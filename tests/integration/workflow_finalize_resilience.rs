@@ -249,16 +249,19 @@ fn run_agentic_finalization(mode: &str, envs: &[(&str, &str)]) -> std::process::
         .expect("run workflow_agentic_finalization.sh")
 }
 
+/// The shell a step runs, following an `amplifier-bundle/tools/` call-out
+/// left by the brick-budget extraction of issue #1619.
 fn step_command(recipe: &Value, id: &str) -> String {
-    recipe
-        .get("steps")
-        .and_then(Value::as_sequence)
-        .expect("recipe must contain top-level steps")
-        .iter()
-        .find(|step| step.get("id").and_then(Value::as_str) == Some(id))
-        .and_then(|step| step.get("command").and_then(Value::as_str))
-        .unwrap_or_else(|| panic!("step {id} must be a bash command step"))
-        .to_owned()
+    crate::recipe_step_body::resolved(
+        recipe
+            .get("steps")
+            .and_then(Value::as_sequence)
+            .expect("recipe must contain top-level steps")
+            .iter()
+            .find(|step| step.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|step| step.get("command").and_then(Value::as_str))
+            .unwrap_or_else(|| panic!("step {id} must be a bash command step")),
+    )
 }
 
 #[test]

@@ -72,11 +72,15 @@ fn step(r: &Value, id: &str) -> Value {
         .unwrap_or_else(|| panic!("step {id} missing"))
 }
 
+/// The shell a step runs. Issue #1619: a body extracted into
+/// `amplifier-bundle/tools/` for the brick budget is followed, so these
+/// assertions read the step's real shell rather than its lookup block.
 fn command(r: &Value, id: &str) -> String {
-    step(r, id)["command"]
-        .as_str()
-        .unwrap_or_else(|| panic!("{id} must have a command"))
-        .to_string()
+    crate::recipe_step_body::resolved(
+        step(r, id)["command"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{id} must have a command")),
+    )
 }
 
 fn condition(r: &Value, id: &str) -> String {
@@ -285,9 +289,7 @@ fn common_preamble_never_resolves_tools_from_the_worktree() {
         if s["type"].as_str() == Some("bash") {
             let id = s["id"].as_str().unwrap();
             assert!(
-                s["command"]
-                    .as_str()
-                    .unwrap()
+                crate::recipe_step_body::resolved(s["command"].as_str().unwrap())
                     .contains("quick_change_common.sh"),
                 "{id} must source quick_change_common.sh"
             );

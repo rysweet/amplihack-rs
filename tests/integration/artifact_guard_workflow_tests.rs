@@ -146,9 +146,13 @@ fn finalize_push_cleanup_guards_immediately_before_broad_staging() {
 #[test]
 fn finalize_artifact_guard_failures_are_not_silenced() {
     let recipe = load_recipe("workflow-finalize.yaml");
-    let guard_commands: Vec<&str> = steps(&recipe)
+    let guard_commands: Vec<String> = steps(&recipe)
         .iter()
         .filter_map(|step| step.get("command").and_then(Value::as_str))
+        // Issue #1619: a body extracted into amplifier-bundle/tools/ for the
+        // brick budget still has to be scanned, or a guard that moved there
+        // would read as a guard that was removed.
+        .map(crate::recipe_step_body::resolved)
         .filter(|command| command.contains("amplihack hygiene artifact-guard"))
         .collect();
 
@@ -217,9 +221,14 @@ fn recipe_commands_with_guarded_broad_staging_fail_loudly() {
                 .get("id")
                 .and_then(Value::as_str)
                 .unwrap_or("<unknown>");
-            let Some(command) = step.get("command").and_then(Value::as_str) else {
+            let Some(command) = step
+                .get("command")
+                .and_then(Value::as_str)
+                .map(crate::recipe_step_body::resolved)
+            else {
                 continue;
             };
+            let command = command.as_str();
             let Some(guard_position) = command.find("amplihack hygiene artifact-guard") else {
                 continue;
             };
@@ -272,9 +281,10 @@ fn publish_and_finalize_do_not_inline_shell_delete_artifacts_as_remediation() {
 fn guard_command_uses_structured_cli_arguments_not_shell_interpolation() {
     for recipe_name in ["workflow-publish.yaml", "workflow-finalize.yaml"] {
         let recipe = load_recipe(recipe_name);
-        let commands: Vec<&str> = steps(&recipe)
+        let commands: Vec<String> = steps(&recipe)
             .iter()
             .filter_map(|step| step.get("command").and_then(Value::as_str))
+            .map(crate::recipe_step_body::resolved)
             .filter(|command| command.contains("amplihack hygiene artifact-guard"))
             .collect();
 
@@ -1005,9 +1015,13 @@ fn every_guard_call_in_every_recipe_can_stop_its_step() {
                 .and_then(Value::as_str)
                 .unwrap_or("<unknown>");
             let mut bodies = Vec::new();
-            if let Some(command) = step.get("command").and_then(Value::as_str) {
+            if let Some(command) = step
+                .get("command")
+                .and_then(Value::as_str)
+                .map(crate::recipe_step_body::resolved)
+            {
                 let set_e = command.contains("set -e");
-                bodies.push((shell_logical_lines(command), set_e, "command"));
+                bodies.push((shell_logical_lines(&command), set_e, "command"));
             }
             if let Some(prompt) = step.get("prompt").and_then(Value::as_str) {
                 bodies.push((fenced_shell_lines(prompt), false, "prompt"));

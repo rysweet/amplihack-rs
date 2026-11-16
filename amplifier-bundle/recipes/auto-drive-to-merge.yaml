@@ -57,6 +57,7 @@ steps:
     type: "agent"
     output: "autodrive_prerequisites"
     agent: "amplihack:core:builder"
+    model: "fast"
     parse_json: true
     prompt: |
       Determine QA prerequisites using the trusted qa-team repository-type table and merge-base QA selection. Report required tools, availability, and any blocker with its cause. Rust CLI and Python repositories do not require gadugi unless operator scenarios require it. Documentation-only changes follow the established exemption. A missing required tool cannot establish QA; do not prevent agents from diagnosing it. Return JSON with prerequisites, blockers, attempts.
@@ -108,6 +109,7 @@ steps:
     type: "agent"
     output: "autodrive_unmerged_check"
     agent: "amplihack:core:builder"
+    model: "fast"
     parse_json: true
     prompt: |
       Observe the exact PR from {{build_result}} after crusty. If merged_before_run=true, report already_merged. Otherwise confirm it remains OPEN; an early merge is a workflow_violation. Missing access is incomplete with its cause. Return JSON with platform_state, action, blockers, attempts.

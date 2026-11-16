@@ -1,0 +1,45 @@
+# Issue #1619: the model tier amplihack maps to a model and a reasoning
+# effort, per harness. This file is compiled into the binary and is the
+# shipped default; an instance replaces single cells with its own file of the
+# same shape, found as `docs/reference/model-tiers.md` describes.
+#
+# A cell names a model, an effort, both, or neither. A cell that names no
+# model means the harness's own default model runs, which is how an instance
+# says "that model is not available to me". A tier with no cell at all falls
+# back the same way. Nothing here names a host, a user path or an account:
+# this file ships to every install.
+
+version = 1
+
+# Claude Code and the tools amplihack launches like it (`rusty`,
+# `rustyclawd`, `amplifier`). Concrete ids, never aliases: an alias is
+# resolved by the CLI, so its meaning depends on the CLI version (issue
+# #1421). `strong` is the id amplihack already defaults to, so the two cannot
+# drift apart.
+[claude.strong]
+model = "claude-opus-5[1m]"
+
+[claude.standard]
+model = "claude-sonnet-5-5"
+
+[claude.fast]
+model = "claude-haiku-5-5"
+
+# Codex. Opus and Sonnet do not exist there, and naming a Codex model in a
+# shipped default would guess at the account, so the tiers differ by
+# reasoning effort and leave the model to Codex. The effort reaches Codex as
+# its own `-c model_reasoning_effort=...` argument.
+[codex.strong]
+effort = "xhigh"
+
+[codex.standard]
+effort = "high"
+
+[codex.fast]
+effort = "low"
+
+# Copilot CLI. The column exists so an instance can fill it in; it ships
+# empty because amplihack passes no `--model` to Copilot today and a model
+# name there would depend on the account. Every tier therefore uses Copilot's
+# own default model.
+[copilot]

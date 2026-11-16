@@ -26,6 +26,7 @@ context:
 steps:
   - id: "step-07-write-tests"
     agent: "amplihack:tester"
+    model: "standard"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
@@ -54,6 +55,7 @@ steps:
 
   - id: "step-08-implement"
     agent: "amplihack:builder"
+    model: "strong"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
@@ -108,6 +110,7 @@ steps:
   # Two-step pair: work-verifier (agent→JSON verdict) + enforce-verdict (bash→exit code).
   - id: "step-08c-work-verifier"
     agent: "amplihack:analyzer"
+    model: "standard"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
@@ -243,6 +246,7 @@ steps:
     # The resume-checkpoint term governs resumption; the applicability term is
     # what makes the prompt's "Skip if no external integrations" real (#1334).
     agent: "amplihack:integration"
+    model: "strong"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "clarified_requirements.requires_integration_work != 'false' and resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
@@ -385,12 +389,10 @@ steps:
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     parse_json: true
     command: |
-      set -euo pipefail
-      # issue #962: full resolution ladder + visible no-discard degrade (see docs/reference/workflow-implementation-evidence.md)
-      HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
-      [ -f "$HELPER" ] || HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
-      [ -f "$HELPER" ] || HELPER="$(pwd)/amplifier-bundle/tools/workflow_implementation_evidence.sh"
-      [ -f "$HELPER" ] || HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_implementation_evidence.sh"
-      [ -f "$HELPER" ] || HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_implementation_evidence.sh"
-      if [ -f "$HELPER" ]; then bash "$HELPER"; else echo "WARNING: implementation-evidence helper unresolvable (AMPLIHACK_HOME/REPO_PATH/cwd/~/.copilot/~/.amplihack); bookkeeping gate degrading VISIBLY to preserve step-08c-verified work (no-discard #962). searched: $HELPER cwd=$(pwd)" >&2; printf '%s\n' '{"implementation_completed":"true","terminal_no_op":"false","terminal_state":"EVIDENCE_TOOL_UNAVAILABLE","terminal_reason":"impl-evidence helper unresolvable; bookkeeping gate degraded (no-discard #962); step-08c-verified work preserved"}'; fi
+      # The body of this step lives in amplifier-bundle/tools/tdd_implementation_evidence_step.sh,
+      # extracted for the brick budget (issue #1619). It is unchanged and
+      # reads the same RECIPE_VAR_* variables the runner exports.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/tdd_implementation_evidence_step.sh" ] && { H="$c/amplifier-bundle/tools/tdd_implementation_evidence_step.sh"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: tdd_implementation_evidence_step.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      bash "$H"
     output: "implementation_terminal_evidence"

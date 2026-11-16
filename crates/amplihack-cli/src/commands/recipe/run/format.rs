@@ -133,6 +133,14 @@ fn format_recipe_run_table(result: &RecipeRunResult, show_context: bool) -> Stri
         append_recent_snippet_lines(&mut lines, "Recent stderr", &step.recent_stderr);
     }
 
+    // Issue #1619: additive, after the steps and before the context, so the
+    // step status and `    Output: ` lines keep their exact shape.
+    let tiers = model_tier_lines(&run_tier_records(), &result.step_results);
+    if !tiers.is_empty() {
+        lines.push(String::new());
+        lines.extend(tiers);
+    }
+
     if show_context && !result.context.is_empty() {
         lines.push(String::new());
         lines.push("Context:".to_string());
@@ -237,4 +245,113 @@ fn json_scalar_to_string(value: &JsonValue) -> String {
         JsonValue::String(v) => v.clone(),
         other => serde_json::to_string(other).unwrap_or_default(),
     }
+}
+
+// =========================================================================
+// Issue #1619: the run summary names the model and effort each step ran on.
+//
+// The section is additive. The step status line and its `    Output: ` line
+// are a machine-read contract — `amplifier-bundle/tools/autodrive_loop.sh`
+// parses them with awk to read the LOOP_HEALTH verdict (issue #1512) — and
+// nothing here reshapes them.
+//
+// Attribution is a correlation, not a lookup: no step id ever reaches a child
+// process, because the recipe runner sets no step-id environment variable. So
+// a step id is printed only when the counts agree, and otherwise the section
+// prints by launch sequence and says why. A retry, a parallel group and a
+// resumed run all make the counts disagree.
+// =========================================================================
+
+use crate::commands::launch::model_tiers::record::{Fallback, Record};
+use crate::commands::launch::model_tiers::table::{Effort, Tier};
+
+/// The `Model tiers:` section for one run, or no lines at all when no launch
+/// recorded a tier: an empty heading is noise in every summary that has
+/// nothing to report.
+pub(crate) fn model_tier_lines(
+    records: &[Record],
+    step_results: &[RecipeRunStepResult],
+) -> Vec<String> {
+    if records.is_empty() {
+        return Vec::new();
+    }
+    let ran: Vec<&RecipeRunStepResult> = step_results
+        .iter()
+        .filter(|step| step.status != "skipped")
+        .collect();
+    let paired = ran.len() == records.len();
+    let mut lines = vec!["Model tiers:".to_string()];
+    if !paired {
+        // Deliberately names no id, not even to say which one is missing:
+        // half an attribution reads as a whole one.
+        lines.push(format!(
+            "  {} tiered launches against {} recipe entries that ran: amplihack cannot \
+             tell which launch belongs to which, so none is named here. A retry, a \
+             parallel group or a resumed run all do this.",
+            records.len(),
+            ran.len()
+        ));
+    }
+    for (index, record) in records.iter().enumerate() {
+        let label = if paired {
+            ran[index].step_id.clone()
+        } else {
+            format!("launch {}", record.seq)
+        };
+        lines.push(format!("  {label}: {}", describe(record)));
+    }
+    lines
+}
+
+/// What one launch ran on, in one line: the tier it asked for, the model and
+/// effort it got, and where they differ from what was asked.
+fn describe(record: &Record) -> String {
+    let tier = record.tier.map(Tier::as_str).unwrap_or("none");
+    let model = match record.effective_model.as_deref() {
+        Some(model) => model.to_string(),
+        None => format!("{} default model", record.harness),
+    };
+    let mut line = format!("{tier} → {model}");
+    if let Some(effort) = record.effective_effort.map(Effort::as_str) {
+        line.push_str(&format!(", effort {effort}"));
+    } else if let Some(effort) = record.requested_effort.map(Effort::as_str) {
+        line.push_str(&format!(
+            ", effort {effort} asked for but not a launch control here"
+        ));
+    }
+    // What was asked for, when it is not what ran: a substitution is visible
+    // rather than silent.
+    let mut asides = Vec::new();
+    if record.requested_model != record.effective_model
+        && let Some(requested) = record.requested_model.as_deref()
+    {
+        asides.push(format!("requested: {requested}"));
+    }
+    if let Some(reason) = record.fallback {
+        asides.push(reason_text(reason, &record.column));
+    }
+    if !asides.is_empty() {
+        line.push_str(&format!(" ({})", asides.join("; ")));
+    }
+    line
+}
+
+/// Why a tier did not become a model, in the words the stderr line used.
+fn reason_text(reason: Fallback, column: &str) -> String {
+    match reason {
+        Fallback::NoColumn => format!("no `{column}` column"),
+        Fallback::NoMapping => format!("no entry in the `{column}` column"),
+        Fallback::NoModel => format!("the `{column}` entry names no model"),
+        Fallback::Gateway => "the LiteLLM gateway routes on the model name".to_string(),
+    }
+}
+
+/// Every tier record of the run `AMPLIHACK_RUN_DIR` names, in launch order.
+/// Empty when the launch had no run scope, which is also what makes the
+/// section absent from a summary with nothing to report.
+pub(super) fn run_tier_records() -> Vec<Record> {
+    let Some(dir) = std::env::var_os("AMPLIHACK_RUN_DIR").filter(|value| !value.is_empty()) else {
+        return Vec::new();
+    };
+    crate::commands::launch::model_tiers::record::read_all(std::path::Path::new(&dir))
 }

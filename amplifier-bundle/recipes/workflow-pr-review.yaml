@@ -54,6 +54,7 @@ steps:
     output: "step_13_testing_evidence_check"
   - id: "step-17b-reviewer-agent"
     agent: "amplihack:reviewer"
+    model: "standard"
     condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 17b: Comprehensive Code Review (MANDATORY)
@@ -75,6 +76,7 @@ steps:
     output: "pr_review"
   - id: "step-17c-security-review"
     agent: "amplihack:security"
+    model: "standard"
     condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 17c: Security Review (MANDATORY)
@@ -94,6 +96,7 @@ steps:
     output: "pr_security_review"
   - id: "step-17d-philosophy-guardian"
     agent: "amplihack:philosophy-guardian"
+    model: "standard"
     condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 17d: Philosophy Guardian Review (MANDATORY)
@@ -113,6 +116,7 @@ steps:
     output: "pr_philosophy_review"
   - id: "step-17e-address-blocking-issues"
     agent: "amplihack:builder"
+    model: "strong"
     condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 17e: Address Blocking Issues (MANDATORY)
@@ -130,23 +134,16 @@ steps:
     type: "bash"
     condition: "terminal_state.terminal_success != 'true'"
     command: |
-      echo "=== STEP 17 VERIFICATION GATE ===" && \
-      echo "" && \
-      echo "Before proceeding, verify ALL of the following:" && \
-      echo "" && \
-      echo "  ✓ Did I invoke the REVIEWER agent? → Yes (output captured)" && \
-      echo "  ✓ Did I invoke the SECURITY agent? → Yes (output captured)" && \
-      echo "  ✓ Did I invoke the PHILOSOPHY-GUARDIAN agent? → Yes (output captured)" && \
-      echo "  ✓ Did I check for FORBIDDEN PATTERN violations? → Yes" && \
-      echo "  ✓ Are all three reviews POSTED to the PR as comments?" && \
-      echo "  ✓ All blocking issues have been addressed?" && \
-      echo "" && \
-      echo "If any verification fails, STOP and complete the missing step." && \
-      echo "" && \
-      echo "=== GATE PASSED - Proceed to Step 18 ==="
+      # The body of this step lives in amplifier-bundle/tools/pr_review_step17_gate.sh,
+      # extracted for the brick budget (issue #1619). It is unchanged and
+      # reads the same RECIPE_VAR_* variables the runner exports.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/pr_review_step17_gate.sh" ] && { H="$c/amplifier-bundle/tools/pr_review_step17_gate.sh"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: pr_review_step17_gate.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      bash "$H"
     output: "step_17_gate_status"
   - id: "step-18a-analyze-feedback"
     agent: "amplihack:architect"
+    model: "strong"
     condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 18a: Analyze Review Feedback (MANDATORY)
@@ -161,6 +158,7 @@ steps:
     output: "feedback_analysis"
   - id: "step-18b-implement-feedback"
     agent: "amplihack:builder"
+    model: "strong"
     condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 18b: Implement Review Feedback (MANDATORY)
@@ -301,21 +299,16 @@ steps:
     type: "bash"
     condition: "terminal_state.terminal_success != 'true'"
     command: |
-      echo "=== STEP 18 VERIFICATION GATE ===" && \
-      echo "" && \
-      echo "Before proceeding, verify ALL of the following:" && \
-      echo "" && \
-      echo "  ✓ Did I address EVERY feedback comment (not just some)?" && \
-      echo "  ✓ Did I respond to each comment on the PR?" && \
-      echo "  ✓ Did I use the builder agent for implementation changes?" && \
-      echo "  ✓ Are all tests still passing?" && \
-      echo "" && \
-      echo "If any verification fails, STOP and complete the missing step." && \
-      echo "" && \
-      echo "=== GATE PASSED - Proceed to Step 19 ==="
+      # The body of this step lives in amplifier-bundle/tools/pr_review_step18_gate.sh,
+      # extracted for the brick budget (issue #1619). It is unchanged and
+      # reads the same RECIPE_VAR_* variables the runner exports.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/pr_review_step18_gate.sh" ] && { H="$c/amplifier-bundle/tools/pr_review_step18_gate.sh"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: pr_review_step18_gate.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      bash "$H"
     output: "step_18_gate_status"
   - id: "step-19a-philosophy-check"
     agent: "amplihack:reviewer"
+    model: "standard"
     condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 19a: Philosophy Compliance Review (MANDATORY)
@@ -332,6 +325,7 @@ steps:
     output: "philosophy_check"
   - id: "step-19b-patterns-check"
     agent: "amplihack:patterns"
+    model: "standard"
     condition: "terminal_state.terminal_success != 'true'"
     prompt: |
       # Step 19b: Pattern Compliance Review (MANDATORY)

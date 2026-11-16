@@ -964,6 +964,16 @@ pub(super) fn execute_recipe_via_rust_fresh(
             .as_deref()
             .map_err(|e| *e),
     );
+    // Issue #1619: an instance may give one named step a tier of its own. The
+    // step id never reaches the child, so the override is applied recipe-side:
+    // patched copies of only the recipes that declare a named step, written
+    // into this run's own directory and put first in the runner's search
+    // order. With nothing configured nothing is staged, no variable is set and
+    // the run behaves exactly as it did before. A staging failure is reported
+    // and the run continues on the recipes as written: a tier preference must
+    // never stop a run.
+    let staged_recipes =
+        stage_step_tier_overrides(workspace.borrow().run_dir(), search_dirs, &mapped_recipe);
     let build_command = |run_id: &str| -> Result<Command> {
         // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
         // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
@@ -1101,6 +1111,11 @@ pub(super) fn execute_recipe_via_rust_fresh(
         command.env(SESSION_DEPTH_ENV, guard.child_depth.to_string());
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
+        // Issue #1619: the runner's first recipe search directory, set on the
+        // child only and only when a per-step tier override staged something.
+        if let Some(staged) = &staged_recipes {
+            command.env(super::step_tiers::RECIPE_DIR_ENV, &staged.dir);
+        }
         // Issue #2486: this run's own TMPDIR must exist before the step starts.
         workspace.borrow_mut().prepare_attempt()?;
         // Must stay last among the TMPDIR/TMP/TEMP setters: it overrides the
@@ -2719,4 +2734,33 @@ pub(crate) fn new_tree_id() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0) as u64;
     format!("{:016x}{:08x}", nanos, std::process::id())
+}
+
+/// Issue #1619: write this run's patched recipe copies, or `None` when no
+/// per-step tier override is configured, the run has no durable directory, or
+/// no recipe declares a named step.
+///
+/// Reported and never fatal: a tier is a preference about which model runs a
+/// step, so a staging failure leaves the run on the recipes as written rather
+/// than stopping a hundred agent steps.
+fn stage_step_tier_overrides(
+    run_dir: Option<&Path>,
+    search_dirs: &[PathBuf],
+    recipe: &Path,
+) -> Option<super::step_tiers::Staged> {
+    let run_dir = run_dir?;
+    let overrides = crate::commands::launch::model_tiers::step_tier_overrides();
+    if overrides.is_empty() {
+        return None;
+    }
+    match super::step_tiers::stage(run_dir, search_dirs, recipe, &overrides) {
+        Ok(staged) => staged,
+        Err(reason) => {
+            eprintln!(
+                "amplihack: model tiers: the per-step tier override could not be staged \
+                 ({reason}); the recipes run with the tiers they declare."
+            );
+            None
+        }
+    }
 }

@@ -489,3 +489,9 @@ mod issue_2552_build_preflight_decision;
 mod issue_1619_tier_argv_safety;
 #[path = "issue_1619_tier_propagation.rs"]
 mod issue_1619_tier_propagation;
+
+// Issue #1619: a step whose shell body was extracted into
+// amplifier-bundle/tools/ for the brick budget still has to be readable by
+// the tests that assert on it. One copy follows the call-out.
+#[path = "../../../tests/integration/recipe_step_body.rs"]
+mod recipe_step_body;

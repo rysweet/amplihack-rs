@@ -44,6 +44,7 @@ steps:
     parse_json: true
     output: "crusty_loop_preflight"
     agent: "amplihack:core:builder"
+    model: "fast"
     prompt: |
       Use noninteractive command execution with GIT_PAGER=cat, GH_PAGER=cat and PAGER=cat.
       Establish the PR identity and the worktree before continuing. Explicit operator PR {{autodrive_pr_input}} takes precedence over {{pr_number}} and branch discovery. Reuse the exact open PR rather than creating a duplicate; observe already-merged state instead of rebuilding it. Resolve platform, host, target repository, source repository, number, URL, head branch/SHA, base branch/SHA and merge-base together. Use available hosting access (for example gh pr view/list); evaluate failure and recover with an authenticated alternative. If lookup is incomplete or ambiguous, report a named blocker rather than guessing main or the current checkout.
@@ -165,6 +166,7 @@ steps:
     continue_on_error: true
     output: "crusty_phase_record"
     agent: "amplihack:core:builder"
+    model: "fast"
     parse_json: true
     prompt: |
       Verify the loop result {{crusty_loop_result}} is DONE with CLEAN or accepted MINOR_ONLY. A DONE from objective completion (source objective-completion, no evaluator call) is a valid DONE; never require a loop-health evaluator result for it. Read the trusted finding contract and existing state {{crusty_loop_preflight.state_dir}}. Preserve stable identifiers, collect minor findings (optional trusted autodrive_followups.sh collect), and ensure one observed follow-up issue per minor finding linked to plan task {{plan_task_id}} (or the established issue-link fallback). Recover failed issue commands using an equivalent authenticated interface and record each observed issue mapping. Dry-run {{autodrive_dry_run}} prohibits issue creation; unfiled findings remain followup-missing:<id> blockers. Do not accept MINOR_ONLY as ready until all obligations hold. Only after verified DONE, record the resolved concerns and head with the trusted autodrive_record_crusty_loop_done function in autodrive_state.sh. Never infer completion from an old marker. Return JSON with recorded, reviewed_head_sha, followups, blockers and attempts.

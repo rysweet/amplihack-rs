@@ -98,6 +98,7 @@ steps:
 
   - id: "push_recovery"
     agent: "amplihack:pre-commit-diagnostic"
+    model: "strong"
     prompt: |
       # Recover from a failed push
 

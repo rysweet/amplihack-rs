@@ -167,6 +167,7 @@ steps:
     output: "light_base"
   - id: "light-implement"
     agent: "amplihack:core:builder"
+    model: "strong"
     condition: "not pr_number and not existing_branch"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
@@ -201,6 +202,7 @@ steps:
     type: "agent"
     condition: "not pr_number and not existing_branch"
     agent: "amplihack:core:builder"
+    model: "standard"
     parse_json: true
     prompt: |
       Verify the change in the established linked worktree. Use operator qa_command {{qa_command}} if provided; otherwise follow trusted quick_change_checks.sh selection from the recorded base {{light_base}}. These are suggested interfaces. Evaluate results, repair failures and rerun within the existing timeout and budget rules. Record commands, exits, concrete results and recovery. A missing required tool or unavailable equivalent is an incomplete blocker; do not install tools automatically or substitute missing evidence. No checks means unverified, never a passing test. Leave the PR open. Later shared merge-ready verification retains all 13 authoritative criteria and QA source precedence.
@@ -274,6 +276,7 @@ steps:
     condition: "not pr_number and not existing_branch"
     output: "light_pr_url"
     agent: "amplihack:core:builder"
+    model: "standard"
     parse_json: true
     prompt: |
       Complete responsibility light-open-pr. Evaluate and adapt these optional command examples; do not run unsupported flags blindly:
@@ -313,6 +316,7 @@ steps:
     parse_json: true
     output: "build_result"
     agent: "amplihack:core:builder"
+    model: "strong"
     prompt: |
       Establish the PR identity and the worktree before continuing. Explicit operator PR {{autodrive_pr_input}} takes precedence over {{pr_number}} and branch discovery. Reuse the exact open PR rather than creating a duplicate; observe already-merged state instead of rebuilding it. Resolve platform, host, target repository, source repository, number, URL, head branch/SHA, base branch/SHA and merge-base together. Use available hosting access (for example gh pr view/list); evaluate failure and recover with an authenticated alternative. If lookup is incomplete or ambiguous, report a named blocker rather than guessing main or the current checkout.
       Resolve the head branch's existing linked worktree with git worktree list; compare its actual branch and HEAD to the observed PR. Do not use the launch checkout or create a replacement over a dirty worktree. Preserve unpublished commits; diagnose behind, ahead or diverged heads and repair without discarding changes. Verify the relationship using the optional portable helper `amplihack orch helper autodrive worktree --repo <path> --head <observed-sha> --branch <head-branch>`. Resolve the main checkout for review with the trusted autodrive_worktree_guard.sh review-dir helper; reviewers start there, never in the reviewed worktree.
@@ -416,6 +420,7 @@ steps:
     type: "agent"
     condition: "light_eligibility.decision == 'light' and build_result.merged_before_run != 'true'"
     agent: "amplihack:core:builder"
+    model: "fast"
     parse_json: true
     prompt: |
       Observe the exact PR in {{build_result}} after crusty. Confirm it remains OPEN on the verified head. Recover a failed command through an equivalent authenticated interface and record each failure and recovery. A missing observation or unexpected earlier merge is a blocker, never readiness. Leave the PR open. Return concrete observations, attempts, blockers and observed state. Do not bypass failed criteria or repository protections.

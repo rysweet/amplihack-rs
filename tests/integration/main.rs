@@ -557,3 +557,9 @@ mod issue_1966_consensus_criticality;
 // holds, and the small-diff combined review is wired and off by default.
 #[path = "issue_1619_recipe_tiers_test.rs"]
 mod issue_1619_recipe_tiers;
+
+// Issue #1619: a step whose shell body was extracted into
+// amplifier-bundle/tools/ for the brick budget still has to be readable by
+// the tests that assert on it. One place follows the call-out.
+#[path = "recipe_step_body.rs"]
+mod recipe_step_body;

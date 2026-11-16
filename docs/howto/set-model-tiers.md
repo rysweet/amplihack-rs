@@ -2,9 +2,9 @@
 
 A recipe step declares how much model it needs — `fast`, `standard` or
 `strong` — and amplihack picks the model, and on Codex the reasoning effort,
-for the CLI it launches. The 30 bundled recipe files that `default-workflow`,
+for the CLI it launches. The 29 bundled recipe files that `default-workflow`,
 `investigation-workflow`, `smart-orchestrator` and the auto-drive family
-reach carry tiers; the other 24 recipes with agent steps are unchanged. This
+reach carry tiers; the other 25 recipes with agent steps are unchanged. This
 guide covers the things you do yourself: changing the mapping for your
 install, moving one step, forcing one model everywhere, and reading back what
 a run actually spent.
@@ -54,7 +54,7 @@ amplihack claude -- --model standard -p 'print the word ok' 2>&1 >/dev/null |
 ```
 
 ```text
-amplihack: passing `--model claude-haiku-5-5` to `claude` (from model tier `standard`). Edit ~/.amplihack/model-tiers.toml, or set model.force, to change it.
+amplihack: model tier `standard` on `claude`: passing `--model claude-haiku-5-5`. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 ```
 
 A bare `amplihack claude -p …` declares no tier, so it will not show this —
@@ -177,7 +177,7 @@ amplihack recipe run default-workflow -c task_description='...'
 
 ```text
 Model tiers:
-  step-01-prepare-workspace: fast → claude-haiku-5-5
+  autodrive-prerequisites: fast → claude-haiku-5-5
   step-05-architecture: strong → claude-opus-5[1m]
   step-10-pre-commit-review: standard → claude-sonnet-5-5
 ```
@@ -238,7 +238,7 @@ The step does not fail, nothing is retried, and the run log says once what
 happened:
 
 ```text
-amplihack: model tier `strong` has no model for `claude`; amplihack's own default applies.
+amplihack: model tier `strong` names no model in the `claude` column, so `claude` runs on its own default model. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 amplihack: passing `--model claude-opus-5[1m]` to `claude` (from amplihack's built-in default). Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to let claude choose its own default model.
 ```
 

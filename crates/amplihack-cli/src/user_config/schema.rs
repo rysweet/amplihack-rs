@@ -12,6 +12,10 @@ use amplihack_utils::agent_binary::validate_binary_name;
 use super::ConfigError;
 use crate::commands::session_tree::state::MAX_DEPTH_CEILING;
 
+/// What a model id may look like, phrased to follow `<key>: `.
+const MODEL_ID_REQUIREMENT: &str = "must be a model id of at most 128 letters, digits and '.', '_', '-', '[', ']', '@' or ':', \
+     not starting with '-'";
+
 /// Longest accepted path value, in bytes.
 pub(crate) const MAX_PATH_BYTES: usize = 4096;
 
@@ -31,6 +35,10 @@ pub(crate) enum Scope {
 pub(crate) enum ValueKind {
     /// One of the allowlisted agent CLIs, canonicalised to lowercase.
     AgentBinary,
+    /// A model id amplihack is willing to put on a command line, validated
+    /// by the one checker every model string crosses
+    /// ([`crate::commands::launch::model_tiers::table::validate_model_id`]).
+    ModelId,
     /// An absolute path, without `..`, control characters or NUL, at most
     /// [`MAX_PATH_BYTES`].
     AbsPath,
@@ -267,6 +275,65 @@ pub(crate) static KEYS: &[KeyDef] = &[
         default: Some(DEFAULT_MAX_DEPTH),
         lower_only: true,
     },
+    KeyDef {
+        name: "model.force",
+        // Issue #1619: names the model every launch asks for, and lands as
+        // the argv token right after `--model`. A cloned repository must not
+        // choose it (the reason the review of #1647 gave for `agent.binary`).
+        scope: Scope::UserOnly,
+        kind: ValueKind::ModelId,
+        env: Some("AMPLIHACK_FORCE_MODEL"),
+        default: None,
+        lower_only: false,
+    },
+    KeyDef {
+        name: "model.tier_map",
+        // Issue #1619: the instance's tier mapping. A path, and it decides
+        // which model every agent step asks for, so user-only. No variable:
+        // it is set deliberately in the user's own config, not picked up
+        // from an inherited environment.
+        scope: Scope::UserOnly,
+        kind: ValueKind::AbsPath,
+        env: None,
+        default: None,
+        lower_only: false,
+    },
+    KeyDef {
+        name: "model.step_tiers",
+        // Issue #1619: names the file that drives amplihack's rewriting of
+        // recipe YAML, whose bash step bodies execute. Never project-scoped,
+        // and no variable, for the same reasons as `model.tier_map`.
+        scope: Scope::UserOnly,
+        kind: ValueKind::AbsPath,
+        env: None,
+        default: None,
+        lower_only: false,
+    },
+    KeyDef {
+        name: "review.combined_small_diff",
+        // Issue #1619: a small change may have its code, security and
+        // philosophy passes as one review. Off by default, so the three
+        // separate passes run exactly as they did before.
+        scope: Scope::UserAndProject,
+        kind: ValueKind::Bool,
+        env: None,
+        default: Some("false"),
+        lower_only: false,
+    },
+    KeyDef {
+        name: "review.combined_diff_threshold",
+        // Changed lines at or below which a diff counts as small. A
+        // threshold of zero would mean no diff is ever small, which is what
+        // turning the switch off already does.
+        scope: Scope::UserAndProject,
+        kind: ValueKind::Int {
+            min: 1,
+            max: 100_000,
+        },
+        env: None,
+        default: Some("200"),
+        lower_only: false,
+    },
     super::schema_governor::GOVERNOR_ENABLED,
     super::schema_governor::GOVERNOR_MAX_CONCURRENCY,
     super::schema_governor::GOVERNOR_RESERVE_POINTS,
@@ -343,6 +410,11 @@ pub(crate) fn parse_raw(kind: ValueKind, raw: &str) -> Result<Value, String> {
         ValueKind::AgentBinary => validate_binary_name(raw)
             .map(Value::Text)
             .ok_or_else(|| kind_requirement(kind)),
+        // Checked on the raw input, before any trimming: a leading space
+        // would otherwise hide a leading dash from a later reader.
+        ValueKind::ModelId => crate::commands::launch::model_tiers::table::validate_model_id(raw)
+            .map(|()| Value::Text(raw.to_string()))
+            .map_err(|_| kind_requirement(kind)),
         ValueKind::AbsPath => validate_abs_path(raw).map(|()| Value::Text(raw.to_string())),
         ValueKind::Choice(words) => words
             .iter()
@@ -375,6 +447,7 @@ pub(crate) fn from_toml(kind: ValueKind, item: &toml_edit::Value) -> Result<Valu
         (
             ValueKind::AgentBinary
             | ValueKind::AbsPath
+            | ValueKind::ModelId
             | ValueKind::Choice(_)
             | ValueKind::SessionPattern,
             toml_edit::Value::String(s),
@@ -395,6 +468,7 @@ pub(crate) fn from_toml(kind: ValueKind, item: &toml_edit::Value) -> Result<Valu
 pub(crate) fn kind_requirement(kind: ValueKind) -> String {
     match kind {
         ValueKind::AgentBinary => "must be one of amplifier, claude, codex or copilot".to_string(),
+        ValueKind::ModelId => MODEL_ID_REQUIREMENT.to_string(),
         ValueKind::AbsPath => format!(
             "must be an absolute path without '..', control characters or NUL, at most \
              {MAX_PATH_BYTES} bytes"

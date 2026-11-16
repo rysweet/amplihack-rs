@@ -25,7 +25,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use tempfile::TempDir;
 
 const BRICK_LIMIT: usize = 400;
@@ -120,15 +120,56 @@ fn load_yaml(name: &str) -> &'static serde_yaml::Value {
     }
 }
 
+/// The shell a bash step runs.
+///
+/// Issue #1619: a step whose body was extracted into
+/// `amplifier-bundle/tools/` for the brick budget runs that file, so the body
+/// every assertion below reads is the file's. The call-out is recognised by
+/// the one line that names the script, and the script must exist: a step that
+/// calls a file that is not there would otherwise read as a step with no
+/// requirements at all.
 fn step_command(recipe: &str, step_id: &str) -> &'static str {
-    load(recipe)
+    let inline = load(recipe)
         .steps
         .iter()
         .find(|step| step.id == step_id)
         .unwrap_or_else(|| panic!("{recipe}.yaml missing step {step_id}"))
         .command
         .as_deref()
-        .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must be a bash step"))
+        .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must be a bash step"));
+    match extracted_body(inline) {
+        Some(body) => body,
+        None => inline,
+    }
+}
+
+/// The text of the `amplifier-bundle/tools/` script a call-out names, or
+/// `None` when the body is inline.
+fn extracted_body(inline: &str) -> Option<&'static str> {
+    static BODIES: LazyLock<Mutex<HashMap<String, &'static str>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let marker = "# The body of this step lives in amplifier-bundle/tools/";
+    let line = inline
+        .lines()
+        .find(|line| line.trim_start().starts_with(marker))?;
+    let name = line
+        .trim_end()
+        .trim_end_matches(',')
+        .rsplit('/')
+        .next()
+        .expect("a call-out names its script");
+    let mut bodies = BODIES.lock().expect("extracted body cache");
+    if let Some(body) = bodies.get(name) {
+        return Some(body);
+    }
+    let path = recipes_dir().join("..").join("tools").join(name);
+    let text: &'static str = Box::leak(
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+            .into_boxed_str(),
+    );
+    bodies.insert(name.to_string(), text);
+    Some(text)
 }
 
 struct StepRun {
@@ -249,9 +290,13 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Phase 4: workflow-refactor-review (steps 09-11b)
     "step-09-refactor",
     "step-09b-optimize",
+    // Issue #1619: a small diff may have its three review passes as one.
+    // `review-mode` decides; off by default, so all three still run.
+    "review-mode",
     "step-10-pre-commit-review",
     "step-10b-security-review",
     "step-10c-philosophy-check",
+    "step-10d-combined-review",
     "step-11-incorporate-feedback",
     "step-11b-implement-feedback",
     "checkpoint-after-review-feedback",

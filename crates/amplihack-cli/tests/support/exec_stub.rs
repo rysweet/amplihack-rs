@@ -42,6 +42,12 @@ pub fn write_executable(path: &Path, body: impl AsRef<[u8]>, mode: u32) {
         ])
         .arg(path)
         .arg(format!("{mode:o}"))
+        // A fixed PATH for `cat`, `chmod` and `mv`. Several tests in this
+        // process set the process-wide PATH to one temp directory while
+        // checking PATH resolution, and `sh` would inherit that one and fail
+        // with 127 — which looked like a failure of whichever unrelated test
+        // happened to be writing a stub at the time.
+        .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| panic!("cannot start sh to write {}: {e}", path.display()));

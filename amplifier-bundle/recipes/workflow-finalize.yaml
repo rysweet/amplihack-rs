@@ -68,6 +68,7 @@ steps:
     output: "pr_head_sync_result"
   - id: "step-20-final-cleanup"
     agent: "amplihack:cleanup"
+    model: "fast"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     prompt: |
       # Step 20: Final Cleanup and Verification
@@ -99,6 +100,7 @@ steps:
     output: "final_cleanup"
   - id: "step-20c-quality-audit"
     agent: "amplihack:core:reviewer"
+    model: "standard"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     prompt: |
       # Step 20c: Quality Audit Loop (runs before 20a/20b, so its fixes are guarded and pushed; #1467)
@@ -246,6 +248,7 @@ steps:
     output: "pr_ready_result"
   - id: "step-22-ensure-mergeable"
     agent: "amplihack:ci-diagnostic-workflow"
+    model: "strong"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_run_ci_wait == 'true'"
     prompt: |
       # Step 21: Ensure PR is Mergeable (TASK COMPLETION POINT)
@@ -294,6 +297,7 @@ steps:
     output: "finalization_evidence"
   - id: "agentic-finalizer"
     agent: "amplihack:core:reviewer"
+    model: "fast"
     prompt: |
       # Agentic Finalization Narrative
 
@@ -385,15 +389,10 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      set -euo pipefail
-      # Reports workflow_result, terminal_outcome, terminal_state, terminal_success,
-      # required_next_action, hollow_success_detected, evidence_used, reporting_failure,
-      # finalizer_schema_version, finalizer_confidence, finalizer_output_valid,
-      # terminal_failure, and the terminal vocabulary: MERGED, CLOSED_OBSOLETE,
-      # NO_DIFF_SUCCESS, FOLLOWUP_CREATED, EXISTING_OPEN_PR, SUPERSEDED, IMPLEMENTED_VERIFIED,
-      # ALLOW_NO_OP, BLOCKED_CI, FAILED_IMPLEMENTATION, FAILED_REPORTING,
-      # FAILED_INVALID_EVIDENCE, FAILED_MISSING_TOOLING, FAILED_PR_METADATA_UNAVAILABLE,
-      # FAILED_DIRTY_WORKTREE, FAILED_MEANINGFUL_DIFF, HOLLOW_SUCCESS, INCOMPLETE.
-      FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
-      bash "$FINALIZER_HELPER" complete
+      # The body of this step lives in amplifier-bundle/tools/finalize_workflow_complete_step.sh,
+      # extracted for the brick budget (issue #1619). It is unchanged and
+      # reads the same RECIPE_VAR_* variables the runner exports.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/finalize_workflow_complete_step.sh" ] && { H="$c/amplifier-bundle/tools/finalize_workflow_complete_step.sh"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: finalize_workflow_complete_step.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      bash "$H"
     output: "workflow_completion"

@@ -35,6 +35,7 @@ steps:
     parse_json: true
     output: "build_preflight"
     agent: "amplihack:core:builder"
+    model: "fast"
     prompt: |
       Use noninteractive command execution with GIT_PAGER=cat, GH_PAGER=cat and PAGER=cat.
       Establish the PR identity before continuing. Explicit operator PR {{autodrive_pr_input}} takes precedence over {{pr_number}} and branch discovery. Reuse the exact open PR rather than creating a duplicate; observe already-merged state instead of rebuilding it. Resolve platform, host, target repository, source repository, number, URL, head branch/SHA, base branch/SHA and merge-base together. Use available hosting access (for example gh pr view/list); evaluate failure and recover with an authenticated alternative. If lookup is incomplete or ambiguous, report a named blocker rather than guessing main or the current checkout.
@@ -52,6 +53,7 @@ steps:
     parse_json: true
     output: "no_merge_directive"
     agent: "amplihack:core:builder"
+    model: "fast"
     prompt: |
       Return task_description and requirements from the inputs below, appending the directive: [amplihack:no-merge] Build and publish the PR and leave it open. No merge is authorized in default-workflow. Commands are suggestions: evaluate results and adapt unavailable interfaces while preserving hooks, protections, noninteractive execution and the existing timeout policy.
       Task: {{task_description}}
@@ -122,6 +124,7 @@ steps:
     parse_json: true
     output: "build_result"
     agent: "amplihack:core:builder"
+    model: "strong"
     prompt: |
       Establish the PR identity and the worktree before continuing. Explicit operator PR {{autodrive_pr_input}} takes precedence over {{pr_number}} and branch discovery. Reuse the exact open PR rather than creating a duplicate; observe already-merged state instead of rebuilding it. Resolve platform, host, target repository, source repository, number, URL, head branch/SHA, base branch/SHA and merge-base together. Use available hosting access (for example gh pr view/list); evaluate failure and recover with an authenticated alternative. If lookup is incomplete or ambiguous, report a named blocker rather than guessing main or the current checkout.
       Resolve the head branch's existing linked worktree with git worktree list; compare its actual branch and HEAD to the observed PR. Do not use the launch checkout or create a replacement over a dirty worktree. Preserve unpublished commits; diagnose behind, ahead or diverged heads and repair without discarding changes. Verify the relationship using the optional portable helper `amplihack orch helper autodrive worktree --repo <path> --head <observed-sha> --branch <head-branch>`. Resolve the main checkout for review with the trusted autodrive_worktree_guard.sh review-dir helper; reviewers start there, never in the reviewed worktree.

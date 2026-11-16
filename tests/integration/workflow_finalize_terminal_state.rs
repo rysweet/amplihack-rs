@@ -54,13 +54,16 @@ fn step_condition<'a>(recipe: &'a Value, id: &str) -> &'a str {
         .unwrap_or_else(|| panic!("workflow-finalize step `{id}` must declare a condition"))
 }
 
+/// The shell a step runs, following an `amplifier-bundle/tools/` call-out
+/// left by the brick-budget extraction of issue #1619.
 fn step_command(recipe: &Value, id: &str) -> String {
-    steps(recipe)
-        .iter()
-        .find(|step| step.get("id").and_then(Value::as_str) == Some(id))
-        .and_then(|step| step.get("command").and_then(Value::as_str))
-        .unwrap_or_else(|| panic!("workflow-finalize step `{id}` must be a bash command step"))
-        .to_owned()
+    crate::recipe_step_body::resolved(
+        steps(recipe)
+            .iter()
+            .find(|step| step.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|step| step.get("command").and_then(Value::as_str))
+            .unwrap_or_else(|| panic!("workflow-finalize step `{id}` must be a bash command step")),
+    )
 }
 
 fn step_by_id<'a>(recipe: &'a Value, id: &str) -> &'a Value {

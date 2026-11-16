@@ -23,6 +23,7 @@ steps:
 
   - id: "step-14-bump-version"
     agent: "amplihack:architect"
+    model: "fast"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     prompt: |
@@ -71,19 +72,12 @@ steps:
     type: "bash"
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     command: |
-      set -euo pipefail
-      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
-      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-14b-sync-lockfile)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14b requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
-      # Issue #915: step-14's version bump leaves Cargo.lock stale, so --locked
-      # pre-commit gates fail deterministically. Keep the lock IN SYNC (do NOT
-      # weaken --locked) via an offline update; skip gracefully on non-Rust workspaces.
-      if [ -f Cargo.toml ] && [ -f Cargo.lock ]; then
-        echo "step-14b: syncing Cargo.lock to bumped version (offline)"
-        cargo update --workspace --offline
-      else
-        echo "step-14b: no Cargo.toml/Cargo.lock present; skipping lockfile sync (non-Rust workspace)"
-      fi
+      # The body of this step lives in amplifier-bundle/tools/publish_sync_lockfile_step.sh,
+      # extracted for the brick budget (issue #1619). It is unchanged and
+      # reads the same RECIPE_VAR_* variables the runner exports.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/publish_sync_lockfile_step.sh" ] && { H="$c/amplifier-bundle/tools/publish_sync_lockfile_step.sh"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: publish_sync_lockfile_step.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      bash "$H"
 
   - id: "step-14c-sync-package-json"
     type: "bash"
@@ -360,6 +354,7 @@ steps:
 
   - id: "step-16b-outside-in-fix-loop"
     agent: "amplihack:builder"
+    model: "strong"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     prompt: |

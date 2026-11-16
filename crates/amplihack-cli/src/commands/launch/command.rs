@@ -137,6 +137,13 @@ pub(super) fn build_command_for_dir(
         pin_profile_for_descendants(&mut cmd, dir);
     }
 
+    // Issue #1619: by here every model tier on `extra_args` has already been
+    // resolved into a model this harness actually has, or removed so the
+    // chain below decides. `run_launch` does that once, before anything reads
+    // the tail, so the LiteLLM routing check, the passthrough rewrite,
+    // `model_args`, the contract-injection gate, the Copilot allow-all checks
+    // and `codex_agent_step_args` all read one consistent argv. See
+    // [`model_tiers::resolve_passthrough`].
     inject_uvx_plugin_args(&mut cmd, &binary.name, extra_args, add_dir_override);
 
     // Issues #1421, #1527: every decision about `--model`, and every stderr

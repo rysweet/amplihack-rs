@@ -38,6 +38,7 @@ steps:
     type: "agent"
     condition: "'Q&A' in task_type"
     agent: "amplihack:core:analyzer"
+    model: "standard"
     prompt: |
       Answer this question directly.
 
@@ -57,6 +58,7 @@ steps:
     type: "agent"
     condition: "'Operations' in task_type"
     agent: "amplihack:core:builder"
+    model: "strong"
     prompt: |
       Execute this operational task directly.
 
@@ -91,22 +93,12 @@ steps:
     type: "bash"
     condition: "'Development' in task_type or 'Investigation' in task_type"
     command: |
-      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
-      SESSION_JSON="${RECIPE_VAR_session_info:-}"
-      # Issue #1062 (finding D1): read `status` through the tested
-      # extract-json|extract-field pipeline; unknown -> BLOCKED:unknown fail-safe.
-      STATUS=$(printf '%s' "$SESSION_JSON" \
-        | amplihack orch helper extract-json \
-        | amplihack orch helper extract-field --field status --default unknown)
-      if [ "$STATUS" = "ok" ] || [ "$STATUS" = "no_tree_script" ]; then
-        echo "ALLOWED"
-      elif [ "$STATUS" = "registration_failed" ]; then
-        echo "NOTE: Session tree registration was skipped — depth and capacity limits inactive." >&2
-        echo "BLOCKED:registration_failed"
-      else
-        # Unknown status — default to blocked
-        echo "BLOCKED:unknown"
-      fi
+      # The body of this step lives in amplifier-bundle/tools/smart_recursion_guard_step.sh,
+      # extracted for the brick budget (issue #1619). It is unchanged and
+      # reads the same RECIPE_VAR_* variables the runner exports.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/smart_recursion_guard_step.sh" ] && { H="$c/amplifier-bundle/tools/smart_recursion_guard_step.sh"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: smart_recursion_guard_step.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      bash "$H"
     output: "recursion_guard"
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2c: Single dev/investigation workstream -- round 1

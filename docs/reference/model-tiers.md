@@ -59,11 +59,11 @@ An agent step writes a tier word in its existing `model:` field:
 
 ```yaml
 steps:
-  - id: "step-01-prepare-workspace"
-    agent: "amplihack:analyzer"
+  - id: "autodrive-prerequisites"
+    agent: "amplihack:core:builder"
     model: "fast"
     prompt: |
-      Prepare the workspace ...
+      Read back the task and check its prerequisites ...
 
   - id: "step-05-architecture"
     agent: "amplihack:architect"
@@ -71,6 +71,9 @@ steps:
     prompt: |
       Design the solution architecture ...
 ```
+
+Only an agent step takes a tier. A `bash` step runs no model, so it declares
+none — `step-01-prepare-workspace`, for instance, is a bash step.
 
 The tier reuses `model:` rather than adding a `tier:` field because `model:`
 is the one step field the pinned recipe runner turns into a launch argument. A
@@ -438,29 +441,29 @@ A gateway launch is the one place a forced model does not take effect; see
 
 ```text
 Steps:
-  ✓ step-01-prepare-workspace (Prepare workspace): completed [elapsed: 44s]
+  ✓ autodrive-prerequisites (Prerequisites): completed [elapsed: 44s]
   ✓ step-05-architecture (Architecture): completed [elapsed: 6.2s]
   ✓ step-10-pre-commit-review (Pre-commit review): completed [elapsed: 2m 1s]
 
 Model tiers:
-  step-01-prepare-workspace: fast → claude-haiku-5-5
+  autodrive-prerequisites: fast → claude-haiku-5-5
   step-05-architecture: strong → claude-opus-5[1m]
-  step-10-pre-commit-review: standard → claude-opus-5[1m] (model.force)
+  step-10-pre-commit-review: standard → claude-opus-5[1m] (requested: claude-sonnet-5-5)
 ```
 
 On Codex, where the tier changes the effort rather than the model:
 
 ```text
 Model tiers:
-  step-01-prepare-workspace: fast → codex default model, effort low
-  step-05-architecture: strong → codex default model, effort xhigh
+  autodrive-prerequisites: fast → codex default model, effort low (the `codex` entry names no model)
+  step-05-architecture: strong → codex default model, effort xhigh (the `codex` entry names no model)
 ```
 
 After a fall-back, the line names both what was asked for and what ran:
 
 ```text
 Model tiers:
-  step-06-documentation: standard → copilot default model (requested: no mapping for copilot)
+  step-06-documentation: standard → copilot default model (no entry in the `copilot` column)
 ```
 
 The existing step status line and its `    Output: ` line are untouched by
@@ -468,9 +471,9 @@ this section, and the section is printed after the `Steps:` block.
 `amplifier-bundle/tools/autodrive_loop.sh` reads those two lines with awk, and
 a test runs that awk over the formatter's output.
 
-`--format json` and `--format yaml` carry the same information as a field
-beside `step_results`; `--format table` is unchanged apart from the new
-section.
+The section is printed only by `--format table`. `--format json` and
+`--format yaml` are the runner's own envelope and are unchanged; read
+`model-tiers.jsonl` for the same facts in a machine-readable form.
 
 ### When a line names a step
 
@@ -494,7 +497,7 @@ Model tiers:
   launch 1: strong → claude-opus-5[1m]
   launch 2: standard → claude-sonnet-5-5
   launch 3: standard → claude-sonnet-5-5
-  3 launches for 2 agent steps, so these are listed in launch order without step ids.
+  3 tiered launches against 2 recipe entries that ran: amplihack cannot tell which launch belongs to which, so none is named here. A retry, a parallel group or a resumed run all do this.
 ```
 
 Giving a launch its step id directly needs a change in the recipe runner,
@@ -555,17 +558,17 @@ jq -r '[.tier // "none", .effective_model // "harness default"] | @tsv' \
 
 ## Tiers in the bundled recipes
 
-Tiers are assigned to the **30 bundled recipe files reachable from
+Tiers are assigned to the **29 bundled recipe files reachable from
 `default-workflow`, `investigation-workflow`, `smart-orchestrator` and the
 auto-drive family** — 100 agent steps. The rule used:
 
 | Tier | Steps |
 |------|-------|
-| `fast` | Workspace preparation, prerequisite lookups including the QA-prerequisite lookup, loop-result verification, summaries, cleanup, status and marker writing — `step-01-prepare-workspace`, `step-20-final-cleanup` and their kind |
+| `fast` | Prerequisite lookups including the QA-prerequisite lookup, task read-back, loop-result verification, summaries, cleanup, status and marker writing — `autodrive-prerequisites`, `step-20-final-cleanup`, `summarize` and their kind |
 | `standard` | Code, security and philosophy reviews, documentation, PR body writing, test authoring — `step-10-pre-commit-review`, `step-10b-security-review`, `step-10c-philosophy-check`, `step-06-documentation`, `step-07-write-tests` |
 | `strong` | Design, implementation, debugging, recovery decision steps, orchestration, classification and planning — `step-05-architecture`, `step-08-implement`, `step-11b-implement-feedback` |
 
-**The other 24 bundled recipes with agent steps are unchanged**, and their 167
+**The other 25 bundled recipes with agent steps are unchanged**, and their 168
 agent steps keep today's behaviour exactly: no `model:` field, no tier, no
 `--model` from this feature, and amplihack's existing default chain decides as
 it always did. That set includes the largest recipes in the bundle —
@@ -634,23 +637,34 @@ it, so the two cannot drift apart.
 
 | Situation | Line |
 |-----------|------|
-| A tier resolved to a model | ``amplihack: passing `--model claude-haiku-5-5` to `claude` (from model tier `fast`). Edit ~/.amplihack/model-tiers.toml, or set model.force, to change it.`` |
-| A forced model | ``amplihack: passing `--model claude-sonnet-5-5` to `claude` (from model.force). Run `amplihack config unset model.force` to go back to each step's tier.`` |
-| A tier with no model, on a Claude-compatible harness | ``amplihack: model tier `strong` has no model for `claude`; amplihack's own default applies.`` — followed by the existing line naming what was passed |
-| A tier with no model, on Codex or Copilot | ``amplihack: model tier `strong` has no model for `codex`; passing no --model, so codex uses its own default model. Add [codex.strong] model to ~/.amplihack/model-tiers.toml to name one.`` |
-| A harness with no column | ``amplihack: no model tier mapping for `copilot`; passing no --model, so copilot uses its own default model. Add a [copilot] section to ~/.amplihack/model-tiers.toml to name one.`` |
-| A gateway launch | ``amplihack: model tier `strong` not applied: this launch goes through the LiteLLM gateway, which routes on AMPLIHACK_LITELLM_MODEL.`` |
-| Codex effort added | ``amplihack: passing `-c model_reasoning_effort=xhigh` to `codex` (from model tier `strong`).`` |
-| Codex effort already on the command line | ``amplihack: leaving your `-c model_reasoning_effort` alone; model tier `strong` sets the model only.`` |
-| An effort value amplihack does not accept | ``amplihack: /home/alice/.amplihack/model-tiers.toml: codex.fast.effort: `turbo` is not one of minimal, low, medium, high, xhigh; the effort is dropped and the model still applies.`` |
-| An override file amplihack cannot use | ``amplihack: /home/alice/.amplihack/model-tiers.toml: not valid TOML at line 7; using the mapping that ships with amplihack.`` |
-| A tier word amplihack does not know | ``amplihack: /home/alice/.amplihack/model-tiers.toml: `heavy` is not a model tier; use fast, standard or strong.`` |
-| A `[step_tiers]` value that is not a tier | ``amplihack: /home/alice/.amplihack/model-tiers.toml: step_tiers.step-08-implement: `heavy` is not a model tier; that entry is ignored.`` |
-| A step id no recipe contains | ``amplihack: model.step_tiers: no step `step-99-polish` in this recipe; its tier is ignored.`` |
+| A tier gave the launch a model | ``amplihack: model tier `fast` on `claude`: passing `--model claude-haiku-5-5`. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.`` |
+| A tier gave the launch an effort and no model | ``amplihack: model tier `strong` on `codex`: passing `-c model_reasoning_effort=xhigh`; the model stays `codex`'s own. …`` |
+| A tier gave the launch both | ``amplihack: model tier `strong` on `codex`: passing `--model gpt-6.1-sol` and `-c model_reasoning_effort=xhigh`. …`` |
+| The command line already set the effort | ``amplihack: model tier `strong` on `codex`: leaving the `-c model_reasoning_effort` already on the command line alone.`` |
+| A forced model | ``amplihack: model.force is set, so `claude` is launched with `--model claude-sonnet-5-5` whatever the step asked for. Unset model.force or AMPLIHACK_FORCE_MODEL to restore per-step tiers.`` |
+| A forced value amplihack will not write | ``amplihack: model.force is ignored: begins with `-`, so it could act as another argument. The step's own tier applies.`` |
+| A tier with no entry in its column | ``amplihack: model tier `strong` has no entry in the `copilot` column, so `copilot` runs on its own default model. …`` |
+| A harness with no column | ``amplihack: model tier `strong` has no `gemini` column, so `gemini` runs on its own default model. …`` |
+| A cell that names no model | ``amplihack: model tier `strong` names no model in the `claude` column, so `claude` runs on its own default model. …`` — followed by the existing issue #1421 line naming what was passed |
+| A gateway launch | ``amplihack: model tier `strong` is not applied to `claude`: the LiteLLM gateway routes on the model name. Set AMPLIHACK_LITELLM_MODEL to change it.`` |
+| An effort value amplihack does not accept | ``amplihack: model tiers: `codex.fast`: `turbo` is not an accepted reasoning effort; it is ignored and the model still applies. The accepted values are minimal, low, medium, high, xhigh.`` |
+| An override file amplihack cannot use | ``amplihack: /home/alice/.amplihack/model-tiers.toml: is not valid TOML; ignored; the model tiers amplihack ships are used instead.`` |
+| A tier word amplihack does not know | ``amplihack: model tiers: `claude.heavy`: `heavy` is not a tier; the entry is ignored. The tiers are fast, standard, strong.`` |
+| An unknown field in a cell | ``amplihack: model tiers: `claude.fast`: unknown field `modle`; it is ignored. A cell may name `model` and `effort`.`` |
+| A model id amplihack will not write | ``amplihack: model tiers: `claude.fast`: the model begins with `-`, so it could act as another argument; the entry is ignored and the shipped value applies.`` |
+| A `[step_tiers]` value that is not a tier | ``amplihack: model tiers: step_tiers.step-08-implement: `heavy` is not a tier; the step keeps the tier its recipe declares.`` |
+| A per-step override that cannot be staged | ``amplihack: model tiers: the per-step tier override could not be staged (<reason>); the recipes run with the tiers they declare.`` |
 
-Every launch writes one record; a falling-back launch also writes one of the
-fall-back lines above. The stderr line and the record's `fallback` value come
-from the same value, so they cannot disagree.
+A step id no recipe contains stages nothing for that step; the other named
+steps are still staged, and the run proceeds.
+
+One launch gets one line about its tier. A launch that fell back and still
+got something from the tier — every shipped Codex cell, which names an effort
+and no model — gets the line naming what it got, and its record carries
+`"fallback": "no_model"`; a launch the tier gave nothing gets the fall-back
+line instead. Every launch with a tier writes exactly one record, and the
+stderr line and the record's `fallback` value are derived from one value, so
+they cannot disagree.
 
 The run summary and the record file may name the step, under the rule in
 [When a line names a step](#when-a-line-names-a-step); the stderr line always

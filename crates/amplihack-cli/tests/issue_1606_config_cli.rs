@@ -330,6 +330,13 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "recipe.usage_limit_wait = true",
             "recipe.usage_limit_max_wait_secs = 21600",
             "orchestrator.max_depth = 3",
+            // Issue #1619: per-step model tiers and the small-diff combined
+            // review.
+            "model.force = (unset)",
+            "model.tier_map = (unset)",
+            "model.step_tiers = (unset)",
+            "review.combined_small_diff = false",
+            "review.combined_diff_threshold = 200",
             "governor.enabled = false",
             "governor.max_concurrency = 4",
             "governor.reserve_points = 10",

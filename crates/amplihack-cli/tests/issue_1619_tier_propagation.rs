@@ -608,6 +608,18 @@ fn a_forced_model_replaces_even_an_explicit_concrete_id() {
 #[test]
 fn a_gateway_launch_uses_the_gateway_model_and_not_the_tier() {
     let f = Fixture::new();
+    // Two version gates that predate this issue and disagree: a gateway
+    // launch of Claude Code requires one of
+    // `VERIFIED_CLAUDE_CODE_VERSIONS` (exact match, 2.1.247), and the
+    // contract file requires 2.1.319 or later (issue #2030). No single
+    // version satisfies both, so this fixture reports the gateway-verified
+    // one and takes the documented way out of the contract gate. The
+    // assertion below is about the model, which is what this issue decides.
+    crate::support::exec_stub::write_executable(
+        &f.tools.join("claude"),
+        FAKE_HARNESS.replace("2.1.319", "2.1.247"),
+        0o755,
+    );
     let launch = {
         let _ = fs::remove_file(&f.argv_log);
         let output = f
@@ -615,6 +627,7 @@ fn a_gateway_launch_uses_the_gateway_model_and_not_the_tier() {
             .env("AMPLIHACK_LITELLM_MODEL", "gateway-routed-model")
             .env("AMPLIHACK_LITELLM_ENDPOINT", "http://127.0.0.1:1")
             .env("AMPLIHACK_LITELLM_API_KEY", "test-key")
+            .env("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", "1")
             .output()
             .expect("run amplihack");
         Launch {

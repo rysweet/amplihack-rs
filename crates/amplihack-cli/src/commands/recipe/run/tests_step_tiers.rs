@@ -80,7 +80,12 @@ impl Fixture {
             .iter()
             .map(|(id, tier)| ((*id).to_string(), *tier))
             .collect();
-        stage(&self.run_dir, &[self.recipes.clone()], &self.recipe(), &map)
+        stage(
+            &self.run_dir,
+            std::slice::from_ref(&self.recipes),
+            &self.recipe(),
+            &map,
+        )
     }
 }
 
@@ -281,8 +286,13 @@ fn a_rejected_step_id_stages_nothing_and_is_not_an_error() {
     let f = Fixture::new();
     let mut map: BTreeMap<String, Tier> = BTreeMap::new();
     map.insert("../../escape".to_string(), Tier::Fast);
-    let staged = stage(&f.run_dir, &[f.recipes.clone()], &f.recipe(), &map)
-        .expect("a bad step id is reported, not fatal");
+    let staged = stage(
+        &f.run_dir,
+        std::slice::from_ref(&f.recipes),
+        &f.recipe(),
+        &map,
+    )
+    .expect("a bad step id is reported, not fatal");
     assert!(
         staged.is_none() || staged.unwrap().files.is_empty(),
         "a step id that is not an identifier never reaches a path join"
