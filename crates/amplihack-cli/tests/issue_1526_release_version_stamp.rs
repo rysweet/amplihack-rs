@@ -146,9 +146,14 @@ fn already_released_short_circuit_precedes_the_tip_comparison() {
         .find(r#"if [ "${MAIN_TIP}" != "${HEAD_SHA}" ]; then"#)
         .expect("version-bump must compare the released commit against main's tip");
 
+    let assignment = yml
+        .find("MAKE_LATEST=true")
+        .expect("version-bump must decide who may claim `latest`");
+
     assert!(
-        tip_read < short_circuit,
-        "the tip must be read before the short-circuit, which gates make_latest on it"
+        tip_read < assignment && assignment < short_circuit,
+        "MAKE_LATEST must be computed after the tip is read and before the \
+         short-circuit that emits it, or the step dies under `set -u`"
     );
     assert!(
         short_circuit < comparison,
@@ -156,11 +161,42 @@ fn already_released_short_circuit_precedes_the_tip_comparison() {
          or a re-run cannot repair a tag whose release failed to publish (#1526)"
     );
 
-    // The repair path reaches `release`, so `latest` must not be unconditional.
+    // The repair path reaches `release` with a commit main has moved past, so
+    // `latest` must not be asserted unconditionally.
+    for literal in [
+        r#"make_latest: "true""#,
+        r#"make_latest: 'true'"#,
+        "make_latest: true",
+    ] {
+        assert!(
+            !yml.contains(literal),
+            "make_latest must be gated on tip-ness, not hard-coded as {literal}: a \
+             repair re-run publishes a commit main has moved past and must not \
+             claim `latest`"
+        );
+    }
+
+    // `false` is an assertion, and the action sends it on the release *update*
+    // path too: re-running a release that already published would ask GitHub to
+    // un-designate a release that is currently `latest`, moving the pointer
+    // backwards. `legacy` asserts nothing and lets GitHub re-elect by date and
+    // semantic version.
     assert!(
-        !yml.contains(r#"make_latest: "true""#),
-        "make_latest must be gated on tip-ness, not hard-coded: a repair re-run \
-         publishes a commit main has moved past and must not claim `latest`"
+        !yml.contains("MAKE_LATEST=false"),
+        "the off-tip value must be `legacy`, not `false`: `false` demotes a \
+         release that is currently `latest` when a completed release is re-run"
+    );
+    assert!(
+        yml.contains("MAKE_LATEST=legacy"),
+        "the off-tip value must be `legacy` so GitHub re-elects `latest` itself"
+    );
+
+    // Two separate wiring points. Dropping either leaves make_latest empty,
+    // which the action drops from the request, and the API then defaults to
+    // `true` — the unsafe answer, reached silently.
+    assert!(
+        yml.contains("make_latest: ${{ steps.bump.outputs.make_latest }}"),
+        "`version-bump` must expose make_latest as a job output"
     );
     assert!(
         yml.contains("make_latest: ${{ needs.version-bump.outputs.make_latest }}"),
@@ -171,6 +207,6 @@ fn already_released_short_circuit_precedes_the_tip_comparison() {
             .count(),
         2,
         "both of version-bump's publishing exits must emit make_latest, or the \
-         `release` job receives an empty value"
+         `release` job receives an empty value and the API defaults to `true`"
     );
 }

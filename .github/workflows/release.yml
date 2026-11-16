@@ -42,7 +42,10 @@ env:
 #
 # Queueing cannot resurrect an old commit either. A queued run that finally
 # starts finds that `main` has moved past the commit CI tested and publishes
-# nothing (the tip comparison in `version-bump`). The two are complementary:
+# nothing (the tip comparison in `version-bump`) -- unless that commit already
+# carries a tag of its own, in which case it republishes exactly the version it
+# already holds, never a newer number, and claims no `latest`. The two are
+# complementary:
 # the comparison stops an older commit from being published, and queueing
 # stops a newer commit's release from being interrupted by an older run.
 #
@@ -99,9 +102,16 @@ jobs:
     #                             message is empty and `contains` is
     #                             permissive.
     #
-    # The workflow's own `v*` tag push is kept out by `head_branch == 'main'`,
-    # and independently by the already-released short-circuit below: the tag
-    # push's head_sha is the stamp commit, which already carries its tag.
+    # The workflow's own `v*` tag push is kept out by `head_branch == 'main'`
+    # -- a tag push reports the tag name there, not a branch -- and upstream of
+    # that by GITHUB_TOKEN pushes creating no workflow run at all.
+    #
+    # The already-released short-circuit is NOT a second defence and must not
+    # be described as one. It used to be, while it sat behind the tip
+    # comparison: the stamp commit is never main's tip, so the comparison
+    # stopped first. It now runs before the comparison, so on that path it
+    # would *admit* the stamp commit, which carries its own tag. The clause
+    # above is the only thing closing this.
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
       || (github.event.workflow_run.conclusion == 'success'
@@ -289,13 +299,28 @@ jobs:
             echo "::error::could not read the current tip of origin/main; not publishing a release for ${HEAD_SHA}"
             exit 1
           fi
-          # `latest` may only be claimed by the commit that is main's tip now.
-          # Both exits below emit this; the normal path has already passed the
-          # comparison, so it is "true" there by construction.
+          # Who may claim the `latest` pointer. Both exits below emit this;
+          # the normal path has already passed the comparison, so it is "true"
+          # there by construction.
+          #
+          # The off-tip value is `legacy`, not `false`. `false` is an
+          # assertion -- the action sends it on the *update* path too, so
+          # re-running a release that already published would ask GitHub to
+          # un-designate a release that is currently `latest`, and the pointer
+          # moves backwards to the previous one. That is the exact harm the
+          # tip comparison exists to prevent, arrived at from the other side.
+          # `legacy` asserts nothing: GitHub re-elects by creation date and
+          # highest semantic version. A repair cannot drag `latest` onto an
+          # older tree, because the short-circuit mints no number and only the
+          # comparison can mint one; and a repair that genuinely is the newest
+          # release is elected correctly instead of being stranded below an
+          # older one. Accepted values are exactly true/false/legacy; anything
+          # else is dropped by the action and the API then defaults to true,
+          # so this must never become a free-form string.
           if [ "${MAIN_TIP}" = "${HEAD_SHA}" ]; then
             MAKE_LATEST=true
           else
-            MAKE_LATEST=false
+            MAKE_LATEST=legacy
           fi
 
           # Check if this exact commit has already been released. Two shapes

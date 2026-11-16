@@ -232,8 +232,10 @@ Either path therefore names the CI run that admitted the release.
   before the `release` job, so a run that never reaches that job leaves nothing
   behind either way. Queueing cannot resurrect an old commit, because a queued
   run that finally starts finds that `main` has moved past its commit and
-  publishes nothing (next bullet). A later commit's own CI therefore decides
-  whether that commit ships.
+  publishes nothing (next bullet) — unless that commit already carries a tag of
+  its own, where the repair exemption described there applies and it
+  republishes that same version rather than a newer one. A later commit's own
+  CI therefore decides whether that commit ships.
 - **A commit `main` has moved past publishes nothing.** Re-running CI on an
   older commit produces a CI completion that satisfies every admission clause
   above: it succeeded, on `main`, from a `push`, in this repository. Before any
@@ -260,7 +262,8 @@ Either path therefore names the CI run that admitted the release.
   skipped run's log prints a `next patch:` line immediately above the skip
   message; that arithmetic is local to the step and persists nothing.
 
-  The job then writes no `version` output, `build` is skipped by
+  For a commit carrying no tag of its own, the job then writes no `version`
+  output, `build` is skipped by
   `if: needs.version-bump.outputs.version != ''`, `release` skips as a
   dependant of a skipped job, and `sccache-prune` — which runs under
   `always()` — skips on its own `needs.build.result != 'skipped'` clause.
