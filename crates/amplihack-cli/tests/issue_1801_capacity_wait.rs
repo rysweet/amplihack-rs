@@ -402,6 +402,58 @@ fn issue_2694_a_reset_wait_under_a_profile_ends_on_another_logins_capacity() {
     assert_no_account_detail(&f, &out);
 }
 
+/// Issue #2694: the no-room line belongs to a wait a reading ended early,
+/// and to no other wait. A step that inherited profile X is limited with a
+/// reset 5 h 30 min away: past the five-hour reset-wait ceiling, so the plan
+/// is a capacity wait, and inside the six-hour maximum, so that reset bounds
+/// it. No reading is ever written, so nothing shows room and the wait runs to
+/// its own reset, where X has recovered and the retry runs on X. That retry
+/// gave up nothing, so it must say nothing: the line was once printed after
+/// any capacity wait, which told every such step it had lost room it never
+/// had.
+#[test]
+fn issue_2694_a_capacity_wait_that_reaches_its_reset_says_nothing_about_no_room() {
+    let f = with_profiles();
+    let _rotator = rotator_running(&f);
+    let mut c = nested_x(&f);
+    // X, then Y, then the retry after the wait. The reset is stated as an
+    // epoch on the fixture's virtual clock, so the log times are exact.
+    c.env("LIMIT_CALLS", "2").env(
+        "LIMIT_MESSAGE",
+        format!("Claude AI usage limit reached|{}", TEST_NOW + 19_800),
+    );
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(
+        f.count("0"),
+        3,
+        "X, then Y, then one retry: {}",
+        describe(&out)
+    );
+    assert_eq!(
+        f.call("0", 3)["PROFILE"],
+        "X",
+        "no login had room, so the retry stays on the limited profile"
+    );
+    let ev = events(&out);
+    assert_eq!(ev.len(), 3, "{ev:?}");
+    assert!(
+        ev[0].starts_with("start reason=usage_limit wait=capacity harness=claude reset="),
+        "a reset past the five-hour ceiling is a capacity wait: {ev:?}"
+    );
+    assert!(
+        ev[0].ends_with(" bound=reset+margin"),
+        "a reset inside the six-hour maximum bounds the wait: {ev:?}"
+    );
+    assert_eq!(ev[1..], ["end reason=reset reached", "resume attempt=3"]);
+    assert!(
+        !text(&out.stderr).contains("no login has room now"),
+        "this wait reached its own reset and never saw room, so the retry must \
+         not report room lost: {}",
+        describe(&out)
+    );
+}
+
 #[test]
 fn a_near_reset_stays_a_reset_wait_with_a_second_login() {
     let f = with_profiles();

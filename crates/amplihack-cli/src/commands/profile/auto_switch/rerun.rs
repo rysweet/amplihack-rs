@@ -80,12 +80,16 @@ pub fn nested_candidate(
 }
 
 /// [`nested_candidate`] without the held-key alert: the same choice, made
-/// without writing or printing anything (issue #2694). The usage-limit wait
-/// asks this every 30 s for the whole of a wait, so the alert would repeat
-/// for hours in the step's stderr and crowd the runner's evidence tail. The
-/// step that is waiting has already hit a limit under auto-switch, so the
-/// alert for its held-back key was written once by the rerun check before
-/// the wait began.
+/// without writing or printing anything (issue #2694). This is for the
+/// usage-limit wait's 30-second probe only, which asks the same question for
+/// the whole of a wait, so the alert would repeat for hours in the step's
+/// stderr and crowd the runner's evidence tail. The step that is waiting has
+/// already hit a limit under auto-switch, so the alert for its held-back key
+/// was written once by the rerun check before the wait began.
+///
+/// The retry's own single selection after the wait keeps [`nested_candidate`]
+/// and so keeps the alert: it runs once, and it is the call that decides the
+/// login the step actually moves to.
 pub(super) fn silent_candidate(
     state: &State,
     ledger: &Ledger,
@@ -110,8 +114,8 @@ pub(super) fn silent_candidate(
 }
 
 /// Whether a caller of [`candidate`] wants the held-key ALERT written.
-#[derive(PartialEq, Eq)]
-enum KeyAlert {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum KeyAlert {
     Write,
     Silent,
 }
@@ -436,9 +440,20 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         Some(sw) => profile_check(sw.store, sw.inherited.as_str()),
         None => waiter.takeover_home(),
     };
+    // Silent: this runs every 30 s for the whole of a wait, and it only
+    // answers whether a move is possible; the retry's own selection below
+    // is the call that moves the step and writes the alert (#2694).
     let probe = |start, now| {
         switch.as_ref().is_some_and(|sw| {
-            capacity_candidate(sw.store, &sw.state, &sw.inherited, start, now).is_some()
+            capacity_candidate(
+                sw.store,
+                &sw.state,
+                &sw.inherited,
+                start,
+                now,
+                KeyAlert::Silent,
+            )
+            .is_some()
         })
     };
     if let Some(sw) = &switch {
@@ -618,25 +633,39 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
 /// rather than carried over from the wait's own probe, because the lease may
 /// have changed since: a stale pick would move the step onto a login another
 /// step now holds. So it may now be `None`, and the one retry then runs on
-/// the inherited profile. After a capacity wait that costs one more attempt
-/// and nothing else, since no better login existed anyway; after a reset
-/// wait ended by another login's room it costs the wait, which would have
-/// run to its reset and succeeded. That case is announced on stderr;
-/// resuming the original wait instead of spending the retry is issue #2719.
+/// the inherited profile.
+///
+/// What that costs is [`room_was_seen`]'s decision, not this
+/// function's: only a wait that a reading ended early gave up something, so
+/// only that case prints. A capacity wait that reached its own reset, or saw
+/// its login change, never had room to lose and retries on a login that has
+/// just recovered, which is the designed outcome and stays as silent as it
+/// was before #2694. Resuming the original wait instead of spending the
+/// retry is issue #2719.
+///
+/// [`room_was_seen`]: crate::commands::profile::limit_wait::RetryMove::room_was_seen
 fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<ProfileName> {
     let sw = switch?;
-    let start = waiter.retry_start()?;
-    let Some(pick) = capacity_candidate(sw.store, &sw.state, &sw.inherited, start, waiter.now())
-    else {
-        // No login has room at the moment the retry moves, though one may
-        // have had room when the wait ended: another step on this host can
-        // take the lease first (#2694). Say so. Every other transition in
-        // this loop prints, and without a line here the log reads
-        // `end reason=login capacity` and then fails on the login that had
-        // none, with nothing in between to name the cause.
-        eprintln!(
-            "amplihack: no login has room now; this step retries under the limited profile (auto-switch)"
-        );
+    let mv = waiter.retry_move()?;
+    let Some(pick) = capacity_candidate(
+        sw.store,
+        &sw.state,
+        &sw.inherited,
+        mv.start(),
+        waiter.now(),
+        KeyAlert::Write,
+    ) else {
+        if mv.room_was_seen() {
+            // A reading ended this wait early, but the room is gone at the
+            // moment the retry moves: another step on this host took the
+            // lease first (#2694). Say so. Every other transition in this
+            // loop prints, and without a line here the log reads
+            // `end reason=login capacity` and then fails on the login that
+            // had none, with nothing in between to name the cause.
+            eprintln!(
+                "amplihack: no login has room now; this step retries under the limited profile (auto-switch)"
+            );
+        }
         return None;
     };
     // The run log names the login the retry moves to, as every other move

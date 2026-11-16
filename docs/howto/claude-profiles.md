@@ -2282,11 +2282,15 @@ amplihack.recipe.usage_limit_wait resume attempt=2
 amplihack: no login has room now; this step retries under the limited profile (auto-switch)
 ```
 
-Seeing it means the step gave up a wait that would have run to its reset and
-succeeded, so it is worth knowing when several steps on one machine hit their
-limits together: they all see the same spare login at the same poll, and only
-the first of them gets it. Run them with `auto-switch exclude` on the
-contended login, or stagger them, if that trade is the wrong one for you.
+Seeing it means the step gave up a wait on the strength of a reading and got
+nothing for it — on a reset wait, a wait that would have run to its reset and
+succeeded. It appears only after `end reason=login capacity`, the one exit
+where room was actually seen and then lost; a wait that ended any other way
+never had room to lose and says nothing. So it is worth knowing when several
+steps on one machine hit their limits together: they all see the same spare
+login at the same poll, and only the first of them gets it. Run them with
+`auto-switch exclude` on the contended login, or stagger them, if that trade
+is the wrong one for you.
 
 A wait for another login has `wait=capacity` on its `start` line, and
 `reset=none` when Claude's message gave no readable reset:

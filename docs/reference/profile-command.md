@@ -11251,20 +11251,30 @@ candidate is chosen once to end the wait and again when the retry is built,
 and the second selection may find nothing: between the two, the login that
 showed room may have been taken by another step in the same run, lent out,
 spend-blocked, or pushed over the threshold by a newer reading. The retry
-then runs on the inherited login, exhausted as it was. After a capacity wait
-that costs one more attempt and nothing else, because no better login existed
-to begin with. After a reset wait it costs the wait itself: that step would
-have slept to its reset and succeeded. The step's stderr names the case, so
-it is not read out of the absence of a line:
+then runs on the inherited login, exhausted as it was.
+
+What that costs depends on whether a reading ended the wait early, and only
+the case that lost something is announced:
+
+| The wait ended | Second selection finds nothing | Announced |
+|----------------|-------------------------------|-----------|
+| `login capacity` — a reading showed room | the room was taken in between; the step gave up a wait it could have finished | yes |
+| a capacity wait ending any other way (`reset reached`, `max reached`, `login changed`, `rotator capacity`) | no login ever had room; the retry runs on the login that just recovered, which is the designed outcome | no |
+| a reset wait reaching its own deadline | no second selection is made at all; the retry runs under the inherited profile, as before | no |
+
+The announcement is one line on the step's stderr, so the lost race is not
+read out of the absence of a line:
 
 ```
 amplihack: no login has room now; this step retries under the limited profile (auto-switch)
 ```
 
-After a reset wait that ended for any other reason, including
-`reset reached` and `max reached`, the retry runs under the inherited
-profile, as before. A reset wait that reaches its deadline with no other
-login available is unchanged in every respect.
+A capacity wait has always made the second selection however it ended
+(#1801), because the step was waiting for *some* login to free up rather
+than for its own reset; finding none then is the expected outcome and costs
+one more attempt and nothing else. That is why it prints nothing. A reset
+wait that reaches its deadline with no other login available is unchanged in
+every respect.
 
 When the retry moves to another profile, the step's stderr names it before
 the retry starts, in the same form as every other auto-switch move:

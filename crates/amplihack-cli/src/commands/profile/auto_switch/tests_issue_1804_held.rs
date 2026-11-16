@@ -201,6 +201,7 @@ fn the_held_key_alert_is_written_once_per_held_set() {
 /// which is what the step saw once before its wait began.
 #[test]
 fn the_wait_probe_writes_no_held_key_alert() {
+    use crate::commands::profile::auto_switch::rerun::KeyAlert;
     use crate::commands::profile::auto_switch::takeover::capacity_candidate;
     use crate::commands::profile::store::ProfileStore;
 
@@ -234,10 +235,29 @@ fn the_wait_probe_writes_no_held_key_alert() {
         .unwrap();
 
     let store = ProfileStore::new(f.root.clone());
-    let got = capacity_candidate(&store, &f.state, &n("work"), now - 60, now);
+    let got = capacity_candidate(
+        &store,
+        &f.state,
+        &n("work"),
+        now - 60,
+        now,
+        KeyAlert::Silent,
+    );
     assert_eq!(got, None, "the unread login holds the key back");
     assert!(alert_lines(&f).is_empty(), "the probe writes no ALERT");
     assert_eq!(f.state.load_key_held(), None, "and no marker");
+
+    // The retry's own selection, the same call with the alert asked for,
+    // does write it: the silence belongs to the 30 s probe and to nothing
+    // else, so the one-shot selection the step moves on keeps the line
+    // it had before #2694.
+    let got = capacity_candidate(&store, &f.state, &n("work"), now - 60, now, KeyAlert::Write);
+    assert_eq!(got, None, "same choice either way");
+    assert_eq!(alert_lines(&f).len(), 1, "the retry's selection writes it");
+    assert_eq!(f.state.load_key_held().as_deref(), Some("spare"));
+    // Back to a clean slate, so the rerun half below counts only its own.
+    fs::remove_file(RotateState::new(&f.root).log).unwrap();
+    f.state.clear_key_held().unwrap();
 
     // The rerun path, with the same readings and the same stale login
     // skipped, does write it: the probe's silence is the only difference.
@@ -263,6 +283,7 @@ fn the_wait_probe_writes_no_held_key_alert() {
 /// `None` from any other cause would fail the first half.
 #[test]
 fn a_login_leased_away_between_the_probe_and_the_retry_gives_no_candidate() {
+    use crate::commands::profile::auto_switch::rerun::KeyAlert;
     use crate::commands::profile::auto_switch::state::HostEntry;
     use crate::commands::profile::auto_switch::takeover::capacity_candidate;
     use crate::commands::profile::store::ProfileStore;
@@ -285,7 +306,14 @@ fn a_login_leased_away_between_the_probe_and_the_retry_gives_no_candidate() {
         .unwrap();
     let store = ProfileStore::new(f.root.clone());
 
-    let got = capacity_candidate(&store, &f.state, &n("work"), now - 60, now);
+    let got = capacity_candidate(
+        &store,
+        &f.state,
+        &n("work"),
+        now - 60,
+        now,
+        KeyAlert::Silent,
+    );
     assert_eq!(
         got.map(|p| p.profile),
         Some(n("spare")),
@@ -310,7 +338,7 @@ fn a_login_leased_away_between_the_probe_and_the_retry_gives_no_candidate() {
         .unwrap();
 
     assert_eq!(
-        capacity_candidate(&store, &f.state, &n("work"), now - 60, now),
+        capacity_candidate(&store, &f.state, &n("work"), now - 60, now, KeyAlert::Write),
         None,
         "the retry gets no candidate and stays on the limited profile"
     );

@@ -111,6 +111,49 @@ impl WaitDeps for RealDeps<'_> {
     }
 }
 
+/// Why the retry after a wait may run under another login, and from when a
+/// capacity reading counts as fresh enough to choose one.
+///
+/// The two are separate decisions and are deliberately not one field: *may
+/// the retry move* is true after any capacity wait, while *was room actually
+/// seen* is true only when a reading ended the wait early. A capacity wait
+/// that reached its reset may still move, but finding no room is then the
+/// expected outcome, not a loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RetryMove {
+    /// When the wait began, on the wait's clock: read in `after_limit`
+    /// just before `wait` takes its own `start`, so it is that instant or a
+    /// hair before it, never after. The freshness bound that decides which
+    /// readings may move a step onto another account, and not a tuning
+    /// parameter: a later instant would make every reading taken during the
+    /// wait look stale, so the step would silently retry on the exhausted
+    /// profile, and an earlier one would admit readings taken before the
+    /// limit was hit. Where the two differ the retry's window is the wider
+    /// one, which can only admit a reading the probe already accepted.
+    start: i64,
+    /// Whether a reading taken during the wait showed another login had
+    /// room, which is what ended the wait (#2694). Only then does finding
+    /// no room at the retry mean something was lost: the room was taken in
+    /// between, and the step gave up a wait that would have run to its
+    /// reset and succeeded. A capacity wait that ended any other way never
+    /// saw room at all, so finding none is what the step already expected
+    /// and costs it one more attempt and nothing else.
+    room_was_seen: bool,
+}
+
+impl RetryMove {
+    /// The floor for a reading to count towards the retry's choice.
+    pub(crate) fn start(self) -> i64 {
+        self.start
+    }
+
+    /// Whether losing the race for the room costs this step a wait that
+    /// would have succeeded, rather than merely an attempt.
+    pub(crate) fn room_was_seen(self) -> bool {
+        self.room_was_seen
+    }
+}
+
 /// The wait's state for one step: at most one wait per step.
 pub(crate) struct Waiter {
     /// `None` when `AMPLIHACK_NONINTERACTIVE` is not exactly `1`.
@@ -131,12 +174,9 @@ pub(crate) struct Waiter {
     /// with an explicit login or an inherited profile.
     home_takeover: Box<dyn Fn() -> bool>,
     /// Set when the retry after this step's wait may run under another
-    /// login, and holding the instant from which a capacity reading counts
-    /// as fresh enough to choose one: after a capacity wait (#1801), which
-    /// may move login however it ends, and after a wait of any kind that
-    /// ended on another login's capacity (#2694). Written once, when the
-    /// wait returns. `None` leaves the retry on the inherited profile.
-    retry_start: Option<i64>,
+    /// login. Written once, when the wait returns; `None` leaves the retry
+    /// on the inherited profile.
+    retry_move: Option<RetryMove>,
 }
 
 impl Waiter {
@@ -167,7 +207,7 @@ impl Waiter {
             blocked: None,
             prompt_in_args,
             home_takeover,
-            retry_start: None,
+            retry_move: None,
         }
     }
 
@@ -204,10 +244,10 @@ impl Waiter {
         (self.home_takeover)()
     }
 
-    /// The wait start to use when choosing the login the retry runs under,
-    /// if one should be chosen at all; `None` keeps the inherited profile.
-    pub(crate) fn retry_start(&self) -> Option<i64> {
-        self.retry_start
+    /// Whether the retry may run under another login, and what it costs if
+    /// none has room; `None` keeps the inherited profile.
+    pub(crate) fn retry_move(&self) -> Option<RetryMove> {
+        self.retry_move
     }
 
     /// The wait's clock, for reading a reset relative to it.
@@ -293,16 +333,14 @@ impl Waiter {
         // Real time, not the test clock: auto-drive compares it with its own
         // wall time (issue #1743).
         ledger::record(waited_from.elapsed());
-        // The retry moves to another login after a capacity wait however it
-        // ended (#1801), and after a wait of any kind that ended because
-        // another login has room (#2694). `now` is the wait's own start on
-        // this clock, and it is both halves of the freshness bound that
-        // decides which readings may move a step onto another account, not
-        // a tuning parameter: a later instant would make every reading
-        // taken during the wait look stale, so the step would silently
-        // retry on the exhausted profile, and an earlier one would admit
-        // readings taken before the limit was hit.
-        self.retry_start = (capacity || end == End::OtherCapacity).then_some(now);
+        // The retry may move to another login after a capacity wait however
+        // it ended (#1801), and after a wait of any kind that ended because
+        // another login has room (#2694).
+        let room_was_seen = end == End::OtherCapacity;
+        self.retry_move = (capacity || room_was_seen).then_some(RetryMove {
+            start: now,
+            room_was_seen,
+        });
         log(&Event::End(end));
         match end {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),

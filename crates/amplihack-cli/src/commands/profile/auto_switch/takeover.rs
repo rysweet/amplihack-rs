@@ -20,7 +20,7 @@
 use super::config::{self, Config, FileState};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
-use super::rerun::{Pick, login_ready, silent_candidate};
+use super::rerun::{KeyAlert, Pick, login_ready, nested_candidate, silent_candidate};
 use super::state::State;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate;
@@ -154,26 +154,40 @@ pub(super) fn is_fresh(observed_at: i64, start: i64, now: i64) -> bool {
 /// `inherited`, from readings taken since `start` only: a profile with an
 /// older reading, or none, has shown nothing during this wait.
 ///
-/// The wait asks this every 30 s, so it uses [`silent_candidate`]: the same
-/// candidate rules as `rerun::nested_candidate`, narrowed by the freshness
-/// skip above and applied without writing the key-held marker, appending to
-/// the rotate log or printing the held-key ALERT (issue #2694). Its reads
-/// are bounded: the effective configuration, the auto-switch ledger, the
-/// readings, a listing of the profile root, and the overflow inputs, which
-/// resolve each stored profile's kind and read the rotate ledger for spend
-/// blocks and the overflow gate. Off macOS each candidate costs one further
-/// `stat` for its login file.
-pub(crate) fn capacity_candidate(
+/// The same candidate rules as `rerun::nested_candidate`, narrowed by the
+/// freshness skip above. `alert` is the caller's, because this has two
+/// callers that want different things of it (issue #2694):
+///
+/// - the wait's 30-second probe passes [`KeyAlert::Silent`], since over a
+///   multi-hour wait it asks hundreds of times and the held-key ALERT, the
+///   rotate-log line and the key-held marker write would repeat for hours in
+///   the step's stderr;
+/// - the retry's single selection once the wait is over passes
+///   [`KeyAlert::Write`], as it did before #2694: it runs once and it is the
+///   call that moves the step, so its held-back key is worth a line.
+///
+/// Its reads are bounded: the effective configuration, the auto-switch
+/// ledger, the readings, a listing of the profile root, and the overflow
+/// inputs, which resolve each stored profile's kind and read the rotate
+/// ledger for spend blocks and the overflow gate. Off macOS each candidate
+/// costs one further `stat` for its login file.
+pub(super) fn capacity_candidate(
     store: &ProfileStore,
     state: &State,
     inherited: &ProfileName,
     start: i64,
     now: i64,
+    alert: KeyAlert,
 ) -> Option<Pick> {
     let eff = config::effective(store.root());
     if !eff.on {
         return None;
     }
+    // A refused readings file — wrong mode, a symlink, over the size bound,
+    // an unparsable account key — is indistinguishable here from no
+    // readings, so takeover goes quiet instead of complaining. Refusing to
+    // parse it is the right posture; the missing diagnostic is issue #2728,
+    // which this probe makes more pressing by asking on every wait kind.
     let ledger = state.load_ledger().ok()?;
     let readings = state.try_load_usage().ok()?.accounts;
     let profiles: Vec<ProfileName> = store
@@ -191,14 +205,25 @@ pub(crate) fn capacity_candidate(
                 .is_some_and(|r| is_fresh(r.observed_at, start, now))
         })
         .collect();
-    silent_candidate(
-        state,
-        &ledger,
-        &profiles,
-        &readings,
-        &eff.config,
-        inherited.as_str(),
-        &stale,
-    )
-    .filter(|p| p.profile != *inherited)
+    let pick = match alert {
+        KeyAlert::Silent => silent_candidate(
+            state,
+            &ledger,
+            &profiles,
+            &readings,
+            &eff.config,
+            inherited.as_str(),
+            &stale,
+        ),
+        KeyAlert::Write => nested_candidate(
+            state,
+            &ledger,
+            &profiles,
+            &readings,
+            &eff.config,
+            inherited.as_str(),
+            &stale,
+        ),
+    };
+    pick.filter(|p| p.profile != *inherited)
 }
