@@ -32,12 +32,13 @@ export AUTODRIVE_QA_EVIDENCE="$STATE/qa-evidence.json"
 ## 1. Measure the facts
 
 In a drive, `step-02a-qa-inputs` resolves the PR's own base: an operator's
-`AUTODRIVE_QA_BASE` first, then the base branch the drive was launched
-against, then `gh pr view <pr> --json baseRefName`. Where none of the three
-answers it passes no base at all rather than guessing one, and the record says
-which answered in `qa_base_source` — `operator`, `recipe`, `pr-base` or
-`none`. It does not consult the clone's own default branch, which is the PR's
-base only where the PR targets it. The order is in
+`AUTODRIVE_QA_BASE` first, then the base the round's own preflight observed for
+the PR, then `gh pr view <pr> --json baseRefName`. Where none of the three
+answers — or where a candidate fails the step's screen — it passes no base at
+all rather than guessing one, and the record says which answered in
+`qa_base_source` — `operator`, `recipe`, `pr-base` or `none`. It does not
+consult the clone's own default branch, which is the PR's base only where the PR
+targets it. The order is in
 [resolving the measurement base](../reference/auto-drive-qa.md#resolving-the-measurement-base).
 By hand you set the base yourself, and you can simply get it right.
 `AUTODRIVE_QA_BASE` is the PR's base branch name without `origin/`; the tool

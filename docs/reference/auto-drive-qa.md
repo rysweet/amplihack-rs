@@ -68,7 +68,7 @@ order:
 
 | Step | Type | What it does |
 | --- | --- | --- |
-| `step-02a-qa-inputs` | bash | Resolves the pinned tools directory from `autodrive_tools_dir` or `$AMPLIHACK_HOME`, never through the git toplevel and never from the worktree under review. It resolves that directory and the worktree with `pwd -P` and checks that the first does not lie inside the second, so a PR carrying its own `amplifier-bundle/tools` cannot supply the tool or the guidance that judges it. It then resolves a measurement base — the operator's `AUTODRIVE_QA_BASE`, else the base branch the drive was launched against, else the PR's own base read with `gh pr view --json baseRefName`, and nothing guessed where none of the three answers, as [resolving the measurement base](#resolving-the-measurement-base) sets out — and runs the trusted `autodrive_qa_evidence.sh` with `AUTODRIVE_QA_BASE` set to it, or unset where there is none, and `AUTODRIVE_QA_BASE_SOURCE` naming which of the four happened. That tool selects and runs the declared QA command, measures the changed files, the documentation-only flag, the repository type and the scenario directory with its tracked scenarios, and writes [the measured record](#the-measured-record). The step checks the shape of what the tool wrote before it uses it: output that is not an object carrying at least one field is treated as no record at all. It runs no scenario and issues no verdict any consumer conditions on. The step prints that record with one field added, `qa_guidance`: the absolute path of the pinned bundle copy of `criterion-1-qa-judgement.md`, checked to be a regular file beside the resolved tools directory. That is the only copy the judgement may read its rules from, so a PR cannot rewrite them. |
+| `step-02a-qa-inputs` | bash | Resolves the pinned tools directory from `autodrive_tools_dir` or `$AMPLIHACK_HOME`, never through the git toplevel and never from the worktree under review. It resolves that directory and the worktree with `pwd -P` and checks that the first does not lie inside the second, so a PR carrying its own `amplifier-bundle/tools` cannot supply the tool or the guidance that judges it. It then resolves a measurement base — the operator's `AUTODRIVE_QA_BASE`, else the base the round's own preflight observed for this PR, else the PR's own base read with `gh pr view --json baseRefName`, and nothing guessed where none of the three answers or a candidate fails the step's screen, as [resolving the measurement base](#resolving-the-measurement-base) sets out — and runs the trusted `autodrive_qa_evidence.sh` with `AUTODRIVE_QA_BASE` set to it, or unset where there is none, and `AUTODRIVE_QA_BASE_SOURCE` naming which of the four happened. That tool selects and runs the declared QA command, measures the changed files, the documentation-only flag, the repository type and the scenario directory with its tracked scenarios, and writes [the measured record](#the-measured-record). The step checks the shape of what the tool wrote before it uses it: output that is not an object carrying at least one field is treated as no record at all. It runs no scenario and issues no verdict any consumer conditions on. The step prints that record with one field added, `qa_guidance`: the absolute path of the pinned bundle copy of `criterion-1-qa-judgement.md`, checked to be a regular file beside the resolved tools directory. That is the only copy the judgement may read its rules from, so a PR cannot rewrite them. |
 | `step-02-qa-team-scenarios` | agent | Reads the guidance from the pinned bundle, the diff, the linked issue, the measured record and the existing scenarios. Judges, writes or extends this PR's scenarios, runs them, fixes and re-runs, and returns the judgement. |
 
 `step-02a-qa-inputs` cannot end a round. The measurement cannot run when a
@@ -140,15 +140,17 @@ was measured against records the other branch's commits as the PR's change,
 selects the suite that branch declares, and reads a documentation-only flag
 covering commits the PR does not carry.
 
-`step-02a-qa-inputs` takes the base from the first of these sources that holds
-a usable value, and records which one answered:
+`step-02a-qa-inputs` takes the base from the first of these sources that
+answers, and records which one answered. A source that answers with a value the
+screen below rejects does not hand on to the next: the resolution stops at
+`none`.
 
 | Order | Source | `qa_base_source` | Where it comes from |
 | --- | --- | --- | --- |
 | 1 | `AUTODRIVE_QA_BASE` in the step's environment | `operator` | An operator override for the run, used as given once it passes the screen below. A variable that is set but empty counts as no answer and falls through to row 2. |
-| 2 | the `autodrive_base_branch` recipe variable | `recipe` | The base branch the drive was launched against, passed from `autodrive_loop.sh` and `autodrive_merge_loop_run.sh` through `autodrive-merge-round.yaml` into this sub-recipe. This is the ordinary answer inside a drive. |
+| 2 | the `autodrive_base_branch` recipe variable | `recipe` | The base the round's own preflight observed for this PR. `autodrive_merge_loop_run.sh` reads `base_branch` out of the `merge_loop_preflight` object — the base `step-01-merge-loop-preflight` observed on the hosting interface when the loop was entered — and passes it as `autodrive_base_branch`, which `autodrive_loop.sh` and `autodrive_crusty_rereview.sh` forward through `autodrive-merge-round.yaml` into this sub-recipe. It is **not** the `base_branch` an operator gave `auto-drive-to-merge`: that input is never forwarded here. This is the ordinary answer inside a drive. |
 | 3 | `gh pr view <pr_number> --json baseRefName` | `pr-base` | The PR's own base, read from the hosting interface. Attempted only where `pr_number` is set and is one to ten digits. |
-| — | none of the three answered | `none` | The step passes no base to the measurement at all. It guesses nothing. |
+| — | none of the three answered, or a candidate failed the screen | `none` | The step passes no base to the measurement at all. It guesses nothing. |
 
 The step consults nothing else. In particular it no longer reads the clone's
 `refs/remotes/origin/HEAD`. The clone's default branch is this PR's base only
@@ -159,14 +161,19 @@ this step. It survives only on the light path, where no PR exists yet and so
 no PR base exists for it to be wrong against: see
 [light drives](#light-drives).
 
-Every candidate is screened before it is used, and a candidate that fails the
-screen is passed over as no answer:
+Every candidate is screened before it is used, and the screen is fail-closed:
+a candidate that fails it resolves the base to `none`. The step does not fall
+through to the next source. Falling through would measure against a base other
+than the one the failing source named, which is the hazard this whole section is
+about; refusing to measure is the answer instead.
 
 - `pr_number` must be one to ten digits before it reaches `gh`. `gh pr view`
   accepts a number, a URL or a branch name and parses options, so an
   option-shaped value such as `--repo other/repo` could otherwise redirect the
   lookup at another repository and make `baseRefName` entirely caller-chosen.
-  Where `pr_number` is anything but digits, no lookup is made at all.
+  Where `pr_number` is anything but digits, no lookup is made at all: row 3
+  offers nothing, and since rows 1 and 2 were empty for the step to have reached
+  it, the base resolves to `none`.
 - a base, from any of the three sources, must be one line of branch-name
   characters and must pass `git check-ref-format --branch`. A name is rejected
   when it begins with `-`, when it contains `..`, or when it carries any of
@@ -180,18 +187,20 @@ screen is passed over as no answer:
   the host, the API URL and the account, and `qa_judgement_notes` reach a
   public PR comment. It is one read-only lookup, made only where both rows
   above it were empty.
-- where a candidate is rejected, the step says that a base was rejected and
-  which source offered it. It never echoes the rejected value, which is
-  untrusted and may carry control bytes, and the step has no sanitiser on its
-  own stderr.
+- where a candidate is rejected, the step says on its stderr that a base was
+  rejected and which source offered it, and resolves `none`. It never echoes the
+  rejected value, which is untrusted and may carry control bytes, and the step
+  has no sanitiser on its own stderr.
 
-`qa_base_source` is written from those four literals at the branch the step
-took, never from a value in the environment and never from command output,
-exactly as `gadugi_scenario_dir_state` and `qa_command_source` are. The
-measurement checks it against its closed set — `operator`, `recipe`,
-`pr-base`, `clone-default`, `none` — and records `none` for anything else, so
-a hostile environment cannot put free text in the record through it. `qa_base`
-names the base itself, sanitised and capped at 200 bytes.
+`qa_base_source` is written from a literal at the branch the step took, never
+from a value in the environment and never from command output, exactly as
+`gadugi_scenario_dir_state` and `qa_command_source` are. A round writes one of
+four: `operator`, `recipe`, `pr-base` or `none`. The measurement checks whatever
+it is given against its own closed set of five — those four plus
+`clone-default`, which only [the light path](#light-drives) writes — and records
+`none` for anything else, so a hostile environment cannot put free text in the
+record through it. `qa_base` names the base itself, sanitised and capped at 200
+bytes.
 
 `qa_base_source` `none` always comes with an empty `qa_base`, and an empty
 `qa_base` always reads `none`. The measurement clears the base whenever it
@@ -201,19 +210,29 @@ covers version skew: a newer recipe naming a source an older staged tool does
 not know collapses to `none` with the change set cleared, not to `none`
 beside real paths.
 
-Ranking the recipe's base above the PR's own is deliberate. The recipe base is
-what the drive was launched against and what `step-01-sync-with-base` merges
-from, so the measurement and the merge describe one base. Where a PR is
-retargeted mid-drive the two differ, and that is visible in the round: the
-base `step-01-sync-with-base` observed sits in the criterion-1 evidence block
-beside `qa_base`, and the judgement names the difference. It is a fact to
-record, not a check that ends anything.
+Ranking the recipe's base above the PR's own is deliberate, and it is not a
+choice between someone's intention and an observation: both rows are
+observations of this PR's base on the hosting interface. Row 2 is the one the
+loop has already made, at preflight; row 3 asks the same question again. The
+step prefers the answer it already holds — one fewer authenticated lookup per
+round, and the base the measurement used is the base the round's own preflight
+reported, rather than a second reading that could differ from it.
 
-Because the base is the PR's own base, a recorded merge-base declaration is
-read as it stands. There is no comparison to make before it counts, and no
-rule that discards a declaration because the base looks wrong. The source
-list is in the record for attribution: a reader can say which of the four
-answered, and an operator who overrode the base can see that they did.
+Row 2's observation is taken once, when the loop is entered, so inside a loop
+entry it can go stale: a PR retargeted mid-entry keeps its preflight base here
+until the next entry observes again. `step-01-sync-with-base` observes the PR's
+actual base afresh every round, so the two differ in exactly that window, and
+the difference is visible in the round: the base `merge_sync` observed sits in
+the criterion-1 evidence block beside `qa_base`, and the judgement names it. It
+is a fact to record, not a check that ends anything.
+
+Because every source that answers names this PR's own base, a recorded
+merge-base declaration is read as it stands. There is no comparison to make
+before it counts, and no rule that discards a declaration because the base looks
+wrong. The source list is in the record for attribution: a reader can say which
+of the round's four outcomes answered — or, in a light record, that
+`clone-default` did — and an operator who overrode the base can see that they
+did.
 
 A base the step resolved but the worktree has not fetched is a different
 case. The measurement needs `refs/remotes/origin/<base>`; where the round has
@@ -222,10 +241,17 @@ carries `(unknown)` paths, an `unknown` `docs_only` and
 `qa_criterion1_declaration` `none`. That is a recorded unknown rather than a
 silent fallback, and the judgement says so. `qa_base` still names what was
 tried and `qa_base_source` who chose it, so an unfetched base and a base that
-was never resolved at all stay distinguishable. The same holds for an
-override that is not a branch name: it is rejected here, so the step falls to
-the next source rather than measuring against a base the operator did not
-choose, and where no source answers the record says `none`.
+was never resolved at all stay distinguishable.
+
+A value that is not a branch name — from any source, though in practice an
+operator's override — is a third case, and this work changes what the record
+shows for it. Such a value used to travel to the measurement,
+which put it in `qa_base` beside `(unknown)` paths, so a typo named itself in the
+record. It is now rejected at the step, which resolves `none`: `qa_base` is
+empty, `qa_base_source` is `none`, and the record no longer carries the bad
+value. An operator diagnosing it reads the step's stderr, which says a base was
+rejected and which source offered it; the value itself is in their own
+environment, and the record does not repeat it.
 
 Where nothing answers, the step passes no base at all. The record then
 carries `qa_base_source` `none`, an empty `qa_base`, `(unknown)` paths, an
@@ -298,7 +324,7 @@ as before, `not pr_number and not existing_branch`.
 
 | Step | Type | What it does |
 | --- | --- | --- |
-| `light-qa-inputs` | bash | Runs the same measurement tool with `AUTODRIVE_QA_EVIDENCE` fixed at `$QUICK_CHANGE_STATE_DIR/qa/qa-evidence.json`, `AUTODRIVE_QA_BASE` set to the `base_branch` the run was given, else the clone's `origin/HEAD` — unset, as on the round's path, where neither answers — and `AUTODRIVE_QA_HEAD` set to the worktree's `HEAD` commit. It checks the criterion-1 guidance the `light-qa` step then reads is a regular, non-symlinked file under `$AMPLIHACK_HOME`, as the merge path checks it, so one document carries one assurance on both paths. There is no PR yet, so no hosting interface is consulted for the base, and the clone's default stays a legitimate answer on this path: with no PR there is no PR base for it to be wrong against. The record says which answered — `recipe` for the run's `base_branch`, `clone-default` for the clone's own default, `none` where neither. That measurement base is not the commit `light-base-pin` pinned: the pin is a SHA of the worktree's `HEAD` at the start of the change, recorded as `light_base` and used for the change set `light-qa` reads, while the measurement base is a branch name resolved independently of it. |
+| `light-qa-inputs` | bash | Runs the same measurement tool with `AUTODRIVE_QA_EVIDENCE` fixed at `$QUICK_CHANGE_STATE_DIR/qa/qa-evidence.json`, `AUTODRIVE_QA_BASE` set to the clone's `origin/HEAD` — unset, as on the round's path, where the clone names no default — and `AUTODRIVE_QA_HEAD` set to the worktree's `HEAD` commit. It checks the criterion-1 guidance the `light-qa` step then reads is a regular, non-symlinked file under `$AMPLIHACK_HOME`, as the merge path checks it, so one document carries one assurance on both paths. There is no PR yet, so no hosting interface is consulted for the base, and the clone's default stays a legitimate answer on this path: with no PR there is no PR base for it to be wrong against. The record says which answered — `clone-default` for the clone's own default, `none` where the clone has none. Those are the only two outcomes here, and `clone-default` appears in no other step's record. The step resolves the base itself and sets `AUTODRIVE_QA_BASE` from what it found, so an `AUTODRIVE_QA_BASE` already in its environment does not reach the measurement, and the run's own `base_branch` is not consulted either. That is deliberate rather than an oversight: this step runs only on the new-change path, where the `quick/` branch starts from `origin/HEAD` and `light-open-pr` opens the PR against that same default, so the clone's default is both the branch the change was made from and the branch the PR will target. A `base_branch` the operator gave the light run is neither, and ranking it first would measure the change against a branch it was not branched from — the clone-default hazard of the round's path with the two branches swapped. That measurement base is not the commit `light-base-pin` pinned: the pin is a SHA of the worktree's `HEAD` at the start of the change, recorded as `light_base` and used for the change set `light-qa` reads, while the measurement base is a branch name resolved independently of it. |
 | `light-qa` | agent | Follows the same guidance and returns the judgement as `light_checks`. |
 
 `light-prereqs` reports whether `gadugi-test` is on the path and exits 0.
@@ -475,7 +501,7 @@ beside `gadugi_status` `FOUND` and state `detected` cannot be produced.
 | `qa_scenarios` | Scenario files, as space-separated repository-relative paths, capped at 2,000 bytes. From `gadugi_scenario_dir` where it was consulted; for a Rust CLI project where it was not, the selected project's `tests/parity/scenarios/*.y{a,}ml`, which `cargo test` runs. Top-level regular files only: a symlinked or non-regular entry is named here and not followed. |
 | `qa_summary` | The recorded causes and the last lines of the command's output, sanitised. |
 | `qa_round` | `AUTODRIVE_ROUND_LABEL`, or `round`. With `head_sha`, this is what binds a record to the round that wrote it: see [the record file](#the-record-file). |
-| `qa_base`, `qa_base_source` | The base the change set was measured against, and how the caller reached it: `operator`, `recipe`, `pr-base`, `clone-default` or `none`. The source is checked against those five literals and never taken from the environment unchecked: a caller that names a base with no source is the `operator`, and no base at all — or any word outside the set — records `none`. `none` and an empty `qa_base` imply each other in both directions, because the measurement clears the base whenever it records `none`; a record saying no base was resolved cannot carry a measured path list beside it. `clone-default` is reachable only from the light path, before a PR exists. See [resolving the measurement base](#resolving-the-measurement-base). |
+| `qa_base`, `qa_base_source` | The base the change set was measured against, and how the caller reached it: `operator`, `recipe`, `pr-base`, `clone-default` or `none`. The source is checked against those five literals and never taken from the environment unchecked: a caller that names a base with no source is the `operator`, and no base at all — or any word outside the set — records `none`. `none` and an empty `qa_base` imply each other in both directions, because the measurement clears the base whenever it records `none`; a record saying no base was resolved cannot carry a measured path list beside it. A round writes one of the first three or `none`; `clone-default` is reachable only from `light-qa-inputs` on the light path, before a PR exists, and is that step's ordinary answer. See [resolving the measurement base](#resolving-the-measurement-base). |
 | `head_sha` | The head measured: hexadecimal digits, or empty where the head could not be read. The tool constrains the value to that set before printing it, so a ref name, an option-like string or any other output of a misread head cannot reach a reader through this field. |
 | `docs_only` | `true`, `false` or `unknown`, from the [documentation-only measurement](#documentation-only-measurement). |
 | `gadugi_required` | What `autodrive_gadugi_required` reports: `true` for a Node project, for any repository where `AUTODRIVE_QA_SCENARIO_DIR` is set, and where the scope helper did not load; `false` for a documentation-only PR, for a Rust CLI or Python project, and under a #2458 declaration. It is a fact about the repository and the operator environment; no consumer conditions criterion 1 on it, and it is not a signal that the measurement is broken — see [telling the three `qa-command-missing` causes apart](#telling-the-three-qa-command-missing-causes-apart). |
@@ -616,6 +642,10 @@ script resolves neither for itself and uses whatever values it is given.
 Inside a round, `step-02a-qa-inputs` resolves the base alone (see
 [resolving the measurement base](#resolving-the-measurement-base)), and an
 `AUTODRIVE_QA_BASE` an operator sets there is the first source it consults.
+`light-qa-inputs` is the exception: it resolves the base from the clone's own
+default and sets `AUTODRIVE_QA_BASE` itself, so an operator value in its
+environment is replaced rather than consulted (see
+[light drives](#light-drives)).
 
 The step sets no head. `AUTODRIVE_QA_HEAD` is left unset, so the measurement
 takes the checkout's own `HEAD`, and nothing compares that commit with the
@@ -632,8 +662,8 @@ preflight of the head commit (see
 preflight record describes the head commit only: `qa_command_paths` is
 `(unknown)` and `docs_only` is `unknown`, so the judgement takes the change
 set from the diff. A round reaches that shape only where none of its three base
-sources answered, and the record names it: `qa_base` empty, `qa_base_source`
-`none`.
+sources answered or a candidate failed its screen, and the record names it:
+`qa_base` empty, `qa_base_source` `none`.
 
 ## Repository configuration
 
