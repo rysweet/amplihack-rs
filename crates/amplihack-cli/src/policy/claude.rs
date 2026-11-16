@@ -88,3 +88,68 @@ pub(crate) fn ensure_deny(settings: &mut Value, instance: &[String]) -> DenyOutc
         DenyOutcome::AlreadyCurrent
     }
 }
+
+// --- the record the Claude writers leave behind -----------------------------
+//
+// `permissions.deny` is written from three places: the install's own settings
+// writer, the per-profile refresh and profile seeding. They run at different
+// points of a run and none of them returns to the install's policy section,
+// so each records what the file it met came to and the policy section reads
+// the record. The alternative, threading a result back through all three, put
+// the reason in `tracing::warn!` alone, which an ordinary install never shows.
+//
+// The record is per thread: the install writes and reads it on one thread,
+// and a per-thread record keeps this crate's tests independent of each other
+// without a lock.
+
+use std::cell::RefCell;
+
+thread_local! {
+    /// One entry per settings file this thread met, in the order it met them:
+    /// the label naming the file, and the reason it took no entries, if any.
+    static RECORD: RefCell<Vec<(String, Option<String>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Records what one Claude settings file came to. `label` names the file
+/// (`home settings`, `profile work`, `new profile fresh`) and never holds
+/// file content. Recording the same label twice describes the same file, so
+/// the later outcome replaces the earlier one.
+pub(crate) fn record(label: &str, outcome: &DenyOutcome) {
+    let reason = match outcome {
+        DenyOutcome::Written | DenyOutcome::AlreadyCurrent => None,
+        DenyOutcome::Unparseable(reason) => Some(reason.clone()),
+    };
+    RECORD.with_borrow_mut(
+        |entries| match entries.iter_mut().find(|(seen, _)| seen == label) {
+            Some(entry) => entry.1 = reason,
+            None => entries.push((label.to_string(), reason)),
+        },
+    );
+}
+
+/// What the record adds up to, and one warning line per refused file,
+/// clearing the record. An empty record is
+/// [`HarnessWrite::NothingToWriteInto`](super::HarnessWrite::NothingToWriteInto):
+/// no settings file was met, so nothing was written and nothing failed.
+pub(crate) fn take_record() -> (super::HarnessWrite, Vec<String>) {
+    use super::HarnessWrite;
+    let entries = RECORD.with_borrow_mut(std::mem::take);
+    let refused: Vec<String> = entries
+        .iter()
+        .filter_map(|(label, reason)| {
+            reason.as_ref().map(|reason| {
+                super::write_failure_warning(&format!("Claude Code ({label})"), reason)
+            })
+        })
+        .collect();
+    let outcome = match (entries.len(), refused.len()) {
+        (0, _) => HarnessWrite::NothingToWriteInto,
+        (met, 0) => {
+            debug_assert!(met > 0);
+            HarnessWrite::Written
+        }
+        (met, bad) if met == bad => HarnessWrite::AllRefused,
+        _ => HarnessWrite::Partial,
+    };
+    (outcome, refused)
+}

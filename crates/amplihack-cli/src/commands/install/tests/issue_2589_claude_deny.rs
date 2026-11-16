@@ -402,3 +402,307 @@ fn seeding_a_new_profile_writes_the_policy_even_from_a_pre_change_home_file() {
         "{deny:?}"
     );
 }
+
+// --- a settings file that cannot take the entries (SEC-C3) ------------------
+//
+// The defect these tests exist for: a settings file holding a `permissions`
+// value amplihack cannot merge gets no deny entries at all, on every install
+// and every update, while the install output said the rules had been
+// written. The reason reached `tracing::warn!` only, which an ordinary
+// install does not show. Silent non-installation of a safety control is
+// worse than visible failure, so each writer records what it met and the
+// install's policy section carries the warning on its own channel.
+//
+// Expected seams:
+//
+// ```ignore
+// // install/settings.rs: the reason reaches the caller as well as the record
+// pub(crate) fn apply_deny_policy(settings: &mut Value, label: &str) -> Option<String>;
+//
+// // profile/settings_refresh.rs: the refresh closure is given the profile
+// // name, because a warning that does not say which profile cannot be acted
+// // on
+// pub(crate) fn refresh_profile_settings(
+//     hooks_bin: &Path,
+//     update: &dyn Fn(&str, &mut Value),
+// ) -> Vec<(String, Refresh)>;
+// ```
+//
+// The labels are the ones `docs/reference/dangerous-command-policy.md`
+// prints: `home settings`, `profile <name>`, `new profile <name>`.
+
+use super::super::apply_dangerous_command_policy;
+use crate::policy::{HarnessWrite, ReportLine};
+
+/// Empties the Claude policy record left by any earlier call on this thread.
+fn clear_policy_record() {
+    let _ = policy::claude::take_record();
+}
+
+/// Whether the report claims `harness` had its rules written to a file.
+fn claims_written(lines: &[ReportLine], harness: &str) -> bool {
+    lines
+        .iter()
+        .any(|line| line.text.starts_with(harness) && line.text.contains("deny rules written to"))
+}
+
+/// A home settings file whose `permissions.deny` is not an array: the one
+/// shape `ensure_permissions` leaves in place today, and the one a hand edit
+/// most often produces.
+#[test]
+fn a_home_file_whose_deny_is_not_an_array_is_left_as_found_and_warns() {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let d = tempdir_outside_framework_roots();
+    let home = d.path().join("home");
+    let claude = home.join(".claude");
+    fs::create_dir_all(&claude).unwrap();
+    fs::write(
+        claude.join("settings.json"),
+        r#"{"language":"en","permissions":{"deny":"Bash(curl:*)"}}"#,
+    )
+    .unwrap();
+    let _env = Env::set(&[("HOME", Some(&home))]);
+
+    let settings = install_home_settings(&home);
+    let value = read_json(&settings);
+    assert_eq!(
+        value["permissions"]["deny"], "Bash(curl:*)",
+        "a value amplihack cannot merge is reported, never replaced"
+    );
+
+    let report = apply_dangerous_command_policy();
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("Claude Code") && w.contains("home settings")),
+        "the install's own channel names the file it could not write: {:?}",
+        report.warnings
+    );
+    assert!(
+        !claims_written(&report.lines, "Claude Code"),
+        "and the same run does not claim Claude coverage: {:?}",
+        report.lines
+    );
+}
+
+/// The `permissions` key itself holding a scalar. The reference page says
+/// this file is left byte-identical and gets no entries; today the settings
+/// writer replaces it before the policy writer sees it, which both discards
+/// the user's value and hides the failure.
+#[test]
+fn a_home_file_whose_permissions_is_not_an_object_is_left_as_found_and_warns() {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let d = tempdir_outside_framework_roots();
+    let home = d.path().join("home");
+    let claude = home.join(".claude");
+    fs::create_dir_all(&claude).unwrap();
+    fs::write(
+        claude.join("settings.json"),
+        r#"{"language":"en","permissions":"bypassPermissions"}"#,
+    )
+    .unwrap();
+    let _env = Env::set(&[("HOME", Some(&home))]);
+
+    let settings = install_home_settings(&home);
+    let value = read_json(&settings);
+    assert_eq!(
+        value["permissions"], "bypassPermissions",
+        "the user's own value is kept, not replaced with amplihack's defaults"
+    );
+
+    let report = apply_dangerous_command_policy();
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("Claude Code") && w.contains("home settings")),
+        "{:?}",
+        report.warnings
+    );
+    assert!(
+        !claims_written(&report.lines, "Claude Code"),
+        "{:?}",
+        report.lines
+    );
+}
+
+/// The warning names a JSON key or an I/O error kind. It never quotes a value
+/// read out of the file, which is content amplihack did not write (SEC-V4).
+#[test]
+fn a_claude_warning_never_quotes_a_value_read_out_of_the_file() {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let d = tempdir_outside_framework_roots();
+    let home = d.path().join("home");
+    let claude = home.join(".claude");
+    fs::create_dir_all(&claude).unwrap();
+    fs::write(
+        claude.join("settings.json"),
+        r#"{"permissions":{"deny":"SECRET-VALUE-9f2a"}}"#,
+    )
+    .unwrap();
+    let _env = Env::set(&[("HOME", Some(&home))]);
+
+    install_home_settings(&home);
+    let report = apply_dangerous_command_policy();
+    for warning in &report.warnings {
+        assert!(
+            !warning.contains("SECRET-VALUE-9f2a"),
+            "a warning must not echo file content: {warning}"
+        );
+        assert!(
+            !warning.chars().any(char::is_control),
+            "and must stay on one line: {warning}"
+        );
+    }
+}
+
+/// A run where every file took the entries says so, and says nothing else.
+#[test]
+fn a_run_that_wrote_the_home_file_reports_claude_as_written_without_a_warning() {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let d = tempdir_outside_framework_roots();
+    let home = d.path().join("home");
+    let _env = Env::set(&[("HOME", Some(&home))]);
+
+    install_home_settings(&home);
+    let report = apply_dangerous_command_policy();
+    assert!(
+        report.warnings.is_empty(),
+        "nothing was refused: {:?}",
+        report.warnings
+    );
+    assert!(
+        claims_written(&report.lines, "Claude Code"),
+        "{:?}",
+        report.lines
+    );
+}
+
+/// A refused profile is named, because a warning that does not say which
+/// profile cannot be acted on.
+#[test]
+fn a_refused_profile_is_named_in_the_install_warning() {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let d = tempdir_outside_framework_roots();
+    let home = d.path().join("home");
+    let root = home.join("profiles");
+    profile_settings(&root, r#"{"permissions":"bypassPermissions","hooks":{}}"#);
+    let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
+    let _env = Env::set(&[
+        (ROOT_ENV, Some(&root)),
+        (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
+        ("HOME", Some(&home)),
+    ]);
+
+    refresh_profile_hooks(&hooks);
+    let report = apply_dangerous_command_policy();
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("Claude Code") && w.contains("profile work")),
+        "the warning names the profile it met: {:?}",
+        report.warnings
+    );
+}
+
+/// One refused profile beside a written home file is a partial write, not a
+/// complete one and not a total failure.
+#[test]
+fn one_refused_profile_beside_a_written_home_file_reports_a_partial_write() {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let d = tempdir_outside_framework_roots();
+    let home = d.path().join("home");
+    let root = home.join("profiles");
+    profile_settings(&root, r#"{"permissions":"bypassPermissions","hooks":{}}"#);
+    let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
+    let _env = Env::set(&[
+        (ROOT_ENV, Some(&root)),
+        (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
+        ("HOME", Some(&home)),
+    ]);
+
+    install_home_settings(&home);
+    refresh_profile_hooks(&hooks);
+    let report = apply_dangerous_command_policy();
+    let claude = report
+        .lines
+        .iter()
+        .find(|line| line.text.starts_with("Claude Code:"))
+        .expect("a partial write is still reported");
+    assert!(
+        !claude.text.contains("deny rules written to"),
+        "a partial write must not read as a complete one: {:?}",
+        claude.text
+    );
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+}
+
+/// Seeding runs off the install path, on `amplihack profile add`. A file it
+/// cannot write is recorded the same way, so the failure is visible there too
+/// rather than only in a log the user never sees.
+#[test]
+fn seeding_a_profile_it_cannot_write_records_the_refusal() {
+    use crate::commands::profile::{ProfileName, ProfileStore};
+
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let d = tempdir_outside_framework_roots();
+    let home = d.path().join("home");
+    let source = home.join(".claude");
+    fs::create_dir_all(&source).unwrap();
+    // A home file whose `permissions` is copied into the new profile and
+    // cannot then take the entries.
+    fs::write(
+        source.join("settings.json"),
+        r#"{"language":"en","permissions":"bypassPermissions"}"#,
+    )
+    .unwrap();
+    let root = home.join("profiles");
+    fs::create_dir_all(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let _env = Env::set(&[("HOME", Some(&home))]);
+
+    let store = ProfileStore::new(root.clone()).with_shared_assets(source);
+    let name = ProfileName::parse("fresh").unwrap();
+    let dir = store
+        .add(&name)
+        .expect("a settings file that cannot take the entries does not fail the add");
+
+    let value = read_json(&dir.join("settings.json"));
+    assert_eq!(
+        value["permissions"], "bypassPermissions",
+        "the seeded value is kept, not replaced"
+    );
+
+    let (outcome, warnings) = policy::claude::take_record();
+    assert_eq!(outcome, HarnessWrite::AllRefused, "{warnings:?}");
+    assert!(
+        warnings.iter().any(|w| w.contains("new profile fresh")),
+        "the seeding path names the profile it seeded: {warnings:?}"
+    );
+}
+
+/// Structural: seeding writes its warning where a person running `amplihack
+/// profile add` will see it. Without this the record is set and nothing ever
+/// prints it on that path.
+#[test]
+fn the_seeding_path_writes_its_warning_to_stderr() {
+    const SOURCE: &str = include_str!("../../profile/store.rs");
+    let seeding = SOURCE
+        .split("fn seed_policy_into")
+        .nth(1)
+        .expect("seed_policy_into is defined in profile/store.rs");
+    let body = &seeding[..seeding.len().min(1200)];
+    assert!(
+        body.contains("eprintln!"),
+        "a refusal met while seeding must reach stderr, not only tracing:\n{body}"
+    );
+}

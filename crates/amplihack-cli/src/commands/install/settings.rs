@@ -310,11 +310,12 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
         return;
     }
     let limit_resume = claude_too_old_for_limit_resume().is_none();
-    let results = refresh_profile_settings(hooks_bin, &|settings| {
+    let results = refresh_profile_settings(hooks_bin, &|name, settings| {
         register_hooks(settings, hooks_bin, limit_resume);
         // Issue #2589: every managed profile gets the same deny entries as
-        // the user's own settings file.
-        apply_deny_policy(settings, "a managed profile settings file");
+        // the user's own settings file. The profile is named, because a
+        // warning that does not say which profile cannot be acted on.
+        apply_deny_policy(settings, &format!("profile {name}"));
     });
     let updated = results
         .iter()
@@ -510,6 +511,14 @@ pub(super) fn read_settings_json(settings_path: &Path) -> Result<Value> {
 
 pub(super) fn ensure_permissions(settings: &mut Value) {
     let root = ensure_object(settings);
+    // SEC-C2: a `permissions` value amplihack cannot merge is left exactly as
+    // the user wrote it. Replacing it with these defaults would discard what
+    // they set and hide the fact that the file took no deny entries; the
+    // policy writer below reports it instead.
+    if !matches!(root.get("permissions"), None | Some(Value::Object(_))) {
+        apply_deny_policy(settings, HOME_SETTINGS_LABEL);
+        return;
+    }
     let permissions = root
         .entry("permissions")
         .or_insert_with(|| Value::Object(Map::new()));
@@ -538,21 +547,34 @@ pub(super) fn ensure_permissions(settings: &mut Value) {
     // Issue #2589: the dangerous-command deny entries, from amplihack's one
     // policy list plus this installation's own additions. The entries
     // already in the file, including the user's own, are kept.
-    apply_deny_policy(settings, "the user settings file");
+    apply_deny_policy(settings, HOME_SETTINGS_LABEL);
 }
+
+/// How the user's own `settings.json` is named in a policy warning. The
+/// labels are the ones `docs/reference/dangerous-command-policy.md` prints.
+pub(crate) const HOME_SETTINGS_LABEL: &str = "home settings";
 
 /// Issue #2589: adds the dangerous-command deny entries to `settings`,
 /// reporting rather than replacing a `permissions` value that cannot take
-/// them (SEC-C2). `label` names the file in the log line and never holds
-/// file content.
-pub(crate) fn apply_deny_policy(settings: &mut Value, label: &str) {
-    use crate::policy::claude::{DenyOutcome, ensure_deny};
+/// them (SEC-C2). `label` names the file and never holds file content.
+///
+/// Returns the reason the file took no entries, and records the same thing
+/// for the install's policy section, which prints it on its own channel: a
+/// safety control that is not installed must not be silent (SEC-C3).
+pub(crate) fn apply_deny_policy(settings: &mut Value, label: &str) -> Option<String> {
+    use crate::policy::claude::{DenyOutcome, ensure_deny, record};
     let instance = crate::user_config::policy_deny_commands();
-    if let DenyOutcome::Unparseable(reason) = ensure_deny(settings, &instance) {
-        tracing::warn!(
-            "{label}: the dangerous-command deny entries were not written ({reason}); the \
-             existing permissions value was left as it is"
-        );
+    let outcome = ensure_deny(settings, &instance);
+    record(label, &outcome);
+    match outcome {
+        DenyOutcome::Written | DenyOutcome::AlreadyCurrent => None,
+        DenyOutcome::Unparseable(reason) => {
+            tracing::warn!(
+                "{label}: the dangerous-command deny entries were not written ({reason}); the \
+                 existing permissions value was left as it is"
+            );
+            Some(reason)
+        }
     }
 }
 
@@ -703,6 +725,44 @@ mod tests {
         let strs: Vec<&str> = dirs.iter().filter_map(Value::as_str).collect();
         assert!(strs.contains(&".claude"));
         assert!(strs.contains(&"Specs"));
+    }
+
+    // -----------------------------------------------------------------------
+    // issue #2589: apply_deny_policy reports what it met
+    // -----------------------------------------------------------------------
+
+    /// The reason reaches the caller. Returning `()` and logging through
+    /// `tracing::warn!` left an ordinary install with no sign that a
+    /// settings file had taken no deny entries at all.
+    #[test]
+    fn apply_deny_policy_returns_the_reason_a_file_could_not_take_the_entries() {
+        let mut settings = json!({"permissions": {"deny": "Bash(curl:*)"}});
+        let reason = apply_deny_policy(&mut settings, "home settings")
+            .expect("a deny value that is not an array is reported");
+        assert!(reason.contains("deny"), "{reason}");
+        assert_eq!(
+            settings["permissions"]["deny"], "Bash(curl:*)",
+            "and the value is left as it was found"
+        );
+    }
+
+    #[test]
+    fn apply_deny_policy_returns_nothing_when_the_entries_were_written() {
+        let mut settings = json!({"permissions": {"deny": []}});
+        assert!(apply_deny_policy(&mut settings, "home settings").is_none());
+        let deny = settings["permissions"]["deny"].as_array().unwrap().clone();
+        assert!(deny.iter().any(|v| v == "Bash(pkill:*)"), "{deny:?}");
+    }
+
+    /// SEC-C2: `ensure_permissions` must not replace a `permissions` value it
+    /// cannot merge. Replacing it discards whatever the user set there and
+    /// hides the fact that the file took no deny entries.
+    #[test]
+    fn ensure_permissions_leaves_a_permissions_value_it_cannot_merge_alone() {
+        let mut settings = json!({"language": "en", "permissions": "bypassPermissions"});
+        ensure_permissions(&mut settings);
+        assert_eq!(settings["permissions"], "bypassPermissions");
+        assert_eq!(settings["language"], "en");
     }
 
     // -----------------------------------------------------------------------

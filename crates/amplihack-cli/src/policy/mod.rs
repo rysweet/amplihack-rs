@@ -29,6 +29,8 @@ mod tests;
 mod tests_prefix;
 #[cfg(test)]
 mod tests_render;
+#[cfg(test)]
+mod tests_report;
 
 pub(crate) use prefix::Prefix;
 
@@ -182,6 +184,13 @@ pub(crate) fn default_prefixes() -> Vec<Prefix> {
 /// The installation's own additions: the entries that validate, deduplicated
 /// and in file order, and one reason per entry that did not.
 ///
+/// The config layer rejects an entry with this same constructor and names it
+/// on stderr when the file is read, so in a working build the reasons here
+/// are empty and only the unit tests see them. They are the second check on
+/// the one value in this module that comes from outside it, and are kept for
+/// that reason: a rendering is a policy file, where an unvalidated value is a
+/// policy bypass.
+///
 /// The reason quotes the rejected value, which is attacker-chosen, so it goes
 /// through the config module's escaping first (SEC-V4).
 pub(crate) fn instance_prefixes(instance: &[String]) -> (Vec<Prefix>, Vec<String>) {
@@ -221,16 +230,98 @@ pub(crate) fn effective_prefixes(instance: &[String]) -> Vec<Prefix> {
     prefixes
 }
 
-/// What `amplihack install` and `amplihack update` say about the policy, one
-/// plain sentence per line.
-pub(crate) fn install_report_lines() -> Vec<&'static str> {
-    vec![
-        "Dangerous-command deny rules written from amplihack's own policy list: Claude Code \
-         reads them from permissions.deny in settings.json, and Codex from an execpolicy rules \
-         file in its home.",
-        "Copilot CLI saves approvals per project and keeps no user-level file for command deny \
-         rules, so amplihack supplies the same policy as session arguments on each launch.",
-    ]
+/// What one harness's deny-rule write came to on this run.
+///
+/// The install's policy section is a function of this, so a positive claim
+/// never outlives the write behind it (SEC-C3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HarnessWrite {
+    /// Every file this harness has holds the entries, whether this run added
+    /// them or found them already there.
+    Written,
+    /// There was no home on this machine to write into, and none was created.
+    NothingToWriteInto,
+    /// Some files took the entries and some were refused.
+    Partial,
+    /// Every file this harness has refused the entries.
+    AllRefused,
+}
+
+/// One line of the install's policy section: the marker it is printed with,
+/// and the sentence itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReportLine {
+    pub marker: &'static str,
+    pub text: String,
+}
+
+/// The marker on a line about something that was written.
+pub(crate) const WRITTEN_MARKER: &str = "\u{2139}\u{fe0f}";
+/// The marker on a line about a step there was nothing to do.
+pub(crate) const SKIPPED_MARKER: &str = "\u{21a9}\u{fe0f}";
+
+/// Copilot CLI's line, which does not vary: its mechanism is the launch
+/// arguments, so there is nothing on disk to succeed or fail at.
+const COPILOT_LINE: &str = "Copilot CLI: approvals are saved per project and there is no \
+     user-level file for command deny rules, so amplihack supplies the same policy as session \
+     arguments on each launch.";
+
+/// What `amplihack install` and `amplihack update` say about the policy: one
+/// plain sentence per harness, describing what this run wrote.
+///
+/// A harness whose files were all refused gets no line at all; the warnings
+/// carry it. A harness there was nothing to write for is named with
+/// [`SKIPPED_MARKER`], rather than passed over for the reader to guess at.
+/// The wording is the one `docs/reference/dangerous-command-policy.md` prints
+/// under "Install and update output".
+pub(crate) fn install_report_lines(claude: HarnessWrite, codex: HarnessWrite) -> Vec<ReportLine> {
+    let mut lines = Vec::new();
+    lines.extend(harness_line(
+        "Claude Code",
+        claude,
+        "deny rules written to permissions.deny in the home settings file and in every managed \
+         profile that has one.",
+        "no Claude settings file on this machine, so there was nothing to write; the rules are \
+         written when one appears.",
+    ));
+    lines.extend(harness_line(
+        "Codex",
+        codex,
+        "deny rules written to the execpolicy rules file in its home.",
+        "no Codex home on this machine, so there was nothing to write; the rules are written \
+         when one appears.",
+    ));
+    lines.push(ReportLine {
+        marker: WRITTEN_MARKER,
+        text: COPILOT_LINE.to_string(),
+    });
+    lines
+}
+
+/// One harness's line, or none when every file it has was refused.
+fn harness_line(
+    harness: &str,
+    outcome: HarnessWrite,
+    written: &str,
+    nothing: &str,
+) -> Option<ReportLine> {
+    let (marker, rest) = match outcome {
+        HarnessWrite::Written => (WRITTEN_MARKER, written.to_string()),
+        HarnessWrite::NothingToWriteInto => (SKIPPED_MARKER, nothing.to_string()),
+        HarnessWrite::Partial => (
+            WRITTEN_MARKER,
+            "deny rules written where they could be; each file that was refused is named in the \
+             warnings below."
+                .to_string(),
+        ),
+        // Nothing was written, so nothing is claimed. The warnings say which
+        // files were met and why.
+        HarnessWrite::AllRefused => return None,
+    };
+    Some(ReportLine {
+        marker,
+        text: format!("{harness}: {rest}"),
+    })
 }
 
 /// The one-line warning for a harness whose deny rules could not be written.

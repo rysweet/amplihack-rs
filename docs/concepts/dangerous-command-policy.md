@@ -1,7 +1,7 @@
 ---
 title: "Why Dangerous Commands Are Denied in the Harness"
 description: "Why amplihack writes each harness's own deny configuration from a single policy list, rather than adding a hook, and what a prefix matcher can and cannot do."
-last_updated: 2026-11-15
+last_updated: 2026-11-16
 review_schedule: quarterly
 owner: rysweet
 doc_type: explanation
@@ -33,6 +33,7 @@ The list itself, and the exact files, are in
 - [Why one list and three renderings](#why-one-list-and-three-renderings)
 - [Why ordinary pushes still run](#why-ordinary-pushes-still-run)
 - [Why pgrep is on the list](#why-pgrep-is-on-the-list)
+- [Why a failed write is loud](#why-a-failed-write-is-loud)
 - [What this is not](#what-this-is-not)
 - [Related](#related)
 
@@ -217,6 +218,30 @@ rewritten the same way rather than exempted.
 
 This is a deliberate trade: that inconvenience against a failure mode that
 hung four builds and ended several dozen runs.
+
+## Why a failed write is loud
+
+A deny rule can fail to arrive. The Codex home can be read-only; a settings
+file can hold a `permissions` value amplihack will not merge into without
+discarding what the user put there, and when it does, that file gets no
+entries at all.
+
+Neither case stops the install. The rest of an install still has value, and a
+harness home that cannot be written is the user's to fix, not amplihack's to
+break the run over. So a refused write is a warning on stderr and an exit
+status of 0.
+
+What it must not be is quiet, and it must not sit under a line saying the
+rules were written. The reason is particular to this kind of feature: an
+unprotected agent and a protected one look identical until the moment the
+protection would have mattered, and in between somebody relies on it. A
+missing deny rule that is known about costs one command; a missing deny rule
+that is believed to be present costs whatever the rule existed to prevent.
+
+That is why the install output reports what the run actually wrote, harness by
+harness, names a harness it found nothing to write into, and drops the
+positive line for a harness whose files were refused. A report is readable
+only if the absence of a line means something.
 
 ## What this is not
 

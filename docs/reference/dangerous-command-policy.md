@@ -1,7 +1,7 @@
 ---
 title: "Dangerous Command Policy"
 description: "The single list of dangerous commands amplihack ships, and the deny configuration it writes for Claude Code, Codex and Copilot CLI from that list."
-last_updated: 2026-11-15
+last_updated: 2026-11-16
 review_schedule: quarterly
 owner: rysweet
 doc_type: reference
@@ -194,8 +194,12 @@ The ten default entries are appended to `permissions.deny`:
 - Entries already present are not duplicated. Entries you added yourself stay,
   and every other key in `permissions` is left as it was.
 - If `permissions` is not an object, or `permissions.deny` is not an array, the
-  file is reported as unparseable and left byte-identical. Nothing is
-  overwritten.
+  file is left byte-identical and gets no entries at all. Nothing is
+  overwritten, and the file is named in a warning on stderr: a settings file
+  that cannot take the entries is a file with no deny rules, and the run that
+  met it does not claim Claude coverage. See *Loud on failure* under
+  [How the files are written](#how-the-files-are-written), and
+  [Install and update output](#install-and-update-output).
 
 Two properties of Claude's own matcher decide how much this covers: whether a
 deny entry still applies under `defaultMode: bypassPermissions`, which is what
@@ -457,32 +461,67 @@ A harness home that does not exist is not created. Nothing is written outside
   amplihack creates is mode 0700. A symlinked, non-regular or foreign-owned
   target is left alone and reported.
 - **Loud on failure.** A policy write that does not succeed prints one line on
-  stderr, in quiet mode as well, and install still exits 0:
+  stderr, in quiet mode as well, and install still exits 0. Every writer uses
+  the same sentence, which names the harness, the file in question and the
+  reason, and nothing else:
 
   ```text
   ⚠️  Codex: the dangerous-command deny rules were not written (permission denied); fix what that names, then run `amplihack install` again
+  ⚠️  Claude Code (home settings): the dangerous-command deny rules were not written (permissions is not a JSON object); fix what that names, then run `amplihack install` again
+  ⚠️  Claude Code (profile work): the dangerous-command deny rules were not written (permissions.deny is not a JSON array); fix what that names, then run `amplihack install` again
   ```
 
+  Three paths report this way: `amplihack install` and `amplihack update`
+  (whose policy section carries the line), the per-profile refresh (reported
+  through the same section), and profile seeding, which writes the line to
+  stderr itself as it seeds, because `amplihack profile add` has no policy
+  section to carry it. The launch-time repair writes the same home settings
+  file but says nothing about the policy; a file it cannot write is named by
+  the next `amplihack install` or `amplihack update`. The reason names a JSON
+  key or an I/O error kind; it never quotes a value read out of the file.
+
   A deny list that is believed to be present and is not is worse than none, so
-  the warning is never suppressed.
+  the warning is never suppressed, and the same run does not also print a line
+  claiming that harness was written.
 
 ## Install and update output
 
-Success is two lines, which is what the install output budget allows. The
-first names the two harnesses whose rules are files; the second names the one
-that has no file to write to. Neither carries a path or a count, so the output
-is the same on every machine:
+The section reports what this run actually wrote, one line per harness. A
+harness whose files were refused does not get a line saying they were written,
+and a harness there was nothing to write for is named rather than passed over:
+a positive claim never outlives the write behind it.
+
+On a machine with a Claude home, managed profiles and a Codex home:
 
 ```text
 🛡️  Configuring dangerous-command deny rules:
-  ℹ️  Dangerous-command deny rules written from amplihack's own policy list: Claude Code reads them from permissions.deny in settings.json, and Codex from an execpolicy rules file in its home.
-  ℹ️  Copilot CLI saves approvals per project and keeps no user-level file for command deny rules, so amplihack supplies the same policy as session arguments on each launch.
+  ℹ️  Claude Code: deny rules written to permissions.deny in the home settings file and in every managed profile that has one.
+  ℹ️  Codex: deny rules written to the execpolicy rules file in its home.
+  ℹ️  Copilot CLI: approvals are saved per project and there is no user-level file for command deny rules, so amplihack supplies the same policy as session arguments on each launch.
 ```
 
-A failure adds one stderr line per harness that could not be written, as
-above. The two lines are printed on every explicit `amplihack install` and
-`amplihack update`, including a run where every file was already current; the
-launch-time repair prints nothing unless it has a warning.
+The Copilot line is unconditional, because its mechanism is the launch
+arguments and there is nothing on disk to succeed or fail at. The other two
+lines vary with what happened.
+
+| What happened | What is printed |
+|---------------|-----------------|
+| Every file for that harness holds the entries, whether this run added them or found them | the ℹ️ line above |
+| There is no harness home to write into | `↩️  Codex: no Codex home on this machine, so there was nothing to write; the rules are written when one appears.` |
+| Some files took the entries and some were refused | `ℹ️  Claude Code: deny rules written where they could be; each file that was refused is named in the warnings below.` |
+| Every file for that harness was refused | no ℹ️ line at all, only the warnings |
+
+Each refused file adds one stderr line naming it, in the form shown under
+[How the files are written](#how-the-files-are-written). Install still exits 0.
+
+The lines are printed on every explicit `amplihack install` and `amplihack
+update`, including a run where every file was already current: they describe
+what the files hold, not what changed. The launch-time repair prints nothing
+unless it has a warning, which it writes to stderr prefixed `amplihack:
+warning:`.
+
+No line carries a path or a count. A profile is named, because a warning that
+does not say which profile cannot be acted on.
 
 ## Uninstall
 
@@ -520,6 +559,11 @@ $ codex execpolicy check --rules ~/.codex/rules/amplihack-dangerous-commands.rul
 $ codex execpolicy check --rules ~/.codex/rules/amplihack-dangerous-commands.rules git push -u origin main
 {"matchedRules":[]}
 ```
+
+Check after a warning, and after any hand edit of a settings file. A file that
+has been given a `permissions` value amplihack cannot merge keeps whatever
+entries it already had and takes no new ones, so the list above is the only
+thing that says which rules a harness is running.
 
 For Copilot, read the command line of a running launch. The deny flags are
 arguments, so they are in the process's own `cmdline`:
@@ -595,10 +639,22 @@ settle before the sentence that depends on it is final.
 | Codex loads `$CODEX_HOME/rules/*.rules` without a `--rules` argument | checked, codex-cli 0.166.0 |
 | Codex applies a rule to the absolute-path form (`/usr/bin/pkill`) | **no**, codex-cli 0.166.0: unmatched |
 | Codex applies a rule to the `bash -lc "..."` form | **no**, codex-cli 0.166.0: unmatched |
-| Claude Code applies `permissions.deny` under `defaultMode: bypassPermissions` | reported live in [#2674](https://github.com/rysweet/amplihack-rs/issues/2674); not re-checked here |
+| Claude Code applies `permissions.deny` under `defaultMode: bypassPermissions` | reported live in [#2674](https://github.com/rysweet/amplihack-rs/issues/2674); not re-checked here, and the whole Claude rendering rests on it |
 | Claude Code matches a denied prefix inside `&&`, `;`, `\|` and `$(...)` chains | reported live in [#2674](https://github.com/rysweet/amplihack-rs/issues/2674); not re-checked here |
 | Copilot CLI resolves `--deny-tool` over a saved project approval | open |
 | Copilot CLI accepts a multi-token prefix in `shell(...)` | open |
+
+The bypass-mode row carries more weight than the others. amplihack writes
+`defaultMode: bypassPermissions` into the same file it writes the deny entries
+into, and four of the clients it manages (`claude`, `rusty`, `rustyclawd` and
+`amplifier`) read that file. If Claude Code did not consult `permissions.deny`
+in that mode, the Claude rendering would cover nothing on any of them. The
+evidence for it is the live testing reported in
+[#2674](https://github.com/rysweet/amplihack-rs/issues/2674). It has not been
+re-run against the Claude Code version on your machine, and nothing on this
+page establishes it: every sentence that depends on it is written as a report
+of that issue. If you depend on the Claude rendering, check it yourself with
+one denied command in a bypass-mode session, and record the version here.
 
 The discovery check was made by putting a deliberately unparseable `.rules`
 file in `$CODEX_HOME/rules/` and starting `codex exec`: it stopped with

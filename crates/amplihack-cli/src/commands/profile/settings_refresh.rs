@@ -42,9 +42,12 @@ pub(crate) enum Refresh {
 /// result; empty when no root is configured. When [`hook_path_refusal`]
 /// refuses `hooks_bin`, no file is opened and every profile with a
 /// `settings.json` is `Skipped` with the reason.
+/// `update` is given the profile's name as well as its settings, because a
+/// line about one profile that does not name it cannot be acted on
+/// (issue #2589).
 pub(crate) fn refresh_profile_settings(
     hooks_bin: &Path,
-    update: &dyn Fn(&mut Value),
+    update: &dyn Fn(&str, &mut Value),
 ) -> Vec<(String, Refresh)> {
     let Ok(store) = ProfileStore::from_env() else {
         return Vec::new();
@@ -59,7 +62,7 @@ pub(crate) fn refresh_profile_settings(
         &temp_bases(),
     ) {
         Some(reason) => refused_all(&store, &reason),
-        None => refresh_in(&store, update),
+        None => refresh_in_named(&store, update),
     }
 }
 
@@ -200,7 +203,7 @@ fn current_home() -> Option<PathBuf> {
 fn refused_all(store: &ProfileStore, reason: &str) -> Vec<(String, Refresh)> {
     each_profile(
         store,
-        &|dir| match std::fs::symlink_metadata(dir.join("settings.json")) {
+        &|_name, dir| match std::fs::symlink_metadata(dir.join("settings.json")) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Refresh::Missing,
             _ => Refresh::Skipped(reason.to_string()),
         },
@@ -208,17 +211,32 @@ fn refused_all(store: &ProfileStore, reason: &str) -> Vec<(String, Refresh)> {
 }
 
 /// Unchecked: it does not consult [`hook_path_refusal`]. Production code
-/// calls [`refresh_profile_settings`]; tests call this with a fixture store.
+/// calls [`refresh_profile_settings`], whose closure is also given the
+/// profile's name; this name-less form is what the fixture tests use.
+#[cfg(test)]
 pub(super) fn refresh_in(
     store: &ProfileStore,
     update: &dyn Fn(&mut Value),
 ) -> Vec<(String, Refresh)> {
-    each_profile(store, &|dir| refresh_one(dir, update))
+    refresh_in_named(store, &|_name, settings| update(settings))
+}
+
+/// [`refresh_in`] whose closure is also given the profile's name.
+pub(super) fn refresh_in_named(
+    store: &ProfileStore,
+    update: &dyn Fn(&str, &mut Value),
+) -> Vec<(String, Refresh)> {
+    each_profile(store, &|name, dir| {
+        refresh_one(dir, &|settings| update(name, settings))
+    })
 }
 
 /// `act` applied to each listed profile's directory; a profile whose name
 /// does not parse is left out, and one that does not resolve is `Skipped`.
-fn each_profile(store: &ProfileStore, act: &dyn Fn(&Path) -> Refresh) -> Vec<(String, Refresh)> {
+fn each_profile(
+    store: &ProfileStore,
+    act: &dyn Fn(&str, &Path) -> Refresh,
+) -> Vec<(String, Refresh)> {
     let Ok(names) = store.list() else {
         return Vec::new();
     };
@@ -227,7 +245,7 @@ fn each_profile(store: &ProfileStore, act: &dyn Fn(&Path) -> Refresh) -> Vec<(St
         .filter_map(|name| {
             let parsed = ProfileName::parse(&name).ok()?;
             let result = match store.resolve(&parsed) {
-                Ok(dir) => act(&dir),
+                Ok(dir) => act(&name, &dir),
                 Err(error) => Refresh::Skipped(error.to_string()),
             };
             Some((name, result))

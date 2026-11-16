@@ -99,18 +99,40 @@ impl ProfileStore {
     /// entries. Seeding copies `permissions` from the user's settings file,
     /// so a profile seeded from a file written before this change would
     /// otherwise carry no entry at all. Never creates the file and never
-    /// fails the seeding: a refusal is logged.
-    fn seed_policy_into(&self, profile_dir: &Path) {
-        let path = profile_dir.join("settings.json");
-        match update_file(&path, &|settings| {
-            apply_deny_policy(settings, "a new profile settings file");
-        }) {
+    /// fails the seeding: a file that cannot take the entries is recorded
+    /// and named on stderr, because `amplihack profile add` runs off the
+    /// install path and nothing else would print it (SEC-C3).
+    fn seed_policy_into(&self, profile_dir: &Path, name: &ProfileName) {
+        let label = format!("new profile {}", name.as_str());
+        // Seeding runs off the install path, on `amplihack profile add`, so
+        // this is the only place a refusal met here is printed (SEC-C3).
+        let warn = |reason: &str| {
+            eprintln!(
+                "amplihack: warning: {}",
+                crate::policy::write_failure_warning(&format!("Claude Code ({label})"), reason)
+            );
+        };
+        let refusal = std::cell::RefCell::new(None);
+        let merge = update_file(&profile_dir.join("settings.json"), &|settings| {
+            *refusal.borrow_mut() = apply_deny_policy(settings, &label);
+        });
+        if let Some(reason) = refusal.into_inner() {
+            warn(&reason);
+            return;
+        }
+        match merge {
             FileMerge::Written | FileMerge::AlreadyCurrent | FileMerge::Absent => {}
             FileMerge::Unparseable(reason) | FileMerge::Refused(reason) => {
+                // The closure never ran, so the file is recorded here.
+                crate::policy::claude::record(
+                    &label,
+                    &crate::policy::claude::DenyOutcome::Unparseable(reason.clone()),
+                );
                 tracing::warn!(
                     "new profile settings.json: dangerous-command deny entries not written \
                      ({reason})"
                 );
+                warn(&reason);
             }
         }
     }
@@ -213,7 +235,7 @@ impl ProfileStore {
         if self.shared_assets.is_some() {
             self.seed_hooks_into(&staging);
         }
-        self.seed_policy_into(&staging);
+        self.seed_policy_into(&staging, name);
         if let Err(error) = rename_noreplace(&staging, &dir) {
             let error = if error.kind() == std::io::ErrorKind::AlreadyExists {
                 ProfileError::AlreadyExists(name.to_string())

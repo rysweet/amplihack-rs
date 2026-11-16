@@ -401,7 +401,9 @@ pub(crate) fn binary_is_current() -> bool {
 /// install prints, and one warning per harness whose rules could not be
 /// written.
 pub(super) struct PolicyReport {
-    pub(crate) lines: Vec<String>,
+    /// What this run wrote, one line per harness. A harness whose files were
+    /// all refused has no line here: the warnings carry it.
+    pub(crate) lines: Vec<crate::policy::ReportLine>,
     pub(crate) warnings: Vec<String>,
 }
 
@@ -418,21 +420,29 @@ pub(super) struct PolicyReport {
 /// the warning is loud and unsuppressed, since a security control that is not
 /// installed must not be silent (SEC-C3).
 pub(super) fn apply_dangerous_command_policy() -> PolicyReport {
-    let mut warnings = Vec::new();
-    match codex_plugin::install_deny_rules() {
-        codex_plugin::DenyRulesWrite::Written | codex_plugin::DenyRulesWrite::AlreadyCurrent => {}
+    use crate::policy::HarnessWrite;
+    let mut codex_warnings = Vec::new();
+    let codex = match codex_plugin::install_deny_rules() {
+        codex_plugin::DenyRulesWrite::Written | codex_plugin::DenyRulesWrite::AlreadyCurrent => {
+            HarnessWrite::Written
+        }
         codex_plugin::DenyRulesWrite::Absent => {
             tracing::debug!("no Codex home to write the dangerous-command rules into");
+            HarnessWrite::NothingToWriteInto
         }
         codex_plugin::DenyRulesWrite::Refused(reason) => {
-            warnings.push(crate::policy::write_failure_warning("Codex", &reason));
+            codex_warnings.push(crate::policy::write_failure_warning("Codex", &reason));
+            // Codex has one rules file, so a refusal is the whole harness.
+            HarnessWrite::AllRefused
         }
-    }
+    };
+    // The Claude settings files were written earlier in this run, by the
+    // settings writer, the profile refresh and profile seeding; each left a
+    // record of the file it met, and this is where it is read and reported.
+    let (claude, mut warnings) = crate::policy::claude::take_record();
+    warnings.extend(codex_warnings);
     PolicyReport {
-        lines: crate::policy::install_report_lines()
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
+        lines: crate::policy::install_report_lines(claude, codex),
         warnings,
     }
 }
@@ -952,7 +962,7 @@ fn local_install_scoped(
         println!("🛡️  Configuring dangerous-command deny rules:");
         let policy = apply_dangerous_command_policy();
         for line in &policy.lines {
-            println!("  ℹ️  {line}");
+            println!("  {}  {}", line.marker, line.text);
         }
         for warning in &policy.warnings {
             eprintln!("  ⚠️  {warning}");

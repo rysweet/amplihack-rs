@@ -1,7 +1,7 @@
 ---
 title: "Add Dangerous-Command Deny Rules"
 description: "Add your own commands to amplihack's dangerous-command policy, write them into every harness, and check what arrived."
-last_updated: 2026-11-15
+last_updated: 2026-11-16
 review_schedule: quarterly
 owner: rysweet
 doc_type: howto
@@ -29,6 +29,7 @@ For the default list and the exact file formats, see
 - [Troubleshooting](#troubleshooting)
   - [An entry was reported and ignored](#an-entry-was-reported-and-ignored)
   - [Nothing was written at all](#nothing-was-written-at-all)
+  - [A harness got no line](#a-harness-got-no-line)
   - [A profile has no entries](#a-profile-has-no-entries)
   - [A denied command still runs](#a-denied-command-still-runs)
 
@@ -69,15 +70,21 @@ amplihack update
 
 ```text
 🛡️  Configuring dangerous-command deny rules:
-  ℹ️  Dangerous-command deny rules written from amplihack's own policy list: Claude Code reads them from permissions.deny in settings.json, and Codex from an execpolicy rules file in its home.
-  ℹ️  Copilot CLI saves approvals per project and keeps no user-level file for command deny rules, so amplihack supplies the same policy as session arguments on each launch.
+  ℹ️  Claude Code: deny rules written to permissions.deny in the home settings file and in every managed profile that has one.
+  ℹ️  Codex: deny rules written to the execpolicy rules file in its home.
+  ℹ️  Copilot CLI: approvals are saved per project and there is no user-level file for command deny rules, so amplihack supplies the same policy as session arguments on each launch.
 ```
 
+Read the lines: each one is a statement about what this run wrote. A harness
+with nothing to write into is named instead (`↩️  Codex: no Codex home on this
+machine …`), and a harness whose files were refused gets a warning on stderr
+rather than a line saying its rules are in place.
+
 The Claude writer covers the home settings file and every managed profile that
-already has a `settings.json`. `amplihack install` writes the same files, and
-prints the same two lines whether or not anything changed. Copilot needs no
-write step: the flags are built on each `amplihack copilot` launch, so a new
-entry applies to the next launch without running install.
+already has a `settings.json`. `amplihack install` writes the same files and
+prints the same lines whether or not anything changed. Copilot needs no write
+step: the flags are built on each `amplihack copilot` launch, so a new entry
+applies to the next launch without running install.
 
 `rusty`, `rustyclawd` and `amplifier` read the same Claude settings file, so
 they are covered by the Claude line and have no step of their own.
@@ -178,14 +185,58 @@ $ ls -l ~/.amplihack/config.toml
 $ chmod 600 ~/.amplihack/config.toml
 ```
 
-If a write itself did not succeed, install prints one line on stderr and still
-exits 0:
+If a write itself did not succeed, install prints one line on stderr per file
+and still exits 0:
 
 ```text
   ⚠️  Codex: the dangerous-command deny rules were not written (permission denied); fix what that names, then run `amplihack install` again
+  ⚠️  Claude Code (home settings): the dangerous-command deny rules were not written (permissions is not a JSON object); fix what that names, then run `amplihack install` again
 ```
 
-Fix the cause the line names, then run `amplihack update` again.
+The second form means the settings file holds a `permissions` value amplihack
+will not merge into, so that file has no amplihack deny entries. Open it and
+make `permissions` an object whose `deny` is an array of strings:
+
+```console
+$ jq '.permissions' ~/.claude/settings.json
+"bypassPermissions"
+
+$ jq '.permissions = {"defaultMode": "bypassPermissions", "deny": []}' ~/.claude/settings.json > /tmp/s.json \
+  && mv /tmp/s.json ~/.claude/settings.json
+```
+
+The same warning appears from `amplihack profile add` when the profile being
+seeded has such a file, named `Claude Code (new profile <name>)`; the
+per-profile refresh during an install names the same file
+`Claude Code (profile <name>)`.
+
+Fix the cause the line names, then run `amplihack update` again and check that
+the harness's ℹ️ line is back.
+
+### A harness got no line
+
+Each harness gets one line, and the absence of one is information. Two forms
+say nothing was written:
+
+```text
+  ↩️  Codex: no Codex home on this machine, so there was nothing to write; the rules are written when one appears.
+```
+
+amplihack does not create a harness home it did not find. Install or start
+Codex once so that `~/.codex` exists (or set `CODEX_HOME` to the directory you
+use), then run `amplihack update`.
+
+```text
+🛡️  Configuring dangerous-command deny rules:
+  ℹ️  Codex: deny rules written to the execpolicy rules file in its home.
+  ℹ️  Copilot CLI: approvals are saved per project …
+  ⚠️  Claude Code (home settings): the dangerous-command deny rules were not written (permissions is not a JSON object); …
+```
+
+No Claude line means no Claude file took the entries. A Claude line reading
+"written where they could be" means some did and some did not, and the
+warnings name each file that was refused. Either way, treat the harness as
+having no amplihack deny rules until the warning is gone.
 
 ### A profile has no entries
 

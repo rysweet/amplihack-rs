@@ -142,7 +142,7 @@ fn refresh_under_temp_home_never_writes_root_outside_it() {
         "no settings.json is created"
     );
 
-    let results = refresh_profile_settings(&hooks, &|s: &mut Value| {
+    let results = refresh_profile_settings(&hooks, &|_name: &str, s: &mut Value| {
         s["hooks"]["StopFailure"] = serde_json::json!([]);
     });
     assert_eq!(fingerprint(&settings), before, "settings.json untouched");
@@ -175,7 +175,7 @@ fn refresh_with_home_unset_and_temp_hooks_is_refused() {
     let settings = profile_settings(&root);
     let before = fingerprint(&settings);
     let _env = Env::set(&[(ROOT_ENV, Some(&root)), ("HOME", None)]);
-    let results = refresh_profile_settings(&hooks, &|s: &mut Value| {
+    let results = refresh_profile_settings(&hooks, &|_name: &str, s: &mut Value| {
         s["hooks"]["StopFailure"] = serde_json::json!([]);
     });
     assert_eq!(fingerprint(&settings), before);
@@ -203,7 +203,7 @@ fn a_missing_hooks_binary_never_reaches_profiles() {
     let missing = Path::new("/nonexistent/amplihack-hooks");
     refresh_profile_hooks(missing);
     assert_eq!(fingerprint(&settings), before);
-    let results = refresh_profile_settings(missing, &|s: &mut Value| {
+    let results = refresh_profile_settings(missing, &|_name: &str, s: &mut Value| {
         s["hooks"]["StopFailure"] = serde_json::json!([]);
     });
     assert!(

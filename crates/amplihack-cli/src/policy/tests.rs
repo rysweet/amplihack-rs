@@ -16,7 +16,10 @@
 //! pub(crate) fn default_prefixes() -> Vec<Prefix>;
 //! pub(crate) fn effective_prefixes(instance: &[String]) -> Vec<Prefix>;
 //! pub(crate) fn instance_prefixes(instance: &[String]) -> (Vec<Prefix>, Vec<String>);
-//! pub(crate) fn install_report_lines() -> Vec<&'static str>;
+//! pub(crate) fn install_report_lines(
+//!     claude: HarnessWrite,
+//!     codex: HarnessWrite,
+//! ) -> Vec<ReportLine>;
 //! pub(crate) fn write_failure_warning(harness: &str, reason: &str) -> String;
 //! ```
 
@@ -293,55 +296,10 @@ fn a_rejection_reason_escapes_the_value_it_quotes() {
     );
 }
 
-// --- install reporting (C7, F8, F9) ----------------------------------------
-
-#[test]
-fn install_report_states_the_copilot_mechanism_in_plain_words() {
-    let lines = install_report_lines();
-    assert!(!lines.is_empty());
-    let text = lines.join("\n");
-    assert!(
-        text.contains("Copilot"),
-        "the Copilot finding must be stated: {text}"
-    );
-    assert!(
-        text.contains("each launch") || text.contains("every launch"),
-        "the report must say the policy is applied per launch: {text}"
-    );
-    for banned in ["gate", "refuse", "refusal", "Gate", "Refuse", "Refusal"] {
-        assert!(
-            !text.contains(banned),
-            "install output names the mechanism rather than writing {banned:?}: {text}"
-        );
-    }
-}
-
-/// F9, corrected: `amplifier`, `rusty` and `rustyclawd` read the Claude
-/// settings file through a pinned `CLAUDE_CONFIG_DIR`, so none of them is a
-/// harness amplihack leaves uncovered. The report must not say otherwise.
-#[test]
-fn the_install_report_claims_no_harness_is_left_without_a_mechanism() {
-    let text = install_report_lines().join("\n").to_lowercase();
-    for claim in ["no mechanism", "offers none", "has none", "none of its own"] {
-        assert!(
-            !text.contains(claim),
-            "the Claude-family harnesses are covered by the Claude settings \
-             file, so the report must not claim {claim:?}: {text}"
-        );
-    }
-}
-
-#[test]
-fn a_failed_policy_write_warning_names_the_harness_and_the_reason() {
-    let warning = write_failure_warning("Codex", "is a symlink");
-    assert!(warning.contains("Codex"), "{warning}");
-    assert!(warning.contains("is a symlink"), "{warning}");
-    assert!(
-        warning.contains("dangerous-command"),
-        "the warning must say which control is missing: {warning}"
-    );
-    assert!(!warning.contains('\n'), "one line: {warning}");
-}
+// --- install reporting -----------------------------------------------------
+//
+// The report is a function of what this run wrote, so its tests live beside
+// the outcome type in `tests_report.rs`.
 
 // --- placement rule (R17) ---------------------------------------------------
 

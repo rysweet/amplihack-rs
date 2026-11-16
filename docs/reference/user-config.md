@@ -508,6 +508,8 @@ policy.deny_commands` removes the key.
 - Entries are added **after** the shipped defaults, in the order written, with
   duplicates removed. An entry can never remove a default; there is no
   removal mechanism for the defaults.
+- The list holds at most 64 entries. A longer list is reported and ignored,
+  on the same terms as a bad entry.
 - Each entry is a command prefix: ASCII letters, digits and `. _ / @ = + -`,
   single spaces between 1 to 8 tokens, 1 to 128 bytes. Quotes, backslashes,
   parentheses, colons, globs, control characters and NUL are rejected, because

@@ -9,8 +9,15 @@
 //! /// warning line and the install carries on.
 //! pub(super) fn apply_dangerous_command_policy() -> PolicyReport;
 //!
-//! pub(super) struct PolicyReport { pub lines: Vec<String>, pub warnings: Vec<String> }
+//! pub(super) struct PolicyReport {
+//!     pub lines: Vec<crate::policy::ReportLine>,
+//!     pub warnings: Vec<String>,
+//! }
 //! ```
+//!
+//! The lines report what this run wrote: a harness whose files were refused
+//! gets no line saying they were written, and a harness there was nothing to
+//! write for is named rather than passed over.
 //!
 //! Visibility this file needs: `update::post_install` becomes `pub(crate)`
 //! so the post-update path can be driven from here, and `policy` items are
@@ -65,6 +72,12 @@ impl Drop for Env {
     }
 }
 
+/// Empties the Claude policy record left by any earlier call on this thread,
+/// so a report read here describes this test's writes alone.
+fn clear_policy_record() {
+    let _ = crate::policy::claude::take_record();
+}
+
 fn temp_homes() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let tmp = tempdir_outside_framework_roots();
     let home = tmp.path().join("home");
@@ -76,6 +89,7 @@ fn temp_homes() -> (tempfile::TempDir, PathBuf, PathBuf) {
 #[test]
 fn applying_the_policy_writes_the_codex_rules_file() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
     let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
@@ -87,6 +101,7 @@ fn applying_the_policy_writes_the_codex_rules_file() {
 #[test]
 fn applying_the_policy_twice_changes_nothing() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
     let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
@@ -97,17 +112,88 @@ fn applying_the_policy_twice_changes_nothing() {
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 
+/// The Codex home here exists and takes the file, so the report says Codex
+/// was written. The Claude writers did not run in this test, so Claude is
+/// named as having nothing to write into rather than passed over.
 #[test]
-fn the_report_carries_the_install_output_lines() {
+fn the_report_describes_what_this_run_wrote() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
     let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
     let report = apply_dangerous_command_policy();
-    let text = report.lines.join("\n");
-    for expected in policy::install_report_lines() {
-        assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
-    }
+    let expected = policy::install_report_lines(
+        policy::HarnessWrite::NothingToWriteInto,
+        policy::HarnessWrite::Written,
+    );
+    assert_eq!(
+        report.lines, expected,
+        "the section reports this run's writes"
+    );
+    let codex_line = report
+        .lines
+        .iter()
+        .find(|line| line.text.starts_with("Codex:"))
+        .expect("Codex was written and is named");
+    assert!(
+        codex_line.text.contains("deny rules written to"),
+        "{:?}",
+        codex_line.text
+    );
+}
+
+/// SEC-A3: an absent Codex home is named as a skipped step, not reported as
+/// a write that happened.
+#[test]
+fn an_absent_codex_home_is_named_rather_than_claimed_as_written() {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let tmp = tempdir_outside_framework_roots();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+
+    let report = apply_dangerous_command_policy();
+    let codex_line = report
+        .lines
+        .iter()
+        .find(|line| line.text.starts_with("Codex:"))
+        .expect("a harness with no home is still named");
+    assert_eq!(codex_line.marker, policy::SKIPPED_MARKER, "{codex_line:?}");
+    assert!(
+        !codex_line.text.contains("deny rules written to"),
+        "{:?}",
+        codex_line.text
+    );
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+}
+
+/// A Codex home whose rules file cannot be replaced gets no line saying the
+/// rules were written: only the warning.
+#[test]
+fn a_refused_codex_write_is_not_reported_as_a_written_one() {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let (tmp, home, codex) = temp_homes();
+    let rules = codex.join(RULES_DIR);
+    fs::create_dir_all(&rules).unwrap();
+    let outside = tmp.path().join("outside.rules");
+    fs::write(&outside, "untouched\n").unwrap();
+    symlink(&outside, rules.join(RULES_FILE)).unwrap();
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
+
+    let report = apply_dangerous_command_policy();
+    assert!(
+        !report
+            .lines
+            .iter()
+            .any(|line| line.text.starts_with("Codex:")),
+        "an all-refused harness gets no line; the warning carries it: {:?}",
+        report.lines
+    );
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
 }
 
 /// SEC-C3: a security control that is not installed must not be silent, and
@@ -115,6 +201,7 @@ fn the_report_carries_the_install_output_lines() {
 #[test]
 fn a_refused_codex_write_warns_and_does_not_fail_the_install() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
     let (tmp, home, codex) = temp_homes();
     let rules = codex.join(RULES_DIR);
     fs::create_dir_all(&rules).unwrap();
@@ -143,6 +230,7 @@ fn a_refused_codex_write_warns_and_does_not_fail_the_install() {
 #[test]
 fn the_post_update_install_path_applies_the_policy() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
     let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
@@ -157,6 +245,7 @@ fn the_post_update_install_path_applies_the_policy() {
 #[test]
 fn skip_install_applies_nothing() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
     let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
