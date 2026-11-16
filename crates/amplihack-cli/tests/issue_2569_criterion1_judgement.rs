@@ -1370,3 +1370,61 @@ fn a_measurement_that_could_not_run_leaves_the_previous_round_record_in_place() 
         "the record on disk is round 1's measurement, not round 2's blocker: {on_disk}"
     );
 }
+
+/// The two fields the round's rule reads to tell a stale record from this
+/// round's: `qa_round` and `head_sha`. A round that could not measure leaves
+/// a file whose bytes, and therefore whose `qa_evidence_sha`, are exactly
+/// last round's -- so neither the hash nor the file's presence can tell the
+/// two apart, and only those two fields can. Here round 1 measures under
+/// `round-1`, the branch then moves on, and the record still names round 1
+/// and round 1's head: a reader binding the declaration to this round's head
+/// and label reads `none`, which is the fail-safe direction.
+#[test]
+fn a_stale_record_still_names_the_round_and_the_head_it_measured() {
+    let w = divergent_default_world();
+    let first_head = w.git(&["rev-parse", "HEAD"]);
+
+    let first = w.record(&[("AUTODRIVE_ROUND_LABEL", "round-1")]);
+    assert_record_contract(&first);
+    assert_eq!(field(&first, "qa_round"), "round-1");
+    assert_eq!(field(&first, "head_sha"), first_head);
+
+    // The branch moves on, and round 2 cannot reach the measurement.
+    w.write("docs/upgrade.md", "# Upgrade\n");
+    let second_head = w.commit("docs: explain upgrade");
+    assert_ne!(second_head, first_head);
+
+    let not_a_repo = w.base.join("round-2-tree");
+    std::fs::create_dir_all(&not_a_repo).expect("mkdir");
+    let evidence = w.evidence_path().display().to_string();
+    let o = w.run_step(
+        "autodrive-merge-evidence.yaml",
+        "step-02a-qa-inputs",
+        &[
+            ("RECIPE_VAR_autodrive_qa_evidence", &evidence),
+            ("RECIPE_VAR_autodrive_round_label", "round-2"),
+            ("RECIPE_VAR_repo_path", &not_a_repo.display().to_string()),
+        ],
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let printed = json_of(&o);
+    assert_eq!(field(&printed, "qa_reason"), "qa-measurement-unavailable");
+
+    // The file on disk is round 1's, and says so in both fields.
+    let on_disk = read_json(&w.evidence_path());
+    assert_eq!(
+        field(&on_disk, "qa_round"),
+        "round-1",
+        "the stale record names the round that measured it, not this one: {on_disk}"
+    );
+    assert_eq!(
+        field(&on_disk, "head_sha"),
+        first_head,
+        "the stale record names the head it measured, not the head under review: {on_disk}"
+    );
+    assert_ne!(
+        field(&on_disk, "head_sha"),
+        second_head,
+        "a reader comparing head_sha against the head under review sees the difference"
+    );
+}

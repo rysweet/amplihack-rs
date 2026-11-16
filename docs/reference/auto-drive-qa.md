@@ -223,8 +223,19 @@ reads the step's printed object, not the file — but two readers are: the hash
 `step-00d-qa-evidence-hash` records is the hash of a file this round did not
 write, and anyone who opens the file by hand is reading an earlier round's
 measurement. Removing or replacing the file on that path is not part of this
-change; until it is, treat a record file as this round's only where the round
-reported a measurement.
+change.
+
+The record names the round and the head it measured, so a reader can tell the
+two apart without that. Both the criterion-1 assessment and the expected-checks
+step take a merge-base declaration from the record only where its `head_sha` is
+the head under review and its `qa_round` is this round; where either differs, or
+where this round's record is the `qa-measurement-unavailable` blocker, the
+declaration is `none`. That direction is fail-safe: it withholds a declaration
+rather than granting one, so it can create no hold a later round cannot clear.
+Without it a round that could not measure would read an earlier round's
+`qa_criterion1_declaration` and `scenarios_ci_job` name as though freshly
+measured, and `qa_evidence_sha` would not notice, because the file is
+byte-identical to the one it hashed last round.
 
 Where no measurement has ever written the path, the file is absent. That is
 not a named blocker on its own: the blocker reaches its readers through the
