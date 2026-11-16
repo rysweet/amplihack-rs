@@ -76,7 +76,11 @@ fn a_hook_descendant_that_commits_leaves_the_callers_checkout_alone() {
     let f = Fixture::new();
     let before = f.snapshot();
 
-    let out = f.command("hook").env("ISSUE_2738_HOOK", "1").output().unwrap();
+    let out = f
+        .command("hook")
+        .env("ISSUE_2738_HOOK", "1")
+        .output()
+        .unwrap();
     succeeds(&out);
 
     assert_eq!(

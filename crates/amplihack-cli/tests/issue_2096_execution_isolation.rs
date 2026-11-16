@@ -597,27 +597,6 @@ impl Fixture {
     }
 }
 
-/// Every file called `name` under `dir`, following no symlink. A missing
-/// `dir` adds nothing; any other I/O error fails the test.
-fn find_named(dir: &Path, name: &str, found: &mut Vec<PathBuf>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-        Err(e) => panic!("read {}: {e}", dir.display()),
-    };
-    for entry in entries {
-        let entry = entry.unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
-        let kind = entry
-            .file_type()
-            .unwrap_or_else(|e| panic!("stat {}: {e}", entry.path().display()));
-        if kind.is_dir() {
-            find_named(&entry.path(), name, found);
-        } else if entry.file_name() == name {
-            found.push(entry.path());
-        }
-    }
-}
-
 fn json_file(path: &Path) -> serde_json::Value {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
