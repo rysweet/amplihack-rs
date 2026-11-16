@@ -137,16 +137,45 @@ fn traceme_refused(error: &std::io::Error) -> bool {
 /// registers one before the site that may classify it, invalidates that.
 ///
 /// Classified by error number only, never message text: a tracee can
-/// influence strings that surface in an error chain. The root cause is what
-/// is read, so an unrelated inner `ESRCH` cannot be mistaken for this. The
-/// full rationale and its limits are in
+/// influence strings that surface in an error chain. The number read is the
+/// one [`PtraceRequestFailed`] carries, which only a ptrace request in this
+/// module can produce, so an `ESRCH` from anything else — notably the `/proc`
+/// reads in [`Scopes::exec`] and [`record_exec`] — cannot be mistaken for
+/// this however it is wrapped. The full rationale and its limits are in
 /// `docs/reference/run-isolation-vanished-observed-tasks.md`.
 fn vanished_task(error: &anyhow::Error) -> bool {
     error
-        .root_cause()
-        .downcast_ref::<std::io::Error>()
-        .and_then(std::io::Error::raw_os_error)
+        .downcast_ref::<PtraceRequestFailed>()
+        .and_then(|failed| failed.error.raw_os_error())
         == Some(libc::ESRCH)
+}
+
+/// Issue #2716: a failed ptrace request, carrying its own `errno` in the type
+/// so [`vanished_task`] never has to walk an error chain to find one. Walking
+/// a chain is what would let an `ESRCH` raised by something other than the
+/// request being classified — a `/proc` read at an exec stop, say — open the
+/// one fail-open path in this module. Only [`ptrace`] and [`event_message`]
+/// construct this, so nothing else can.
+///
+/// Displays as the request's own context text, with the `io::Error` as its
+/// source, so `{:#}` and [`anyhow::Error::root_cause`] read exactly as the
+/// `.context(…)` chain this replaced.
+#[derive(Debug)]
+struct PtraceRequestFailed {
+    context: &'static str,
+    error: std::io::Error,
+}
+
+impl std::fmt::Display for PtraceRequestFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.context)
+    }
+}
+
+impl std::error::Error for PtraceRequestFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
 }
 
 /// A `/proc/<tid>` read failed because that task has gone: `ENOENT` for a
@@ -933,7 +962,10 @@ fn retire_thread_group(
 fn ptrace(request: libc::c_uint, pid: i32, data: usize) -> Result<()> {
     // SAFETY: request uses no pointer output; pid is a stopped tracee.
     if unsafe { libc::ptrace(request, pid, 0, data) } == -1 {
-        return Err(std::io::Error::last_os_error()).context("required process observation failed");
+        return Err(anyhow::Error::new(PtraceRequestFailed {
+            context: "required process observation failed",
+            error: std::io::Error::last_os_error(),
+        }));
     }
     Ok(())
 }
@@ -941,7 +973,10 @@ fn event_message(pid: i32) -> Result<usize> {
     let mut message = 0usize;
     // SAFETY: message points to initialized writable storage of the ABI size.
     if unsafe { libc::ptrace(libc::PTRACE_GETEVENTMSG, pid, 0, &mut message) } == -1 {
-        return Err(std::io::Error::last_os_error()).context("read observed process relationship");
+        return Err(anyhow::Error::new(PtraceRequestFailed {
+            context: "read observed process relationship",
+            error: std::io::Error::last_os_error(),
+        }));
     }
     Ok(message)
 }
@@ -1345,11 +1380,13 @@ mod tests_vanished_task {
         "PTRACE_CONT",
     ];
 
-    /// What a failed request in the loop hands to the classifier: the
-    /// `ptrace` helper's own context over the call's `io::Error`.
+    /// What a failed request in the loop hands to the classifier: exactly
+    /// what the `ptrace` helper returns.
     fn ptrace_failure(errno: i32) -> anyhow::Error {
-        anyhow::Error::new(std::io::Error::from_raw_os_error(errno))
-            .context("required process observation failed")
+        anyhow::Error::new(PtraceRequestFailed {
+            context: "required process observation failed",
+            error: std::io::Error::from_raw_os_error(errno),
+        })
     }
 
     fn journal(dir: &Path, attempt_id: &str, root: i32) -> Journal {
@@ -1405,6 +1442,41 @@ mod tests_vanished_task {
                     .context("No such process (os error 3)")
             ),
             "the message text must never decide this"
+        );
+    }
+
+    #[test]
+    fn only_a_ptrace_request_of_this_module_can_report_a_task_gone() {
+        // The errno read is the one the failed request carries, so an ESRCH
+        // raised by anything else cannot open the fail-open path however it
+        // is wrapped. `Scopes::exec` reads `/proc/<tid>/environ` at an exec
+        // stop and can itself see ESRCH; that read must stay fatal, because
+        // at an exec stop the new image is loaded and a task resumed there
+        // would run unjournaled.
+        let proc_read = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::ESRCH))
+            .context("read observed process environment");
+        assert!(
+            !vanished_task(&proc_read),
+            "an ESRCH that is not a ptrace request's own must stay fatal"
+        );
+        assert!(
+            !vanished_task(&proc_read.context("required process observation failed")),
+            "nor may wrapping it in a request's context text make it one"
+        );
+        // And the shape the helpers really return still reads as the
+        // `.context(…)` chain it replaced, so the field message and the
+        // `root_cause` errno are unchanged.
+        let failure = ptrace_failure(libc::ESRCH);
+        assert_eq!(
+            format!("{failure:#}"),
+            "required process observation failed: No such process (os error 3)"
+        );
+        assert_eq!(
+            failure
+                .root_cause()
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::raw_os_error),
+            Some(libc::ESRCH)
         );
     }
 

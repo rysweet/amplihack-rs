@@ -104,6 +104,17 @@ fn a_thread_destroyed_by_exit_group_does_not_fail_the_run() {
     a_vanished_task_leaves_the_run_alone("vanished-exit-group", "exit-group-thread");
 }
 
+/// Read this with the test above, not as independent evidence of a second
+/// window. The only non-vacuity assertion both share is `was gone at`, and
+/// the `exit_group` races the child makes by itself already satisfy it; the
+/// warning's site vocabulary does not discriminate either, because both modes
+/// produce plain `PTRACE_CONT` lines. So if the SIGKILL window ever stopped
+/// opening, this test would still pass and the pair would collapse into one
+/// proof. What keeps the mode honest is structural, not asserted here:
+/// `kill_child` accepts `ESRCH` and no other errno, so a signal that could
+/// never be delivered fails loudly in the fixture. Strengthening this into an
+/// independent check means making the stop the signal lands in observable —
+/// not raising the iteration count.
 #[test]
 fn a_child_killed_in_its_stop_does_not_fail_the_run() {
     a_vanished_task_leaves_the_run_alone("vanished-sigkill", "sigkill-child");

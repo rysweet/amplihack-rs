@@ -338,11 +338,14 @@ jq -r '.vanished' "$RUN_DIR/git-trace2/observer-$RUN_ID.receipt"
 
 ## Rust components
 
-All of these are internal to `amplihack-cli`; none is a public API.
+All of these are internal to `amplihack-cli`; none is a public API. This table
+and the [test table](#tests) name code, so the code is authoritative where
+they disagree — read them as an entry point, not as a contract.
 
 | Component | Purpose |
 | --- | --- |
-| `vanished_task(&anyhow::Error) -> bool` | True when a failed observer request's root cause is `ESRCH`. Reads the chain's root cause, so an unrelated inner `ESRCH` cannot be mistaken for the ptrace result. Error number only. |
+| `vanished_task(&anyhow::Error) -> bool` | True when a failed observer request's own error number is `ESRCH`. Error number only. The number read is the one `PtraceRequestFailed` carries, and only the two ptrace helpers construct that, so an `ESRCH` from anything else cannot be mistaken for the ptrace result however it is wrapped. |
+| `PtraceRequestFailed` | The error the two ptrace helpers return, carrying the request's `errno` in the type so classification never walks an error chain. Displays as the request's context text with the `io::Error` as its source, so the run's message and `root_cause` errno are what the `.context(…)` chain gave. |
 | `vanished_proc_entry(&std::io::Error) -> bool` | True for `ESRCH` or `ENOENT`. Used at exactly one site, the newborn `Tgid:` read. Kept separate so `ENOENT` can never be accepted from a ptrace request. |
 | `Journal.vanished: u64` | Per-journal count, `0` at both construction sites, written by `Journal::finish` as the receipt's `vanished` number. |
 | `Scopes::vanished(task, owner, request)` | Infallible. Increments the count on every journal in the owner's chain, then prints the capped stderr warning. Takes the request name as a `&'static str` from the [six-value closed vocabulary](#the-stderr-line); the two `PTRACE_CONT` sites pass different values. |
@@ -358,7 +361,8 @@ beside it, so either would turn a lost task into a run failure on every run.
 
 | Test | What it holds |
 | --- | --- |
-| `observer/linux.rs` module tests: `only_esrch_means_a_ptrace_request_found_the_task_gone` | `ESRCH` classifies as gone; `EPERM`, `EIO` and `EINVAL` stay fatal. |
+| `observer/linux.rs` module tests: `only_esrch_means_a_ptrace_request_found_the_task_gone` | `ESRCH` classifies as gone; six other error numbers stay fatal, as does an error carrying no number and one whose *message text* reads `No such process (os error 3)`. |
+| `observer/linux.rs`: `only_a_ptrace_request_of_this_module_can_report_a_task_gone` | An `ESRCH` that is not a ptrace request's own stays fatal, including when wrapped in a request's context text; and the helpers' error still prints and still reports the `root_cause` errno the `.context(…)` chain did. |
 | `observer/linux.rs`: `a_proc_entry_is_gone_only_for_esrch_or_enoent` | The `/proc` predicate accepts those two error numbers and nothing else. |
 | `observer/linux.rs`: `the_receipt_counts_the_tasks_that_were_gone` | A finished journal's receipt holds the seven existing keys byte for byte plus the `vanished` number, for a non-zero count and for zero. Uses a temporary folder. |
 | `tests/issue_2716_vanished_observed_task.rs`: `a_thread_destroyed_by_exit_group_does_not_fail_the_run` | A thread group whose leader calls `exit_group` while a freshly cloned thread is still at its ptrace stop. The run's status is the runner's own; `run.json`'s `outcome` is `success`; stderr carries no `amplihack.recipe.failure_class ` line; coverage is `established`; and the warning appeared. |
@@ -428,11 +432,18 @@ design and a test must not be shaped to dodge that.
   from finishing. This is accepted deliberately: timers are ruled out,
   `PTRACE_O_EXITKILL` and the observer's teardown bound the blast radius, and a
   visible stall is better than a falsely failed P0 run that nothing retries.
+  One case rests on `PTRACE_O_EXITKILL` alone: the newborn abandoned at
+  `thread group identity` is never entered in `pids`, so `kill_all` does not
+  signal it and `reap_all` does not wait for it. It dies with the tracer
+  because the option is inherited across `clone`, not because teardown finds
+  it. Its subject is still at its initial `SIGSTOP` and has executed nothing,
+  so this costs no evidence.
 - **The `/proc` reads at an `exec` stop are still fatal.** The `environ` read
   in `Scopes::exec` and the `exe` link read while recording an `exec` have the
   same shape of exposure and are out of scope here: the field evidence does not
   implicate them, and the integrity argument is weaker at an `exec` stop. This
-  is a known adjacent hazard with a follow-up issue recommended. Widening the
+  is a known adjacent hazard, tracked as
+  [#2718](https://github.com/rysweet/amplihack-rs/issues/2718). Widening the
   `/proc` predicate to them "for symmetry" would be a mistake: the `environ`
   read is where a relayed nested scope's journal path is validated, so a task
   reaching an `exec` stop could then skip registration and its checks while
@@ -441,7 +452,11 @@ design and a test must not be shaped to dodge that.
   trace folder after validation, so the receipt survives only where evidence
   is retained.
 - **The "exited before registration" set is keyed by process id and never
-  pruned.** Unchanged by this work; noted as a known adjacent item.
+  pruned.** Unchanged by this work. That set, and the `pending_stops` entry
+  the abandoned-newborn path leaves behind, are both bookkeeping invariants
+  that hold today only because `pid_max` makes reuse within one run
+  unreachable; making them uniform is tracked as
+  [#2718](https://github.com/rysweet/amplihack-rs/issues/2718).
 - Non-Linux targets have no observer and none of this applies. See
   [Platform support](recipe-checkout-isolation.md#platform-support).
 

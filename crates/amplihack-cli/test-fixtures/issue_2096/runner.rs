@@ -53,16 +53,26 @@ fn announce_success() {
 /// Forks once and returns the child's pid to the parent. The child runs
 /// `in_child` and never returns: it leaves through `_exit`, which is
 /// `exit_group`, so it runs no destructor and flushes no inherited buffer.
+///
+/// `in_child` is run under `catch_unwind` so that guarantee holds even if it
+/// panics. Without it a panic would unwind out of the forked child, print to
+/// the inherited stderr and run destructors over state inherited from the
+/// parent — the opposite of what this function promises, and an unexplained
+/// flake in the run log. A panic is still a failure: the child leaves with a
+/// non-zero status.
 fn fork_child(in_child: impl FnOnce()) -> i32 {
     // SAFETY: this fixture has no threads of its own here, so the child
     // inherits no held lock. The child only clones threads and leaves.
     let child = unsafe { fork() };
     assert_ne!(child, -1, "fork: {}", std::io::Error::last_os_error());
     if child == 0 {
-        in_child();
+        let code = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(in_child)) {
+            Ok(()) => 0,
+            Err(_) => 1,
+        };
         // SAFETY: leaving the forked child through exit_group, which
         // destroys the thread group including any thread still at its stop.
-        unsafe { _exit(0) }
+        unsafe { _exit(code) }
     }
     assert!(child > 0, "implausible fork result {child}");
     child
@@ -71,10 +81,21 @@ fn fork_child(in_child: impl FnOnce()) -> i32 {
 /// Clones threads that do nothing but yield. Each one stops this thread at a
 /// clone event and holds the newborn at its initial SIGSTOP until the
 /// observer has registered and resumed it.
+///
+/// `Builder::spawn` rather than `thread::spawn`: this runs in a forked child
+/// that must leave through `_exit`, and `thread::spawn` panics when the
+/// kernel refuses the clone. Under a parallel `cargo test` beside 109 other
+/// isolation tests, 128 iterations × 2 cloners × 32 threads can reach
+/// `EAGAIN`. A refused clone just means one fewer thread holding the window
+/// open, which bounded repetition already covers.
+fn spawn_detached(body: impl FnOnce() + Send + 'static) {
+    // Detached on purpose: the group is destroyed underneath them.
+    drop(std::thread::Builder::new().spawn(body));
+}
+
 fn clone_threads() {
     for _ in 0..ISSUE_2716_THREADS {
-        // Detached on purpose: the group is destroyed underneath them.
-        drop(std::thread::spawn(std::thread::yield_now));
+        spawn_detached(std::thread::yield_now);
     }
 }
 
@@ -86,7 +107,7 @@ fn clone_threads() {
 /// round trip each, which is what guarantees they are running by then.
 fn clone_underneath() {
     for _ in 0..ISSUE_2716_CLONERS {
-        drop(std::thread::spawn(clone_threads));
+        spawn_detached(clone_threads);
     }
 }
 
