@@ -276,6 +276,18 @@ Either path therefore names the CI run that admitted the release.
   re-run reuses the original run's `GITHUB_SHA` and `GITHUB_REF`, so a run
   created at the tip can start days after `main` has moved past it. Tip-ness
   at creation time is not tip-ness at start time, on either path.
+
+  One case is exempt: a commit that already carries a tag in this series. That
+  short-circuit runs *before* the comparison and must stay there, because it is
+  the repair path for the one failure #1356 cannot prevent — `Push tag`
+  succeeds, `Create GitHub Release` fails, and a public tag is left with no
+  release behind it. The repair is a re-run, which reuses the original SHA, so
+  by the time anyone notices, `main` has moved; behind the comparison the
+  repair would be unreachable from every path, since a dispatch carries the
+  current tip instead. It cannot disturb version ordering — it re-emits the
+  version that commit already holds and mints none — and `make_latest` is
+  `true` only when the released commit is still the tip, so a repair cannot
+  move `latest` backwards.
 - **Every CI completion creates an Auto Release run.** Most skip every job
   immediately — pull-request CI, merge-group CI, failed CI, the twice-weekly
   schedule run, and CI's own `workflow_dispatch` run. The release's own `v*` tag
@@ -303,11 +315,13 @@ gh workflow run release.yml --ref main
 `version-bump` resolves that ref to a SHA and, before computing any version,
 asks for a successful `ci.yml` run on that exact SHA — one started by a `push`
 whose branch was `main`. Because the dispatch is restricted to
-`refs/heads/main`, the SHA it resolves is already the tip of `main`, which is
-why the tip-of-`main` comparison described above is scoped to the
-`workflow_run` path and not repeated here. To ask the same question first, read
-the SHA from the remote rather than from a possibly stale local branch, since
-that is what the runner resolves:
+`refs/heads/main`, the SHA it resolves is the tip of `main` at the moment the
+run is created — which is not the same as being the tip when the job starts. A
+re-run of a dispatched run reuses that original SHA, so the tip-of-`main`
+comparison described above applies on this path too, and a dispatch whose
+commit has since been overtaken publishes nothing. To ask the same question
+first, read the SHA from the remote rather than from a possibly stale local
+branch, since that is what the runner resolves:
 
 ```bash
 gh api "repos/rysweet/amplihack-rs/actions/workflows/ci.yml/runs?head_sha=$(git rev-parse origin/main)&status=success&per_page=100" \
