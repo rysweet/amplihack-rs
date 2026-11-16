@@ -228,10 +228,15 @@ pub(crate) fn instance_only_prefixes(instance: &[String]) -> Vec<Prefix> {
 }
 
 /// The defaults followed by the installation's additions. An addition never
-/// removes a default and never reorders one.
+/// removes a default and never reorders one: the defaults are laid down
+/// first and only what is not already among them is appended.
 pub(crate) fn effective_prefixes(instance: &[String]) -> Vec<Prefix> {
     let mut prefixes = default_prefixes();
-    prefixes.extend(instance_only_prefixes(instance));
+    for prefix in instance_prefixes(instance).0 {
+        if !prefixes.contains(&prefix) {
+            prefixes.push(prefix);
+        }
+    }
     prefixes
 }
 

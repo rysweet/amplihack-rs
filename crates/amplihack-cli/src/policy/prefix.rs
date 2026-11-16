@@ -93,11 +93,3 @@ impl TryFrom<&str> for Prefix {
         Ok(Self(raw.to_string()))
     }
 }
-
-impl TryFrom<&String> for Prefix {
-    type Error = PrefixError;
-
-    fn try_from(raw: &String) -> Result<Self, Self::Error> {
-        Prefix::try_from(raw.as_str())
-    }
-}

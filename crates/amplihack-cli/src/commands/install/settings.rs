@@ -552,7 +552,7 @@ pub(super) fn ensure_permissions(settings: &mut Value) {
 
 /// How the user's own `settings.json` is named in a policy warning. The
 /// labels are the ones `docs/reference/dangerous-command-policy.md` prints.
-pub(crate) const HOME_SETTINGS_LABEL: &str = "home settings";
+const HOME_SETTINGS_LABEL: &str = "home settings";
 
 /// Issue #2589: adds the dangerous-command deny entries to `settings`,
 /// reporting rather than replacing a `permissions` value that cannot take

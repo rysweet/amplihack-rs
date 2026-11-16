@@ -29,51 +29,37 @@ pub(crate) fn deny_entries(instance: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// Why `settings` cannot take the deny entries without discarding a value
-/// the user set. The reason names the key, never the value, which comes from
-/// the file.
-fn unmergeable(settings: &Value) -> Option<String> {
-    let Value::Object(root) = settings else {
-        return Some("the settings root is not a JSON object".to_string());
-    };
-    match root.get("permissions") {
-        None => None,
-        Some(Value::Object(permissions)) => match permissions.get("deny") {
-            None | Some(Value::Array(_)) => None,
-            Some(_) => Some("permissions.deny is not a JSON array".to_string()),
-        },
-        Some(_) => Some("permissions is not a JSON object".to_string()),
-    }
-}
-
 /// Adds every policy entry missing from `settings["permissions"]["deny"]`,
 /// keeping the entries already there and their order, and creating the
 /// `permissions` object or the `deny` array only when neither is present.
+///
+/// A value on that path that is not the shape the entries go into is
+/// reported, never replaced (SEC-C2): each refusal below returns before
+/// anything is inserted, so the file is left exactly as it was found. The
+/// reason names the key, never the value, which comes from the file.
 ///
 /// Idempotent: a second call on the same value reports
 /// [`DenyOutcome::AlreadyCurrent`] and changes nothing, which is what lets
 /// the file writers compare by bytes.
 pub(crate) fn ensure_deny(settings: &mut Value, instance: &[String]) -> DenyOutcome {
-    if let Some(reason) = unmergeable(settings) {
-        return DenyOutcome::Unparseable(reason);
-    }
-    let entries = deny_entries(instance);
-    let root = settings
-        .as_object_mut()
-        .expect("unmergeable() accepted a non-object root");
+    let Some(root) = settings.as_object_mut() else {
+        return DenyOutcome::Unparseable("the settings root is not a JSON object".to_string());
+    };
     let permissions = root
         .entry("permissions")
-        .or_insert_with(|| Value::Object(Map::new()))
-        .as_object_mut()
-        .expect("unmergeable() accepted a non-object permissions value");
+        .or_insert_with(|| Value::Object(Map::new()));
+    let Some(permissions) = permissions.as_object_mut() else {
+        return DenyOutcome::Unparseable("permissions is not a JSON object".to_string());
+    };
     let deny = permissions
         .entry("deny")
-        .or_insert_with(|| Value::Array(Vec::new()))
-        .as_array_mut()
-        .expect("unmergeable() accepted a non-array deny value");
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let Some(deny) = deny.as_array_mut() else {
+        return DenyOutcome::Unparseable("permissions.deny is not a JSON array".to_string());
+    };
 
     let mut changed = false;
-    for entry in entries {
+    for entry in deny_entries(instance) {
         if !deny
             .iter()
             .any(|value| value.as_str() == Some(entry.as_str()))
