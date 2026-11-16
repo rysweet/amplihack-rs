@@ -33,9 +33,13 @@ export AUTODRIVE_QA_EVIDENCE="$STATE/qa-evidence.json"
 
 In a drive, `step-02a-qa-inputs` resolves the base from the clone, not from
 the PR: an operator's `AUTODRIVE_QA_BASE` first, then the clone's own
-`origin/HEAD`, then the literal `main`. It never reads the PR's base branch, so
+`origin/HEAD`. There is no third source — where neither answers it passes no
+base at all rather than guessing one. It never reads the PR's base branch, so
 for a PR into any branch other than the clone's default the operator's override
-is what makes the base right; the order is in
+is what makes the base right; the record names which source answered in
+`qa_base_source`, and the round's assessment compares the recorded `qa_base`
+against the base it observed before any merge-base declaration counts. The
+order is in
 [resolving the measurement base](../reference/auto-drive-qa.md#resolving-the-measurement-base).
 By hand you set the base yourself, and you can simply get it right.
 `AUTODRIVE_QA_BASE` is the PR's base branch name without `origin/`; the tool
@@ -44,7 +48,8 @@ defaults to `HEAD`.
 
 ```bash
 git fetch origin main
-REPO_PATH="$PWD" AUTODRIVE_QA_BASE=main AUTODRIVE_ROUND_LABEL=round-1 \
+REPO_PATH="$PWD" AUTODRIVE_QA_BASE=main AUTODRIVE_QA_BASE_SOURCE=operator \
+  AUTODRIVE_ROUND_LABEL=round-1 \
   bash "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_qa_evidence.sh" >/dev/null
 jq '{qa_status, qa_reason, docs_only, qa_repo_type, qa_command_paths,
      gadugi_required, gadugi_scenario_dir, gadugi_scenario_dir_state,
@@ -86,14 +91,18 @@ reports a documentation-only flag covering commits the PR does not carry:
 
 ```bash
 git fetch origin release/1.2
-REPO_PATH="$PWD" AUTODRIVE_QA_BASE=release/1.2 AUTODRIVE_ROUND_LABEL=round-1 \
+REPO_PATH="$PWD" AUTODRIVE_QA_BASE=release/1.2 AUTODRIVE_QA_BASE_SOURCE=operator \
+  AUTODRIVE_ROUND_LABEL=round-1 \
   bash "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_qa_evidence.sh" >/dev/null
 ```
 
 The tool runs the declared QA command. It runs no scenario, and it issues no
 verdict you may rely on: `qa_status` describes the measurement only. With
 `AUTODRIVE_QA_BASE` unset, or a base that is not fetched,
-`qa_command_paths` is `(unknown)` and `docs_only` is `unknown`; see
+`qa_command_paths` is `(unknown)` and `docs_only` is `unknown`. The record
+names the base it used in `qa_base` and how it was reached in
+`qa_base_source`; a base you set by hand with no source beside it records
+`operator`, which is what you are. See
 [operator environment](../reference/auto-drive-qa.md#operator-environment).
 
 A record you find in a drive's state directory is not necessarily the latest

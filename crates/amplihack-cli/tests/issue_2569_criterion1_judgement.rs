@@ -29,6 +29,7 @@ const SCENARIO_DIR_STATES: [&str; 5] = [
 ];
 const GADUGI_STATUSES: [&str; 4] = ["NOT_REQUIRED", "NOT_INSTALLED", "NO_SCENARIOS", "FOUND"];
 const QA_STATUSES: [&str; 4] = ["PASS", "FAIL", "BLOCKED", "QA_UNRESOLVED"];
+const BASE_SOURCES: [&str; 3] = ["operator", "clone-default", "none"];
 
 /// Every value the record carries is inside its closed set, and the
 /// run-shaped fields are empty because the measurement runs no scenario.
@@ -47,6 +48,18 @@ fn assert_record_contract(rec: &Value) {
     assert!(
         QA_STATUSES.contains(&qa.as_str()),
         "qa_status {qa:?} is outside its closed set {QA_STATUSES:?}"
+    );
+    // How the base was reached is written from a closed-set literal, never
+    // from the operator's own value, so a hostile environment cannot put
+    // free text here. A record naming no base never claims a source for it.
+    let bsrc = field(rec, "qa_base_source");
+    assert!(
+        BASE_SOURCES.contains(&bsrc.as_str()),
+        "qa_base_source {bsrc:?} is outside its closed set {BASE_SOURCES:?}"
+    );
+    assert!(
+        !field(rec, "qa_base").is_empty() || bsrc == "none",
+        "a record naming no base never claims a source for one: {bsrc:?}"
     );
     for key in [
         "gadugi_validate_exit_code",
@@ -1144,8 +1157,8 @@ fn a_record_measured_before_the_first_commit_names_no_head_sha() {
 // ─────────────────────────────────────────────────────────────────────────
 
 /// A repository whose clone defaults to `trunk` while the PR's own base is
-/// `main`, so the three sources `step-02a-qa-inputs` consults give three
-/// different answers and a test can tell which one it used:
+/// `main`, so the two sources `step-02a-qa-inputs` consults give different
+/// answers and a test can tell which one it used:
 ///
 /// ```text
 /// A  base            -> refs/remotes/origin/trunk, refs/remotes/origin/HEAD
@@ -1190,6 +1203,8 @@ fn inputs_with_base(w: &World, base: Option<&str>) -> Value {
     let evidence = w.evidence_path().display().to_string();
     // An empty value is no answer: the step reads `${AUTODRIVE_QA_BASE:-}`,
     // so an operator who exported it empty falls through to the next source.
+    // The step decides whether to pass a base on at all, so this environment
+    // never reaches the measurement unchanged.
     let extra = [
         ("RECIPE_VAR_autodrive_qa_evidence", evidence.as_str()),
         ("AUTODRIVE_QA_BASE", base.unwrap_or("")),
@@ -1232,6 +1247,11 @@ fn an_operator_base_outranks_the_clone_default() {
         "docs/install.md",
         "the change set is the diff against the operator's base: {j}"
     );
+    assert_eq!(
+        (field(&j, "qa_base"), field(&j, "qa_base_source")),
+        ("main".into(), "operator".into()),
+        "the record names the base it measured and how that base was reached: {j}"
+    );
 }
 
 /// Source 2, and the hazard it carries. With no operator base the step
@@ -1239,6 +1259,11 @@ fn an_operator_base_outranks_the_clone_default() {
 /// stripped of its `origin/` prefix. That is the clone's default and not
 /// this PR's base: this PR targets `main`, and the step measures it against
 /// `trunk`, which reports a change set the PR does not have.
+///
+/// The hazard is no longer invisible. The record names `trunk` and says it
+/// came from the clone's default, so the assessment can compare it against
+/// the base `step-01-sync-with-base` observed and withhold the declaration
+/// where they differ.
 #[test]
 fn without_an_operator_base_the_step_answers_with_the_clone_default() {
     let w = divergent_default_world();
@@ -1254,42 +1279,73 @@ fn without_an_operator_base_the_step_answers_with_the_clone_default() {
         paths.contains("src/app.js"),
         "the change set measured against trunk carries the source file: {paths}"
     );
+    assert_eq!(
+        (field(&j, "qa_base"), field(&j, "qa_base_source")),
+        ("trunk".into(), "clone-default".into()),
+        "the record names the clone default it fell back to, so a reader can          see this is not the PR's own base: {j}"
+    );
 }
 
-/// Source 3. With no operator base and no `refs/remotes/origin/HEAD` the
-/// step answers with the literal `main`. Here `main` happens to be this
-/// PR's base, so the answer is right by coincidence rather than by
-/// resolution -- which is why source 3 is the order's residual hazard and
-/// not a resolution.
+/// Neither source answers, so the step guesses nothing. It used to fall
+/// back to the literal `main`, which was right here only by coincidence --
+/// this PR's base happens to be `main` -- and would have measured a PR into
+/// `develop` against `main` and recorded the result as fact.
+///
+/// Now the step passes no base to the measurement at all. The record says
+/// so (`qa_base` empty, `qa_base_source` `none`), the change set is not
+/// measured rather than measured against a guess, and the merge-base
+/// declaration is `none` because `autodrive_qa_sources.sh` takes its
+/// `decl-only` path when `AUTODRIVE_QA_BASE` is unset (#2458). Every one of
+/// those is a fact the judgement carries on from; none is a hold.
 #[test]
-fn without_a_clone_default_the_step_answers_with_the_literal_main() {
+fn an_unresolved_base_is_recorded_as_none_and_measures_no_change_set() {
     let w = divergent_default_world();
     w.git(&["symbolic-ref", "-d", "refs/remotes/origin/HEAD"]);
     let j = inputs_with_base(&w, None);
 
     assert_eq!(
-        field(&j, "docs_only"),
-        "true",
-        "the literal main is the last source, and against main this PR is documentation only: {j}"
+        (field(&j, "qa_base"), field(&j, "qa_base_source")),
+        (String::new(), "none".into()),
+        "no source answered, so the record names no base and says so: {j}"
     );
-    assert_eq!(field(&j, "qa_command_paths"), "docs/install.md");
+    assert_eq!(
+        field(&j, "qa_command_paths"),
+        "(unknown)",
+        "with no base there is no change set to measure, and none is guessed: {j}"
+    );
+    assert_eq!(
+        field(&j, "docs_only"),
+        "unknown",
+        "an unmeasured change set is unknown, never a documentation-only claim: {j}"
+    );
+    assert_eq!(
+        field(&j, "qa_criterion1_declaration"),
+        "none",
+        "an unset base takes the decl-only path, so no merge-base declaration counts: {j}"
+    );
+
+    // Every one of those is an input the judgement carries on from.
+    assert_judgement_shape(&w.judgement("auto", "pass"));
 }
 
-/// The step exports a base on every path, so the preflight shape -- no base
-/// at all, where the head stands in for the merge base and the change set
-/// reads `(none)` -- is unreachable from a round. Where the exported base
-/// names no remote-tracking branch the change set is `(unknown)`, which the
-/// judgement carries on from, and never `(none)`, which would read as a PR
-/// that changed nothing.
+/// A base that was resolved but names no remote-tracking branch -- the
+/// round never fetched it, or the operator mistyped it -- is a different
+/// state from no base at all, and the record keeps them apart. The change
+/// set reads `(unknown)` in both, never `(none)`, which would read as a PR
+/// that changed nothing; but here `qa_base` names what was tried and
+/// `qa_base_source` says who chose it, so the judgement can name the cause
+/// rather than guess at it.
 #[test]
-fn a_round_never_measures_the_preflight_shape() {
+fn a_base_that_names_no_branch_is_recorded_with_an_unknown_change_set() {
     let w = divergent_default_world();
-    // Neither source 2 nor the branch source 3 names resolves: the step
-    // still exports `main`, and `refs/remotes/origin/main` is gone.
-    w.git(&["symbolic-ref", "-d", "refs/remotes/origin/HEAD"]);
     w.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
-    let j = inputs_with_base(&w, None);
+    let j = inputs_with_base(&w, Some("main"));
 
+    assert_eq!(
+        (field(&j, "qa_base"), field(&j, "qa_base_source")),
+        ("main".into(), "operator".into()),
+        "the base the operator chose is recorded even where it resolves to nothing: {j}"
+    );
     assert_eq!(
         field(&j, "qa_command_paths"),
         "(unknown)",

@@ -34,7 +34,8 @@
 #   REPO_PATH              the repository to measure (default: the working directory)
 #   AUTODRIVE_QA_EVIDENCE  file the record is written to, private (optional)
 #   AUTODRIVE_ROUND_LABEL  recorded as qa_round
-#   AUTODRIVE_QA_BASE      the base branch name, for the changed paths
+#   AUTODRIVE_QA_BASE      the base branch name, for the changed paths; unset means no base was resolved, and nothing here guesses one
+#   AUTODRIVE_QA_BASE_SOURCE  how the caller reached that base, checked here: operator, clone-default or none. Unset beside a base is operator; no base, or any other word, is none
 #   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
 #   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
 # Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE
@@ -119,7 +120,10 @@ san() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr '\
 # Text cut to a byte length is made ASCII first: a cut through a multibyte
 # character leaves invalid UTF-8, which every JSON reader rejects.
 ascii() { LC_ALL=C tr -d '\200-\377'; }
-CAUSES=""
+CAUSES=""; QBASE="$(printf '%s' "${AUTODRIVE_QA_BASE:-}" | san | ascii | cut -c1-200)"; QBSRC="${AUTODRIVE_QA_BASE_SOURCE-operator}"
+case "$QBSRC" in operator|clone-default) [ -n "$QBASE" ] || QBSRC="none" ;; *) QBSRC="none" ;; esac
+# No base means no change set was measured: the scope helper's `(none)` would read as a pull request that changed nothing.
+[ -n "$QBASE" ] || PATHS="(unknown)"
 cause() { CAUSES="${CAUSES}${CAUSES:+; }$1"; }
 # The evidence binds to the tree it was measured on: the merge gate refuses evidence
 # whose head_sha is not the SHA being merged, so an earlier round's PASS cannot stand in.
@@ -381,7 +385,7 @@ F="${F}"'"qa_round":"%s","head_sha":"%s","docs_only":"%s","gadugi_required":"%s"
 F="${F}"'"gadugi_validate_exit_code":"","gadugi_run_exit_code":"","gadugi_scenario_count":"%s",'
 F="${F}"'"gadugi_scenario_dir":"%s","gadugi_scenario_dir_state":"%s","gadugi_scenarios_validated":"0",'
 F="${F}"'"gadugi_scenarios_run":"0","gadugi_scenarios_passed":"0","gadugi_scenarios_failed":"0",'
-F="${F}"'"gadugi_failed_scenarios":"","gadugi_scenario_results":"","git_env_cleared":"%s","run_env_cleared":"%s"}\n'
+F="${F}"'"gadugi_failed_scenarios":"","gadugi_scenario_results":"","qa_base":"%s","qa_base_source":"%s","git_env_cleared":"%s","run_env_cleared":"%s"}\n'
 # shellcheck disable=SC2059 # F is the fixed format above, never input
 OUT="$(printf "$F" \
   "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$QD" | san | ascii | cut -c1-200)" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" \
@@ -390,7 +394,7 @@ OUT="$(printf "$F" \
   "$(printf '%s' "$SCEN" | san | ascii | cut -c1-2000)" "$RC" "$SUMMARY" \
   "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
   "$DOCSONLY" "$GREQ" "$G_STATUS" "$COUNT" "$(printf '%s' "$SREL" | san | ascii | cut -c1-200)" "$SSTATE" \
-  "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)")"
+  "$QBASE" "$QBSRC" "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)")"
 # Private to this user (#1517 D5), and never written through a planted symlink.
 [ -z "$EVIDENCE" ] || ( umask 077; rm -f -- "$EVIDENCE"; printf '%s' "$OUT" > "$EVIDENCE" )
 printf '%s\n' "$OUT"

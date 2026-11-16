@@ -35,7 +35,13 @@ hand-off does.
   `docs_only`, `qa_command_paths` (the changed files), `qa_repo_type`,
   `gadugi_scenario_dir`, `gadugi_scenario_dir_state`, `gadugi_scenario_count`, `qa_scenarios`,
   `gadugi_status`, `qa_command`, `qa_command_source`,
-  `qa_criterion1_declaration`, `qa_exit_code`, `qa_summary`, `head_sha`.
+  `qa_criterion1_declaration`, `qa_exit_code`, `qa_summary`, `head_sha`,
+  `qa_round`, `qa_base` and `qa_base_source`. The last two name the base the
+  change set was measured against and how the step reached it -- `operator`,
+  `clone-default` or `none`. A `clone-default` base is the clone's own
+  default branch, which is this PR's base only when the PR targets it, and a
+  `none` base means none was resolved: `qa_command_paths` is then `(unknown)`
+  and `docs_only` is `unknown`, so say what you judged the change set from.
 - The existing user journeys and scenarios in the scenario directory.
 - Before the PR exists (`light-qa`), nothing is committed: `qa_command_paths`
   and `docs_only` describe committed history only, so they are empty or do

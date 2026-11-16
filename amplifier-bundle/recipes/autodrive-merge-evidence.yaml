@@ -60,6 +60,9 @@ steps:
     output: "qa_inputs"
     command: |
       set -uo pipefail
+      # An exported CDPATH would send the two cd's below somewhere else; every
+      # tool in this family clears it before its own first cd.
+      unset CDPATH
       WT="${RECIPE_VAR_repo_path:-.}"
       # Built from these literals and nothing else. This step has no
       # sanitiser, so no command output is interpolated into parsed JSON.
@@ -103,14 +106,22 @@ steps:
         echo "[skip] not a git repo at ${WT}; the QA measurement needs one, so this step reports the named blocker instead" >&2
         unavailable "the worktree under review is not a git repository"
       }
-      # The PR's own base: what the drive measured against, else origin/HEAD.
-      BASE="${AUTODRIVE_QA_BASE:-}"
+      # The base the measurement uses: the operator's, else the clone's own
+      # default. There is no third source. A literal fallback here would
+      # measure a PR into another branch against the wrong change set and
+      # record the answer as fact, so where neither source answers the base
+      # is left unset: autodrive_qa_sources.sh reads unset (not empty) as
+      # the signal to count no merge-base declaration at all (#2458), and
+      # the record then carries no change set rather than a guessed one.
+      # BSRC is one of three literals, assigned at the branch that was
+      # taken, so no environment value reaches the record through it.
+      BASE="${AUTODRIVE_QA_BASE:-}"; BSRC="operator"
       if [ -z "$BASE" ]; then
         BASE="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-        BASE="${BASE#origin/}"
+        BASE="${BASE#origin/}"; BSRC="clone-default"
       fi
-      [ -n "$BASE" ] || BASE=main
-      REC="$(REPO_PATH="$WT" AUTODRIVE_QA_BASE="$BASE" \
+      if [ -n "$BASE" ]; then export AUTODRIVE_QA_BASE="$BASE"; else unset AUTODRIVE_QA_BASE; BSRC="none"; fi
+      REC="$(REPO_PATH="$WT" AUTODRIVE_QA_BASE_SOURCE="$BSRC" \
         AUTODRIVE_QA_EVIDENCE="${RECIPE_VAR_autodrive_qa_evidence:-}" \
         AUTODRIVE_ROUND_LABEL="${RECIPE_VAR_autodrive_round_label:-round}" \
         bash "$TOOL" | tail -n 1)"
@@ -141,7 +152,7 @@ steps:
       {{qa_inputs}}
       ```
 
-      The record measures and issues no verdict you may rely on; where a value lies outside the closed sets the guidance lists, the record is the named blocker `qa-measurement-unavailable`, never a pass. The record was measured with `AUTODRIVE_QA_BASE` set to the PR's own base; a record measured without it describes the head commit only, so its `qa_criterion1_declaration` does not count for a merge (#2458). The suite the record names in `qa_command` and `qa_command_source` was chosen by the first source present, and that selection stands: explicit operator overrides, then merge-base QA configuration, then merge-base CI test selection, then merge-base manifest detection (#1763). Never substitute a suite of your own choosing for it, and never drop a suite or a scenario the record names. Where the selection could not be made -- `qa-unresolved`, or `qa-config-invalid` -- say so and judge what testing this PR needs from the diff and the scenarios; only an operator can clear it, by setting `AUTODRIVE_QA_COMMAND` or fixing `.amplihack/qa.toml` on the base branch.
+      The record measures and issues no verdict you may rely on; where a value lies outside the closed sets the guidance lists, the record is the named blocker `qa-measurement-unavailable`, never a pass. The record names the base its change set was measured against in `qa_base`, and how the step reached it in `qa_base_source` -- `operator`, `clone-default` or `none`. A `clone-default` base is the clone's own default branch, which is this PR's base only when the PR targets it; a `none` base is none at all, and the record then describes the head commit only, with `(unknown)` paths and an `unknown` `docs_only`. In either of those two cases, and wherever `qa_base` is not this PR's own base, the `qa_criterion1_declaration` does not count for a merge (#2458) -- read it as `none` and say in your notes what you judged the change set from. The suite the record names in `qa_command` and `qa_command_source` was chosen by the first source present, and that selection stands: explicit operator overrides, then merge-base QA configuration, then merge-base CI test selection, then merge-base manifest detection (#1763). Never substitute a suite of your own choosing for it, and never drop a suite or a scenario the record names. Where the selection could not be made -- `qa-unresolved`, or `qa-config-invalid` -- say so and judge what testing this PR needs from the diff and the scenarios; only an operator can clear it, by setting `AUTODRIVE_QA_COMMAND` or fixing `.amplihack/qa.toml` on the base branch.
 
       Then, as the guidance states: judge whether this PR changes behaviour a user, operator or calling program sees, citing files that appear in the diff for a `not_user_facing` reason, and treating a measured `docs_only` of `false` as binding against that reason. Where the change is user-facing, exercise the PR's own change end to end, outside-in, as a user would: use the repository's scenarios, or write or extend the ones this PR needs with the `qa-team` skill and commit them to the PR branch. Run only the scenarios this PR changed or added, one at a time, each staged alone outside the repository and validated before it is run, under a private `TMPDIR` and with `-S <private socket>` on every `tmux` call. Never the whole suite on a shared host, and never `tests/gadugi/*` on the host in amplihack-rs. Loop on failures: classify each as `product`, `scenario` or `environment`, fix the code or the scenario as the evidence shows, never weaken or delete a failing scenario, commit and run again. A host-caused failure unrelated to the PR's files is a judgement you record. Judge this PR end to end on its own; cross-repository user journeys belong to product management, so neither run nor require them. Never install required QA tooling, and never add, edit or suggest a `.amplihack/qa.toml` declaration in the PR under review.
 

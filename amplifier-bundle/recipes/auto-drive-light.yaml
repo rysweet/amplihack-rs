@@ -213,12 +213,21 @@ steps:
       git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"
       T="$QC_TOOLS/autodrive_qa_evidence.sh"
       [ -f "$T" ] && [ ! -L "$T" ] || qc_die "autodrive_qa_evidence.sh not found under AMPLIHACK_HOME"
+      # light-qa reads the criterion-1 guidance from this same path. Check it here,
+      # as the merge path checks it, so one document carries one assurance: a
+      # symlink or a non-regular file there is named now, not followed later.
+      G="$QC_TOOLS/../skills/merge-ready/criterion-1-qa-judgement.md"
+      [ -f "$G" ] && [ ! -L "$G" ] || qc_die "criterion-1-qa-judgement.md not found under AMPLIHACK_HOME"
       ( umask 077 && mkdir -p "$QUICK_CHANGE_STATE_DIR/qa" ) || qc_die "cannot create $QUICK_CHANGE_STATE_DIR/qa"
+      # The clone's own default, and the record says that is what it is. No
+      # literal fallback: where the clone names no default the base is left
+      # unset, and the record carries no change set rather than a guessed one.
       DEFAULT="$(git -C "$QC_WT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-      DEFAULT="${DEFAULT#origin/}"; [ -n "$DEFAULT" ] || DEFAULT=main
+      DEFAULT="${DEFAULT#origin/}"; BSRC=clone-default
+      if [ -n "$DEFAULT" ]; then export AUTODRIVE_QA_BASE="$DEFAULT"; else unset AUTODRIVE_QA_BASE; BSRC=none; fi
       HEAD_SHA="$(git -C "$QC_WT" rev-parse --verify HEAD)" || qc_die "the worktree has no HEAD"
       REPO_PATH="$QC_WT" AUTODRIVE_QA_EVIDENCE="$QUICK_CHANGE_STATE_DIR/qa/qa-evidence.json" \
-        AUTODRIVE_QA_BASE="$DEFAULT" AUTODRIVE_QA_HEAD="$HEAD_SHA" AUTODRIVE_ROUND_LABEL="light-qa" bash "$T"
+        AUTODRIVE_QA_BASE_SOURCE="$BSRC" AUTODRIVE_QA_HEAD="$HEAD_SHA" AUTODRIVE_ROUND_LABEL="light-qa" bash "$T"
     output: "light_qa_inputs"
   - id: "light-qa"
     type: "agent"

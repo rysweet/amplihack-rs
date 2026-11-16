@@ -681,7 +681,10 @@ printf '"qa_cited_files":%s,"qa_blockers":%s,"qa_scenario_runs":%s,"qa_fallback_
 
     // ── the real pieces ──────────────────────────────────────────────────
 
-    /// The measurement, as `step-02a-qa-inputs` runs it.
+    /// The measurement, as `step-02a-qa-inputs` runs it. The step names the
+    /// base it resolved and how it reached it, so this does too: a base
+    /// with no source beside it is a shape no caller produces, and the
+    /// record contract rejects it.
     pub fn measure(&self, extra: &[(&str, &str)]) -> Output {
         let mut c = self.cmd("bash");
         c.arg(bundle_tools().join("autodrive_qa_evidence.sh"))
@@ -689,6 +692,7 @@ printf '"qa_cited_files":%s,"qa_blockers":%s,"qa_scenario_runs":%s,"qa_fallback_
             .env("REPO_PATH", &self.repo)
             .env("AUTODRIVE_QA_EVIDENCE", self.evidence_path())
             .env("AUTODRIVE_QA_BASE", "main")
+            .env("AUTODRIVE_QA_BASE_SOURCE", "operator")
             .env("AUTODRIVE_ROUND_LABEL", "round-1");
         for (k, v) in extra {
             c.env(k, v);
