@@ -22,10 +22,14 @@ mod contract_support;
 mod exec_reclaim;
 #[path = "issue_2096_input_preservation.rs"]
 mod input_preservation;
+#[path = "issue_2677_nested_unobserved.rs"]
+mod nested_unobserved;
 #[path = "issue_2096_ownership_lifecycle.rs"]
 mod ownership_lifecycle;
 #[path = "issue_2096_private_base_ref.rs"]
 mod private_base_ref;
+#[path = "issue_2677_private_main_root.rs"]
+mod private_main_root;
 #[path = "issue_2096_real_hooks.rs"]
 mod real_hooks;
 #[path = "issue_2096_recording.rs"]
@@ -73,6 +77,33 @@ git worktree list --porcelain | grep -c '^worktree ' > "$out/worktrees" || true
 for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_CONFIG_COUNT GIT_CONFIG_KEY_0; do
   if eval "[ -n \"\${$v+set}\" ]"; then : > "$out/$v"; fi
 done
+# Issue #2677: what step-04's worktree helper answers here, asked the way a
+# recipe older than #2290 asks (`base` of `root`'s answer) and the new way.
+if [ -n "${ISSUE_2677_ROOT_HELPER:-}" ]; then
+  git for-each-ref --format='%(refname)' refs/remotes/origin/ > "$out/origin_refs"
+  main="$(bash "$ISSUE_2677_ROOT_HELPER" root .)"
+  printf '%s' "$main" > "$out/main_root"
+  AMPLIHACK_WORK_ROOT_EXPLICIT=1 AMPLIHACK_WORK_ROOT="$ISSUE_2677_WORK_ROOT" \
+    bash "$ISSUE_2677_ROOT_HELPER" base "$main" > "$out/base_from_main" 2> "$out/base_from_main.err" \
+    || echo failed >> "$out/base_from_main.err"
+  AMPLIHACK_WORK_ROOT_EXPLICIT=1 AMPLIHACK_WORK_ROOT="$ISSUE_2677_WORK_ROOT" \
+    bash "$ISSUE_2677_ROOT_HELPER" base . > "$out/base_from_checkout"
+fi
+# Issue #2677 B1: the drive's launch shape. A step of this (observed) run
+# starts another `amplihack recipe run` without the observer marker, so the
+# outer observer still traces it. Removing ISSUE_2677_NESTED_BIN stops the
+# nested stub from recursing.
+if [ -n "${ISSUE_2677_NESTED_BIN:-}" ]; then
+  nested="$ISSUE_2677_NESTED_OUT"
+  mkdir -p "$nested"
+  status=0
+  env -u AMPLIHACK_OBSERVER_PID -u ISSUE_2677_NESTED_BIN \
+    ISSUE_2096_OBSERVATIONS="$nested/observations" \
+    AMPLIHACK_WORK_ROOT="$nested/work" \
+    "$ISSUE_2677_NESTED_BIN" recipe run "$ISSUE_2677_NESTED_RECIPE" -w "$PWD" \
+    > "$nested/stdout" 2> "$nested/stderr" || status=$?
+  printf '%s' "$status" > "$nested/status"
+fi
 if [ -n "${ISSUE_2096_STAGE:-}" ]; then
   printf 'private output\n' > run-output
   git add -- run-output

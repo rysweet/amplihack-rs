@@ -190,6 +190,8 @@ fn bootstrap_leaves_unparseable_settings_untouched() {
     let fixture = tempfile::tempdir().unwrap();
     let hooks_stub = create_exe_stub(&fixture.path().join("stub_bin"), "amplihack-hooks");
     let mut env = IsolatedHome::new(home);
+    // This settings-repair fixture has no native Codex plugin installation.
+    env.set("AMPLIHACK_AGENT_BINARY", "claude");
     env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
     env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
 

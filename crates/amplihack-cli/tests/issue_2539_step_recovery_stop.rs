@@ -45,26 +45,13 @@ fn bash_step(id: &str, command: &str) -> Value {
 
 /// Runs `steps` as one recipe through the real runner with the fixture's
 /// recovery dir. The driver's agent call goes to the fixture's stub runner.
-fn run_recipe(f: &Fixture, steps: Vec<Value>, env: &[(&str, &str)]) -> Option<Output> {
+fn run_recipe(f: &Fixture, steps: Vec<Value>, env: &[(&str, &str)]) -> Output {
     run_recipe_in(f, steps, f.dir.to_str().unwrap(), env)
 }
 
-/// As [`run_recipe`] with `step_recovery_dir=<srd>`. `None` when no real
-/// runner exists (a failure under `AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER`).
-fn run_recipe_in(
-    f: &Fixture,
-    steps: Vec<Value>,
-    srd: &str,
-    env: &[(&str, &str)],
-) -> Option<Output> {
-    let Some(runner) = real_runner() else {
-        assert!(
-            std::env::var_os("AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER").is_none(),
-            "no recipe-runner-rs found"
-        );
-        eprintln!("recipe-runner-rs unavailable; skipping the recipe run");
-        return None;
-    };
+/// As [`run_recipe`] with `step_recovery_dir=<srd>`, on the pinned runner.
+fn run_recipe_in(f: &Fixture, steps: Vec<Value>, srd: &str, env: &[(&str, &str)]) -> Output {
+    let runner = real_runner();
     let recipes = f.root.join("recipes");
     private_dir(&recipes);
     let recipe = serde_yaml::to_string(&json!({
@@ -105,7 +92,7 @@ fn run_recipe_in(
     for (k, v) in env {
         cmd.env(k, v);
     }
-    Some(cmd.output().unwrap())
+    cmd.output().unwrap()
 }
 
 /// The real command, with the driver's agent call sent to the stub runner.
@@ -132,9 +119,7 @@ fn a_handoff_on_pr_ready_ends_the_recipe_with_81_and_the_ci_step_never_runs() {
         marker_step(&f, "step-22"),
     ];
     // On a GitHub host with no PR-ready helper installed, step-21 fails.
-    let Some(o) = run_recipe(&f, steps, &[("REMOTE_HOST_TYPE", "github")]) else {
-        return;
-    };
+    let o = run_recipe(&f, steps, &[("REMOTE_HOST_TYPE", "github")]);
     assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
     assert!(
         !f.root.join("step-22").exists(),
@@ -168,9 +153,7 @@ fn a_handoff_on_the_crusty_review_dir_guard_ends_the_round_before_step_01() {
         marker_step(&f, "step-02-crusty-review"),
     ];
     let tools = empty.to_str().unwrap();
-    let Some(o) = run_recipe(&f, steps, &[("AUTODRIVE_LAUNCH_TOOLS", tools)]) else {
-        return;
-    };
+    let o = run_recipe(&f, steps, &[("AUTODRIVE_LAUNCH_TOOLS", tools)]);
     assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
     for later in ["step-01-round-context", "step-02-crusty-review"] {
         assert!(!f.root.join(later).exists(), "{later} ran:\n{}", show(&o));
@@ -256,9 +239,7 @@ fn init_under_a_home_holding_a_symlink_disables_recovery_and_steps_run_unwrapped
         ("XDG_STATE_HOME", "relative-state"),
         ("REMOTE_HOST_TYPE", "github"),
     ];
-    let Some(o) = run_recipe_in(&f, steps, "", &env) else {
-        return;
-    };
+    let o = run_recipe_in(&f, steps, "", &env);
     let all = format!("{}{}", text(&o.stdout), text(&o.stderr));
     assert_eq!(o.status.code(), Some(1), "fails as before recovery:\n{all}");
     // The runner does not show a successful step's stderr; the warning is

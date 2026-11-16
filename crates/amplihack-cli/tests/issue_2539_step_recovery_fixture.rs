@@ -5,15 +5,15 @@
 //! is searched first for sub-recipes, so the `step-failure-recovery` the
 //! driver starts with `--recipe-dir <dir>` is the fixture's: a bash stand-in
 //! that replays a scripted agent reply.
-//! The real runner is `RECIPE_RUNNER_QA_BINARY`, else `recipe-runner-rs` on
-//! `PATH`; without one each test says so and returns, unless
-//! `AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER` is set, when it fails.
+//! The real runner is the receipt-checked pinned build from
+//! `tests/support/pinned_runner.rs` (#2658), never a `PATH` lookup. The tests
+//! never skip: without a runner at the pin they fail.
 
 #![cfg(unix)]
 
 use std::fs;
-use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::path::{Path, PathBuf};
+use std::process::Output;
 
 use serde_json::json;
 
@@ -83,30 +83,14 @@ steps:
     command: amplihack orch helper step-recovery report --dir "$RECIPE_VAR_step_recovery_dir"
 "#;
 
-pub(crate) fn real_runner() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("RECIPE_RUNNER_QA_BINARY") {
-        return Some(PathBuf::from(explicit));
-    }
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|d| d.join("recipe-runner-rs"))
-        .find(|c| {
-            c.is_file()
-                && Command::new(c)
-                    .arg("--version")
-                    .output()
-                    .is_ok_and(|o| o.status.success())
-        })
+/// The pinned runner (#2658): a receipt-checked override or a build cached in
+/// the test target directory, never the host's installed runner.
+pub(crate) fn real_runner() -> PathBuf {
+    crate::pinned_runner::pinned_runner(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
-fn run_fixture(second_reply: serde_json::Value) -> Option<(Fixture, Output)> {
-    let Some(runner) = real_runner() else {
-        assert!(
-            std::env::var_os("AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER").is_none(),
-            "no recipe-runner-rs found"
-        );
-        eprintln!("recipe-runner-rs unavailable; skipping the fixture recipe run");
-        return None;
-    };
+fn run_fixture(second_reply: serde_json::Value) -> (Fixture, Output) {
+    let runner = real_runner();
     let f = Fixture::new();
     let recipes = f.root.join("recipes");
     crate::support::step_recovery::private_dir(&recipes);
@@ -147,15 +131,13 @@ fn run_fixture(second_reply: serde_json::Value) -> Option<(Fixture, Output)> {
         .env("RECIPE_RUNNER_RS_PATH", runner)
         .output()
         .unwrap();
-    Some((f, o))
+    (f, o)
 }
 
 #[test]
 fn a_fixture_recipe_recovers_both_opt_in_forms_and_finishes() {
     let retry = json!({"choice": "retry_after_repair", "reason": "the child stopped early", "repair": "none needed"});
-    let Some((f, o)) = run_fixture(retry) else {
-        return;
-    };
+    let (f, o) = run_fixture(retry);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let out = text(&o.stdout);
     assert!(
@@ -184,9 +166,7 @@ fn a_fixture_recipe_recovers_both_opt_in_forms_and_finishes() {
 fn a_fixture_handoff_skips_dependent_steps_and_ends_at_the_report() {
     let handoff = json!({"choice": "handoff", "reason": "the child keeps failing",
         "owner": "run-requester", "needs": "look at the child recipe"});
-    let Some((f, o)) = run_fixture(handoff) else {
-        return;
-    };
+    let (f, o) = run_fixture(handoff);
     assert_ne!(
         o.status.code(),
         Some(0),
@@ -211,14 +191,7 @@ fn a_fixture_handoff_skips_dependent_steps_and_ends_at_the_report() {
 /// finalization that merged would run a second time.
 #[test]
 fn a_sub_recipe_that_succeeds_with_no_output_does_not_run_its_recovery_step() {
-    let Some(runner) = real_runner() else {
-        assert!(
-            std::env::var_os("AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER").is_none(),
-            "no recipe-runner-rs found"
-        );
-        eprintln!("recipe-runner-rs unavailable; skipping the recipe run");
-        return;
-    };
+    let runner = real_runner();
     let f = Fixture::new();
     let recipes = f.root.join("recipes");
     crate::support::step_recovery::private_dir(&recipes);

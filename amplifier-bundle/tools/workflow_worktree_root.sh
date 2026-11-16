@@ -31,9 +31,13 @@
 #
 #   workflow_worktree_root.sh base [repo_path]                  (issue #1808)
 #     stdout : the folder new worktrees of this repository go under.
-#              Give it a checkout, not the output of `root`: for a bare
-#              repository (a private recipe-run checkout, issue #2096)
-#              `root` prints a folder that is not a repository.
+#              Give it a checkout, or `root`'s answer for this run's
+#              private checkout (issue #2677): for a bare repository (a
+#              private recipe-run checkout, issue #2096) `root` prints the
+#              folder beside it, which is not a work tree. When
+#              AMPLIHACK_RUN_CHECKOUT names that checkout and that folder is
+#              exactly the current one, it is answered as its own root, so a
+#              step-04 older than #2290 that runs `base "$(root)"` works.
 #              With AMPLIHACK_WORK_ROOT_EXPLICIT=1 and an absolute
 #              AMPLIHACK_WORK_ROOT: <work root>/worktrees/<name>-<hash8>, where
 #              <name> is the main checkout's basename reduced to [A-Za-z0-9._-]
@@ -112,6 +116,18 @@ cmd_root() {
         return 1
     fi
     if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        # Issue #2677: for this run's private checkout (#2096, named by
+        # AMPLIHACK_RUN_CHECKOUT) `root` prints the folder beside its bare
+        # repository, which is not a work tree. Recipes older than #2290,
+        # found first in the caller's own amplifier-bundle/, pass that answer
+        # back (`base "$MAIN_REPO_PATH"`), so it is answered as itself.
+        local private="${AMPLIHACK_RUN_CHECKOUT:-}" private_main here
+        if [ -n "$private" ] \
+            && private_main="$(AMPLIHACK_RUN_CHECKOUT='' cmd_root "$private" 2>/dev/null)" \
+            && here="$(pwd -P)" && [ "$private_main" = "$here" ]; then
+            printf '%s\n' "$private_main"
+            return 0
+        fi
         log "ERROR: '$repo' is not inside a git work tree."
         return 1
     fi

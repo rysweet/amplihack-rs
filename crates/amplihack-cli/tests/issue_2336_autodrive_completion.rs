@@ -275,6 +275,50 @@ fn rereview_requires_followup_recording_before_returning_success() {
     }
 }
 
+/// #2575 B1: criterion 3 is read from the PR's verdict comment. A CLEAN
+/// Crusty record whose verdict never reached the PR (a failed post, or a state
+/// folder from an older release) is no record: the re-review runs Crusty
+/// instead of leaving criterion 3 unmet for good, and the drive reaches DONE.
+#[test]
+fn clean_record_without_a_posted_verdict_runs_crusty_and_reaches_done() {
+    let d = Drive::new();
+    done_record(&d);
+    let o = d.finalize(false, false);
+    assert!(o.status.success() && d.marked(), "baseline: {}", show(&o));
+    assert!(!d.p("crusty-verdict-posted.txt").exists());
+    d.set("eval-verdict", "DONE");
+    let before = d.rounds().len();
+    let o = d.rereview(false);
+    assert!(
+        o.status.success() && d.marked(),
+        "the re-run Crusty loop ends DONE: {}",
+        show(&o)
+    );
+    assert!(
+        d.rounds().len() > before,
+        "a CLEAN record with no posted verdict runs Crusty: {}",
+        show(&o)
+    );
+}
+
+/// The same record with its verdict read back on the PR needs no new review.
+#[test]
+fn clean_record_with_a_posted_verdict_does_not_run_crusty() {
+    let d = Drive::new();
+    done_record(&d);
+    let o = d.finalize(false, false);
+    assert!(o.status.success() && d.marked(), "baseline: {}", show(&o));
+    let head = d.head();
+    private_file(
+        &d.p("crusty-verdict-posted.txt"),
+        &format!("CLEAN {head}\nMINOR_ONLY {head}\n"),
+    );
+    let before = d.rounds().len();
+    let o = d.rereview(false);
+    assert!(o.status.success() && d.marked(), "{}", show(&o));
+    assert_eq!(d.rounds().len(), before, "{}", show(&o));
+}
+
 #[test]
 fn stale_phase_marker_cannot_authorize_new_review_with_unrecorded_minors() {
     let d = Drive::new();

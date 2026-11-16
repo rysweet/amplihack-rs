@@ -5,9 +5,13 @@
 //! runner composed itself, anchored where the runner put it. Captured output
 //! can quote any status; it never reaches the decoder.
 //!
-//! # The envelopes recipe-runner-rs `90286bc` writes
+//! # The envelopes the pinned recipe-runner-rs writes
 //!
-//! The pin is in `claude-plugin/recipe-runner.rev` and `Cargo.toml`.
+//! These envelopes came in with `90286bc`. At the current pin, `2833a0b`,
+//! they are unchanged for a literal `recipe:` name. When the name is a
+//! template expression, the runner leaves `'<name>'` out of the sub-recipe
+//! header, and this decoder returns `None` for it. The pin is in
+//! `claude-plugin/recipe-runner.rev` and `Cargo.toml`.
 //!
 //! - A bash or agent step (`StepExecutionError`, `models.rs`):
 //!   `Step '<id>' failed: bash step failed: Command failed (exit N): <stderr>`

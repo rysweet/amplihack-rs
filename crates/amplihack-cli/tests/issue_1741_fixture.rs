@@ -130,15 +130,12 @@ impl Fixture {
     pub fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
-        let runner = std::env::var_os("RECIPE_RUNNER_RS_PATH")
-            .or_else(|| std::env::var_os("RECIPE_RUNNER_QA_BINARY"))
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::split_paths(&std::env::var_os("PATH")?)
-                    .map(|p| p.join("recipe-runner-rs"))
-                    .find(|p| p.is_file())
-            })
-            .expect("install the pinned real runner or set RECIPE_RUNNER_RS_PATH; no stub/skip");
+        // #2658: the pinned revision, from a receipt-checked override or a
+        // build cached in the test target directory; never the host's
+        // installed runner, whose replay rules may differ from the pin's.
+        let runner = crate::pinned_runner::pinned_runner(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        );
         let mut f = Self {
             repo: root.join("repo"),
             home: root.join("home"),
@@ -251,6 +248,29 @@ printf '%s\n' '{{"label":"saved-output","enabled":true,"count":7,"empty":null,"i
             "input",
         ];
         context.extend(steps.iter().filter_map(|s| s["output"].as_str()));
+        // Bash and recipe steps depend on every context key they can see
+        // (runner #208, "semantic-input-coverage-v2"), and replay only when
+        // the recipe persists each one. A child sees its parent's outputs and
+        // a parent sees its children's, so every document persists the
+        // outputs any fixture recipe produces. The shipped routing recipes
+        // likewise persist the keys their callers set and their routing
+        // children return (issue_2658_routing_replay.rs runs one on the pin);
+        // keys merged back from development children are not yet persisted
+        // (rysweet/amplihack-rs#2697).
+        for key in [
+            "architecture",
+            "classify",
+            "decompose",
+            "design",
+            "first-call",
+            "implement",
+            "prepare",
+            "second-call",
+        ] {
+            if !context.contains(&key) {
+                context.push(key);
+            }
+        }
         json!({
             "name": name, "description": "Issue 1741 behavior fixture", "version": "1.0.0",
             "context": {},
@@ -320,6 +340,12 @@ printf '%s\n' '{{"label":"saved-output","enabled":true,"count":7,"empty":null,"i
             .output()
             .expect("execute amplihack");
         let run_dirs = self.run_dirs().difference(&before).cloned().collect();
+        self.attempt_from(output, run_dirs)
+    }
+
+    /// An attempt from a command the caller built with [`Self::command`] and
+    /// adjusted, such as a run of a shipped recipe with its own PATH.
+    pub fn attempt_from(&self, output: Output, run_dirs: Vec<PathBuf>) -> Attempt {
         Attempt {
             output,
             run_dirs,

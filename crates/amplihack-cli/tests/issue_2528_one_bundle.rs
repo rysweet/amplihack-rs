@@ -25,9 +25,10 @@
 //! - T6b: steps of a pinned run find a git identity kept under a
 //!   non-default `AMPLIHACK_HOME`.
 //!
-//! The real runner is `RECIPE_RUNNER_QA_BINARY`, else `recipe-runner-rs` on
-//! `PATH`. Tests that need a step to run fail without one, as the #1741
-//! tests do; they never skip.
+//! The real runner is the receipt-checked pinned build resolved by
+//! `tests/support/pinned_runner.rs` (#2658), never a `PATH` lookup. Tests
+//! that need a step to run fail without one, as the #1741 tests do; they
+//! never skip.
 
 #![cfg(target_os = "linux")]
 
@@ -39,29 +40,27 @@ use std::process::{Command, Output, Stdio};
 
 const POINTER: &str = "amplihack.recipe.log_pointer ";
 
-pub(crate) fn real_runner() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("RECIPE_RUNNER_QA_BINARY") {
-        return Some(PathBuf::from(explicit));
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("recipe-runner-rs"))
-        .find(|candidate| {
-            candidate.is_file()
-                && Command::new(candidate)
-                    .arg("--version")
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .is_ok_and(|status| status.success())
-        })
+/// The pinned runner (#2658): a receipt-checked override or a build cached in
+/// this test target's own temporary directory, never the host's installed
+/// runner and never a `PATH` lookup.
+///
+/// These tests drive real recipe runs, so this binary executes the fixtures'
+/// steps. Resolved through the shared helper, which puts every source through
+/// the install-receipt check and has no fallback: a source that fails the
+/// check stops the test instead of quietly supplying a substitute.
+fn real_runner() -> PathBuf {
+    crate::pinned_runner::pinned_runner(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
-/// The real runner; a test that needs a step to run fails without one.
-pub(crate) fn runner(test: &str) -> PathBuf {
-    real_runner().unwrap_or_else(|| {
-        panic!("{test}: install the pinned real runner or set RECIPE_RUNNER_RS_PATH; no stub/skip")
-    })
+/// The real runner at the pin; the test name stays for the call sites.
+///
+/// A test that needs a step to run fails without a runner: the shared helper
+/// panics, naming the source that failed the receipt check. The parameter is
+/// kept so that the lookup can move again without touching the thirteen
+/// places that call this, each of which still reads as the test it belongs
+/// to.
+pub(crate) fn runner(_test: &str) -> PathBuf {
+    real_runner()
 }
 
 pub(crate) fn quoted(path: &Path) -> String {
@@ -1215,4 +1214,73 @@ fn b3_a_step_starts_a_nested_round_by_the_path_into_its_own_bundle_copy() {
         }
     }
     assert!(saw_early, "no early record from the round:\n{round}");
+}
+
+// ------------------------------------------------------------- C1: the runner
+
+/// C1 (#2658, #2687): the real runner these tests drive is the receipt-checked
+/// build at the revision pinned in `claude-plugin/recipe-runner.rev`, resolved
+/// by the one shared helper. It is never whatever `recipe-runner-rs` the host
+/// happens to have on `PATH`.
+///
+/// The #2528 tests drive real recipe runs, so the binary this returns executes
+/// the fixtures' shell steps. Walking `PATH` for it makes the binary under
+/// test depend on the ambient environment: any earlier `PATH` entry holding a
+/// file of that name decides what runs. `pinned_runner` instead puts every
+/// source through the install-receipt check and has no fallback, so a source
+/// that fails it stops the test rather than quietly supplying a substitute.
+/// (The receipt check is a consistency check on a Cargo install receipt. It
+/// is not a signature and not proof of provenance.)
+///
+/// Two separate claims, because either alone can be met by the wrong code:
+/// the helper delegates to the shared resolution, and the path it yields
+/// belongs to one of the three sources that resolution allows.
+#[test]
+fn c1_the_runner_is_the_pinned_one_and_never_a_path_lookup() {
+    let resolved = runner("c1");
+    assert!(
+        resolved.is_absolute(),
+        "the runner must be an absolute path: {}",
+        resolved.display()
+    );
+
+    // 1. The same binary the shared helper resolves. A local copy of the
+    //    lookup drifts from the pin; delegation cannot.
+    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let shared = crate::pinned_runner::pinned_runner(&repo_root);
+    assert_eq!(
+        canonical(&resolved),
+        canonical(&shared),
+        "the #2528 runner must be the shared pinned runner ({}), not a lookup of its own ({})",
+        shared.display(),
+        resolved.display()
+    );
+
+    // 2. One of the sources the pin allows: either override, or the build
+    //    cached under this test target's own temporary directory. A binary
+    //    found by scanning `PATH` matches none of them.
+    let overrides: Vec<PathBuf> = ["RECIPE_RUNNER_QA_BINARY", "RECIPE_RUNNER_RS_PATH"]
+        .iter()
+        .filter_map(|name| std::env::var_os(name).map(PathBuf::from))
+        .collect();
+    let cache = canonical(&Path::new(env!("CARGO_TARGET_TMPDIR")).join("pinned-recipe-runner"));
+    let from_override = overrides
+        .iter()
+        .any(|given| canonical(given) == canonical(&resolved));
+    let from_cache = canonical(&resolved).starts_with(&cache);
+    assert!(
+        from_override || from_cache,
+        "the runner at {} comes from neither RECIPE_RUNNER_QA_BINARY nor \
+         RECIPE_RUNNER_RS_PATH ({overrides:?}) nor the pinned build cached under {}; \
+         a binary found on PATH is not the pinned runner",
+        resolved.display(),
+        cache.display()
+    );
+}
+
+/// Canonical form where the path resolves, the path itself otherwise, so a
+/// comparison fails closed instead of panicking on a path that is simply
+/// absent.
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }

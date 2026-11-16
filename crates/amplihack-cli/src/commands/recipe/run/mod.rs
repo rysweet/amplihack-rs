@@ -501,7 +501,11 @@ fn scalar_to_context_value(value: &Value) -> String {
 }
 
 #[cfg(test)]
+mod tests_autodrive_final_status;
+#[cfg(test)]
 mod tests_autodrive_health_log;
+#[cfg(test)]
+mod tests_autodrive_success;
 /// Issue #2528: bundle selection, trust and the per-run snapshot.
 #[cfg(all(test, unix))]
 mod tests_bundle_pin;
@@ -541,3 +545,6 @@ mod tests_terminal_record;
 mod tests_termination;
 #[cfg(test)]
 mod tests_termination_contract;
+
+#[cfg(all(test, unix))]
+mod test_runner;

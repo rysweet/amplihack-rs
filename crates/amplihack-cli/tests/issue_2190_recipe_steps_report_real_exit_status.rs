@@ -937,7 +937,9 @@ fn run_test_fix_handoff(sb: &Sandbox, with_worktree_setup: bool) -> Output {
 set -eu
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-p" ]; then
-    prompt=$2
+    # The pinned runner sends the task on stdin behind a bare -p (runner
+    # #205, agent_prompt_file_v1); older runners gave it as -p's value.
+    if [ "$#" -ge 2 ] && [ "${2#-}" = "$2" ]; then prompt=$2; else prompt=$(cat); fi
     case "$prompt" in
       *"Diagnose and fix any test or pre-commit failures:"*)
         printf '%s' "$prompt" > "$STUB_CALLS/fix.prompt"
@@ -1220,7 +1222,9 @@ fn run_ci_handoff(sb: &Sandbox) -> Output {
 set -eu
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "-p" ]; then
-    prompt=$2
+    # The pinned runner sends the task on stdin behind a bare -p (runner
+    # #205, agent_prompt_file_v1); older runners gave it as -p's value.
+    if [ "$#" -ge 2 ] && [ "${2#-}" = "$2" ]; then prompt=$2; else prompt=$(cat); fi
     case "$prompt" in
       "Diagnose any CI failures:"*)
         printf '%s' "$prompt" > "$STUB_CALLS/diagnosis.prompt"

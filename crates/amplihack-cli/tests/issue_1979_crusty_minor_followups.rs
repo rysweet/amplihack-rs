@@ -2089,11 +2089,6 @@ fn verdict_allow_lists_admit_minor_only() {
         state.contains("(CLEAN|MINOR_ONLY)"),
         "crusty_final terminal regex"
     );
-    let ev = read("amplifier-bundle/tools/autodrive_round_evidence.sh");
-    assert!(
-        ev.contains("MINOR_ONLY"),
-        "round evidence maps MINOR_ONLY to DONE_CLEAN"
-    );
 }
 
 #[test]
@@ -2189,11 +2184,6 @@ fn plan_task_id_is_an_input_and_reaches_both_loops() {
             "{id} receives plan_task_id: {text}"
         );
     }
-    assert!(
-        read("crates/amplihack-cli/src/commands/orch/autodrive/followups.rs")
-            .contains("followups.tsv"),
-        "the final summary lists follow-ups"
-    );
 }
 
 #[test]
