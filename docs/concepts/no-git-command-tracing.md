@@ -114,9 +114,11 @@ its own header called that "a diagnostic compatibility API" which "production
 never uses ... as coverage"; it was the fallback path, not the required one.
 No `GIT_TRACE2_*` setting of amplihack's own went away with the removal,
 because the required path set none: it removed both variables before spawning
-the runner. What the removal did drop is the scrubbing of the caller's own
-trace variables, which now pass through to the runner like any other part of
-the environment it is given. See
+the runner. The scrubbing of the caller's own trace variables is not part of
+what went away either. The tracer happened to own it, but it is a credential
+boundary in its own right — `GIT_TRACE2_REDACT=0` disables Git's redaction of
+`Authorization:` headers — so `RunCheckout::apply_to` now clears the whole
+`GIT_TRACE2*` namespace for its own reason, with its own test. See
 [what a run folder holds](../reference/recipe-runner-logging.md#git-commands-a-run-makes).
 
 Argv was redacted on the way in, but only in two shapes: user information in a
@@ -214,6 +216,6 @@ part of it is implemented.
 ## Related
 
 - [Recipe Run and Auto-Drive Checkout Isolation](../reference/recipe-checkout-isolation.md) - What a run copies, where steps run, platform support and the tests
-- [Recipe Runner Logging Reference](../reference/recipe-runner-logging.md#git-commands-a-run-makes) - What a run folder holds, `GIT_TRACE2*` pass-through, and older run folders
+- [Recipe Runner Logging Reference](../reference/recipe-runner-logging.md#git-commands-a-run-makes) - What a run folder holds, `GIT_TRACE2*` clearing, and older run folders
 - [Recipe Runner Architecture](./recipe-runner-architecture.md) - Which of the CLI and the runner owns each part of a run
 - [Run a Recipe](../howto/run-a-recipe.md) - Launching a run and knowing where it works

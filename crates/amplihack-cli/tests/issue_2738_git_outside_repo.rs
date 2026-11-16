@@ -24,12 +24,12 @@ fn a_git_clone_and_a_git_ls_remote_outside_any_repository_do_not_affect_the_run(
     let outside = f.root.join("outside");
     let before = f.snapshot();
 
-    let out = f
-        .command("outside")
-        .env("ISSUE_2738_OUTSIDE", &outside)
-        .env("ISSUE_2738_REMOTE", &f.origin)
-        .output()
-        .unwrap();
+    let out = Fixture::finish(
+        "outside",
+        f.command("outside")
+            .env("ISSUE_2738_OUTSIDE", &outside)
+            .env("ISSUE_2738_REMOTE", &f.origin),
+    );
 
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(

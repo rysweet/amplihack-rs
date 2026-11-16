@@ -17,11 +17,7 @@ fn the_run_works_in_a_private_clone_and_a_step_that_commits_leaves_the_caller_al
     let f = Fixture::new();
     let before = f.snapshot();
 
-    let out = f
-        .command("private")
-        .env("ISSUE_2738_STAGE", "1")
-        .output()
-        .unwrap();
+    let out = Fixture::finish("private", f.command("private").env("ISSUE_2738_STAGE", "1"));
     succeeds(&out);
 
     let cwd = f.observed_str("private", "cwd");
@@ -76,11 +72,7 @@ fn a_hook_descendant_that_commits_leaves_the_callers_checkout_alone() {
     let f = Fixture::new();
     let before = f.snapshot();
 
-    let out = f
-        .command("hook")
-        .env("ISSUE_2738_HOOK", "1")
-        .output()
-        .unwrap();
+    let out = Fixture::finish("hook", f.command("hook").env("ISSUE_2738_HOOK", "1"));
     succeeds(&out);
 
     assert_eq!(

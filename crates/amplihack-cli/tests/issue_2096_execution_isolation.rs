@@ -81,20 +81,6 @@ if [ -n "${ISSUE_2677_ROOT_HELPER:-}" ]; then
   AMPLIHACK_WORK_ROOT_EXPLICIT=1 AMPLIHACK_WORK_ROOT="$ISSUE_2677_WORK_ROOT" \
     bash "$ISSUE_2677_ROOT_HELPER" base . > "$out/base_from_checkout"
 fi
-# Issue #2677 B1: the drive's launch shape. A step of this run starts another
-# `amplihack recipe run`. Removing ISSUE_2677_NESTED_BIN stops the nested stub
-# from recursing.
-if [ -n "${ISSUE_2677_NESTED_BIN:-}" ]; then
-  nested="$ISSUE_2677_NESTED_OUT"
-  mkdir -p "$nested"
-  status=0
-  env -u ISSUE_2677_NESTED_BIN \
-    ISSUE_2096_OBSERVATIONS="$nested/observations" \
-    AMPLIHACK_WORK_ROOT="$nested/work" \
-    "$ISSUE_2677_NESTED_BIN" recipe run "$ISSUE_2677_NESTED_RECIPE" -w "$PWD" \
-    > "$nested/stdout" 2> "$nested/stderr" || status=$?
-  printf '%s' "$status" > "$nested/status"
-fi
 if [ -n "${ISSUE_2096_STAGE:-}" ]; then
   printf 'private output\n' > run-output
   git add -- run-output

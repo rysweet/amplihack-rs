@@ -508,6 +508,8 @@ mod tests_parent_watch;
 #[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]
+mod tests_run_checkout_trace_vars;
+#[cfg(test)]
 mod tests_teardown;
 #[cfg(test)]
 mod tests_terminal_record;

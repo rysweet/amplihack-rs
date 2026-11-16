@@ -25,14 +25,15 @@ fn a_runner_that_exits_non_zero_ends_the_run_and_nothing_else_does() {
     let f = Fixture::new();
     let before = f.snapshot();
 
-    let out = f
-        .command("runner-exit")
-        .env("ISSUE_2738_RUNNER_EXIT", "3")
-        // One attempt, so the assertion is about this exit and not about a
-        // later one: the transient-retry bound is read from the environment.
-        .env("AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS", "1")
-        .output()
-        .unwrap();
+    let out = Fixture::finish(
+        "runner-exit",
+        f.command("runner-exit")
+            .env("ISSUE_2738_RUNNER_EXIT", "3")
+            // One attempt, so the assertion is about this exit and not about
+            // a later one: the transient-retry bound is read from the
+            // environment.
+            .env("AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS", "1"),
+    );
 
     // The runner was reached: the failure is its own, not a launch failure.
     assert!(
@@ -67,12 +68,12 @@ fn a_runner_that_exits_non_zero_ends_the_run_and_nothing_else_does() {
 fn a_runner_that_reports_its_own_failure_ends_the_run() {
     let f = Fixture::new();
 
-    let out = f
-        .command("runner-reports-failure")
-        .env("ISSUE_2738_RUNNER_REPORTS_FAILURE", "1")
-        .env("AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS", "1")
-        .output()
-        .unwrap();
+    let out = Fixture::finish(
+        "runner-reports-failure",
+        f.command("runner-reports-failure")
+            .env("ISSUE_2738_RUNNER_REPORTS_FAILURE", "1")
+            .env("AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS", "1"),
+    );
 
     assert!(
         !f.observed_str("runner-reports-failure", "startup_cwd")

@@ -25,11 +25,10 @@ fn a_clone_with_a_pr_worktree_runs_and_keeps_its_worktree() {
         "the fixture did not register the worktree:\n{before}"
     );
 
-    let out = f
-        .command("drive")
-        .env("ISSUE_2738_WORKTREE_LIST", &f.repo)
-        .output()
-        .unwrap();
+    let out = Fixture::finish(
+        "drive",
+        f.command("drive").env("ISSUE_2738_WORKTREE_LIST", &f.repo),
+    );
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
         !stderr.contains(ATTRIBUTION_MESSAGE),
@@ -64,7 +63,10 @@ fn a_run_started_from_a_pr_worktree_finishes() {
     let worktree = f.add_worktree("pr-9");
     let before = f.worktrees();
 
-    let out = f.command_in("from-worktree", &worktree).output().unwrap();
+    let out = Fixture::finish(
+        "from-worktree",
+        &mut f.command_in("from-worktree", &worktree),
+    );
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
         !stderr.contains(ATTRIBUTION_MESSAGE),

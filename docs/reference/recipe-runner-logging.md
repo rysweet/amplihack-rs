@@ -27,7 +27,7 @@ keeps a run out of your checkout is the private clone it works in, described in
 - [JSON result fields](#json-result-fields)
 - [JSONL log events](#jsonl-log-events)
 - [Git commands a run makes](#git-commands-a-run-makes)
-  - [Caller Git trace variables are inherited](#caller-git-trace-variables-are-inherited)
+  - [Caller Git trace variables are cleared](#caller-git-trace-variables-are-cleared)
   - [Run directories from earlier releases](#run-directories-from-earlier-releases)
 - [Configuration](#configuration)
 - [Examples](#examples)
@@ -319,21 +319,32 @@ What keeps a run out of your checkout is the private clone it works in, not a
 record of what it did. See
 [Recipe run and auto-drive checkout isolation](recipe-checkout-isolation.md).
 
-### Caller Git trace variables are inherited
+### Caller Git trace variables are cleared
 
-The runner inherits the environment it is given. `GIT_TRACE2`,
-`GIT_TRACE2_EVENT`, `GIT_TRACE2_PERF`, `GIT_TRACE2_CONFIG_PARAMS`,
-`GIT_TRACE2_REDACT` and `GIT_TRACE2_ENV_VARS` pass through to the runner and
-to the Git processes a run starts, and amplihack sets none of them.
+A run clears `GIT_TRACE2`, `GIT_TRACE2_EVENT`, `GIT_TRACE2_PERF`,
+`GIT_TRACE2_CONFIG_PARAMS`, `GIT_TRACE2_REDACT` and `GIT_TRACE2_ENV_VARS`
+from the runner's environment, and sets none of them itself. Exporting one
+before `amplihack recipe run` therefore does not trace the run's Git
+commands; it has no effect on them at all.
 
-Setting one directs Git's own trace output to the target you choose, for every
-Git process in the run:
+This is deliberate, and it is a credential boundary rather than a tidiness
+rule. Git redacts `Authorization:` headers in its Trace2 output by default,
+and `GIT_TRACE2_REDACT=0` turns that redaction off. An environment carrying
+both a `GIT_TRACE2*` target and `GIT_TRACE2_REDACT=0` would otherwise write
+the auth headers of the run's Git traffic to a target chosen outside the run.
+Full command lines can carry secrets the same way, so the whole namespace is
+cleared rather than filtered.
 
-```sh
-mkdir -p "$PWD/trace2"
-GIT_TRACE2_EVENT="$PWD/trace2" amplihack recipe run default-workflow \
-  -c task_description="Add cache headers" \
-  -c repo_path=.
+To trace Git inside a run, set the variable where the Git command actually
+runs — in the recipe step itself — so the target is one you chose for that
+step and the trace does not follow every other process in the run:
+
+```yaml
+- id: trace-one-step
+  type: bash
+  command: |
+    mkdir -p "$PWD/trace2"
+    GIT_TRACE2_EVENT="$PWD/trace2" git fetch --prune
 ```
 
 The target can be a file or a directory, and Git treats them differently: a

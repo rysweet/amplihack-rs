@@ -238,6 +238,14 @@ impl Fixture {
         self.command_in(label, &self.repo)
     }
 
+    /// Run `cmd` to completion under the suite's hang guard (issue #1973).
+    ///
+    /// A run that never ends is a real failure of this change, so it must
+    /// fail naming itself rather than as an unattributed CI timeout.
+    pub(crate) fn finish(label: &str, cmd: &mut Command) -> Output {
+        crate::support::wait::output_within(&format!("the {label} recipe run to end"), cmd)
+    }
+
     pub(crate) fn observed(&self, label: &str, name: &str) -> Vec<u8> {
         fs::read(self.root.join(label).join(name))
             .unwrap_or_else(|e| panic!("observation {label}/{name}: {e}"))
