@@ -243,11 +243,38 @@ fn a_real_recipe_run_and_every_process_below_it_have_no_tracer_and_the_run_finis
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        let mut writer = fs::OpenOptions::new()
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(&fifo)
-            .expect("open the FIFO while the step reads it");
+        // Opening a FIFO for writing with O_NONBLOCK fails with ENXIO until a
+        // reader has it open, and the step writes `ready` on the line *before*
+        // its `read`. Under host load it may not have reached the open yet, so
+        // retry rather than take the first answer, bounded by the suite's hang
+        // guard (#1973). `support::unix_process::release_fifo` is the same
+        // wait, but it closes immediately; this one has to write a whole line.
+        let mut opened = None;
+        wait_until("the step to open the FIFO for reading", || {
+            assert!(
+                matches!(run.try_wait(), Ok(None)),
+                "the run ended before its step read the FIFO\nrun stderr:\n{}",
+                stderr_of_run()
+            );
+            match fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&fifo)
+            {
+                Ok(writer) => {
+                    opened = Some(writer);
+                    true
+                }
+                Err(e)
+                    if e.raw_os_error() == Some(libc::ENXIO)
+                        || e.kind() == std::io::ErrorKind::Interrupted =>
+                {
+                    false
+                }
+                Err(e) => panic!("open the FIFO while the step reads it: {e}"),
+            }
+        });
+        let mut writer = opened.expect("the FIFO was opened for writing");
         writer.write_all(b"go\n").expect("release the step");
     }
     // Cleared before the wait, not after: every panic path inside `wait_child`
