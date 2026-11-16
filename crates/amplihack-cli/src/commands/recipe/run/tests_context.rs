@@ -1121,6 +1121,118 @@ mod context_transport_2582 {
         );
     }
 
+    /// Issue #2582 (review 17b finding 2 / security S3): the one case where
+    /// `ContextFile::drop` is actually LOAD-BEARING.
+    ///
+    /// Everywhere else, `RuntimeGuard::release()` ends with
+    /// `remove_dir_all(<runtime>)`, which removes the context file whether or
+    /// not the `Drop` ever ran — so no "nothing left behind" assertion can
+    /// distinguish a working teardown from a deleted one. The exception is
+    /// `RuntimeRemoval::KeptInUse`: a process still holds the runtime folder,
+    /// `remove_dir_all` is deliberately NOT called, and the folder stays on
+    /// disk until a later sweep. There, `ContextFile::drop` is the only thing
+    /// removing a 0600 file that can hold auto-drive authorization material,
+    /// and it is exactly the case with a live exposure.
+    ///
+    /// This test reproduces that shape directly: the runtime folder survives
+    /// the release, and the context file must still be gone.
+    #[test]
+    fn context_file_is_removed_even_when_the_runtime_folder_is_retained() {
+        use crate::commands::cleanup::run_dir::{RuntimeGuard, RuntimeRemoval};
+        use crate::test_support::proc::fake_proc_scope;
+
+        let procs = fake_proc_scope();
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = tmp.path().join("runtime");
+        fs::create_dir(&runtime).unwrap();
+        fs::create_dir(runtime.join("tmp")).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+
+        // The context file, holding a distinctive secret.
+        let mut context = self::context();
+        context.insert(
+            "autodrive_authorization".to_string(),
+            "ZQXV2582AUTHWORD".to_string(),
+        );
+        let file = write_context_file(&runtime, &context).unwrap();
+        let path = file.path().to_path_buf();
+        assert!(path.is_file());
+
+        // A live process inside the runtime folder, so the guard must keep it.
+        let mut child = std::process::Command::new("sh")
+            .env("PATH", crate::test_support::host_path())
+            .arg("-c")
+            .arg("echo ready; while read -r _; do :; done")
+            .current_dir(runtime.join("tmp"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+        {
+            use std::io::BufRead;
+            let mut line = String::new();
+            std::io::BufReader::new(child.stdout.take().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            assert_eq!(line.trim(), "ready");
+        }
+        procs.fake.link_own(child.id());
+
+        // The run's own teardown order: the context file is dropped, then the
+        // runtime folder is released.
+        drop(file);
+        let removal = RuntimeGuard::new(runtime.clone())
+            .unwrap()
+            .remove()
+            .unwrap();
+
+        drop(child.stdin.take());
+        let _ = child.wait();
+
+        // The precondition that makes this test meaningful. If this ever
+        // becomes `Removed`, the assertions below are proved by
+        // `remove_dir_all` instead of by `ContextFile::drop`, and this test
+        // has stopped testing anything.
+        assert_eq!(
+            removal,
+            RuntimeRemoval::KeptInUse,
+            "this test is only meaningful while the runtime folder is retained"
+        );
+        assert!(
+            runtime.is_dir(),
+            "a runtime folder in use is left in place, so remove_dir_all did NOT run"
+        );
+
+        // The actual claim.
+        assert!(
+            !path.exists(),
+            "the context file must be gone even though the runtime folder was kept: {}",
+            path.display()
+        );
+        assert!(!runtime.join("context").exists(), "and its 0700 folder too");
+        // Nothing anywhere under the retained tree still holds the secret.
+        let mut found = Vec::new();
+        let mut stack = vec![runtime.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap().flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if fs::read(&p)
+                    .map(|b| String::from_utf8_lossy(&b).contains("ZQXV2582AUTHWORD"))
+                    .unwrap_or(false)
+                {
+                    found.push(p);
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "authorization material left in the retained runtime folder: {found:?}"
+        );
+    }
+
     #[test]
     fn context_file_drop_leaves_unexpected_entries_alone() {
         // Cleanup is remove_file then remove_dir, never remove_dir_all.
@@ -1155,13 +1267,38 @@ mod context_transport_2582 {
             "the fallback writes no file"
         );
 
+        // NOT `assert_eq!(transport.apply(..), pass_context(..))`: since the
+        // refactor `ContextTransport::Set::apply` IS `pass_context`, so such a
+        // comparison is `f(x) == f(x)` and cannot fail. The argv is therefore
+        // pinned against a literal instead — that is what "byte for byte"
+        // actually has to mean for a reader.
         let mut via_transport = Command::new("echo");
         let transport_bytes = transport.apply(&mut via_transport, &context).unwrap();
-        let mut today = Command::new("echo");
-        let today_bytes = pass_context(&mut today, &context).unwrap();
-        assert_eq!(args(&via_transport), args(&today));
-        assert_eq!(transport_bytes, today_bytes);
+
+        // BTreeMap order: flag, pr_body, task_description.
+        assert_eq!(
+            args(&via_transport),
+            vec![
+                "--set".to_string(),
+                "flag=true".to_string(),
+                "--set".to_string(),
+                format!("pr_body={BODY}"),
+                "--set".to_string(),
+                format!("task_description={TASK}"),
+            ],
+            "the --set argv must be exactly the pre-#2582 form"
+        );
         assert!(args(&via_transport).iter().all(|a| a != "--context-file"));
+
+        // And the byte count is the documented argv cost of those pairs:
+        // `--set\0`, `KEY=VALUE\0` and two argv pointers per entry.
+        let expected: usize = context
+            .iter()
+            .map(|(k, v)| {
+                "--set".len() + 1 + k.len() + 1 + v.len() + 1 + 2 * std::mem::size_of::<usize>()
+            })
+            .sum();
+        assert_eq!(transport_bytes, expected);
     }
 
     #[test]
@@ -1203,15 +1340,75 @@ mod context_transport_2582 {
         assert!(refuse_reserved_keys(&self::context()).is_ok());
     }
 
+    /// Issue #2582 (security review S1): `RECIPE_RUNNER_RS_PATH` selects the
+    /// `recipe-runner-rs` binary this run and every nested `amplihack` execs,
+    /// and decides whether context travels in a file or on argv. Context is
+    /// untrusted input, so a `recipe_runner_rs_path` key must be refused —
+    /// on BOTH transports and in ANY letter case, never merely dropped from
+    /// the env by the denylist.
     #[test]
-    fn refusal_message_is_unchanged_from_pass_context() {
+    fn runner_path_key_is_reserved_on_both_paths() {
+        for key in [
+            "recipe_runner_rs_path",
+            "RECIPE_RUNNER_RS_PATH",
+            "Recipe_Runner_Rs_Path",
+        ] {
+            let (_tmp, runtime) = runtime();
+            let mut context = context();
+            context.insert(key.to_string(), "/tmp/ZQXV2582EVILRUNNER".to_string());
+
+            for report in [with_capability(), without_capability()] {
+                let error = match ContextTransport::choose(&report, &runtime, &context) {
+                    Ok(_) => panic!("{key} must be refused, not accepted"),
+                    Err(error) => error.to_string(),
+                };
+                assert!(error.contains("reserved"), "{error}");
+                assert!(
+                    !error.contains("ZQXV2582"),
+                    "the value must not be printed: {error}"
+                );
+                assert!(
+                    !runtime.join("context").exists(),
+                    "no file may be written before the refusal"
+                );
+            }
+
+            assert!(refuse_reserved_keys(&context).is_err(), "{key}");
+
+            // And the `--set` path refuses it identically, so neither
+            // transport is a way around the rule.
+            let mut command = Command::new("echo");
+            assert!(pass_context(&mut command, &context).is_err(), "{key}");
+        }
+    }
+
+    /// The operator-visible refusal text, pinned against a literal.
+    ///
+    /// This used to `assert_eq!` the message from `refuse_reserved_keys`
+    /// against the one from `pass_context`. Since the refactor `pass_context`
+    /// CALLS `refuse_reserved_keys`, so that comparison was `f(x) == f(x)`:
+    /// it could not fail, and it would have gone on passing if the message
+    /// had been reworded or emptied. The text itself is the contract, so the
+    /// text is what is asserted.
+    #[test]
+    fn refusal_message_is_pinned_and_shared_by_both_entry_points() {
+        const EXPECTED: &str = "recipe context key \"AMPLIHACK_X\" is reserved: the AMPLIHACK_ namespace, Git execution configuration and the RECIPE_RUNNER_RS_PATH runner selector cannot be set from recipe context";
+
         let context = BTreeMap::from([("AMPLIHACK_X".to_string(), "v".to_string())]);
         let moved = refuse_reserved_keys(&context).unwrap_err().to_string();
+        assert_eq!(moved, EXPECTED);
+
+        // `pass_context` reaches the same refusal, and the caller sees the
+        // same words — now asserted against the literal, not against `moved`.
         let mut command = Command::new("echo");
         let today = pass_context(&mut command, &context)
             .unwrap_err()
             .to_string();
-        assert_eq!(moved, today);
+        assert_eq!(today, EXPECTED);
+        assert!(
+            command.get_args().count() == 0,
+            "a refused context must put nothing on the argv"
+        );
     }
 
     #[test]
@@ -1262,18 +1459,12 @@ mod context_transport_2582 {
         );
     }
 
-    #[test]
-    fn capability_present_write_failure_does_not_fall_back() {
-        if is_root() {
-            // Root ignores DAC, so a 0500 folder does not stop the write.
-            return;
-        }
-        let (_tmp, runtime) = runtime();
-        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o500)).unwrap();
+    /// Asserts the module's central negative claim for one way of making the
+    /// write fail: the capability IS present, the write fails, and the run
+    /// must end as an error rather than quietly degrading to `--set`.
+    fn assert_no_fallback_on_write_failure(runtime: &Path) {
         let context = context();
-        let result = ContextTransport::choose(&with_capability(), &runtime, &context);
-        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
-        match result {
+        match ContextTransport::choose(&with_capability(), runtime, &context) {
             Ok(ContextTransport::Set) => panic!("a write failure must never fall back to --set"),
             Ok(_) => panic!("a write failure must be an error"),
             Err(error) => {
@@ -1283,8 +1474,69 @@ mod context_transport_2582 {
         }
     }
 
+    /// Issue #2582, the central negative claim: with the capability present,
+    /// a failed context-file write ends the run and NEVER degrades to `--set`.
+    ///
+    /// The trigger is an existing entry at `<runtime>/context`, which
+    /// `write_context_file` refuses with `AlreadyExists`. That is a *root-safe*
+    /// trigger: unlike a 0500 folder, it does not depend on DAC enforcement,
+    /// so this test really runs in a root CI image instead of reporting a pass
+    /// it never earned.
+    #[test]
+    fn capability_present_write_failure_does_not_fall_back() {
+        // An existing regular file where the context folder must go.
+        let (_tmp, runtime) = runtime();
+        fs::write(runtime.join("context"), b"planted").unwrap();
+        assert_no_fallback_on_write_failure(&runtime);
+
+        // An existing folder of the same name.
+        let (_tmp, runtime) = self::runtime();
+        fs::create_dir(runtime.join("context")).unwrap();
+        assert_no_fallback_on_write_failure(&runtime);
+
+        // A runtime folder that does not exist at all.
+        let tmp = tempfile::tempdir().unwrap();
+        assert_no_fallback_on_write_failure(&tmp.path().join("not-created"));
+    }
+
+    /// The same claim for the permission-denied trigger, which only a non-root
+    /// euid can produce. Kept separate from the root-safe case above so that
+    /// skipping it cannot silently take the central claim with it.
+    #[test]
+    fn capability_present_unwritable_runtime_does_not_fall_back() {
+        if is_root() {
+            // Root ignores DAC, so a 0500 folder does not stop the write.
+            return;
+        }
+        let (_tmp, runtime) = runtime();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_no_fallback_on_write_failure(&runtime)
+        }));
+        // Restore the mode before propagating, so the tempdir can be removed.
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
     #[test]
     fn write_error_has_no_values() {
+        // Root-safe trigger first, so the no-values claim is asserted even in
+        // a root CI image where the permission-denied case below cannot run.
+        let (_tmp, planted) = runtime();
+        fs::write(planted.join("context"), b"planted").unwrap();
+        let text = match write_context_file(&planted, &context()) {
+            Ok(_) => panic!("an existing entry at <runtime>/context must fail the write"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(
+            text.contains("failed to write recipe context file"),
+            "{text}"
+        );
+        assert!(!text.contains("ZQXV2582"), "{text}");
+        assert!(!text.contains("widget"), "{text}");
+
         if is_root() {
             return;
         }

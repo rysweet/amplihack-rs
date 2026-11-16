@@ -150,14 +150,24 @@ done
 # normalise-verdict and normalise-type have no stand-in, but the tree pipes
 # into both, so they must still drain. Dropping them from the drain list turns
 # a clean pipeline into exit 141 under `set -o pipefail`.
+#
+# The pipefail check writes a payload LARGER THAN THE PIPE BUFFER (64 KiB on
+# Linux, 16 KiB on macOS). With a few bytes the writer's single write() fits
+# in the kernel buffer and returns before the reader is ever scheduled, so the
+# pipeline ends 0 whether or not the mode reads — the assertion could not fail.
+# Past the buffer the writer blocks, and a mode that does not drain leaves it
+# to take SIGPIPE (exit 141) when the mode exits.
+BIGBLOB="${WORK}/bigblob"
+: > "$BIGBLOB"
+for _ in $(seq 1 1024); do printf '%01024d' 0; done >> "$BIGBLOB"   # 1 MiB
 for mode in normalise-verdict normalise-type; do
   run_mode "$mode"
   ok "W1-DRAIN-${mode}" \
     "a piped-into mode left stdin unread (left='${LEFT}'); its writer will take SIGPIPE" \
     test -z "$LEFT"
   ok "W1-PIPEFAIL-${mode}" "a pipeline into the mode did not end 0" \
-    bash -c 'set -o pipefail; printf CLEAN | STUB_STATE="$1" bash "$2" orch helper "$3" >/dev/null' \
-    _ "$d" "$STUB" "$mode"
+    bash -c 'set -o pipefail; cat "$4" | STUB_STATE="$1" bash "$2" orch helper "$3" >/dev/null' \
+    _ "$d" "$STUB" "$mode" "$BIGBLOB"
 done
 
 echo "=== W1: the REAL_AMPLIHACK passthrough still wins ==="
@@ -191,17 +201,32 @@ ok W2-AB-EXTRACTED "ab() could not be read out of the loop driver" \
   bash -c 'printf "%s" "$1" | grep -q "bash \"\${TOOLS}/\$1\""' _ "$AB_SRC"
 
 W2="${WORK}/w2"; mkdir -p "${W2}/tools" "${W2}/ab/path" "${W2}/ab/state" "${W2}/work/bin" "${W2}/work/home"
-printf '%s\n' '#!/usr/bin/env bash' 'cat > "$PROBE_OUT"' > "${W2}/tools/probe_stdin.sh"
+# The probe records that it RAN before it records what it read. Without the
+# first line, a probe that never starts is indistinguishable from a probe that
+# read nothing, and `test ! -s probe-saw` below would pass on a missing file —
+# i.e. the assertion could not fail. W2-PROBE-RAN is that positive control.
+printf '%s\n' '#!/usr/bin/env bash' 'printf ran > "$PROBE_RAN"' 'cat > "$PROBE_OUT"' \
+  > "${W2}/tools/probe_stdin.sh"
 printf '%s' "$SENTINEL" > "${W2}/payload"
+# Pre-seed the output with the sentinel, so "empty" can only be the probe
+# having truncated it on an EOF stdin, never the file being absent.
+printf '%s' "$SENTINEL" > "${W2}/probe-saw"
 (
   set +u
   WORK="${W2}/work"; AB="${W2}/ab"; TOOLS="${W2}/tools"
   eval "$AB_SRC"
   exec 3<"${W2}/payload"
-  PROBE_OUT="${W2}/probe-saw" ab probe_stdin.sh <&3 || true
+  PROBE_RAN="${W2}/probe-ran" PROBE_OUT="${W2}/probe-saw" ab probe_stdin.sh <&3
+  printf '%s' "$?" > "${W2}/probe-rc"
   printf '%s' "$(cat <&3)" > "${W2}/probe-left"
   exec 3<&-
 )
+ok W2-PROBE-RAN \
+  "ab() never launched the probe, so the stdin assertions below prove nothing" \
+  test -s "${W2}/probe-ran"
+ok W2-PROBE-RC0 \
+  "ab() returned $(cat "${W2}/probe-rc" 2>/dev/null) for the probe" \
+  test "$(cat "${W2}/probe-rc" 2>/dev/null)" = 0
 ok W2-PROBE-SAW-EOF \
   "a tool launched by ab() inherited the caller's stdin and read '$(cat "${W2}/probe-saw" 2>/dev/null)' from it" \
   test ! -s "${W2}/probe-saw"

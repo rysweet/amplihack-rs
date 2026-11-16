@@ -3730,8 +3730,75 @@ printf '%s\n' '{{"recipe_name":"ctx-2582","success":true,"step_results":[],"cont
     runner
 }
 
+/// What one stub run leaves behind, with everything that owns a directory
+/// still alive.
+///
+/// Issue #2582 (review 17b, finding 2): the work root, the env guard and the
+/// environment lock are FIELDS rather than locals of `run_2582_with`, so the
+/// run's tree still exists while the caller asserts over it. Dropping
+/// `FixtureEnvironment` at the end of the helper would delete the whole
+/// private work root, and every `!context_file.exists()` assertion would then
+/// pass no matter what the production teardown did — the test would be unable
+/// to fail. `assert_live_tree` below is the positive control for exactly that.
 #[cfg(unix)]
-fn run_2582(caps: &str) -> (tempfile::TempDir, Vec<String>, PathBuf) {
+#[allow(dead_code)]
+struct Run2582 {
+    temp: tempfile::TempDir,
+    argv: Vec<String>,
+    records: PathBuf,
+    /// Owns the private work root; must outlive the caller's assertions.
+    fixture: FixtureEnvironment,
+    /// Held for as long as `fixture`'s env mutations are in place.
+    lock: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(unix)]
+impl Run2582 {
+    /// The run's runtime folder, i.e. the context folder's parent.
+    fn runtime_dir(&self, context_file: &Path) -> PathBuf {
+        context_file
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf()
+    }
+
+    /// Positive control for every "the context file is gone" assertion here.
+    ///
+    /// Before this, `run_2582_with` dropped `FixtureEnvironment` on return,
+    /// which deleted the entire private work root — so `!path.exists()` was
+    /// true of a tree that no longer existed and the assertion could not
+    /// fail. `live_ancestor` is the directory that MUST survive the run; it
+    /// is checked to exist and to actually contain the context path, so the
+    /// absence asserted afterwards is an absence observed in a live tree.
+    ///
+    /// Deliberately NOT asserted: that the run's own `runtime/` (or dry-run)
+    /// folder survives. On a completed run `RuntimeGuard::release()` ends
+    /// with `remove_dir_all(<runtime>)`, so that folder is legitimately gone
+    /// and nothing at THIS level can tell `ContextFile::drop` apart from the
+    /// bulk removal. The case where the `Drop` is the only thing removing the
+    /// file — `RuntimeRemoval::KeptInUse`, where the folder is deliberately
+    /// retained — is proved by `tests_context::context_transport_2582::
+    /// context_file_is_removed_even_when_the_runtime_folder_is_retained`.
+    fn assert_live_tree(&self, context_file: &Path, live_ancestor: &Path) {
+        assert!(
+            live_ancestor.is_dir(),
+            "{} must still exist while we assert over it, or the absence of \
+             the context file proves nothing",
+            live_ancestor.display()
+        );
+        assert!(
+            context_file.starts_with(live_ancestor),
+            "the context file {} must be inside {}",
+            context_file.display(),
+            live_ancestor.display()
+        );
+    }
+}
+
+#[cfg(unix)]
+fn run_2582(caps: &str) -> Run2582 {
     run_2582_with(caps, false)
 }
 
@@ -3739,8 +3806,8 @@ fn run_2582(caps: &str) -> (tempfile::TempDir, Vec<String>, PathBuf) {
 /// a dry run takes the same transport, writes the same private file under the
 /// dry runtime folder, and removes it the same way (#2582).
 #[cfg(unix)]
-fn run_2582_with(caps: &str, dry_run: bool) -> (tempfile::TempDir, Vec<String>, PathBuf) {
-    let _guard = crate::test_support::home_env_lock()
+fn run_2582_with(caps: &str, dry_run: bool) -> Run2582 {
+    let lock = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _fixture_environment = fixture_environment();
@@ -3779,14 +3846,20 @@ fn run_2582_with(caps: &str, dry_run: bool) -> (tempfile::TempDir, Vec<String>, 
         .filter(|s| !s.is_empty())
         .map(|s| String::from_utf8_lossy(s).into_owned())
         .collect();
-    (temp, argv, records)
+    Run2582 {
+        temp,
+        argv,
+        records,
+        fixture: _fixture_environment,
+        lock,
+    }
 }
 
 #[test]
 #[cfg(unix)]
 fn test_2582_capability_puts_context_in_a_private_file_not_argv() {
-    let (_temp, argv, records) =
-        run_2582(r#"["codex_exec","durable_recovery_v1","context_file_v1"]"#);
+    let run = run_2582(r#"["codex_exec","durable_recovery_v1","context_file_v1"]"#);
+    let (argv, records) = (&run.argv, &run.records);
     assert!(
         !argv.iter().any(|a| a.contains("ZQXV2582")),
         "a context value reached the runner's argv: {argv:?}"
@@ -3822,6 +3895,7 @@ fn test_2582_capability_puts_context_in_a_private_file_not_argv() {
     assert_eq!(read("file.mode").trim(), "600");
     assert_eq!(read("dir.mode").trim(), "700");
 
+    run.assert_live_tree(&path, &run.fixture.work_root.path());
     assert!(
         !path.exists(),
         "the context file must be removed once the runner has been reaped"
@@ -3832,7 +3906,8 @@ fn test_2582_capability_puts_context_in_a_private_file_not_argv() {
 #[test]
 #[cfg(unix)]
 fn test_2582_without_capability_keeps_set_arguments() {
-    let (_temp, argv, records) = run_2582(r#"["codex_exec","durable_recovery_v1"]"#);
+    let run = run_2582(r#"["codex_exec","durable_recovery_v1"]"#);
+    let (argv, records) = (&run.argv, &run.records);
     assert!(!argv.iter().any(|a| a == "--context-file"), "{argv:?}");
     assert!(!records.join("context.copy.json").exists());
     let sets: Vec<&str> = argv
@@ -3847,8 +3922,8 @@ fn test_2582_without_capability_keeps_set_arguments() {
 #[test]
 #[cfg(unix)]
 fn test_2582_capability_match_is_exact_at_run_level() {
-    let (_temp, argv, _records) =
-        run_2582(r#"["durable_recovery_v1","context_file_v10","context_file"]"#);
+    let run = run_2582(r#"["durable_recovery_v1","context_file_v10","context_file"]"#);
+    let argv = &run.argv;
     assert!(!argv.iter().any(|a| a == "--context-file"), "{argv:?}");
     assert!(argv.iter().any(|a| a == "--set"), "{argv:?}");
 }
@@ -3984,10 +4059,11 @@ fn a_context_transport_failure_finishes_the_run_as_failed_and_never_launches_the
 #[test]
 #[cfg(unix)]
 fn test_2582_a_dry_run_writes_the_same_private_file_and_leaves_nothing_behind() {
-    let (_temp, argv, records) = run_2582_with(
+    let run = run_2582_with(
         r#"["codex_exec","durable_recovery_v1","context_file_v1"]"#,
         true,
     );
+    let (argv, records) = (&run.argv, &run.records);
     assert!(
         argv.iter().any(|a| a == "--dry-run"),
         "this must be the dry-run path: {argv:?}"
@@ -4017,6 +4093,16 @@ fn test_2582_a_dry_run_writes_the_same_private_file_and_leaves_nothing_behind() 
         "the dry run's context must still reach the runner byte-exact"
     );
 
+    // A dry run writes its context under a private `amplihack-dry-*` folder
+    // in TMPDIR rather than under the work root; TMPDIR is the ancestor that
+    // must outlive the run.
+    let dry_tmpdir = run.runtime_dir(&path).parent().unwrap().to_path_buf();
+    run.assert_live_tree(&path, &dry_tmpdir);
+    assert!(
+        !run.runtime_dir(&path).exists(),
+        "a dry run must remove its whole private folder: {}",
+        run.runtime_dir(&path).display()
+    );
     assert!(
         !path.exists(),
         "a dry run must not leave the context file behind: {}",

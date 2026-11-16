@@ -219,9 +219,10 @@ impl Drop for SpawnGuard {
 /// string longer than `MAX_ARG_STRLEN` (PAGE_SIZE * 32 = 131072 on Linux)
 /// with `E2BIG`. We cap conservatively below that so a pathologically large
 /// value cannot make the spawn fail. Over-limit values are still delivered
-/// to the runner via `--set` for `{{placeholder}}`
-/// substitution; only the env mirror is skipped (issue #784, regression
-/// guard for the E2BIG path).
+/// to the runner for `{{placeholder}}` substitution — since issue #2582 in
+/// the context file, and only on the `--set` path for a runner older than
+/// the pin; only the env mirror is skipped (issue #784, regression guard
+/// for the E2BIG path).
 const CONTEXT_ENV_VALUE_MAX_BYTES: usize = 96 * 1024;
 
 /// Per-entry byte overhead charged to every environment variable when
@@ -333,17 +334,30 @@ fn env_entry_bytes(name: &str, value: &str) -> usize {
 }
 
 /// Context cannot select an amplihack profile or restore Git routing and
-/// executable configuration that the command policy removed before launch.
+/// executable configuration that the command policy removed before launch,
+/// and cannot select the recipe-runner binary.
 ///
 /// Issue #2582: `pub(super)` so `context_transport::refuse_reserved_keys`
 /// applies the same predicate before it writes a context file, rather than
 /// carrying a second copy of the rule that could drift from this one.
+///
+/// `RECIPE_RUNNER_RS_PATH` is reserved here rather than only in
+/// [`RESERVED_ENV_DENYLIST`] because it is an *executable selector*, not
+/// merely a dangerous env name: it decides which `recipe-runner-rs` binary
+/// this run and every nested `amplihack` execs, and (issue #2582) whether
+/// context reaches that binary in a file or on argv. Context is untrusted
+/// input — issue bodies and third-party recipes flow into it — so a
+/// `recipe_runner_rs_path` key must be refused by the same rule both
+/// transports consult, not by the env filter alone.
 pub(super) fn is_reserved_context_key(key: &str) -> bool {
     let name = key.to_ascii_uppercase();
     name.starts_with("AMPLIHACK_")
         || amplihack_git::REPOSITORY_ENV_VARS.contains(&name.as_str())
         || name.starts_with("GIT_CONFIG")
-        || matches!(name.as_str(), "GIT_EXEC_PATH" | "GIT_TEMPLATE_DIR")
+        || matches!(
+            name.as_str(),
+            "GIT_EXEC_PATH" | "GIT_TEMPLATE_DIR" | "RECIPE_RUNNER_RS_PATH"
+        )
 }
 
 /// Validate a single recipe context entry for env export (issue #784 / #1023),
@@ -513,7 +527,9 @@ pub(super) fn resolve_context_env_budget() -> usize {
 /// 5. Drop values containing a NUL byte (rejected by the OS for env vars;
 ///    would otherwise panic at spawn time).
 /// 6. Drop values larger than [`CONTEXT_ENV_VALUE_MAX_BYTES`] (would risk
-///    `E2BIG`); they are delivered to the runner as `--set` arguments.
+///    `E2BIG`); they still reach the runner through the chosen context
+///    transport — the context file since issue #2582, or `--set` arguments
+///    for a runner older than the pin.
 ///
 /// Aggregate budget (issue #1023): the total bytes of the exported mirror must
 /// stay within `budget` so the environment inherited by every bash step cannot

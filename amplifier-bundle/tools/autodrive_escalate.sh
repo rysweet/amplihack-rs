@@ -224,6 +224,15 @@ EVAL_CTX=""; EVAL_CTX_ARGS=()
 eval_ctx_write() {
   local k
   EVAL_CTX_ARGS=()
+  # A missing helper is not a disk problem. Without this check the failure
+  # below reports "check space and permissions in the state dir", which names
+  # the wrong cause and sends the operator to look at a healthy disk. The
+  # round-tail helper is the only external program this function runs, and the
+  # caller's preflight does not cover it.
+  if [ ! -f "${LOOP_HOME}/autodrive_round_tail.sh" ]; then
+    echo "ERROR: ${LOOP_HOME}/autodrive_round_tail.sh is missing; the loop-health evaluator was not started. This is an incomplete tool bundle, not a disk or permission problem." >&2
+    return 1
+  fi
   EVAL_CTX="$(mktemp -d "${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-ctx.XXXXXX")" || EVAL_CTX=""
   if [ -z "$EVAL_CTX" ] \
     || ! printf '%s' "$HISTORY" >"${EVAL_CTX}/loop_history" \
