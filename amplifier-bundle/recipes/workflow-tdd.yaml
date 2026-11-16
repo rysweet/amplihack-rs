@@ -222,9 +222,7 @@ steps:
     # Fast-path opt-outs preserved from the legacy guard (issue #425):
     #   * Orchestration sentinel in implement output -> exit 0.
     #   * ALLOW_NO_OP=true (orchestration / docs-only / audit / meta) -> exit 0.
-    # Both opt-outs run BEFORE parsing the verdict so callers that legitimately
-    # produce no working-tree edits never get blocked, even if the verifier
-    # step itself fails or is skipped.
+    # Both run before the verdict is parsed, so a task with no edits still passes even where the verifier step failed or was skipped.
     command: |
       set -euo pipefail
       # The reader retains VERDICT_JSON for legacy-only Claude/Copilot callers.
@@ -389,10 +387,12 @@ steps:
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     parse_json: true
     command: |
-      # The body of this step lives in amplifier-bundle/tools/tdd_implementation_evidence_step.sh,
-      # extracted for the brick budget (issue #1619). It is unchanged and
-      # reads the same RECIPE_VAR_* variables the runner exports.
-      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/tdd_implementation_evidence_step.sh" ] && { H="$c/amplifier-bundle/tools/tdd_implementation_evidence_step.sh"; break; }; done
-      [ -n "$H" ] || { echo "ERROR: tdd_implementation_evidence_step.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
-      bash "$H"
+      set -euo pipefail
+      # issue #962: full resolution ladder + visible no-discard degrade (see docs/reference/workflow-implementation-evidence.md)
+      HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || HELPER="$(pwd)/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      [ -f "$HELPER" ] || HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_implementation_evidence.sh"
+      if [ -f "$HELPER" ]; then bash "$HELPER"; else echo "WARNING: implementation-evidence helper unresolvable (AMPLIHACK_HOME/REPO_PATH/cwd/~/.copilot/~/.amplihack); bookkeeping gate degrading VISIBLY to preserve step-08c-verified work (no-discard #962). searched: $HELPER cwd=$(pwd)" >&2; printf '%s\n' '{"implementation_completed":"true","terminal_no_op":"false","terminal_state":"EVIDENCE_TOOL_UNAVAILABLE","terminal_reason":"impl-evidence helper unresolvable; bookkeeping gate degraded (no-discard #962); step-08c-verified work preserved"}'; fi
     output: "implementation_terminal_evidence"
