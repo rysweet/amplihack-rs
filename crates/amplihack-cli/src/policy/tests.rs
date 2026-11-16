@@ -241,6 +241,11 @@ fn no_instance_entry_can_remove_a_default() {
     }
 }
 
+/// Byte-identical output is load-bearing: both file writers compare the
+/// rendering with what is on disk and skip the write when they match, so a
+/// rendering that varied between calls would rewrite the file on every run.
+/// This fails if the order ever becomes set-derived -- swapping the `Vec` in
+/// `effective_prefixes` for a `HashSet` is enough.
 #[test]
 fn effective_prefixes_is_stable_across_calls() {
     let instance = vec!["shutdown".to_string()];

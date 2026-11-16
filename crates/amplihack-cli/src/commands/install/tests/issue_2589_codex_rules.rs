@@ -219,12 +219,13 @@ fn a_project_layer_entry_reaches_no_rendering() {
         "[policy]\ndeny_commands = [\"git-commit\"]\n",
     )
     .unwrap();
-    let previous_cwd = crate::test_support::set_cwd(&project).unwrap();
+    // A guard, not a hand-rolled pair: the assertion below panics on failure
+    // and a leaked cwd would follow every later test in this binary.
+    let _cwd = crate::test_support::CwdGuard::set(&project).unwrap();
     let _env = fx.env();
 
     install_deny_rules();
     let text = fs::read_to_string(fx.rules_file()).unwrap();
-    crate::test_support::restore_cwd(&previous_cwd).unwrap();
     assert!(
         !text.contains("git-commit"),
         "a project file must not add a deny entry:\n{text}"

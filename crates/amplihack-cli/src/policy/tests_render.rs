@@ -48,6 +48,11 @@ fn claude_entries_include_instance_additions_after_the_defaults() {
     assert!(entries.contains(&"Bash(pkill:*)".to_string()));
 }
 
+/// Byte-identical output is load-bearing: both file writers compare the
+/// rendering with what is on disk and skip the write when they match, so a
+/// rendering that varied between calls would rewrite the file on every run.
+/// This fails if the order ever becomes set-derived -- swapping the `Vec` in
+/// `effective_prefixes` for a `HashSet` is enough.
 #[test]
 fn claude_entries_are_stable_across_calls() {
     assert_eq!(claude::deny_entries(&[]), claude::deny_entries(&[]));
@@ -224,6 +229,11 @@ fn an_instance_addition_renders_its_own_codex_rule() {
     assert!(text.contains("\"shutdown\""), "{text}");
 }
 
+/// Byte-identical output is load-bearing: both file writers compare the
+/// rendering with what is on disk and skip the write when they match, so a
+/// rendering that varied between calls would rewrite the file on every run.
+/// This fails if the order ever becomes set-derived -- swapping the `Vec` in
+/// `effective_prefixes` for a `HashSet` is enough.
 #[test]
 fn the_codex_file_is_byte_identical_across_calls() {
     let instance = vec!["shutdown".to_string()];
@@ -256,15 +266,15 @@ fn copilot_renders_one_deny_tool_flag_pair_per_prefix() {
         super::default_prefixes().len() * 2,
         "a flag and its value per prefix: {args:?}"
     );
-    assert_eq!(&args[..2], ["--deny-tool", "shell(pkill)"]);
+    assert_eq!(&args[..2], ["--deny-tool", "shell(pkill:*)"]);
     assert!(
         args.windows(2)
-            .any(|w| w == ["--deny-tool", "shell(tmux kill-session -a)"]),
+            .any(|w| w == ["--deny-tool", "shell(tmux kill-session -a:*)"]),
         "{args:?}"
     );
     assert!(
         args.windows(2)
-            .any(|w| w == ["--deny-tool", "shell(git push --force)"]),
+            .any(|w| w == ["--deny-tool", "shell(git push --force:*)"]),
         "{args:?}"
     );
 }
@@ -272,27 +282,35 @@ fn copilot_renders_one_deny_tool_flag_pair_per_prefix() {
 #[test]
 fn copilot_args_include_instance_additions() {
     let args = copilot::deny_args(&["shutdown".to_string()], &[]);
-    assert_eq!(&args[args.len() - 2..], ["--deny-tool", "shell(shutdown)"]);
+    assert_eq!(
+        &args[args.len() - 2..],
+        ["--deny-tool", "shell(shutdown:*)"]
+    );
 }
 
 #[test]
 fn copilot_adds_no_duplicate_when_the_caller_already_denied_the_same_prefix() {
     for user in [
-        vec!["--deny-tool".to_string(), "shell(pkill)".to_string()],
-        vec!["--deny-tool=shell(pkill)".to_string()],
+        vec!["--deny-tool".to_string(), "shell(pkill:*)".to_string()],
+        vec!["--deny-tool=shell(pkill:*)".to_string()],
     ] {
         let args = copilot::deny_args(&[], &user);
         assert!(
-            !args.iter().any(|a| a == "shell(pkill)"),
+            !args.iter().any(|a| a == "shell(pkill:*)"),
             "already denied by the caller: {user:?} -> {args:?}"
         );
         assert!(
-            args.iter().any(|a| a == "shell(killall)"),
+            args.iter().any(|a| a == "shell(killall:*)"),
             "the rest still render: {args:?}"
         );
     }
 }
 
+/// Byte-identical output is load-bearing: both file writers compare the
+/// rendering with what is on disk and skip the write when they match, so a
+/// rendering that varied between calls would rewrite the file on every run.
+/// This fails if the order ever becomes set-derived -- swapping the `Vec` in
+/// `effective_prefixes` for a `HashSet` is enough.
 #[test]
 fn copilot_args_are_stable_across_calls() {
     assert_eq!(copilot::deny_args(&[], &[]), copilot::deny_args(&[], &[]));

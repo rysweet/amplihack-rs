@@ -47,6 +47,10 @@ use manifest::{manifest_path, write_manifest};
 use paths::*;
 /// Issue #2589: the dangerous-command deny entries, for every writer of a
 /// Claude `settings.json` outside this module (the profile seeding).
+///
+/// The function holds no install-specific logic and belongs in
+/// `policy::claude`; this re-export is what makes profile management depend
+/// on the install module. Moved in issue #2751.
 pub(crate) use settings::apply_deny_policy;
 use settings::*;
 #[cfg(test)]

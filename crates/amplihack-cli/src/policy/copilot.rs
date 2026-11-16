@@ -13,10 +13,20 @@
 /// The `--deny-tool` arguments for `instance`, skipping any prefix the caller
 /// has already denied in `user_args`, in either the separate or the joined
 /// spelling.
+///
+/// The rendered value carries the `:*` suffix (`shell(git push --force:*)`),
+/// which is what GitHub documents as the shell-rule prefix form: `shell(git:*)`
+/// matches `git push` but not `gitea`, while a bare `shell(git status)` is
+/// documented as matching that text literally and so would spare every
+/// invocation that has arguments -- that is, everything worth denying.
+///
+/// One consequence: a caller who already passed `--deny-tool=shell(pkill)`
+/// is no longer seen by [`already_denied`], so `shell(pkill:*)` is added
+/// beside it. Both deny, so the duplicate is harmless.
 pub(crate) fn deny_args(instance: &[String], user_args: &[String]) -> Vec<String> {
     let mut args = Vec::new();
     for prefix in super::effective_prefixes(instance) {
-        let value = format!("shell({})", prefix.as_str());
+        let value = format!("shell({}:*)", prefix.as_str());
         if already_denied(user_args, &value) {
             continue;
         }

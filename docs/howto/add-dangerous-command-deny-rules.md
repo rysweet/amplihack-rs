@@ -129,7 +129,7 @@ are arguments of the `copilot` process itself):
 ```console
 $ tr '\0' '\n' < /proc/4713/cmdline | grep -A1 -- --deny-tool | tail -2
 --deny-tool
-shell(docker rm -f)
+shell(docker rm -f:*)
 ```
 
 ## Remove an entry you added
@@ -258,11 +258,16 @@ having no amplihack deny rules until the warning is gone.
 ### A profile has no entries
 
 amplihack writes to managed profiles that already have a `settings.json`. It
-does not create one for a profile that has none. Launch the profile once, or
-seed it, and the entries arrive:
+does not create one for a profile that has none.
+
+Launching the profile does not fix this. `--profile` sets `CLAUDE_CONFIG_DIR`
+for the launched client only; amplihack's own launch repair writes the home
+settings file, not the profile's. Run an install, which refreshes every
+managed profile that has a settings file, or recreate the profile, which
+seeds one:
 
 ```sh
-amplihack claude --profile work
+amplihack install
 jq -r '.permissions.deny[]' ~/.amplihack/claude-profiles/work/settings.json | head -3
 ```
 

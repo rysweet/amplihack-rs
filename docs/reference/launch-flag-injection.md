@@ -29,7 +29,7 @@ can override the defaults.
 | `--model <value>` | tool is Claude-compatible AND user did not pass `--model`, unless `AMPLIHACK_DEFAULT_MODEL` is set to an empty value outside the LiteLLM gateway path. Unset, the value is `claude-opus-5[1m]`; see [--model](#-model) | `claude`, `rusty`, `rustyclawd`, `amplifier` | pass `--model`, or set `AMPLIHACK_DEFAULT_MODEL=` (empty) to pass none |
 | `--resume` | only when `amplihack launch --resume` | `launch` only (not `claude`) | pass `--resume` to the `launch` subcommand |
 | `--continue` | only when `amplihack launch --continue` | `launch` only (not `claude`) | pass `--continue` to the `launch` subcommand |
-| `--deny-tool shell(<prefix>)` | always, once per entry in the [dangerous-command policy](./dangerous-command-policy.md) that the caller has not already denied | `copilot` | pass the same `--deny-tool` yourself; change the policy with `policy.deny_commands`; see [--deny-tool](#-deny-tool) |
+| `--deny-tool shell(<prefix>:*)` | always, once per entry in the [dangerous-command policy](./dangerous-command-policy.md) that the caller has not already denied | `copilot` | pass the same `--deny-tool` yourself; change the policy with `policy.deny_commands`; see [--deny-tool](#-deny-tool) |
 | `--sandbox danger-full-access` | argv after `--` contains an `exec`/`e` subcommand AND the caller chose no sandbox | `codex` | pass your own sandbox (`--sandbox`, `--sandbox=`, `-s`, `-s<mode>`, `-s=<mode>`, `-c sandbox_mode=…`); see [Codex agent-step flags](#codex-agent-step-flags) |
 | `--dangerously-bypass-hook-trust` | argv after `--` contains an `exec`/`e` subcommand AND the flag is not already present | `codex` | none; it is added once on every Codex `exec` launch |
 
@@ -399,7 +399,7 @@ prompt. The preconditions, including the trusted-checkout requirement, are in
 
 ## --deny-tool
 
-Every Copilot CLI launch receives one `--deny-tool shell(<prefix>)` argument
+Every Copilot CLI launch receives one `--deny-tool shell(<prefix>:*)` argument
 pair per prefix in amplihack's
 [dangerous-command policy](./dangerous-command-policy.md) — ten for the
 shipped list, which renders ten prefixes from six policy entries, since the
@@ -410,28 +410,33 @@ element:
 ```text
 copilot
 --deny-tool
-shell(pkill)
+shell(pkill:*)
 --deny-tool
-shell(killall)
+shell(killall:*)
 --deny-tool
-shell(pgrep)
+shell(pgrep:*)
 --deny-tool
-shell(tmux kill-server)
+shell(tmux kill-server:*)
 --deny-tool
-shell(tmux kill-session -a)
+shell(tmux kill-session -a:*)
 --deny-tool
-shell(git push --force)
+shell(git push --force:*)
 --deny-tool
-shell(git push -f)
+shell(git push -f:*)
 --deny-tool
-shell(git push --force-with-lease)
+shell(git push --force-with-lease:*)
 --deny-tool
-shell(git push --delete)
+shell(git push --delete:*)
 --deny-tool
-shell(git push -d)
+shell(git push -d:*)
 ```
 
-The quotes in `--deny-tool 'shell(pkill)'` are shell syntax, needed only when
+The `:*` suffix is the prefix form GitHub documents for shell rules:
+`shell(git:*)` matches `git push` but not `gitea`, while a bare value is
+documented as matching literally. See
+[Verified behaviour and open checks](./dangerous-command-policy.md#verified-behaviour-and-open-checks).
+
+The quotes in `--deny-tool 'shell(pkill:*)'` are shell syntax, needed only when
 you type the flag at a prompt yourself. The value amplihack passes holds no
 quotes; do not copy them into a config file.
 
@@ -450,10 +455,11 @@ amplihack passes both and does not enforce a precedence between them.
 - Copilot CLI has no user-level file for command deny rules, only per-session
   flags, so the policy is applied here rather than at install.
 - A `--deny-tool` already present in the caller's own arguments for the same
-  prefix is not repeated. Both spellings count: `--deny-tool shell(pkill)` as
-  two arguments, and the joined `--deny-tool=shell(pkill)`. The comparison is
-  on the exact `shell(<prefix>)` text, so `shell(pkill -f)` is a different
-  value and both are passed.
+  prefix is not repeated. Both spellings count: `--deny-tool shell(pkill:*)` as
+  two arguments, and the joined `--deny-tool=shell(pkill:*)`. The comparison is
+  on the exact `shell(<prefix>:*)` text, so `shell(pkill -f:*)` is a
+  different value and both are passed, and so is a bare `shell(pkill)`
+  without the suffix.
 - Entries from `policy.deny_commands` in `~/.amplihack/config.toml` follow the
   shipped defaults, in the order written. A change applies to the next launch;
   no install or update is needed.
@@ -461,7 +467,7 @@ amplihack passes both and does not enforce a precedence between them.
 
 Whether Copilot CLI resolves a `--deny-tool` over a session approval or an
 allow flag, and whether it accepts a multi-token prefix such as
-`shell(git push --force)` at all, are third-party behaviours recorded with the
+`shell(git push --force:*)` at all, are third-party behaviours recorded with the
 version they were checked against in
 [Verified behaviour and open checks](./dangerous-command-policy.md#verified-behaviour-and-open-checks).
 Until those checks are settled, the Copilot rendering is the weakest of the
@@ -507,7 +513,7 @@ assembles the final command line. The assembly order is:
    `AMPLIHACK_DEFAULT_MODEL` outside the gateway means no `--model`
 4. `--resume` (if requested — `launch` subcommand only)
 5. `--continue` (if requested — `launch` subcommand only)
-6. `--allow-all`, then `--deny-tool shell(<prefix>)` once per
+6. `--allow-all`, then `--deny-tool shell(<prefix>:*)` once per
    dangerous-command policy entry the caller has not already denied.
    `copilot` only; see [--deny-tool](#-deny-tool)
 7. All `extra_args` in the order they were passed on the command line. For
@@ -528,7 +534,7 @@ amplihack claude --skip-permissions
 # → claude --dangerously-skip-permissions --model claude-opus-5[1m]
 
 amplihack copilot
-# → copilot --allow-all --deny-tool shell(pkill) … (one --deny-tool argument
+# → copilot --allow-all --deny-tool shell(pkill:*) … (one --deny-tool argument
 #   pair per policy entry; see the --deny-tool section above)
 
 amplihack codex

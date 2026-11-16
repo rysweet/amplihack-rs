@@ -563,10 +563,20 @@ run() {   # Arguments: extra variables for git, such as GIT_TERMINAL_PROMPT=0.
 # The control: git prompts for a username and is stopped (state T).
 run & sleep 2
 ps -eo pid,stat,cmd | awk '$2 ~ /T/'
-# End only `script`; closing the pseudo-terminal hangs up the stopped group.
-# Take the PID from the listing above rather than matching a pattern blind.
-kill "$(ps -eo pid=,args= | awk '/script -qec timeout 6 [g]it/ {print $1; exit}')"
+```
 
+The listing names three stopped processes: `script`, the `sh` it started and
+`git`. End only `script` — closing the pseudo-terminal hangs up the whole
+stopped group. Read its PID out of the listing, confirm the command line is
+the `script -qec timeout 6 git …` you just started, and name that PID:
+
+```bash
+kill <pid of script>
+```
+
+Then continue:
+
+```bash
 # With the setting, git fails at once with `terminal prompts disabled`, rc=128.
 run GIT_TERMINAL_PROMPT=0
 

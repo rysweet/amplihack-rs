@@ -167,7 +167,7 @@ entry. For `pkill`, `killall`, `pgrep` and `git push` nothing closes them; see
 |---------|-----------|-------|------------|
 | Claude Code (`claude`) | `permissions.deny` in `settings.json` | `$CLAUDE_CONFIG_DIR/settings.json`, which is `$HOME/.claude` or a managed profile | install, update, profile setup and seeding, `amplihack launch` repair |
 | `rusty`, `rustyclawd`, `amplifier` | the same file | the same file | the same writers |
-| Codex | execpolicy rules file | `$CODEX_HOME/rules/amplihack-dangerous-commands.rules` | install, update |
+| Codex | execpolicy rules file | `$CODEX_HOME/rules/amplihack-dangerous-commands.rules` | install, update, `amplihack codex` |
 | Copilot CLI | `--deny-tool` arguments | the `copilot` command line | `amplihack copilot` and every other launch of the Copilot CLI |
 
 `rusty`, `rustyclawd` and `amplifier` are
@@ -203,8 +203,10 @@ The ten default prefixes are appended to `permissions.deny`, one entry each:
 - Entries already present are not duplicated. Entries you added yourself stay,
   and every other key in `permissions` is left as it was.
 - If `permissions` is not an object, or `permissions.deny` is not an array, the
-  file is left byte-identical and gets no entries at all. Nothing is
-  overwritten, and the file is named in a warning on stderr: a settings file
+  `permissions` value is left exactly as found and gets no entries at all.
+  Nothing under `permissions` is overwritten, and the file is named in a
+  warning on stderr. The same run still merges the hooks block, the status
+  line and the backup, so the file as a whole may well change: a settings file
   that cannot take the entries is a file with no deny rules, and the run that
   met it does not claim Claude coverage. See *Loud on failure* under
   [How the files are written](#how-the-files-are-written), and
@@ -326,31 +328,42 @@ amplihack copilot
 # amplihack spawns (argv, one element per line):
 copilot
 --deny-tool
-shell(pkill)
+shell(pkill:*)
 --deny-tool
-shell(killall)
+shell(killall:*)
 --deny-tool
-shell(pgrep)
+shell(pgrep:*)
 --deny-tool
-shell(tmux kill-server)
+shell(tmux kill-server:*)
 --deny-tool
-shell(tmux kill-session -a)
+shell(tmux kill-session -a:*)
 --deny-tool
-shell(git push --force)
+shell(git push --force:*)
 --deny-tool
-shell(git push -f)
+shell(git push -f:*)
 --deny-tool
-shell(git push --force-with-lease)
+shell(git push --force-with-lease:*)
 --deny-tool
-shell(git push --delete)
+shell(git push --delete:*)
 --deny-tool
-shell(git push -d)
+shell(git push -d:*)
 ```
 
 amplihack spawns `copilot` directly, with no shell in between, so each value is
 one argv element and holds no quotes. The quotes in
-`--deny-tool 'shell(pkill)'` are shell syntax, needed only when you type the
+`--deny-tool 'shell(pkill:*)'` are shell syntax, needed only when you type the
 flag at a prompt yourself; do not copy them into a config file.
+
+The `:*` suffix is the prefix form GitHub documents for shell rules:
+`shell(git:*)` matches `git push` but not `gitea`, while a bare
+`shell(git status)` is documented as matching that text literally and so
+would spare every invocation that carries arguments. Whether a bare stem
+nevertheless matches invocations with arguments is
+[not settled upstream](#verified-behaviour-and-open-checks); the suffixed
+form is the one both GitHub pages agree on, so it is what amplihack sends.
+One consequence: if you already pass `--deny-tool=shell(pkill)` yourself,
+amplihack does not recognise it as the same rule and adds `shell(pkill:*)`
+beside it. Both deny, so the duplicate is harmless.
 
 These are not the only flags amplihack injects into a `copilot` launch:
 `--allow-all` is injected as well, unless the caller passed an allow-all flag
@@ -367,10 +380,10 @@ flags handed to a harness that documents a deny-over-allow order, not as a
 stop amplihack performs.
 
 - A `--deny-tool` you pass yourself for the same prefix is not repeated. Both
-  spellings count: `--deny-tool shell(pkill)` as two arguments, and the joined
-  `--deny-tool=shell(pkill)`. The comparison is on the exact `shell(<prefix>)`
-  text, so `shell(pkill )` or `shell(pkill -f)` is a different value and both
-  are passed.
+  spellings count: `--deny-tool shell(pkill:*)` as two arguments, and the
+  joined `--deny-tool=shell(pkill:*)`. The comparison is on the exact
+  `shell(<prefix>:*)` text, so `shell(pkill :*)`, `shell(pkill -f:*)` and a
+  bare `shell(pkill)` are each a different value and both are passed.
 - Because this runs at launch, a `copilot` you start by hand, outside
   `amplihack`, has no deny rules.
 - The denied command names are visible in the process table, since they are
@@ -380,7 +393,7 @@ stop amplihack performs.
 
 Whether Copilot resolves a `--deny-tool` over a session approval already
 saved in the project's `permissions-config.json`, and whether it accepts a
-multi-token prefix such as `shell(git push --force)` at all, are recorded in
+multi-token prefix such as `shell(git push --force:*)` at all, are recorded in
 [Verified behaviour and open checks](#verified-behaviour-and-open-checks).
 Until both are settled this is the weakest of the three renderings, and the
 only one that is rebuilt rather than stored.
@@ -462,20 +475,39 @@ confirmation that the whole value reverted to unset.
 |---------|-------------|------------------|-------|---------|
 | `amplihack install` | yes | yes | yes | states the per-launch mechanism |
 | `amplihack update` | yes | yes | yes | states the per-launch mechanism |
-| `amplihack profile add` / seeding | yes | the new profile | no | no |
-| `amplihack claude`, `amplihack copilot` | yes, through launch repair | the launched profile | no | the deny flags |
-| `amplihack codex` | yes, through launch repair | the launched profile | yes | n/a |
+| `amplihack profile add` / seeding | no | the new profile | no | no |
+| `amplihack claude`, `amplihack copilot` | only if launch repair rewrites it | no | no | the deny flags |
+| `amplihack codex` | only if launch repair rewrites it | no | yes | n/a |
 
-The Claude entries are therefore refreshed on every launch, not only on install
-and update. That is the existing launch-repair path, which already rewrites the
-settings file.
+The entries are written by `amplihack install`, `amplihack update` and
+`amplihack profile add`. A launch writes them only if it already had to
+repair the hooks block: launch repair returns early when the hooks block is
+current, and drift is computed over that block alone, so a launch whose
+hooks are up to date never reaches the settings writer. Empty
+`permissions.deny` by hand and no launch restores it; run `amplihack
+install` or `amplihack update`.
+
+A launch repairs the home settings file, not the launched profile's. The
+`--profile` flag sets `CLAUDE_CONFIG_DIR` for the child process only, and
+launch repair reads amplihack's own environment; when `CLAUDE_CONFIG_DIR`
+*is* exported into amplihack itself, an absent settings file there is not
+created. Only `amplihack install` (which refreshes every managed profile)
+or `amplihack profile add` (which seeds a new one) writes a profile's file.
 
 The Codex row is the one exception, and it is deliberate. A launch of another
 client leaves the Codex home byte-identical, which issue #1538 pins and its
 integration tests check; only a Codex launch refreshes the rules file. An
 explicit `amplihack install` or `amplihack update` writes it either way.
 
-A harness home that does not exist is not created. Nothing is written outside
+A Codex home that does not exist is not created; the run says so and writes
+nothing. The Claude writer is the other way round: an explicit install
+creates `~/.claude/settings.json` if it is absent, so a bare `$HOME` comes
+out of `amplihack install` with the entries in place.
+
+The table above describes the default global hook scope. An install that
+chose repo-local scope writes `<repo>/.claude/settings.json` instead — which
+is outside `$HOME` — and does not refresh the managed profiles at all, even
+though the line it prints still mentions them. Everything else is confined to
 `$HOME`, the Codex home and the managed profile root.
 
 ## How the files are written
@@ -484,7 +516,8 @@ A harness home that does not exist is not created. Nothing is written outside
   array that is there. Your own entries and every unrelated key survive. The
   Codex rules file is amplihack's own and is rewritten whole.
 - **Idempotent by content.** A second run leaves every written file
-  byte-identical, and reports that there was nothing to change.
+  byte-identical. The report does not distinguish the two: a run that added
+  entries and a run that found them all already there print the same line.
 - **Atomic, and private.** Each file is written to a temporary file in the same
   directory, created with `O_EXCL` and `O_NOFOLLOW` at mode 0600, synced, then
   renamed over the target. Those two flags are what makes the temporary file
@@ -506,7 +539,7 @@ A harness home that does not exist is not created. Nothing is written outside
   created with `create_dir_all` and chmod-ed 0700, and both of those follow a
   link.
 - **Loud on failure.** A policy write that does not succeed prints one line on
-  stderr, in quiet mode as well, and install still exits 0. Every writer uses
+  stderr, and install still exits 0. Every writer uses
   the same sentence, which names the harness, the file in question and the
   reason, and nothing else:
 
@@ -518,13 +551,19 @@ A harness home that does not exist is not created. Nothing is written outside
   ⚠️  Claude Code (profile work): the dangerous-command deny rules were not written (permissions.deny is not a JSON array); fix what that names, then run `amplihack install` again
   ```
 
-  Three paths report this way: `amplihack install` and `amplihack update`
+  Four paths report this way: `amplihack install` and `amplihack update`
   (whose policy section carries the line), the per-profile refresh (reported
   through the same section), and profile seeding, which writes the line to
   stderr itself as it seeds, because `amplihack profile add` has no policy
-  section to carry it. The launch-time repair writes the same home settings
-  file but says nothing about the policy; a file it cannot write is named by
-  the next `amplihack install` or `amplihack update`. The reason names a JSON
+  section to carry it. The launch-time repair is the fourth: it writes the
+  same home settings file but says nothing about the policy, so a file it
+  cannot write there is named by the next `amplihack install` or `amplihack
+  update`.
+
+  A file the merge refuses before the policy writer runs — malformed JSON, a
+  symlink, a hard link, a foreign-owned or oversized `settings.json` — is
+  reported the same way. It is a file that took no entries, not a file that
+  does not exist, and the two must not read alike. The reason names a JSON
   key or an I/O error kind; it never quotes a value read out of the file.
 
   A deny list that is believed to be present and is not is worse than none, so
@@ -592,9 +631,11 @@ does not say which profile cannot be acted on.
 
 ## Uninstall
 
-`amplihack uninstall` removes the Codex rules file, and only that file: it is
-checked for the `# amplihack:` ownership marker on its first line, so a symlink or an unmarked
-regular file at that path is left in place. It is removed whenever it is there,
+`amplihack uninstall` removes the Codex rules file, and only that file: the
+file must start with the whole 41-character marker line
+`# amplihack: dangerous-command deny rules`, so a symlink, an unmarked
+regular file, or a file whose first line merely begins `# amplihack:` and
+then says something else, is left in place. It is removed whenever it is there,
 on the same unconditional terms as the rest of the Codex cleanup.
 
 The Claude entries are not removed. They sit in an array among your own
@@ -655,6 +696,8 @@ is not a boundary, and nothing here should be relied on as one.
 | Refspec deletion | `git push origin :topic` | no |
 | `git -c` prefixes | `git -c core.pager=cat push --force` | no |
 | Grouped tmux flags, Codex only | `tmux kill-session -at x`, `-aC` | yes |
+| An attached value, Codex only | `git push --force-with-lease=origin/main` | no |
+| Grouped push flags, Codex only | `git push -fu origin main` | no |
 | tmux flags after the target | `tmux kill-session -t foo -a` | yes |
 | A socket-qualified tmux command | `tmux -S /tmp/s kill-server` | allowed on purpose |
 | A shell alias or function | `alias k=pkill` | no |
@@ -664,6 +707,18 @@ is not a boundary, and nothing here should be relied on as one.
 tmux commands, on Claude Code, Copilot and Codex alike, but nothing closes it
 for `pkill`, `killall`, `pgrep` or `git push`. See
 [Hook Specifications](./hook-specifications.md#tmux-server-guard).
+
+"Codex only" marks the three rows where the harnesses disagree. Claude and
+Copilot match the command *text*, so anything that starts with the prefix is
+denied; Codex compares whole argv *tokens*, so a flag that carries its value
+(`--force-with-lease=origin/main`) or that is grouped with another letter
+(`-fu`, `-at`) is a different token and matches nothing. This matters most
+for `--force-with-lease=<ref>`, which is the spelling git's own
+documentation steers people towards. Checked against codex-cli 0.166.0: both
+push forms above return `{"matchedRules":[]}`, while `git push --force`,
+`git push -f origin main` and a bare `git push --force-with-lease` are
+`forbidden`. It cannot be closed in the rules file, because the set of
+attached values and flag groupings is open-ended.
 
 "Codex only" means the escape exists in the Codex rendering and not in the
 other two: Codex compares whole tokens, so `-at` is not `-a`, while Claude and
@@ -713,8 +768,11 @@ settle before the sentence that depends on it is final.
 | Codex loads `$CODEX_HOME/rules/*.rules` without a `--rules` argument | checked, codex-cli 0.166.0 |
 | Codex applies a rule to the absolute-path form (`/usr/bin/pkill`) | **no**, codex-cli 0.166.0: unmatched |
 | Codex applies a rule to the `bash -lc "..."` form | **no**, codex-cli 0.166.0: unmatched |
-| Claude Code applies `permissions.deny` under `defaultMode: bypassPermissions` | reported live in [#2674](https://github.com/rysweet/amplihack-rs/issues/2674); not re-checked here, and the whole Claude rendering rests on it |
-| Claude Code matches a denied prefix inside `&&`, `;`, `\|` and `$(...)` chains | reported live in [#2674](https://github.com/rysweet/amplihack-rs/issues/2674); not re-checked here |
+| Codex matches a flag that carries its value (`--force-with-lease=<ref>`) or is grouped with another letter (`-fu`) | **no**, codex-cli 0.166.0: unmatched, and it cannot be closed in the rules file |
+| Claude Code applies `permissions.deny` under `defaultMode: bypassPermissions` | checked, Claude Code session with `Bash(pgrep:*)` denied and `defaultMode: bypassPermissions` set: `pgrep --version` was denied. First reported in [#2674](https://github.com/rysweet/amplihack-rs/issues/2674) |
+| Claude Code matches a denied prefix inside `&&`, `;`, `\|` and `$(...)` chains | checked for `&&` in the same session: `true && pgrep --version` was denied. The other three separators are still [#2674](https://github.com/rysweet/amplihack-rs/issues/2674) only |
+| Copilot CLI treats `shell(<prefix>:*)` as a prefix rule rather than a literal | documented by GitHub for shell rules, not executed here; amplihack sends the suffixed form because it is the one both GitHub pages agree on |
+| Copilot CLI matches a bare `shell(<prefix>)` against invocations with arguments | **not settled**: GitHub's CLI reference implies yes, its `permissions-config.json` reference documents literal matching, and [github/copilot-cli#1736](https://github.com/github/copilot-cli/issues/1736) reports the narrower behaviour. amplihack does not rely on it |
 | Copilot CLI resolves `--deny-tool` over a saved project approval | open |
 | Copilot CLI accepts a multi-token prefix in `shell(...)` | open |
 

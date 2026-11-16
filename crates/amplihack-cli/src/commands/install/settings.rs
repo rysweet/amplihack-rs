@@ -116,6 +116,16 @@ pub(super) fn ensure_settings_json_for(
                 "  ⚠️  {shown} was not changed ({reason}); hooks were not registered there. \
                  Replace it with a regular file you own, then run `amplihack install` again"
             );
+            // Issue #2589 (SEC-C3): the merge refused this file before
+            // `update` ran, so `ensure_permissions` never reached
+            // `apply_deny_policy` and the file is absent from the record.
+            // Without this the policy section reads an empty record and
+            // reports that there is no Claude settings file on this machine,
+            // while one exists and took no entries.
+            crate::policy::claude::record(
+                HOME_SETTINGS_LABEL,
+                &crate::policy::claude::DenyOutcome::Unparseable(reason),
+            );
             return Ok((false, Vec::new()));
         }
     }
@@ -327,6 +337,18 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     for (name, result) in &results {
         if let Refresh::Skipped(reason) = result {
             println!("  ⚠️  Profile {name}: settings.json not refreshed ({reason})");
+            // Issue #2589 (SEC-C3): `update_file` refused this profile before
+            // the closure above ran, so `apply_deny_policy` never met it and
+            // it left no record. The label must be byte-identical to the one
+            // the closure uses, because the record is keyed by label.
+            //
+            // `Refresh::Missing` stays unrecorded on purpose: a profile with
+            // no settings.json is nothing to write into, not a refusal, which
+            // matches `FileMerge::Absent => None` in `ProfileStore`.
+            crate::policy::claude::record(
+                &format!("profile {name}"),
+                &crate::policy::claude::DenyOutcome::Unparseable(reason.clone()),
+            );
         }
     }
 }
@@ -731,11 +753,53 @@ mod tests {
     // issue #2589: apply_deny_policy reports what it met
     // -----------------------------------------------------------------------
 
+    /// A temp HOME and the shared env lock, restored on drop.
+    ///
+    /// `apply_deny_policy` reads `$HOME/.amplihack/config.toml` through
+    /// `user_config::policy_deny_commands()`. Without this the three tests
+    /// below read the developer's real config and race every other
+    /// HOME-mutating test in the binary.
+    struct TempHome {
+        _dir: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl TempHome {
+        fn set() -> Self {
+            let lock = crate::test_support::env_lock()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let dir = crate::test_support::tempdir_outside_framework_roots();
+            let previous = std::env::var_os("HOME");
+            // SAFETY: edition 2024 requires unsafe; the env lock is held.
+            unsafe { std::env::set_var("HOME", dir.path()) };
+            Self {
+                _dir: dir,
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            // SAFETY: as in `set`.
+            unsafe {
+                match self.previous.take() {
+                    Some(value) => std::env::set_var("HOME", value),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
     /// The reason reaches the caller. Returning `()` and logging through
     /// `tracing::warn!` left an ordinary install with no sign that a
     /// settings file had taken no deny entries at all.
     #[test]
     fn apply_deny_policy_returns_the_reason_a_file_could_not_take_the_entries() {
+        let _home = TempHome::set();
         let mut settings = json!({"permissions": {"deny": "Bash(curl:*)"}});
         let reason = apply_deny_policy(&mut settings, "home settings")
             .expect("a deny value that is not an array is reported");
@@ -744,14 +808,19 @@ mod tests {
             settings["permissions"]["deny"], "Bash(curl:*)",
             "and the value is left as it was found"
         );
+        // This test records an `Unparseable` for `home settings`; leaving it
+        // behind would be read by whatever runs next on this thread.
+        crate::policy::claude::clear_record();
     }
 
     #[test]
     fn apply_deny_policy_returns_nothing_when_the_entries_were_written() {
+        let _home = TempHome::set();
         let mut settings = json!({"permissions": {"deny": []}});
         assert!(apply_deny_policy(&mut settings, "home settings").is_none());
         let deny = settings["permissions"]["deny"].as_array().unwrap().clone();
         assert!(deny.iter().any(|v| v == "Bash(pkill:*)"), "{deny:?}");
+        crate::policy::claude::clear_record();
     }
 
     /// SEC-C2: `ensure_permissions` must not replace a `permissions` value it
@@ -759,10 +828,12 @@ mod tests {
     /// hides the fact that the file took no deny entries.
     #[test]
     fn ensure_permissions_leaves_a_permissions_value_it_cannot_merge_alone() {
+        let _home = TempHome::set();
         let mut settings = json!({"language": "en", "permissions": "bypassPermissions"});
         ensure_permissions(&mut settings);
         assert_eq!(settings["permissions"], "bypassPermissions");
         assert_eq!(settings["language"], "en");
+        crate::policy::claude::clear_record();
     }
 
     // -----------------------------------------------------------------------

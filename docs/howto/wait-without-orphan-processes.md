@@ -185,7 +185,7 @@ any left from before the guard, list them by exact match and check each
 before ending it:
 
 ```bash
-pgrep -xa tail | grep -F ' -f /dev/null'
+ps -eo pid=,args= | grep -F 'tail -f /dev/null' | grep -v grep
 ```
 
 The list also shows the `tail -f /dev/null` entry point of any running

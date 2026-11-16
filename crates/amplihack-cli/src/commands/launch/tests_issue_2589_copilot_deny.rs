@@ -69,7 +69,7 @@ fn copilot_launch_carries_a_deny_tool_flag_for_every_policy_prefix() {
         .collect();
     assert_eq!(denied(&args), expected, "{args:?}");
     assert!(
-        denied(&args).contains(&"shell(pkill)".to_string()),
+        denied(&args).contains(&"shell(pkill:*)".to_string()),
         "{args:?}"
     );
 }
@@ -86,7 +86,7 @@ fn the_deny_flags_are_injected_even_when_allow_all_is_suppressed() {
         "the opt-out still suppresses allow-all: {args:?}"
     );
     assert!(
-        denied(&args).contains(&"shell(pkill)".to_string()),
+        denied(&args).contains(&"shell(pkill:*)".to_string()),
         "but the policy still applies: {args:?}"
     );
 }
@@ -103,18 +103,18 @@ fn the_deny_flags_are_injected_alongside_allow_all_by_default() {
 #[test]
 fn a_users_own_deny_tool_for_the_same_prefix_is_not_duplicated() {
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    let extra = vec!["--deny-tool".to_string(), "shell(pkill)".to_string()];
+    let extra = vec!["--deny-tool".to_string(), "shell(pkill:*)".to_string()];
     let args = build("copilot", &extra);
     assert_eq!(
         denied(&args)
             .iter()
-            .filter(|v| *v == "shell(pkill)")
+            .filter(|v| *v == "shell(pkill:*)")
             .count(),
         1,
         "{args:?}"
     );
     assert!(
-        denied(&args).contains(&"shell(killall)".to_string()),
+        denied(&args).contains(&"shell(killall:*)".to_string()),
         "the rest still render: {args:?}"
     );
 }
@@ -122,10 +122,10 @@ fn a_users_own_deny_tool_for_the_same_prefix_is_not_duplicated() {
 #[test]
 fn the_joined_deny_tool_spelling_also_suppresses_the_duplicate() {
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    let extra = vec!["--deny-tool=shell(pkill)".to_string()];
+    let extra = vec!["--deny-tool=shell(pkill:*)".to_string()];
     let args = build("copilot", &extra);
     assert!(
-        !denied(&args).contains(&"shell(pkill)".to_string()),
+        !denied(&args).contains(&"shell(pkill:*)".to_string()),
         "{args:?}"
     );
 }
@@ -181,11 +181,11 @@ fn an_instance_addition_reaches_the_copilot_argv() {
     crate::test_support::restore_home(previous);
 
     assert!(
-        denied(&args).contains(&"shell(shutdown)".to_string()),
+        denied(&args).contains(&"shell(shutdown:*)".to_string()),
         "{args:?}"
     );
     assert!(
-        denied(&args).contains(&"shell(pkill)".to_string()),
+        denied(&args).contains(&"shell(pkill:*)".to_string()),
         "an addition removes no default: {args:?}"
     );
 }
@@ -197,9 +197,27 @@ fn the_injected_values_are_short_command_names_only() {
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     for value in denied(&build("copilot", &[])) {
         assert!(value.starts_with("shell("), "{value}");
-        assert!(value.ends_with(')'), "{value}");
+        // The `:*` suffix is what GitHub documents as the shell-rule prefix
+        // form. A bare `shell(<prefix>)` is documented as matching that text
+        // literally, which would spare every invocation that has arguments.
+        assert!(value.ends_with(":*)"), "{value}");
         assert!(value.len() <= 64, "{value}");
     }
+}
+
+/// The documented side effect of the `:*` suffix: a caller who denied the
+/// bare stem is not recognised, and the suffixed form is added beside it.
+/// Both deny, so the duplicate is harmless; this pins that it is a duplicate
+/// and not a gap.
+#[test]
+fn a_users_bare_stem_deny_tool_does_not_suppress_the_suffixed_form() {
+    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let extra = vec!["--deny-tool=shell(pkill)".to_string()];
+    let args = build("copilot", &extra);
+    assert!(
+        denied(&args).contains(&"shell(pkill:*)".to_string()),
+        "the policy still renders its own form: {args:?}"
+    );
 }
 
 // --- the Claude-family harnesses (F9, D7) -----------------------------------

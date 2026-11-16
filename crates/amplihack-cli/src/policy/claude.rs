@@ -81,12 +81,25 @@ pub(crate) fn ensure_deny(settings: &mut Value, instance: &[String]) -> DenyOutc
 // writer, the per-profile refresh and profile seeding. They run at different
 // points of a run and none of them returns to the install's policy section,
 // so each records what the file it met came to and the policy section reads
-// the record. The alternative, threading a result back through all three, put
-// the reason in `tracing::warn!` alone, which an ordinary install never shows.
+// the record.
 //
 // The record is per thread: the install writes and reads it on one thread,
 // and a per-thread record keeps this crate's tests independent of each other
 // without a lock.
+//
+// This is the wrong shape and is being replaced. Its correctness rests on
+// four call-site rules nothing enforces -- clear where each write phase
+// starts, record from every writer, read after every writer, clear in tests
+// -- and rule 2 was broken at two of four sites before
+// `every_refusal_arm_in_the_install_writer_records_what_it_refused` was
+// added to guard it. The explicit channel already exists:
+// `refresh_profile_settings` returns the skipped profiles with their
+// reasons, and `apply_deny_policy` returns `Option<String>` beside
+// recording, so the same fact travels two channels. Passing those into
+// `install_report_lines` deletes `record`, `clear_record`, `take_record`,
+// the three clear-sites and 46 test calls, and makes the bug class
+// unrepresentable. Tracked as issue #2751, which also moves
+// `apply_deny_policy` out of the install module into this one.
 
 use std::cell::RefCell;
 

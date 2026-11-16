@@ -8,8 +8,11 @@
 //! as `pub(crate)` beside the existing `ProfileStore` re-export, so the
 //! seeding test can create a profile.
 //!
-//! Every test here uses a temp HOME and a temp profile root. None of them
-//! touches the real `~/.claude`, `~/.codex` or `~/.amplihack` (T1, #2586).
+//! Every test here uses a temp HOME and a temp profile root, and unsets
+//! `CODEX_HOME`, which `codex_home()` prefers over `$HOME/.codex`: without that
+//! a machine where it is set would have these tests write the rules file into
+//! the developer's real Codex home. None of them touches the real
+//! `~/.claude`, `~/.codex` or `~/.amplihack` (T1, #2586).
 
 use super::super::settings::{
     PROFILE_REFRESH_TEST_OPT_IN, ensure_settings_json_for, refresh_profile_hooks,
@@ -133,7 +136,7 @@ fn install_writes_every_default_deny_entry_once_into_the_home_settings_file() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
-    let _env = Env::set(&[("HOME", Some(&home))]);
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let settings = install_home_settings(&home);
     let deny = deny_entries(&read_json(&settings));
@@ -151,7 +154,7 @@ fn install_keeps_a_users_own_deny_entry_and_unrelated_settings_keys() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
-    let _env = Env::set(&[("HOME", Some(&home))]);
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let claude = home.join(".claude");
     fs::create_dir_all(&claude).unwrap();
@@ -178,7 +181,7 @@ fn a_second_install_leaves_the_home_settings_file_byte_identical() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
-    let _env = Env::set(&[("HOME", Some(&home))]);
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let settings = install_home_settings(&home);
     let before = fingerprint(&settings);
@@ -198,7 +201,7 @@ fn an_instance_addition_appears_in_the_home_file_alongside_the_defaults() {
     let home = d.path().join("home");
     fs::create_dir_all(&home).unwrap();
     instance_config(&home, &["shutdown"]);
-    let _env = Env::set(&[("HOME", Some(&home))]);
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let settings = install_home_settings(&home);
     let deny = deny_entries(&read_json(&settings));
@@ -216,7 +219,7 @@ fn no_written_entry_denies_an_ordinary_push() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
-    let _env = Env::set(&[("HOME", Some(&home))]);
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let deny = deny_entries(&read_json(&install_home_settings(&home)));
     for entry in &deny {
@@ -252,6 +255,7 @@ fn profile_refresh_writes_the_policy_into_each_profile_settings_json() {
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
+        ("CODEX_HOME", None),
     ]);
 
     refresh_profile_hooks(&hooks);
@@ -282,6 +286,7 @@ fn a_profiles_own_deny_entries_survive_the_refresh() {
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
+        ("CODEX_HOME", None),
     ]);
 
     refresh_profile_hooks(&hooks);
@@ -307,6 +312,7 @@ fn a_second_profile_refresh_leaves_the_file_byte_identical() {
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
+        ("CODEX_HOME", None),
     ]);
 
     refresh_profile_hooks(&hooks);
@@ -331,6 +337,7 @@ fn a_profile_with_a_malformed_permissions_value_is_left_as_found() {
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
+        ("CODEX_HOME", None),
     ]);
 
     refresh_profile_hooks(&hooks);
@@ -355,6 +362,7 @@ fn a_profile_without_a_settings_file_does_not_gain_one() {
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
+        ("CODEX_HOME", None),
     ]);
 
     refresh_profile_hooks(&hooks);
@@ -384,7 +392,7 @@ fn seeding_a_new_profile_writes_the_policy_even_from_a_pre_change_home_file() {
     let root = home.join("profiles");
     fs::create_dir_all(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let _env = Env::set(&[("HOME", Some(&home))]);
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let store = ProfileStore::new(root.clone()).with_shared_assets(source);
     let name = ProfileName::parse("fresh").unwrap();
@@ -462,7 +470,7 @@ fn a_home_file_whose_deny_is_not_an_array_is_left_as_found_and_warns() {
         r#"{"language":"en","permissions":{"deny":"Bash(curl:*)"}}"#,
     )
     .unwrap();
-    let _env = Env::set(&[("HOME", Some(&home))]);
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let settings = install_home_settings(&home);
     let value = read_json(&settings);
@@ -504,7 +512,7 @@ fn a_home_file_whose_permissions_is_not_an_object_is_left_as_found_and_warns() {
         r#"{"language":"en","permissions":"bypassPermissions"}"#,
     )
     .unwrap();
-    let _env = Env::set(&[("HOME", Some(&home))]);
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let settings = install_home_settings(&home);
     let value = read_json(&settings);
@@ -544,7 +552,7 @@ fn a_claude_warning_never_quotes_a_value_read_out_of_the_file() {
         r#"{"permissions":{"deny":"SECRET-VALUE-9f2a"}}"#,
     )
     .unwrap();
-    let _env = Env::set(&[("HOME", Some(&home))]);
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     install_home_settings(&home);
     let report = apply_dangerous_command_policy();
@@ -567,7 +575,7 @@ fn a_run_that_wrote_the_home_file_reports_claude_as_written_without_a_warning() 
     clear_policy_record();
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
-    let _env = Env::set(&[("HOME", Some(&home))]);
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     install_home_settings(&home);
     let report = apply_dangerous_command_policy();
@@ -598,6 +606,7 @@ fn a_refused_profile_is_named_in_the_install_warning() {
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
+        ("CODEX_HOME", None),
     ]);
 
     refresh_profile_hooks(&hooks);
@@ -627,6 +636,7 @@ fn one_refused_profile_beside_a_written_home_file_reports_a_partial_write() {
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
+        ("CODEX_HOME", None),
     ]);
 
     install_home_settings(&home);
@@ -668,7 +678,7 @@ fn seeding_a_profile_it_cannot_write_records_the_refusal() {
     let root = home.join("profiles");
     fs::create_dir_all(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let _env = Env::set(&[("HOME", Some(&home))]);
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let store = ProfileStore::new(root.clone()).with_shared_assets(source);
     let name = ProfileName::parse("fresh").unwrap();
@@ -711,4 +721,140 @@ fn the_seeding_path_writes_its_warning_to_stderr() {
         body.contains("eprintln!"),
         "a refusal met while seeding must reach stderr, not only tracing:\n{body}"
     );
+}
+
+// --- a file the merge refused before the policy writer ran (SEC-C3) ---------
+//
+// `apply_deny_policy` runs inside the closure `hook_block::update_file` is
+// given, and the merge decides whether to run that closure. Every path that
+// refuses a file before the closure runs leaves the file absent from the
+// record, and an absent file reads as "this harness has no file" -- a
+// positive, and wrong, claim. The two tests below are the reachable shapes:
+// a hand-edited profile with a trailing comma, and a dotfile-managed symlink.
+
+/// A profile whose `settings.json` is not JSON is refused by the merge
+/// before the policy writer runs. Beside a home file that did take the
+/// entries, that is a partial write with the profile named, not a silent
+/// complete one.
+#[test]
+fn a_profile_the_merge_refused_before_the_writer_ran_is_still_reported() {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let d = tempdir_outside_framework_roots();
+    let home = d.path().join("home");
+    let root = home.join("profiles");
+    // Not JSON: `update_file` returns `Unparseable` and never runs the
+    // closure that would have applied the policy.
+    profile_settings(&root, "{ not json");
+    let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
+    let _env = Env::set(&[
+        (ROOT_ENV, Some(&root)),
+        (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
+        ("HOME", Some(&home)),
+        ("CODEX_HOME", None),
+    ]);
+
+    install_home_settings(&home);
+    refresh_profile_hooks(&hooks);
+    let report = apply_dangerous_command_policy();
+
+    assert_eq!(
+        fs::read_to_string(root.join("work/settings.json")).unwrap(),
+        "{ not json",
+        "the file was refused, so it is unchanged"
+    );
+    assert!(
+        !claims_written(&report.lines, "Claude Code"),
+        "one profile took no entries, so this is not a complete write: {:?}",
+        report.lines
+    );
+    assert_eq!(
+        report.warnings.len(),
+        1,
+        "the refused profile is warned about once: {:?}",
+        report.warnings
+    );
+    assert!(
+        report.warnings[0].contains("profile work"),
+        "the warning names the profile it met: {:?}",
+        report.warnings
+    );
+}
+
+/// A symlinked home `settings.json` is refused by the merge before the
+/// policy writer runs. The record must still hold it, or the report claims
+/// there is no Claude settings file on this machine while one exists and
+/// took no entries.
+#[test]
+fn a_symlinked_home_settings_file_is_reported_as_refused_not_as_absent() {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let d = tempdir_outside_framework_roots();
+    let home = d.path().join("home");
+    let claude = home.join(".claude");
+    fs::create_dir_all(&claude).unwrap();
+    let elsewhere = d.path().join("elsewhere.json");
+    fs::write(&elsewhere, "{}\n").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, claude.join("settings.json")).unwrap();
+    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+
+    install_home_settings(&home);
+    let report = apply_dangerous_command_policy();
+
+    assert_eq!(
+        fs::read_to_string(&elsewhere).unwrap(),
+        "{}\n",
+        "a symlinked settings file is left as it was found"
+    );
+    let claude_line = report
+        .lines
+        .iter()
+        .find(|line| line.text.starts_with("Claude Code:"));
+    assert!(
+        claude_line.is_none(),
+        "every Claude file was refused, so nothing is claimed: {claude_line:?}"
+    );
+    assert_eq!(
+        report.warnings.len(),
+        1,
+        "the refused home file is warned about once: {:?}",
+        report.warnings
+    );
+    assert!(
+        report.warnings[0].contains("home settings"),
+        "the warning names the file it met: {:?}",
+        report.warnings
+    );
+}
+
+/// Structural: every arm in `install/settings.rs` that turns a merge result
+/// into a refusal records it. `record` is called from inside the merge
+/// closure, so an arm that returns before the closure runs and does not
+/// record leaves a refused file looking like a file that does not exist.
+/// Without this check that contract is a comment, and it was already broken
+/// once at two of the four sites.
+#[test]
+fn every_refusal_arm_in_the_install_writer_records_what_it_refused() {
+    const SOURCE: &str = include_str!("../settings.rs");
+    let arms = [
+        "FileMerge::Refused(reason) => {",
+        "Refresh::Skipped(reason) = result {",
+    ];
+    for arm in arms {
+        let after = SOURCE
+            .split(arm)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{arm} is still a match arm in install/settings.rs"));
+        // To the end of the block, so a later unrelated `record(` cannot
+        // satisfy the check: `\n        }` at the arm's own indent closes it.
+        let body = after
+            .split_once("\n        }")
+            .unwrap_or_else(|| panic!("{arm} is a closed block"))
+            .0;
+        assert!(
+            body.contains("::record("),
+            "the arm after {arm:?} returns without recording the file it refused, so the \
+             policy section cannot tell it from a file that does not exist:\n{body}"
+        );
+    }
 }
