@@ -143,7 +143,7 @@ fn world_with(name: &str, body: &str) -> World {
 
 #[test]
 fn t5_a_successful_run_leaves_no_cleanup_child_and_no_snapshot() {
-    let runner = runner("t5 success");
+    let runner = runner();
     let world = world_with(
         "t5-ok",
         "\"$AMPLIHACK_HOME/amplifier-bundle/tools/identity.sh\" > /dev/null\n",
@@ -153,7 +153,7 @@ fn t5_a_successful_run_leaves_no_cleanup_child_and_no_snapshot() {
 
 #[test]
 fn t5_a_failed_run_leaves_no_cleanup_child_and_no_snapshot() {
-    let runner = runner("t5 failure");
+    let runner = runner();
     let world = world_with("t5-fail", "exit 3\n");
     run_and_check(&world, &runner, "t5-fail", false);
 }

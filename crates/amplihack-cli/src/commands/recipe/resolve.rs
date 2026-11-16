@@ -412,6 +412,10 @@ fn classify_recipe_path(
     if let Some(bundle_dir) = foreign_bundle_dir(&canonical) {
         anyhow::bail!(foreign_bundle_message(&canonical, bundle_dir, selection));
     }
+    // A standalone recipe file, returned as the caller gave it rather than
+    // canonicalised: E15 names the path the way the user typed it. The two
+    // `Bundle` arms above return `canonical` instead, because what they name
+    // is the bundle the run is pinned to, not the user's spelling of it.
     Ok((path.clone(), RecipeOrigin::File(path)))
 }
 

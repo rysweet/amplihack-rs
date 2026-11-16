@@ -1007,6 +1007,52 @@ fn an_unreadable_pin_record_is_noted_not_silently_dropped() {
     );
 }
 
+/// A record that *parses* reaches the same degraded values as one that
+/// cannot be read, so it must explain itself the same way (#2528).
+#[test]
+fn a_pin_record_with_an_unusable_field_is_noted_not_silently_dropped() {
+    let (_tmp, root) = scratch();
+    let (work, marker) = parent_snapshot(&root);
+    let select = || select_from(nested_inputs(&root, &work, &marker, "installed")).unwrap();
+    let write = |source: &str, version: &str| {
+        let record = format!(
+            r#"{{"source":"{source}","version":"{version}","choice":"installed","inherited":true}}"#
+        );
+        fs::write(marker.join("pin.json"), record).unwrap();
+    };
+
+    // A relative `source`: the snapshot stands in, and the note says so.
+    write("amplifier-bundle", "1.2.3");
+    let relative = select();
+    assert!(relative.inherited());
+    assert_eq!(relative.version(), "1.2.3", "only the source was unusable");
+    let note = relative.notes().join("\n");
+    assert!(note.contains("relative source"), "{note}");
+    assert!(note.contains("pin.json"), "{note}");
+    assert!(
+        !note.contains("amplifier-bundle\""),
+        "the note names the field, not its contents: {note}"
+    );
+    let pinned = pin(&relative, &work, false).unwrap();
+    assert_eq!(
+        Path::new(&pinned.record().source),
+        marker.join("amplifier-bundle"),
+        "the snapshot stands in for the relative source"
+    );
+    drop(pinned);
+
+    // A version `sanitize_version` rejects: `unknown`, and the note says so.
+    write(
+        &marker.join("amplifier-bundle").display().to_string(),
+        "1.2 (dev)",
+    );
+    let version = select();
+    assert_eq!(version.version(), "unknown");
+    let note = version.notes().join("\n");
+    assert!(note.contains("unusable version"), "{note}");
+    assert!(!note.contains("dev"), "the note names the field: {note}");
+}
+
 #[test]
 fn a_nested_run_takes_a_shared_lease_and_never_copies_or_removes() {
     let (_tmp, root) = scratch();

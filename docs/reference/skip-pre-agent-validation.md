@@ -92,7 +92,7 @@ fi
 Pass the variable via `-c` to opt in to pre-agent validation:
 
 ```sh
-amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+amplihack recipe run smart-orchestrator \
   -c task_description="refactor auth module" \
   -c repo_path="." \
   -c skip_pre_agent_validation="false"

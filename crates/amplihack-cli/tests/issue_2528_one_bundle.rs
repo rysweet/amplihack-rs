@@ -46,21 +46,11 @@ const POINTER: &str = "amplihack.recipe.log_pointer ";
 ///
 /// These tests drive real recipe runs, so this binary executes the fixtures'
 /// steps. Resolved through the shared helper, which puts every source through
-/// the install-receipt check and has no fallback: a source that fails the
-/// check stops the test instead of quietly supplying a substitute.
-fn real_runner() -> PathBuf {
+/// the install-receipt check and has no fallback: a test that needs a step to
+/// run fails rather than quietly taking a substitute, and the panic names the
+/// source that failed the check.
+pub(crate) fn runner() -> PathBuf {
     crate::pinned_runner::pinned_runner(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-}
-
-/// The real runner at the pin; the test name stays for the call sites.
-///
-/// A test that needs a step to run fails without a runner: the shared helper
-/// panics, naming the source that failed the receipt check. The parameter is
-/// kept so that the lookup can move again without touching the thirteen
-/// places that call this, each of which still reads as the test it belongs
-/// to.
-pub(crate) fn runner(_test: &str) -> PathBuf {
-    real_runner()
 }
 
 pub(crate) fn quoted(path: &Path) -> String {
@@ -287,7 +277,7 @@ fn split_world() -> (World, PathBuf) {
 
 #[test]
 fn t1_default_run_inside_a_newer_checkout_uses_the_installed_recipe_and_tool() {
-    let runner = runner("t1 default");
+    let runner = runner();
     let (world, checkout) = split_world();
     let output = world.run(
         Some(&runner),
@@ -311,7 +301,7 @@ fn t1_default_run_inside_a_newer_checkout_uses_the_installed_recipe_and_tool() {
 
 #[test]
 fn t1_checkout_choice_uses_the_checkout_recipe_and_tool() {
-    let runner = runner("t1 checkout");
+    let runner = runner();
     for how in [["--bundle", "checkout"], ["-c", "bundle=checkout"]] {
         let (world, checkout) = split_world();
         let mut args = vec!["split-probe", "-w", checkout.to_str().unwrap()];
@@ -424,7 +414,7 @@ fn t2_a_group_writable_checkout_bundle_is_refused_before_any_step() {
 
 #[test]
 fn t2_a_group_writable_file_names_the_file_and_its_mode() {
-    let runner = runner("t2 file");
+    let runner = runner();
     let (world, checkout) = split_world();
     let bad = checkout.join("amplifier-bundle/tools/split_tool.sh");
     set_mode(&bad, 0o775);
@@ -531,7 +521,7 @@ fn assert_upgrade_did_not_reach_the_run(world: &World, stderr: &str) {
 
 #[test]
 fn t3_replacing_a_flat_installed_bundle_mid_run_does_not_change_the_run() {
-    let runner = runner("t3");
+    let runner = runner();
     let world = World::new();
     let staged = world.root.join("staged/amplifier-bundle");
     let installed_bundle = world.installed.join("amplifier-bundle");
@@ -561,7 +551,7 @@ fn t3_replacing_a_flat_installed_bundle_mid_run_does_not_change_the_run() {
 
 #[test]
 fn t4_re_pointing_the_release_link_mid_run_does_not_change_the_run() {
-    let runner = runner("t4");
+    let runner = runner();
     let world = World::new();
     let releases = world.installed.join("releases");
     for (version, label) in [("1.0.0", "A"), ("2.0.0", "B")] {
@@ -621,7 +611,7 @@ fn t4_re_pointing_the_release_link_mid_run_does_not_change_the_run() {
 
 #[test]
 fn t6_steps_see_the_real_state_root_not_the_snapshot() {
-    let runner = runner("t6");
+    let runner = runner();
     let world = World::new();
     let bundle = world.installed.join("amplifier-bundle");
     upgrade_bundle(&world, &bundle, "A", "true\n");
@@ -742,7 +732,7 @@ const AUTODRIVE_ASSETS: &[&str] = &[
 
 #[test]
 fn autodrive_run_turns_default_search_off_and_nested_runs_inherit_the_snapshot() {
-    let runner = runner("auto-drive");
+    let runner = runner();
     let world = World::new();
     // A wrapper that records the runner's arguments, then runs it.
     let args_file = world.records.join("runner-args.txt");
@@ -878,7 +868,7 @@ fn early_bundle(stderr: &str) -> serde_json::Value {
 
 #[test]
 fn r2_a_resumed_run_pins_the_same_bundle_with_the_same_choice() {
-    runner("r2");
+    runner();
     // The recovery fixture stops a run at a usage limit in its second step;
     // the next launch resumes it. No timing is involved.
     let f = crate::issue_1741_fixture::Fixture::new();
@@ -961,7 +951,7 @@ fn path_world() -> (World, PathBuf) {
 
 #[test]
 fn b1_path_recipe_runs_from_one_bundle_or_is_refused() {
-    let runner = runner("b1 path");
+    let runner = runner();
     let rel = "amplifier-bundle/recipes/split-parent.yaml";
 
     // (a) A checkout path with the default (installed) bundle: refused
@@ -1056,7 +1046,7 @@ fn b1_a_missing_recipe_path_is_e15_and_exits_1_before_the_runner() {
 
 #[test]
 fn t6b_steps_find_the_git_identity_under_a_non_default_amplihack_home() {
-    let runner = runner("t6b");
+    let runner = runner();
     let world = World::new();
     let bundle = world.installed.join("amplifier-bundle");
     let helper =
@@ -1135,7 +1125,7 @@ fn t6b_steps_find_the_git_identity_under_a_non_default_amplihack_home() {
 /// come from it.
 #[test]
 fn b3_a_step_starts_a_nested_round_by_the_path_into_its_own_bundle_copy() {
-    let runner = runner("b3");
+    let runner = runner();
     let world = World::new();
     let checkout = world.root.join("checkout");
     git_init(&checkout);
@@ -1295,7 +1285,7 @@ fn b3_a_step_starts_a_nested_round_by_the_path_into_its_own_bundle_copy() {
 /// belongs to one of the three sources that resolution allows.
 #[test]
 fn c1_the_runner_is_the_pinned_one_and_never_a_path_lookup() {
-    let resolved = runner("c1");
+    let resolved = runner();
     assert!(
         resolved.is_absolute(),
         "the runner must be an absolute path: {}",

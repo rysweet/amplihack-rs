@@ -361,7 +361,7 @@ run the recipe in a detached tmux session:
 ```bash
 tmux new-session -d -s "recipe-$(date +%s)" \
   "cd /path/to/repo && $(amplihack agent-binary --shell -w /path/to/repo) \
-   amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
+   amplihack recipe run smart-orchestrator \
      -c task_description='TASK_DESCRIPTION_HERE' -c repo_path='.'"
 ```
 

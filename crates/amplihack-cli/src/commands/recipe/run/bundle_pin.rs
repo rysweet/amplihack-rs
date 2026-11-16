@@ -369,8 +369,16 @@ fn check_marker(
             work_root.display()
         ));
     }
-    // The same three-directory trust check `is_launch_copy_of` runs, over
-    // borrowed paths, so `canonical` survives for `AcceptedMarker::home`.
+    // The same `trusted_directory` check `is_launch_copy_of` runs, over this
+    // path's own three directories rather than that one's: the pins folder,
+    // the snapshot and the snapshot's bundle. Borrowed, so `canonical`
+    // survives for `AcceptedMarker::home`.
+    //
+    // The two sets are not duplicates and must not be merged. The snapshot's
+    // `recipes/` is checked there and not here because `is_launch_copy_of`
+    // accepts a copy this process did not make, while a snapshot is created
+    // read-only by `store` under a 0700 `bundle-pins` whose own trust this
+    // loop has just established.
     let pins = canonical.parent().unwrap_or(Path::new(""));
     let bundle = canonical.join(BUNDLE_DIR);
     for dir in [pins, canonical.as_path(), bundle.as_path()] {
@@ -432,8 +440,9 @@ pub(crate) fn is_snapshot_path(path: &Path, work_root: &Path) -> bool {
 }
 
 /// The outer run's snapshot as this run's selection. A pin record that
-/// cannot be read leaves the source as the snapshot and the version
-/// `unknown`, with a note saying why.
+/// cannot be read, or that parses but holds a relative `source` or a version
+/// `sanitize_version` rejects, leaves the source as the snapshot and the
+/// version `unknown` -- each with a note naming which field was unusable.
 fn inherited_selection(accepted: AcceptedMarker) -> Selection {
     let AcceptedMarker {
         home,
@@ -458,14 +467,35 @@ fn inherited_selection(accepted: AcceptedMarker) -> Selection {
             None
         }
     };
-    let source = record
-        .as_ref()
-        .map(|r| PathBuf::from(&r.source))
-        .filter(|path| path.is_absolute())
-        .unwrap_or_else(|| bundle.clone());
-    let version = record
-        .and_then(|r| sanitize_version(&r.version))
-        .unwrap_or_else(|| "unknown".to_string());
+    // A record that parses but holds an unusable field degrades the same way
+    // an unreadable one does, so it says so the same way: the sibling above
+    // is the only other path that reaches these defaults. Name the field, not
+    // its contents -- the record is the outer run's, and a note goes to the
+    // user's stderr.
+    let source = match record.as_ref().map(|r| PathBuf::from(&r.source)) {
+        Some(source) if source.is_absolute() => source,
+        Some(_) => {
+            notes.push(format!(
+                "recipe bundle: the outer run's pin record {} names a relative source; \
+                 recording the snapshot as the source",
+                path.display()
+            ));
+            bundle.clone()
+        }
+        None => bundle.clone(),
+    };
+    let version = match record.as_ref().map(|r| sanitize_version(&r.version)) {
+        Some(Some(version)) => version,
+        Some(None) => {
+            notes.push(format!(
+                "recipe bundle: the outer run's pin record {} has an unusable version; \
+                 recording the version as unknown",
+                path.display()
+            ));
+            "unknown".to_string()
+        }
+        None => "unknown".to_string(),
+    };
     Selection {
         recipes: bundle.join("recipes"),
         source: bundle,
