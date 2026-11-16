@@ -11251,10 +11251,15 @@ candidate is chosen once to end the wait and again when the retry is built,
 and the second selection may find nothing: between the two, the login that
 showed room may have been taken by another step in the same run, lent out,
 spend-blocked, or pushed over the threshold by a newer reading. The retry
-then runs on the inherited login, exhausted as it was, at the cost of one
-more attempt. `end reason=login capacity` followed by `resume` with no move
-notice is that case, and is the only way to tell it apart from a move in the
-log.
+then runs on the inherited login, exhausted as it was. After a capacity wait
+that costs one more attempt and nothing else, because no better login existed
+to begin with. After a reset wait it costs the wait itself: that step would
+have slept to its reset and succeeded. The step's stderr names the case, so
+it is not read out of the absence of a line:
+
+```
+amplihack: no login has room now; this step retries under the limited profile (auto-switch)
+```
 
 After a reset wait that ended for any other reason, including
 `reset reached` and `max reached`, the retry runs under the inherited
@@ -11337,8 +11342,8 @@ amplihack.recipe.usage_limit_wait resume attempt=2
 amplihack: a login has capacity again; rerunning this step under profile "personal" (auto-switch)
 ```
 
-The same four wait lines without that notice mean the second selection found
-nothing and the retry ran on the inherited login: see
+The same four wait lines followed by `no login has room now` mean the second
+selection found nothing and the retry ran on the inherited login: see
 [Retry login](#retry-login).
 
 A capacity wait on a weekly limit, ended by the rotator:

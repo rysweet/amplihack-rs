@@ -254,3 +254,64 @@ fn the_wait_probe_writes_no_held_key_alert() {
     assert_eq!(alert_lines(&f).len(), 1, "the rerun check writes it");
     assert_eq!(f.state.load_key_held().as_deref(), Some("spare"));
 }
+
+/// Issue #2694: the room that ends a wait can be gone by the time the retry
+/// moves. The probe and the retry each choose a candidate of their own, so
+/// another step on this host may take the lease in between, and then the
+/// retry gets no candidate and runs on the limited profile it inherited.
+/// The lease is the only difference between the two halves here, so a
+/// `None` from any other cause would fail the first half.
+#[test]
+fn a_login_leased_away_between_the_probe_and_the_retry_gives_no_candidate() {
+    use crate::commands::profile::auto_switch::state::HostEntry;
+    use crate::commands::profile::auto_switch::takeover::capacity_candidate;
+    use crate::commands::profile::store::ProfileStore;
+
+    let _proc = crate::test_support::proc::fake_proc_scope();
+    let _l = lock();
+    let f = fx("enabled=on\n");
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _toggle = EnvGuard::unset([config::TOGGLE_ENV]);
+    let now = fsx::now();
+
+    // Every login used up but `spare`, which is the room the wait saw.
+    let mut readings = used_up(now);
+    readings.insert("spare".to_string(), reading(0.0, 4 * 3600, now));
+    f.state
+        .save_usage(&UsageFile {
+            version: 1,
+            accounts: readings,
+        })
+        .unwrap();
+    let store = ProfileStore::new(f.root.clone());
+
+    let got = capacity_candidate(&store, &f.state, &n("work"), now - 60, now);
+    assert_eq!(
+        got.map(|p| p.profile),
+        Some(n("spare")),
+        "the probe's reading is what ended the wait"
+    );
+
+    // Another step on this host swaps `spare` into its own directory.
+    f.state
+        .save_ledger(&Ledger {
+            version: 1,
+            hosts: [(
+                "other".to_string(),
+                HostEntry {
+                    live: "spare".to_string(),
+                    swapped_at: now,
+                    pre_swap_fingerprint: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        capacity_candidate(&store, &f.state, &n("work"), now - 60, now),
+        None,
+        "the retry gets no candidate and stays on the limited profile"
+    );
+}

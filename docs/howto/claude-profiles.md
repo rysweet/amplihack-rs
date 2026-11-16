@@ -2271,10 +2271,22 @@ amplihack.recipe.usage_limit_wait resume attempt=2
 amplihack: a login has capacity again; rerunning this step under profile "personal" (auto-switch)
 ```
 
-If that last line is missing, the step moved nowhere. The login is picked
-twice, once to end the wait and once to build the retry, and if it was taken
-in between, by another waiting step or by a newer reading, the retry runs on
-the exhausted login the step started with and fails again.
+The login is picked twice, once to end the wait and once to build the retry.
+If it was taken in between, by another waiting step on this machine or by a
+newer reading, the retry runs on the exhausted login the step started with
+and fails again. That case says so in place of the line above:
+
+```
+amplihack.recipe.usage_limit_wait end reason=login capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack: no login has room now; this step retries under the limited profile (auto-switch)
+```
+
+Seeing it means the step gave up a wait that would have run to its reset and
+succeeded, so it is worth knowing when several steps on one machine hit their
+limits together: they all see the same spare login at the same poll, and only
+the first of them gets it. Run them with `auto-switch exclude` on the
+contended login, or stagger them, if that trade is the wrong one for you.
 
 A wait for another login has `wait=capacity` on its `start` line, and
 `reset=none` when Claude's message gave no readable reset:

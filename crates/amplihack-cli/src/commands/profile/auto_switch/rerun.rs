@@ -614,13 +614,31 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
 /// environment. After a capacity wait, and after a wait of any kind that
 /// ended because another login has room (#2694), that is the login which
 /// showed capacity, never the exhausted inherited one; after a reset wait
-/// that ran to its deadline, `None`. The candidate is chosen again here and
-/// may now be `None`: the one retry then runs on the inherited profile, at a
-/// cost of one more attempt.
+/// that ran to its deadline, `None`. The candidate is chosen again here
+/// rather than carried over from the wait's own probe, because the lease may
+/// have changed since: a stale pick would move the step onto a login another
+/// step now holds. So it may now be `None`, and the one retry then runs on
+/// the inherited profile. After a capacity wait that costs one more attempt
+/// and nothing else, since no better login existed anyway; after a reset
+/// wait ended by another login's room it costs the wait, which would have
+/// run to its reset and succeeded. That case is announced on stderr;
+/// resuming the original wait instead of spending the retry is issue #2719.
 fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<ProfileName> {
     let sw = switch?;
     let start = waiter.retry_start()?;
-    let pick = capacity_candidate(sw.store, &sw.state, &sw.inherited, start, waiter.now())?;
+    let Some(pick) = capacity_candidate(sw.store, &sw.state, &sw.inherited, start, waiter.now())
+    else {
+        // No login has room at the moment the retry moves, though one may
+        // have had room when the wait ended: another step on this host can
+        // take the lease first (#2694). Say so. Every other transition in
+        // this loop prints, and without a line here the log reads
+        // `end reason=login capacity` and then fails on the login that had
+        // none, with nothing in between to name the cause.
+        eprintln!(
+            "amplihack: no login has room now; this step retries under the limited profile (auto-switch)"
+        );
+        return None;
+    };
     // The run log names the login the retry moves to, as every other move
     // in this loop does (#1801, item 3).
     eprintln!(
