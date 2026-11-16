@@ -7,7 +7,7 @@
 //! wait is never counted as a lack of progress and never ends the run as
 //! `STUCK` with `stop_reason` `no_progress`.
 //!
-//! Contract: docs/reference/autodrive-rest-reads.md#waiting-is-not-a-failed-criterion.
+//! Contract: docs/reference/autodrive-crusty-completion.md.
 //!
 //! Nothing here sleeps, retries or polls. Each case runs `autodrive_loop.sh`
 //! once with a stub round and a stub evaluator, and asserts on what the loop
@@ -26,12 +26,27 @@ use crate::support::auto_drive_light::{
 const DECIDED: &str = "no progress (decided in code)";
 
 /// Plan line per round label, the last repeating:
-/// `VERDICT|findings,…|ci_signal|rc`. The record shape is main's after
-/// #2637: the verdict field, the head, the round label and the CI signal.
+/// `VERDICT|findings,…|ci_signal|rc[|round_waiting]`. The record shape is
+/// main's after #2637: the verdict field, the head, the round label and the
+/// CI signal, plus `round_waiting` when the plan line names one (#2333 R3).
+/// An absent fifth field writes no `round_waiting` key at all, which is the
+/// shape every round on main has.
 const AMPLIHACK_STUB: &str = r#"#!/usr/bin/env bash
 set -u
 S="$STUB_STATE"
 case "${1:-} ${2:-}" in
+  # Review generations (#2096): the loop allocates one before round 1 and
+  # stamps it, so each is a real detached worktree of the PR worktree's HEAD.
+  # The launch directory is deliberately not one: nothing may read the head
+  # from there.
+  "internal review-allocate"|"internal review-next")
+    n="$(( $(cat "$S/review-gens" 2>/dev/null || echo 0) + 1 ))"; printf '%s' "$n" > "$S/review-gens"
+    g="$S/review-gen-$n"
+    git -C "$3" worktree add -q --detach "$g" HEAD >/dev/null 2>&1 || exit 1
+    printf '%s\n' "$g"; exit 0 ;;
+  "internal review-launch") mkdir -p "$S/launch" && printf '%s\n' "$S/launch"; exit 0 ;;
+  "internal review-head") exec git -C "$3" rev-parse --verify HEAD ;;
+  "internal review-release") exit 0 ;;
   "recipe show") exit 0 ;;
   "orch helper")
     case "${3:-}" in autodrive-completion-*) exec "$REAL_AMPLIHACK" "$@" ;; esac
@@ -85,6 +100,7 @@ for a in "$@"; do
     case "$a" in
       autodrive_round_record=*) record="${a#autodrive_round_record=}" ;;
       autodrive_round_label=*) label="${a#autodrive_round_label=}" ;;
+      repo_path=/*) wd="${a#repo_path=}" ;;
     esac
   fi
   prev=$a
@@ -92,12 +108,14 @@ done
 printf '%s\n' "$label" >> "$S/round-calls"
 r="${label#round-}"
 line="$(sed -n "${r}p" "$S/plan")"; [ -n "$line" ] || line="$(tail -n 1 "$S/plan")"
-IFS='|' read -r verdict items ci rc <<<"$line"
+IFS='|' read -r verdict items ci rc waiting <<<"$line"
 head="$(git -C "$wd" rev-parse HEAD)"
 field=crusty_verdict; [ "$name" = "autodrive-merge-round" ] && field=merge_ready_verdict
+waiting_field=""
+[ -n "${waiting:-}" ] && waiting_field=",\"round_waiting\":\"${waiting}\""
 ( umask 077
-  printf '{"%s":"%s","head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s","ci_signal":"%s"}\n' \
-    "$field" "$verdict" "$head" "$head" "$label" "${ci:-}" > "$record"
+  printf '{"%s":"%s","head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s","ci_signal":"%s"%s}\n' \
+    "$field" "$verdict" "$head" "$head" "$label" "${ci:-}" "$waiting_field" > "$record"
   : > "$record.findings"
   if [ -n "${items:-}" ]; then printf '%s\n' "$items" | tr ',' '\n' > "$record.findings"; fi )
 if [ -n "${AUTODRIVE_COMPLETION_STATE:-}" ] && [ -f "$record" ]; then
@@ -505,7 +523,7 @@ fn no_tool_on_the_wait_path_sleeps_or_retries() {
         "autodrive_progress.sh",
         "autodrive_escalate.sh",
         "autodrive_merge.sh",
-        "autodrive_rest.sh",
+        "autodrive_loop.sh",
     ] {
         let p = tools.join(name);
         let Ok(body) = std::fs::read_to_string(&p) else {
@@ -520,5 +538,132 @@ fn no_tool_on_the_wait_path_sleeps_or_retries() {
                 );
             }
         }
+    }
+}
+
+// ── R3: a round that says it waited is not a round that made no progress ────
+
+/// The chain of #2333 R3, end to end: the round record carries
+/// `round_waiting`, `autodrive_loop.sh` reads it beside `ci_signal` and
+/// passes it to `progress_stop`, `autodrive_escalate.sh` forwards it as
+/// argument seven of `autodrive_progress.sh check`, and the check exits 0.
+///
+/// Two crusty rounds alike in every way the rule compares — same head, same
+/// open items, same CI signal — which is exactly the shape #1743 stops. The
+/// second round says it waited, so the stop decided in code does not happen
+/// and the agentic evaluation decides the run instead.
+#[test]
+fn a_round_that_waited_is_exempt_from_the_rule_decided_in_code() {
+    let Some(l) = Loop::new() else { return };
+    l.plan(&[
+        "CONCERNS|one|PASS|0",
+        "CONCERNS|one|PASS|0|true",
+        "CONCERNS|one|PASS|0|true",
+    ]);
+    let o = l.run("crusty", &[("STUB_EVALUATOR_ROUNDS", "2")]);
+    assert_never_stopped_in_code(&l, &o, "crusty");
+    assert_eq!(
+        l.lines("round-calls").len(),
+        3,
+        "the waiting rounds are run and judged, not cut off: {}",
+        show(&o)
+    );
+    let r = result(&o);
+    assert_eq!(
+        r["loop_result"],
+        "STUCK",
+        "the stub evaluator ends this run, not the rule in code: {}",
+        show(&o)
+    );
+    assert!(
+        r["reason"]
+            .as_str()
+            .is_some_and(|s| s.contains("loop-health-evaluator")),
+        "and the stop is the evaluator's, not the rule's: {r}"
+    );
+    assert_eq!(
+        l.lines("evaluator-calls").len(),
+        3,
+        "every round reached the agentic evaluation: {}",
+        show(&o)
+    );
+}
+
+/// The control, and the limit of the exemption: the same two rounds with no
+/// `round_waiting` in the record are stopped in code exactly as #1743 says.
+/// The field can only narrow a stop, so its absence must change nothing.
+#[test]
+fn the_same_rounds_without_round_waiting_still_stop_in_code() {
+    let Some(l) = Loop::new() else { return };
+    l.plan(&["CONCERNS|one|PASS|0"]);
+    let o = l.run("crusty", &[("STUB_EVALUATOR_ROUNDS", "99")]);
+    assert!(
+        stdout(&o).contains(DECIDED) || stderr(&o).contains(DECIDED),
+        "#1743's rule is not removed by #2333: {}",
+        show(&o)
+    );
+    assert!(
+        l.state_file("crusty-stuck-reason.txt").is_some(),
+        "the stop decided in code records its reason: {}",
+        show(&o)
+    );
+}
+
+/// The exemption is an exact whole-string comparison with `true`. A record
+/// that says `TRUE`, pads the value, or says anything else, is judged by the
+/// rule as before, so the field cannot be widened by accident.
+#[test]
+fn the_progress_check_exempts_only_the_exact_string_true() {
+    let Some(l) = Loop::new() else { return };
+    let tool = repo_root().join("amplifier-bundle/tools/autodrive_progress.sh");
+    let findings = l.state.join("f");
+    std::fs::write(&findings, "one\n").unwrap();
+    let head = l.head();
+    let run = |cmd: &str, label: &str, waiting: Option<&str>| {
+        let mut c = std::process::Command::new("bash");
+        c.arg(&tool)
+            .arg(cmd)
+            .arg(&l.state)
+            .args(["crusty", label])
+            .arg(&head);
+        if cmd == "record" {
+            c.arg("0");
+        }
+        c.arg(&findings).arg("PASS");
+        if let Some(w) = waiting {
+            assert_eq!(cmd, "check", "only check takes a seventh argument");
+            c.arg(w);
+        }
+        c.output().unwrap()
+    };
+    let o = run("record", "round-1", None);
+    assert!(o.status.success(), "{}", show(&o));
+
+    let o = run("check", "round-2", Some("true"));
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "a round that waited is not a stop: {}",
+        show(&o)
+    );
+    assert!(!stdout(&o).contains(DECIDED), "{}", show(&o));
+
+    for waiting in [
+        None,
+        Some(""),
+        Some("TRUE"),
+        Some("True"),
+        Some(" true"),
+        Some("true "),
+        Some("false"),
+        Some("1"),
+    ] {
+        let o = run("check", "round-2", waiting);
+        assert_eq!(
+            o.status.code(),
+            Some(10),
+            "round_waiting {waiting:?} is not the exemption: {}",
+            show(&o)
+        );
     }
 }

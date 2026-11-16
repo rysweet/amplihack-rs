@@ -54,12 +54,17 @@ pub struct Dispatch {
     child_exit_code: i32,
 }
 
-/// Dispatch exit code: the PR head is unavailable on every path, so the
-/// round is WAITING (#2333). Not 75, which is ORPHANED.
-pub const EXIT_WAITING: i32 = 76;
-
+/// The PR number, as `prepare` accepts it (#2333 S7): typed, positive, with
+/// no leading zero and bounded, so it can only ever have come from the loop's
+/// own `AD_PR`. Never read from the round record or from any file the round's
+/// agent writes.
 fn parse_pr(s: &str) -> Result<u64, String> {
-    super::autodrive_gh::valid_pr(s).ok_or_else(|| "the PR number must be 1-9999999999".to_string())
+    let digits = !s.is_empty() && s.len() <= 10 && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits || s.starts_with('0') {
+        return Err("the PR number must be 1-9999999999".to_string());
+    }
+    s.parse()
+        .map_err(|_| "the PR number must be 1-9999999999".to_string())
 }
 
 pub fn prepare(args: Prepare) -> Result<()> {

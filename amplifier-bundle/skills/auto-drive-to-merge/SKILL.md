@@ -7,7 +7,7 @@ description: contract to build a PR, repair crusty concerns, verify readiness, a
 version: 1.0.0
 allowed-tools: ["Read", "Grep", "Glob", "Bash", "Agent", "Edit", "Write"]
 user-invocable: true
-last_updated: 2026-11-15
+last_updated: 2026-11-13
 doc_type: reference
 auto-activation:
   priority: 4
@@ -190,4 +190,3 @@ CI is green only when every expected check exists at the head SHA and passed
 - Crusty completion contract: `docs/reference/autodrive-crusty-completion.md`
 - Git repository environment helper: `docs/reference/git-repo-env-helper.md`
 - Expected checks at the head: `docs/reference/autodrive-expected-checks.md`
-- REST reads on the merge path: `docs/reference/autodrive-rest-reads.md`

@@ -283,12 +283,18 @@ pub fn fault(o: &Output, token: &str) {
 /// not a 404: the account's allowance is spent, so REST still answers and
 /// the merge mutation still answers (#2333 D1). `$FAKE_GH_FAIL` is a
 /// separate, unchanged mode.
+///
+/// Each call also appends one line to `$FAKE_LOG/gh-env.log` naming the two
+/// variables that can send a REST read somewhere other than the repository
+/// it was given, so a test may assert they did not reach `gh`
+/// ([`Fakes::gh_env`]).
 pub const FAKE_GH: &str = r#"#!/usr/bin/env bash
 case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 set -u
 log="${FAKE_LOG:?}"
 n=$(( $(wc -l < "$log/gh.log" 2>/dev/null || echo 0) + 1 ))
 ( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "$log/gh.log"
+printf 'GH_HOST=%s\tGH_REPO=%s\n' "${GH_HOST-<unset>}" "${GH_REPO-<unset>}" >> "$log/gh-env.log"
 args=("$@")
 jqf=""
 for ((i=0; i<${#args[@]}; i++)); do
@@ -448,6 +454,17 @@ impl Fakes {
     /// Every `gh` call, each as its argv.
     pub fn gh_calls(&self) -> Vec<Vec<String>> {
         read_log(&self.log.join("gh.log"))
+    }
+
+    /// What each `gh` call saw in `GH_HOST` and `GH_REPO`, one line per call
+    /// in call order: `GH_HOST=<value>\tGH_REPO=<value>`, with `<unset>`
+    /// where the variable was not in the environment at all.
+    pub fn gh_env(&self) -> Vec<String> {
+        std::fs::read_to_string(self.log.join("gh-env.log"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     pub fn amplihack_calls(&self) -> Vec<Vec<String>> {

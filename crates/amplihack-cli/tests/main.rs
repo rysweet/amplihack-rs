@@ -361,13 +361,10 @@ mod issue_2218_excluded;
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2333_ci_wait.rs"]
 mod issue_2333_ci_wait;
-// Registered until the branch-reduction commit deletes these modules and the
-// autodrive_gh read layer they exercise; delisting them earlier orphans
-// tests/support/autodrive_gh_fake.rs and turns clippy red.
-#[path = "issue_2333_gh_fallback.rs"]
-mod issue_2333_gh_fallback;
 #[path = "issue_2333_head_read.rs"]
 mod issue_2333_head_read;
+#[path = "issue_2333_retired_layer.rs"]
+mod issue_2333_retired_layer;
 #[path = "issue_2336_autodrive_completion.rs"]
 mod issue_2336_autodrive_completion;
 #[path = "issue_2535_recipe_guide_cli.rs"]

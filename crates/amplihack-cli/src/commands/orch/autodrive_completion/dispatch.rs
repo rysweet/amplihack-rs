@@ -38,29 +38,46 @@ pub fn run(args: Dispatch) -> Result<i32> {
         Some("CLEAN" | "MINOR_ONLY")
     );
     // The remote head is read only for a completion claim, after every record
-    // check (#2333). Each outcome is matched by name: a difference fails
-    // closed as before, an unavailable read is WAITING and never DONE.
+    // check (#2333). Each outcome is matched by name: a head that moved fails
+    // closed as before, while a read that did not answer leaves the head
+    // unconfirmed and is judged by the loop-health evaluator, with the fault
+    // in front of it. It is not an invalid decision, and it is not a
+    // completion either.
+    let mut head_unavailable = None;
     if complete {
         match evidence::head_check(&state)? {
             evidence::HeadCheck::Matches => {}
-            evidence::HeadCheck::Differs => {
-                bail!("current PR head differs from reviewed evidence")
-            }
+            evidence::HeadCheck::Differs { local, remote } => bail!(
+                "current PR head {remote} differs from the reviewed evidence at {local}; \
+                 the completion claim does not cover the branch as it now stands"
+            ),
             evidence::HeadCheck::Unavailable(u) => {
+                // The guard the Complete arm applies, kept ahead of the
+                // evaluator so an unreadable head cannot route a decision
+                // past a check it would otherwise have failed.
                 ensure!(
                     decision.action == Action::Complete && args.child_exit_code == 0,
-                    "current PR head is unavailable and the decision cannot complete"
+                    "the PR head could not be read and the decision cannot complete"
                 );
-                // A refusal (bad credentials, no permission, not found) does
-                // not clear by waiting: an error, so the round is not WAITING.
-                ensure!(
-                    !u.refused,
-                    "the PR head read was refused on every path ({}); not a wait",
-                    u.reason
-                );
-                return Ok(waiting(&state, &u));
+                head_unavailable = Some(u);
             }
         }
+    }
+    if let Some(u) = head_unavailable {
+        eprintln!(
+            "WARNING: the PR head could not be read on either route ({}); the round goes to the loop-health evaluator rather than completing",
+            u.token()
+        );
+        secure_fs::create(
+            secure_fs::Scope::of(&state.state_dir),
+            &args.private_state.with_extension("dispatched"),
+            state.run_id.as_bytes(),
+        )?;
+        let (mut result, code) =
+            evaluator::run(&state, &record, args.child_exit_code, Some(u.token()))?;
+        result["head_read"] = serde_json::json!(format!("unavailable:{}", u.token()));
+        println!("{result}");
+        return Ok(code);
     }
     let (result, code) = match decision.action {
         Action::Complete => {
@@ -76,7 +93,8 @@ pub fn run(args: Dispatch) -> Result<i32> {
             )?;
             (
                 serde_json::json!({"loop":"crusty","loop_result":"DONE","round_label":state.round_label,
-                "round_verdict":record["crusty_verdict"],"source":"objective-completion","evaluator_invoked":false}),
+                "round_verdict":record["crusty_verdict"],"source":"objective-completion","evaluator_invoked":false,
+                "head_read":"matches"}),
                 0,
             )
         }
@@ -90,33 +108,11 @@ pub fn run(args: Dispatch) -> Result<i32> {
                 &args.private_state.with_extension("dispatched"),
                 state.run_id.as_bytes(),
             )?;
-            evaluator::run(&state, &record, args.child_exit_code)?
+            evaluator::run(&state, &record, args.child_exit_code, None)?
         }
     };
     // The dispatch result is iteration evidence only. Follow-up receipts and
     // phase completion belong to the finalization step, never to this adapter.
     println!("{result}");
     Ok(code)
-}
-
-/// WAITING on an unavailable head: no `.dispatched` marker, no evaluator, no
-/// change to the sealed evidence, so the same round dispatches again later.
-fn waiting(state: &private_state::State, u: &super::super::autodrive_gh::Unavailable) -> i32 {
-    let target = match (u.rate_limited, u.reset_epoch) {
-        (true, Some(e)) => format!("ratelimit-reset@{e}"),
-        (true, None) => "ratelimit-reset@unknown".to_string(),
-        (false, _) if u.reason.starts_with("pr-number-unresolved") => "read@pr-number".to_string(),
-        (false, _) => "read@pr-head".to_string(),
-    };
-    eprintln!(
-        "WARNING: the PR head is unavailable on every read path ({}); the round is WAITING, not complete",
-        u.reason
-    );
-    println!(
-        "{}",
-        serde_json::json!({"loop":"crusty","loop_result":"WAITING","round_label":state.round_label,
-            "reason":"the PR head could not be read on any path","wait_reason":"head-unavailable",
-            "wait_target":target,"evaluator_invoked":false})
-    );
-    super::EXIT_WAITING
 }

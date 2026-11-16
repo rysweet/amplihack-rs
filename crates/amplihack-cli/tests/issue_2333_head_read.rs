@@ -28,7 +28,7 @@ use std::process::Output;
 
 use serde_json::{Value, json};
 
-use crate::support::auto_drive_light::{private_file, show, stderr, stdout, tools_dir};
+use crate::support::auto_drive_light::{private_file, repo_root, show, stderr, stdout, tools_dir};
 
 #[path = "support/autodrive_completion.rs"]
 #[allow(dead_code, clippy::duplicate_mod)] // also loaded by issue_2336_autodrive_completion
@@ -346,7 +346,13 @@ fn the_evaluator_is_told_the_head_read_failed() {
 /// and goes to the evaluator carries an empty `loop_head_read`.
 #[test]
 fn a_readable_head_leaves_loop_head_read_empty() {
-    let d = Drive::new(); // the default fixture review is CONCERNS
+    let d = Drive::new();
+    // A concern the classifier cannot read as MINOR_ONLY, so the round is
+    // not completable and `evaluate` is the action the record supports.
+    d.set(
+        "review.json",
+        r#"{"crusty_verdict":"CONCERNS","concerns":[{"id":"wrong-value","severity":"major","summary":"Wrong value","evidence":"lib.rs:2"}]}"#,
+    );
     d.record(1);
     let p = prepare(&d, 1, Some("7"));
     d.decide(&p, "evaluate");
@@ -462,7 +468,7 @@ fn an_origin_that_is_not_github_is_unavailable_not_a_match() {
         "-ext::sh -c id",
     ] {
         let c = Case::new();
-        c.d.git(&c.d.repo, &["remote", "set-url", "origin", url]);
+        c.d.git(&c.d.repo, &["remote", "set-url", "origin", "--", url]);
         // The fake would answer the reviewed head for any URL, so a Matches
         // here would mean the outcome was forged through the config.
         let o = c.dispatch(&[("FAKE_GIT_LS_REMOTE", "answer")]);
@@ -682,5 +688,107 @@ fn the_head_read_never_waits_for_a_credential() {
         "unavailable:read-failed",
         "{}",
         show(&o)
+    );
+}
+
+// ── C9: the REST route cannot be sent to another host ───────────────────────
+
+/// The origin has already been verified as `github.com` before either route
+/// runs, so any other host is wrong by construction. `GH_HOST` in the
+/// environment the loop inherited must not reach `gh`, or the credential
+/// would be offered to a host the verification has already excluded. The
+/// same holds for `GH_REPO`, which would re-resolve the repository from the
+/// worktree's remotes rather than from the verified pair.
+#[test]
+fn the_rest_route_is_not_redirected_by_gh_host_or_gh_repo() {
+    let c = Case::new();
+    // Route 1 answers nothing, so route 2 runs and is the one observed.
+    let o = c.dispatch(&[
+        ("FAKE_GIT_LS_REMOTE", "empty"),
+        ("GH_HOST", "attacker.example"),
+        ("GH_REPO", "attacker/evil"),
+    ]);
+    assert!(o.status.success(), "{}", show(&o));
+    let env = c.d.fakes.gh_env();
+    assert!(!env.is_empty(), "route 2 ran: {}", show(&o));
+    for line in &env {
+        assert_eq!(
+            line, "GH_HOST=<unset>\tGH_REPO=<unset>",
+            "neither variable may reach the REST read: {env:?}"
+        );
+    }
+    assert!(
+        c.d.fakes
+            .gh_calls()
+            .iter()
+            .any(|a| a.iter().any(|x| x.contains("repos/o/r/pulls/7"))),
+        "the read still names the verified owner and repository: {:?}",
+        c.d.fakes.gh_calls()
+    );
+}
+
+// ── C3: the evaluator's recipe carries the token ────────────────────────────
+
+/// `loop_head_read` is inserted into the evaluation's context by the
+/// dispatch, so the recipe must declare it. An undeclared key is not a
+/// context value the prompt can read, and #1561 requires every declared
+/// field so a nested run never picks up an inherited `RECIPE_VAR_<key>`.
+/// Without this declaration the token stops at the runner and the evaluator
+/// judges the round without knowing the fault was in the read.
+#[test]
+fn the_loop_health_evaluator_declares_loop_head_read() {
+    let path = repo_root().join("amplifier-bundle/recipes/loop-health-evaluator.yaml");
+    let text = std::fs::read_to_string(&path).expect("the evaluator recipe exists");
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("parse the evaluator recipe");
+    let context = doc
+        .get("context")
+        .and_then(serde_yaml::Value::as_mapping)
+        .expect("the recipe declares a context block");
+    let field = context
+        .get(serde_yaml::Value::String("loop_head_read".into()))
+        .unwrap_or_else(|| {
+            panic!("loop-health-evaluator.yaml must declare loop_head_read (#2333 C3)")
+        });
+    assert_eq!(
+        field.as_str(),
+        Some(""),
+        "it defaults to empty: an unfailed read says nothing"
+    );
+    assert!(
+        context.contains_key(serde_yaml::Value::String("loop_ci_signal".into())),
+        "declared beside the other round signals"
+    );
+}
+
+/// Declaring the field is not enough: the judgement step must be told what a
+/// non-empty value means, or the evaluator reads a silent key. A read that
+/// did not answer says nothing about the branch, and the round's own verdict
+/// still stands.
+#[test]
+fn the_evaluator_prompt_reads_the_head_read_token() {
+    let path = repo_root().join("amplifier-bundle/recipes/loop-health-evaluator.yaml");
+    let text = std::fs::read_to_string(&path).expect("the evaluator recipe exists");
+    assert!(
+        text.contains("{{loop_head_read}}"),
+        "the evaluation interpolates loop_head_read, as it does loop_ci_signal (#2333 C3)"
+    );
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("parse the evaluator recipe");
+    let steps = doc
+        .get("steps")
+        .and_then(serde_yaml::Value::as_sequence)
+        .expect("the recipe has steps");
+    let judgement = steps
+        .iter()
+        .find(|s| {
+            s.get("id").and_then(serde_yaml::Value::as_str) == Some("step-02-evaluate-loop-health")
+        })
+        .expect("the agentic judgement step");
+    let prompt = judgement
+        .get("prompt")
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        prompt.contains("{{loop_head_read}}"),
+        "the token belongs in the judgement step's own prompt, beside waiting_on_output"
     );
 }

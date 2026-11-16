@@ -23,12 +23,16 @@ The public CLI is `amplihack orch helper autodrive-completion-{prepare,seal,writ
   `MINOR_ONLY` completion returns `DONE`, `source=objective-completion` and
   `evaluator_invoked=false`. An atomic receipt prevents repeat dispatch.
 - The completion claim also compares the PR head on GitHub with the reviewed
-  head, through `autodrive_gh` (GraphQL, then REST, then `git ls-remote`; issue
-  #2333). The PR number comes from `prepare --pr`, else from the branch's open
-  PR. A different head fails closed as before. A head refused on every path, or a branch
-  with no open PR, is an error. A head unavailable on every path returns
-  `WAITING` with exit 76: no receipt, no evaluator, the sealed evidence
-  unchanged, so the same round dispatches again once a read answers.
+  head. The head is read with `git ls-remote` against the canonical origin URL
+  and then, only if that answered with no line, with
+  `gh api repos/{owner}/{repo}/pulls/{n} --jq .head.sha`: each route once, no
+  GraphQL call, nothing sleeping between them (issue #2333). The PR number comes
+  from `prepare --pr`, else from the PR worktree's current branch. There are
+  three outcomes. A matching head completes as before. A different head fails
+  closed, naming both commits and never the word unavailable. A head no route
+  answered is `unavailable:<token>`, which is not an error: the dispatch receipt
+  is written and the loop-health evaluator runs with the token in its context,
+  so a read that did not answer never ends a clean round as an invalid decision.
 
 `evaluate` requires an unresolved review. The evaluator runs with typed process
 arguments, file-backed context, the captured sibling depth and inherited policy
