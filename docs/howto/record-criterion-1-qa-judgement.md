@@ -31,15 +31,16 @@ export AUTODRIVE_QA_EVIDENCE="$STATE/qa-evidence.json"
 
 ## 1. Measure the facts
 
-In a drive, `step-02a-qa-inputs` resolves the base from the PR itself: an
-operator's `AUTODRIVE_QA_BASE` first, then the base branch the drive observed,
-then `gh pr view <pr_number> --json baseRefName`, and a preflight where none
-of those answers or where the operator's own value is not a branch name. The
-order and its validation are in
+In a drive, `step-02a-qa-inputs` resolves the base from the clone, not from
+the PR: an operator's `AUTODRIVE_QA_BASE` first, then the clone's own
+`origin/HEAD`, then the literal `main`. It never reads the PR's base branch, so
+for a PR into any branch other than the clone's default the operator's override
+is what makes the base right; the order is in
 [resolving the measurement base](../reference/auto-drive-qa.md#resolving-the-measurement-base).
-By hand you set the base yourself. `AUTODRIVE_QA_BASE` is the PR's base branch
-name without `origin/`; the tool reads `refs/remotes/origin/<base>`, so fetch
-it first. `AUTODRIVE_QA_HEAD` defaults to `HEAD`.
+By hand you set the base yourself, and you can simply get it right.
+`AUTODRIVE_QA_BASE` is the PR's base branch name without `origin/`; the tool
+reads `refs/remotes/origin/<base>`, so fetch it first. `AUTODRIVE_QA_HEAD`
+defaults to `HEAD`.
 
 ```bash
 git fetch origin main
@@ -95,10 +96,12 @@ verdict you may rely on: `qa_status` describes the measurement only. With
 `qa_command_paths` is `(unknown)` and `docs_only` is `unknown`; see
 [operator environment](../reference/auto-drive-qa.md#operator-environment).
 
-A record you find in a round's state directory is that round's own. Where the
-round's step could not measure, it replaces the file with its
-`qa-measurement-unavailable` object rather than leaving the previous round's
-record in place, so a stale measurement is never what you are reading; see
+A record you find in a drive's state directory is not necessarily the latest
+round's. Every round of a drive uses the same path, and only a round that
+measured writes it: a round that could not measure prints its
+`qa-measurement-unavailable` object and leaves the file untouched. So check
+the round's own output before you trust the file's dates or contents as this
+round's; see
 [the record file](../reference/auto-drive-qa.md#the-record-file).
 
 ## 2. Judge whether the change is user-facing
@@ -124,6 +127,10 @@ What a drive's round accepts afterwards follows from the measured value:
 | absent | Read exactly as `unknown`. The `qa-measurement-unavailable` record carries no `docs_only` field, so the notes-naming rule applies there too and criterion 1 stays reachable. |
 
 ## 3. Exercise a user-facing change
+
+Running a scenario runs the branch's own code on your host, so do this only
+for a branch you own. A PR from a fork you do not control is the operator's
+to judge, not yours.
 
 Run only the scenarios this PR changed or added, one at a time, each staged
 alone outside the repository. `gadugi-test --scenario` matches a substring
@@ -184,9 +191,11 @@ configuration or build input changes, so no scenario exercises it.
 Measured docs_only=true; the declared command `npm test` passed (exit 0).
 ```
 
-Leave raw command output, log tails, environment values, file contents from
-outside the diff, `~/.claude` and `~/.amplihack` paths and email addresses
-out of it. Name the scenario, the file and the outcome instead.
+Leave raw command output, log tails, environment values, any credential,
+token, key or connection string even where it looks already redacted, file
+contents from outside the diff, `~/.claude` and `~/.amplihack` paths and
+email addresses out of it. Name the scenario, the file and the outcome
+instead.
 
 ## 5. Hand off when only a person can act
 

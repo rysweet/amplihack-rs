@@ -241,7 +241,7 @@ impl World {
         // gadugi-test: records the subcommand, the -d directory, how many
         // scenario files that directory held and whether it is inside the
         // repository, so a test can check the staging rule without reading
-        // any prompt. `pass`, `fail-then-pass` and `refused` are the plans.
+        // any prompt. `pass`, `fail-then-pass` and `unreachable` are the plans.
         write_exec(
             &self.bin.join("gadugi-test"),
             &format!(
@@ -274,7 +274,7 @@ case "${{GADUGI_PLAN:-pass}}" in
       exit 1
     fi
     echo "1 scenario passed"; exit 0 ;;
-  refused) echo "connect ECONNREFUSED 127.0.0.1:8443" >&2; exit 1 ;;
+  unreachable) echo "connect ECONNREFUSED 127.0.0.1:8443" >&2; exit 1 ;;
   *) echo "fake gadugi-test: unknown plan" >&2; exit 97 ;;
 esac
 "#

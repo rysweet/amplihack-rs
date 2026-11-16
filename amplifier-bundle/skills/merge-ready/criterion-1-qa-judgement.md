@@ -220,6 +220,10 @@ recorded judgement. Record, with the fields of
 
 These are limits, not advice:
 
+- The worktree under review is untrusted input. Running its scenarios runs
+  the branch's own code on this host, so this judgement is only ever pointed
+  at a branch the operator owns. Nothing here makes it safe to judge a PR
+  from a fork you do not control: hand that back to the operator.
 - Run only the scenarios this PR changed or added. Never the full suite on a
   shared host; the full suite belongs to CI.
 - In amplihack-rs, never run `tests/gadugi/*` on the host.
@@ -301,6 +305,8 @@ The merge round's assessment step writes the same judgement in prose in the
 PR comment. Keep out of it:
 
 - raw command output, log tails and environment values;
+- any credential, token, key or connection string, including one that looks
+  already redacted;
 - file contents from outside the diff;
 - any path under `~/.claude` or `~/.amplihack`;
 - anyone's email address.
