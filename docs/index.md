@@ -316,6 +316,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recovery after a Recipe Usage Limit](concepts/recipe-usage-limit-recovery.md) - **Planned:** latest-attempt eligibility, nested replay, and compatibility
 - [Recipe Recovery Reference](reference/recipe-recovery.md) - **Planned:** persistence policies, resources, durable storage, and runner contracts
 - [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
+- [Why a Recipe Run Does Not Trace Git Commands](concepts/no-git-command-tracing.md) - Why the ptrace observer and the Git-command journal were removed, what the private clone does instead, and what a tamper-resistant record would require (#2738)
 - [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, and recovery decisions
 
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
