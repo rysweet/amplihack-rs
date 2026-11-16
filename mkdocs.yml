@@ -73,6 +73,7 @@ nav:
       - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
       - Run Tests Against the Pinned Recipe Runner: howto/run-tests-against-the-pinned-recipe-runner.md
       - Keep Tests from Prompting for Git Credentials: howto/keep-tests-from-prompting-for-git.md
+      - Keep Shell Test Stubs from Blocking on stdin: howto/keep-test-stubs-from-blocking-on-stdin.md
       - Run recipe::run Tests Inside a Recipe Session: howto/run-recipe-tests-inside-a-recipe-session.md
       - Wait Without Leaving Orphan Processes: howto/wait-without-orphan-processes.md
       - Profile Command Reference: reference/profile-command.md

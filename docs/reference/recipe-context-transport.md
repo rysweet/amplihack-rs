@@ -604,4 +604,5 @@ mirror. What the change removes is the world-readable copy on argv.
 - [Agent Prompt Channels Reference](./agent-prompt-channels.md) - The channel each agent launch path uses
 - [Recipe runner validation](./recipe-runner-validation.md) - The capability report this page reads
 - [Pass Large Recipe Context and Agent Text](../howto/pass-large-recipe-context.md) - Getting context into `amplihack recipe run`
+- [Keep Shell Test Stubs from Blocking on stdin](../howto/keep-test-stubs-from-blocking-on-stdin.md) - The stdin rule for the shell stubs the #2582 rounds touched
 - [Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md) - The agent guidance from #2582 part 2

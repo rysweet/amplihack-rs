@@ -7,7 +7,25 @@
 #                 stand-in for `extract-json --require-field F` (pass the blob
 #                 through when it names F) and `extract-field --field F
 #                 --default D [--require-boolean]` (a string or bare value;
-#                 JSON \n and \t decoded, boolean types checked when required).
+#                 JSON \n and \t decoded, boolean types checked when required),
+#                 and for `normalise-loop-verdict` (pass CONTINUE, DONE or
+#                 STUCK through; anything else becomes STUCK).
+#
+#                 stdin rule (#2582): the mode is dispatched BEFORE stdin is
+#                 opened, and only these five modes read it —
+#                   normalise-loop-verdict  extract-json  extract-field
+#                   normalise-verdict       normalise-type
+#                 Every other mode answers 0 without reading, so a caller that
+#                 passes an open stdin cannot block on a channel the stub does
+#                 not use. `autodrive-completion-seal` is the mode that hung
+#                 tests/issue_1437_autodrive_loop.sh this way.
+#
+#                 The last two have no stand-in and answer nothing, but the
+#                 tree pipes into them, so they must keep draining: a mode that
+#                 is piped into belongs in the read list even with no stand-in,
+#                 or its writer takes SIGPIPE and the pipeline ends 141 under
+#                 `set -o pipefail`. Adding a mode means deciding which list it
+#                 joins. See docs/howto/keep-test-stubs-from-blocking-on-stdin.md.
 #   recipe show   exit 0.
 #   recipe run    the loop names recipes by absolute launch-side path (#1543),
 #                 so the recipe is keyed on its base name. Every call is logged
@@ -88,7 +106,14 @@ if [ "${1:-} ${2:-}" = "orch helper" ]; then
       *) shift ;;
     esac
   done
-  BLOB="$(cat)"
+  # Read stdin only for the modes that carry a JSON blob (see the stdin rule in
+  # this file's header). BLOB is set first so the skip path stays `set -u` safe.
+  BLOB=""
+  case "$MODE" in
+    normalise-loop-verdict|extract-json|extract-field|normalise-verdict|normalise-type)
+      BLOB="$(cat)" ;;
+    *) exit 0 ;;
+  esac
   case "$MODE" in
     normalise-loop-verdict)
       case "$BLOB" in CONTINUE|DONE|STUCK) printf '%s' "$BLOB" ;; *) printf STUCK ;; esac
