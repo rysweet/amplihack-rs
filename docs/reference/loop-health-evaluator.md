@@ -15,9 +15,17 @@ structured verdict — `CONTINUE`, `DONE`, or `STUCK`.
 Auto-drive Crusty reviews check objective completion before invoking this
 brick. An evidence-valid `CLEAN` or `MINOR_ONLY` ends review iteration without
 an evaluator call; required follow-up recording still gates phase completion.
-This also applies to Crusty rereviews between merge-ready rounds. The
-merge-ready loop's own evaluator policy is unchanged. See the
+This also applies to Crusty rereviews between merge-ready rounds. See the
 [Crusty completion contract](autodrive-crusty-completion.md).
+
+For the merge-ready loop, `loop_ci_signal` is `<pass|pending|fail|none>@<head>`.
+When it is `pending@<head>` and the head has not changed, the verdict is
+`CONTINUE`, never `STUCK`: a required check still running is a wait, not a
+lack of progress. Repeated rounds with no movement and no pending signal,
+including `fail@<head>`, are still `STUCK`. A round whose only open item is a
+pending check does not reach the evaluator at all; it ends the loop
+`WAITING`. See
+[A pending check is a wait](autodrive-merge-ready-round.md#a-pending-check-is-a-wait-not-a-lack-of-progress).
 
 It is deliberately **not** an iteration counter. See
 [Why not a numeric iteration cap](#why-not-a-numeric-iteration-cap).

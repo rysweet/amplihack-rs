@@ -24,7 +24,16 @@ use std::process::{Command, Stdio};
 
 /// Writes `body` to `path` (replacing it by rename) with permission bits
 /// `mode`. The path and mode reach `sh` as arguments, never as script text.
+///
+/// Panics before writing anything if `mode` has a setuid, setgid or sticky
+/// bit (`mode & 0o7000 != 0`): a test stub never needs one.
 pub fn write_executable(path: &Path, body: impl AsRef<[u8]>, mode: u32) {
+    assert!(
+        mode & 0o7000 == 0,
+        "refusing to write stub {} with mode {mode:o}: setuid, setgid and sticky \
+         bits (0o7000) are not allowed",
+        path.display()
+    );
     let mut child = Command::new("/bin/sh")
         .args([
             "-c",
@@ -33,6 +42,14 @@ pub fn write_executable(path: &Path, body: impl AsRef<[u8]>, mode: u32) {
         ])
         .arg(path)
         .arg(format!("{mode:o}"))
+        // `cat`, `chmod` and `mv` are resolved through the child's PATH, and
+        // the inherited one is not ours to rely on: tests across this process
+        // set the process-global PATH to a single private directory while they
+        // run (the install and update suites do), and `sh` then reports 127
+        // for each of the three. The parent's PATH says nothing about where
+        // these three live, so name the standard locations outright instead of
+        // inheriting a value another test is in the middle of changing.
+        .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| panic!("cannot start sh to write {}: {e}", path.display()));

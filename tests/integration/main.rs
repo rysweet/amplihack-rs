@@ -26,6 +26,13 @@ mod investigation_workflow_decomposition;
 mod isolated_amplihack;
 #[path = "isolated_amplihack_scan.rs"]
 mod isolated_amplihack_scan;
+// Issue #2658: the real-runner tests build or reuse recipe-runner-rs at the
+// pinned revision instead of using whatever the host has installed.
+#[path = "../support/pinned_runner.rs"]
+mod pinned_runner;
+// The helper's unit tests run in this binary only.
+#[path = "../support/pinned_runner_tests.rs"]
+mod pinned_runner_tests;
 
 // Issue #1973: condition waits with one ceiling, shared with cli_integration.
 #[path = "../../crates/amplihack-cli/tests/support/wait.rs"]
@@ -507,6 +514,14 @@ mod issue_1642_github_origin_parsing;
 // a fake gh, all through `isolated(..)`.
 #[path = "issue_1762_caller_branch_alias_test.rs"]
 mod issue_1762_caller_branch_alias;
+
+// Issue #2471 (first slice of #2472): a failed push step (15, 18c) gets
+// an agentic recovery. The real steps, taken by id, run through
+// recipe-runner-rs against a bare remote whose pre-receive hook rejects an
+// inherited RECIPE_VAR_issue_number, with a fake agent. Skipped without the
+// runner; CI installs it.
+#[path = "push_failure_recovery.rs"]
+mod push_failure_recovery;
 
 // Issue #1697: bundled journalistic-writing-style skill — content, trigger
 // separation from documentation-writing, registration, isolated install.

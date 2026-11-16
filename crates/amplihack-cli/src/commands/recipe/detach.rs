@@ -325,7 +325,7 @@ fn session_exists(session: &str) -> bool {
 /// (issue #1976, D8): it must not watch the launching run as its parent, nor
 /// write into another drive's state directory. The governor markers are
 /// issue #1811's.
-pub(crate) const PANE_ENV_REMOVED: [&str; 7] = [
+pub(crate) const PANE_ENV_REMOVED: [&str; 8] = [
     "AMPLIHACK_RECOVERY_ATTACHMENT",
     "AMPLIHACK_RECOVERY_DESCRIPTOR",
     crate::commands::governor::GOVERNOR_PARENT_ENV,
@@ -333,6 +333,8 @@ pub(crate) const PANE_ENV_REMOVED: [&str; 7] = [
     super::run::parent_watch::PARENT_WATCH_ENV[0],
     super::run::parent_watch::PARENT_WATCH_ENV[1],
     super::run::parent_watch::PARENT_WATCH_ENV[2],
+    // Issue #2535: a new top-level run reads only its own guidance.
+    crate::run_guidance::GUIDANCE_DIRS_ENV,
 ];
 
 /// Whether the pane may inherit `name`.
@@ -362,7 +364,7 @@ fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
 }
 
 /// `recipe.log_dir`, or `~/.amplihack/recipe-logs`.
-fn log_dir() -> Result<PathBuf> {
+pub(crate) fn log_dir() -> Result<PathBuf> {
     if let Some(dir) = crate::user_config::recipe_log_dir() {
         return Ok(dir);
     }

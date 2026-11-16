@@ -25,6 +25,7 @@ recursion:
   max_total_steps: 140
 
 context:
+  base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   task_description: ""
   repo_path: "."
   issue_number: ""
@@ -32,8 +33,7 @@ context:
   existing_branch: ""
   quick_change_max_files: "3"
   quick_change_max_lines: "150"
-  # "true" (exactly) from smart-classify-route for docs-only, audit and meta
-  # tasks: an empty diff then finishes the run with verdict empty, no PR.
+  # "true" (exactly) from smart-classify-route for docs-only, audit and meta tasks: an empty diff then finishes the run with verdict empty, no PR.
   allow_no_op: "false"
   worktree_setup: ""
   quick_change_base: ""
@@ -145,13 +145,13 @@ steps:
       printf '%s' "$NOTE"
     output: "quick_change_handover_note"
 
-  # Step 6: default-workflow continues on the quick/ branch; its step 04
-  # reuses the existing worktree as it is.
+  # Step 6: default-workflow continues on the quick/ branch; its step 04 reuses the existing worktree as it is.
   - id: "quick-change-handover"
     type: "recipe"
     condition: "quick_change_verdict == 'handover'"
     recipe: "default-workflow"
     context:
+      base_branch: "{{base_branch}}"
       task_description: "{{task_description}}\n\n{{quick_change_handover_note}}"
       existing_branch: "{{worktree_setup.branch_name}}"
       repo_path: "{{repo_path}}"

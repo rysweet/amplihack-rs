@@ -74,7 +74,7 @@ impl InvocationAuthorization {
             state_dir: None,
         })
     }
-    pub(crate) fn validate_selection(&self, binding: &super::records::Binding) -> Result<()> {
+    pub(crate) fn validate_selection(&self, binding: &super::identity::Binding) -> Result<()> {
         anyhow::ensure!(
             self.selected_pr.is_none_or(|n| n == binding.pr_number),
             "evidence changed explicitly selected PR"
@@ -92,6 +92,17 @@ impl InvocationAuthorization {
             "evidence changed explicitly selected source branch"
         );
         Ok(())
+    }
+    /// Whether PR `pr` is the one the operator selected at launch, by number
+    /// or by URL (#2575: the finalize merge is bound to the selection, as the
+    /// retired record validation was). No selection accepts any PR.
+    pub(crate) fn selects_pr(&self, pr: u64) -> bool {
+        self.selected_pr.is_none_or(|n| n == pr)
+            && self.selected_url.as_deref().is_none_or(|url| {
+                url.trim_end_matches('/')
+                    .rsplit_once("/pull/")
+                    .is_some_and(|(_, n)| n.parse::<u64>().ok() == Some(pr))
+            })
     }
     pub(crate) fn restrict_dry_run(&mut self) {
         self.dry_run = true;

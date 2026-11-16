@@ -607,6 +607,69 @@ fn base_branch_is_never_replaced_when_it_is_absent_forbidden_or_the_head() {
     }
 }
 
+// #2520: the publish result records the base step-16 gave the pull request,
+// so finalize can find a pull request into a branch other than origin/HEAD.
+// Only a base already checked is recorded; every other exit records "".
+
+#[test]
+fn publish_result_records_the_base_given_to_gh_pr_create() {
+    let f = PublishFixture::new();
+    f.git(&[
+        "update-ref",
+        "refs/remotes/origin/dev",
+        "refs/remotes/origin/main",
+    ]);
+    let output = f
+        .publish_command()
+        .env("RECIPE_VAR_base_branch", "dev")
+        .output()
+        .unwrap();
+    let result = f.assert_created(&output);
+    assert!(create_args(&f).contains(&b"--base=dev".to_vec()));
+    assert_eq!(result["base_branch"], "dev", "{result}");
+}
+
+#[test]
+fn publish_result_records_no_base_when_github_chose_it() {
+    // Without base_branch, gh pr create names no base and GitHub uses the
+    // repository's default branch, which the local origin/HEAD may not
+    // match. Nothing unchecked is recorded; finalize reads the pull
+    // request's own base instead.
+    let f = PublishFixture::new();
+    let result = f.assert_created(&f.publish());
+    assert_eq!(result["base_branch"], "", "{result}");
+}
+
+#[test]
+fn publish_result_records_the_base_of_a_matched_open_pull_request() {
+    let f = PublishFixture::new();
+    f.write(
+        "prs.json",
+        &serde_json::json!([f.pr("OPEN", BRANCH)]).to_string(),
+    );
+    let output = f.publish();
+    assert!(output.status.success(), "{}", describe(&output));
+    let result = json(&output);
+    assert_eq!(result["state"], "existing-open-pr", "{result}");
+    assert_eq!(result["base_branch"], "main", "{result}");
+    assert!(!f.read("gh.log").contains("pr create"));
+}
+
+#[test]
+fn publish_result_records_no_base_without_a_pull_request() {
+    let f = PublishFixture::new();
+    f.git(&["reset", "--hard", "origin/main"]);
+    let output = f.publish();
+    assert!(output.status.success(), "{}", describe(&output));
+    let result = json(&output);
+    assert_eq!(result["state"], "NO_DIFF_SUCCESS", "{result}");
+    assert_eq!(
+        result.get("base_branch").and_then(|v| v.as_str()),
+        Some(""),
+        "the field is always present: {result}"
+    );
+}
+
 #[test]
 fn step_16_refuses_main_even_when_base_branch_names_another_branch() {
     let f = PublishFixture::new();

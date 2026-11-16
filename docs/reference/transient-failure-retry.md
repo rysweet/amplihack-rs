@@ -221,7 +221,9 @@ an unsuccessful step's terminating error header records the reserved exit code
 diagnostics. It does not search captured stdout, stderr or diagnostic text
 for refusal phrases or embedded exit-code references. The class is then
 `work`, and the failure is never mechanically retried. The decoder is
-`termination.rs`.
+`termination.rs`. A sub-recipe whose `recipe:` value is a template
+expression is not decoded: the pinned runner leaves the name out of that
+header.
 
 ```text
 Command failed (exit 79): <any diagnostics>                  -> true, work

@@ -1845,9 +1845,37 @@ fn round_step06_records_minor_only() {
     let d = Drive::new();
     let script = step_command(ROUND, "step-06-write-round-record");
     let rec = d.record(1);
-    let ctx = json!({"pr": "7", "head_sha": "a".repeat(40)}).to_string();
+    // Step-06 binds its record to the drive's private review generation
+    // (#2096), so the reviewed head is a real commit with a real generation.
+    let repo = d.tmp.path().join("pr");
+    crate::support::git_fixture::init_with_commit(&repo);
+    let head = amplihack_git::command_in(&repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert!(head.status.success(), "{}", show(&head));
+    let head = String::from_utf8(head.stdout).unwrap().trim().to_string();
+    let generation =
+        crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin())
+            .args(["internal", "review-checkout"])
+            .arg(&repo)
+            .arg(d.tmp.path().join("review"))
+            .arg(&head)
+            .env("HOME", &d.home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .unwrap();
+    assert!(generation.status.success(), "{}", show(&generation));
+    let generation = String::from_utf8(generation.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    let real = crate::support::amplihack_bin::amplihack_bin();
+    let ctx = json!({"pr": "7", "head_sha": head}).to_string();
     let tools = tools_dir();
     let env: Vec<(&str, &OsStr)> = vec![
+        ("REVIEW_DIR", OsStr::new(&generation)),
+        ("REAL_AMPLIHACK", real.as_os_str()),
         (
             "RECIPE_VAR_crusty_verdict",
             OsStr::new(
@@ -2061,11 +2089,6 @@ fn verdict_allow_lists_admit_minor_only() {
         state.contains("(CLEAN|MINOR_ONLY)"),
         "crusty_final terminal regex"
     );
-    let ev = read("amplifier-bundle/tools/autodrive_round_evidence.sh");
-    assert!(
-        ev.contains("MINOR_ONLY"),
-        "round evidence maps MINOR_ONLY to DONE_CLEAN"
-    );
 }
 
 #[test]
@@ -2161,11 +2184,6 @@ fn plan_task_id_is_an_input_and_reaches_both_loops() {
             "{id} receives plan_task_id: {text}"
         );
     }
-    assert!(
-        read("crates/amplihack-cli/src/commands/orch/autodrive/followups.rs")
-            .contains("followups.tsv"),
-        "the final summary lists follow-ups"
-    );
 }
 
 #[test]

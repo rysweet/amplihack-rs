@@ -47,13 +47,21 @@ pub(super) fn supports_context_file(report: &serde_json::Value) -> bool {
         })
 }
 
-/// Refuses a context key in the `AMPLIHACK_` namespace (issue #1567). Runs
-/// before any transport is chosen, so no file is written for a refused map.
+/// Refuses a reserved context key (issue #1567): the `AMPLIHACK_` namespace,
+/// and the Git routing and executable configuration the command policy
+/// removes before launch.
+///
+/// The rule itself is [`is_reserved_context_key`], so this and
+/// [`super::execute::pass_context`] cannot drift apart. Both call it: this one
+/// runs before a transport is chosen, so no file is written for a refused
+/// map, and `pass_context` keeps its own call for the `--set` path. The
+/// duplication is deliberate — either path alone refuses the key.
+///
 /// The error names the key, escaped, and never a value.
 pub(super) fn refuse_reserved_keys(context: &BTreeMap<String, String>) -> Result<()> {
     if let Some(key) = context.keys().find(|k| is_reserved_context_key(k)) {
         anyhow::bail!(
-            "recipe context key {} is reserved: the AMPLIHACK_ namespace cannot be set from recipe context",
+            "recipe context key {} is reserved: the AMPLIHACK_ namespace and Git execution configuration cannot be set from recipe context",
             crate::commands::profile::escape_for_error(key)
         );
     }

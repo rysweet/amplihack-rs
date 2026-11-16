@@ -1,15 +1,18 @@
-# Portable auto-drive records
+# Auto-drive authorization and state
 
-This module implements local workflow safeguards for issue #2329. It never
-contacts a hosting service, decides semantic readiness, or performs a merge.
-Agents observe and assess facts under trusted merge-ready policy.
+This module implements local workflow safeguards for issues #2329 and #2575.
+It never contacts a hosting service, decides readiness, or performs a merge.
+The merge-ready agent assesses the PR and writes it up as a PR comment;
+nothing here parses that write-up. The merge is requested by the bundled
+`autodrive_merge.sh` under the conditions in
+`docs/reference/autodrive-merge-ready-round.md`.
 
 - `authorization`: strictly capture explicit invocation inputs before expanding
   defaults. Local recipe defaults cannot select a PR or grant action authority.
   Context defaults are expanded only from the pinned trusted entrypoint.
   The full composer defaults to merge authorization; direct consumers and
   light mode default to verification. Dry-run suppresses follow-ups as well.
-  Resume captures fresh authority; no candidate or inherited marker grants it.
+  Resume captures fresh authority; no agent output or inherited marker grants it.
   This includes `recipe run --fresh` and durable recovery resume: capture reads
   the raw explicit inputs before recovery normalisation, and every invocation
   gets a new `run_id`. After recovery admission the runner rewrites
@@ -39,106 +42,48 @@ Agents observe and assess facts under trusted merge-ready policy.
 - `trusted`: pin and privately copy launch recipes, skills, templates, helpers
   and evaluator; freeze authorization in child prompts and literal recipe
   contexts. Clean exact retired environment entries without sourcing them.
-- `records` / `validation`: closed schema-1 identity, criterion, attempt,
-  recovery, finalization and completion records. Exactly 13 criteria, current
-  head/base/run binding, concrete observations and no contradictions establish
-  structural readiness. Semantic correctness remains the agent's obligation.
-  `null_as_unknown` reads a `null` or missing value in the listed string
-  fields (every `Binding` field, `Attempt.cause` and `.operation`,
-  `reviewed_head_sha`, `verified_head_sha`, every `ReviewRange` field,
-  `Evidence.source` and `.observation`, `Recovery.interface` and `.evidence`,
-  and the `FinalizationObservation` strings) as `""`. Every other field stays
-  strict, `deny_unknown_fields` stays on every type, and serialisation is
-  unchanged. `validation::unknown_fields` reports each empty or `"unknown"`
-  value as a sorted `unknown-field:<path>` blocker. Paths use array positions
-  and only a criterion id found in the fixed criteria list. An empty cause on
-  a succeeded attempt is not reported.
-- `state`: create private directories and files, reject unsafe historical
-  modes, links, traversal and special files; bound reads; validate and hash
-  opened bytes; publish new snapshots atomically without replacement.
-- `outcome`: keep readiness, requested action, observed state and stop reason
-  separate. Merge-ready completion needs both an accepted `MERGE_READY`
-  round and evaluator `DONE`. Crusty completion is not reduced here; it is
-  decided by `orch/autodrive_completion/` (an evidence-valid `CLEAN` or
-  `MINOR_ONLY` completes without an evaluator call). Merge
-  success additionally requires authorized expected-head protection and
-  platform confirmation; queue admission or exit zero is insufficient.
-- `review`: verify the established post-review allowlist against local Git.
-- `completion`: seal accepted round bytes only after the merge-ready loop
-  observes an accepted `MERGE_READY` round and evaluator `DONE`; reject
-  receipts from an older invocation.
-- `followups`: validate private MINOR_ONLY issue mappings for reporting.
-- `report`: replay the same complete reduction boundary as `helper reduce`,
-  including the pre-action accepted snapshot, local Git/review coverage, artifact
-  bytes and loop receipt. Require a matching private outcome snapshot from
-  successful reduction; retain concrete rejection causes in incomplete reports.
-  The evidence store is opened only from the authorization's bound state
-  directory; an unset binding is incomplete. The child's `autodrive_state_dir`
-  and the reducer's `state_dir` must equal the bound path lexically (empty
-  counts as absent; any other string or a non-string value is a mismatch).
-  Nothing is joined onto `working_dir` or canonicalised. A mismatch reports
-  `incomplete` with a fixed cause; paths in it are `{:?}`-escaped.
-- `helper`: optional local CLI operations under `amplihack orch helper
-  autodrive`. Required record validation in the recipe uses these local
-  operations; platform access and recovery have no prescribed interface.
-  `assess` and `round` read stdin (at most 4 MiB) only after authorisation
-  and the state directory are established and, for `round`, the record's
-  parent is confirmed to be the state directory. They then run parse,
-  `unknown_fields`, `binding_drift` and the integrity checks in that order.
-  `binding_drift` is the public wrapper over the private `drift()`, which
-  also returns `current_head` and `current_base`. It validates the binding
-  and both branch names, and checks that the head branch matches the
-  worktree branch, before any Git command reads `HEAD`; it returns
-  `stale-evidence-head`, `stale-evidence-base` or
-  `stale-evidence-merge-base`; the merge-base is compared only when the head
-  and base match. If `git rev-parse --verify HEAD` fails (for example in a
-  repository with no commits), the read adds the fixed blocker
-  `current-head-unreadable`, sets `current_head` to `"unknown"` and
-  `current_base` to `""`, and returns before any comparison; this applies on
-  the parse-error, unknown-field and drift paths alike, and the Git error
-  goes only to `tracing::debug!`. An invalid binding, an invalid branch
-  name, a branch mismatch, grafts and every Git failure other than reading
-  `HEAD` remain hard errors, as do `validate_candidate` errors (for example
-  an incomplete criterion with no cause; see #2539). A parse, unknown-field,
-  unreadable-head or drift fault is not a hard error:
-  - `assess` prints `{"status":"refresh_required","accepted":null,
-    "readiness":"incomplete","refresh_required":true,"evidence_head",
-    "current_head","current_base","blockers"}` and exits 0. It writes no
-    snapshot, reads no follow-ups and leaves `--directory` unchanged. Success
-    adds `"status":"accepted"` and `"refresh_required":false`.
-  - `round` writes a `NOT_MERGE_READY` record (`test_signal` `BLOCKED`,
-    `ci_signal` `UNVERIFIED`, `accepted_evidence` null) with its blockers,
-    writes the same blockers one per line to `<record>.findings`, prints the
-    record and exits 0. Every round record has the same keys, including
-    `blockers`, and `blocker_count` equals their number.
-  Blocker text is built from fixed names, positions and serde's error class,
-  line and column, never from record values. Each blocker is at most 256
-  bytes with no control characters. Echoed SHAs must be 40 or 64 hexadecimal
-  characters and `round_label` must match `[A-Za-z0-9._-]{1,128}`; otherwise
-  they are written as `""`; this applies to `evidence_head`, `current_head`
-  and `current_base`, so on the unreadable-head path both `current_head` and
-  `current_base` are printed as `""`. In a repository with no commits the
-  branch check still passes when the binding names the unborn current
-  branch, so the result is `current-head-unreadable`, not a branch-mismatch
-  hard error.
-  `local_binding` keeps its three strict messages, also rejects any other
-  drift blocker (including `current-head-unreadable`), and
-  `validate_reduction` still calls it, so stale evidence or an unreadable
-  worktree `HEAD` never passes reduction. The strict check
-  runs after the merge action, so a merge is never reduced against a head
-  that has moved since acceptance.
+- `identity`: `Binding`, `validate_binding` and `MAX_RECORD_BYTES`. `Binding`
+  keeps `deny_unknown_fields` because the runner, not an agent, produces it.
+  Used by `authorization` and `report`; `state` uses `MAX_RECORD_BYTES`.
+- `state`: create private directories, reject unsafe historical modes,
+  links, traversal and special files, and read private files with a size
+  bound (`EvidenceStore::create`, `read_private`).
+- `private_mode`: the one permission rule `state` and the completion checker
+  share (#2546). `access` decides; `make_private` removes extra group and
+  other bits with `fchmod` on the checked descriptor and logs each repair.
+  World-writable entries, other owners or groups, symlinks and hard links
+  stay refused.
+- `report`: build the run's `autodrive_outcome` (`schema_version` 2). It
+  never fails and never panics. `merge` and `stop_reason` come only from
+  tool-written JSON (`finalize_merge`, `merge_loop_result`); `summary` is the
+  finalization agent's statement verbatim, cut on a character boundary at
+  `MAX_RECORD_BYTES`. `already_merged` keeps its binding, selection,
+  `run_id`, provenance and PR checks; its errors become a fixed `note`
+  that copies no file contents. State is opened only from the authorization's
+  bound state directory, compared lexically; nothing is joined onto a working
+  directory or canonicalised.
+- `helper`: local CLI operations under `amplihack orch helper autodrive`:
+  the `State` and `Worktree` operations, and `authorization --invocation F
+  --directory D [--pr N]`, which reads the captured invocation, checks the
+  bound state directory and prints `{"allows_merge":bool,"run_id":...}`, plus
+  `"pr_selected":bool` with `--pr`, exiting `2` on any error.
 
-The full serialized agent contract is in the bundled skill's
-`evidence-contract.md`. `tests.rs` exercises authorization, stale/mismatched
-records, concrete evidence, failure/recovery, private state and outcomes,
-including state directory mismatches and a resumed run that tries to replay an
-earlier run's finalisation or receipt. The CLI integration suite
-(`issue_2329_autodrive_outcomes.rs`) exercises runner boundaries without
-executing a real agent or merge, including `--fresh` and recovery resume with
-stored authority and the absolute-path refusal. Its runner stubs report
-`durable_recovery_v1`. The stubs do not write a real recovery descriptor, so
-the recovery case reruns with `--fresh` and a `-c` context that carries stored
-authority; descriptor-driven resume itself is not exercised. Neither suite establishes live recovery or macOS execution.
+The parsed readiness record, its strict validation, the finalization observation,
+the loop receipt and the `records`, `validation`, `completion`, `outcome`,
+`review` and `followups` modules were retired by #2575. Crusty completion is
+decided by `orch/autodrive_completion/`, unchanged.
+
+`tests.rs` exercises authorization, private state, state-directory binding,
+retired environment entries, `already_merged` and the assigned state
+directory. `report_v2_tests.rs` covers any finalization text, the
+`stop_reason` mapping and an oversized multi-byte summary. The CLI suite
+`issue_2575_agentic_merge_ready.rs` runs the merge-ready round, loop endings,
+merge tool and hand-off against a stub `amplihack` and `gh`, with `HOME`,
+`AMPLIHACK_HOME`, the state directory and `CLAUDE_CONFIG_DIR` in temporary
+directories. `issue_2329_autodrive_outcomes.rs` exercises runner boundaries,
+including `--fresh` and recovery resume with stored authority and the
+absolute-path refusal. Neither suite runs a real agent or merge, or
+establishes live recovery or macOS execution.
 
 Private state and prompts are not an OS security boundary against a process
 holding the same user's credentials. Repository protections remain required.

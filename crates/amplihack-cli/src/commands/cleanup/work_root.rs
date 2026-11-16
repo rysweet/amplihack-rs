@@ -7,6 +7,9 @@ use std::fs;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
+/// The folder of stable execution storage under the work root.
+pub(crate) const EXEC_DIR: &str = "exec";
+
 pub(crate) const WORK_ROOT_ENV: &str = "AMPLIHACK_WORK_ROOT";
 pub(crate) const WORK_ROOT_EXPLICIT_ENV: &str = "AMPLIHACK_WORK_ROOT_EXPLICIT";
 
@@ -182,6 +185,12 @@ impl WorkRoot {
 
     pub(crate) fn short_runtime_dir(&self) -> PathBuf {
         self.path.join("r")
+    }
+
+    /// `<work root>/exec/`: the stable execution storage of runs with a
+    /// recovery identity (issue #2096, #2493).
+    pub(crate) fn exec_dir(&self) -> PathBuf {
+        self.path.join(EXEC_DIR)
     }
 
     pub(crate) fn lock_path(&self) -> PathBuf {

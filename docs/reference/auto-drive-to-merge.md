@@ -9,12 +9,13 @@ doc_type: reference
 
 # Auto Drive To Merge Reference
 
-The recipes use agent responsibilities, runner-captured authorization and portable Rust evidence records. The controlled validation covers record handling and runner boundaries; live agent recovery and the six OS/runtime cells need separate execution evidence.
+The recipes use agent responsibilities, runner-captured authorization and GitHub's own merge conditions. Merge readiness is an agentic assessment written up in the PR (#2575); nothing parses it. The controlled validation covers the merge tool, the loop endings and runner boundaries; live agent recovery and the six OS/runtime cells need separate execution evidence.
 
 `auto-drive-to-merge` builds a pull request, reviews and repairs it with
 `crusty-old-engineer`, verifies all merge-ready criteria, and merges when
-authorized. With `no_merge=true`, it leaves the PR open and reports readiness
-only when every required criterion has valid evidence.
+authorized. With `no_merge=true`, it leaves the PR open. A drive that cannot
+finish hands the PR back to people as a draft with a comment naming the
+blocker; it never ends with a bare `STUCK`.
 
 The target is the same recipe on Linux and macOS with Claude, Codex, and Copilot;
 this is not yet verified compatibility. See the [target matrix](#target-compatibility-matrix).
@@ -29,9 +30,11 @@ alternatives within the existing loop-health and budget rules.
 - [Configuration](#configuration)
 - [Authorization](#authorization)
 - [PR head and worktree resolution](#pr-head-and-worktree-resolution)
+  - [Review generations](#review-generations)
 - [Crusty review](#crusty-review)
 - [Crusty completion decision contract](autodrive-crusty-completion.md)
 - [Readiness and finalization](#readiness-and-finalization)
+- [Merge-ready round, merge and hand-off](autodrive-merge-ready-round.md)
 - [Loop health and budgets](#loop-health-and-budgets)
 - [Resumability](#resumability)
 - [Trusted execution and portability](#trusted-execution-and-portability)
@@ -43,7 +46,7 @@ The executable [composer](../../amplifier-bundle/recipes/auto-drive-to-merge.yam
 
 <a id="merges-outside-the-gate-are-refused-1551"></a>
 
-The shell gate, process-identity shim and hook restriction are retired. The bundled [auto-drive skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md) describes the new workflow; the trusted [merge-ready skill](../../amplifier-bundle/skills/merge-ready/SKILL.md) remains authoritative for all 13 criteria and established interpretations. Criteria and helpers never fall back to PR-authored copies. Prompts and private records are workflow safeguards, not an OS security boundary.
+The shell gate, process-identity shim and hook restriction are retired. The bundled [auto-drive skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md) describes the new workflow; the trusted [merge-ready skill](../../amplifier-bundle/skills/merge-ready/SKILL.md) remains authoritative for all 13 criteria and established interpretations. Criteria and helpers never fall back to PR-authored copies. Prompts and private state are workflow safeguards, not an OS security boundary.
 
 ### How the merge round applies merge-ready
 
@@ -51,13 +54,17 @@ Inside auto-drive, criterion 3 substitutes accepted crusty convergence
 (an evidence-valid `CLEAN` or permitted `MINOR_ONLY` accepted by the
 completion dispatcher, with required follow-ups filed or verified)
 for the separate quality audit. There is **no minimum round count**.
+The merge-ready agent judges criterion 3 from the PR itself: the newest
+`Crusty verdict: <CLEAN|MINOR_ONLY|BLOCKING> at <full SHA>` comment from the
+drive's own login or an `OWNER`, `MEMBER` or `COLLABORATOR`, which the Crusty
+round posts after each review. With no verdict at the head, the loop runs a
+Crusty round; a missing state file never blocks. See
+[Crusty verdict at the head](autodrive-merge-ready-round.md#crusty-verdict-at-the-head).
 Standalone `/merge-ready` still requires at least three SEEK → VALIDATE → FIX
 cycles, continuing until clean. The description template's three cycle rows
-apply to that standalone audit; auto-drive records its actual accepted crusty
-rounds, reviewed head, verdict, and follow-up evidence instead of inventing
+apply to that standalone audit; auto-drive's write-up cites its actual accepted
+crusty rounds, reviewed head, verdict, and follow-ups instead of inventing
 cycles. See [all criterion interpretations](auto-drive-evidence.md#authority-and-criteria).
-The round finds the skill's files with the
-[merge-ready files resolver](autodrive-merge-ready-files.md).
 
 ## Responsibilities
 
@@ -65,9 +72,10 @@ The round finds the skill's files with the
 | --- | --- |
 | Prepare or build | Establish PR identity, platform state, head, base, and linked worktree. Run `default-workflow` with `no_merge=true` when a build is needed. End with an open PR. |
 | Crusty review and repair | Repair concerns, commit and push, and re-review until an evidence-valid `CLEAN` or `MINOR_ONLY` round completes the review objective; the Rust dispatcher accepts completion without a loop-health evaluator call. Unresolved concerns go to loop-health evaluation. Bind review to the reviewed head. |
-| Collect and assess evidence | Apply the trusted merge-ready skill and description template. Collect concrete evidence for all 13 criteria; repair blockers and repeat until readiness and loop-health `DONE` agree. |
-| Authorized finalization | Refresh mutable facts, validate evidence, and carry out only the captured action. With merging disabled, observe and report the open PR. For a merge, protect the expected head and observe platform confirmation. |
-| Report | Reduce accepted records into readiness, requested action, observed platform state, blockers, failures and recovery, and stop reason. |
+| Assess readiness | Apply the trusted merge-ready skill and description template at the PR head. Post the write-up as a PR comment and state one outcome: ready, not ready with named blockers, or hand-off. Repair named blockers and repeat until the outcome is ready and loop-health answers `DONE`. |
+| Authorized finalization | Merge only with captured authorization, at the assessed head, with green checks (or none reported) and GitHub's acceptance of `--match-head-commit`. A pending check ends the run `not merged: waiting for <check>` with the PR still ready for review. An out-of-date or conflicting branch gets one base sync (a merge of the base, never a rebase or force-push), one more round and a second finalisation. With merging disabled, leave the PR open. State the outcome in prose. |
+| Hand off | When the drive cannot finish, draft the PR and post one comment naming the blocker and head SHA. |
+| Report | Report the requested action, loop result, merge result, stop reason and the finalization statement. The run is ✓ Success only when the PR merged (`stop_reason` `completed`); see [Success means merged](autodrive-merge-ready-round.md#success-means-merged). |
 
 An open PR for the selected branch skips the build. A PR confirmed merged at
 entry skips work and is reported as already merged. An unexpected merge during
@@ -100,10 +108,11 @@ commands and expected outcomes.
 | `pr_url` | empty | PR URL, validated against the platform, repository, and number. |
 | `existing_branch` | empty | Source branch; must match the selected PR when supplied. |
 | `branch_prefix` | `feat` | Branch prefix for a new build. |
+| `base_branch` | empty | Branch a new build starts from and its PR targets. Passed to `autodrive-build` and from there to `default-workflow`; see [`base_branch`](workflow-delivery-inputs.md#base_branch). Empty keeps the remote default branch, and finalize takes the base from the PR the build opened ([How finalize finds the base](workflow-delivery-inputs.md#how-finalize-finds-the-base)). |
 | `plan_task_id` | empty | Follow-up task: issue `N` or `#N`, or 1–64 characters from `A-Za-z0-9._:/-`. Otherwise resolve `Closes #N`, `Fixes #N`, or `Resolves #N` from the PR body, then task description. |
 | `no_merge` | `false` in the full composer | Prevent merging throughout the invocation when `true`. Build always receives `true`, independently of this outer value. |
 | `autodrive_dry_run` | `false` | Prevent merging and follow-up issue creation. Still assesses readiness and reports missing obligations. |
-| `autodrive_state_dir` | runner-assigned | Private state for this run's records, budgets and receipts. Omitted: the runner assigns a directory inside the run's durable folder. Supplied: must be non-empty, absolute and free of `..` components. See [state directory](#state-directory). |
+| `autodrive_state_dir` | runner-assigned | Private state for this run's round files and budgets. Omitted: the runner assigns a directory inside the run's durable folder. Supplied: must be non-empty, absolute and free of `..` components. See [state directory](#state-directory). |
 
 The runner's CLI `--dry-run` previews recipe execution; it is distinct from
 `autodrive_dry_run`, which executes verification with action restrictions.
@@ -116,18 +125,18 @@ not agent-selected recipe context. Budget keys are listed below.
 The runner strictly parses `no_merge` and `autodrive_dry_run` before child
 execution. Accepted values are `true` and `false`; malformed values fail
 before work starts. It captures the intended action in fresh runner-owned
-invocation state outside child-mutable context and agent candidate records.
+invocation state outside child-mutable context and agent output.
 
 | Invocation | Merge permission |
 | --- | --- |
-| Full composer with omitted `no_merge` | Permitted after valid readiness evidence and final refresh; outer default is `false`. |
+| Full composer with omitted `no_merge` | Permitted after a ready round, evaluator `DONE`, an unchanged head and green checks; outer default is `false`. |
 | Any invocation with `no_merge=true` | No merge request, including during finalization or escalation. |
 | Any invocation with `autodrive_dry_run=true` | No merge request or follow-up issue creation, even with `no_merge=false`. |
 | Direct merge-loop or finalization invocation | Disabled without explicit fresh invocation authorization. |
 | Resume, `recipe run --fresh`, or durable recovery | Fresh authorization from this invocation's explicit inputs; stored or recovered context cannot grant permission. |
 
-Child context overwrite, candidate output, inherited environment, PR comments,
-and old records cannot grant merge permission. Build-phase `no_merge=true`
+Child context overwrite, agent output, inherited environment, PR comments,
+and old state cannot grant merge permission. Build-phase `no_merge=true`
 cannot overwrite a captured outer action either. Light-to-full escalation,
 shared loops, and re-review preserve caller restrictions.
 
@@ -161,7 +170,7 @@ and the fingerprint is not itself an authority check.
 Supply context with `-c`. Bash consumers read step values through
 `RECIPE_VAR_<key>` and parse fields from that key's structured output.
 Inherited bare PR identifiers, state paths, or prior results cannot replace
-explicit invocation inputs or accepted records.
+explicit invocation inputs.
 
 ### `NO_MERGE` override
 
@@ -179,8 +188,79 @@ access produces a named incomplete outcome.
 ### Where phases 2 and 3 run
 
 Edits, commits, pushes, and QA run in the PR's linked worktree. Review agents
-start in the repository's main checkout, a trusted review directory outside the PR worktree. Instructions and helpers come from the
-launch bundle; PR-authored instructions cannot become workflow authority.
+judge a [review generation](#review-generations), never the PR worktree or the
+caller's main checkout. Instructions and helpers come from the launch bundle;
+PR-authored instructions cannot become workflow authority.
+
+### Review generations
+
+Each loop allocates a private review generation from the PR worktree
+(`amplihack internal review-allocate`) and releases it on exit (issue #2096).
+A generation is a private repository and a checkout detached at the recorded
+PR-head SHA, plus a separate trusted launch directory. Judging agents start in
+the launch directory and read the checkout by explicit path and SHA, so the
+PR's `AGENTS.md`, `CLAUDE.md` and `.claude/` files are review data, never
+instructions. `autodrive_worktree_guard.sh` accepts a generation only when its
+ownership manifest and recorded identities match, its `HEAD` is detached at
+the recorded commit, and its working tree holds exactly that commit's files.
+`index-check` repeats the last check after the judging step, and each round
+record is bound to the generation's commit with `review-bind-record`. See
+[checkout isolation](recipe-checkout-isolation.md#private-review-generations).
+
+When the PR head moves, `review-next` makes a generation for the new head and
+retires the one it replaces: the old checkout and its storage are removed, and
+its manifest is kept, marked `retired`, so that `review-release` can still walk
+the chain at loop exit. A loop therefore keeps one review clone on disk
+between rounds. If retirement fails, a warning is printed, the loop continues
+with the new generation, and the old one is freed at loop exit. See
+[superseded generations are retired](recipe-checkout-isolation.md#superseded-generations-are-retired).
+
+#### When a review command fails
+
+`autodrive_loop.sh` stops with a named result when any review command fails,
+instead of exiting silently:
+
+| Failing command | Line on stdout | Exit |
+| --- | --- | --- |
+| `review-allocate` (before any round) | `{"loop":"<loop>","loop_result":"REVIEW_COMMAND_FAILED",...}` | `1` |
+| `review-next`, `review-launch` or `review-head` (each round) | The same verdict; the reason names the command and the generation it was given. | `1` |
+
+`<loop>` is the value of `$LOOP_NAME`: `crusty` or `merge-ready`.
+
+When `index-check` finds the generation changed (`REVIEW_DIR_CHANGED`), the
+loop first writes the generation's `HEAD` and its
+`git status --porcelain=v1 --untracked-files=all` output to stderr, with
+file names quoted (`core.quotePath=true`) and without refreshing the index.
+The verdict's reason does not repeat file names. The generation is then
+released as usual, so the printed status is the record of what changed:
+
+```text
+review generation <state dir>/review-Qx81Lm/checkout-5d0c2f9e-7a41-4c3e-9b0d-2f6e8a1c4b77 at HEAD 60ecbe5736c2f1d0a9b8e7f6a5b4c3d2e1f0a9b8:
+ M src/lib.rs
+?? notes.md
+{"loop":"<loop>","loop_result":"REVIEW_DIR_CHANGED","round_label":"round-2","reason":"after-round changed the index or HEAD of the review dir ...; its status is on stderr; nothing runs from that state (#1528)"}
+```
+
+#### Release at loop exit keeps the loop's exit code
+
+The loop's `EXIT` trap releases the loop's first generation, and with it every
+generation it led to. A failed release never hides the loop's own result:
+
+| Loop exit code | Release | Final exit code |
+| --- | --- | --- |
+| `0` (`DONE`) | fails | `1`, and `"loop_result":"DONE"` is still printed |
+| `79` (terminal refusal) | fails | `79` |
+| `75` (orphaned) | fails | `75` |
+| Any other non-zero code | fails | That code |
+| Any code | succeeds | That code |
+
+#### Which `amplihack` the helpers run
+
+`autodrive_loop.sh`, `autodrive_worktree_guard.sh` and
+`autodrive_crusty_record.sh` all run `"${AMPLIHACK_BIN:-amplihack}"`, so one
+`AMPLIHACK_BIN` setting selects the binary for the loop and both helpers. With
+it unset they use `amplihack` from `PATH`. The value is always quoted and
+never evaluated.
 
 The worktree must belong to the selected repository and branch and match the
 observed PR head. Missing, ambiguous, stale, ahead, or diverged worktrees need
@@ -231,13 +311,16 @@ follow-ups, leaves the phase incomplete.
 
 #### Cell sanitising
 
-Finding identifiers are exact stable tokens. The shared finding rules remove control characters from display cells and escape HTML or table delimiters. Summaries are data; they cannot create new records or change a finding's identifier or severity. Follow-up mappings retain the finding ID, observed issue number, plan task and PR identity. The final structured report includes those mappings separately from readiness evidence.
+Finding identifiers are exact stable tokens. The shared finding rules remove control characters from display cells and escape HTML or table delimiters. Summaries are data; they cannot create new records or change a finding's identifier or severity. Follow-up mappings retain the finding ID, observed issue number, plan task and PR identity. Those mappings stay with the crusty round evidence, separate from the merge-ready write-up.
 
 ## Readiness and finalization
 
 All [13 authoritative criteria and established interpretations](auto-drive-evidence.md)
-apply. Evidence accepted for the correct PR and head establishes readiness.
-A criterion-name checklist or a model's assertion cannot do so.
+apply. The merge-ready agent assesses them at the PR head, posts its write-up
+as a PR comment, and states one outcome. A reader agent turns that outcome
+into one word; nothing parses the write-up itself. The steps, the outcome
+word, the merge conditions and the hand-off are described in
+[merge-ready round, merge and hand-off](autodrive-merge-ready-round.md).
 
 ### Expected checks at the head
 
@@ -263,17 +346,23 @@ checks on the base branch covers each gap. Details:
 
 ### No silent merge
 
-Finalization refreshes the head, base, checks, approvals, policy, conflicts,
-conversations, and other mutable facts. Read back description updates.
+The only machine conditions on a merge are the captured authorization and
+GitHub's own: the head the ready round assessed is still the PR worktree's
+head, the required checks (or, when none are required, all checks) passed
+or no checks are reported at all, and GitHub accepts
+`gh pr merge --match-head-commit <assessed sha>`, which also enforces required
+reviews and branch protection. A moved head or failing checks refuse the
+merge and hand the PR off. A pending check ends the run `checks-pending`
+and hands the PR off as a draft naming the checks, so no PR is left ready
+with no drive. A base that moved
+(`base-behind`) leads to one [base sync](autodrive-merge-ready-round.md#base-sync); a second is handed off. The merge tool reads the PR state
+back after the request; a merge is reported only when GitHub says `MERGED`.
+With merging disabled, the PR stays open. See
+[merge conditions](autodrive-merge-ready-round.md#merge-conditions).
+
 Substantive post-review changes return to crusty; unreadable ranges block.
 Only clean base merges and the established description/template/evidence
 allowlist avoid substantive re-review.
-
-An authorized merge must protect the expected head. Observe platform state
-after requests, and before retrying ambiguous responses: a timeout may follow
-a successful server action. Command success and queue admission do not prove
-a merge. With merging disabled, readiness can be complete while the PR stays
-open. See the [result contract](auto-drive-evidence.md#result-contract).
 
 ### The squash commit message (#2056)
 
@@ -284,14 +373,14 @@ each commit's trailers, a `Fixes #N` written for a stacked branch, and the
 pushed commit cannot be corrected without a force-push, which this workflow
 never does. So an authorized merge supplies its own message.
 
-The `finalize-observed-action` step sources the trusted launch-bundle helper
+The finalization `merge` step, through `autodrive_merge.sh`, sources the trusted launch-bundle helper
 by its absolute path, `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh`.
 The runner sets `AMPLIHACK_HOME` to the pinned, digest-bound copy of the
 launch bundle, and `LaunchBundle::prepare` refuses a bundle without the
 helper. The step's working directory is the PR worktree, so a repo-relative
-path would resolve to the PR's own copy; the prompt refuses a non-absolute
-`AMPLIHACK_HOME`, a missing helper and a symlinked helper before it reads
-anything. It composes the message from one `gh pr view --json title,body`
+path would resolve to the PR's own copy; the tool refuses a non-absolute
+`AMPLIHACK_HOME`, a missing helper and a symlinked helper (exit `2`) before
+it reads anything. It composes the message from one `gh pr view --json title,body`
 read:
 
 | Part | Source | Refused when |
@@ -306,9 +395,8 @@ path a same-user process could rewrite between a check and the read:
 printf '%s' "$MERGE_BODY" | gh pr merge <N> --squash --match-head-commit <sha> --subject "$subject" --body-file -
 ```
 
-A refusal from either function is a blocker; the step reports it and does
-not fall back to the platform's default message. The step records the
-subject and whether a report was cut.
+A refusal from either function gives `message-unavailable` and a hand-off;
+the step does not fall back to the platform's default message.
 
 Two limitations stay open. An empty description gives `gh` an empty body;
 whether GitHub then falls back to its default message is unverified (#2263).
@@ -348,8 +436,9 @@ the agent chooses.
 
 The existing convergence engine remains in place for unresolved work.
 Completed crusty objectives exit before evaluation. Unresolved crusty
-reviews and every merge-ready round end with `loop-health-evaluator`:
-`CONTINUE`, `DONE`, or `STUCK`.
+reviews and every ready or not-ready merge-ready round end with
+`loop-health-evaluator`: `CONTINUE`, `DONE`, or `STUCK`. A hand-off round
+stops the loop before the evaluator runs.
 
 ### Advancing needs two independent signals
 
@@ -359,9 +448,12 @@ review evidence. It preserves the actual verdict (`MINOR_ONLY` is not
 rewritten to `CLEAN`) and round accounting. An evaluator `DONE` cannot
 complete an unresolved crusty review.
 
-Merge-ready completion needs both a machine-checked `MERGE_READY` round
-and evaluator `DONE`. Inconsistent `DONE` triggers recovery within
-budget. Measured failures override a permissive assessment.
+Merge-ready completion needs both a round whose outcome word is `ready` and
+evaluator `DONE`. Every other ending of the merge-ready loop (evaluator
+`STUCK`, no progress, budget exhausted, a hand-off round or an unreadable
+loop result) hands the PR off instead of ending with a bare `STUCK`; see
+[how the loop ends](autodrive-merge-ready-round.md#how-the-loop-ends).
+A usage limit, an orphaned round and exit `79` keep their own exits.
 
 ### Reading the loop-health line
 
@@ -376,8 +468,13 @@ Missing or unreadable evaluator output is never success. See
 
 ### No-progress stop and usage budget
 
-For a non-clean round, unchanged head, sorted open-item set, and CI signal,
-with CI no longer pending, produces `STUCK`. Budget exhaustion is separate,
+For a non-clean crusty round, unchanged head, sorted open-item set, and CI
+signal, with CI no longer pending, produces `STUCK`. For the merge-ready
+loop, a round whose only open item is a required check still running at the
+head ends the loop `WAITING` and goes to finalisation; it is never counted as
+no progress. A pending CI signal at an unchanged head is `CONTINUE`, never
+`STUCK`, for the evaluator. Other not-ready rounds that change nothing are
+judged `STUCK` and the PR is handed off. Budget exhaustion is separate,
 checked before starting more work. Budgets limit cost, not convergence.
 A completed crusty objective is exempt; it does not reach these checks.
 
@@ -408,7 +505,7 @@ amplihack recipe run auto-drive-to-merge \
 Without the same explicit `autodrive_state_dir`, the new run gets its own
 state directory and starts its budget count from zero.
 
-### Usage limits are not STUCK
+### Usage limits are not STUCK or hand-off
 
 A model-service usage limit surviving runtime wait/retry stops as
 `USAGE_LIMIT`. It is neither a readiness judgment nor lack of progress.
@@ -448,11 +545,10 @@ Usage budgets remain separate from tool timeouts.
 Reuse completed work only after validation. A fresh host repeats work whose provenance it cannot
 establish. PR comments never restore workflow authority.
 
-Staging, accepted evidence, and loop completion are distinct. Rust filesystem
-handling creates private state and immutable snapshots. Unsafe historical
-entries are rejected or quarantined. Hashes do not make historical or
-same-user edits trustworthy. Every resume captures authorization afresh and
-refreshes mutable facts before finalization.
+Rust filesystem handling creates private state; the round tools write files
+`0600` through a temporary file and never through an existing path. Unsafe
+historical entries are rejected. Every resume captures authorization afresh,
+and a merge always re-checks the assessed head and the checks.
 
 State is kept in a per-run directory by default, so a later drive reuses round
 history and budget usage only when every drive passes the same explicit
@@ -481,27 +577,27 @@ folder must be owned by the current user and not writable by group or others.
 
 The runner binds the absolute path it passes to the evidence store, before any
 canonicalisation, and gives the child the same string. When the run ends, the
-report opens the store only from that bound path. It compares the child's
-`autodrive_state_dir` and the reducer's `state_dir` with the bound path
-lexically: nothing is joined onto the working directory, canonicalised or
-resolved through links. An empty string counts as absent. Any other value,
-including a relative path, a sibling directory, a different absolute path or a
-non-string JSON value, gives readiness `incomplete`, action `not_requested`
-and a fixed `failure_cause` naming the state directory mismatch.
+merge step's `authorization` helper and the already-merged report open state
+only from that bound path. They compare the child's `autodrive_state_dir` with
+the bound path lexically: nothing is joined onto the working directory,
+canonicalised or resolved through links. Any mismatch makes the authorization
+helper exit `2`, so the merge step reports `authorization-unreadable` and
+hands the PR off, and the run report carries a `note` naming the state directory mismatch.
 
 Because the default directory is per run, round history and budget usage are
 shared across drives only when each drive passes the same explicit absolute
-`autodrive_state_dir`. Records stay bound to the `run_id` that produced them,
-so a shared directory cannot replay an earlier run's finalisation
-observations or completion receipt into a merge-ready result.
+`autodrive_state_dir`. Merge permission is read from this run's captured
+invocation, never from files in the shared directory, so an earlier run's
+round files cannot authorise a merge.
 
 ## Trusted execution and portability
 
 The launch bundle pins recipes, criteria, templates, evaluator, and helpers
 independently of merge enforcement. Selection never falls back to PR-authored
-instructions. Rust helpers validate and snapshot records, manage state, check
-local Git relationships, and reduce outcomes. They do not contact hosting
-services, judge semantic readiness, or merge.
+instructions. Rust helpers capture authorization, manage private state and
+build the run report. They do not contact hosting services, judge readiness,
+or merge. The merge is requested by the bundled `autodrive_merge.sh`, under
+the conditions in [merge conditions](autodrive-merge-ready-round.md#merge-conditions).
 
 Before any `git` or `gh` call, the merge-round and
 merge-evidence steps clear the `GIT_*` repository selectors and the
@@ -521,7 +617,7 @@ launcher, hooks, installation, and shared consumers follow this contract.
 Cleanup removes only exact recognized retired entries and preserves unrelated
 shell settings. Unrelated `MergeGate` ownership coordination is preserved.
 
-Prompts, authorization records, and snapshots are workflow safeguards, not an
+Prompts, authorization records, and private state are workflow safeguards, not an
 OS security boundary against an agent holding credentials. Repository
 protections and minimum necessary credentials remain the service boundary.
 
@@ -546,6 +642,7 @@ runtime compatibility.
 
 - [Verify a PR without merging](../howto/verify-pr-with-auto-drive.md)
 - [Evidence and outcomes](auto-drive-evidence.md)
+- [Merge-ready round, merge and hand-off](autodrive-merge-ready-round.md)
 - [QA selection and configuration](auto-drive-qa.md)
 - [Auto-drive-light](auto-drive-light.md)
 - [Merge-ready authority](../../amplifier-bundle/skills/merge-ready/SKILL.md)
@@ -553,4 +650,3 @@ runtime compatibility.
 - [Crusty completion contract](autodrive-crusty-completion.md)
 - [Git repository environment helper](git-repo-env-helper.md)
 - [Expected checks at the head](autodrive-expected-checks.md)
-- [Merge-ready files resolver](autodrive-merge-ready-files.md)

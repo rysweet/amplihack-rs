@@ -52,7 +52,8 @@ orphan_stop() {
 # operator cannot see which criterion held the pull request up. Two sources:
 #
 #   the round record's held_by field  one condition line per disagreeing
-#       measurement, written by autodrive_round_evidence.sh round-record.
+#       measurement, when a round record carries one. The merge-ready round
+#       file holds only merge_ready_verdict since #2575, so it prints none.
 #   ${RECORD}.findings                one `reported <id>` line per blocker
 #       the round reported.
 #
@@ -132,6 +133,16 @@ record_result() {
   t="$(umask 077; mktemp "${STATE_DIR}/.result.XXXXXX")" && printf '%s\n' "$1" > "$t" \
     && mv -f -- "$t" "${STATE_DIR}/${LOOP_NAME}-result.json" && return 0
   rm -f -- "$t"; echo "WARNING: could not write ${LOOP_NAME}-result.json in the state dir." >&2
+}
+
+# merge_ready_prior <latest writeup>: writes the merge-ready round's
+# prior_writeup file (#2575): the previous round's write-up, or empty in the
+# first round of a run. Private temporary file, then mv -f, never through a link.
+merge_ready_prior() {
+  local t
+  t="$(umask 077; mktemp "${STATE_DIR}/.prior_writeup.XXXXXX")" || return 1
+  if [ -n "${1:-}" ] && [ -f "$1" ] && [ ! -L "$1" ]; then cat -- "$1" > "$t" || { rm -f -- "$t"; return 1; }; fi
+  mv -f -- "$t" "${STATE_DIR}/merge-ready-prior_writeup.txt" || { rm -f -- "$t"; return 1; }
 }
 
 # wait_ledger <phase>: the path, cleared, a child's usage-limit waits are written
@@ -239,4 +250,22 @@ eval_ctx_remove() {
   for k in "${EVAL_KEYS[@]}"; do rm -f -- "${EVAL_CTX}/${k}" || true; done
   rmdir -- "$EVAL_CTX" || true
   EVAL_CTX=""; EVAL_CTX_ARGS=()
+}
+
+# recovery_stop: before the first round and after each, read the run's step-recovery records
+# (#2539, docs/reference/step-failure-recovery.md). A recorded handoff ends
+# the loop with the report's own exit status (STEP_RECOVERY_HANDOFF_EXIT),
+# before the evaluator or another round meets the same failure. Invalid or
+# unsafe records end it with exit 2. Without a step_recovery_dir it does nothing.
+recovery_stop() {
+  [ -n "${AD_RECOVERY_DIR:-}" ] || return 0
+  local out rc
+  out="$("$AMPLIHACK_BIN" orch helper step-recovery report --dir "$AD_RECOVERY_DIR")"; rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  if [ "$rc" -eq 81 ]; then # STEP_RECOVERY_HANDOFF_EXIT: report found a handoff
+    escalate "STEP_RECOVERY_HANDOFF" "the run holds a recorded handoff (checked ${ROUND_LABEL:+after }${ROUND_LABEL:-before the first round}); the owner must act before the run goes on: ${out}"
+    exit "$rc"
+  fi
+  escalate "INVALID_RECOVERY_RECORDS" "the step-recovery records in ${AD_RECOVERY_DIR} are invalid or unsafe (report exit ${rc}); nothing runs on unread records"
+  exit 2
 }
