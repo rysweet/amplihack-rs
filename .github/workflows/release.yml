@@ -189,6 +189,8 @@ jobs:
 
       - name: Compute next version from tags
         id: bump
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
@@ -225,6 +227,53 @@ jobs:
           fi
 
           HEAD_SHA=$(git rev-parse HEAD)
+
+          # A release must not publish a commit that `main` has moved past.
+          #
+          # Re-running CI on an older commit produces a completion that passes
+          # every admission clause above: successful, on main, from a push, in
+          # this repository. The release that followed would stamp that older
+          # tree with a *higher* version number and mark it `latest`
+          # (make_latest below), and every host running `amplihack update` --
+          # and every documented curl-and-untar install line -- would then
+          # fetch code older than the code it already has. A rising version
+          # number does not imply a later commit; this comparison is the only
+          # thing in the workflow binding the two together.
+          #
+          # Scoped to the workflow_run path. A dispatch is admitted only from
+          # refs/heads/main, so the checked-out SHA is main's tip by
+          # construction and a second comparison there would only add a race.
+          #
+          # The tip comes from the remote-tracking ref of the full fetch above
+          # when it is present, and otherwise from a single `git ls-remote`.
+          # There is no retry, no sleep, no polling and no second fetch. The
+          # remote name and the branch are literals: nothing from the
+          # triggering event reaches this shell, and on the fork pull-request
+          # path those fields are attacker-chosen. The repository is public,
+          # so the unauthenticated read works under persist-credentials:
+          # false, as the same call does in the `release` job; were the
+          # repository to become private this would fail and releases would
+          # stop loudly rather than quietly.
+          #
+          # If neither read resolves, the job fails visibly instead of
+          # skipping, so an infrastructure fault is never mistaken for a
+          # superseded commit. The cost is bounded: the next push to main
+          # releases normally.
+          if [ "${EVENT_NAME}" = "workflow_run" ]; then
+            MAIN_TIP=$(git rev-parse --verify --quiet origin/main || true)
+            if [ -z "${MAIN_TIP}" ]; then
+              MAIN_TIP=$(git ls-remote --exit-code origin refs/heads/main | cut -f1 || true)
+            fi
+            if [ -z "${MAIN_TIP}" ]; then
+              echo "::error::could not read the current tip of origin/main; not publishing a release for ${HEAD_SHA}"
+              exit 1
+            fi
+            if [ "${MAIN_TIP}" != "${HEAD_SHA}" ]; then
+              echo "CI tested ${HEAD_SHA} but origin/main is now ${MAIN_TIP}"
+              echo "no release published for a commit that main has moved past"
+              exit 0
+            fi
+          fi
 
           # Check if this exact commit has already been released. Two shapes
           # count, so a re-run rebuilds the same version instead of a new one:
@@ -285,6 +334,14 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     needs: version-bump
+    # There is nothing to build when `version-bump` reserved no version: on the
+    # workflow_run path it stops before writing one when the commit CI tested
+    # is no longer the tip of main. This single condition settles three jobs.
+    # `release` needs `build`, and GitHub skips a job whose dependency skipped,
+    # so it needs no clause of its own; `sccache-prune` runs under `always()`
+    # and skips on its existing `needs.build.result != 'skipped'` test. Do not
+    # add a second copy of this condition to either of them.
+    if: needs.version-bump.outputs.version != ''
     runs-on: ${{ matrix.runner }}
     # actions: read lets the sccache composite actions list cache entries to
     # tell a rate-limited restore or save from a real miss.
