@@ -169,9 +169,9 @@ is `github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'`
 
 Passing all five clauses admits the run, not the commit. One more condition is
 checked inside `version-bump`'s `bump` step, because it cannot be expressed as
-a job-level `if:`: on the `workflow_run` path the tested commit must still be
-the tip of `origin/main`. A CI re-run on a superseded commit satisfies every
-clause in the table above, so this is the check that stops it — see
+a job-level `if:`: on both entry paths the tested commit must still be the tip
+of `origin/main`. A CI re-run on a superseded commit satisfies every clause in
+the table above, so this is the check that stops it — see
 [What this guarantees](#what-this-guarantees).
 
 The release's own tag push does not start a second release. The tag is pushed
@@ -264,6 +264,12 @@ Either path therefore names the CI run that admitted the release.
   visibly rather than skipping quietly, so an infrastructure fault is never
   mistaken for a superseded commit. The cost of that failure is bounded — the
   next push to `main` releases normally.
+
+  The comparison covers the manual `workflow_dispatch` path as well, not only
+  the automatic one. A dispatch is admitted only from `refs/heads/main`, but a
+  re-run reuses the original run's `GITHUB_SHA` and `GITHUB_REF`, so a run
+  created at the tip can start days after `main` has moved past it. Tip-ness
+  at creation time is not tip-ness at start time, on either path.
 - **Every CI completion creates an Auto Release run.** Most skip every job
   immediately — pull-request CI, merge-group CI, failed CI, the twice-weekly
   schedule run, and CI's own `workflow_dispatch` run. The release's own `v*` tag

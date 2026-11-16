@@ -150,11 +150,12 @@ jobs:
       # and ci.yml's `name: CI`; renaming the file fails this check closed
       # (#2744).
       #
-      # The job's `if:` admits a dispatch only from refs/heads/main, so the
-      # ref resolved here is main's tip by construction. That hardens a
-      # maintainer-error path -- dispatching from a stale tag or a topic
-      # branch -- rather than an outsider path, and it is why the
-      # tip-of-main comparison below is scoped to the workflow_run path.
+      # The job's `if:` admits a dispatch only from refs/heads/main. That
+      # hardens a maintainer-error path -- dispatching from a stale tag or a
+      # topic branch -- rather than an outsider path. It does not establish
+      # that the commit is still main's tip when the job runs: a re-run
+      # reuses the original run's GITHUB_SHA and GITHUB_REF. The tip-of-main
+      # comparison below therefore runs on this path too.
       #
       # This is a safety control, not an authorization control: anyone who can
       # push to main can let CI pass and then dispatch. What it rules out is
@@ -214,8 +215,6 @@ jobs:
 
       - name: Compute next version from tags
         id: bump
-        env:
-          EVENT_NAME: ${{ github.event_name }}
         run: |
           set -euo pipefail
 
@@ -265,12 +264,18 @@ jobs:
           # number does not imply a later commit; this comparison is the only
           # thing in the workflow binding the two together.
           #
-          # Scoped to the workflow_run path. A dispatch is admitted only from
-          # refs/heads/main, so the checked-out SHA is main's tip by
-          # construction and a second comparison there would only add a race.
+          # The comparison runs on both entry paths. A dispatch is admitted
+          # only from refs/heads/main, but a re-run reuses the original run's
+          # GITHUB_SHA and GITHUB_REF, so a run created at the tip can start
+          # days after main has moved past it. Tip-ness at creation time is
+          # not tip-ness at start time, on either path.
           #
           # The tip comes from the remote-tracking ref of the full fetch above
           # when it is present, and otherwise from a single `git ls-remote`.
+          # Both reads name the ref exactly: a bare `origin/main` resolves
+          # through refs/tags/ first, and ls-remote matches a pattern against
+          # the tail of every ref, so either shorthand can answer with a
+          # well-formed SHA from the wrong ref and defeat the guard below.
           # There is no retry, no sleep, no polling and no second fetch. The
           # remote name and the branch are literals: nothing from the
           # triggering event reaches this shell, and on the fork pull-request
@@ -284,20 +289,23 @@ jobs:
           # skipping, so an infrastructure fault is never mistaken for a
           # superseded commit. The cost is bounded: the next push to main
           # releases normally.
-          if [ "${EVENT_NAME}" = "workflow_run" ]; then
-            MAIN_TIP=$(git rev-parse --verify --quiet origin/main || true)
-            if [ -z "${MAIN_TIP}" ]; then
-              MAIN_TIP=$(git ls-remote --exit-code origin refs/heads/main | cut -f1 || true)
-            fi
-            if [ -z "${MAIN_TIP}" ]; then
-              echo "::error::could not read the current tip of origin/main; not publishing a release for ${HEAD_SHA}"
-              exit 1
-            fi
-            if [ "${MAIN_TIP}" != "${HEAD_SHA}" ]; then
-              echo "CI tested ${HEAD_SHA} but origin/main is now ${MAIN_TIP}"
-              echo "no release published for a commit that main has moved past"
-              exit 0
-            fi
+          MAIN_TIP=$(git rev-parse --verify --quiet refs/remotes/origin/main || true)
+          if [ -z "${MAIN_TIP}" ]; then
+            MAIN_TIP=$(git ls-remote --exit-code origin refs/heads/main \
+              | awk '$2 == "refs/heads/main" { print $1; exit }' || true)
+          fi
+          if [ -z "${MAIN_TIP}" ]; then
+            echo "::error::could not read the current tip of origin/main; not publishing a release for ${HEAD_SHA}"
+            exit 1
+          fi
+          if [ "${MAIN_TIP}" != "${HEAD_SHA}" ]; then
+            echo "CI tested ${HEAD_SHA} but origin/main is now ${MAIN_TIP}"
+            echo "no release published for a commit that main has moved past"
+            {
+              echo "No release published: main has moved past ${HEAD_SHA}"
+              echo "origin/main is now ${MAIN_TIP}"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
           fi
 
           # Check if this exact commit has already been released. Two shapes
