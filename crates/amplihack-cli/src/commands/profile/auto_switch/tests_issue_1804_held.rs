@@ -193,14 +193,25 @@ fn the_held_key_alert_is_written_once_per_held_set() {
     );
 }
 
-/// Issue #2694: the usage-limit wait asks for a candidate every 30 s, for
-/// the whole of a wait that may run for hours, and now does so on a reset
-/// wait as well as a capacity wait. The probe therefore writes nothing: no
-/// held-key ALERT to the step's stderr, no line in the rotate log and no
-/// key-held marker. The same selection on the rerun path still writes one,
-/// which is what the step saw once before its wait began.
+/// Issue #2694: the two halves of the held-key alert, and which of them is
+/// silent.
+///
+/// The wait's probe asks for a candidate on every login check, for the whole
+/// of a wait that may run for hours, and now does so on a reset wait as well
+/// as a capacity wait. It therefore passes `KeyAlert::Silent` and writes
+/// nothing: no held-key ALERT to the step's stderr, no line in the rotate
+/// log and no key-held marker. Repeating that alert every 30 s for hours
+/// would bury the step's own output.
+///
+/// The retry's login selection is not silent. It runs once, when the wait
+/// has ended and the step is about to move, so it passes `KeyAlert::Write`
+/// and writes the ALERT, the rotate-log line and the key-held marker, just
+/// as the step received them before #2694. That record is the only trace
+/// that work was held off a login whose key another holder was using, so it
+/// is kept deliberately rather than by omission. The rerun path, asserted
+/// last, writes it for the same reason.
 #[test]
-fn the_wait_probe_writes_no_held_key_alert() {
+fn the_wait_probe_writes_no_held_key_alert_and_the_retrys_selection_does() {
     use crate::commands::profile::auto_switch::rerun::KeyAlert;
     use crate::commands::profile::auto_switch::takeover::capacity_candidate;
     use crate::commands::profile::store::ProfileStore;
