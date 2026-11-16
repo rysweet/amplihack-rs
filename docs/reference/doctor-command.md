@@ -152,7 +152,6 @@ Effective config:
   orchestrator.max_depth = 3  # default
   model.force = (unset)  # default
   model.tier_map = (unset)  # default
-  model.step_tiers = (unset)  # default
   review.combined_small_diff = false  # default
   review.combined_diff_threshold = 200  # default
   governor.enabled = false  # default

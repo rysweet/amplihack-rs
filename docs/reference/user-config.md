@@ -20,7 +20,7 @@ files.
   - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
   - [model.force](#modelforce)
-  - [model.tier_map and model.step_tiers](#modeltier_map-and-modelstep_tiers)
+  - [model.tier_map](#modeltier_map)
   - [Review keys](#review-keys)
   - [Governor keys](#governor-keys)
   - [sessions.daily_archive](#sessionsdaily_archive)
@@ -67,7 +67,6 @@ recipe.usage_limit_max_wait_secs = 21600  # default
 orchestrator.max_depth = 3  # default
 model.force = (unset)  # default
 model.tier_map = (unset)  # default
-model.step_tiers = (unset)  # default
 review.combined_small_diff = false  # default
 review.combined_diff_threshold = 200  # default
 governor.enabled = false  # default
@@ -171,7 +170,6 @@ command, so it never prints `flag`.
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 | `model.force` | model id | (unset) | `AMPLIHACK_FORCE_MODEL` | — | user only |
 | `model.tier_map` | absolute path | (unset: `$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`) | — | — | user only |
-| `model.step_tiers` | absolute path | (unset) | — | — | user only |
 | `review.combined_small_diff` | bool | `false` | — | — | user, project |
 | `review.combined_diff_threshold` | integer lines, 1 to 100000 | `200` | — | — | user, project |
 | `governor.enabled` | bool | `false` | — | — | user only |
@@ -441,21 +439,17 @@ another argument is rejected rather than passed on.
 
 User-only.
 
-### model.tier_map and model.step_tiers
+### model.tier_map
 
-Where the [model tier](./model-tiers.md) mapping and the per-step tier
-overrides are read from.
+Where the [model tier](./model-tiers.md) mapping is read from.
 
-- `model.tier_map` names the mapping file. Unset, amplihack reads
-  `$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`.
-  Exactly one file is read, and its entries merge cell by cell over the
-  mapping that ships with amplihack.
-- `model.step_tiers` names a file holding only a `[step_tiers]` table, for
-  when the mapping is managed centrally and the per-step tiers are not. A
-  `[step_tiers]` table in the `model.tier_map` file works too; where both name
-  the same step, `model.step_tiers` wins.
+`model.tier_map` names the mapping file. Unset, amplihack reads
+`$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`.
+Exactly one file is read, and its entries merge cell by cell over the mapping
+that ships with amplihack. Per-step tier overrides live in the same file, in
+its `[step_tiers]` table.
 
-Both files are read once per process through the same reader every other
+The file is read once per process through the same reader every other
 amplihack config file uses: at most 64 KiB, regular files only, opened
 non-blocking, so a FIFO, device file or directory is reported rather than
 read. A symlink that resolves to a regular file is followed, exactly as
@@ -767,7 +761,7 @@ have just cloned, so it is trusted less.
 - **The project file never names a path, a command, an executable or the
   agent CLI.** `agent.binary` and every path-valued key are user-only.
 - **The project file cannot choose a model or the tier mapping.** `model.force`,
-  `model.tier_map` and `model.step_tiers` are user-only. A forced model becomes
+  `model.tier_map` is user-only. A forced model becomes
   the argument right after `--model`, and the two path keys name files that drive
   amplihack's rewriting of recipe YAML, whose steps run shell commands. The
   `review.*` keys choose how many review passes run, name nothing and no path, and

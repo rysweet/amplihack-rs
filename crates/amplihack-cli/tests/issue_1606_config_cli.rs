@@ -334,7 +334,6 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             // review.
             "model.force = (unset)",
             "model.tier_map = (unset)",
-            "model.step_tiers = (unset)",
             "review.combined_small_diff = false",
             "review.combined_diff_threshold = 200",
             "governor.enabled = false",

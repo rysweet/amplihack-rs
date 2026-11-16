@@ -363,10 +363,10 @@ Rules the file is held to:
   `display_path` / `display_safe` escaping and 200-character truncation as
   every other config diagnostic.
 
-`model.tier_map` and `model.step_tiers` are user-only keys, like every
-path-valued key in amplihack. A project file cannot name either one: a cloned
-repository must not be able to choose the file that drives amplihack's
-rewriting of recipe YAML, whose steps run shell commands.
+`model.tier_map` is a user-only key, like every path-valued key in amplihack.
+A project file cannot name it: a cloned repository must not be able to choose
+the file that drives amplihack's rewriting of recipe YAML, whose steps run
+shell commands.
 
 ### Overriding one step's tier
 
@@ -381,9 +381,8 @@ step-08-implement = "standard"
 step-20-final-cleanup = "fast"
 ```
 
-It may live in the override file above, or in a separate file named by
-`model.step_tiers`. When both exist they are merged, and the
-`model.step_tiers` file wins for a step both name.
+It lives in the override file above — the same single file as the mapping, so
+`amplihack config get model.tier_map` always answers "which file is in force".
 
 How it is applied: the step id is not visible at launch time — the recipe
 runner does not tell a step's child process which step it is — so the
@@ -677,7 +676,7 @@ which step it is.
 ## Related
 
 - [User Configuration](./user-config.md) — `model.force`, `model.tier_map`,
-  `model.step_tiers`, the `review.*` keys and the `amplihack config` command
+  the `review.*` keys and the `amplihack config` command
 - [AMPLIHACK_* Environment Variable Audit](./amplihack-env-vars.md) —
   `AMPLIHACK_FORCE_MODEL`, `AMPLIHACK_DEFAULT_MODEL`,
   `AMPLIHACK_LITELLM_MODEL` and `AMPLIHACK_RUN_DIR`.

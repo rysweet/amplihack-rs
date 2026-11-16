@@ -95,16 +95,11 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
         let tier = Tier::parse(&occurrence.value);
         let decision = decide(request, &column, tier, force);
         if let Some(tier) = tier {
+            let cell = request.table.entry(&column, tier);
             seen = Some(Seen {
                 tier,
-                requested: request
-                    .table
-                    .entry(&column, tier)
-                    .and_then(|entry| entry.model.clone()),
-                requested_effort: request
-                    .table
-                    .entry(&column, tier)
-                    .and_then(|entry| entry.effort),
+                requested: cell.and_then(|entry| entry.model.clone()),
+                requested_effort: cell.and_then(|entry| entry.effort),
                 decision: decision.clone(),
             });
         }
@@ -131,14 +126,15 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
     }
 
     if let Some(seen) = seen {
-        out.effort = effective_effort(&column, seen.requested_effort, &seen.decision);
+        let effort = effective_effort(&column, seen.requested_effort, &seen.decision);
+        out.effort = effort;
         // A fall-back that still carried a reasoning effort is announced by
         // the caller's one Applied line instead, so a launch never gets two
         // lines about one tier.
         if let Some(notice) = seen
             .decision
             .notice(request, &column, seen.tier)
-            .filter(|_| out.effort.is_none())
+            .filter(|_| effort.is_none())
         {
             out.notices.push(notice);
         }
@@ -147,12 +143,12 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
             seq: 0,
             run_id: None,
             harness: request.harness.to_string(),
-            column: column.clone(),
+            column,
             tier: Some(seen.tier),
             requested_model: seen.requested,
             effective_model: seen.decision.model(),
             requested_effort: seen.requested_effort,
-            effective_effort: effective_effort(&column, seen.requested_effort, &seen.decision),
+            effective_effort: effort,
             fallback: seen.decision.fallback(),
         });
     } else if let Some(model) = force {

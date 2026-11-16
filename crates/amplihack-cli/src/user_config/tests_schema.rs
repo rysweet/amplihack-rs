@@ -30,7 +30,6 @@ fn keys_are_in_documented_order() {
             // docs/reference/user-config.md#keys.
             "model.force",
             "model.tier_map",
-            "model.step_tiers",
             "review.combined_small_diff",
             "review.combined_diff_threshold",
             "governor.enabled",
@@ -85,7 +84,6 @@ fn user_only_keys_are_agent_home_node_log_dir_model_governor_and_sessions() {
             // (the reason the review of #1647 gave for `agent.binary`).
             "model.force",
             "model.tier_map",
-            "model.step_tiers",
             "governor.enabled",
             "governor.max_concurrency",
             "governor.reserve_points",
@@ -263,16 +261,14 @@ fn the_model_tier_keys_exist_with_the_documented_scope_and_variable() {
     assert_eq!(force.env, Some("AMPLIHACK_FORCE_MODEL"));
     assert_eq!(force.default, None, "forcing a model is opt-in");
 
-    for name in ["model.tier_map", "model.step_tiers"] {
-        let key = key_def(name).unwrap_or_else(|| panic!("{name} is a schema key"));
-        assert_eq!(key.scope, Scope::UserOnly, "{name}");
-        assert_eq!(key.kind, ValueKind::AbsPath, "{name}");
-        assert_eq!(
-            key.env, None,
-            "{name} names a file that drives recipe rewriting; it is set deliberately \
-             in the user's own config, not picked up from an inherited environment"
-        );
-    }
+    let map = key_def("model.tier_map").expect("model.tier_map is a schema key");
+    assert_eq!(map.scope, Scope::UserOnly);
+    assert_eq!(map.kind, ValueKind::AbsPath);
+    assert_eq!(
+        map.env, None,
+        "model.tier_map names a file that drives recipe rewriting; it is set deliberately \
+         in the user's own config, not picked up from an inherited environment"
+    );
 }
 
 #[test]
@@ -349,15 +345,13 @@ fn model_force_accepts_a_model_id_and_rejects_anything_that_could_act_as_an_argu
 }
 
 #[test]
-fn the_model_tier_paths_are_held_to_the_same_path_rules_as_every_other_path_key() {
-    for name in ["model.tier_map", "model.step_tiers"] {
+fn the_model_tier_map_is_held_to_the_same_path_rules_as_every_other_path_key() {
+    assert!(parse_cli("model.tier_map", "/home/x/.amplihack/model-tiers.toml").is_ok());
+    for bad in ["relative/path.toml", "/a/../b", "", "/a\0b"] {
         assert!(
-            parse_cli(name, "/home/x/.amplihack/model-tiers.toml").is_ok(),
-            "{name}"
+            parse_cli("model.tier_map", bad).is_err(),
+            "model.tier_map: `{bad:?}`"
         );
-        for bad in ["relative/path.toml", "/a/../b", "", "/a\0b"] {
-            assert!(parse_cli(name, bad).is_err(), "{name}: `{bad:?}`");
-        }
     }
 }
 
@@ -367,7 +361,7 @@ fn no_project_file_can_name_the_file_that_rewrites_recipes() {
     // consequence is specific: a project-scoped path key here would let a
     // cloned repository choose the file that drives amplihack's rewriting of
     // recipe YAML, whose bash step bodies execute.
-    for name in ["model.force", "model.tier_map", "model.step_tiers"] {
+    for name in ["model.force", "model.tier_map"] {
         assert_eq!(
             key_def(name).unwrap().scope,
             Scope::UserOnly,

@@ -48,7 +48,7 @@ use crate::user_config::safe::{display_path, read_bounded};
 use crate::user_config::{self, Value};
 
 /// The file name an instance's mapping has, wherever it lives.
-pub(crate) const TIER_FILE: &str = "model-tiers.toml";
+const TIER_FILE: &str = "model-tiers.toml";
 
 /// The run directory a launch records into, when it has one.
 const RUN_DIR_ENV: &str = "AMPLIHACK_RUN_DIR";
@@ -187,19 +187,11 @@ fn resolve_for_launch(binary_name: &str, extra_args: &[String]) -> Resolution {
     out
 }
 
-/// The per-step tier overrides an instance has configured, for the recipe
-/// runner to apply recipe-side. Empty when nothing is configured, which is
-/// what makes a run with no overrides byte-identical to one before this
-/// feature.
-pub(crate) fn step_tier_overrides() -> BTreeMap<String, Tier> {
-    let mut out = loaded_table().table.step_tiers().clone();
-    if let Some(path) = configured_path("model.step_tiers") {
-        let (table, _) = read_tier_file(&path);
-        for (step, tier) in table.step_tiers() {
-            out.insert(step.clone(), *tier);
-        }
-    }
-    out
+/// The per-step tier overrides an instance has configured, read from the one
+/// override file in force. Empty when nothing is configured, which is what
+/// makes a run with no overrides byte-identical to one before this feature.
+pub(crate) fn step_tier_overrides() -> &'static BTreeMap<String, Tier> {
+    loaded_table().table.step_tiers()
 }
 
 /// The mapping and the diagnostics gathered while loading it, read once per
@@ -259,17 +251,17 @@ fn read_tier_file(path: &Path) -> (Table, Vec<Notice>) {
 /// answers "which file is in force".
 fn override_file() -> Option<PathBuf> {
     let candidates = [
-        configured_path("model.tier_map"),
+        configured_path(),
         non_empty("AMPLIHACK_HOME").map(|home| PathBuf::from(home).join(TIER_FILE)),
         user_config::home_dir().map(|home| home.join(".amplihack").join(TIER_FILE)),
     ];
     candidates.into_iter().flatten().find(|path| path.exists())
 }
 
-/// A path key from the user's own config file.
-fn configured_path(name: &str) -> Option<PathBuf> {
+/// `model.tier_map`, from the user's own config file.
+fn configured_path() -> Option<PathBuf> {
     user_only()
-        .entry(name)
+        .entry("model.tier_map")
         .value
         .as_ref()
         .and_then(Value::as_text)
@@ -318,17 +310,12 @@ fn non_empty(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
-/// The schema keys this feature owns, so a reader of `schema.rs` can find
-/// the consumer of each one.
-#[allow(dead_code)]
-pub(crate) const KEYS: [&str; 3] = ["model.force", "model.tier_map", "model.step_tiers"];
-
 /// Pin that every key this module reads is in the schema (issue #1606: no
 /// dead config, and no config read that was never declared).
 #[cfg(test)]
 #[test]
 fn every_key_this_module_reads_is_declared() {
-    for name in KEYS {
+    for name in ["model.force", "model.tier_map"] {
         assert!(
             crate::user_config::schema::key(name).is_some(),
             "{name} is not a schema key"

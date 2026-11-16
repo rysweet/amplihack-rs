@@ -106,9 +106,13 @@ impl Notice {
                         "passing `-c model_reasoning_effort={}`; the model stays `{harness}`'s own",
                         effort.as_str()
                     ),
-                    // Nothing to say: the caller does not emit this variant
-                    // when the tier gave the launch neither of the two.
-                    (None, None) => "passing nothing".to_string(),
+                    // The caller does not emit this variant when the tier
+                    // gave the launch neither of the two — a fall-back line
+                    // has already said so. Worded for truth rather than left
+                    // as a placeholder, in case a later caller does.
+                    (None, None) => {
+                        format!("the model and effort stay `{harness}`'s own")
+                    }
                 };
                 format!(
                     "amplihack: model tier `{}` on `{harness}`: {what}. {ADVICE}",

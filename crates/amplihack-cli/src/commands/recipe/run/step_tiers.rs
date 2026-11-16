@@ -17,7 +17,7 @@
 //! With nothing configured, nothing is staged, no environment variable is set
 //! and the run behaves byte for byte as it did before.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -70,12 +70,12 @@ pub(crate) fn stage(
         dir,
         files: Vec::new(),
     };
-    let mut written: BTreeMap<String, ()> = BTreeMap::new();
+    let mut written: BTreeSet<String> = BTreeSet::new();
     for source in candidates(recipe_dirs, top_level_recipe) {
         let Some(name) = source.file_name().map(|n| n.to_string_lossy().into_owned()) else {
             continue;
         };
-        if written.contains_key(&name) {
+        if written.contains(&name) {
             continue;
         }
         let Ok(text) = fs::read_to_string(&source) else {
@@ -92,7 +92,7 @@ pub(crate) fn stage(
             create_private_dir(&staged.dir)?;
         }
         write_private(&target, &patched)?;
-        written.insert(name, ());
+        written.insert(name);
         staged.files.push(target);
     }
     if staged.files.is_empty() {
@@ -156,10 +156,12 @@ fn patch(text: &str, wanted: &BTreeMap<&str, Tier>) -> Option<String> {
         };
         let end = step_end(&lines, index, indent);
         let field_indent = " ".repeat(indent + 2);
+        let model_line = format!("{field_indent}model: \"{}\"", tier.as_str());
+        let id_position = out.len();
         let mut replaced = false;
         for line in &lines[index..end] {
             if line.trim_start().starts_with("model:") && !replaced {
-                out.push(format!("{field_indent}model: \"{}\"", tier.as_str()));
+                out.push(model_line.clone());
                 replaced = true;
             } else {
                 out.push((*line).to_string());
@@ -168,10 +170,7 @@ fn patch(text: &str, wanted: &BTreeMap<&str, Tier>) -> Option<String> {
         if !replaced {
             // A step that declares no model gains one directly after its id,
             // where every other field of the step already sits.
-            out.insert(
-                out.len() - (end - index) + 1,
-                format!("{field_indent}model: \"{}\"", tier.as_str()),
-            );
+            out.insert(id_position + 1, model_line);
         }
         changed = true;
         index = end;

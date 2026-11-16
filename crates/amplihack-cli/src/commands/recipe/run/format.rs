@@ -1,5 +1,8 @@
 use super::super::*;
 
+use crate::commands::launch::model_tiers::record::{Fallback, Record};
+use crate::commands::launch::model_tiers::table::{Effort, Tier};
+
 const MAX_OUTPUT_LENGTH: usize = 200;
 const MAX_RECENT_SNIPPET_LINES: usize = 5;
 const MAX_RECENT_SNIPPET_CHARS: usize = 300;
@@ -262,9 +265,6 @@ fn json_scalar_to_string(value: &JsonValue) -> String {
 // resumed run all make the counts disagree.
 // =========================================================================
 
-use crate::commands::launch::model_tiers::record::{Fallback, Record};
-use crate::commands::launch::model_tiers::table::{Effort, Tier};
-
 /// The `Model tiers:` section for one run, or no lines at all when no launch
 /// recorded a tier: an empty heading is noise in every summary that has
 /// nothing to report.
@@ -348,11 +348,12 @@ fn reason_text(reason: Fallback, column: &str) -> String {
 
 /// The run directory of the run being summarised.
 ///
-/// `execute` records it, because a top-level `recipe run` hands
-/// `AMPLIHACK_RUN_DIR` to its children and does not set it on itself: without
-/// this the section would appear only for a nested run, and there it would
-/// read the parent's file. The environment is the fall-back for a caller that
-/// records nothing.
+/// `execute` records it rather than the summary reading `AMPLIHACK_RUN_DIR`
+/// back: a top-level `recipe run` hands that variable to its children without
+/// setting it on itself, so reading the environment would make the section
+/// appear only for a nested run — and there it would report the parent's
+/// launches as this run's steps. A run with no durable directory of its own
+/// gets no section, which is the honest answer.
 static RUN_DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 
 /// Name the run directory whose tier records this process's summary reads.
@@ -366,17 +367,11 @@ pub(super) fn remember_run_dir(dir: &std::path::Path) {
 /// the run had no durable directory, which is also what makes the section
 /// absent from a summary with nothing to report.
 pub(super) fn run_tier_records() -> Vec<Record> {
-    let recorded = RUN_DIR
-        .lock()
-        .ok()
-        .and_then(|slot| slot.clone())
-        .or_else(|| {
-            std::env::var_os("AMPLIHACK_RUN_DIR")
-                .filter(|value| !value.is_empty())
-                .map(std::path::PathBuf::from)
-        });
-    match recorded {
-        Some(dir) => crate::commands::launch::model_tiers::record::read_all(&dir),
+    let Ok(slot) = RUN_DIR.lock() else {
+        return Vec::new();
+    };
+    match slot.as_deref() {
+        Some(dir) => crate::commands::launch::model_tiers::record::read_all(dir),
         None => Vec::new(),
     }
 }

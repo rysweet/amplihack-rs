@@ -2761,7 +2761,7 @@ fn stage_step_tier_overrides(
     if overrides.is_empty() {
         return None;
     }
-    match super::step_tiers::stage(run_dir, search_dirs, recipe, &overrides) {
+    match super::step_tiers::stage(run_dir, search_dirs, recipe, overrides) {
         Ok(staged) => staged,
         Err(reason) => {
             eprintln!(

@@ -288,21 +288,12 @@ pub(crate) static KEYS: &[KeyDef] = &[
     },
     KeyDef {
         name: "model.tier_map",
-        // Issue #1619: the instance's tier mapping. A path, and it decides
-        // which model every agent step asks for, so user-only. No variable:
-        // it is set deliberately in the user's own config, not picked up
-        // from an inherited environment.
-        scope: Scope::UserOnly,
-        kind: ValueKind::AbsPath,
-        env: None,
-        default: None,
-        lower_only: false,
-    },
-    KeyDef {
-        name: "model.step_tiers",
-        // Issue #1619: names the file that drives amplihack's rewriting of
-        // recipe YAML, whose bash step bodies execute. Never project-scoped,
-        // and no variable, for the same reasons as `model.tier_map`.
+        // Issue #1619: the instance's tier mapping, including the
+        // `[step_tiers]` table that drives amplihack's rewriting of recipe
+        // YAML, whose bash step bodies execute. A path, and it decides which
+        // model every agent step asks for, so user-only. No variable: it is
+        // set deliberately in the user's own config, not picked up from an
+        // inherited environment.
         scope: Scope::UserOnly,
         kind: ValueKind::AbsPath,
         env: None,
