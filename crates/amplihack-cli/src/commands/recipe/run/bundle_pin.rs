@@ -126,13 +126,14 @@ struct Inherited {
 }
 
 /// What [`check_marker`] accepted: the outer run's snapshot, the
-/// `AMPLIHACK_HOME` that vouched for it, and the outer run's choice.
-#[derive(Debug, Clone)]
+/// `AMPLIHACK_HOME` that vouched for it, and the outer run's choice. The
+/// field names match [`Inherited`], which this becomes.
+#[derive(Debug)]
 struct AcceptedMarker {
-    /// Canonical `<work root>/bundle-pins/<key>`.
-    marker: PathBuf,
-    /// Canonical accepted `AMPLIHACK_HOME` (B3).
+    /// Canonical `<work root>/bundle-pins/<key>`, the snapshot home.
     home: PathBuf,
+    /// Canonical accepted `AMPLIHACK_HOME` (B3).
+    accepted_home: PathBuf,
     choice: BundleChoice,
 }
 
@@ -275,7 +276,7 @@ pub(crate) fn select_from(inputs: SelectInputs<'_>) -> Result<Selection> {
                         "this run is nested in a run pinned to the {} bundle at {}; \
                          --bundle {} cannot change it",
                         accepted.choice.as_str(),
-                        accepted.marker.display(),
+                        accepted.home.display(),
                         requested.as_str()
                     );
                 }
@@ -380,8 +381,8 @@ fn check_marker(
         .and_then(|value| BundleChoice::parse(value).ok())
         .ok_or_else(|| format!("{RUN_BUNDLE_CHOICE_ENV} is not installed or checkout"))?;
     Ok(AcceptedMarker {
-        marker: canonical,
-        home: accepted_home,
+        home: canonical,
+        accepted_home,
         choice,
     })
 }
@@ -435,8 +436,8 @@ pub(crate) fn is_snapshot_path(path: &Path, work_root: &Path) -> bool {
 /// `unknown`, with a note saying why.
 fn inherited_selection(accepted: AcceptedMarker) -> Selection {
     let AcceptedMarker {
-        marker: home,
-        home: accepted_home,
+        home,
+        accepted_home,
         choice,
     } = accepted;
     let bundle = home.join(BUNDLE_DIR);

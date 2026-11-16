@@ -824,14 +824,13 @@ pub(super) fn execute_recipe_via_rust_fresh(
             // it. For an `autodrive-` round this value is replaced again
             // below by the round's own invocation copy, which carries its
             // authorisation.
-            let roots = [
-                Some(bundle.selection.source().to_path_buf()),
-                bundle.selection.accepted_home_bundle_dir(),
-            ];
-            let relative = roots
-                .iter()
-                .flatten()
-                .find_map(|root| recipe_path.strip_prefix(root).ok())
+            let relative = recipe_path
+                .strip_prefix(bundle.selection.source())
+                .ok()
+                .or_else(|| {
+                    let copy = bundle.selection.accepted_home_bundle_dir()?;
+                    recipe_path.strip_prefix(&copy).ok()
+                })
                 .with_context(|| {
                     format!(
                         "recipe {} is not inside the selected bundle {}",

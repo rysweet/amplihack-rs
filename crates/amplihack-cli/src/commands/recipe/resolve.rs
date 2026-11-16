@@ -394,11 +394,7 @@ fn classify_recipe_path(
     let canonical = std::fs::canonicalize(&path)
         .map_err(|e| anyhow::anyhow!("recipe {given} not found: {e}"))?;
     anyhow::ensure!(canonical.is_file(), "recipe {given} is not a regular file");
-    // A recipes dir that cannot be canonicalised is compared as it is, so
-    // only an identical canonical path can match it (fails closed).
-    let recipes = std::fs::canonicalize(selection.recipes_dir())
-        .unwrap_or_else(|_| selection.recipes_dir().to_path_buf());
-    if canonical.starts_with(&recipes) {
+    if canonical.starts_with(comparable_dir(selection.recipes_dir().to_path_buf())) {
         return Ok((canonical, RecipeOrigin::Bundle));
     }
     // B3. A nested run may also be started by a path into the bundle under
@@ -408,16 +404,22 @@ fn classify_recipe_path(
     // hook-repair rounds. The origin is `Bundle`, not `File`, so the round's
     // sub-recipes, agents and tools still come from the one pinned snapshot
     // rather than adding the copy as a second search root.
-    if let Some(accepted) = selection.accepted_home_recipes_dir() {
-        let accepted = std::fs::canonicalize(&accepted).unwrap_or(accepted);
-        if canonical.starts_with(&accepted) {
-            return Ok((canonical, RecipeOrigin::Bundle));
-        }
+    if let Some(accepted) = selection.accepted_home_recipes_dir()
+        && canonical.starts_with(comparable_dir(accepted))
+    {
+        return Ok((canonical, RecipeOrigin::Bundle));
     }
     if let Some(bundle_dir) = foreign_bundle_dir(&canonical) {
         anyhow::bail!(foreign_bundle_message(&canonical, bundle_dir, selection));
     }
     Ok((path.clone(), RecipeOrigin::File(path)))
+}
+
+/// A directory to compare canonical paths against: its canonical form, or
+/// the directory itself when it cannot be canonicalised, so that only an
+/// identical canonical path matches it (fails closed).
+fn comparable_dir(dir: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&dir).unwrap_or(dir)
 }
 
 /// The nearest ancestor named `amplifier-bundle` whose `recipes/` contains
