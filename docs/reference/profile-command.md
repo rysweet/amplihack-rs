@@ -11128,7 +11128,11 @@ after the fingerprint, for a profile that auto-switch would choose now. The
 check judges capacity from the stored [readings](#readings) only, and uses
 auto-switch's own candidate rules, so a profile with a spend block, over
 the threshold, on another platform, with a weekly-limit record or in the
-`exclude` list never counts. This is stricter than the start check in
+`exclude` list never counts. Nor does a profile whose login is
+[lent](#leases) to another directory, or whose own directory hosts another
+account: in a recipe run with several steps waiting at once, a login already
+taken by one of them is the commonest reason a wait sits beside an
+apparently idle profile. This is stricter than the start check in
 [When a capacity wait starts](#when-a-capacity-wait-starts), which also
 counts profiles that are over the threshold or have a weekly-limit record.
 A reading counts only when it was taken after the wait began and no more
@@ -11197,12 +11201,20 @@ by this check at all: such a step is the login the user chose.
 | Step's login | After `login changed` | After `rotator capacity` | After `login capacity` |
 |--------------|----------------------|--------------------------|------------------------|
 | `$HOME/.claude` | the live `$HOME/.claude` | the live `$HOME/.claude` | not used |
-| inherited profile, auto-switch on | the profile auto-switch chooses from fresh readings, else the inherited profile | not used | the profile that showed capacity |
+| inherited profile, auto-switch on | the profile auto-switch chooses from fresh readings, else the inherited profile | not used | the profile a second selection chooses, else the inherited profile |
 
-The table holds for both kinds of wait. The retry profile is never the
-exhausted inherited profile when another profile showed capacity, whether
-the wait was a reset wait or a capacity wait. It is passed only as a
-validated profile name.
+The table holds for both kinds of wait. It is passed only as a validated
+profile name.
+
+**The reading that ended the wait is advisory, not a reservation.** The
+candidate is chosen once to end the wait and again when the retry is built,
+and the second selection may find nothing: between the two, the login that
+showed room may have been taken by another step in the same run, lent out,
+spend-blocked, or pushed over the threshold by a newer reading. The retry
+then runs on the inherited login, exhausted as it was, at the cost of one
+more attempt. `end reason=login capacity` followed by `resume` with no move
+notice is that case, and is the only way to tell it apart from a move in the
+log.
 
 After a reset wait that ended for any other reason, including
 `reset reached` and `max reached`, the retry runs under the inherited
@@ -11274,14 +11286,20 @@ amplihack.recipe.usage_limit_wait resume attempt=2
 A reset wait ended by a reading showing another login has room. The `start`
 line has no `wait=capacity`, so it does not announce that this exit is
 possible; the [capacity check](#capacity-for-a-profile-step) runs on both
-kinds of wait, and the retry runs on the login that showed room:
+kinds of wait. The move notice after the `resume` is not a wait line, and
+names the login the retry runs under:
 
 ```
 amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
 amplihack.recipe.usage_limit_wait progress remaining=1740s
 amplihack.recipe.usage_limit_wait end reason=login capacity
 amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack: a login has capacity again; rerunning this step under profile "personal" (auto-switch)
 ```
+
+The same four wait lines without that notice mean the second selection found
+nothing and the retry ran on the inherited login: see
+[Retry login](#retry-login).
 
 A capacity wait on a weekly limit, ended by the rotator:
 

@@ -2216,6 +2216,12 @@ take. Work through these:
   [login rotator](claude-profile-rotation.md) are what write them, so an
   unattended run with neither has nothing to see and goes to its reset.
   `amplihack profile rotate status` says whether the rotator is running.
+- **Another step already has that login.** A login lent to another
+  session, or a directory hosting another account, is never a candidate.
+  With several steps of one recipe run waiting at the same time, this is
+  the usual reason a wait sits beside a login that looks idle: the first
+  step to see the room took it. `amplihack profile auto-switch status`
+  marks the rows `leased→<dir>` and `hosts:<account>`.
 - **Auto-switch is off.** `amplihack profile auto-switch status` shows it.
   With it off the step keeps its own login and has no `login capacity`
   exit.
@@ -2226,8 +2232,9 @@ take. Work through these:
   on `rotator capacity` or `login changed` instead.
 - **The other login is not one auto-switch would choose.** A spend block,
   a weekly-limit record, a reading over the auto-switch threshold, a login
-  for another platform and an API-key profile that `overflow=` does not
-  mark all keep a profile out. The rules are in
+  for another platform, a leased or hosting directory, and an API-key
+  profile that `overflow=` does not mark all keep a profile out. The rules
+  are in
   [Capacity for a profile step](../reference/profile-command.md#capacity-for-a-profile-step).
 - **The limit was an organisation spend limit with no reset.** No wait
   starts at all (`skipped reason=spend_limit`), whatever room other logins
@@ -2253,8 +2260,8 @@ amplihack.recipe.usage_limit_wait resume attempt=2
 A wait for a reset that ended instead on a reading showing another stored
 profile has room looks the same up to its `end` line. The `start` line
 carries no `wait=capacity`, because the wait was timed by the reset, so
-`end reason=login capacity` is what tells you the step moved. The line
-after the resume names the profile the retry runs under:
+`end reason=login capacity` is what tells you the wait ended early. The
+line after the resume names the profile the retry runs under:
 
 ```
 amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
@@ -2263,6 +2270,11 @@ amplihack.recipe.usage_limit_wait end reason=login capacity
 amplihack.recipe.usage_limit_wait resume attempt=2
 amplihack: a login has capacity again; rerunning this step under profile "personal" (auto-switch)
 ```
+
+If that last line is missing, the step moved nowhere. The login is picked
+twice, once to end the wait and once to build the retry, and if it was taken
+in between, by another waiting step or by a newer reading, the retry runs on
+the exhausted login the step started with and fails again.
 
 A wait for another login has `wait=capacity` on its `start` line, and
 `reset=none` when Claude's message gave no readable reset:

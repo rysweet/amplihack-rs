@@ -814,8 +814,10 @@ runner sees the failure:
    from starting the rotator, so start one before auto-drive; without one
    the step fails at once on the usage limit.
 3. The wait ends on `rotator capacity`, `login changed`, `login capacity`
-   or `reset reached`, and step-02 runs once more with the same prompt under
-   whichever login is now live.
+   or `reset reached`, and step-02 runs once more with the same prompt. On
+   `rotator capacity`, `login changed` and `reset reached` that is whichever
+   login is now live; on `login capacity` the step runs under the stored
+   profile that showed room, which is never made live in `~/.claude`.
 4. The second attempt answers as usual. Step-02 exits `0`, and step-03 and
    step-04 resolve and enforce its verdict exactly as if the limit had never
    happened.
