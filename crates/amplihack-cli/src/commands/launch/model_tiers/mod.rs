@@ -9,16 +9,9 @@
 //! step runs on the harness's own default model: it never fails for this
 //! reason, and there is no retry, no timer and no probe.
 //!
-//! The parts:
-//!
-//! - [`table`] — the closed vocabulary and the per-harness mapping. Pure.
-//! - [`resolve`] — the one place a tier becomes a model. Pure.
-//! - [`codex_effort`] — Codex's `-c model_reasoning_effort=…`. Pure.
-//! - [`record`] — one JSON line per launch, so the saving is measurable.
-//! - this module — the only part that reads a file or the environment, and
-//!   the only part that decides nothing.
-//!
-//! The contract is `docs/reference/model-tiers.md`.
+//! [`table`], [`resolve`], [`codex_effort`] and [`record`] are pure; this
+//! module is the only one that reads a file or the environment, and the only
+//! one that decides nothing. The contract is `docs/reference/model-tiers.md`.
 
 pub(crate) mod argv_scan;
 pub(crate) mod codex_effort;
@@ -59,20 +52,16 @@ const RUN_ID_ENV: &str = "AMPLIHACK_RUN_ID";
 /// Resolve every model tier on one launch's passthrough tail, and add the
 /// reasoning effort the tier asks for where the harness has a control for it.
 ///
-/// This is the whole feature, applied once, as early in `run_launch` as the
-/// tool name is known and before anything else reads the tail. It has to be
-/// this early: the LiteLLM routing check refuses a launch whose explicit
-/// `--model` is not `AMPLIHACK_LITELLM_MODEL`, so a tier word left in place
-/// would stop every gateway launch before it started, and the passthrough
-/// rewrite and the Codex agent-step injection must see the same argv the
-/// harness will.
+/// Applied once in `run_launch`, as soon as the tool name is known and before
+/// anything else reads the tail. The order matters: the LiteLLM routing check
+/// stops a launch whose explicit `--model` is not `AMPLIHACK_LITELLM_MODEL`,
+/// so a tier word left in place would stop every gateway launch, and the
+/// passthrough rewrite and the Codex injection must see the same argv.
 ///
-/// `gateway_target` is whether this launch has a LiteLLM gateway target at
-/// all — `proxy_target.is_some()` at the call site. It arrives as data rather
-/// than being re-derived here: Copilot CLI is a gateway target that
-/// `is_claude_compatible_tool` excludes, so deriving it a second time gave a
-/// filled `[copilot]` column a `--model` the gateway refuses, and refused
-/// every tiered Copilot step with it.
+/// `gateway_target` is `proxy_target.is_some()` at the call site, passed as
+/// data rather than re-derived: Copilot CLI is a gateway target that
+/// `is_claude_compatible_tool` excludes, so deriving it twice put a `--model`
+/// the gateway rejects on every tiered Copilot step.
 ///
 /// Prints the stderr lines the resolution produced and returns the tail to
 /// use in place of `extra_args`. A tail with no tier and no forced model
@@ -199,13 +188,10 @@ fn resolve_for_launch(
 /// diagnostics gathered while reading the file they came from.
 ///
 /// Empty when nothing is configured, which is what makes a run with no
-/// overrides byte-identical to one before this feature.
-///
-/// The notices come back with the map rather than being dropped here. This is
-/// the recipe-run process's only entry into the tier file, and it has no
-/// launch of its own to print them from: a tier file that will not parse, or
-/// a `[step_tiers]` value that is not a tier, would otherwise be read,
-/// discarded and never mentioned.
+/// overrides byte-identical to one before this feature. The notices come back
+/// with the map: this is the recipe-run process's only entry into the tier
+/// file and it has no launch of its own to print from, so an unparsable file
+/// or a bad `[step_tiers]` value would otherwise never be mentioned.
 pub(crate) fn step_tier_overrides() -> (&'static BTreeMap<String, Tier>, &'static [Notice]) {
     let loaded = loaded_table();
     (loaded.table.step_tiers(), &loaded.notices)
@@ -248,11 +234,10 @@ fn read_tier_file(path: &Path) -> (Table, Vec<Notice>) {
             }],
         )
     };
-    // The same ownership and permission gate `model.force` and
-    // `model.tier_map` get in the config loader. These settings moved out of
-    // the schema into this file when the feature consolidated to one override
-    // file; the gate has to follow them, or a group-writable home chooses the
-    // model every agent step runs on and can retarget one named step.
+    // The same ownership and permission check `model.force` and
+    // `model.tier_map` get in the config loader, which has to follow them into
+    // this file: otherwise a group-writable home chooses the model every agent
+    // step runs on, and can retarget one named step.
     if let Some(reason) = user_config::safe::insecure_reason(path) {
         return failed(reason.to_string());
     }
@@ -270,10 +255,9 @@ fn read_tier_file(path: &Path) -> (Table, Vec<Notice>) {
 }
 
 /// The single instance mapping this process reads, highest first:
-/// `model.tier_map`, then `$AMPLIHACK_HOME/model-tiers.toml`, then
-/// `$HOME/.amplihack/model-tiers.toml`. The first that exists is the one;
-/// there is no merging of several files, so one `config get model.tier_map`
-/// answers "which file is in force".
+/// `model.tier_map`, `$AMPLIHACK_HOME/model-tiers.toml`, then
+/// `$HOME/.amplihack/model-tiers.toml`. The first that exists wins outright;
+/// files are never merged, so one answer says which file is in force.
 fn override_file() -> Option<PathBuf> {
     let candidates = [
         configured_path(),
@@ -326,11 +310,8 @@ fn user_only() -> &'static user_config::Effective {
 }
 
 /// The tier file as a diagnostic names it: home-relative where it sits under
-/// the operator's home, escaped either way.
-///
-/// These lines land in run logs that get pasted into issues, and the absolute
-/// path carries the operator's username. `~/.amplihack/model-tiers.toml` says
-/// everything the reader needs.
+/// the operator's home, escaped either way. These lines land in run logs that
+/// get pasted into issues, and an absolute path carries the username.
 fn tier_file_display(path: &Path) -> String {
     let shown = user_config::home_dir()
         .and_then(|home| path.strip_prefix(&home).ok().map(Path::to_path_buf))

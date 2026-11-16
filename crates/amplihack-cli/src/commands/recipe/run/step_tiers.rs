@@ -1,21 +1,19 @@
 //! Issue #1619: overriding the model tier of one named step.
 //!
-//! The step id never reaches the child process — the recipe runner sets no
-//! step-id environment variable — so amplihack cannot know at launch time
-//! which step a command belongs to. Patching the recipe is the honest way to
-//! change one step's tier: before the runner starts, the recipes that contain
-//! a named step are copied into a run-private directory with that one
-//! `model:` line rewritten, and the copies are put first in the runner's
-//! search order.
+//! The recipe runner exports no step id, so amplihack cannot tell at launch
+//! time which step a command belongs to. Instead, before the runner starts,
+//! each recipe holding a named step is copied into a run-private directory
+//! with that one `model:` line rewritten, and the copies go first in the
+//! runner's search order.
 //!
-//! The patch is line-scoped and vocabulary-closed: only one of three literal
-//! words is ever written into a recipe file, so no text from an override file
-//! can reach a prompt or a shell body. Step ids are identifiers, never path
-//! components, and a staged file's name comes only from the recipe amplihack
-//! found.
+//! The patch is line-scoped and vocabulary-closed: the only value ever
+//! written is one of three literal tier words, so no text from an override
+//! file reaches a prompt or a shell body. Step ids are identifiers, never
+//! path components, and a staged file's name comes only from the recipe
+//! amplihack found.
 //!
-//! With nothing configured, nothing is staged, no environment variable is set
-//! and the run behaves byte for byte as it did before.
+//! With nothing configured nothing is staged, no environment variable is set,
+//! and the run behaves byte for byte as before.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -57,15 +55,13 @@ pub(crate) struct Outcome {
 
 /// Write patched copies of the recipes that declare any step in `overrides`.
 ///
-/// `Outcome::staged` is `None` when there is nothing to do, which is the case
-/// for every run that configures no per-step tier. A step id that is not an
-/// identifier and a step id no candidate recipe declares each come back as a
-/// notice and stage nothing: neither may stop a run of a hundred agent steps,
-/// and neither may pass in silence, because a typo'd step id has no other
-/// symptom. A search directory that cannot be read is skipped without a line
-/// of its own — the runner would have skipped it too — and the step ids it
-/// would have matched are reported as unmatched, which is the operator-
-/// visible consequence.
+/// `Outcome::staged` is `None` when there is nothing to do, as on every run
+/// that configures no per-step tier. A step id that is not an identifier, and
+/// one no candidate recipe declares, each stage nothing and come back as a
+/// notice: neither may stop a run of a hundred agent steps, and neither may
+/// pass in silence, since a mistyped step id has no other symptom. An
+/// unreadable search directory is skipped without a line of its own, as the
+/// runner would have skipped it too, and its step ids are reported unmatched.
 pub(crate) fn stage(
     run_dir: &Path,
     recipe_dirs: &[PathBuf],
