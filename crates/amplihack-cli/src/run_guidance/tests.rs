@@ -130,6 +130,15 @@ fn u1_pr_key_matches_autodrive_state_sh_for_an_https_origin() {
 fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
     // Runs the real shell function against a scratch repo whose origin is an
     // https remote. Skips quietly where bash or git is missing.
+    //
+    // Holds the environment lock: this spawns `git` and `bash`, which it
+    // resolves through `PATH`, and several install tests set the process-wide
+    // `PATH` to one temp directory for the length of their own assertion. Both
+    // spawns here would then fail with ENOENT, and the failure would be
+    // reported against this test rather than against the interleaving.
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (_tmp, root) = private_root();
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -147,7 +156,7 @@ fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
     if !git_ok || !script.is_file() {
         return;
     }
-    amplihack_git::command()
+    let remote_ok = amplihack_git::command()
         .args([
             "remote",
             "add",
@@ -156,7 +165,12 @@ fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
         ])
         .current_dir(&repo)
         .status()
-        .unwrap();
+        .is_ok_and(|s| s.success());
+    // The same quiet skip the `git init` above takes: a missing git is not a
+    // failure of the parity this test is about.
+    if !remote_ok {
+        return;
+    }
     let out = std::process::Command::new("bash")
         .arg("-c")
         .arg(format!(
@@ -1209,6 +1223,13 @@ fn d6_runner_env_value_without_pr_lists_the_run_folder_only() {
 
 #[test]
 fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
+    // Holds the environment lock, and takes the same quiet skip for both
+    // spawns: `git` is resolved through `PATH`, and several install tests set
+    // the process-wide `PATH` to one temp directory for the length of their
+    // own assertion.
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (_tmp, root) = private_root();
     let repo = root.join("repo");
     fs::create_dir(&repo).unwrap();
@@ -1221,11 +1242,14 @@ fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
     if !ok {
         return;
     }
-    amplihack_git::command()
+    let remote_ok = amplihack_git::command()
         .args(["remote", "add", "origin", "git@github.com:o/r.git"])
         .current_dir(&repo)
         .status()
-        .unwrap();
+        .is_ok_and(|s| s.success());
+    if !remote_ok {
+        return;
+    }
     let state = root.join("state");
     let mut ctx = BTreeMap::new();
     ctx.insert("pr_number".to_string(), "7".to_string());

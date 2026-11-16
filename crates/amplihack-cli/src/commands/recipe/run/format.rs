@@ -346,12 +346,37 @@ fn reason_text(reason: Fallback, column: &str) -> String {
     }
 }
 
-/// Every tier record of the run `AMPLIHACK_RUN_DIR` names, in launch order.
-/// Empty when the launch had no run scope, which is also what makes the
-/// section absent from a summary with nothing to report.
+/// The run directory of the run being summarised.
+///
+/// `execute` records it, because a top-level `recipe run` hands
+/// `AMPLIHACK_RUN_DIR` to its children and does not set it on itself: without
+/// this the section would appear only for a nested run, and there it would
+/// read the parent's file. The environment is the fall-back for a caller that
+/// records nothing.
+static RUN_DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// Name the run directory whose tier records this process's summary reads.
+pub(super) fn remember_run_dir(dir: &std::path::Path) {
+    if let Ok(mut slot) = RUN_DIR.lock() {
+        *slot = Some(dir.to_path_buf());
+    }
+}
+
+/// Every tier record of the run being summarised, in launch order. Empty when
+/// the run had no durable directory, which is also what makes the section
+/// absent from a summary with nothing to report.
 pub(super) fn run_tier_records() -> Vec<Record> {
-    let Some(dir) = std::env::var_os("AMPLIHACK_RUN_DIR").filter(|value| !value.is_empty()) else {
-        return Vec::new();
-    };
-    crate::commands::launch::model_tiers::record::read_all(std::path::Path::new(&dir))
+    let recorded = RUN_DIR
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+        .or_else(|| {
+            std::env::var_os("AMPLIHACK_RUN_DIR")
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+        });
+    match recorded {
+        Some(dir) => crate::commands::launch::model_tiers::record::read_all(&dir),
+        None => Vec::new(),
+    }
 }

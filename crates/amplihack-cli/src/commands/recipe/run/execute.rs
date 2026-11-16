@@ -972,6 +972,14 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // the run behaves exactly as it did before. A staging failure is reported
     // and the run continues on the recipes as written: a tier preference must
     // never stop a run.
+    // Issue #1619: the run summary's `Model tiers:` section reads the records
+    // this run's agent steps write into the run directory. A top-level
+    // `recipe run` hands AMPLIHACK_RUN_DIR to its children without setting it
+    // on itself, so the directory is named here rather than read back from
+    // the environment.
+    if let Some(run_dir) = workspace.borrow().run_dir() {
+        super::format::remember_run_dir(run_dir);
+    }
     let staged_recipes =
         stage_step_tier_overrides(workspace.borrow().run_dir(), search_dirs, &mapped_recipe);
     let build_command = |run_id: &str| -> Result<Command> {

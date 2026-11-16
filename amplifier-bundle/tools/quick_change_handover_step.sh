@@ -2,11 +2,11 @@
 # quick_change_handover_step.sh — the body of `quick-change-write-handover` in amplifier-bundle/recipes/quick-change.yaml.
 #
 # Extracted for the brick budget when that recipe gained one `model:` line per
-# agent step (issue #1619). The body is unchanged: it reads the same
-# `RECIPE_VAR_*` variables the recipe runner exports and writes the same
-# stdout the step's `output:` captures. It is a file rather than an inline
-# block so the recipe stays under the 400-line limit; compressing the recipe
-# instead is the one thing the brick rule forbids.
+# agent step (issue #1619). The body is unchanged: the step runs it with
+# `bash`, so it reads the same environment the recipe runner exported and
+# writes the same stdout the step's `output:` captures. It is a file rather
+# than an inline block so the recipe stays under its line budget; compressing
+# the recipe instead is the one thing the brick rule forbids.
 
 QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-write-handover; . "${QC:?quick_change_common.sh not found}"
 git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"

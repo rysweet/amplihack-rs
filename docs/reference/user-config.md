@@ -422,7 +422,7 @@ fires only from your own user file or your own environment, and the stderr
 line names it as the origin:
 
 ```text
-amplihack: passing `--model claude-sonnet-5-5` to `claude` (from model.force). Run `amplihack config unset model.force` to go back to each step's tier.
+amplihack: model.force is set, so `claude` is launched with `--model claude-sonnet-5-5` whatever the step asked for. Unset model.force or AMPLIHACK_FORCE_MODEL to restore per-step tiers.
 ```
 
 Like every other model line amplihack prints, it ends by naming the setting

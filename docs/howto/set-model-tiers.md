@@ -131,7 +131,7 @@ step-08-implement = "standard"
 step-11b-implement-feedback = "standard"
 ```
 
-A step id that no recipe contains changes nothing and is reported once.
+A step id that no recipe contains changes nothing: no recipe is copied for it, and the rest of the table still applies.
 
 ### 4. Force one model for every step
 
@@ -188,7 +188,7 @@ section then lists launches by number with a line saying so — see
 [When a line names a step](../reference/model-tiers.md#when-a-line-names-a-step).
 
 For a count across the whole run, read the record file the run wrote. Every
-launch appends one line, falling back or not:
+launch that carried a tier appends one line, falling back or not:
 
 ```sh
 jq -r '[.tier // "none", .effective_model // "harness default"] | @tsv' \

@@ -2,11 +2,11 @@
 # tdd_implementation_evidence_step.sh — the body of `implementation-terminal-evidence` in amplifier-bundle/recipes/workflow-tdd.yaml.
 #
 # Extracted for the brick budget when that recipe gained one `model:` line per
-# agent step (issue #1619). The body is unchanged: it reads the same
-# `RECIPE_VAR_*` variables the recipe runner exports and writes the same
-# stdout the step's `output:` captures. It is a file rather than an inline
-# block so the recipe stays under the 400-line limit; compressing the recipe
-# instead is the one thing the brick rule forbids.
+# agent step (issue #1619). The body is unchanged: the step runs it with
+# `bash`, so it reads the same environment the recipe runner exported and
+# writes the same stdout the step's `output:` captures. It is a file rather
+# than an inline block so the recipe stays under its line budget; compressing
+# the recipe instead is the one thing the brick rule forbids.
 
 set -euo pipefail
 # issue #962: full resolution ladder + visible no-discard degrade (see docs/reference/workflow-implementation-evidence.md)

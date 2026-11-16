@@ -240,10 +240,12 @@ The step never fails because of a fall-back, and the fall-back costs nothing:
   model, because that is a retry.
 - **No timers and no waiting.**
 
-Every launch — falling back or not — appends one line to
-[the record file](#the-record-file); only a falling-back launch adds a stderr
-line about it. The record's `fallback` field is `null` when the launch did not
-fall back, so the per-step summary can render both kinds from the same file.
+Every launch that carried a tier — falling back or not — appends one line to
+[the record file](#the-record-file) and prints one line to stderr: the line
+names what the tier gave the launch, or, when it gave it nothing, that the
+harness's own default runs. The record's `fallback` field is `null` when the
+launch did not fall back, so the per-step summary can render both kinds from
+the same file.
 
 ## Reasoning effort, per harness
 
@@ -401,7 +403,8 @@ three words.
   characters. `.` and `..` are not step ids. Staged file names come only from
   the names of the recipe files amplihack found, never from the override file,
   and the staging directory is created with mode 0700 and its files with 0600.
-- A step id that no recipe contains changes nothing and is reported once.
+- A step id that no recipe contains changes nothing: no recipe is copied
+  for it, and the other named steps are still staged.
 - **A value that is not one of the three words is reported by name and that
   one entry is dropped**; the rest of the table still applies and the step
   keeps the tier its recipe declares.
