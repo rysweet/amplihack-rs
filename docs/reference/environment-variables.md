@@ -472,7 +472,7 @@ amplihack recipe run recipe.yaml
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
 
-**Usage-limit wait:** a Claude agent step that waits on a usage limit, for a reset or for another login with capacity, ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner. See [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
+**Usage-limit wait:** a Claude agent step that waits on a usage limit, for a reset, for another login with capacity, or for the login in `~/.claude` to change, ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. The deadline is taken from the step's start, not the wait's, so a step that waits several times over, once per login the rotator brings in, is still bounded by it. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner. See [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
 
 ---
 
@@ -794,6 +794,16 @@ amplihack.recipe.usage_limit_wait start reason=usage_limit account=work reset=20
 amplihack.recipe.usage_limit_wait end reason=login changed
 ```
 
+A login-change wait's `start` line reads `reason=spend_limit`, since an
+organisation spend limit is the only limit that starts one; every other wait
+reads `reason=usage_limit`.
+
+Both lines arrive whole. The detached run copies the runner's output into
+the same file a line at a time, holding an unterminated tail back until its
+line is complete, so a wait line never lands inside a half-written `working
+(Ns elapsed)` heartbeat and `grep amplihack.recipe.usage_limit_wait` over
+the log returns whole lines.
+
 A top-level foreground `amplihack recipe run` has no log file of its own and
 never sets the variable, so it writes no such lines; its stderr is on the
 terminal already.
@@ -1099,8 +1109,10 @@ Claude usage limit waits for the reset, or for a login with capacity, and
 runs once more instead of ending the run. A reset more than five hours away
 or an unreadable reset is waited out only by a
 [capacity wait](./profile-command.md#capacity-wait), when another login
-could take over. A spend limit is never waited for unless it also states a
-session reset. Overrides the
+could take over. An organisation spend limit with no reset is waited for
+only by a [login-change wait](./profile-command.md#login-change-wait), on a
+step running on `~/.claude` with a rotator running; on any other step it
+ends the run at once, whatever room other logins have. Overrides the
 config files; empty means unset; an invalid value prints one warning and is
 ignored. See the
 [usage-limit wait reference](./profile-command.md#usage-limit-wait).

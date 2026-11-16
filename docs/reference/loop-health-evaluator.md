@@ -828,12 +828,17 @@ runner sees the failure:
    and the step fails at once on the usage limit. All three kinds need the
    rotator for the same reason: only it moves a login into `~/.claude`, so
    with none running there is nothing to wait for.
-3. The wait ends on `rotator capacity`, `login changed`, `login capacity`
-   or `reset reached`, and step-02 runs once more with the same prompt under
-   whichever login is now live. On a host where every step shares one
-   `~/.claude` login, the wait usually ends on `login changed` within
-   seconds, because the rotator has already swapped the login by the time
-   the failed attempt returns.
+3. A reset or capacity wait ends on `rotator capacity`, `login changed`,
+   `login capacity` or `reset reached`, and step-02 runs once more with the
+   same prompt. On `rotator capacity`, `login changed` and `reset reached`
+   that is whichever login is now live; on `login capacity` the step runs
+   under the stored profile that showed room, which is never made live in
+   `~/.claude`. A login-change wait ends on `login changed` alone, because
+   no capacity reading says whether the next login's organisation has
+   credit; its retry runs on whatever login is live in `~/.claude`. On a
+   host where every step shares one `~/.claude` login, the wait usually ends
+   on `login changed` within seconds, because the rotator has already
+   swapped the login by the time the failed attempt returns.
 4. The second attempt answers as usual. Step-02 exits `0`, and step-03 and
    step-04 resolve and enforce its verdict exactly as if the limit had never
    happened.
@@ -859,7 +864,18 @@ amplihack.recipe.usage_limit_wait end reason=login changed
 A waiting step therefore no longer reads as a hung one: the log says what it
 is waiting for, on which login and until when. The tokens are the ones the
 step's own stderr uses, so a capacity or login-change wait carries its
-`wait=` field here too. The full rules are in
+`wait=` field here too, and a login-change wait, which only an organisation
+spend limit starts, reads `reason=spend_limit`:
+
+```
+amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change account=work reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait
+amplihack.recipe.usage_limit_wait end reason=login changed
+```
+
+Both lines arrive whole. The runner's own `working (Ns elapsed)` heartbeat
+is written a line at a time, so a wait line is never spliced into the middle
+of one, and `grep amplihack.recipe.usage_limit_wait` over the log finds each
+line complete. The full rules are in
 [The wait in the recipe log](profile-command.md#the-wait-in-the-recipe-log).
 
 The time a wait spends is appended to the ledger

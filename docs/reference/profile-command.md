@@ -4803,7 +4803,10 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
      over, and a launch or rerun writes `ALERT: API key not used
      session=<account>: …; auto-switch from <profile>` to stderr every time
      and to the rotate log once per set of unmeasured profiles (again once
-     the set changes or every plan profile has a reading). `session=` is the
+     the set changes or every plan profile has a reading). The
+     [usage-limit wait's own capacity check](#capacity-for-a-profile-step)
+     applies the same candidate rules without writing the line, so a step
+     waiting out a limit does not repeat it every 30 s. `session=` is the
      account of the session that ran out; `live=`, in the rotator's form of
      the line, is the login in `~/.claude`. Excluded profiles do not count,
      and neither do those the rotator skips as `no login` or `not oauth`,
@@ -5540,7 +5543,7 @@ profile and never appears in `profile list`.
 | `capacity-weights.json` | Optional, written by you. Each login's weight in the capacity summary; see [Capacity weights](#capacity-weights). A JSON object, capped at 64 KiB, with no `version`. |
 | `usage-history.jsonl` | One line per measured cycle from `profile usage` and the rotator, kept for eight days; see [Usage history](#usage-history). JSON lines, not one JSON document; read from the last 4 MiB. |
 | `usage-history.lock` | Lock for writers of `usage-history.jsonl`. Separate from `lock`. |
-| `key-held` | The unmeasured plan profiles named by the last `ALERT: API key not used session=…` that auto-switch wrote to the rotate log, one name per line, so the same set is logged once. Removed once every plan profile has a reading. Not JSON. |
+| `key-held` | The unmeasured plan profiles named by the last `ALERT: API key not used session=…` that auto-switch wrote to the rotate log, one name per line, so the same set is logged once. Removed once every plan profile has a reading. Written by the launch and rerun checks only, never by the [usage-limit wait's capacity check](#capacity-for-a-profile-step). Not JSON. |
 | `notice/<session>` | The last capacity state shown in a Claude session; see [Notice records](#notice-records). Unlike the other state files, it is a bare word, not JSON, and is read up to 64 bytes. |
 
 Apart from `capacity.json`, `capacity-weights.json`, `usage-history.jsonl`
@@ -6234,9 +6237,12 @@ in `~/.claude` can still be used, so the ALERT is *advisory*:
 - the key is stored in the ledger's `advisory_alert` field, and `alert` is
   set to `null`;
 - the cycle records `stayed`, which is capacity by the
-  [rotator capacity rule](#rotator-capacity-rule), so a recipe step in the
-  usage-limit wait reruns. It is a stay, so it writes no swap record and the
-  limit-resume hook does not act on it.
+  [rotator capacity rule](#rotator-capacity-rule), so a recipe step in a
+  reset or capacity wait reruns. A step in a
+  [login-change wait](#login-change-wait) does not: it is waiting for the
+  login to change, and a stay is the rotator reporting that it did not. It
+  is a stay, so it writes no swap record and the limit-resume hook does not
+  act on it.
 
 For example, with `--session-at 90` and three logins:
 
@@ -10545,10 +10551,12 @@ same user as the session, which is the trust boundary.
 
 #### Rotator capacity rule
 
-This is the ledger rule the [usage-limit wait](#usage-limit-wait) uses for
-its `rotator capacity` check (`CycleStatus::fresh_capacity` in
-`amplihack_utils::rotator_status`). The limit-resume hook does not resume on
-it; it resumes only on a [swap record](#capacity-for-a-resume). The hook
+This is the ledger rule a reset wait and a capacity wait use for the
+[usage-limit wait](#usage-limit-wait)'s `rotator capacity` check
+(`CycleStatus::fresh_capacity` in `amplihack_utils::rotator_status`). A
+[login-change wait](#login-change-wait) does not apply it at all. The
+limit-resume hook does not resume on it; it resumes only on a
+[swap record](#capacity-for-a-resume). The hook
 still reads the ledger, by the trust rules at the end of this section, for
 the `live` profile and for the `rotator-down` check. The `live` profile is
 the login in the [event key](#resume-state-directory) unless a noted swap
@@ -10737,7 +10745,12 @@ There are three kinds of wait:
 
 - a **reset wait**, for a limit that resets within five hours: it waits for
   that reset, or for a login with capacity to become live, whichever comes
-  first (see [Reset time](#reset-time));
+  first (see [Reset time](#reset-time)). For a step under an inherited
+  profile with auto-switch on, a stored profile that a [reading](#readings)
+  taken during the wait shows has capacity ends the wait as well, without
+  that profile's login becoming live, and the retry then runs under it
+  rather than under the exhausted inherited one (see
+  [Capacity for a profile step](#capacity-for-a-profile-step));
 - a **capacity wait**, for a limit that does not reset within five hours (a
   weekly limit) or states no readable reset, when another login could take
   over: it waits only for a login with capacity, for at most
@@ -10746,7 +10759,11 @@ There are three kinds of wait:
   reset on a step that runs on `$HOME/.claude`: no reset lifts that limit and
   no login of the same organisation would either, so it waits only for the
   rotator to move another login into `~/.claude` (see
-  [Login-change wait](#login-change-wait)).
+  [Login-change wait](#login-change-wait)). It is the one wait that **no**
+  capacity reading ends: neither the rotator's cycle nor another stored
+  profile's reading says whether the next login's organisation still has
+  credit, so only the login key changing, a deadline, a stop signal or the
+  end of the session ends it.
 
 When none applies, the step is not waited for and the run ends as before.
 
@@ -10784,11 +10801,14 @@ once and runs unsupervised, as before.
 
 With an inherited profile and auto-switch on, the
 [auto-switch reruns](#usage-limit-reruns) come first and the wait follows.
-The retry after a reset wait always runs under the inherited profile, not
-under the last profile auto-switch tried, so a reset wait is for the
-**inherited profile's** reset (see [Order of attempts](#order-of-attempts)).
-The retry after a capacity wait runs under the profile that showed capacity
-(see [Retry login](#retry-login)).
+A reset wait is for the **inherited profile's** reset, not for the reset of
+the last profile auto-switch tried (see
+[Order of attempts](#order-of-attempts)). Its retry runs under the inherited
+profile, unless the wait ended on `login capacity`, in which case it runs
+under the profile that showed capacity. The retry after a capacity wait runs
+under the profile that showed capacity. A login-change wait is for the
+login in `~/.claude`, and its retry runs on whichever login is live there.
+See [Retry login](#retry-login).
 Otherwise the same supervisor runs with no profile substitution: the retry
 runs under the inherited profile, or with no override when none was
 inherited. With no inherited profile the launch may still apply the
@@ -10869,8 +10889,9 @@ begins, spending a mark but no time; see
 [A login that changed before the wait](#a-login-that-changed-before-the-wait).
 
 Steps 6 and 7 read the inherited profile's limit, not the last attempt's.
-The retry runs under the inherited profile, so only that profile's reset
-says when it can work again. When auto-switch ran the step under other
+The wait is timed by that profile's reset, because that is the login the
+retry uses unless the wait ends on another login's capacity (see
+[Retry login](#retry-login)). When auto-switch ran the step under other
 profiles before running out, their limits only steer auto-switch's choice
 of the next profile: a candidate that resets later does not stretch the
 wait, and a candidate's weekly limit or spend limit does not cancel it.
@@ -10906,6 +10927,14 @@ address or a UUID. A step that can read neither file has no key. A host with
 no profile store has no rotator files at all, so every key is absent, every
 recipe-log line says `account=unknown`, and the rest of this section has no
 effect: such a step waits once, as it always did.
+
+Each reading carries **which of the two files it came from** along with the
+name. The two are read in order, the cycle ledger first and the swap record
+as a fallback, so a ledger that is missing, unreadable or being replaced
+switches the answer's source without any login having moved. Comparisons
+keep the source ([A login that changed before the wait](#a-login-that-changed-before-the-wait)),
+while the mark and the `account=` field use the name alone: a login read
+from either file is one login, and therefore one mark.
 
 **Every wait records a mark**, and a wait whose mark is already recorded is
 refused. The mark is the login key, or, when no name can be read, one
@@ -10967,7 +10996,7 @@ starts with `Claude AI usage limit reached|` and Unix seconds, or with
 | Weekly limit | `You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)` | [capacity wait](#capacity-wait) when another login could take over, else `skipped reason=reset_too_far` |
 | Spend limit with a session reset | `You've hit your org's monthly spend limit · run /usage-credits … · your session limit resets 1pm (America/Los_Angeles)` | wait for that reset: the session limit is what stops work |
 | Spend limit with a weekly reset | `… monthly spend limit · … · your weekly limit resets Oct 8, 12am (America/Los_Angeles)` | `skipped reason=reset_too_far`, even when another login could take over |
-| Spend limit, no reset | `You've hit your org's monthly spend limit · run /usage-credits …` | [login-change wait](#login-change-wait) on a `$HOME/.claude` step with a rotator running; otherwise `skipped reason=spend_limit`, because no reset lifts it |
+| Spend limit, no reset | `You've hit your org's monthly spend limit · run /usage-credits …` | [login-change wait](#login-change-wait) on a `$HOME/.claude` step with a rotator running; otherwise `skipped reason=spend_limit`, because no reset lifts it, and room on another stored login does not either |
 | Epoch | `Claude AI usage limit reached\|1792335000` | reset wait, when at most five hours away; further away, as for a weekly limit |
 | Shape, no readable reset | `You've hit your session limit · try again later` | capacity wait when another login could take over, else `skipped reason=no_reset` |
 | No message in the shape | model prose, `credit balance is too low` | `skipped reason=no_limit_message`, or not a usage limit at all |
@@ -11048,12 +11077,28 @@ its baseline. Without this check the step would take the new login as its
 baseline, see nothing change afterwards, and sleep to the **old** account's
 reset.
 
-The comparison fails closed: a change counts only when both readings name a
-login and the names differ. A ledger that is momentarily unreadable while the
-rotator replaces it therefore reads as "no change", and the step waits as it
-otherwise would. The cost of that is one wait the step was going to make in
-any case; the cost of the other error would be an attempt burnt on a login
-that is still at its limit.
+The comparison fails closed. A change counts only when both readings name a
+login, **both came from the same file**, and the names differ. Anything else
+reads as "no change", and the step waits as it otherwise would:
+
+| First reading | Second reading | Read as |
+|---------------|----------------|---------|
+| cycle ledger, `work` | cycle ledger, `personal` | changed |
+| swap record, `work` | swap record, `personal` | changed |
+| cycle ledger, `work` | swap record, `personal` | no change |
+| cycle ledger, `work` | swap record, `work` | no change |
+| either, `work` | neither file readable | no change |
+| neither file readable | either, `work` | no change |
+
+The cross-source rows are the reason the source is carried at all. The swap
+record is written at a different moment from the cycle ledger and may name
+the login before or after the one the ledger names, so two readings taken
+from different files are not evidence of anything happening in between. A
+ledger that is momentarily unreadable while the rotator replaces it falls
+back to the swap record and so reads as no change, rather than as a swap
+that did not happen. The cost of that is one wait the step was going to make
+in any case; the cost of the other error would be an attempt burnt on a
+login that is still at its limit.
 
 #### Reasons a wait ends
 
@@ -11071,8 +11116,24 @@ come first, then the deadline, then the 30 s probes in the order listed.
 | `capacity expired` | capacity | the `max_wait` deadline passed with no login showing capacity | no; [closing line](#closing-line) |
 | `step timeout` | all | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no; [closing line](#closing-line) |
 | `login changed` | all | the login changed before the wait was planned, or two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline | yes |
-| `rotator capacity` | all | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped`, `stayed` or `switched`, no alert; `stayed-unread` is not capacity) whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
-| `login capacity` | capacity | the step runs under an inherited profile with auto-switch on, and a [reading](#readings) taken after the wait began shows that another stored profile has capacity (see [Capacity for a profile step](#capacity-for-a-profile-step)) | yes, under that profile |
+| `rotator capacity` | reset, capacity | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped`, `stayed` or `switched`, no alert; `stayed-unread` is not capacity) whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
+| `login capacity` | reset, capacity | the step runs under an inherited profile with auto-switch on, and a [reading](#readings) taken after the wait began shows that another stored profile has capacity (see [Capacity for a profile step](#capacity-for-a-profile-step)) | yes, under that profile |
+
+Both capacity rows apply to a reset wait and to a capacity wait, and to
+**neither** of them on a login-change wait. A login-change wait is started
+by an organisation spend limit, which is a limit on the organisation's
+credit rather than on any session or week, and no capacity reading reports
+credit: a rotator cycle that measures the live login's windows, and a stored
+profile's reading, both say only that some account has session capacity. A
+cycle that swaps the login does still end the wait, but through the login
+fingerprint described below, not through either capacity check: the
+fingerprint watches `$HOME/.claude` itself, so the swap is seen as the
+directory changing under the step, and the end is recorded as
+`login changed`. Because the fingerprint acts only on two probes 30 s apart
+that agree, a swap is acted on up to about 60 s after it lands. A cycle that
+measures the same login and stays there leaves the wait in place. The two
+capacity checks are therefore not run at all for that plan, rather than run
+and ignored.
 
 `rotator capacity` uses the [rotator capacity rule](#rotator-capacity-rule)
 (`CycleStatus::fresh_capacity` in `amplihack_utils::rotator_status`). The
@@ -11241,39 +11302,204 @@ retry. The failed attempt's result is passed up after the
 
 #### Capacity for a profile step
 
+This check runs on a **reset wait and on a capacity wait alike**. A reset
+wait under an inherited profile therefore ends as soon as another stored
+profile is seen to have room, rather than sleeping to a reset that may be
+hours off while other logins are idle. It does not run on a
+[login-change wait](#login-change-wait), whose limit is on an organisation's
+credit and which no reading of session capacity can lift.
+
+**A spend limit is the exception, on either kind of step.** An organisation
+spend limit with no reset never starts a capacity wait, and room on another
+stored login never lifts one: a profiled step writes
+`skipped reason=spend_limit` and ends, exactly as it did before this check
+existed, and a `$HOME/.claude` step with a rotator running takes a
+login-change wait instead. Session capacity and organisation credit are
+different quantities, and only the second is what that limit is about.
+
 A `$HOME/.claude` step uses the `login changed` and `rotator capacity`
-checks that a reset wait uses. A step under an inherited profile with
-auto-switch on uses `login changed` and, instead of `rotator capacity`,
-checks every 30 s, after the fingerprint, for a profile that auto-switch
-would choose now. The check reads the stored
-[readings](#readings) only and uses auto-switch's own candidate rules, so a
-profile with a spend block, over the threshold, on another platform, with a
-weekly-limit record or in the `exclude` list never counts. This is stricter than the
-start check in [When a capacity wait starts](#when-a-capacity-wait-starts),
-which also counts profiles that are over the threshold or have a
-weekly-limit record. A reading counts only when
-it was taken after the wait began and no more than 60 s in the future
-(`start < observed_at <= now + 60`). No `/usage` probe is made: a profile
-whose window has reset is only seen once a status line or the rotator
-records a new reading for it, so a wait on a profile step may run until its
-deadline after a login has in fact recovered.
+checks. A step under an inherited profile with auto-switch on uses
+`login changed` and, instead of `rotator capacity`, checks every 30 s,
+after the fingerprint, for a profile that auto-switch would choose now. The
+check judges capacity from the stored [readings](#readings) only, and uses
+auto-switch's own candidate rules, so a profile with a spend block, over
+the threshold, on another platform, with a weekly-limit record or in the
+`exclude` list never counts. Nor does a profile whose login is
+[lent](#leases) to another directory, or whose own directory hosts another
+account; both states are written by an [in-session swap](#in-session-swap),
+not by a waiting step, which takes no lease at all (see
+[Retry login](#retry-login)). This is stricter than the start check in
+[When a capacity wait starts](#when-a-capacity-wait-starts), which also
+counts profiles that are over the threshold or have a weekly-limit record.
+A reading counts only when it was taken after the wait began and no more
+than 60 s in the future (`start < observed_at <= now + 60`). No `/usage`
+probe is made: a profile whose window has reset is only seen once a status
+line or the rotator records a new reading for it, so a wait on a profile
+step may run until its deadline after a login has in fact recovered. The
+how-to lists the reasons a wait reaches its reset with another login idle
+beside it, in the order to check them, under
+[A wait that ran to its reset while another login had room](../howto/claude-profiles.md#a-wait-that-ran-to-its-reset-while-another-login-had-room).
+
+A reset wait starts on its reset alone, so it never consults the start check
+in [When a capacity wait starts](#when-a-capacity-wait-starts) and does not
+need a rotator running. Without a rotator, though, an unattended recipe run
+has nothing recording readings, so such a wait usually still runs to its
+reset. The check itself is a set of bounded local reads, repeated every
+30 s: the effective configuration, the auto-switch ledger, the readings
+file, a listing of the profile root to enumerate the stored profiles, and
+the [overflow inputs](#auto-switch-and-overflow-profiles), which resolve
+each stored profile's [kind](#kind-detection) from its own files and read
+the [rotate ledger](#rotate-state-directory) for spend blocks and the
+overflow gate. Off macOS, where the login is a file rather than a Keychain
+entry, each candidate costs one further `stat` for its login file, and a
+marked API-key candidate costs auto-switch's
+[own login check](#api-key-profiles-and-auto-switch) against the profile's
+`.claude.json` and `settings.json`. None of them makes a network call.
+There is no new timer, poll or retry; the check rides the 30 s probe the
+fingerprint already uses, so the first check falls 30 s after the wait
+begins, the rest every 30 s after that, and a wait that ends sooner makes
+none. A read that fails, and a file that is missing or damaged, counts as
+no candidate, so the wait runs on to its deadline rather than moving the
+step.
+
+**The check writes nothing.** It applies the same candidate rules as the
+auto-switch rerun check, narrowed by the freshness restriction above, but
+it does not print the `ALERT: API key not used session=…` line to the
+step's stderr, append it to the [rotate log](#rotate-log), or write the
+[`key-held` marker](#state-directory). The stderr line is written on every
+check that finds a held set, so over a five-hour wait it would repeat
+around six hundred times and crowd the step's output; the rotate-log line
+and the marker are written once per set, and are suppressed with it.
+
+If the key was already being held back when the wait began, the alert was
+written by the rerun check that ran just before it, and that is the record
+of why work was held off the API key. A held set that first arises during
+the wait, because a plan profile's reading ages out or the profile is
+removed, is recorded nowhere until the next launch or rerun check. A
+`key-held` marker left by an earlier check is likewise not cleared during
+the wait, even if the held profiles gain readings while it runs; the next
+launch or rerun check clears it.
+
+One record is not suppressed, and it is not part of the step's own output: a
+profile marked in `overflow=` and detected as an API-key profile that fails
+auto-switch's [own login check](#api-key-profiles-and-auto-switch) emits a
+`WARN` through `tracing` naming the profile and the reason, never a key
+value. One check reads that profile's login several times over, because the
+candidate rules test it as they narrow the field by organisation, make the
+selection, and work out which logins are being held back, so each check
+emits several identical warnings rather than one, and a wait of several
+hours leaves hundreds of them. Where the record goes depends on the tracing
+subscriber the process installed, and a run with none keeps no copy.
+
+The two ways to stop them do not have the same effect on the wait. While
+the login check fails, the profile stays out of the candidate pool and the
+wait runs on as though it were not there. Fixing the profile's
+`.claude.json` or `settings.json` ends the warnings **and makes the profile
+selectable**, which is what the `overflow=` mark is for: a wait may then end
+on it. Taking the mark off with `amplihack profile overflow remove <name>`
+ends the warnings and leaves the profile unselectable, because an unmarked
+API-key profile is neither a plan login nor in the overflow order, so no
+selection ever chooses it.
+
+**A step pinned to a profile can therefore change account part way through a
+run.** Where one profile must be kept for billing or data separation, there
+are two ways to hold a step on it:
+
+- turn auto-switch off (`amplihack profile auto-switch off`), which removes
+  the `login capacity` exit along with the auto-switch reruns; or
+- put the other profiles in the auto-switch `exclude` list
+  (`amplihack profile auto-switch exclude <name>…`, which replaces the list,
+  so name every profile to exclude in one call), which keeps them from being
+  chosen while leaving auto-switch on for the rest.
+
+An explicit `$CLAUDE_CONFIG_DIR`, with no inherited profile, is never moved
+by this check at all: such a step is the login the user chose.
 
 #### Retry login
 
 | Step's login | After `login changed` | After `rotator capacity` | After `login capacity` |
 |--------------|----------------------|--------------------------|------------------------|
 | `$HOME/.claude` | the live `$HOME/.claude` | the live `$HOME/.claude` | not used |
-| inherited profile, auto-switch on | the profile auto-switch chooses from fresh readings, else the inherited profile | not used | the profile that showed capacity |
+| inherited profile, auto-switch on | the profile auto-switch chooses from fresh readings, else the inherited profile | not used | the profile a second selection chooses, else the inherited profile |
 
-The retry profile is never the exhausted inherited profile when another
-profile showed capacity. It is passed only as a validated profile name.
-After a reset wait the retry runs under the inherited profile, as before.
-After a [login-change wait](#login-change-wait) it runs on whatever login is
-live in `~/.claude`, which is the only thing that wait waits for.
+The `$HOME/.claude` row holds for every kind of wait: a step with no
+inherited profile has nothing for the retry to choose between, so any of its
+exits leaves the retry on the live `$HOME/.claude`. In the inherited-profile
+row, every column holds for a capacity wait, but for a reset wait only the
+`login capacity` column does: that is the one exit which moves a reset
+wait's retry to another account. A reset wait that ends on `login changed`
+retries under the inherited profile, because the
+[fingerprint](#ending-the-wait-early) watches that profile's own directory,
+so a change there is a new login for the same profile, and because the wait
+was timed by that profile's reset. The profile is passed only as a validated
+profile name. After a [login-change wait](#login-change-wait) the retry runs
+on whatever login is live in `~/.claude`, which is the only thing that wait
+waits for.
 
-When the retry after a capacity wait moves to another profile, the step's
-stderr names it before the retry starts, in the same form as every other
-auto-switch move:
+**Each wait chooses its own retry login, and only its own.** The choice is
+cleared when a wait is planned, before anything else about that wait is
+decided, and is set again only by a wait that actually ran. A step that
+waits twice therefore cannot have its second retry steered by what its first
+wait saw, and the short-circuit in
+[A login that changed before the wait](#a-login-that-changed-before-the-wait),
+which returns before any wait runs, leaves the choice empty and retries on
+the live `$HOME/.claude`. The [mark](#one-wait-per-login) and the retry
+login answer different questions, are written at different moments, and
+neither is derived from the other: the mark says whether this step may wait
+again, the retry login says where the next attempt runs.
+
+The second selection reads the stored [readings](#readings) with the same
+freshness window as the check that ended the wait: taken after the wait
+began and no more than 60 s in the future, both measured from the wait's own
+start, not from its end. That window is what lets the retry act on the very
+reading that ended the wait. Measured from the end instead, every reading
+taken while the step slept would count as stale, no candidate would be
+found, and the step would retry on the exhausted profile every time.
+
+**The reading that ended the wait is advisory, not a reservation.** The
+candidate is chosen once to end the wait and again when the retry is built,
+and the second selection may find nothing: between the two, the login that
+showed room may have been taken by an
+[in-session swap](#in-session-swap) on this host, lent out, spend-blocked,
+or pushed over the threshold by a newer reading. The retry then runs on the
+inherited login, exhausted as it was.
+
+Both of the lease-shaped causes, the swap itself and the login being lent
+out, originate in an in-session swap: it is the only move that writes a
+ledger entry, and so the only one that [leases](#leases) what it moves to. A
+step retrying after a wait writes no ledger entry and takes no lease; it
+only sets `CLAUDE_CONFIG_DIR` for the one attempt. Several waiting steps
+that read the same login at the same poll therefore all retry under it, and
+none of them displaces the others. Issue
+[#2733](https://github.com/rysweet/amplihack-rs/issues/2733) tracks the
+consequence, which is a shared login rather than a lost race.
+
+What that costs depends on whether a reading ended the wait early, and only
+the case that lost something is announced:
+
+| The wait ended | Second selection finds nothing | Announced |
+|----------------|-------------------------------|-----------|
+| `login capacity` — a reading showed room | the room was taken in between; the step gave up a wait it could have finished | yes |
+| a capacity wait ending any other way (`reset reached`, `max reached`, `login changed`, `rotator capacity`) | no login ever had room; the retry runs on the login that just recovered, which is the designed outcome | no |
+| a reset wait reaching its own deadline | no second selection is made at all; the retry runs under the inherited profile, as before | no |
+| a login-change wait ending on `login changed` | no second selection is made at all; the retry runs on the login the rotator has just made live | no |
+
+The announcement is one line on the step's stderr, so the lost race is not
+read out of the absence of a line:
+
+```
+amplihack: no login has room now; this step retries under the limited profile (auto-switch)
+```
+
+A capacity wait has always made the second selection however it ended
+(#1801), because the step was waiting for *some* login to free up rather
+than for its own reset; finding none then is the expected outcome and costs
+one more attempt and nothing else. That is why it prints nothing. A reset
+wait that reaches its deadline with no other login available is unchanged in
+every respect.
+
+When the retry moves to another profile, the step's stderr names it before
+the retry starts, in the same form as every other auto-switch move:
 
 ```
 amplihack: a login has capacity again; rerunning this step under profile "personal" (auto-switch)
@@ -11316,8 +11542,7 @@ and another login of the same organisation would not lift it either, so a
 moves logins through `$HOME/.claude`, though, the login that arrives next may
 belong to another organisation entirely. A `$HOME/.claude` step that hits a
 spend limit with no readable reset therefore starts a **login-change wait**:
-it waits only for the login in `~/.claude` to change, or for the rotator to
-record a cycle with capacity.
+it waits for the login in `~/.claude` to change, and for nothing else.
 
 | Limit | Step's login | Rotator | Result |
 |-------|--------------|---------|--------|
@@ -11336,11 +11561,26 @@ non-blocking exclusive lock on `<root>/.rotator/lock`, taken and released at
 once; a rotator that is running with auto-switch off is paused and does not
 count.
 
-It makes none of the capacity wait's **other** reads. It does not run the
+It makes none of the capacity wait's **other** reads, while it is being
+planned or while it runs. It does not run the
 ["another login could take over" check](#when-a-capacity-wait-starts) on the
-stored profiles, and it never consults the stored [readings](#readings): no
-reading says whether the next login's organisation has credit, and the
-rotator picks what goes into `~/.claude` in any case.
+stored profiles, it never consults the stored [readings](#readings), and it
+does not watch the [rotate ledger](#rotate-state-directory) for a cycle with
+capacity. No reading of session capacity says whether the next login's
+organisation has credit, and the rotator picks what goes into `~/.claude` in
+any case. In particular a **fresh rotator cycle that does not swap**, one
+that measures the live login and stays on it, leaves the wait in place,
+where on a reset or capacity wait it would end it as `rotator capacity`. A
+cycle that does swap ends the wait, but through the **login fingerprint**
+on `$HOME/.claude` (see [Reasons a wait ends](#reasons-a-wait-ends)) rather
+than through anything read from the rotator's own files: the directory the
+step would retry in has changed under it, and that is recorded as
+`login changed`, the end the retry acts on. The fingerprint acts only when
+two probes 30 s apart agree, so a swap is acted on up to about 60 s after it
+lands. The [login key](#one-wait-per-login) read from the rotator files
+drives the wait's mark and the
+[short circuit before the wait](#a-login-that-changed-before-the-wait), not
+this exit.
 
 **It is wall time the budget does not see.** Like every other wait, a
 login-change wait appends its real length to the file
@@ -11362,12 +11602,24 @@ could ever arrive.
 A tie is named `max_wait`. There is no reset row, because the limit stated
 no reset, so the `start` line carries `reset=none`. There is no five-hour
 ceiling and no `reset+margin` bound, and `end reason=reset reached` cannot
-occur.
+occur. The `start` line also reads `reason=spend_limit` rather than
+`reason=usage_limit`, because a spend limit is the only limit that starts
+this wait; see [Log lines](#log-lines).
+
+Two bounds hold a chain of these waits on a host that swaps often. Each
+distinct login earns a fresh wait (see
+[One wait per login](#one-wait-per-login)), but `max_wait_secs` is a
+**per-step** budget: each wait is planned with the maximum less what the
+earlier ones spent, so every wait the step makes fits inside one maximum.
+The key has a default of `21600`, so it is never unset and the budget always
+applies. `AMPLIHACK_STEP_TIMEOUT` is the second bound, and the tighter one
+on a long step: it is folded into every wait's deadline, counted from the
+step's start rather than the wait's, so repeated swaps cannot push it
+back.
 
 | `end reason=` | Retry |
 |---------------|-------|
 | `login changed` | yes, on the login now live in `~/.claude` |
-| `rotator capacity` | yes |
 | `max reached` | no; [closing line](#closing-line) `failed reason=spend_limit: usage limit not lifted` |
 | `step timeout` | no; [closing line](#closing-line) |
 | `signal` | no; exits `128` + signal |
@@ -11400,12 +11652,23 @@ and no other event reaches that sink.
 |-------|--------|
 | `start` (reset wait) | `reason=usage_limit harness=claude reset=<time> until=<time> bound=<bound>` |
 | `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time> bound=max_wait\|step_timeout` |
-| `start` (login-change wait) | `reason=usage_limit wait=login_change harness=claude reset=none until=<time> bound=max_wait\|step_timeout` |
+| `start` (login-change wait) | `reason=spend_limit wait=login_change harness=claude reset=none until=<time> bound=max_wait\|step_timeout` |
 | `progress` | `remaining=<secs>s`, every 60 s |
 | `end` | `reason=<end reason>` from the table above |
 | `resume` | `attempt=<n>`, counting every attempt in the step |
 | `skipped` | `reason=disabled\|ci\|already_waited\|not_supervised\|spend_limit\|reset_too_far\|no_reset\|no_limit_message\|piped_prompt` |
 | `failed` | `reason=capacity_expired\|spend_limit\|step_timeout\|already_waited`, followed by `: usage limit not lifted` |
+
+`reason=` on a `start` line says **what stopped the step**, not which kind
+of wait followed. An organisation spend limit that states no reset, which is
+the only limit that starts a login-change wait, reads `reason=spend_limit`;
+every other limit reads `reason=usage_limit`. That includes a spend limit
+which also states a session reset: the session limit is what actually
+stopped work, so it is waited out as one and reads `reason=usage_limit` on
+an ordinary reset-wait `start` line. The `wait=`
+token, not `reason=`, is what names the kind of wait. The
+[closing line](#closing-line)'s own `failed reason=spend_limit` is a
+different event with its own reason table.
 
 A reset wait:
 
@@ -11415,6 +11678,24 @@ amplihack.recipe.usage_limit_wait progress remaining=1740s
 amplihack.recipe.usage_limit_wait end reason=login changed
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
+
+A reset wait ended by a reading showing another login has room. The `start`
+line has no `wait=capacity`, so it does not announce that this exit is
+possible; the [capacity check](#capacity-for-a-profile-step) runs on a reset
+wait as well. The move notice after the `resume` is not a wait line, and
+names the login the retry runs under:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait progress remaining=1740s
+amplihack.recipe.usage_limit_wait end reason=login capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack: a login has capacity again; rerunning this step under profile "personal" (auto-switch)
+```
+
+The same four wait lines followed by `no login has room now` mean the second
+selection found nothing and the retry ran on the inherited login: see
+[Retry login](#retry-login).
 
 A capacity wait on a weekly limit, ended by the rotator:
 
@@ -11446,10 +11727,21 @@ amplihack.recipe.usage_limit_wait resume attempt=2
 A login-change wait on a spend limit that nothing lifted:
 
 ```
-amplihack.recipe.usage_limit_wait start reason=usage_limit wait=login_change harness=claude reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait
+amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change harness=claude reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait
 amplihack.recipe.usage_limit_wait progress remaining=60s
 amplihack.recipe.usage_limit_wait end reason=max reached
 amplihack.recipe.usage_limit_wait failed reason=spend_limit: usage limit not lifted
+```
+
+The same wait ended by a swap, which is what it is waiting for. The retry
+runs on the login the rotator has just made live, and a limit there starts a
+second wait of its own, keyed to that login:
+
+```
+amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change harness=claude reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait
+amplihack.recipe.usage_limit_wait progress remaining=21540s
+amplihack.recipe.usage_limit_wait end reason=login changed
+amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
 No **stderr** line contains credentials, account names, profile names,
@@ -11495,7 +11787,7 @@ The fields, in order:
 
 | Field | Value |
 |-------|-------|
-| `reason=` | always `usage_limit`, as on stderr |
+| `reason=` | `usage_limit`, or `spend_limit` for a limit on the organisation's credit, as on stderr |
 | `wait=` | `capacity` or `login_change`, as on stderr; absent on a reset wait |
 | `account=` | the login being waited on, or `unknown` |
 | `reset=` | the reset the limit stated, or `none` |
@@ -11505,16 +11797,21 @@ The fields, in order:
 Every token means the same thing in both sinks. The line is the stderr
 `start` line with `harness=` dropped and `account=` put in its place, so one
 `grep amplihack.recipe.usage_limit_wait` over the recipe log and the step's
-stderr together reads as one stream. The closing line's own
-`failed reason=spend_limit` is a different event and never reaches the recipe
-log; the only `reason=` here is `usage_limit`.
+stderr together reads as one stream. The
+[closing line](#closing-line)'s own `failed reason=…` is a different event
+and never reaches the recipe log, so a `reason=` here is always a `start`
+line's.
 
 A login-change wait therefore appears as:
 
 ```
-amplihack.recipe.usage_limit_wait start reason=usage_limit wait=login_change account=calypso reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait
-amplihack.recipe.usage_limit_wait end reason=max reached
+amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change account=research reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait
+amplihack.recipe.usage_limit_wait end reason=login changed
 ```
+
+The `start` line is what a reader needs: it says the step stopped on a spend
+limit, that it is waiting for the login to change rather than for a clock,
+which account it is waiting on, and when it gives up.
 
 Exactly one `start` and one `end` reach the recipe log for each wait. No
 `progress`, `resume`, `skipped` or `failed` line does: the recipe log says
@@ -11544,6 +11841,24 @@ regular file, owned by another user, accessible to group or others, or has
 more than one link is refused and nothing is written. Every failure is
 silent: the stderr lines already carry the information, and a log that cannot
 be appended to is not a reason to change what the step does.
+
+**A wait line always stands whole.** Two writers share the file: the step,
+appending the lines above, and the detached run's copier, which forwards the
+runner's output as it arrives. The copier writes **only whole lines**. It
+holds back the tail of a read that stops mid-line and writes it with the
+rest of that line when the rest arrives, flushing the remainder with a
+closing newline when the pipe ends. A wait line can therefore never land
+inside the runner's `working (Ns elapsed)` heartbeat, and
+`grep amplihack.recipe.usage_limit_wait <log>` finds each line entire,
+whatever the timing of the runner's output. Since each writer appends whole
+lines to a descriptor opened `O_APPEND`, the two interleave by line and
+never by byte.
+
+Holding the tail changes what the recipe log receives, not what the terminal
+receives: the run's own standard output is streamed byte for byte as before,
+so interactive output is unaffected. A runner that writes a very long run of
+bytes with no newline at all is flushed once the held tail reaches 1 MiB,
+rather than held indefinitely or discarded.
 
 **When nothing is written.** `AMPLIHACK_RECIPE_LOG` unset, empty, relative,
 or naming a file that fails any check above means no line and no new file,
