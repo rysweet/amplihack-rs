@@ -167,12 +167,12 @@ repository. These clauses are therefore a security boundary, not a convenience
 filter: they are joined with `&&`, and the only other way into the release jobs
 is `github.event_name == 'workflow_dispatch'`.
 
-The release's own tag push does not start a second release, and that does not
-rest on the table alone. `ci.yml` triggers on `push: tags: ["v*"]` as well as on
-`push: branches: [main]`, so the tag this workflow pushes runs CI and that CI
-run completes with `event == 'push'`. What GitHub reports as `head_branch` for a
-tag push is not contractual, so the loop is closed a second time where it does
-not depend on that: a tag push's `head_sha` is the stamp commit, which already
+The release's own tag push does not start a second release. The tag is pushed
+with `secrets.GITHUB_TOKEN` (`release.yml`), and GitHub creates no workflow run
+for a push authenticated with that token, so `ci.yml`'s `push: tags: ["v*"]`
+trigger does not fire and no `workflow_run` event reaches this workflow. Were
+the push ever moved to a personal access token, the loop would still be closed
+structurally: a tag push's `head_sha` is the stamp commit, which already
 carries its series tag, and `version-bump` short-circuits on a commit that has
 already been released (see
 [Release tags point at a stamp commit](#release-tags-point-at-a-stamp-commit)).
@@ -193,7 +193,7 @@ Each run records where it came from in its job summary, so a disputed release
 can be traced back to the CI run that admitted it:
 
 ```text
-Released from CI run 43712904881 · conclusion success
+Admitted by CI run 43712904881 · conclusion success
 commit 5bc4defc4 · branch main
 ```
 
@@ -201,7 +201,7 @@ A manually dispatched run has no triggering CI run to name, so it records the
 run its lookup matched instead, by URL:
 
 ```text
-Released by workflow_dispatch · validated by CI run https://github.com/rysweet/amplihack-rs/actions/runs/43712904881
+Admitted by workflow_dispatch · validated by CI run https://github.com/rysweet/amplihack-rs/actions/runs/43712904881
 commit 5bc4defc4 · branch main
 ```
 
@@ -221,12 +221,10 @@ Either path therefore names the CI run that admitted the release.
   cancelled run leaves nothing behind (#1356).
 - **Every CI completion creates an Auto Release run.** Most skip every job
   immediately — pull-request CI, merge-group CI, failed CI, the twice-weekly
-  schedule run, and CI's own `workflow_dispatch` run. The `v*` tag push may or
-  may not be excluded by the table, since what GitHub reports as `head_branch`
-  for a tag push is not contractual. If it is admitted, it stops one step later
-  in `version-bump`, on the commit that already carries its series tag, having
-  published nothing. A skipped "Auto Release" entry in the Actions list is the
-  expected shape, not a fault.
+  schedule run, and CI's own `workflow_dispatch` run. The release's own `v*` tag
+  push creates no CI run at all, since it is pushed with `GITHUB_TOKEN`. A
+  skipped "Auto Release" entry in the Actions list is the expected shape, not a
+  fault.
 - **Publication trails the merge by one CI duration.** A release appears once CI
   on that commit has completed, rather than beside it. Nothing waits or polls
   for it: the Auto Release run is created by CI's completion event, so the delay
@@ -270,6 +268,12 @@ that workflow detaches Auto Release silently: no run is created and nothing
 reports an error — releases simply stop. Change `name:` in `ci.yml` and
 `workflows:` in `release.yml` in the same commit.
 
+`ci.yml` has no `paths` or `paths-ignore` filter, and the admission rule depends
+on that: `conclusion == 'success'` is read as the full job set having passed.
+Adding a path filter to `ci.yml` would make a success conclusion compatible with
+a commit on which nothing ran, weakening admission without any edit to
+`release.yml`.
+
 Two further properties follow from the trigger itself rather than from any job:
 
 - `workflow_run` trigger definitions are read from the **default branch**, so a
@@ -278,8 +282,9 @@ Two further properties follow from the trigger itself rather than from any job:
   `actionlint` or a YAML parse. No test checks the trigger or the concurrency
   expression: `ci_workflows_define_concurrency_boundaries` only asserts that
   each workflow file has a top-level `concurrency:` key at all.
-- `github.ref` is always `refs/heads/main` in an Auto Release run, whatever CI
-  ran on. Conditions that need the released branch read
+- `github.ref` is always `refs/heads/main` on the `workflow_run` path, whatever
+  CI ran on; on `workflow_dispatch` it is the ref the operator selected.
+  Conditions that need the released branch read
   `github.event.workflow_run.head_branch` instead. For the same reason the
   `sccache-prune` job also requires `needs.build.result != 'skipped'`, so it
   prunes once per release rather than once per CI completion.

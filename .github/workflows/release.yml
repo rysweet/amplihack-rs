@@ -155,7 +155,7 @@ jobs:
             exit 1
           fi
           {
-            echo "Released by workflow_dispatch · validated by CI run ${RUN_URL}"
+            echo "Admitted by workflow_dispatch · validated by CI run ${RUN_URL}"
             echo "commit ${SHA} · branch ${BRANCH}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
@@ -171,7 +171,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "Released from CI run ${CI_RUN_ID} · conclusion ${CI_CONCLUSION}"
+            echo "Admitted by CI run ${CI_RUN_ID} · conclusion ${CI_CONCLUSION}"
             echo "commit $(git rev-parse HEAD) · branch ${CI_HEAD_BRANCH}"
           } >> "${GITHUB_STEP_SUMMARY}"
 
