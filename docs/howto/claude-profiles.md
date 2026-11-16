@@ -2216,12 +2216,14 @@ take. Work through these:
   [login rotator](claude-profile-rotation.md) are what write them, so an
   unattended run with neither has nothing to see and goes to its reset.
   `amplihack profile rotate status` says whether the rotator is running.
-- **Another step already has that login.** A login lent to another
-  session, or a directory hosting another account, is never a candidate.
-  With several steps of one recipe run waiting at the same time, this is
-  the usual reason a wait sits beside a login that looks idle: the first
-  step to see the room took it. `amplihack profile auto-switch status`
-  marks the rows `leased→<dir>` and `hosts:<account>`.
+- **Another session holds that login.** A login lent to another directory,
+  or a directory hosting another account, is never a candidate. Both states
+  come from an
+  [in-session swap](../reference/profile-command.md#in-session-swap), the
+  only move that writes a ledger entry; a waiting step takes no lease, so
+  other waiting steps are not what put a login into either state.
+  `amplihack profile auto-switch status` marks the rows `leased→<dir>`
+  and `hosts:<account>`.
 - **Auto-switch is off.** `amplihack profile auto-switch status` shows it.
   With it off the step keeps its own login and has no `login capacity`
   exit.
@@ -2272,9 +2274,11 @@ amplihack: a login has capacity again; rerunning this step under profile "person
 ```
 
 The login is picked twice, once to end the wait and once to build the retry.
-If it was taken in between, by another waiting step on this machine or by a
-newer reading, the retry runs on the exhausted login the step started with
-and fails again. That case says so in place of the line above:
+If it was taken in between, the retry runs on the exhausted login the step
+started with and fails again. What takes it is either an in-session swap on
+this host, the one move that leases the login it goes to, or a newer reading
+that disqualifies the login, by putting it back over the threshold or by
+recording a spend block. That case says so in place of the line above:
 
 ```
 amplihack.recipe.usage_limit_wait end reason=login capacity
@@ -2286,11 +2290,16 @@ Seeing it means the step gave up a wait on the strength of a reading and got
 nothing for it — on a reset wait, a wait that would have run to its reset and
 succeeded. It appears only after `end reason=login capacity`, the one exit
 where room was actually seen and then lost; a wait that ended any other way
-never had room to lose and says nothing. So it is worth knowing when several
-steps on one machine hit their limits together: they all see the same spare
-login at the same poll, and only the first of them gets it. Run them with
-`auto-switch exclude` on the contended login, or stagger them, if that trade
-is the wrong one for you.
+never had room to lose and says nothing.
+
+A waiting step takes no lease on the login it retries under. When several
+steps on one machine hit their limits together, they all read the same spare
+login at the same poll and all move onto it; none of them excludes the
+others, so the line above is not what contention between waiting steps looks
+like. What it looks like instead is several steps sharing one login that may
+not have room for all of them, and a step that meets a second limit there has
+already spent its one wait. That consequence is tracked in
+[Issue #2733](https://github.com/rysweet/amplihack-rs/issues/2733).
 
 A wait for another login has `wait=capacity` on its `start` line, and
 `reset=none` when Claude's message gave no readable reset:

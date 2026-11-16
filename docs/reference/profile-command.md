@@ -11130,9 +11130,9 @@ auto-switch's own candidate rules, so a profile with a spend block, over
 the threshold, on another platform, with a weekly-limit record or in the
 `exclude` list never counts. Nor does a profile whose login is
 [lent](#leases) to another directory, or whose own directory hosts another
-account: in a recipe run with several steps waiting at once, a login already
-taken by one of them is the commonest reason a wait sits beside an
-apparently idle profile. This is stricter than the start check in
+account; both states are written by an [in-session swap](#in-session-swap),
+not by a waiting step, which takes no lease at all (see
+[Retry login](#retry-login)). This is stricter than the start check in
 [When a capacity wait starts](#when-a-capacity-wait-starts), which also
 counts profiles that are over the threshold or have a weekly-limit record.
 A reading counts only when it was taken after the wait began and no more
@@ -11249,9 +11249,20 @@ found, and the step would retry on the exhausted profile every time.
 **The reading that ended the wait is advisory, not a reservation.** The
 candidate is chosen once to end the wait and again when the retry is built,
 and the second selection may find nothing: between the two, the login that
-showed room may have been taken by another step in the same run, lent out,
-spend-blocked, or pushed over the threshold by a newer reading. The retry
-then runs on the inherited login, exhausted as it was.
+showed room may have been taken by an
+[in-session swap](#in-session-swap) on this host, lent out, spend-blocked,
+or pushed over the threshold by a newer reading. The retry then runs on the
+inherited login, exhausted as it was.
+
+Both of the lease-shaped causes, the swap itself and the login being lent
+out, originate in an in-session swap: it is the only move that writes a
+ledger entry, and so the only one that [leases](#leases) what it moves to. A
+step retrying after a wait writes no ledger entry and takes no lease; it
+only sets `CLAUDE_CONFIG_DIR` for the one attempt. Several waiting steps
+that read the same login at the same poll therefore all retry under it, and
+none of them displaces the others. Issue
+[#2733](https://github.com/rysweet/amplihack-rs/issues/2733) tracks the
+consequence, which is a shared login rather than a lost race.
 
 What that costs depends on whether a reading ended the wait early, and only
 the case that lost something is announced:

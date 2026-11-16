@@ -630,10 +630,13 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
 /// ended because another login has room (#2694), that is the login which
 /// showed capacity, never the exhausted inherited one; after a reset wait
 /// that ran to its deadline, `None`. The candidate is chosen again here
-/// rather than carried over from the wait's own probe, because the lease may
-/// have changed since: a stale pick would move the step onto a login another
-/// step now holds. So it may now be `None`, and the one retry then runs on
-/// the inherited profile.
+/// rather than carried over from the wait's own probe, because the live
+/// login may have changed since: an in-session swap on this host leases the
+/// login it moves to and can remove the candidate, and a newer reading can
+/// disqualify it. A waiting step takes no lease, so waiting steps do not
+/// remove each other's candidates; several of them land on the same login
+/// together, which is issue #2733. So the pick may now be `None`, and the
+/// one retry then runs on the inherited profile.
 ///
 /// What that costs is [`room_was_seen`]'s decision, not this
 /// function's: only a wait that a reading ended early gave up something, so
@@ -656,10 +659,13 @@ fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<Profile
         KeyAlert::Write,
     ) else {
         if mv.room_was_seen() {
-            // A reading ended this wait early, but the room is gone at the
-            // moment the retry moves: another step on this host took the
-            // lease first (#2694). Say so. Every other transition in this
-            // loop prints, and without a line here the log reads
+            // A reading ended this wait early, but the login no longer
+            // qualifies at the moment the retry moves: an in-session swap on
+            // this host took it, or a newer reading disqualified it (#2694).
+            // Not another waiting step, which takes no lease and would land
+            // on the same login rather than remove it (#2733). Say so. Every
+            // other transition in this loop prints, and without a line here
+            // the log reads
             // `end reason=login capacity` and then fails on the login that
             // had none, with nothing in between to name the cause.
             eprintln!(

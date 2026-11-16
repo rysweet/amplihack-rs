@@ -277,10 +277,13 @@ fn the_wait_probe_writes_no_held_key_alert() {
 
 /// Issue #2694: the room that ends a wait can be gone by the time the retry
 /// moves. The probe and the retry each choose a candidate of their own, so
-/// another step on this host may take the lease in between, and then the
-/// retry gets no candidate and runs on the limited profile it inherited.
-/// The lease is the only difference between the two halves here, so a
-/// `None` from any other cause would fail the first half.
+/// an in-session swap on this host may lease the login in between, and then
+/// the retry gets no candidate and runs on the limited profile it inherited.
+/// The swap is what the fixture below performs, by writing a ledger entry;
+/// a waiting step writes none and takes no lease, so a second waiting step
+/// could not produce this outcome (#2733). The lease is the only difference
+/// between the two halves here, so a `None` from any other cause would fail
+/// the first half.
 #[test]
 fn a_login_leased_away_between_the_probe_and_the_retry_gives_no_candidate() {
     use crate::commands::profile::auto_switch::rerun::KeyAlert;
@@ -320,7 +323,7 @@ fn a_login_leased_away_between_the_probe_and_the_retry_gives_no_candidate() {
         "the probe's reading is what ended the wait"
     );
 
-    // Another step on this host swaps `spare` into its own directory.
+    // An in-session swap in another directory on this host takes `spare`.
     f.state
         .save_ledger(&Ledger {
             version: 1,
