@@ -40,6 +40,8 @@ mod issue_2575_agentic_merge_ready;
 mod issue_2575_finalize_recovery_runner;
 #[path = "issue_2582_context_off_argv.rs"]
 mod issue_2582_context_off_argv;
+#[path = "issue_2582_degraded_runner_no_set.rs"]
+mod issue_2582_degraded_runner_no_set;
 #[path = "issue_2582_nested_context_off_argv.rs"]
 mod issue_2582_nested_context_off_argv;
 #[path = "issue_2582_real_runner_argv.rs"]
