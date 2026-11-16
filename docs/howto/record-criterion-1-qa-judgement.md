@@ -1,7 +1,7 @@
 ---
 title: Record a Criterion-1 QA Judgement by Hand
 description: Measure the QA facts for a PR, judge criterion 1 from them and the diff, and write the judgement up - what the criterion-1 agent step does inside an auto-drive round.
-last_updated: 2026-11-15
+last_updated: 2026-11-16
 review_schedule: quarterly
 owner: workflow-team
 doc_type: howto
@@ -31,15 +31,13 @@ export AUTODRIVE_QA_EVIDENCE="$STATE/qa-evidence.json"
 
 ## 1. Measure the facts
 
-In a drive, `step-02a-qa-inputs` resolves the base from the clone, not from
-the PR: an operator's `AUTODRIVE_QA_BASE` first, then the clone's own
-`origin/HEAD`. There is no third source — where neither answers it passes no
-base at all rather than guessing one. It never reads the PR's base branch, so
-for a PR into any branch other than the clone's default the operator's override
-is what makes the base right; the record names which source answered in
-`qa_base_source`, and the round's assessment compares the recorded `qa_base`
-against the base it observed before any merge-base declaration counts. The
-order is in
+In a drive, `step-02a-qa-inputs` resolves the PR's own base: an operator's
+`AUTODRIVE_QA_BASE` first, then the base branch the drive was launched
+against, then `gh pr view <pr> --json baseRefName`. Where none of the three
+answers it passes no base at all rather than guessing one, and the record says
+which answered in `qa_base_source` — `operator`, `recipe`, `pr-base` or
+`none`. It does not consult the clone's own default branch, which is the PR's
+base only where the PR targets it. The order is in
 [resolving the measurement base](../reference/auto-drive-qa.md#resolving-the-measurement-base).
 By hand you set the base yourself, and you can simply get it right.
 `AUTODRIVE_QA_BASE` is the PR's base branch name without `origin/`; the tool

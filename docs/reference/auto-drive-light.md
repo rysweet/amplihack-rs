@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: small-change eligibility, authorization, escalation, and shared readiness outcomes.
-last_updated: 2026-11-11
+last_updated: 2026-11-16
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -50,7 +50,7 @@ recipe name when the change is eligible.
 | `repo_path` | `.` | Repository. |
 | `pr_number` | empty | Existing PR; explicit selection takes precedence. |
 | `existing_branch` | empty | Existing source branch with an open PR; must match explicit PR input. |
-| `base_branch` | empty | Passed to `auto-drive-to-merge` on escalation. A new change clears it in `light-worktree`, because the `quick/` branch starts from `origin/HEAD`, so escalation then sees an empty base. Only the existing-PR path (`pr_number` or `existing_branch` set) keeps the caller's value. See [Where the inputs apply](workflow-delivery-inputs.md#where-the-inputs-apply). |
+| `base_branch` | empty | Passed to `auto-drive-to-merge` on escalation, and used by `light-qa-inputs` as the base the pre-PR QA measurement is taken against, recorded as `qa_base_source` `recipe` ([resolving the measurement base](auto-drive-qa.md#resolving-the-measurement-base)). Where it is empty, that step falls back to the clone's own default, recorded as `clone-default`; before a PR exists there is no PR base for that to be wrong against. A new change clears it in `light-worktree`, because the `quick/` branch starts from `origin/HEAD`, so escalation then sees an empty base. Only the existing-PR path (`pr_number` or `existing_branch` set) keeps the caller's value. See [Where the inputs apply](workflow-delivery-inputs.md#where-the-inputs-apply). |
 | `issue_number` | empty | Issue reference used by the branch/PR and task fallback. A positive issue number, up to 10 digits. |
 | `plan_task_id` | empty | Explicit task for follow-ups. Otherwise use `#<issue_number>`, then the shared PR-body/task-description fallback. |
 | `qa_command` | empty | Operator-supplied build check command; otherwise repository quick-change checks. This does not replace final QA selection. |
