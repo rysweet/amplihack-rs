@@ -1165,7 +1165,6 @@ fn divergent_default_world() -> World {
         r#"{"name":"shop","version":"1.0.0","scripts":{"test":"node test.js"}}"#,
     );
     w.write("src/app.js", "console.log(\"shop\");\n");
-    w.write("README.md", "# Shop\n");
     let a = w.commit("base");
     w.git(&["update-ref", "refs/remotes/origin/trunk", &a]);
     w.git(&[
@@ -1189,10 +1188,12 @@ fn divergent_default_world() -> World {
 /// base environment this case wants.
 fn inputs_with_base(w: &World, base: Option<&str>) -> Value {
     let evidence = w.evidence_path().display().to_string();
-    let mut extra: Vec<(&str, &str)> = vec![("RECIPE_VAR_autodrive_qa_evidence", &evidence)];
     // An empty value is no answer: the step reads `${AUTODRIVE_QA_BASE:-}`,
     // so an operator who exported it empty falls through to the next source.
-    extra.push(("AUTODRIVE_QA_BASE", base.unwrap_or("")));
+    let extra = [
+        ("RECIPE_VAR_autodrive_qa_evidence", evidence.as_str()),
+        ("AUTODRIVE_QA_BASE", base.unwrap_or("")),
+    ];
     let o = w.run_step(
         "autodrive-merge-evidence.yaml",
         "step-02a-qa-inputs",
