@@ -929,14 +929,10 @@ pub(super) fn execute_recipe_via_rust_fresh(
     let pinned_search = launch
         .as_ref()
         .map(|l| vec![l.home.join("amplifier-bundle/recipes")]);
-    let bundle_search = match (&pinned, &bundle) {
-        (Some(pinned), Some(bundle)) => Some(build_search_dirs(pinned.bundle(), bundle.origin)),
-        _ => None,
-    };
-    let search_dirs = pinned_search
-        .as_deref()
-        .or(bundle_search.as_deref())
-        .unwrap_or(search_dirs);
+    // A pinned run never reads this list: the -R site below sends its bundle
+    // through `runner_bundle_args`, and the arm that reads `search_dirs` is
+    // reached only when no bundle was selected.
+    let search_dirs = pinned_search.as_deref().unwrap_or(search_dirs);
     // Expand auto-drive defaults only after trusted entrypoint selection.
     // Neither requested recipe defaults nor inferred values grant authority.
     let (mut invocation_context, inferred) = if launch.is_some() {

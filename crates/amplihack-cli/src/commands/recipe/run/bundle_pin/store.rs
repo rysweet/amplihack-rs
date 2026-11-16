@@ -118,12 +118,8 @@ pub(super) fn tree_digest(root: &Path) -> Result<TreeDigest> {
 }
 
 fn digest_dir(hasher: &mut Sha256, dir: &Path, relative: &Path) -> Result<()> {
-    let mut entries = fs::read_dir(dir)
-        .with_context(|| format!("cannot read {}", dir.display()))?
-        .collect::<std::io::Result<Vec<_>>>()
-        .with_context(|| format!("cannot read {}", dir.display()))?;
-    entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
+    // The same name order `copy_bundle` walks, so the digest matches the copy.
+    for entry in crate::commands::orch::autodrive::trusted::sorted_entries(dir)? {
         let path = entry.path();
         let rel = relative.join(entry.file_name());
         let meta = fs::symlink_metadata(&path)

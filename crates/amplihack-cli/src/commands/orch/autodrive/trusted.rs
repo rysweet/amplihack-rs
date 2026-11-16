@@ -208,18 +208,26 @@ fn check_and_copy(source: &Path, dest: Option<&Path>, links: LinkPolicy) -> Resu
     walk_bundle(&root, &root, dest, links)
 }
 
-fn walk_bundle(root: &Path, dir: &Path, dest: Option<&Path>, links: LinkPolicy) -> Result<()> {
+/// Every entry of `dir`, in byte order of its name, so that a copy of a
+/// bundle tree and a digest of it visit the same files in the same order.
+/// The snapshot key depends on that order (see `bundle_pin::store`).
+pub(crate) fn sorted_entries(dir: &Path) -> Result<Vec<fs::DirEntry>> {
     let mut entries = fs::read_dir(dir)
         .with_context(|| format!("cannot read {}", dir.display()))?
         .collect::<std::io::Result<Vec<_>>>()
         .with_context(|| format!("cannot read {}", dir.display()))?;
     entries.sort_by_key(|entry| entry.file_name());
-    for entry in entries {
-        if SKIPPED_NAMES.iter().any(|name| entry.file_name() == *name) {
+    Ok(entries)
+}
+
+fn walk_bundle(root: &Path, dir: &Path, dest: Option<&Path>, links: LinkPolicy) -> Result<()> {
+    for entry in sorted_entries(dir)? {
+        let name = entry.file_name();
+        if SKIPPED_NAMES.iter().any(|skipped| name == *skipped) {
             continue;
         }
         let path = entry.path();
-        let to = dest.map(|d| d.join(entry.file_name()));
+        let to = dest.map(|d| d.join(&name));
         let metadata = fs::symlink_metadata(&path)
             .with_context(|| format!("cannot inspect {}", path.display()))?;
         let kind = metadata.file_type();

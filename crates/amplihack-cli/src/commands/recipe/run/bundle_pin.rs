@@ -369,12 +369,12 @@ fn check_marker(
             work_root.display()
         ));
     }
-    let pins = canonical
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    for dir in [pins, canonical.clone(), canonical.join(BUNDLE_DIR)] {
-        trusted_directory(&dir).map_err(|error| format!("{error:#}"))?;
+    // The same three-directory trust check `is_launch_copy_of` runs, over
+    // borrowed paths, so `canonical` survives for `AcceptedMarker::home`.
+    let pins = canonical.parent().unwrap_or(Path::new(""));
+    let bundle = canonical.join(BUNDLE_DIR);
+    for dir in [pins, canonical.as_path(), bundle.as_path()] {
+        trusted_directory(dir).map_err(|error| format!("{error:#}"))?;
     }
     let choice = marker_choice
         .and_then(OsStr::to_str)
@@ -504,14 +504,10 @@ fn installed_home(inputs: &SelectInputs<'_>, notes: &mut Vec<String>) -> Result<
         let Some(candidate) = candidate else {
             continue;
         };
-        let Ok(canonical) = fs::canonicalize(&candidate) else {
+        let Some(canonical) = fs::canonicalize(&candidate).ok().filter(|c| c.is_dir()) else {
             searched.push(candidate.display().to_string());
             continue;
         };
-        if !canonical.is_dir() {
-            searched.push(candidate.display().to_string());
-            continue;
-        }
         if fs::symlink_metadata(canonical.join(".git")).is_ok() {
             notes.push(format!(
                 "recipe bundle: skipping {label}={}: it is a git checkout; \
