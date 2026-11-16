@@ -490,5 +490,7 @@ mod issue_2738_git_outside_repo;
 mod issue_2738_no_ptrace;
 #[path = "issue_2738_private_clone.rs"]
 mod issue_2738_private_clone;
+#[path = "issue_2738_run_status.rs"]
+mod issue_2738_run_status;
 #[path = "issue_2738_support.rs"]
 mod issue_2738_support;

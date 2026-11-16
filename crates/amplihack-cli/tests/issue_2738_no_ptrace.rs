@@ -236,15 +236,18 @@ fn a_real_recipe_run_and_every_process_below_it_have_no_tracer_and_the_run_finis
     );
 
     // The run's status is the runner's own exit: release the step and let it
-    // finish on its own.
+    // finish on its own. A whole line, not just end-of-file: the step's `read`
+    // reports failure at end-of-file, which would end the run with the step's
+    // own exit 1 and say nothing about the tracer.
     {
+        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        let writer = fs::OpenOptions::new()
+        let mut writer = fs::OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_NONBLOCK)
             .open(&fifo)
             .expect("open the FIFO while the step reads it");
-        drop(writer);
+        writer.write_all(b"go\n").expect("release the step");
     }
     let status = wait_child("the recipe run to finish", &mut run);
     cleanup.run_pid = None;

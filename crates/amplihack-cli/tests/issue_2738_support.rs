@@ -11,7 +11,9 @@
 //! The stub runner records where it was started, what Git sees there, and,
 //! on request, runs Git from a directory that is not a repository (#2737),
 //! lists the caller's worktrees, or stages and commits inside the run's own
-//! checkout.
+//! checkout. It can also end on its own terms, with an exit code of the
+//! test's choosing or with a report of its own failure, so a test can show
+//! that the run's status is the runner's.
 //!
 //! Wired as a module of `crates/amplihack-cli/tests/main.rs`; the files that
 //! use it are wired there too.
@@ -34,6 +36,16 @@ fi
 out="$ISSUE_2738_OBS"
 mkdir -p "$out"
 printf '%s' "$(pwd -P)" > "$out/startup_cwd"
+# The run's status is the runner's own: these two modes end the runner on its
+# own terms, and nothing else may decide what the run reports (#2738).
+if [ -n "${ISSUE_2738_RUNNER_EXIT:-}" ]; then
+  printf 'the runner ended on its own terms\n' >&2
+  exit "$ISSUE_2738_RUNNER_EXIT"
+fi
+if [ -n "${ISSUE_2738_RUNNER_REPORTS_FAILURE:-}" ]; then
+  printf '%s\n' '{"recipe_name":"issue-2738","success":false,"step_results":[],"context":{}}'
+  exit 0
+fi
 dir=""
 while [ $# -gt 0 ]; do
   case "$1" in
