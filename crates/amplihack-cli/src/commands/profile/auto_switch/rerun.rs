@@ -65,6 +65,77 @@ pub fn nested_candidate(
     current: &str,
     skip: &[String],
 ) -> Option<Pick> {
+    candidate(
+        Reads {
+            state,
+            ledger,
+            profiles,
+            readings,
+            cfg,
+        },
+        current,
+        skip,
+        KeyAlert::Write,
+    )
+}
+
+/// [`nested_candidate`] without the held-key alert: the same choice, made
+/// without writing or printing anything (issue #2694). The usage-limit wait
+/// asks this every 30 s for the whole of a wait, so the alert would repeat
+/// for hours in the step's stderr and crowd the runner's evidence tail. The
+/// step that is waiting has already hit a limit under auto-switch, so the
+/// alert for its held-back key was written once by the rerun check before
+/// the wait began.
+pub(super) fn silent_candidate(
+    state: &State,
+    ledger: &Ledger,
+    profiles: &[ProfileName],
+    readings: &BTreeMap<String, Reading>,
+    cfg: &Config,
+    current: &str,
+    skip: &[String],
+) -> Option<Pick> {
+    candidate(
+        Reads {
+            state,
+            ledger,
+            profiles,
+            readings,
+            cfg,
+        },
+        current,
+        skip,
+        KeyAlert::Silent,
+    )
+}
+
+/// Whether a caller of [`candidate`] wants the held-key ALERT written.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyAlert {
+    Write,
+    Silent,
+}
+
+/// Everything a candidate choice is read from, bundled so that [`candidate`]
+/// stays inside clippy's argument limit without an exemption. Shared
+/// references only: the choice reads this state and never writes it.
+#[derive(Clone, Copy)]
+struct Reads<'a> {
+    state: &'a State,
+    ledger: &'a Ledger,
+    profiles: &'a [ProfileName],
+    readings: &'a BTreeMap<String, Reading>,
+    cfg: &'a Config,
+}
+
+fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) -> Option<Pick> {
+    let Reads {
+        state,
+        ledger,
+        profiles,
+        readings,
+        cfg,
+    } = reads;
     let source_host = current;
     let current = ledger.account_in(source_host);
     let now = fsx::now();
@@ -105,7 +176,7 @@ pub fn nested_candidate(
         |p| eligible(p) && restriction.allowed.contains(p),
         |p| restriction.plan_room.contains(p),
     );
-    if picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
+    if alert == KeyAlert::Write && picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
         let held = per_token::key_held(&pool, &overflow, current, eligible);
         per_token::record_key_held(state, &held);
     }
