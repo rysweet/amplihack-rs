@@ -26,7 +26,11 @@ pub(super) struct Fake {
     signal_seen_at_ms: Option<i64>,
     sleeps: Vec<Duration>,
     pub(super) sleeps_after_signal: usize,
-    probes: Vec<i64>,
+    /// The virtual second of each login fingerprint. `tests_wait_ends`
+    /// derives from this where another login's capacity may be read, so the
+    /// reading's cadence is stated against the checks the wait already
+    /// makes rather than against their interval (issue #2694).
+    pub(super) probes: Vec<i64>,
     logs: Vec<String>,
     /// Virtual second from which the step's parent is gone.
     pub(super) parent_gone_from: Option<i64>,

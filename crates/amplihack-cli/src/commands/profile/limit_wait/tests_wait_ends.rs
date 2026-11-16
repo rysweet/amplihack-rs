@@ -232,21 +232,36 @@ fn a_changed_login_outranks_another_logins_capacity_on_a_reset_wait() {
     assert_eq!(f.elapsed(), 90, "the poll two agreeing probes in");
 }
 
-/// The reading is taken on the fingerprint's own 30-second poll and nowhere
-/// else, on a reset wait as on a capacity wait: issue #2694 widens which
-/// waits consult it and adds no timer, interval or retry of its own.
+/// The reading rides the login check the wait already makes and happens
+/// nowhere else, on a reset wait as on a capacity wait: issue #2694 widens
+/// which waits consult it and adds no timer, interval or retry of its own.
+///
+/// Stated against the login checks themselves, not against the interval
+/// between them, so this says where the reading is taken and leaves what
+/// that interval is set to for `the_fingerprint_is_taken_at_the_start_and_
+/// every_thirty_seconds` to pin. The first check is the baseline taken
+/// before the loop and no reading accompanies it, so the readings are
+/// exactly the tail of the checks.
 #[test]
-fn another_logins_capacity_is_read_on_the_existing_thirty_second_poll() {
+fn another_logins_capacity_is_read_on_the_existing_login_check() {
     for plan in [
         plan_in(100, Bound::ResetMargin),
         capacity_plan_in(100, Bound::MaxWait),
     ] {
         let mut f = Fake::new();
         wait(&plan, &mut f);
+        let mut checks = f.probes.clone();
+        checks.dedup();
+        assert!(
+            !f.other_probes.is_empty(),
+            "{:?}: a wait of this length does read another login's capacity",
+            plan.kind
+        );
         assert_eq!(
             f.other_probes,
-            vec![30, 60, 90],
-            "{:?}: the poll the login fingerprint already uses",
+            checks[1..],
+            "{:?}: every reading falls on a login check, and the wait makes \
+             no check of its own; checks were {checks:?}",
             plan.kind
         );
     }
