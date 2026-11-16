@@ -27,20 +27,36 @@ env:
 
 # Under `workflow_run`, `github.ref` is always the default branch, so the old
 # key collapsed every release into one global group. Rebuild it from the CI
-# run's repository and branch to keep today's behaviour: one release in flight
-# per branch, newest wins (#1356 depends on a cancelled run leaving nothing
-# behind).
+# run's repository and branch: one release in flight per branch.
+#
+# Runs in this lane queue; they do not cancel one another. A stale run -- a CI
+# re-run on an older commit, or a slow run overtaken by a merge -- must never
+# stop a newer commit's release part-way through, and an hour-wide build
+# window (see the sccache note on the `build` job) makes being overtaken
+# ordinary rather than rare.
+#
+# #1356's invariant does not depend on cancellation and is unchanged by this:
+# nothing is written to `main` or to the tag namespace before the `release`
+# job, so a run that never reaches that job leaves nothing behind however it
+# died -- cancelled by hand, failed, or timed out.
+#
+# Queueing cannot resurrect an old commit either. A queued run that finally
+# starts finds that `main` has moved past the commit CI tested and publishes
+# nothing (the tip comparison in `version-bump`). The two are complementary:
+# the comparison stops an older commit from being published, and queueing
+# stops a newer commit's release from being interrupted by an older run.
 #
 # The group is claimed when the run is created, before `version-bump`'s `if:`
 # is evaluated, so the admission clauses below do not protect it. On the fork
 # pull-request path `head_branch` is attacker-chosen -- a fork branch named
-# `main` would otherwise share this key and cancel a legitimate release. The
-# repository component separates them. `github.ref_name` (not `github.ref`) is
-# the fallback so a manual dispatch lands in the same group as the automatic
-# path rather than a second one.
+# `main` would otherwise share this key with a legitimate release. The
+# repository component separates them, and keeps fork runs in fork-keyed
+# lanes. `github.ref_name` (not `github.ref`) is the fallback so a manual
+# dispatch lands in the same group as the automatic path rather than a second
+# one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name || github.repository }}-${{ github.event.workflow_run.head_branch || github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   # ── Determine next version ────────────────────────────────────────────
@@ -316,16 +332,19 @@ jobs:
           # The tag is NOT pushed here. The `release` job creates it once the
           # artifacts exist (issue #1356).
           #
-          # This workflow sets `cancel-in-progress: true`, so a push to main cancels
-          # whatever release is running. Pushing the tag before the build meant a
-          # cancelled run left a public tag with nothing behind it -- and the next run
-          # reads `git tag --list` as its source of truth (above), sees that tag, and
-          # bumps past it, so the version is burned and never retried.
+          # Pushing the tag before the build meant a run that died mid-flight left a
+          # public tag with nothing behind it -- and the next run reads
+          # `git tag --list` as its source of truth (above), sees that tag, and bumps
+          # past it, so the version is burned and never retried. A run can die in
+          # several ways: a failed build leg, a timeout, a cancellation by hand. This
+          # workflow no longer cancels its own runs, but the rule is independent of
+          # that and must stay so.
           #
           # Eleven merges in one night produced eight stranded tags, and left
           # `amplihack update` reporting "already at the latest version" against a main
-          # it would never fetch. A cancelled run must leave nothing behind: reserving
-          # a number in a job output costs nothing if the run dies, publishing it does.
+          # it would never fetch. Nothing may be written to main or to the tag
+          # namespace before the `release` job: reserving a number in a job output
+          # costs nothing if the run dies, publishing it does.
 
           echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
@@ -367,10 +386,11 @@ jobs:
     env:
       # Ported from ci.yml (issue #1358). Without this the release recompiles
       # the whole tree on every target every time: measured 12-28 min per
-      # target (~59 min for the since-removed Windows target). With
-      # cancel-in-progress set, an hour-wide window means any merge inside it kills the release --
-      # five of six runs were cancelled on the night eleven PRs landed, and no
-      # release published at all.
+      # target (~59 min for the since-removed Windows target). An hour-wide
+      # window means a merge landing inside it is ordinary: five of six runs
+      # were cancelled by a later merge on the night eleven PRs landed, and no
+      # release published at all. That is why the concurrency group above
+      # queues runs rather than cancelling them, and why this cache matters.
       #
       # cache-targets stays false: restoring the whole target/ dir exhausted
       # runner disk, which is exactly why sccache was adopted in ci.yml.
