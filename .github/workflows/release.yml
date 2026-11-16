@@ -153,7 +153,7 @@ jobs:
           ANSWER=$(gh api \
             "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&status=success&per_page=100" \
             --jq '[.workflow_runs[] | select(.event != "pull_request")]
-                  | "\(length)\t\(.[0].html_url // "")"')
+                  | "\(length)\t\(.[0].html_url // "(run URL unavailable)")"')
           COUNT=$(printf '%s' "${ANSWER}" | cut -f1)
           RUN_URL=$(printf '%s' "${ANSWER}" | cut -f2)
           case "${COUNT}" in
@@ -280,8 +280,6 @@ jobs:
 
           echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ── Build release binaries ────────────────────────────────────────────
   build:
