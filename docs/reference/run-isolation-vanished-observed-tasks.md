@@ -225,7 +225,9 @@ Facts about that field:
 
 On a run that succeeds the trace folder is removed after validation, so the
 receipt is a field artefact: it is there to read on a run that kept its
-evidence.
+evidence. Nothing reads the count automatically, and `coverage` does not
+depend on it — see
+[a degraded run leaves no durable, enforced evidence](#limits).
 
 ### The stderr line
 
@@ -448,9 +450,25 @@ design and a test must not be shaped to dodge that.
   read is where a relayed nested scope's journal path is validated, so a task
   reaching an `exec` stop could then skip registration and its checks while
   the run still finished as established.
-- **The count is not readable after a successful run.** Publication removes the
-  trace folder after validation, so the receipt survives only where evidence
-  is retained.
+- **A degraded run leaves no durable, enforced evidence that it degraded.**
+  Three things combine. `coverage` is a literal in the receipt, so it reads
+  `established` whether the run lost no task or two hundred. The `vanished`
+  number beside it is written and read by nothing: the recording validator
+  compares seven named keys and ignores the rest, by the design above, so the
+  count's only reader in the tree is this module's own test. And both visible
+  surfaces are bounded or transient — the stderr line stops at sixteen per run
+  while the count does not, and publication removes the trace folder after
+  validation, so the receipt survives only where evidence is retained. The
+  consequence is that the eight runs in #2716 were diagnosable because they
+  *failed*; the same degradation on a passing run is invisible after the fact.
+  This is a detectability gap and not a bypass — the degraded case can only
+  stall, never report coverage it did not establish — and closing it means
+  touching the report path, which was out of scope for a fix one error number
+  wide. Tracked as
+  [#2726](https://github.com/rysweet/amplihack-rs/issues/2726), with the
+  constraint that the count must not become an eighth compared key: every
+  traced tree can influence it, so a gate that reads it would hand that tree a
+  new way to fail any run.
 - **The "exited before registration" set is keyed by process id and never
   pruned.** Unchanged by this work. That set, and the `pending_stops` entry
   the abandoned-newborn path leaves behind, are both bookkeeping invariants
