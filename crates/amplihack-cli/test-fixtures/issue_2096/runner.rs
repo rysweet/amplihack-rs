@@ -20,8 +20,14 @@ const ECHILD: i32 = 10;
 /// How many times each vanishing-task mode repeats its race. Bounded
 /// repetition is the only determinism these modes may use: no sleep, timer,
 /// retry or poll appears here or in the tests that drive them. A race that
-/// never lands fails its test rather than passing it, and the only remedy
-/// is a larger number here.
+/// never lands fails its test rather than passing it.
+///
+/// Raising this is not the remedy when a mode stops landing, and that is
+/// worth knowing before spending time on it: what makes these races land is
+/// the structure below — the cloning is done by threads that run freely
+/// (`clone_underneath`), and `sigkill-child` signals the *previous* child.
+/// With either undone the window never opens and no count reopens it. See
+/// `docs/reference/run-isolation-vanished-observed-tasks.md`.
 const ISSUE_2716_ITERATIONS: usize = 128;
 
 /// Threads of a child's group that clone, so that cloning is still in
@@ -81,6 +87,18 @@ fn clone_underneath() {
     for _ in 0..ISSUE_2716_CLONERS {
         drop(std::thread::spawn(clone_threads));
     }
+}
+
+/// Kills one child this fixture forked, by number, and reaps it. `child` is
+/// always a positive pid from [`fork_child`]: never 0, never negative, never
+/// a name or a pattern, so this can reach no process group and nothing this
+/// fixture did not create. SIGKILL needs no handler and reaches a tracee even
+/// in ptrace-stop, which is the point of the mode that calls this.
+fn kill_child(child: i32) {
+    assert!(child > 0, "refusing to signal {child}");
+    // SAFETY: a positive pid forked and recorded by this fixture.
+    unsafe { kill(child, SIGKILL) };
+    wait_for(child);
 }
 
 /// Waits for one pid this fixture created, by number. Never a process group,
@@ -429,20 +447,20 @@ fn run() {
         // No child execs, so this reaches no exec stop either.
         "sigkill-child" => {
             announce_success();
-            let mut cloning = 0;
+            // `Option`, never a sentinel: `kill(0, ...)` signals the whole
+            // process group, which here is the test harness. Only a pid this
+            // fixture forked and recorded can reach `kill_child`.
+            let mut cloning = None;
             for _ in 0..ISSUE_2716_ITERATIONS {
                 let next = fork_child(clone_underneath);
-                if cloning > 0 {
-                    // SAFETY: a pid forked and recorded above, still this
-                    // fixture's own child. SIGKILL needs no handler.
-                    unsafe { kill(cloning, SIGKILL) };
-                    wait_for(cloning);
+                if let Some(previous) = cloning {
+                    kill_child(previous);
                 }
-                cloning = next;
+                cloning = Some(next);
             }
-            // SAFETY: as above, for the last child still cloning.
-            unsafe { kill(cloning, SIGKILL) };
-            wait_for(cloning);
+            if let Some(last) = cloning {
+                kill_child(last);
+            }
             return;
         }
         other => panic!("unknown fixture mode {other}"),

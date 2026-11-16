@@ -121,30 +121,26 @@ fn traceme_refused(error: &std::io::Error) -> bool {
     matches!(error.raw_os_error(), Some(libc::EPERM) | Some(libc::ENOSYS))
 }
 
-/// Issue #2716: a ptrace request issued inside the observation loop failed
-/// because the task it addressed has gone. `ESRCH` from a request on a
-/// stopped tracee is the documented result when that tracee died between the
-/// stop and the request: a thread of a group whose leader called `exit_group`,
-/// a tracee killed with SIGKILL, or a tid retired by a sibling's exec. That
-/// is an ordinary event in a traced tree of agent, node, cargo and shell
-/// processes, not a broken observation.
+/// Issue #2716: a ptrace request in the observation loop failed because its
+/// task has gone. `ESRCH` on a stopped tracee is the documented result when
+/// that tracee died between the stop and the request — a thread of a group
+/// whose leader called `exit_group`, a tracee killed with SIGKILL, or a tid
+/// retired by a sibling's exec — which is ordinary in a traced tree of agent,
+/// node, cargo and shell processes, not a broken observation.
 ///
-/// This is the one deliberate fail-open case in a fail-closed design, and it
-/// is safe only because of the structure around it: every site that
-/// classifies a task as gone is a site that does **not** resume it, so a task
-/// misclassified while still alive stays in its ptrace-stop and executes
-/// nothing further. No exit status is ever synthesized either — the runner's
-/// status comes only from a real wait status, and
-/// `observer lost runner exit status` stays as the backstop. A future change
-/// that resumes a task on a classifying path, or that registers a task before
-/// the site that may classify it, invalidates that reasoning.
+/// This is the one deliberate fail-open case in a fail-closed design. It is
+/// safe only because no site that classifies a task as gone resumes it, so a
+/// task misclassified while alive stays in its ptrace-stop and executes
+/// nothing, and because no exit status is ever synthesized: the runner's
+/// comes from a real wait status, with `observer lost runner exit status` as
+/// the backstop. A change that resumes a task on a classifying path, or
+/// registers one before the site that may classify it, invalidates that.
 ///
-/// Classified by error number only, never by message text: a traced process
-/// can influence strings that surface in an error chain, so no
-/// tracee-reachable text may steer a control decision. The chain's root cause
-/// is what is read, so an unrelated inner `ESRCH` cannot be mistaken for the
-/// result of the ptrace request itself. `ENOENT` is deliberately not accepted
-/// here; see [`vanished_proc_entry`].
+/// Classified by error number only, never message text: a tracee can
+/// influence strings that surface in an error chain. The root cause is what
+/// is read, so an unrelated inner `ESRCH` cannot be mistaken for this. The
+/// full rationale and its limits are in
+/// `docs/reference/run-isolation-vanished-observed-tasks.md`.
 fn vanished_task(error: &anyhow::Error) -> bool {
     error
         .root_cause()
@@ -153,28 +149,25 @@ fn vanished_task(error: &anyhow::Error) -> bool {
         == Some(libc::ESRCH)
 }
 
-/// A `/proc/<tid>` read failed because that task has gone. The kernel answers
-/// `ENOENT` for a retired entry and `ESRCH` for a task that died while the
-/// read was in flight, so both mean the same thing here.
+/// A `/proc/<tid>` read failed because that task has gone: `ENOENT` for a
+/// retired entry, `ESRCH` for a task that died with the read in flight.
 ///
-/// Kept separate from [`vanished_task`] so that `ENOENT` can never be
-/// accepted from a ptrace request. Used at exactly one site: the newborn
-/// thread-group read, whose subject is still at its initial `SIGSTOP` and has
-/// therefore by definition executed nothing that is not already recorded. The
-/// `environ` read in [`Scopes::exec`] and the `exe` read-link in
-/// [`record_exec`] sit at an exec stop, where that argument does not hold,
-/// and stay fatal.
+/// Kept separate from [`vanished_task`] so `ENOENT` can never be accepted
+/// from a ptrace request. Used at one site only — the newborn thread-group
+/// read, whose subject is still at its initial `SIGSTOP` and has therefore
+/// executed nothing that is not already recorded. The `environ` read in
+/// [`Scopes::exec`] and the `exe` read-link in [`record_exec`] sit at an exec
+/// stop, where that argument does not hold, and stay fatal.
 fn vanished_proc_entry(error: &std::io::Error) -> bool {
     matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::ENOENT))
 }
 
-/// Builds the line reporting one task that had gone. Fixed text plus the task
-/// and a closed-vocabulary request name: no error chain, path, command line,
-/// working directory or environment value reaches it. The observer reads
+/// Builds the line reporting one task that had gone: fixed text, the task,
+/// and a closed-vocabulary request name. No error chain, path, command line,
+/// working directory or environment value reaches it — the observer reads
 /// `environ` and `cmdline`, which hold tokens and private paths, and run
-/// stderr reaches CI logs and retained evidence folders, so nothing else may
-/// pass. One line names one call site, which is what makes it diagnostic
-/// alone.
+/// stderr reaches CI logs and retained evidence folders. One line names one
+/// call site, which is what makes it diagnostic alone.
 fn vanished_warning(task: i32, request: &'static str) -> String {
     format!("amplihack: warning: observed task {task} was gone at {request}")
 }
@@ -620,14 +613,13 @@ impl Scopes {
         Ok(())
     }
     /// Issue #2716: records one task the observation loop found gone.
-    /// Infallible on purpose: this runs on a path that must continue, so it
+    /// Infallible on purpose — this runs on a path that must continue, so it
     /// has no failure to report and nothing here may end the run.
     ///
     /// The count goes on every journal in `owner`'s chain. Every chain holds
-    /// index 0, so `journals[0].vanished` is the run's exact total, and a
-    /// relay scope counts only the tasks it owned. An owner whose chain is
-    /// already gone (its group retired by a sibling's exec, say) still counts
-    /// on the run, so no task is lost from the evidence.
+    /// index 0, so `journals[0].vanished` is the run's exact total and a relay
+    /// scope counts only the tasks it owned. An owner whose chain is already
+    /// gone still counts on the run, so no task is lost from the evidence.
     ///
     /// The warning is capped while the count is not: a traced tree can create
     /// unbounded tasks, so an uncapped per-task line is log amplification and
@@ -838,12 +830,12 @@ fn observe(
                             // happen is losing the parent's resume below:
                             // this arm is handling the parent's stop, and
                             // continuing the loop here would leave the
-                            // parent stopped for good.
+                            // parent stopped for good. Falling out of the
+                            // block does exactly that.
                             if !vanished_task(&error) {
                                 return Err(error);
                             }
                             scopes.vanished(child, pid, "PTRACE_CONT (newborn)");
-                            break 'newborn;
                         }
                     }
                 }

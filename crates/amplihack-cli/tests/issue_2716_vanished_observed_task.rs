@@ -85,12 +85,17 @@ fn a_vanished_task_leaves_the_run_alone(label: &str, mode: &str) {
 
     // Non-vacuity. The receipt that counts the tasks found gone is removed
     // with the trace folder when recording finalizes, so the observer's own
-    // warning on stderr is what proves the race landed. If it did not, raise
-    // the fixture mode's iteration count; never add a sleep, timer or retry.
+    // warning on stderr is what proves the race landed.
+    //
+    // If it did not, the iteration count is the wrong thing to reach for: a
+    // mode lands because of how it is built, not how often it repeats. Check
+    // that the cloning is still done by freely running threads and that
+    // `sigkill-child` still signals the *previous* child. Never add a sleep,
+    // timer, retry or poll.
     assert!(
         stderr.contains("was gone at"),
-        "no task went away, so {mode} proved nothing; raise the fixture's \
-         iteration count:\n{stderr}"
+        "no task went away, so {mode} proved nothing; check the mode's \
+         structure before its iteration count:\n{stderr}"
     );
 }
 
