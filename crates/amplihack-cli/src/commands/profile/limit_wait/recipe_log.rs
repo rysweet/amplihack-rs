@@ -50,8 +50,10 @@ pub(super) fn append(line: &str) {
 
 /// One line, `<line>\n`, in a single write on an append descriptor. The file
 /// is created `0600` and must be a regular file this user owns, with one
-/// link and no group or other mode bits; a symlink is never followed and no
-/// parent directory is ever created.
+/// link and no group or other mode bits; the final component is never
+/// followed as a symlink (`O_NOFOLLOW` guards that component only, not the
+/// parent directories, which the detached run owns) and no parent directory
+/// is ever created.
 pub(super) fn append_to(path: &Path, line: &str) -> std::io::Result<()> {
     let mut file = amplihack_utils::secure_files::open_private_nofollow(path)?;
     file.write_all(format!("{line}\n").as_bytes())

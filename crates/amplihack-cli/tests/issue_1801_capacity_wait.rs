@@ -966,20 +966,60 @@ fn issue_2694_a_home_step_sleeps_to_its_reset_though_another_login_has_room() {
     assert_room_still_shown(&f, TEST_NOW + 60);
 }
 
+/// Requirement 14 / D8: the profiled half, with a rotator running.
+///
+/// Issue #2731 promotes a no-reset spend limit to a login-change wait only
+/// on a `$HOME/.claude` step, and production says so twice: `rerun` filters
+/// the spend harness through `Waiter::is_home`, and `upgrade_spend` then
+/// asks whether a rotator is running. A rotator *is* running here, so the
+/// second guard is satisfied and the first one alone has to hold. It must:
+/// the rotator swaps logins into `~/.claude` and nowhere else, so a step
+/// pinned to profile X would not see the new login even if one arrived, and
+/// another login of the same organisation would not lift the limit anyway.
+///
+/// The sibling below is the `$HOME/.claude` step with no rotator, where the
+/// other guard is the one doing the work. The case where both are satisfied
+/// — a home step with a rotator — is the login-change wait itself, in
+/// `issue_2731_login_change_wait.rs`.
+#[test]
+fn issue_2731_an_inherited_profile_spend_limit_skips_though_a_rotator_runs() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    readings_with_room(&f.profiles, TEST_NOW + 60);
+    let mut c = nested_x(&f);
+    // X, then the auto-switch rerun on Y, both hit the spend limit.
+    c.env("LIMIT_MESSAGE", SPEND_TEXT).env("LIMIT_CALLS", "2");
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "X, then Y, and no retry after them");
+    assert_eq!(
+        events(&out),
+        ["skipped reason=spend_limit"],
+        "a profiled step gets no login-change wait, rotator or not: {}",
+        describe(&out)
+    );
+}
+
 /// A spend limit is unchanged by #2694: another login of the same
 /// organisation would not lift it, so one with room starts no wait and
 /// gives no login-capacity exit. The step is passed up as it was.
 ///
-/// Stated here with no rotator running, which is the case where nothing at
-/// all can replace the exhausted credit: only the rotator moves a login into
-/// `~/.claude`, so with none there is nowhere for the step to go and nothing
-/// to wait for, and the room another login has changes none of that. With a
-/// rotator running, the login it brings in next may belong to another
-/// organisation, and the same message then starts a login-change wait rather
-/// than ending the step; that half is
+/// Stated here on a `$HOME/.claude` step with no rotator running, which is
+/// the case where nothing at all can replace the exhausted credit: only the
+/// rotator moves a login into `~/.claude`, so with none there is nowhere for
+/// the step to go and nothing to wait for, and the room another login has
+/// changes none of that.
+///
+/// The two cases this one does not cover are next to it. With a rotator
+/// running the same message starts a login-change wait rather than ending
+/// the step:
 /// `issue_2731_a_shared_home_spend_limit_waits_for_the_swap_instead` in
-/// `issue_2731_login_change_wait.rs`, and it asserts the same readings end
-/// nothing.
+/// `issue_2731_login_change_wait.rs`, which asserts the same readings end
+/// nothing. On a step with an inherited profile the skip stands even with a
+/// rotator running:
+/// `issue_2731_an_inherited_profile_spend_limit_skips_though_a_rotator_runs`
+/// above.
 #[test]
 fn issue_2694_a_spend_limit_still_skips_with_room_on_another_login() {
     let f = with_profiles();

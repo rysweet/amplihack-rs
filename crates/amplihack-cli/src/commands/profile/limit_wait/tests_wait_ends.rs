@@ -362,6 +362,90 @@ fn a_login_change_wait_still_ends_when_the_login_changes() {
     assert_eq!(f.elapsed(), 90);
 }
 
+/// The fingerprint's blind spot, stated so the fix below has something to
+/// be a fix *for*. A swap landing before two probes have agreed is absorbed
+/// into the baseline: the first reading and the stable one that follows
+/// differ, which is also what a torn first read looks like, and the
+/// fingerprint cannot tell the two apart. Left to the fingerprint alone this
+/// wait sleeps to its deadline with a swapped-in login sitting there.
+#[test]
+fn the_fingerprint_alone_absorbs_a_swap_inside_the_first_poll_interval() {
+    let mut f = Fake::new();
+    f.prints = vec![(0, Some(1)), (10, Some(2))];
+    assert_eq!(
+        wait(&login_change_plan_in(300), &mut f),
+        End::MaxReached,
+        "the baseline settles on the post-swap value and never differs again"
+    );
+}
+
+/// Issue #2731's own failure, shifted thirty seconds later: a login-change
+/// wait suppresses both capacity sources, so the login key is what has to
+/// catch a swap this early. Same fingerprint schedule as the test above,
+/// and now the wait ends at the first poll.
+#[test]
+fn a_swap_inside_the_first_poll_interval_ends_a_login_change_wait() {
+    let mut f = Fake::new();
+    f.prints = vec![(0, Some(1)), (10, Some(2))];
+    f.login_changed_from = Some(10);
+    assert_eq!(
+        wait(&login_change_plan_in(300), &mut f),
+        End::LoginChanged,
+        "the named login key is anchored before the attempt, so it has no \
+         baseline to settle"
+    );
+    assert_eq!(f.elapsed(), 30, "at the first poll, not the second");
+}
+
+/// The login key renames no end that already has a name. One rotator
+/// write both swaps the login and records fresh capacity, so on a reset or
+/// capacity wait the two fire on the same poll; `rotator capacity` is the
+/// end such a wait has always reported, and auto-drive reads these reasons.
+/// Checking the key before the capacity sources would relabel it.
+#[test]
+fn a_swap_that_also_reports_capacity_still_ends_as_rotator_capacity() {
+    let mut f = Fake::new();
+    f.capacity_from = Some(30);
+    f.login_changed_from = Some(30);
+    assert_eq!(
+        wait(&plan_in(1800, Bound::ResetMargin), &mut f),
+        End::RotatorCapacity,
+        "the capacity sources keep first refusal"
+    );
+}
+
+/// The same for another login's capacity, which is checked after the
+/// rotator's and still before the key.
+#[test]
+fn a_swap_that_also_shows_another_login_with_room_still_ends_as_login_capacity() {
+    let mut f = Fake::new();
+    f.other_from = Some(30);
+    f.login_changed_from = Some(30);
+    assert_eq!(
+        wait(&plan_in(1800, Bound::ResetMargin), &mut f),
+        End::OtherCapacity
+    );
+}
+
+/// The key is read on the poll cadence and no faster: it reads two files.
+#[test]
+fn the_login_key_is_read_once_per_poll() {
+    let mut f = Fake::new();
+    wait(&plan_in(100, Bound::ResetMargin), &mut f);
+    assert_eq!(f.login_probes, vec![30, 60, 90]);
+}
+
+/// A step whose login the rotator never changes reports no change, so the
+/// key adds no exit to the waits that are not about a swap.
+#[test]
+fn a_login_key_that_never_changes_ends_nothing() {
+    let mut f = Fake::new();
+    assert_eq!(
+        wait(&plan_in(100, Bound::ResetMargin), &mut f),
+        End::ResetReached
+    );
+}
+
 #[test]
 fn a_login_change_wait_still_ends_on_a_signal_and_on_the_sessions_end() {
     let mut f = Fake::new();
@@ -384,16 +468,35 @@ fn a_login_change_wait_that_reaches_its_deadline_reads_as_max_reached() {
     assert_eq!(f.elapsed(), 0, "a zero-length wait never sleeps");
 }
 
-/// A login-change wait never asks another login's capacity at all, rather
+/// A login-change wait never asks either capacity source at all, rather
 /// than asking and ignoring the answer: a wait that is not going to act on
 /// a reading has no business taking one.
+///
+/// Both sources are named here. Pinning only the other-login one would let
+/// a wait that still read the rotate ledger every 30 s pass, while the
+/// module header above claims both are suppressed.
 #[test]
 fn a_login_change_wait_takes_no_capacity_reading() {
     let mut f = Fake::new();
     wait(&login_change_plan_in(100), &mut f);
     assert!(
         f.other_probes.is_empty(),
-        "readings were taken: {:?}",
+        "another login's capacity was read: {:?}",
         f.other_probes
     );
+    assert!(
+        f.capacity_probes.is_empty(),
+        "the rotator's cycle was read: {:?}",
+        f.capacity_probes
+    );
+}
+
+/// The counterpart, so the test above cannot pass by the sources never
+/// being read at all: a reset wait reads both, on the poll cadence.
+#[test]
+fn a_reset_wait_reads_both_capacity_sources() {
+    let mut f = Fake::new();
+    wait(&plan_in(100, Bound::ResetMargin), &mut f);
+    assert_eq!(f.capacity_probes, vec![30, 60, 90]);
+    assert_eq!(f.other_probes, vec![30, 60, 90]);
 }

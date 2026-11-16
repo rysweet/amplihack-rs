@@ -2188,11 +2188,12 @@ A rotator cycle that measures the live login and **stays** on it therefore
 leaves the step waiting, where on a session or weekly limit the same cycle
 would end the wait and retry. A cycle that swaps ends it, because the login
 in `~/.claude` has changed, which is the one thing that could put the step
-on an organisation with credit left. The change is noticed by watching
-`~/.claude` itself rather than the rotator's own records, and only once two
-checks a half-minute apart agree, so expect up to a minute between the swap
-and the retry. If the arriving organisation is also spent, the step waits
-again, keyed to the new login.
+on an organisation with credit left. The change is noticed two ways: by
+watching `~/.claude` itself, which takes two checks a half-minute apart to
+agree, and by the login name in the rotator's own records, which is
+compared against the name read before the attempt started and so needs no
+agreement. Expect up to half a minute between the swap and the retry. If the arriving organisation is also spent,
+the step waits again, keyed to the new login.
 
 ### Weekly limits: waiting for another login
 

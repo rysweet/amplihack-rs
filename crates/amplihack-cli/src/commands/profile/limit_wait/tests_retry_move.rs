@@ -37,7 +37,22 @@ use std::os::unix::fs::PermissionsExt;
 /// A step timeout of one second puts every plan's deadline at `now`, so each
 /// wait here ends the instant it begins and nothing sleeps. What is under
 /// test is the order of the writes to `retry_move`, not the waiting.
+///
+/// It also means the step is already out of its own time, and the
+/// retry-before-wait return finishes on the step timeout rather than
+/// retrying. A test that needs that return to be *taken* therefore uses
+/// `ROOMY_STEP_TIMEOUT` and ends its waits some other way.
 const IMMEDIATE_STEP_TIMEOUT: &str = "1";
+
+/// A step timeout the step is nowhere near, for the tests that need the
+/// retry-before-wait return: it is taken only while the step still has
+/// time to run the retry it starts.
+const ROOMY_STEP_TIMEOUT: &str = "3600";
+
+/// Virtual seconds per real second, so a wait that has to reach its first
+/// 30-second poll does so in milliseconds. Only the tests that let a wait
+/// run use it; the rest keep the real clock.
+const FAST: &str = "1000";
 
 /// The variables that would send a wait's own records outside the test's
 /// temporary tree, or put it on a virtual clock. Cleared for the test.
@@ -124,16 +139,25 @@ fn login_change() -> WaitFor {
     }
 }
 
-/// Holds the environment lock and the step timeout for one test.
-fn guarded<T>(f: impl FnOnce() -> T) -> T {
+/// Holds the environment lock, the step timeout and, where a wait is meant
+/// to run rather than end at its deadline, the clock scale.
+fn guarded_with<T>(timeout: &str, scale: Option<&str>, f: impl FnOnce() -> T) -> T {
     let _lock = env_lock()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut guard = EnvGuard::set([("AMPLIHACK_STEP_TIMEOUT", IMMEDIATE_STEP_TIMEOUT)]);
+    let mut guard = EnvGuard::set([("AMPLIHACK_STEP_TIMEOUT", timeout)]);
     for name in SILENCED {
         guard.clear(name);
     }
+    if let Some(scale) = scale {
+        guard.assign("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", scale);
+    }
     f()
+}
+
+/// The common case: every wait ends at once on the step timeout.
+fn guarded<T>(f: impl FnOnce() -> T) -> T {
+    guarded_with(IMMEDIATE_STEP_TIMEOUT, None, f)
 }
 
 fn signals() -> Signals {
@@ -166,14 +190,18 @@ fn a_capacity_wait_still_leaves_a_retry_move() {
 /// runs on.
 #[test]
 fn the_retry_before_a_wait_carries_no_earlier_waits_retry_move() {
-    guarded(|| {
+    // The step keeps time in hand throughout, so the return under test is
+    // reached on its own merits rather than being pre-empted by the step
+    // timeout, and the first wait ends on a reading instead of a deadline.
+    guarded_with(ROOMY_STEP_TIMEOUT, Some(FAST), || {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();
 
-        // First wait: a capacity wait on login `a`, which sets the field.
+        // First wait: a capacity wait on login `a`, ended at its first poll
+        // by a login with room, which is what sets the field.
         w.note_attempt_login();
-        let _ = w.after_limit(capacity(), 1, &signals(), &|_, _| false);
+        let _ = w.after_limit(capacity(), 1, &signals(), &|_, _| true);
         assert!(w.retry_move().is_some(), "the state this test starts from");
 
         // The attempt that follows is launched on `b` and, while it is
@@ -225,7 +253,9 @@ fn a_later_wait_that_earns_no_move_clears_the_earlier_ones() {
 /// already waited on must not earn a second wait later in the chain.
 #[test]
 fn the_wait_that_returns_early_still_records_its_mark() {
-    guarded(|| {
+    // No wait runs here at all: both calls take the early return, so the
+    // step needs time left for it to be taken.
+    guarded_with(ROOMY_STEP_TIMEOUT, None, || {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();

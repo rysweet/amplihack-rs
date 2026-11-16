@@ -811,9 +811,16 @@ terminal already.
 Do not set it by hand. It is not read from `config.toml`, a recipe spec or a
 step's declared environment, and a detached run overwrites any value it
 inherits, so no detached run's steps can append into another detached run's
-log. Unset, empty, relative, or naming anything other than a private regular
-file this user owns, it is ignored: no line is written, no file is created,
-and the step behaves exactly as it would without it.
+log. Unset, empty or relative, it is ignored: no line is written, no file
+is created, and the step behaves exactly as it would without it.
+
+An absolute path is opened with `O_CREAT`, so one naming a file that does
+not exist yet **is created**, `0600`, and written to — set the variable by
+hand at a path you did not mean and you get a stray file there. A path that
+exists but is not a private regular file this user owns — a directory, a
+symlink, a file owned by another user, one readable or writable by group or
+other, or one with more than one link — is refused instead, and nothing is
+written or changed.
 
 This is not `AMPLIHACK_RECIPE_LOG_JSONL`, and nothing is ever written to the
 file that names. The full rules are in

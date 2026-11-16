@@ -11571,16 +11571,24 @@ organisation has credit, and the rotator picks what goes into `~/.claude` in
 any case. In particular a **fresh rotator cycle that does not swap**, one
 that measures the live login and stays on it, leaves the wait in place,
 where on a reset or capacity wait it would end it as `rotator capacity`. A
-cycle that does swap ends the wait, but through the **login fingerprint**
-on `$HOME/.claude` (see [Reasons a wait ends](#reasons-a-wait-ends)) rather
-than through anything read from the rotator's own files: the directory the
-step would retry in has changed under it, and that is recorded as
-`login changed`, the end the retry acts on. The fingerprint acts only when
-two probes 30 s apart agree, so a swap is acted on up to about 60 s after it
-lands. The [login key](#one-wait-per-login) read from the rotator files
-drives the wait's mark and the
-[short circuit before the wait](#a-login-that-changed-before-the-wait), not
-this exit.
+cycle that does swap ends the wait, recorded as `login changed`
+(see [Reasons a wait ends](#reasons-a-wait-ends)), the end the retry acts
+on. Two independent readings can reach it.
+
+The **login fingerprint** notices that the directory the step would retry
+in has changed under it. It acts only when two probes 30 s apart agree, so
+by itself it reports a swap up to about 60 s after it lands — and does not
+report one that arrives before its baseline has settled, in the wait's
+first poll interval, because to the fingerprint that is indistinguishable
+from a torn first read.
+
+The [login key](#one-wait-per-login) read from the rotator's own files
+closes that window. It is anchored on a reading taken *before the attempt
+was launched*, so it has no baseline to settle and names any swap at the
+first poll after it, within about 30 s. It applies to `$HOME/.claude` steps
+only, which are the only ones the rotator swaps. The same key drives the
+wait's mark and the
+[short circuit before the wait](#a-login-that-changed-before-the-wait).
 
 **It is wall time the budget does not see.** Like every other wait, a
 login-change wait appends its real length to the file

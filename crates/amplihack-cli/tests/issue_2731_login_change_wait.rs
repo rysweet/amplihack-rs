@@ -248,6 +248,50 @@ fn ac1_a_swap_during_the_failing_attempt_ends_the_wait_before_it_begins() {
     f.assert_isolated("0");
 }
 
+/// The step's own deadline bounds the retry above, not just the wait it
+/// replaces. `Waiter::new` keeps the step timeout so a wait cannot outlive
+/// the step; a retry started in the wait's place is a whole fresh attempt
+/// and would outlive it by more. Nothing downstream re-checks the deadline,
+/// so if this return did not, the step would run on past its timeout.
+///
+/// Same swap as the test above, and the only difference is that the step is
+/// already out of time: the closing line is the step timeout and no second
+/// attempt is launched.
+#[test]
+fn a_swap_does_not_start_a_retry_once_the_step_is_out_of_time() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let mut c = home_step(&f);
+    c.env("SWAP_ON_CALL", "1:Y")
+        .env("LIMIT_CALLS", "1")
+        // Less than the 60-second lead, so the deadline is already behind
+        // the wait before it is planned.
+        .env("AMPLIHACK_STEP_TIMEOUT", "1");
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(
+        live_login(&f).as_deref(),
+        Some("Y"),
+        "the swap really happened: without it this test proves nothing"
+    );
+    assert_eq!(
+        f.count("0"),
+        1,
+        "the step was out of time, so no retry ran: {}",
+        describe(&out)
+    );
+    let ev = events(&out);
+    assert!(ev[0].ends_with(" bound=step_timeout"), "{ev:?}");
+    assert_eq!(
+        ev[1..],
+        [
+            "end reason=step timeout",
+            "failed reason=step_timeout: usage limit not lifted",
+        ],
+        "the closing line keeps the failure class in the evidence tail: {ev:?}"
+    );
+}
+
 #[test]
 fn a_wait_that_ended_before_it_began_records_no_time_in_the_wait_ledger() {
     // Auto-drive subtracts this file from its wall budget. A wait that never
@@ -426,14 +470,19 @@ fn a_step_timeout_ends_a_login_change_wait_with_the_closing_line() {
 }
 
 /// Issue #2717's `issue_2694_a_spend_limit_still_skips_with_room_on_another_login`
-/// is two cases wearing one name. On a step with an inherited profile the
-/// skip is still right: another login of the same organisation would not
-/// lift an organisation spend limit, so there is nowhere to go and nothing
-/// to wait for, and that half keeps the old name in
-/// `issue_1801_capacity_wait.rs`. On a shared `$HOME/.claude` step with the
-/// rotator running, the login that arrives next may belong to another
-/// organisation, so the same message now starts a login-change wait. This is
-/// the second half.
+/// covered one case under one name. Issue #2731 makes it three, because
+/// whether a spend limit skips now turns on what could replace the login,
+/// and only one of the three answers changed:
+///
+/// - a step with an **inherited profile** still skips, rotator or not: the
+///   rotator swaps logins into `~/.claude` and nowhere else. That is
+///   `issue_2731_an_inherited_profile_spend_limit_skips_though_a_rotator_runs`
+///   in `issue_1801_capacity_wait.rs`.
+/// - a `$HOME/.claude` step with **no rotator** still skips: nothing can
+///   move another login in. That case keeps the old name, in the same file.
+/// - a `$HOME/.claude` step **with a rotator running** no longer skips: the
+///   login that arrives next may belong to another organisation, so the
+///   same message starts a login-change wait. That is this test.
 ///
 /// The readings in front of it show another login with room throughout, so
 /// this also proves the capacity reading does not end the wait: the swap

@@ -69,7 +69,7 @@ use clock::Clock;
 use events::{Event, FailReason, Shape, Skip, log, recipe_line};
 use fingerprint::{Fingerprint, Source, Watch};
 use marks::Marks;
-use plan::{NoWait, PlanKind, WaitFor, plan, plan_capacity, plan_login_change};
+use plan::{Bound, NoWait, PlanKind, WaitFor, plan, plan_capacity, plan_login_change};
 pub(crate) use recipe_log::RECIPE_LOG_ENV;
 pub(crate) use settings::WaitSettings;
 use std::path::PathBuf;
@@ -93,6 +93,9 @@ struct RealDeps<'a> {
     signals: &'a Signals,
     parent: libc::pid_t,
     probe: &'a dyn Fn(i64, i64) -> bool,
+    /// The login key read before the attempt was launched, the anchor for
+    /// [`WaitDeps::login_changed`] (issue #2731).
+    attempt_login: &'a Option<(Source, String)>,
 }
 
 impl WaitDeps for RealDeps<'_> {
@@ -108,6 +111,12 @@ impl WaitDeps for RealDeps<'_> {
 
     fn fingerprint(&mut self) -> Option<Fingerprint> {
         self.watch.probe()
+    }
+
+    fn login_changed(&mut self) -> bool {
+        // The same comparison the pre-wait check makes, on the same
+        // anchor: see `changed`.
+        changed(self.attempt_login, self.watch.login())
     }
 
     fn signal(&mut self) -> Option<i32> {
@@ -413,6 +422,17 @@ impl Waiter {
         // the rotator is mid-replace reads as no change and the step waits
         // as it otherwise would.
         if changed(&self.attempt_login, self.watch.login()) {
+            // The step's own deadline still binds. A wait may not outlive
+            // the step, and neither may a retry started in its place: with
+            // the deadline already behind us `wait` would return
+            // `StepTimeout` at once, so this zero-sleep path must finish
+            // the same way rather than launch a fresh attempt the runner
+            // is about to kill (issue #2731).
+            if p.bound == Bound::StepTimeout && self.clock.now() >= p.until {
+                emit(&Event::End(End::StepTimeout), account);
+                log(&Event::Failed(FailReason::StepTimeout));
+                return AfterLimit::Finish(None);
+            }
             emit(&Event::End(End::LoginChanged), account);
             log(&Event::Resume {
                 attempt: n.saturating_add(1),
@@ -427,6 +447,7 @@ impl Waiter {
             signals,
             parent: self.parent,
             probe,
+            attempt_login: &self.attempt_login,
         };
         let waited_from = std::time::Instant::now();
         let end = wait::wait(&p, &mut deps);

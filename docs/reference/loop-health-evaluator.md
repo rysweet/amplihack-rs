@@ -825,9 +825,10 @@ runner sees the failure:
    runs on `~/.claude`. Inside a recipe run `AMPLIHACK_RECIPE_RUN_ID` stops
    launches from starting the rotator, so start one before auto-drive;
    without one neither a capacity wait nor a login-change wait is started
-   and the step fails at once on the usage limit. All three kinds need the
+   and the step fails at once on the usage limit. Those two kinds need the
    rotator for the same reason: only it moves a login into `~/.claude`, so
-   with none running there is nothing to wait for.
+   with none running there is nothing for them to wait for. A reset wait
+   needs no rotator — it waits out the limit the step already has.
 3. A reset or capacity wait ends on `rotator capacity`, `login changed`,
    `login capacity` or `reset reached`, and step-02 runs once more with the
    same prompt. On `rotator capacity`, `login changed` and `reset reached`

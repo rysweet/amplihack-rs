@@ -549,6 +549,13 @@ const MAX_HELD: usize = 1 << 20;
 /// therefore carries whole lines only, with any unterminated tail held until
 /// the newline arrives, or until the pipe closes and the tail is written with
 /// one.
+///
+/// The single exception is [`MAX_HELD`]: a tail that reaches it is written
+/// as it stands, still unterminated. Holding it for ever would cost the log
+/// and the memory both, and no newline is invented for it, because the one
+/// here would land inside a runner line and show up in the log as a blank
+/// line that the run never produced. A line over a mebibyte long can
+/// therefore still be interleaved with; nothing shorter can.
 fn copy_output(reader: &mut impl Read, stdout: &mut impl Write, log: &mut impl Write) {
     let mut buf = [0u8; 8192];
     let mut held: Vec<u8> = Vec::new();
