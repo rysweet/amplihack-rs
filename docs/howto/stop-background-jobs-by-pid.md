@@ -14,14 +14,20 @@ related:
 # Stop Background Jobs by PID
 
 A pattern kill matches every process whose command line contains the pattern,
-not the one the agent meant. Twice an agent stopping its own hung job this way
-also stopped the recipe runners driving other runs on the same host, because
-their task text shared a word with the pattern
-([#2582](https://github.com/rysweet/amplihack-rs/issues/2582)). amplihack no
-longer puts that text on any command line it builds, but the hazard belongs to
-the pattern, not to one source of text: other processes on the host carry their
-own. This guide shows how to stop only the processes you started. It is written
-for recipe authors and for anyone running agents.
+not the one the agent meant. Four times an agent stopping its own hung job this
+way also stopped the recipe runners driving other runs on the same host,
+because their task text held a word from the pattern: once with
+`pkill -f "vitest.mjs"` on 13 November, and three times with
+`pkill -f "scripts/check full"` on 14 and 15 November
+([#2582](https://github.com/rysweet/amplihack-rs/issues/2582)).
+
+amplihack no longer puts that text on any command line it builds, but the
+hazard belongs to the pattern, not to one source of text: other processes on
+the host carry their own. This guide shows how to stop only the processes you
+started. It is written for recipe authors and for anyone running agents. The
+separate waves in which a `timeout` signalled a process group many runs shared
+are [#2674](https://github.com/rysweet/amplihack-rs/issues/2674); the guidance
+here does not address them.
 
 ## Contents
 

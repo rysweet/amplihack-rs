@@ -50,6 +50,15 @@ Optional capabilities change behaviour without being required:
 | Capability | Effect when present |
 | --- | --- |
 | `context_file_v1` | `amplihack recipe run` passes the recipe context as `--context-file <path>` instead of `--set` pairs. Exact membership only. See [Recipe Context Transport Reference](recipe-context-transport.md). |
+| `agent_prompt_file_v1` | The runner hands an agent step's brief to the agent wrapper by file and stdin instead of in the wrapper's argv. See [Agent Prompt Channels Reference](agent-prompt-channels.md). |
+
+Both are absent from a runner older than v0.7.0 and present in the pinned
+revision. amplihack reads the report it already takes before every run and
+makes no second probe. A report that fails the validation above ends the run
+before a transport is chosen; a report that validates but omits an optional
+capability selects the older behaviour for that capability alone, and for the
+context transport the run's log then names which path it took (see
+[Seeing which transport a run used](recipe-context-transport.md#seeing-which-transport-a-run-used)).
 
 ### Recovery capability enforcement
 

@@ -49,20 +49,28 @@ The option can be repeated, once per key.
 The value stays out of `amplihack`'s own argv at any size. How it reaches the
 recipe runner depends on the runner:
 
-- A runner that reports the `context_file_v1` capability receives the whole
-  context in a 0600 file under the run's private runtime folder, and its argv
-  holds only `--context-file <path>`. There is no per-value size limit.
-- An older runner, including the currently pinned revision, takes context only
-  as `--set KEY=VALUE` arguments. Each value must then fit in one argument
-  (128 KiB, `MAX_ARG_STRLEN`); several such values may together exceed
-  128 KiB, up to the host's `ARG_MAX` less the inherited environment. See
+- The pinned runner reports the `context_file_v1` capability and receives the
+  whole context in a 0600 file under the run's private runtime folder; its
+  argv holds only `--context-file <path>`. There is no per-value size limit
+  beyond the 16 MiB each file source may hold. This is the path every ordinary
+  run takes.
+- A runner older than v0.7.0 takes context as `--set KEY=VALUE` arguments.
+  In practice you reach one by pointing `RECIPE_RUNNER_RS_PATH` at it; an
+  older installed runner can also persist if the freshness check failed or
+  recorded a skip that is still within its cooldown. Each value must then fit
+  in one argument (128 KiB, `MAX_ARG_STRLEN`); several such values may
+  together exceed 128 KiB, up to the host's `ARG_MAX` less the inherited
+  environment. See
   [Troubleshooting](#troubleshooting).
 
-On the `--set` path, other local users can read the context through `ps` or
-`/proc/<pid>/cmdline` while the run lasts. Even with the file, the runner
-still passes agent prompts, which contain the task text, on its agent
-launcher's argv. Do not use recipe context to carry secrets; let the step read
-them from its own environment or a credential helper instead. See
+On that older `--set` path, other local users can read the context through
+`ps` or `/proc/<pid>/cmdline` while the run lasts. On the pinned runner they
+cannot: the context file is 0600 in a 0700 folder, and the agent prompts the
+runner builds from the task text go to the agent CLI by file and stdin rather
+than on its argv. What remains readable by your own account is listed under
+[What this does and does not protect](../reference/recipe-context-transport.md#what-this-does-and-does-not-protect).
+Do not use recipe context to carry secrets either way; let the step read them
+from its own environment or a credential helper instead. See
 [Recipe Context Transport Reference](../reference/recipe-context-transport.md).
 
 ## Pass a whole context as JSON

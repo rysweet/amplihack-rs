@@ -62,8 +62,13 @@ The same report decides the context transport. No second probe is made.
 The pinned runner, `2833a0b8` in `claude-plugin/recipe-runner.rev`
 (recipe-runner-rs v0.7.0), reports `context_file_v1`, so every run on the
 pinned runner takes the file transport. A runner selected through
-`RECIPE_RUNNER_RS_PATH` may be older and may not report it; the `--set` path
-exists for that case only.
+`RECIPE_RUNNER_RS_PATH`, or an older installed runner the freshness check
+kept rather than replaced, may not report it; the `--set` path exists for
+those cases.
+
+A report that fails validation ends the run before any transport is chosen,
+so a degraded runner does not fall back to `--set`; the choice below is made
+only among reports that already validated.
 
 The decision is made once per run, after the context is final and after the
 workspace is prepared, in this order:
@@ -107,9 +112,12 @@ INFO recipe context transport=file
 The record holds the transport name and nothing else: no key, no value and no
 count derived from one. It is there so that a run which took the set transport
 is visible to whoever reads the log. The pinned runner reports the capability
-on every host amplihack runs on, so `transport=set` has one meaning: a runner
-older than v0.7.0 was supplied through `RECIPE_RUNNER_RS_PATH` — a local choice
-that would otherwise show up only in `/proc`. See
+on every host amplihack runs on, so in practice `transport=set` means a runner
+older than v0.7.0 was in use: usually one supplied through
+`RECIPE_RUNNER_RS_PATH`, more rarely an older installed runner the freshness
+check kept, since a failed check is a warning rather than an error and a
+recorded skip holds across launches within its cooldown. Either way it is a
+local condition that would otherwise show up only in `/proc`. See
 [Set transport](#set-transport-older-runners).
 
 ## File transport
@@ -187,8 +195,22 @@ before any file exists.
 `refuse_reserved_keys` runs inside `ContextTransport::choose`, before the
 folder or the file is created, so a context holding a reserved key leaves
 nothing on disk. One predicate, `is_reserved_context_key`, serves both
-transports: a key that uppercases to something beginning with `AMPLIHACK_`
-ends the run (#1567). The message names the key, escaped, and no value.
+transports, and both call it: `choose` runs it before a transport is picked,
+and `pass_context` runs it again on the `--set` arm, so either path alone
+refuses the key. The message names the key, escaped, and no value.
+
+A key is reserved when its uppercase form is any of:
+
+| Reserved form | Why | Issue |
+| --- | --- | --- |
+| Anything beginning with `AMPLIHACK_` | The namespace belongs to the subprocess environment builder; a context key here could repoint a launch, including the Claude profile it selects | #1567 |
+| A name in `amplihack_git::REPOSITORY_ENV_VARS` (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY` and the rest) | Git repository routing. A context value here would point a step's `git` at another repository | #2096 |
+| Anything beginning with `GIT_CONFIG` | `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_COUNT` and the `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` pairs carry configuration, and git configuration includes execution-bearing settings such as `core.pager` and the `*.sshCommand` family | #2096 |
+| `GIT_EXEC_PATH` or `GIT_TEMPLATE_DIR` | Both name a folder git executes from or copies hooks out of | #2096 |
+
+The command policy already removes these names from a runner child's
+environment before launch. Refusing them as context keys closes the other
+door, through which a recipe could have put them back.
 
 The longer denylist of `PATH`, `HOME`, `LD_PRELOAD`, `BASH_ENV` and the rest
 belongs to the environment mirror alone, where those names would change how a
@@ -333,12 +355,17 @@ The file is owned by a guard created when the transport is chosen.
   transport is declared after the workspace. Both the named step and the
   declaration order carry a comment saying why, because no merge tool or
   compiler can check this ordering.
-- On drop it removes `context.json`, then `context.json.tmp` by its literal
-  name, then the now-empty `context/` folder. It never removes recursively,
-  and it ignores errors.
-- The `.tmp` sibling exists only if the atomic writer failed between creating
-  it and renaming it. Removing it by name both clears the text it may hold and
-  lets the `rmdir` of `context/` succeed.
+- On drop it removes `context.json` by its literal name, then the now-empty
+  `context/` folder with `rmdir`. It never removes recursively, and it ignores
+  errors, so an entry it did not create is left where it is rather than
+  deleted.
+- A `context.json.tmp` sibling exists only if the atomic writer failed between
+  creating it and renaming it, which is also the only case in which the run
+  ends rather than spawning. The guard's `rmdir` then fails and `context/`
+  stays until the runtime folder guard below removes the runtime folder and
+  its contents. The writer removes a stale `.tmp` by name before it creates
+  one, inside a folder this run has just created, so a leftover never becomes
+  the file a later run reads.
 - The runtime folder guard (or the legacy temporary folder) also removes the
   file on drop. This covers panics and SIGTERM or SIGINT handled through the
   run's stop signal.
@@ -455,7 +482,7 @@ error may appear; a context value, in whole or in part, may not.
 | Message | Cause | What happens |
 | --- | --- | --- |
 | `failed to write recipe context file <path>: <io error>` | The runtime folder is not writable, the disk is full, or `context` already exists in the runtime folder | The run ends with an error. It does not fall back to `--set`. |
-| `recipe context key "<KEY>" is reserved: the AMPLIHACK_ namespace cannot be set from recipe context` | The context holds a key that uppercases to `AMPLIHACK_*` | The run ends with an error on both transports, before anything is written. |
+| `recipe context key "<KEY>" is reserved: the AMPLIHACK_ namespace and Git execution configuration cannot be set from recipe context` | The context holds a key reserved by `is_reserved_context_key`: the `AMPLIHACK_` namespace, a Git repository selector, `GIT_CONFIG*`, `GIT_EXEC_PATH` or `GIT_TEMPLATE_DIR` | The run ends with an error on both transports, before anything is written. |
 | `--context-from-file <path>: value for key '<KEY>' contains a NUL byte` | A file-sourced value holds `\0` | The run ends at intake, before the capability probe. |
 | `recipe context value for key "<KEY>" is <N> bytes; ... cannot exceed 131072 bytes` (existing text) | One pair is too large for one argument | Set transport only. On the file transport the value is passed. |
 | `recipe context totals <N> bytes of runner arguments, ...` | The context's argv cost leaves too little of `ARG_MAX` for the environment | Both transports, though unreachable in practice on the file transport. |
@@ -511,9 +538,24 @@ pattern kill had on context text. It leaves exposure no broader than the
 environment mirror the same values already travel in.
 
 Confidentiality against a process running as the run's own user but outside
-the run is not achieved and is not claimed. Recipe context is not a place for
-secrets; let a step read those from its own environment or a credential
-helper.
+the run is not achieved and is not claimed. Three copies of the same values
+remain readable by that user, and each of them was there before #2582:
+
+| Copy | Where | Lifetime | Matched by `pkill -f` |
+| --- | --- | --- | --- |
+| The environment mirror | `RECIPE_VAR_*` and the uppercase names in `/proc/<pid>/environ`, mode 0400 | The runner child's life | No |
+| The context file | `<runtime_dir>/context/context.json`, mode 0600 in a 0700 folder | Until the guard is released, or until the sweep after a SIGKILL | No |
+| The correlation record | The `log_pointer` events, which name `task_description` on the `amplihack` process's own stderr and in its 0600 run log (#1606) | The log's retention | No |
+
+None of the three is on a command line, so none can be matched by a pattern
+kill; that is the property #2582 restores, and it is narrower than
+confidentiality. Recipe context is not a place for secrets; let a step read
+those from its own environment or a credential helper.
+
+The context file is the one of the three that holds authorization material on
+an auto-drive run, because the transport is chosen after the auto-drive
+authorization keys are written into the context. Its mode and its folder's
+mode are therefore load-bearing, not hygiene.
 
 The capability report is compatibility negotiation, not a privilege boundary.
 A runner that reports the capability falsely would receive a file it does not
@@ -566,11 +608,18 @@ it in a `timeout` is how a shared process group comes to be signalled
 The resolver has no skip path. A test that skipped when the capability was
 absent would pass against the v0.6.0 runner on `PATH` for the wrong reason,
 which is the main way a live test here could be vacuously green. It resolves,
-in order: `AMPLIHACK_TEST_PINNED_RUNNER` (checked to be a regular executable
-file), a cached build under `CARGO_TARGET_TMPDIR` behind an `flock`, then a
-`--locked` build of `--bin recipe-runner-rs` from the cargo git checkout. It
-never inherits `RECIPE_RUNNER_RS_PATH`. If an environment cannot reach the
-checkout, give it access rather than adding a skip.
+in order: `RECIPE_RUNNER_QA_BINARY`, `RECIPE_RUNNER_RS_PATH`, then a
+`cargo install --locked --git` build of the pinned revision, cached under
+`$CARGO_TARGET_TMPDIR/pinned-recipe-runner/<pin>/` behind a blocking lock
+shared by every test binary. Both overrides are honoured, so a runner-backed
+test can be pointed at another binary, but every source must pass the same
+receipt check against the pinned revision: an override whose receipt names a
+different revision panics rather than falling back to the cache or to the
+host, so an older runner cannot quietly stand in for the pin. The `--set`
+path is covered instead by a runner stub that reports no `context_file_v1`.
+If an environment cannot reach the checkout, give it access rather than
+adding a skip. The order and the receipt rules are set out in
+[Run tests against the pinned recipe runner](../howto/run-tests-against-the-pinned-recipe-runner.md).
 
 Every test in this area uses tempfile `HOME`, `AMPLIHACK_HOME` and profile
 roots, and reads and writes neither the real `~/.claude` nor the real

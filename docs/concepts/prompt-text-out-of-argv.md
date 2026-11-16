@@ -170,6 +170,15 @@ pattern matched the runner and ended the drive
 ([#2582](https://github.com/rysweet/amplihack-rs/issues/2582)). This is the
 #2030 failure one level up the process tree.
 
+It happened three more times. On 14 November at 08:29Z and 16:44Z, and on
+15 November at 07:24Z, an agent stopping its own quality run with
+`pkill -f "scripts/check full"` matched every recipe runner whose argv carried
+that phrase from its task text. A kill audit rule on the host named the sender
+each time. Those three are this defect; the larger waves in which a `timeout`
+called `kill(0, SIGTERM)` on a process group many runs shared are a separate
+one ([#2674](https://github.com/rysweet/amplihack-rs/issues/2674)), and taking
+text off argv does not address them.
+
 The same rule now applies to recipe context. The pinned runner reports the
 `context_file_v1` capability, so amplihack writes the context to a 0600 file
 in the run's private runtime folder and passes only `--context-file <path>`.

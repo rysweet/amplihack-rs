@@ -132,6 +132,7 @@ nav:
           - How-To: howto/pass-large-recipe-context.md
           - Reference: reference/large-payload-delivery.md
       - Recipe Context Transport: reference/recipe-context-transport.md
+      - Prompt Text Out of Argv: concepts/prompt-text-out-of-argv.md
       - Stop Background Jobs by PID: howto/stop-background-jobs-by-pid.md
       - Clean Result Channel: reference/clean-result-channel.md
       - PR Recovery Readiness:
