@@ -542,6 +542,15 @@ mod issue_1764_git_never_prompts;
 #[path = "issue_1771_precommit_symlinked_caches_test.rs"]
 mod issue_1771_precommit_symlinked_caches;
 
+// Issue #2712: a recipe shell suite started inside a recipe run inherited
+// AMPLIHACK_WORK_ROOT and AMPLIHACK_WORK_ROOT_EXPLICIT=1 and put its
+// worktrees in the shared work root, outside its own EXIT trap. Runs
+// test-default-workflow-reliability.sh with an explicit work root supplied
+// from outside and requires that directory to stay empty, plus two unit tests
+// of the shared setup fragment the suites source.
+#[path = "issue_2712_recipe_test_work_root.rs"]
+mod issue_2712_recipe_test_work_root;
+
 // Issue #1966: is_critical_code is a required caller input. consensus-workflow
 // step 0 and consensus-tdd-impl reject a missing or malformed value before any
 // route, and the route gate fails unless exactly one route completed. Static

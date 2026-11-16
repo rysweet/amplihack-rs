@@ -34,6 +34,17 @@ use std::path::{Path, PathBuf};
 const BEGIN: &str = "===== BEGIN OPERATOR INSTRUCTIONS FOR THIS RUN =====";
 const END: &str = "===== END OPERATOR INSTRUCTIONS FOR THIS RUN =====";
 
+/// The `PATH` handed to every child this file starts.
+///
+/// Several tests in this binary set `PATH` process-wide while they run, two
+/// of them to a directory holding nothing
+/// (`install::tests::binary_tests` and `install::recipe_runner`), and the
+/// variable is process-wide, so a `git` or `bash` resolved through the
+/// inherited value fails with `NotFound` at random. `git` and `bash` are in
+/// `/usr/bin` or `/bin` on every platform these tests run on; where they are
+/// not, the tests below skip quietly as they already do.
+const CHILD_PATH: &str = "/usr/bin:/bin";
+
 /// A private (0700) temporary root, canonical so no ancestor is a symlink.
 fn private_root() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
@@ -142,12 +153,13 @@ fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
         .args(["init", "-q"])
         .current_dir(&repo)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", CHILD_PATH)
         .status()
         .is_ok_and(|s| s.success());
     if !git_ok || !script.is_file() {
         return;
     }
-    amplihack_git::command()
+    let remote_ok = amplihack_git::command()
         .args([
             "remote",
             "add",
@@ -155,8 +167,11 @@ fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
             "https://github.com/octo-org/my.repo.git",
         ])
         .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", CHILD_PATH)
         .status()
-        .unwrap();
+        .is_ok_and(|s| s.success());
+    assert!(remote_ok, "git remote add failed in {}", repo.display());
     let out = std::process::Command::new("bash")
         .arg("-c")
         .arg(format!(
@@ -165,6 +180,7 @@ fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
             repo.display()
         ))
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", CHILD_PATH)
         .stdin(std::process::Stdio::null())
         .output();
     let Ok(out) = out else { return };
@@ -1209,6 +1225,12 @@ fn d6_runner_env_value_without_pr_lists_the_run_folder_only() {
 
 #[test]
 fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
+    // `runner_env_value` resolves `git` through the process `PATH`, which
+    // sibling tests in this binary replace while they run, so this one holds
+    // the shared environment lock for as long as that call is in flight.
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (_tmp, root) = private_root();
     let repo = root.join("repo");
     fs::create_dir(&repo).unwrap();
@@ -1216,16 +1238,20 @@ fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
         .args(["init", "-q"])
         .current_dir(&repo)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", CHILD_PATH)
         .status()
         .is_ok_and(|s| s.success());
     if !ok {
         return;
     }
-    amplihack_git::command()
+    let remote_ok = amplihack_git::command()
         .args(["remote", "add", "origin", "git@github.com:o/r.git"])
         .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", CHILD_PATH)
         .status()
-        .unwrap();
+        .is_ok_and(|s| s.success());
+    assert!(remote_ok, "git remote add failed in {}", repo.display());
     let state = root.join("state");
     let mut ctx = BTreeMap::new();
     ctx.insert("pr_number".to_string(), "7".to_string());
