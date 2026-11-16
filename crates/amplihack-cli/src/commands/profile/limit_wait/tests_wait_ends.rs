@@ -231,3 +231,58 @@ fn a_changed_login_outranks_another_logins_capacity_on_a_reset_wait() {
     );
     assert_eq!(f.elapsed(), 90, "the poll two agreeing probes in");
 }
+
+/// The reading is taken on the fingerprint's own 30-second poll and nowhere
+/// else, on a reset wait as on a capacity wait: issue #2694 widens which
+/// waits consult it and adds no timer, interval or retry of its own.
+#[test]
+fn another_logins_capacity_is_read_on_the_existing_thirty_second_poll() {
+    for plan in [
+        plan_in(100, Bound::ResetMargin),
+        capacity_plan_in(100, Bound::MaxWait),
+    ] {
+        let mut f = Fake::new();
+        wait(&plan, &mut f);
+        assert_eq!(
+            f.other_probes,
+            vec![30, 60, 90],
+            "{:?}: the poll the login fingerprint already uses",
+            plan.kind
+        );
+    }
+}
+
+/// The reading is not taken at all before the first poll, so a wait that
+/// ends inside its first 30 seconds makes none of the probe's reads.
+#[test]
+fn a_wait_shorter_than_one_poll_never_reads_another_logins_capacity() {
+    let mut f = Fake::new();
+    f.other_from = Some(0);
+    assert_eq!(
+        wait(&plan_in(20, Bound::ResetMargin), &mut f),
+        End::ResetReached
+    );
+    assert!(f.other_probes.is_empty(), "{:?}", f.other_probes);
+}
+
+#[test]
+fn the_end_of_the_steps_session_outranks_other_capacity_on_a_reset_wait() {
+    let mut f = Fake::new();
+    f.parent_gone_from = Some(30);
+    f.other_from = Some(0);
+    assert_eq!(
+        wait(&plan_in(13_500, Bound::ResetMargin), &mut f),
+        End::SessionEnded,
+        "nobody is left to use the retry's result"
+    );
+}
+
+#[test]
+fn a_step_timeout_outranks_other_capacity_on_a_reset_wait() {
+    let mut f = Fake::new();
+    f.other_from = Some(0);
+    assert_eq!(
+        wait(&plan_in(30, Bound::StepTimeout), &mut f),
+        End::StepTimeout
+    );
+}

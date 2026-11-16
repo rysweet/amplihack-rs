@@ -192,3 +192,65 @@ fn the_held_key_alert_is_written_once_per_held_set() {
         "{lines:?}"
     );
 }
+
+/// Issue #2694: the usage-limit wait asks for a candidate every 30 s, for
+/// the whole of a wait that may run for hours, and now does so on a reset
+/// wait as well as a capacity wait. The probe therefore writes nothing: no
+/// held-key ALERT to the step's stderr, no line in the rotate log and no
+/// key-held marker. The same selection on the rerun path still writes one,
+/// which is what the step saw once before its wait began.
+#[test]
+fn the_wait_probe_writes_no_held_key_alert() {
+    use crate::commands::profile::auto_switch::takeover::capacity_candidate;
+    use crate::commands::profile::store::ProfileStore;
+
+    // The auto-switch setting is resolved for real here, so the rotator
+    // check needs the synthetic process table (issue #2196).
+    let _proc = crate::test_support::proc::fake_proc_scope();
+    let _l = lock();
+    let f = fx("enabled=on\noverflow=console\n");
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _toggle = EnvGuard::unset([config::TOGGLE_ENV]);
+    let _gate = default_gate();
+    let now = fsx::now();
+    // The key passes its own login check, so the only thing keeping work
+    // off it is the unread plan login (issue #1804).
+    private(
+        &f.root.join("console").join("settings.json"),
+        r#"{"env":{"ANTHROPIC_API_KEY":"sk-test"}}"#,
+    );
+
+    // Every plan login used up and `spare` unread, so the unread login is
+    // the only thing holding work off the API key: the ALERT case. The key
+    // has a reading of its own, so the probe does not skip it as stale.
+    let mut readings = used_up(now);
+    readings.remove("spare");
+    readings.insert("console".to_string(), reading(0.0, 4 * 3600, now));
+    f.state
+        .save_usage(&UsageFile {
+            version: 1,
+            accounts: readings.clone(),
+        })
+        .unwrap();
+
+    let store = ProfileStore::new(f.root.clone());
+    let got = capacity_candidate(&store, &f.state, &n("work"), now - 60, now);
+    assert_eq!(got, None, "the unread login holds the key back");
+    assert!(alert_lines(&f).is_empty(), "the probe writes no ALERT");
+    assert_eq!(f.state.load_key_held(), None, "and no marker");
+
+    // The rerun path, with the same readings and the same stale login
+    // skipped, does write it: the probe's silence is the only difference.
+    let got = nested_candidate(
+        &f.state,
+        &Ledger::default(),
+        &f.profiles,
+        &readings,
+        &cfg(&["console"]),
+        "work",
+        &["spare".to_string()],
+    );
+    assert_eq!(got, None);
+    assert_eq!(alert_lines(&f).len(), 1, "the rerun check writes it");
+    assert_eq!(f.state.load_key_held().as_deref(), Some("spare"));
+}

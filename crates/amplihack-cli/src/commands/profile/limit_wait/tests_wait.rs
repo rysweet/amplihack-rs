@@ -34,6 +34,9 @@ pub(super) struct Fake {
     pub(super) capacity_from: Option<i64>,
     /// Virtual second from which another stored login reports capacity.
     pub(super) other_from: Option<i64>,
+    /// The virtual second of each reading of another login's capacity, so a
+    /// test can show the wait adds no cadence of its own (issue #2694).
+    pub(super) other_probes: Vec<i64>,
 }
 
 impl Fake {
@@ -50,6 +53,7 @@ impl Fake {
             parent_gone_from: None,
             capacity_from: None,
             other_from: None,
+            other_probes: Vec::new(),
         }
     }
 
@@ -118,6 +122,7 @@ impl WaitDeps for Fake {
 
     fn other_capacity(&mut self, start: i64) -> bool {
         assert_eq!(start, T0, "capacity is judged from the wait's start");
+        self.other_probes.push(self.elapsed());
         self.other_from.is_some_and(|t| self.elapsed() >= t)
     }
 

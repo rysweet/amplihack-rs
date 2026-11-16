@@ -12,6 +12,9 @@
 //! - Issue #2694: the same exit now ends a reset wait, so a step whose
 //!   stored profile states a near reset no longer sleeps to it while
 //!   another login has room.
+//! - Issue #2694: a step auto-switch cannot move, one on an explicit
+//!   `CLAUDE_CONFIG_DIR` or on `$HOME/.claude`, still sleeps to its reset
+//!   with the same readings in front of it, and a spend limit still skips.
 //!
 //! Tests that need something to happen during a wait run on the real clock,
 //! scaled, with `TEST_NOW` removed: a reading or rotator cycle is stamped with
@@ -90,6 +93,35 @@ pub(crate) const OLD_CYCLE: i64 = TEST_NOW - 3600;
 /// A rotate ledger naming X as live, with a cycle from before the step.
 pub(crate) fn x_is_live(f: &Fixture) {
     write_cycle(&f.profiles, "X", OLD_CYCLE);
+}
+
+/// The auto-switch readings with X at its session limit and Y with room,
+/// both stamped `at`. Written in one step, so a wait taking a reading
+/// never reads half the file.
+///
+/// Used both during a wait, stamped with real time, where it moves the
+/// step onto Y, and before a run, stamped on the fixture's virtual clock,
+/// where the question is whether the step moves at all. The two uses share
+/// the body so that a reading shape the probe would reject could not leave
+/// the second sort passing on readings that move nothing.
+fn readings_with_room(profiles: &Path, at: i64) {
+    private_dirs(profiles);
+    let reading = |pct: f64| {
+        serde_json::json!({
+            "five_hour": {"used_percentage": pct, "resets_at": at + 3600},
+            "seven_day": {"used_percentage": 5.0, "resets_at": at + 86_400},
+            "observed_at": at,
+            "source": "statusline",
+        })
+    };
+    let body = serde_json::json!({
+        "version": 1,
+        "accounts": {"X": reading(100.0), "Y": reading(10.0)},
+    });
+    replace(
+        &profiles.join(".auto-switch.d").join("usage.json"),
+        &body.to_string(),
+    );
 }
 
 /// Holds the external rotator's lock, as a running prototype rotator does,
@@ -257,27 +289,14 @@ fn ac13_an_inherited_profile_step_retries_on_the_login_with_capacity() {
     // X, then Y, then the retry.
     c.env("LIMIT_CALLS", "2");
     real_clock(&mut c);
-    let usage = f.profiles.join(".auto-switch.d").join("usage.json");
+    let profiles = f.profiles.clone();
     let count = f.records.join("count.0");
     let out = run_during_wait(&f, &mut c, move || {
         // The reading must change during the wait that follows Y's limit
         // hit (call 2), not during one after X's. Checked after the write,
         // so a wrong order fails here rather than at the ceiling.
         let calls = fs::read_to_string(&count).unwrap_or_default();
-        let now = real_now();
-        let reading = |pct: f64, source: &str| {
-            serde_json::json!({
-                "five_hour": {"used_percentage": pct, "resets_at": now + 3600},
-                "seven_day": {"used_percentage": 5.0, "resets_at": now + 86_400},
-                "observed_at": now,
-                "source": source,
-            })
-        };
-        let body = serde_json::json!({
-            "version": 1,
-            "accounts": {"X": reading(100.0, "statusline"), "Y": reading(10.0, "statusline")},
-        });
-        replace(&usage, &body.to_string());
+        readings_with_room(&profiles, real_now());
         assert_eq!(
             calls.trim(),
             "2",
@@ -333,27 +352,14 @@ fn issue_2694_a_reset_wait_under_a_profile_ends_on_another_logins_capacity() {
     c.env("LIMIT_CALLS", "2")
         .env("LIMIT_MESSAGE", near_reset_message());
     real_clock(&mut c);
-    let usage = f.profiles.join(".auto-switch.d").join("usage.json");
+    let profiles = f.profiles.clone();
     let count = f.records.join("count.0");
     let out = run_during_wait(&f, &mut c, move || {
         // The reading must change during the wait that follows Y's limit
         // hit (call 2), not during one after X's. Checked after the write,
         // so a wrong order fails here rather than at the ceiling.
         let calls = fs::read_to_string(&count).unwrap_or_default();
-        let now = real_now();
-        let reading = |pct: f64, source: &str| {
-            serde_json::json!({
-                "five_hour": {"used_percentage": pct, "resets_at": now + 13_500},
-                "seven_day": {"used_percentage": 5.0, "resets_at": now + 86_400},
-                "observed_at": now,
-                "source": source,
-            })
-        };
-        let body = serde_json::json!({
-            "version": 1,
-            "accounts": {"X": reading(100.0, "statusline"), "Y": reading(10.0, "statusline")},
-        });
-        replace(&usage, &body.to_string());
+        readings_with_room(&profiles, real_now());
         assert_eq!(
             calls.trim(),
             "2",
@@ -773,4 +779,104 @@ fn ci_refuses_first() {
     c.env("CI", "true");
     let out = f.run(&mut c);
     assert_ran_once_unsupervised(&f, &out);
+}
+
+// --- a step with nowhere to go still sleeps to its reset (issue #2694) --------
+
+/// The readings written before the run are still the ones on disk: the run
+/// replaced none of them, so what the wait had in front of it the whole
+/// time was a login with room.
+fn assert_room_still_shown(f: &Fixture, at: i64) {
+    let body = fs::read_to_string(f.profiles.join(".auto-switch.d").join("usage.json")).unwrap();
+    let got: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(got["accounts"]["Y"]["observed_at"], at, "{body}");
+    assert_eq!(
+        got["accounts"]["Y"]["five_hour"]["used_percentage"], 10.0,
+        "{body}"
+    );
+}
+
+/// The wait ran to its reset and the step never changed login.
+fn assert_slept_to_its_reset(f: &Fixture, out: &Output) {
+    assert!(out.status.success(), "{}", describe(out));
+    assert_eq!(f.count("0"), 2, "one wait and one retry: {}", describe(out));
+    assert_eq!(
+        events(out),
+        vec![
+            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 \
+             until=2026-10-18 08:32:00 -07:00 bound=reset+margin",
+            "end reason=reset reached",
+            "resume attempt=2",
+        ],
+        "{}",
+        describe(out)
+    );
+    assert!(
+        !text(&out.stderr).contains("a login has capacity again"),
+        "the step must not move login: {}",
+        describe(out)
+    );
+    assert_eq!(
+        f.call("0", 2)["PROFILE"],
+        "<unset>",
+        "no profile was chosen"
+    );
+}
+
+/// Issue #2694, the other half of the change: the reading ends a wait only
+/// where auto-switch has somewhere to move the step. A step given an
+/// explicit `CLAUDE_CONFIG_DIR` inherited no profile, so nothing may
+/// substitute its login, and its wait runs to its reset however much room
+/// another stored login has.
+#[test]
+fn issue_2694_an_explicit_login_sleeps_to_its_reset_though_another_login_has_room() {
+    let f = with_profiles();
+    switch_on(&f);
+    readings_with_room(&f.profiles, TEST_NOW + 60);
+    let mut c = f.step();
+    c.env(TOGGLE_ENV, "1").env("LIMIT_MESSAGE", LIMIT_TEXT);
+    let out = f.run(&mut c);
+    assert_slept_to_its_reset(&f, &out);
+    assert_room_still_shown(&f, TEST_NOW + 60);
+    assert_eq!(
+        f.call("0", 2)["CLAUDE_CONFIG_DIR"],
+        f.config.display().to_string(),
+        "the retry keeps the login it was given"
+    );
+}
+
+/// The same for a step on `$HOME/.claude`: the rotator may change that
+/// login under it, but auto-switch may not, so the reading does not end
+/// this wait either.
+#[test]
+fn issue_2694_a_home_step_sleeps_to_its_reset_though_another_login_has_room() {
+    let f = with_profiles();
+    switch_on(&f);
+    readings_with_room(&f.profiles, TEST_NOW + 60);
+    let mut c = home_step(&f);
+    c.env(TOGGLE_ENV, "1").env("LIMIT_MESSAGE", LIMIT_TEXT);
+    let out = f.run(&mut c);
+    assert_slept_to_its_reset(&f, &out);
+    assert_room_still_shown(&f, TEST_NOW + 60);
+}
+
+/// A spend limit is unchanged by #2694: another login of the same
+/// organisation would not lift it, so one with room starts no wait and
+/// gives no login-capacity exit. The step is passed up as it was.
+#[test]
+fn issue_2694_a_spend_limit_still_skips_with_room_on_another_login() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    readings_with_room(&f.profiles, TEST_NOW + 60);
+    let mut c = home_step(&f);
+    c.env(TOGGLE_ENV, "1").env("LIMIT_MESSAGE", SPEND_TEXT);
+    let out = f.run(&mut c);
+    assert_skipped(&f, &out, "spend_limit");
+    assert_room_still_shown(&f, TEST_NOW + 60);
+    assert!(
+        !text(&out.stderr).contains("a login has capacity again"),
+        "the step must not move login: {}",
+        describe(&out)
+    );
 }
