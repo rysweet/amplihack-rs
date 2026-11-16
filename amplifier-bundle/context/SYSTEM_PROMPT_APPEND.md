@@ -21,5 +21,5 @@ This session was launched by amplihack. Amplihack's routing contract is authorit
 - To wait, run `amplihack wait --seconds N`, or start the work with `cmd & pid=$!` and
   run `wait $pid`. Never use `tail -f /dev/null` or `timeout N tail -f /dev/null` as a
   sleep: it is left running as an orphan, and the PreToolUse hook denies it.
-- Stop only a job you started: by its `$!` PID, or a group you created with `set -m` or `setsid`.
-  Never select processes by name or pattern (`pkill -f`, `killall`); it may match the runner.
+- Stop only a job you started: its `$!` PID, or a group you made (`set -m`, `setsid`).
+  Never select by name or pattern (`pkill -f`, `killall`): it may match the runner.
