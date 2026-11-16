@@ -203,7 +203,8 @@ fn a_real_recipe_run_and_every_process_below_it_have_no_tracer_and_the_run_finis
     wait_until("the run's step to start, or the run to end", || {
         ready.is_file() || matches!(run.try_wait(), Ok(Some(_)))
     });
-    let stderr_of_run = || fs::read_to_string(&run_err).unwrap_or_default();
+    let stderr_of_run =
+        || fs::read_to_string(&run_err).unwrap_or_else(|e| format!("<unreadable: {e}>"));
     assert!(
         ready.is_file(),
         "the run's step never started\nrun stderr:\n{}",
@@ -249,8 +250,11 @@ fn a_real_recipe_run_and_every_process_below_it_have_no_tracer_and_the_run_finis
             .expect("open the FIFO while the step reads it");
         writer.write_all(b"go\n").expect("release the step");
     }
-    let status = wait_child("the recipe run to finish", &mut run);
+    // Cleared before the wait, not after: every panic path inside `wait_child`
+    // kills and reaps the child itself, so a `Drop` kill after one would signal
+    // a pid the kernel has already freed.
     cleanup.run_pid = None;
+    let status = wait_child("the recipe run to finish", &mut run);
     assert!(
         status.success(),
         "the recipe run ended with {status}\nrun stderr:\n{}",

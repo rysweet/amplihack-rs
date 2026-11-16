@@ -357,7 +357,9 @@ outside the disposable `runtime/` directory the runner deletes when a run
 ends, and they belong to none of the categories the cleanup sweep collects
 (`run-tmp`, `run-worktree`, `run-target`, `run-exec`). Run folders themselves
 are never pruned, so an old recording stays until you delete its folder
-yourself. See
+yourself. `git-commands.jsonl` recorded the full command line of every Git
+process the run started, which can carry credentials, so treat an old run
+folder as readable only by you. See
 [Clean up after recipe runs](../howto/clean-up-after-recipe-runs.md).
 
 ## Configuration
