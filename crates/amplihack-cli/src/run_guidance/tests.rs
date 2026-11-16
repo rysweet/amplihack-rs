@@ -130,6 +130,15 @@ fn u1_pr_key_matches_autodrive_state_sh_for_an_https_origin() {
 fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
     // Runs the real shell function against a scratch repo whose origin is an
     // https remote. Skips quietly where bash or git is missing.
+    //
+    // `git` and `bash` are resolved through the process-wide `PATH`, which
+    // env-mutating tests in this binary replace with a scratch directory
+    // while they run. Without this lock such a test could take `git` away
+    // between the probe below and the `remote add` that follows, and the
+    // spawn failed with ENOENT (issue #2019).
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let (_tmp, root) = private_root();
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()

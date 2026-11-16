@@ -14,6 +14,12 @@
 //! earlier copy is still running therefore replaces the directory entry
 //! instead of opening the running file, which would fail with ETXTBSY.
 //!
+//! The children run with an explicit `PATH` (`STUB_WRITER_PATH`) instead of
+//! the inherited one. Env-mutating tests in these binaries set the
+//! process-wide `PATH` to a scratch directory while they run, and a stub
+//! write that happened to overlap one of them resolved no `cat`, `chmod` or
+//! `mv` and died with status 127 (issue #2019).
+//!
 //! This file uses only `std`. `amplihack-cli`'s and `amplihack-hooks`'s
 //! `test_support` modules and the `integration` target include it with
 //! `#[path]`, so there is one stub writer.
@@ -21,6 +27,11 @@
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+
+/// `PATH` for the stub-writing children. Fixed, so a concurrent test that
+/// replaces the process-wide `PATH` cannot take `cat`, `chmod` or `mv` away
+/// from them. It matches the absolute `/bin/sh` and `/bin/cp` below.
+const STUB_WRITER_PATH: &str = "/usr/bin:/bin";
 
 /// Writes `body` to `path` (replacing it by rename) with permission bits
 /// `mode`. The path and mode reach `sh` as arguments, never as script text.
@@ -42,6 +53,7 @@ pub fn write_executable(path: &Path, body: impl AsRef<[u8]>, mode: u32) {
         ])
         .arg(path)
         .arg(format!("{mode:o}"))
+        .env("PATH", STUB_WRITER_PATH)
         .stdin(Stdio::piped())
         .spawn()
         .unwrap_or_else(|e| panic!("cannot start sh to write {}: {e}", path.display()));
@@ -67,6 +79,7 @@ pub fn copy_executable(from: &Path, to: &Path) {
         .arg("--")
         .arg(from)
         .arg(to)
+        .env("PATH", STUB_WRITER_PATH)
         .status()
         .unwrap_or_else(|e| panic!("cannot start cp for {}: {e}", to.display()));
     assert!(
