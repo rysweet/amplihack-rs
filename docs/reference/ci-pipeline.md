@@ -242,9 +242,15 @@ Either path therefore names the CI run that admitted the release.
   when they differ:
 
   ```text
-  CI tested 5bc4defc4 but origin/main is now 8a51b29e8
+  CI tested 5bc4defc45a0c2e1f3b8d9a7c6e4f2b1d0a98765 but origin/main is now 8a51b29e8c3d4f5a6b7c8d9e0f1a2b3c4d5e6f70
   no release published for a commit that main has moved past
   ```
+
+  The skip is also written to the run's job summary, so a green "Auto Release"
+  run that published nothing says why on its front page.
+
+  A release is therefore skipped, not deferred: if the commit that superseded
+  it fails CI, no release publishes until a later commit lands and passes.
 
   Without that comparison the older tree is published under a *higher* version
   number and marked `latest`, and every host running `amplihack update`
