@@ -241,6 +241,30 @@ fn only_files_containing_a_named_step_are_copied() {
     );
 }
 
+#[test]
+fn a_recipe_that_only_mentions_a_named_step_is_not_copied() {
+    // `patch` skips a file that does not contain a wanted id as a substring,
+    // because a rewritten id is read out of a line of the file. That is a
+    // prefilter and never the decision: a file that names the step in prose
+    // but declares no such step still has to come back unstaged, and the line
+    // walk is what decides that.
+    let f = Fixture::new();
+    fs::write(
+        f.recipes.join("mentions.yaml"),
+        "name: \"mentions\"\nsteps:\n  - id: \"x\"\n    agent: \"a\"\n    prompt: |\n      \
+         Read what step-08-implement produced.\n",
+    )
+    .unwrap();
+    let staged = f
+        .stage(&[("step-08-implement", Tier::Fast)])
+        .expect("stage")
+        .expect("staged");
+    assert!(
+        !staged.dir.join("mentions.yaml").exists(),
+        "naming a step in a prompt does not declare it, so nothing is patched"
+    );
+}
+
 // -------------------------------------------------------------------------
 // Step ids are identifiers, never path components
 // -------------------------------------------------------------------------

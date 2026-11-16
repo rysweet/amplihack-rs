@@ -137,7 +137,16 @@ fn candidates(recipe_dirs: &[PathBuf], top_level_recipe: &Path) -> Vec<PathBuf> 
 /// Read line by line, the way a reader of the file would: the step's `id:`
 /// opens it, and the next `- ` at the same indentation closes it. Only the
 /// `model:` line moves; prompts and shell bodies are copied verbatim.
+///
+/// A step id amplihack rewrites is read out of a line of `text`, so a file
+/// that contains no wanted id as a substring declares no wanted step and the
+/// line walk cannot change it. Saying so first keeps the 64 bundled recipes
+/// this runs over — 22,000 lines, of which one file typically matches — a
+/// substring scan rather than 22,000 string allocations thrown away.
 fn patch(text: &str, wanted: &BTreeMap<&str, Tier>) -> Option<String> {
+    if !wanted.keys().any(|id| text.contains(id)) {
+        return None;
+    }
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len() + wanted.len());
     let mut changed = false;
