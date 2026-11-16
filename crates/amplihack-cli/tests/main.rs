@@ -24,6 +24,9 @@
 
 #[path = "../../../tests/support/isolated_amplihack.rs"]
 mod isolated_amplihack;
+// Issue #2658: shared pinned recipe-runner-rs resolution.
+#[path = "../../../tests/support/pinned_runner.rs"]
+mod pinned_runner;
 mod support;
 
 #[path = "issue_2096_execution_isolation.rs"]
@@ -389,6 +392,8 @@ mod issue_2539_step_recovery_report;
 mod issue_2539_step_recovery_stop;
 #[path = "issue_2539_step_recovery_validation.rs"]
 mod issue_2539_step_recovery_validation;
+#[path = "issue_2658_routing_replay.rs"]
+mod issue_2658_routing_replay;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

@@ -13,6 +13,7 @@ use crate::commands::cleanup::run_dir::write_atomic_0600;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Read};
@@ -99,20 +100,32 @@ pub(crate) struct Entry {
 /// The run's git command record.
 #[derive(Debug)]
 pub(crate) struct GitRecord {
-    state: State,
-    required: bool,
+    /// Interior mutability: issue #2677's downgrade happens through the
+    /// shared reference the attempt loop holds. No borrow is held across a
+    /// spawn.
+    state: RefCell<State>,
+    required: Cell<bool>,
     /// Runner launches attempted through `spawn`. Zero means no runner,
     /// and so no step, ever ran.
-    spawned: std::cell::Cell<u32>,
+    spawned: Cell<u32>,
+    /// Attempts the observer attached to. Any nonzero count forbids the
+    /// downgrade to unavailable: evidence may exist.
+    established: Cell<u32>,
 }
 
 #[derive(Debug)]
 enum State {
     Disabled,
-    /// A real run on a platform with no observer: nothing is recorded, and
+    /// A real run with no observer: off Linux, or on Linux after the
+    /// observer could not attach (issue #2677). Nothing is recorded, and
     /// `finish` says so in `<run_dir>/git-recording.json`.
     Unavailable {
         run_dir: PathBuf,
+        /// One of the fixed reasons below; never a path or error text.
+        reason: &'static str,
+        /// The Linux trace folder, emptied by the downgrade; `finish`
+        /// removes it with `remove_dir`, so anything added later keeps it.
+        trace_dir: Option<PathBuf>,
     },
     Enabled {
         run_dir: PathBuf,
@@ -145,6 +158,24 @@ impl RecordingPlatform {
 /// path, environment value or command line.
 const UNAVAILABLE_REASON: &str =
     "Git command recording needs the Linux ptrace observer; this platform has none";
+/// Written to `git-recording.json` when the Linux observer could not attach
+/// to the runner (issue #2677). It holds no path, error number or command.
+pub(crate) const LINUX_UNAVAILABLE_REASON: &str = "the Linux ptrace observer could not attach to the runner, so this run has no Git command record";
+
+/// Builds the line reporting a refused release of an unstarted attempt's
+/// recorder storage (issue #2677 A6b). Fixed text plus the refusal's own
+/// chain, formatted with `{:#}` so the operating system's message underneath
+/// is kept. No path, command line or environment value goes into it, and it
+/// carries neither the spawn context nor the word `nested`, so a run log
+/// holding it can be quoted unread and the line is never mistaken for the
+/// cause `spawn` returns.
+#[cfg(target_os = "linux")]
+pub(super) fn refused_release_warning(refusal: &anyhow::Error) -> String {
+    format!(
+        "amplihack: warning: could not release the unstarted attempt's recorder \
+         storage: {refusal:#}"
+    )
+}
 
 impl GitRecord {
     /// Production recording on the build's platform; see [`Self::begin_on`].
@@ -165,19 +196,17 @@ impl GitRecord {
             eprintln!(
                 "amplihack: Git command recording is unavailable on this platform; the run continues in its private checkout without recording"
             );
-            return Ok(Self {
-                spawned: std::cell::Cell::new(0),
-                required: false,
-                state: State::Unavailable {
-                    run_dir: run_dir.to_path_buf(),
-                },
-            });
+            return Ok(Self::with_state(State::Unavailable {
+                run_dir: run_dir.to_path_buf(),
+                reason: UNAVAILABLE_REASON,
+                trace_dir: None,
+            }));
         }
-        let mut record = Self::prepare(run_dir);
-        if matches!(record.state, State::Disabled) {
+        let record = Self::prepare(run_dir);
+        if matches!(*record.state.borrow(), State::Disabled) {
             bail!(NO_WORK_ROOT);
         }
-        record.required = true;
+        record.required.set(true);
         Ok(record)
     }
 
@@ -193,16 +222,15 @@ impl GitRecord {
     /// Whether this record must observe the runner (every real run).
     #[cfg(target_os = "linux")]
     pub(crate) fn is_required(&self) -> bool {
-        self.required
+        self.required.get()
     }
 
+    /// Counts the attempt and names its journal and run. The state borrow
+    /// ends here, before anything is spawned.
     #[cfg(target_os = "linux")]
-    pub(crate) fn spawn(
-        &self,
-        command: Command,
-        attempt_id: &str,
-    ) -> Result<(std::process::Child, observer::Observer)> {
-        let State::Enabled { run_dir, trace_dir } = &self.state else {
+    fn begin_attempt(&self, attempt_id: &str) -> Result<(PathBuf, String)> {
+        let state = self.state.borrow();
+        let State::Enabled { run_dir, trace_dir } = &*state else {
             bail!("required Git recorder is unavailable");
         };
         self.spawned.set(self.spawned.get() + 1);
@@ -212,7 +240,123 @@ impl GitRecord {
             .context("recording run id")?
             .to_string_lossy()
             .into_owned();
-        observer::Observer::spawn(command, path, run_id, attempt_id.to_string())
+        Ok((path, run_id))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn spawn(
+        &self,
+        command: Command,
+        attempt_id: &str,
+    ) -> Result<(std::process::Child, observer::Observer)> {
+        let (path, run_id) = self.begin_attempt(attempt_id)?;
+        let spawned = observer::Observer::spawn(command, path, run_id, attempt_id.to_string());
+        match &spawned {
+            Ok(_) => self.established.set(self.established.get() + 1),
+            Err(error) if error.downcast_ref::<observer::RunnerNotStarted>().is_some() => {
+                // Issue #2677 B1d: the runner's own spawn failed, so the
+                // attempt never started. Its empty journal is released and
+                // the attempt uncounted, so `finish` has nothing to check and
+                // the spawn error is the only cause reported. If the release
+                // refuses, the attempt still counts and `finish` fails
+                // closed; the spawn error is returned either way.
+                let released = match &*self.state.borrow() {
+                    // A refusal is reported, never returned: the spawn error
+                    // stays the only cause the caller sees.
+                    State::Enabled { trace_dir, .. } => self
+                        .release_unstarted_attempt(trace_dir, attempt_id)
+                        .inspect_err(|refusal| eprintln!("{}", refused_release_warning(refusal)))
+                        .is_ok(),
+                    _ => false,
+                };
+                if released {
+                    self.spawned.set(self.spawned.get() - 1);
+                }
+            }
+            Err(_) => {}
+        }
+        spawned
+    }
+
+    /// Releases the storage of an attempt that recorded nothing. Every check
+    /// runs before anything changes: no attempt of this run was established,
+    /// `git-trace2/` holds nothing but this attempt's journal, and that
+    /// journal is empty or absent. A journal with any content, any other
+    /// entry, or a missing folder is refused, so evidence is never removed.
+    #[cfg(target_os = "linux")]
+    fn release_unstarted_attempt(&self, trace_dir: &Path, attempt_id: &str) -> Result<()> {
+        const KEPT: &str = "partial evidence retained";
+        if self.established.get() != 0 {
+            bail!("an earlier attempt of this run was observed; {KEPT}");
+        }
+        let journal_name = format!("observer-{attempt_id}.jsonl");
+        if Path::new(&journal_name).file_name() != Some(std::ffi::OsStr::new(&journal_name)) {
+            bail!("invalid observer attempt id; {KEPT}");
+        }
+        for entry in fs::read_dir(trace_dir)
+            .with_context(|| format!("cannot list recorder storage; {KEPT}"))?
+        {
+            let entry = entry.with_context(|| format!("cannot list recorder storage; {KEPT}"))?;
+            if entry.file_name() != std::ffi::OsStr::new(&journal_name) {
+                bail!("recorder storage holds other entries; {KEPT}");
+            }
+        }
+        let journal = trace_dir.join(&journal_name);
+        match fs::symlink_metadata(&journal) {
+            Ok(metadata) if metadata.len() == 0 => fs::remove_file(&journal)
+                .with_context(|| format!("cannot remove empty observer journal; {KEPT}")),
+            Ok(_) => bail!("observer journal is not empty; {KEPT}"),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => {
+                Err(error).with_context(|| format!("cannot inspect observer journal; {KEPT}"))
+            }
+        }
+    }
+
+    /// Issue #2677: the kernel refused `PTRACE_TRACEME` for `attempt_id`
+    /// ([`observer::ObserverNotEstablished`]), so the observer watched
+    /// nothing.
+    ///
+    /// One rule decides it (M5): proceed when nothing was recorded, meaning
+    /// no attempt of this run was established and `git-trace2/` holds nothing
+    /// but this attempt's journal, itself empty or absent; otherwise fail and
+    /// change nothing, so the run fails closed with its evidence. The
+    /// `required` flag is not consulted: the only caller reaches this path
+    /// because the record was required, and the transition below clears the
+    /// flag itself, so reading it here would only restate the caller. What
+    /// stops a second downgrade of one record is the state check above: the
+    /// first transition leaves the record `Unavailable` rather than
+    /// `Enabled`.
+    ///
+    /// On success the record becomes unavailable (as off Linux): the empty
+    /// journal is removed, `is_required` turns false and a notice naming the
+    /// refused call and its `errno` is printed. The caller then starts the
+    /// runner once unobserved.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn attempt_not_established(&self, attempt_id: &str, errno: i32) -> Result<()> {
+        let Ok(mut state) = self.state.try_borrow_mut() else {
+            bail!("Git recording is in use; the observer failure stands");
+        };
+        let State::Enabled { run_dir, trace_dir } = &*state else {
+            bail!("Git recording is not observing this run; the observer failure stands");
+        };
+        self.release_unstarted_attempt(trace_dir, attempt_id)?;
+        // Every check passed: only now does the record change.
+        *state = State::Unavailable {
+            run_dir: run_dir.clone(),
+            reason: LINUX_UNAVAILABLE_REASON,
+            trace_dir: Some(trace_dir.clone()),
+        };
+        self.required.set(false);
+        // Fixed text only: just the integer errno and its fixed name, so no
+        // path, command line or environment value reaches the notice.
+        let name = observer::errno_name(errno);
+        eprintln!(
+            "amplihack: Git command recording is unavailable for this run: the kernel refused \
+             PTRACE_TRACEME (errno {errno}, {name}), so the Linux observer could not attach; \
+             the run continues in its private checkout without recording"
+        );
+        Ok(())
     }
     /// Creates `<run_dir>/git-trace2/` with mode 0700. With no run folder, or
     /// when the folder cannot be created (including when anything already
@@ -231,14 +375,10 @@ impl GitRecord {
             .create(&trace_dir)
             .and_then(|()| fs::set_permissions(&trace_dir, fs::Permissions::from_mode(0o700)));
         match created {
-            Ok(()) => Self {
-                spawned: std::cell::Cell::new(0),
-                required: false,
-                state: State::Enabled {
-                    run_dir: run_dir.to_path_buf(),
-                    trace_dir,
-                },
-            },
+            Ok(()) => Self::with_state(State::Enabled {
+                run_dir: run_dir.to_path_buf(),
+                trace_dir,
+            }),
             Err(error) => {
                 eprintln!(
                     "amplihack: warning: cannot create {} ({:?}); this run keeps no record of \
@@ -252,10 +392,15 @@ impl GitRecord {
     }
 
     fn disabled() -> Self {
+        Self::with_state(State::Disabled)
+    }
+
+    fn with_state(state: State) -> Self {
         Self {
-            spawned: std::cell::Cell::new(0),
-            state: State::Disabled,
-            required: false,
+            state: RefCell::new(state),
+            required: Cell::new(false),
+            spawned: Cell::new(0),
+            established: Cell::new(0),
         }
     }
 
@@ -267,8 +412,9 @@ impl GitRecord {
     /// Call after `RunCheckout::apply_to` and before the workspace variables
     /// are added.
     pub(crate) fn apply_to(&self, command: &mut Command) -> Result<()> {
+        let required = self.required.get();
         #[cfg(target_os = "linux")]
-        if self.required {
+        if required {
             let parent = observer::parent_observer()?.unwrap_or_else(std::process::id);
             command.env("AMPLIHACK_OBSERVER_PID", parent.to_string());
             for key in OBSERVER_INHERITED_VARS {
@@ -278,9 +424,9 @@ impl GitRecord {
         for var in CALLER_TRACE_VARS {
             command.env_remove(var);
         }
-        match &self.state {
+        match &*self.state.borrow() {
             State::Enabled { trace_dir, .. } => {
-                if self.required {
+                if required {
                     // Native supervision does not rely on variables surviving
                     // the external runner's bounded environment adapter.
                     command.env_remove(EVENT_VAR).env_remove(ENV_VARS_VAR);
@@ -313,24 +459,46 @@ impl GitRecord {
     /// and deletes the raw folder. If the summary cannot be written the raw
     /// folder is kept and a warning says so.
     pub(crate) fn finish(self) -> Result<()> {
-        let (run_dir, trace_dir) = match self.state {
+        let required = self.required.get();
+        let (run_dir, trace_dir) = match self.state.into_inner() {
             State::Enabled { run_dir, trace_dir } => (run_dir, trace_dir),
             State::Disabled => return Ok(()),
-            State::Unavailable { run_dir } => {
-                return write_atomic_0600(
+            State::Unavailable {
+                run_dir,
+                reason,
+                trace_dir,
+            } => {
+                write_atomic_0600(
                     &run_dir.join("git-recording.json"),
                     &serde_json::to_vec(&serde_json::json!({
                         "schema_version": 1,
                         "coverage": "unavailable",
                         "complete": false,
-                        "reason": UNAVAILABLE_REASON,
+                        "reason": reason,
                         "backend": null,
                     }))?,
                 )
-                .context("cannot record that Git command recording was unavailable");
+                .context("cannot record that Git command recording was unavailable")?;
+                // `remove_dir`, never `remove_dir_all`: anything written
+                // there after the downgrade keeps the folder and fails here.
+                if let Some(trace_dir) = trace_dir {
+                    match fs::remove_dir(&trace_dir) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(error).with_context(|| {
+                                format!(
+                                    "cannot release unused recorder storage {}",
+                                    trace_dir.display()
+                                )
+                            });
+                        }
+                    }
+                }
+                return Ok(());
             }
         };
-        if self.required && self.spawned.get() == 0 {
+        if required && self.spawned.get() == 0 {
             // The run stopped before any runner started (a refused guard or
             // context check): no step ran, so there is nothing to record.
             // Storage that holds anything is still validated below.
@@ -354,7 +522,7 @@ impl GitRecord {
             }
         }
         let mut text = String::new();
-        if self.required {
+        if required {
             let metadata = fs::symlink_metadata(&trace_dir)
                 .context("required collector storage disappeared")?;
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -457,7 +625,7 @@ impl GitRecord {
             );
             return Err(error).context("cannot publish required Git command evidence");
         }
-        if self.required {
+        if required {
             let diagnostics = run_dir.join("diagnostics");
             fs::DirBuilder::new().mode(0o700).create(&diagnostics)?;
             let directory = diagnostics.join("git");
@@ -483,7 +651,7 @@ impl GitRecord {
     /// fine; any other failure is returned for the caller to attach to the
     /// error it already holds.
     pub(crate) fn discard(self) -> Result<()> {
-        let State::Enabled { trace_dir, .. } = self.state else {
+        let State::Enabled { trace_dir, .. } = self.state.into_inner() else {
             return Ok(());
         };
         match fs::remove_dir(&trace_dir) {
