@@ -141,12 +141,3 @@ pub(super) fn run_dir(f: &Fixture) -> PathBuf {
     assert_eq!(paths.len(), 1, "expected one logical run: {paths:?}");
     paths[0].clone()
 }
-
-pub(super) fn records(f: &Fixture) -> Vec<serde_json::Value> {
-    let file = run_dir(f).join("git-commands.jsonl");
-    fs::read_to_string(&file)
-        .unwrap_or_else(|error| panic!("read {}: {error}", file.display()))
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("valid command record"))
-        .collect()
-}

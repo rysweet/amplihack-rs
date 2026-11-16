@@ -542,13 +542,11 @@ fn sweep_on_measures_grace_on_the_given_clock_and_honours_give_up() {
 // -------------------------------------------------------------------------
 // Test 3c — the executor's tree sweep waits its grace on the runner's clock.
 //
-// Every real run on Linux is spawned under the native Git observer. Its
-// timeout and stop teardown (`terminate_observed_runner`), its finished-scope
-// sweeps and the sweep after a runner that exited with a stop signal pending
-// all wait the grace in `execute::sweep_runner_tree`, which takes the
-// attempt's `RunnerClock`. This runs that helper on a `RunnerWorker` with
-// virtual time, the way the recipe tests run the executor, against a child
-// that ignores TERM.
+// The timeout teardown, the stop teardown and the sweep after a runner that
+// exited with a stop signal pending all wait the grace in
+// `execute::sweep_runner_tree`, which takes the attempt's `RunnerClock`. This
+// runs that helper on a `RunnerWorker` with virtual time, the way the recipe
+// tests run the executor, against a child that ignores TERM.
 //
 // The test first waits for the helper to read the worker's clock. A helper
 // that measured the grace on the system clock never reads it, and returns by
@@ -557,9 +555,8 @@ fn sweep_on_measures_grace_on_the_given_clock_and_honours_give_up() {
 // read the grace is frozen, and only the test's advance of virtual time by
 // the grace ends it, with SIGKILL to the child.
 //
-// Not covered here: `Observer::terminate`, the one other call in
-// `terminate_observed_runner`, and the cancellation wiring, whose failure
-// would hold the frozen grace until the test's ceiling instead of failing.
+// Not covered here: the cancellation wiring, whose failure would hold the
+// frozen grace until the test's ceiling instead of failing.
 // -------------------------------------------------------------------------
 #[cfg(target_os = "linux")]
 #[test]

@@ -157,12 +157,12 @@ change, even when a step runs `git add` or `git commit`.
   `-c repo_path=$PWD`, is mapped to the same path in the run's checkout.
   A path buried inside longer text is refused; pass it as its own value.
 - Ignored files are not copied, except the recipe file itself.
-- `--dry-run` prepares no checkout, records nothing and writes no run folder.
+- `--dry-run` prepares no checkout and writes no run folder.
 - A resumed run gets a fresh checkout.
-- Real runs work on every platform. On Linux the Git commands they run are
-  recorded; elsewhere the run proceeds without recording, and
-  `git_recording.coverage` in `run.json` (copied from `git-recording.json`)
-  is `"unavailable"`.
+- Real runs work the same on every platform. A run starts no tracer and needs
+  no `ptrace` privilege, so it also runs where `ptrace` is denied, such as a
+  container with `CAP_SYS_PTRACE` dropped. No record of the Git commands a run
+  makes is kept.
 
 Commits you want to keep belong in a durable task or PR worktree. Try it in
 [Inspect a local-input snapshot](../tutorials/recipe-checkout-isolation.md);
@@ -487,4 +487,4 @@ amplihack recipe run recipe.yaml -c task_description="..." --verbose
 - [Environment Variables](../reference/environment-variables.md) — `AMPLIHACK_CONTEXT_*` and `RECIPE_RUNNER_RS_PATH`
 - [Run amplihack in Non-interactive Mode](./run-in-noninteractive-mode.md) — CI configuration
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How agents are located during recipe execution
-- [Recipe Run and Auto-Drive Checkout Isolation](../reference/recipe-checkout-isolation.md) — The run's own checkout, nested runs and the git command record
+- [Recipe Run and Auto-Drive Checkout Isolation](../reference/recipe-checkout-isolation.md) — The run's own checkout, nested runs and what a run leaves behind

@@ -500,3 +500,18 @@ mod issue_1619_step_tier_diagnostics;
 // the tests that assert on it. One copy follows the call-out.
 #[path = "../../../tests/integration/recipe_step_body.rs"]
 mod recipe_step_body;
+// Issue #2738: the Git-command tracer is gone; the private clone per run
+// stays. `issue_2738_support` holds the fixture the stub-runner tests share;
+// `issue_2738_no_ptrace` drives the pinned runner and has none.
+#[path = "issue_2738_drive_shaped_layout.rs"]
+mod issue_2738_drive_shaped_layout;
+#[path = "issue_2738_git_outside_repo.rs"]
+mod issue_2738_git_outside_repo;
+#[path = "issue_2738_no_ptrace.rs"]
+mod issue_2738_no_ptrace;
+#[path = "issue_2738_private_clone.rs"]
+mod issue_2738_private_clone;
+#[path = "issue_2738_run_status.rs"]
+mod issue_2738_run_status;
+#[path = "issue_2738_support.rs"]
+mod issue_2738_support;

@@ -69,7 +69,6 @@ impl Fx {
             attempts: Vec::new(),
             steps: Vec::new(),
             log_path: None,
-            git_recording: None,
         };
         fs::write(dir.join(RUN_JSON), serde_json::to_vec(&report).unwrap()).unwrap();
         let mut owned = Vec::new();
@@ -376,7 +375,6 @@ fn seed(fx: &Fx, id: &str, active: bool, owned: &[u8]) -> PathBuf {
         attempts: Vec::new(),
         steps: Vec::new(),
         log_path: None,
-        git_recording: None,
     };
     fs::write(dir.join(RUN_JSON), serde_json::to_vec(&report).unwrap()).unwrap();
     fs::write(dir.join(OWNED_PATHS), owned).unwrap();
