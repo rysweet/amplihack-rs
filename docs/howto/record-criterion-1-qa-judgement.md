@@ -31,10 +31,15 @@ export AUTODRIVE_QA_EVIDENCE="$STATE/qa-evidence.json"
 
 ## 1. Measure the facts
 
-In a drive, the recipe sets the base and head from the observed PR. By hand,
-you set them. `AUTODRIVE_QA_BASE` is the PR's base branch name without
-`origin/`; the tool reads `refs/remotes/origin/<base>`, so fetch it first.
-`AUTODRIVE_QA_HEAD` defaults to `HEAD`.
+In a drive, `step-02a-qa-inputs` resolves the base from the PR itself: an
+operator's `AUTODRIVE_QA_BASE` first, then the base branch the drive observed,
+then `gh pr view <pr_number> --json baseRefName`, and a preflight where none
+of those answers or where the operator's own value is not a branch name. The
+order and its validation are in
+[resolving the measurement base](../reference/auto-drive-qa.md#resolving-the-measurement-base).
+By hand you set the base yourself. `AUTODRIVE_QA_BASE` is the PR's base branch
+name without `origin/`; the tool reads `refs/remotes/origin/<base>`, so fetch
+it first. `AUTODRIVE_QA_HEAD` defaults to `HEAD`.
 
 ```bash
 git fetch origin main
@@ -73,11 +78,28 @@ directory. In amplihack-rs, and for any documentation-only PR, expect
 `gadugi_scenario_dir` and `gadugi_scenario_dir_state` `not-consulted`: the
 tool looked for no directory, and you find it yourself.
 
+Use the PR's own base, not `main`, for a PR into any other branch. Measured
+against `main`, a PR into `release/1.2` records that release branch's commits
+as its own change, reads `.amplihack/qa.toml` from the wrong merge base, and
+reports a documentation-only flag covering commits the PR does not carry:
+
+```bash
+git fetch origin release/1.2
+REPO_PATH="$PWD" AUTODRIVE_QA_BASE=release/1.2 AUTODRIVE_ROUND_LABEL=round-1 \
+  bash "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_qa_evidence.sh" >/dev/null
+```
+
 The tool runs the declared QA command. It runs no scenario, and it issues no
 verdict you may rely on: `qa_status` describes the measurement only. With
 `AUTODRIVE_QA_BASE` unset, or a base that is not fetched,
 `qa_command_paths` is `(unknown)` and `docs_only` is `unknown`; see
 [operator environment](../reference/auto-drive-qa.md#operator-environment).
+
+A record you find in a round's state directory is that round's own. Where the
+round's step could not measure, it replaces the file with its
+`qa-measurement-unavailable` object rather than leaving the previous round's
+record in place, so a stale measurement is never what you are reading; see
+[the record file](../reference/auto-drive-qa.md#the-record-file).
 
 ## 2. Judge whether the change is user-facing
 

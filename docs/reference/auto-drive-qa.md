@@ -38,6 +38,9 @@ This reference does not establish execution coverage for the
 ## Contents
 
 - [How a round judges criterion 1](#how-a-round-judges-criterion-1)
+  - [Resolving the measurement base](#resolving-the-measurement-base)
+  - [The record file](#the-record-file)
+  - [Light drives](#light-drives)
 - [What the judgement records](#what-the-judgement-records)
 - [Named recoverable blockers](#named-recoverable-blockers)
 - [The measured record](#the-measured-record)
@@ -64,7 +67,7 @@ order:
 
 | Step | Kind | What it does |
 | --- | --- | --- |
-| `step-02a-qa-inputs` | bash | Resolves the pinned tools directory from `autodrive_tools_dir` or `$AMPLIHACK_HOME`, never through the git toplevel and never from the worktree under review. It resolves that directory and the worktree with `pwd -P` and checks that the first does not lie inside the second, so a PR carrying its own `amplifier-bundle/tools` cannot supply the tool or the guidance that judges it. It then sets `AUTODRIVE_QA_BASE` to the PR's observed base branch, and runs the trusted `autodrive_qa_evidence.sh`. That tool selects and runs the declared QA command, measures the changed files, the documentation-only flag, the repository type and the scenario directory with its tracked scenarios, and writes [the measured record](#the-measured-record). The step checks the shape of what the tool wrote before it uses it: output that is not an object carrying at least one field is treated as no record at all. It runs no scenario and issues no verdict any consumer conditions on. The step prints that record with one field added, `qa_guidance`: the absolute path of the pinned bundle copy of `criterion-1-qa-judgement.md`, checked to be a regular file beside the resolved tools directory. That is the only copy the judgement may read its rules from, so a PR cannot rewrite them. |
+| `step-02a-qa-inputs` | bash | Resolves the pinned tools directory from `autodrive_tools_dir` or `$AMPLIHACK_HOME`, never through the git toplevel and never from the worktree under review. It resolves that directory and the worktree with `pwd -P` and checks that the first does not lie inside the second, so a PR carrying its own `amplifier-bundle/tools` cannot supply the tool or the guidance that judges it. It then resolves the PR's own base branch, as [resolving the measurement base](#resolving-the-measurement-base) sets out, and runs the trusted `autodrive_qa_evidence.sh` with `AUTODRIVE_QA_BASE` set to that base, or with the variable unset where no base resolved. That tool selects and runs the declared QA command, measures the changed files, the documentation-only flag, the repository type and the scenario directory with its tracked scenarios, and writes [the measured record](#the-measured-record). The step checks the shape of what the tool wrote before it uses it: output that is not an object carrying at least one field is treated as no record at all. It runs no scenario and issues no verdict any consumer conditions on. The step prints that record with one field added, `qa_guidance`: the absolute path of the pinned bundle copy of `criterion-1-qa-judgement.md`, checked to be a regular file beside the resolved tools directory. That is the only copy the judgement may read its rules from, so a PR cannot rewrite them. |
 | `step-02-qa-team-scenarios` | agent | Reads the guidance from the pinned bundle, the diff, the linked issue, the measured record and the existing scenarios. Judges, writes or extends this PR's scenarios, runs them, fixes and re-runs, and returns the judgement. |
 
 `step-02a-qa-inputs` cannot end a round. The measurement cannot run when a
@@ -127,6 +130,93 @@ scenario directory or failing declared command ends a drive, and none of
 them yields a criterion-1 outcome a later round cannot clear. Only a
 recorded hand-off hands the drive to a person.
 
+### Resolving the measurement base
+
+The base decides what the measurement describes: which files the PR changed,
+whether the change is documentation-only, and which merge-base blob
+`.amplihack/qa.toml` is read from. A PR into a branch other than the
+repository's default, measured against the default anyway, records the base
+branch's own commits as the PR's change, selects the suite the default branch
+declares, and reads a documentation-only flag covering commits the PR does not
+carry.
+
+`step-02a-qa-inputs` takes the base from the PR, in this order, and uses the
+first candidate that passes validation:
+
+| Order | Source | Where it comes from |
+| --- | --- | --- |
+| 1 | `AUTODRIVE_QA_BASE` in the step's environment | An operator override. It stands over every row below, so a base an operator pinned for the run is the base measured, and a value set here that fails validation ends the order at row 4 rather than falling through to row 2. |
+| 2 | the `autodrive_base_branch` recipe variable | The base branch the drive observed for the selected PR. `autodrive_merge_loop_run.sh` passes it into the merge loop and `autodrive_loop.sh` into the round's context; `autodrive-merge-round.yaml` declares it and passes it on to `autodrive-merge-evidence.yaml`, which declares it in turn. A drive that supplies no base leaves it empty, which counts as no answer. |
+| 3 | `gh pr view <pr_number> --json baseRefName --jq .baseRefName` | The hosting interface, read only where `pr_number` is digits alone and `gh` is on the path. The read is optional: a non-zero exit, an unauthenticated host and an offline host are each no answer, and the step moves to the next row. It waits for nothing and repeats nothing. |
+| 4 | nothing resolved | The tool runs with `AUTODRIVE_QA_BASE` **unset**, which measures a preflight. |
+
+A candidate is used only where it is a plausible branch name: not empty, not
+beginning with `-`, holding only the characters `A-Za-z0-9._/-`, and accepted
+by `git check-ref-format --branch`. A name arriving from recipe context or from
+`gh` therefore cannot reach a git invocation as an option or as a path of its
+own choosing.
+
+What failing that validation means depends on the row. A row 2 or row 3
+candidate that fails is passed over as though its source had no answer, and the
+step tries the next row. A row 1 value that fails is not passed over. The
+operator named a base for this run, and resolving the drive's own base or the
+hosting interface's in its place is the substitution the rest of this section
+forbids, so the step takes no measurement base at all and measures a preflight.
+An operator who mistypes the override gets the recorded unknowns of a preflight,
+visible in the record and named in the judgement, rather than a measurement
+against a base they did not choose.
+
+Unset and empty are different inputs to the measurement, so the step exports
+`AUTODRIVE_QA_BASE` only where a candidate survived. An empty value is a
+measurement whose scope could not be resolved; no variable at all is a
+preflight of the head commit. The step never turns the second into the first,
+and it never substitutes the default branch for a base it could not resolve: a
+preflight records `qa_command_paths` `(unknown)` and `docs_only` `unknown`,
+which the judgement reads as an unknown it must name, whereas a measurement
+against the wrong base reads as fact.
+
+The measurement needs `refs/remotes/origin/<base>` in the worktree. Where the
+round has not fetched the base branch, the merge base cannot be resolved, and
+the record carries `(unknown)` paths, an `unknown` `docs_only` and
+`qa_criterion1_declaration` `none`. That is a recorded unknown rather than a
+silent fallback, and the judgement says so.
+
+A preflight differs from that case in one field. With no base at all the tool
+reads the declaration from the head tree instead, so a preflight record can
+carry a declaration no base branch ever committed. What a reader does with it
+is set out under [how merge-ready agents use the
+declaration](#how-merge-ready-agents-use-the-declaration).
+
+The record carries no field naming the base it was measured against, so
+neither the judging agent nor the round's assessment can confirm the base from
+the record itself. The base is correct by construction, from the order above,
+and the criterion 1 prompt states that rule, including the preflight case,
+rather than asking the agent to verify it.
+
+### The record file
+
+The file named by the `autodrive_qa_evidence` recipe variable has two writers,
+and which of them wrote it matters. Where the measurement runs,
+`autodrive_qa_evidence.sh` writes the record itself, under `umask 077`, so the
+file is mode `0600`; that is the measured record, and the step neither composes
+it nor rewrites it. `step-02a-qa-inputs` writes the file only on the path where
+no measurement could run. The judging agent reads the file and never writes it,
+and the round hashes it (see [the record hash](#the-record-hash)).
+
+A round that cannot measure replaces the file as well as printing the blocker.
+The step removes the file and writes the same `qa-measurement-unavailable`
+object into it, so the assessment and the hash read this round's blocker and
+never the previous round's measurement. Where the removal succeeds and the
+write does not, no file is left at the path. An absent file is not itself a
+named blocker: the blocker reaches its readers through the object the step
+prints, which it prints either way, and the missing file shows up at
+[the record hash](#the-record-hash) as an empty `qa_evidence_sha` beside the
+tool's `WARNING:` line. The removal guarantees something narrower, which is
+why it is done first: no reader is handed a previous round's measurement as
+this round's. The step acts only on the path the round supplied, declines a
+symlink, and applies the same path check it applies to the other paths it
+uses, so the replacement cannot be redirected onto a file the PR chose.
+
 ### Light drives
 
 `auto-drive-light.yaml` checks the change before the PR exists, so it has its
@@ -135,7 +225,7 @@ as before, `not pr_number and not existing_branch`.
 
 | Step | Kind | What it does |
 | --- | --- | --- |
-| `light-qa-inputs` | bash | Runs the same measurement tool with `AUTODRIVE_QA_EVIDENCE` fixed at `$QUICK_CHANGE_STATE_DIR/qa/qa-evidence.json`, `AUTODRIVE_QA_BASE` set to the branch `light-worktree` started from and `AUTODRIVE_QA_HEAD` set to the worktree's `HEAD`. |
+| `light-qa-inputs` | bash | Runs the same measurement tool with `AUTODRIVE_QA_EVIDENCE` fixed at `$QUICK_CHANGE_STATE_DIR/qa/qa-evidence.json`, `AUTODRIVE_QA_BASE` set to the branch `light-worktree` started from and `AUTODRIVE_QA_HEAD` set to the worktree's `HEAD`. There is no PR yet, so the base is that recorded starting branch and no hosting interface is consulted for it. |
 | `light-qa` | agent | Follows the same guidance and returns the judgement as `light_checks`. |
 
 `light-prereqs` reports whether `gadugi-test` is on the path and exits 0.
@@ -164,6 +254,14 @@ them to a shell.
 The light judgement is a pre-PR check. It does not meet criterion 1: once
 the PR is open, `light-merge-loop` runs `autodrive-merge-loop.yaml`, and each
 round measures and judges again against the PR head.
+
+Its hand-off is advisory for the same reason. A `qa_handoff` that `light-qa`
+records stays in the step's own `light_checks` output for the run's write-up;
+nothing writes it to the step-recovery store of
+[step failure recovery](step-failure-recovery.md), and no later step reads it
+as a recorded recovery. Read the light judgement, its named blockers and its
+hand-off as advice to the run, and expect the merge round to judge criterion 1
+again from its own measurement.
 
 ## What the judgement records
 
@@ -405,10 +503,22 @@ An explicitly empty command override records source `env` and `qa_reason`
 `qa-command-missing`; it does not fall back. Sources other than the single
 environment command choose their own directory.
 
-`AUTODRIVE_QA_BASE` and `AUTODRIVE_QA_HEAD` are internal observation inputs.
-The merge evidence step must set them to the selected PR's actual base branch
-and verified head before it runs `autodrive_qa_evidence.sh`; the script uses
-whatever values it is given. With `AUTODRIVE_QA_BASE` unset the tool
+`AUTODRIVE_QA_BASE` and `AUTODRIVE_QA_HEAD` are observation inputs. The
+script resolves neither for itself and uses whatever values it is given.
+Inside a round, `step-02a-qa-inputs` resolves the base alone (see
+[resolving the measurement base](#resolving-the-measurement-base)), and an
+`AUTODRIVE_QA_BASE` an operator sets there is the first source it consults.
+
+The step sets no head. `AUTODRIVE_QA_HEAD` is left unset, so the measurement
+takes the checkout's own `HEAD`, and nothing compares that commit with the
+gate's `headRefOid`: the round trusts that the worktree it was given is the
+worktree of the PR it selected. The script accepts the literal `HEAD` or a full
+SHA present in the clone and nothing else, so a short SHA or an empty value
+makes everything unknown rather than measuring some other commit.
+`light-qa-inputs` passes the head explicitly because its worktree holds the
+change under construction. Fixing the head to the gate's value is not part of
+this change; it belongs with the record's missing base field in the follow-up
+issue. With `AUTODRIVE_QA_BASE` unset the tool
 measures a preflight of the head commit (see
 [Declaring how criterion 1 is met](#declaring-how-criterion-1-is-met)). A
 preflight record describes the head commit only: `qa_command_paths` is
@@ -511,9 +621,11 @@ is no base to compare with. The head declaration has one effect:
 `invalid` `paths-unknown` and chooses no command, so a preflight measures the
 head commit only. An `AUTODRIVE_QA_BASE` that is set but empty, or names a
 base whose merge base cannot be resolved, does not fall back to the head; the
-declaration is then `none`. Merge evidence must run with `AUTODRIVE_QA_BASE`
-set to the PR's actual base. A record measured without it describes the head
-commit only, and its declaration does not count for a merge.
+declaration is then `none`. Merge evidence measures against the PR's own
+base, resolved as
+[resolving the measurement base](#resolving-the-measurement-base) sets out. A
+record measured where no base resolved describes the head commit only, and its
+declaration does not count for a merge.
 
 **Fails closed.** The declaration is `none`, and gadugi stays required
 wherever detection requires it, when `AUTODRIVE_QA_SCENARIO_DIR`,
@@ -538,10 +650,11 @@ The agents that judge criterion 1 are told about the declaration in two
 places: the criterion 1 row of the
 [merge-ready skill](../../amplifier-bundle/skills/merge-ready/SKILL.md) and the
 criterion 1 bullet of `amplifier-bundle/recipes/autodrive-merge-round.yaml`.
-The criterion 1 prompt of `autodrive-merge-evidence.yaml` tells the evidence
-agent to run `autodrive_qa_evidence.sh` with `AUTODRIVE_QA_BASE` set to the
-selected PR's base branch. The guidance is agent judgement; no script checks
-the agent's reading.
+The judging agent runs no measurement of its own: `step-02a-qa-inputs` runs
+`autodrive_qa_evidence.sh` against the base it resolved, and the criterion 1
+prompt of `autodrive-merge-evidence.yaml` states that rule, with what a
+preflight record does not support. The guidance is agent judgement; no script
+checks the agent's reading.
 
 Both texts give the same rules:
 
@@ -554,9 +667,14 @@ Both texts give the same rules:
 - **Source.** The agent takes the value only from the measured record at
   `{{autodrive_qa_evidence}}`. It never takes it from the step-02 summary, the
   PR description, or a qa.toml read from the PR head or the worktree.
-- **Base binding.** A declaration counts only in evidence measured with
-  `AUTODRIVE_QA_BASE` set to the PR's actual base. Otherwise the agent treats
-  it as `none`.
+- **Base binding.** A declaration counts only in a record measured against
+  the PR's own base, which
+  [resolving the measurement base](#resolving-the-measurement-base)
+  establishes. A preflight record, measured where no base resolved, reads its
+  declaration from the PR head rather than from a merge base, so it can carry
+  `multi-area-command` or `ci-job:<name>` that no base branch ever committed.
+  The agent reads a preflight's declaration as `none` whatever it says, and
+  reads a declaration found outside the record as `none` too.
 - **Exclusions.** The declaration does not apply when the PR changes
   `.amplihack/qa.toml`; when the operator sets `AUTODRIVE_QA_SCENARIO_DIR`,
   `AUTODRIVE_QA_COMMAND` or `AUTODRIVE_QA_COMMANDS`, even to an empty value;
