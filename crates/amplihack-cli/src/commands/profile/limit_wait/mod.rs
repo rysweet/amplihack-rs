@@ -1,11 +1,15 @@
 //! The usage-limit wait for recipe agent steps (issue #1618).
 //!
 //! When a supervised `-p` step fails on a usage limit and no auto-switch
-//! rerun is left, the step waits once for the reset (or for the login to
-//! change), then runs once more with the same inputs. A limit that will not
-//! reset soon waits for another login with capacity instead when one could
-//! take over (issue #1801). See
-//! docs/reference/profile-command.md#usage-limit-wait.
+//! rerun is left, the step waits for the reset (or for the login to change),
+//! then runs once more with the same inputs. A limit that will not reset soon
+//! waits for another login with capacity instead when one could take over
+//! (issue #1801), and an organisation spend limit on a `$HOME/.claude` step
+//! waits for the rotator to move another login in (issue #2731). A step waits
+//! once per login it runs on, inside one `max_wait_secs` budget (`marks`).
+//! Each wait's `start` and `end` also reach the run's recipe log, so a
+//! waiting step is visible there and not just in its own stderr
+//! (`recipe_log`). See docs/reference/profile-command.md#usage-limit-wait.
 //!
 //! `Waiter` decides what happens after a limit; the one supervisor loop,
 //! `auto_switch::rerun::run`, runs the attempts with or without auto-switch.
@@ -16,7 +20,9 @@ mod clock;
 mod events;
 pub(crate) mod fingerprint;
 mod ledger;
+mod marks;
 pub(crate) mod plan;
+mod recipe_log;
 pub(crate) mod scratch;
 pub(crate) mod settings;
 pub(crate) mod wait;
@@ -30,9 +36,19 @@ mod tests_fingerprint_ledgers;
 #[cfg(test)]
 mod tests_log;
 #[cfg(test)]
+mod tests_log_recipe;
+#[cfg(test)]
+mod tests_login_key;
+#[cfg(test)]
+mod tests_marks;
+#[cfg(test)]
 mod tests_plan;
 #[cfg(test)]
+mod tests_plan_login_change;
+#[cfg(test)]
 mod tests_plan_reading;
+#[cfg(test)]
+mod tests_recipe_log;
 #[cfg(test)]
 mod tests_scratch;
 #[cfg(test)]
@@ -46,9 +62,11 @@ use super::attempt::Signals;
 use super::store::ProfileStore;
 use anyhow::Result;
 use clock::Clock;
-use events::{Event, FailReason, Skip, log};
+use events::{Event, FailReason, Shape, Skip, log, recipe_line};
 use fingerprint::{Fingerprint, Watch};
-use plan::{NoWait, PlanKind, WaitFor, plan, plan_capacity};
+use marks::Marks;
+use plan::{NoWait, PlanKind, WaitFor, plan, plan_capacity, plan_login_change};
+pub(crate) use recipe_log::RECIPE_LOG_ENV;
 pub(crate) use settings::WaitSettings;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -111,11 +129,15 @@ impl WaitDeps for RealDeps<'_> {
     }
 }
 
-/// The wait's state for one step: at most one wait per step.
+/// The wait's state for one step: one wait per login, inside one budget.
 pub(crate) struct Waiter {
     /// `None` when `AMPLIHACK_NONINTERACTIVE` is not exactly `1`.
     settings: Option<WaitSettings>,
-    used: bool,
+    /// Which logins this step has waited on, and what it has spent (#2731).
+    marks: Marks,
+    /// The login the attempt now running was launched on, read before it
+    /// started. `None` for any step the rotator cannot move.
+    attempt_login: Option<String>,
     clock: Clock,
     step_start: i64,
     step_timeout: Option<u64>,
@@ -130,6 +152,9 @@ pub(crate) struct Waiter {
     /// (#1801), called only when a limit is seen. Always false for a step
     /// with an explicit login or an inherited profile.
     home_takeover: Box<dyn Fn() -> bool>,
+    /// Whether a rotator is running that could move another login into
+    /// `$HOME/.claude` (#2731), called only when a spend limit is seen.
+    home_rotator: Box<dyn Fn() -> bool>,
     /// When this step's wait began, on the wait's clock, if a capacity wait.
     capacity_start: Option<i64>,
 }
@@ -140,6 +165,7 @@ impl Waiter {
         watch: Watch,
         prompt_in_args: bool,
         home_takeover: Box<dyn Fn() -> bool>,
+        home_rotator: Box<dyn Fn() -> bool>,
     ) -> Self {
         let clock = Clock::new();
         let step_start = clock.now();
@@ -152,7 +178,8 @@ impl Waiter {
             .and_then(|v| v.parse().ok());
         Self {
             settings,
-            used: false,
+            marks: Marks::new(),
+            attempt_login: None,
             clock,
             step_start,
             step_timeout,
@@ -162,6 +189,7 @@ impl Waiter {
             blocked: None,
             prompt_in_args,
             home_takeover,
+            home_rotator,
             capacity_start: None,
         }
     }
@@ -171,8 +199,30 @@ impl Waiter {
         self.settings.is_some_and(|s| s.enabled)
     }
 
+    /// Whether this step has waited at all, which is what auto-switch reads
+    /// to stop choosing another candidate. #2731 did not change it.
     pub(crate) fn used(&self) -> bool {
-        self.used
+        self.marks.used()
+    }
+
+    /// Reads the login the next attempt will run on, immediately before it
+    /// is launched (issue #2731). On a shared-login host the rotator reacts
+    /// to the same exhausted reading that fails the attempt, so the swap
+    /// usually lands while the attempt is still failing; taking the key
+    /// before the attempt is what lets `after_limit` see that.
+    pub(crate) fn note_attempt_login(&mut self) {
+        self.attempt_login = self.watch.login();
+    }
+
+    /// Whether this step runs on `$HOME/.claude`, the one directory the
+    /// rotator swaps logins into.
+    pub(crate) fn is_home(&self) -> bool {
+        self.watch.is_home()
+    }
+
+    /// Whether a rotator is running that could move another login in.
+    pub(crate) fn rotator_running(&self) -> bool {
+        (self.home_rotator)()
     }
 
     /// Never wait for this step, for `why`.
@@ -242,32 +292,68 @@ impl Waiter {
             }));
             return AfterLimit::Finish(None);
         }
-        if self.used {
+        // The mark is the login the failed attempt ran on, read before it
+        // was launched. A login this step has already waited on, or a spent
+        // budget after an earlier wait, refuses this one (#2731).
+        let mark = self.attempt_login.clone();
+        let max = settings.max_wait_secs;
+        if self.marks.refuses(&mark, max) {
             log(&Event::Skipped(Skip::AlreadyWaited));
             log(&Event::Failed(FailReason::AlreadyWaited));
             return AfterLimit::Finish(None);
         }
         let now = self.clock.now();
         let step = self.step_timeout.map(|t| (self.step_start, t));
-        let max = settings.max_wait_secs;
-        let (harness, p) = match self.blocked.map_or(inherited, WaitFor::Skip) {
-            WaitFor::Reset { harness, reset } => (harness, plan(now, reset, max, step)),
-            WaitFor::Capacity { harness, reset } => (harness, plan_capacity(now, reset, max, step)),
+        // `max_wait_secs` is a budget for the whole step, so a later wait
+        // gets only what the earlier ones left.
+        let budget = self.marks.remaining(max);
+        let (harness, p, shape) = match self.blocked.map_or(inherited, WaitFor::Skip) {
+            WaitFor::Reset { harness, reset } => {
+                (harness, plan(now, reset, budget, step), Shape::Reset)
+            }
+            WaitFor::Capacity { harness, reset } => (
+                harness,
+                plan_capacity(now, reset, budget, step),
+                Shape::Capacity,
+            ),
+            WaitFor::LoginChange { harness } => (
+                harness,
+                plan_login_change(now, budget, step),
+                Shape::LoginChange,
+            ),
             WaitFor::Skip(why) => {
                 log(&Event::Skipped(Skip::Cannot(why)));
                 return AfterLimit::Finish(None);
             }
         };
-        self.used = true;
+        self.marks.record(mark.clone());
+        let account = mark.as_deref();
         let capacity = p.kind == PlanKind::Capacity;
         self.capacity_start = capacity.then_some(now);
-        log(&Event::Start {
-            harness,
-            reset: p.reset,
-            until: p.until,
-            bound: p.bound,
-            capacity,
-        });
+        emit(
+            &Event::Start {
+                harness,
+                reset: p.reset,
+                until: p.until,
+                bound: p.bound,
+                shape,
+            },
+            account,
+        );
+        // The login may already have changed while the attempt was failing,
+        // which on a shared-login host is the common case: there is then
+        // nothing left to wait for. The comparison fails closed, so a ledger
+        // the rotator is mid-replace reads as no change and the step waits
+        // as it otherwise would.
+        if changed(&mark, self.watch.login()) {
+            emit(&Event::End(End::LoginChanged), account);
+            log(&Event::Resume {
+                attempt: n.saturating_add(1),
+            });
+            // Nothing is recorded in the wait ledger: no time passed.
+            return AfterLimit::Retry;
+        }
+        let before = self.clock.now();
         let mut deps = RealDeps {
             clock: &mut self.clock,
             watch: &self.watch,
@@ -280,7 +366,11 @@ impl Waiter {
         // Real time, not the test clock: auto-drive compares it with its own
         // wall time (issue #1743).
         ledger::record(waited_from.elapsed());
-        log(&Event::End(end));
+        // The budget is spent on the wait's own clock, the one that planned
+        // the deadline.
+        self.marks
+            .spend(u64::try_from(self.clock.now().saturating_sub(before)).unwrap_or(0));
+        emit(&Event::End(end), account);
         match end {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),
             End::SessionEnded => AfterLimit::Finish(None),
@@ -294,6 +384,12 @@ impl Waiter {
                 log(&Event::Failed(FailReason::CapacityExpired));
                 AfterLimit::Finish(None)
             }
+            // A login-change wait that reached its deadline: no reset lifts
+            // an organisation spend limit, and no login arrived that might.
+            End::MaxReached if shape == Shape::LoginChange => {
+                log(&Event::Failed(FailReason::SpendLimit));
+                AfterLimit::Finish(None)
+            }
             End::ResetReached
             | End::MaxReached
             | End::LoginChanged
@@ -305,6 +401,25 @@ impl Waiter {
                 AfterLimit::Retry
             }
         }
+    }
+}
+
+/// Whether the login changed between `was`, read before the attempt, and
+/// `now`, read after its limit. Fails closed: a change counts only when both
+/// readings name a login and the names differ, so unreadable evidence costs
+/// at most the wait the step was going to make, never an attempt burnt on a
+/// login that is still at its limit (issue #2731).
+fn changed(was: &Option<String>, now: Option<String>) -> bool {
+    matches!((was, &now), (Some(a), Some(b)) if a != b)
+}
+
+/// Writes `e` to the step's stderr and, for a wait's `start` and `end`, to
+/// the run's recipe log (issue #2731). `account` is the login the wait is
+/// for; it reaches the recipe log only, never stderr.
+fn emit(e: &Event, account: Option<&str>) {
+    log(e);
+    if let Some(line) = recipe_line(e, account, &chrono::Local) {
+        recipe_log::append(&line);
     }
 }
 
@@ -335,10 +450,18 @@ pub(crate) fn supervise_unprofiled(
     let watch = Watch::new(store, default, config_dir.as_deref(), home.as_deref());
     // Only `$HOME/.claude` can get another login: an explicit directory or a
     // `.default` profile is the login the launch chose (#1801).
-    let home_takeover =
-        super::auto_switch::takeover::home_check(store.filter(|_| watch.is_home()).cloned());
+    let home_store = store.filter(|_| watch.is_home()).cloned();
+    let home_takeover = super::auto_switch::takeover::home_check(home_store.clone());
+    // Issue #2731: a login-change wait needs only a running rotator.
+    let home_rotator = super::auto_switch::takeover::home_rotator(home_store);
     super::auto_switch::rerun::run(
         None,
-        Waiter::new(Some(settings), watch, prompt_in_args, home_takeover),
+        Waiter::new(
+            Some(settings),
+            watch,
+            prompt_in_args,
+            home_takeover,
+            home_rotator,
+        ),
     )
 }

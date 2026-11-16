@@ -20,7 +20,7 @@ use super::super::fsx;
 use super::super::name::ProfileName;
 use super::super::rotate::identify::Account;
 use super::super::store::ProfileStore;
-use amplihack_utils::rotator_status::{CycleStatus, read_cycle};
+use amplihack_utils::rotator_status::{CycleStatus, read_cycle, swap_record};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -107,6 +107,30 @@ impl Watch {
             identity: identity(json_dir),
             creds: fsx::exists(&dir.join(CREDS)),
         })
+    }
+
+    /// The **login key**: the name of the login a `$HOME/.claude` step would
+    /// run on now (issue #2731). It is the rotate ledger's `live` profile,
+    /// else the swap record's live login, both written by the rotator under
+    /// its own lock. `None` for any other kind of step, for a step with no
+    /// profile root, and whenever neither file can be read.
+    ///
+    /// This is not the fingerprint. The fingerprint says when a wait ends and
+    /// has no readable form; the key says which waits a step may still make
+    /// and is the `account=` field of the recipe-log lines. It is never taken
+    /// from `.claude.json`, whose account may hold an e-mail address or a
+    /// UUID, and it is always in the rotator's own name form, so it needs no
+    /// quoting in a log line.
+    pub(crate) fn login(&self) -> Option<String> {
+        let Kind::Home { root, .. } = &self.kind else {
+            return None;
+        };
+        let root = root.as_deref()?;
+        let now = fsx::now();
+        if let Some(live) = read_cycle(root, now).and_then(|c| c.live) {
+            return Some(live);
+        }
+        swap_record::read_swap(root, now).map(|r| r.live_login)
     }
 
     /// The rotate ledger's last cycle, for a `$HOME/.claude` watch only:

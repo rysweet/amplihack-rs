@@ -408,6 +408,10 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             .map(|(sw, p)| (p, sw.state.profile_dir(p.as_str())));
         let env = switch_dir.as_ref().map(|(p, d)| (*p, d.as_path()));
         let input = stdin.for_attempt(n);
+        // Issue #2731: which login this attempt runs on, read before it
+        // starts. The rotator reacts to the same exhausted reading that
+        // fails it, so the swap often lands while the attempt is failing.
+        waiter.note_attempt_login();
         let attempt = match run_attempt_with_recovery(
             &exe,
             &args,
@@ -440,7 +444,14 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         if profile.is_none() {
             // This attempt ran under the inherited profile: its limit is the
             // freshest word on that profile.
-            inherited_wait = Some(plan::upgrade(lim.wait, lim.seen, || takeover(&waiter)));
+            let wait = plan::upgrade(lim.wait, lim.seen, || takeover(&waiter));
+            // Issue #2731: an organisation spend limit with no reset on a
+            // `$HOME/.claude` step waits for the login to change instead.
+            inherited_wait = Some(plan::upgrade_spend(
+                wait,
+                lim.spend.filter(|_| waiter.is_home()),
+                || waiter.rotator_running(),
+            ));
         }
         if let Some(sw) = &switch {
             let current = profile.as_ref().unwrap_or(&sw.inherited).clone();

@@ -54,6 +54,21 @@ pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
     })
 }
 
+/// Whether a rotator is running with auto-switch on for a `$HOME/.claude`
+/// step, and nothing else (issue #2731). A login-change wait needs only
+/// this: the rotator is the one thing that moves a login into `~/.claude`,
+/// and which login it moves in is its own choice, so neither the stored
+/// readings nor the "another login could take over" rules say anything about
+/// whether such a wait can end. With no rotator the step fails at once, as
+/// it did before.
+pub(crate) fn home_rotator(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
+    Box::new(move || {
+        store
+            .as_ref()
+            .is_some_and(|s| rotate::daemon::rotating(s.root()))
+    })
+}
+
 /// The takeover check for a step that inherited profile `own`. No `/usage`
 /// probe is made, so that step's wait ends only on a fresh reading, a rotator
 /// cycle, a login change in its own directory or its own reset. In an

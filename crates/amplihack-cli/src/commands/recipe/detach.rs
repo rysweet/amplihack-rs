@@ -136,7 +136,7 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     let spec = Spec {
         args,
         cwd,
-        env: child_env(request.agent_binary),
+        env: child_env(request.agent_binary, &log),
         log: log.clone(),
         context_file: secrets.context.clone(),
     };
@@ -337,6 +337,21 @@ pub(crate) const PANE_ENV_REMOVED: [&str; 8] = [
     crate::run_guidance::GUIDANCE_DIRS_ENV,
 ];
 
+/// Where a detached run's steps append their usage-limit wait lines (issue
+/// #2731). One marker, named in one place, so the writer and the exporter
+/// cannot drift.
+pub(crate) const RECIPE_LOG_ENV: &str = crate::commands::profile::limit_wait::RECIPE_LOG_ENV;
+
+/// Points `env` at this run's log. Set, never defaulted: a detached run
+/// started from inside another one must append to its own log, so an
+/// inherited value is replaced rather than kept.
+fn with_recipe_log(env: &mut BTreeMap<String, String>, log: &Path) {
+    env.insert(
+        RECIPE_LOG_ENV.to_string(),
+        log.to_string_lossy().into_owned(),
+    );
+}
+
 /// Whether the pane may inherit `name`.
 pub(crate) fn keeps_in_pane(name: &str) -> bool {
     !PANE_ENV_REMOVED.contains(&name)
@@ -346,7 +361,7 @@ pub(crate) fn keeps_in_pane(name: &str) -> bool {
 /// and the resolved agent binary set with the tag `recipe run` would export.
 /// The capacity governor's parent and recipe markers are removed too (issue
 /// #1811): a detached run is independent work and asks for a slot of its own.
-fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
+fn child_env(agent_binary: &Resolution, log: &Path) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
         .filter(|(k, _)| {
@@ -356,6 +371,7 @@ fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
         })
         .collect();
     env.insert(BINARY_ENV.to_string(), agent_binary.binary.clone());
+    with_recipe_log(&mut env, log);
     match export_tag(&agent_binary.binary, agent_binary.source) {
         Some(tag) => env.insert(SOURCE_ENV.to_string(), tag),
         None => env.remove(SOURCE_ENV),
@@ -732,5 +748,36 @@ mod tests {
         ] {
             assert!(keeps_in_pane(kept), "{kept} must reach the pane");
         }
+    }
+
+    /// Issue #2731: a detached run tells its steps where its log is, so a
+    /// step that waits out a usage limit can say so where the run is being
+    /// watched. The value is set, never defaulted: a detached run started
+    /// from inside another one must append to its own log, not the
+    /// enclosing run's.
+    #[test]
+    fn the_recipe_log_marker_is_set_for_the_pane_and_overrides_any_inherited_one() {
+        let mut env: BTreeMap<String, String> = BTreeMap::new();
+        env.insert("PATH".into(), "/usr/bin".into());
+        env.insert(
+            RECIPE_LOG_ENV.into(),
+            "/tmp/an-enclosing-run.log".to_string(),
+        );
+        with_recipe_log(&mut env, Path::new("/logs/amp-run.log"));
+        assert_eq!(env[RECIPE_LOG_ENV], "/logs/amp-run.log");
+        assert_eq!(env["PATH"], "/usr/bin", "nothing else is touched");
+    }
+
+    #[test]
+    fn the_recipe_log_marker_reaches_the_pane() {
+        assert!(
+            keeps_in_pane(RECIPE_LOG_ENV),
+            "a pane that strips it would write no wait lines at all"
+        );
+        assert_eq!(
+            RECIPE_LOG_ENV,
+            crate::commands::profile::limit_wait::RECIPE_LOG_ENV,
+            "both sides must name the same marker"
+        );
     }
 }

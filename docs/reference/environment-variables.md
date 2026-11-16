@@ -29,6 +29,7 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS](#amplihack_recipe_heartbeat_interval_seconds)
   - [AMPLIHACK_RECIPE_SNIPPET_LINES](#amplihack_recipe_snippet_lines)
   - [AMPLIHACK_RECIPE_SNIPPET_BYTES](#amplihack_recipe_snippet_bytes)
+  - [AMPLIHACK_RECIPE_LOG](#amplihack_recipe_log)
   - [AMPLIHACK_RECIPE_LOG_JSONL](#amplihack_recipe_log_jsonl)
   - [AMPLIHACK_RUN_GUIDANCE_DIRS](#amplihack_run_guidance_dirs)
   - [AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS](#amplihack_recipe_transient_max_attempts)
@@ -773,6 +774,43 @@ amplihack recipe run default-workflow \
 
 ---
 
+### AMPLIHACK_RECIPE_LOG
+
+**Type:** absolute path
+**Set by:** `amplihack recipe run --detach`, which exports its own log path
+**Inherited by:** anything that run starts, including a foreground run or
+sub-recipe nested inside it, whose steps then append to the enclosing run's
+log; a nested run that is itself detached overwrites it with its own path
+**Read by:** the usage-limit wait in each supervised agent step
+
+Internal. It names a detached run's own log file, the one
+`amplihack recipe run --detach` prints as `log:`. A step that waits out a
+usage limit appends two lines to it, one when the wait starts and one when it
+ends, so a waiting step is visible to anyone reading the run's log instead of
+looking hung behind the runner's heartbeat:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit account=work reset=2026-11-16 13:00:00 +00:00 until=2026-11-16 13:02:00 +00:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait end reason=login changed
+```
+
+A top-level foreground `amplihack recipe run` has no log file of its own and
+never sets the variable, so it writes no such lines; its stderr is on the
+terminal already.
+
+Do not set it by hand. It is not read from `config.toml`, a recipe spec or a
+step's declared environment, and a detached run overwrites any value it
+inherits, so no detached run's steps can append into another detached run's
+log. Unset, empty, relative, or naming anything other than a private regular
+file this user owns, it is ignored: no line is written, no file is created,
+and the step behaves exactly as it would without it.
+
+This is not `AMPLIHACK_RECIPE_LOG_JSONL`, and nothing is ever written to the
+file that names. The full rules are in
+[The wait in the recipe log](profile-command.md#the-wait-in-the-recipe-log).
+
+---
+
 ### AMPLIHACK_RECIPE_LOG_JSONL
 
 **Type:** path
@@ -1076,14 +1114,25 @@ ignored. See the
 **Config key:** [`recipe.usage_limit_max_wait_secs`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
-Upper bound on one usage-limit wait. For a wait on a reset it only shortens
-the wait, and `0` means no wait but one more attempt; such a wait never
-lasts longer than five hours and 120 seconds. For a
+Upper bound on the time one step spends waiting out usage limits, across
+every wait it makes. For a wait on a reset it only shortens the wait, and `0`
+means no wait but one more attempt; such a wait never lasts longer than five
+hours and 120 seconds. For a
 [capacity wait](./profile-command.md#capacity-wait) on a weekly or
-unreadable reset it sets the length of the wait, with no five-hour ceiling
-(the wait still ends sooner at the failed login's own reset plus 120 s), and `0` means the step ends at once as a usage limit. The variable may set a
-value above the default. Overrides the config files; empty means unset; an
-invalid value prints one warning, naming the variable only, and is ignored.
+unreadable reset, or a
+[login-change wait](./profile-command.md#login-change-wait) on an
+organisation spend limit with no reset, it sets the length of the wait, with
+no five-hour ceiling (a capacity wait still ends sooner at the failed login's
+own reset plus 120 s), and `0` means the step ends at once as a usage limit.
+
+A step that waits again after its login changes draws on the same budget, so
+a chain of waits across several logins lasts no longer in total than the one
+wait the same step would have made before; see
+[One wait per login](./profile-command.md#one-wait-per-login).
+
+The variable may set a value above the default. Overrides the config files;
+empty means unset; an invalid value prints one warning, naming the variable
+only, and is ignored.
 
 ---
 

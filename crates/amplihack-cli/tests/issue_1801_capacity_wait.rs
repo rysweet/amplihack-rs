@@ -498,15 +498,24 @@ fn the_exit_code_passes_through_unchanged() {
     assert_eq!(out.status.code(), Some(7), "{}", describe(&out));
 }
 
+/// Issue #2731 split this test in two. AC15's rule is now one wait per
+/// *login*, not one per step, so what the retry runs on decides whether a
+/// second wait starts. Here the rotator's cycle keeps X live, so the retry
+/// runs on the login the step already waited on and AC15 holds unchanged.
 #[test]
-fn ac15_a_retry_that_hits_the_limit_again_gets_no_second_wait() {
+fn ac15_a_retry_on_the_same_login_gets_no_second_wait() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     c.env("LIMIT_CALLS", "5");
     real_clock(&mut c);
-    let out = run_with_rotator_cycle_during_wait(&f, &mut c);
+    let profiles = f.profiles.clone();
+    let out = run_during_wait(&f, &mut c, move || {
+        // A fresh cycle with capacity, but X is still live: the wait ends
+        // and the retry runs on the login that already had its wait.
+        write_cycle(&profiles, "X", real_now());
+    });
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "one wait, one retry, then give up");
     let ev = events(&out);
@@ -519,6 +528,38 @@ fn ac15_a_retry_that_hits_the_limit_again_gets_no_second_wait() {
     assert!(
         text(&out.stderr).contains("You've hit your weekly limit"),
         "the runner's classifier must still see the limit"
+    );
+}
+
+/// The other half: the rotator made Y live, so the retry runs on a login
+/// this step has not waited on and a second wait starts, keyed to it. That
+/// second wait is bounded by what the first left of `max_wait_secs`, and
+/// when nothing lifts Y's limit either the step ends as it always did.
+#[test]
+fn ac15_a_retry_on_a_login_this_step_has_not_waited_on_waits_again() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "5").env(MAX_WAIT_ENV, "120");
+    real_clock(&mut c);
+    let out = run_with_rotator_cycle_during_wait(&f, &mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "X, then the retry on Y");
+    let ev = events(&out);
+    assert_eq!(
+        ev.iter().filter(|l| l.starts_with("start ")).count(),
+        2,
+        "the login the step moved to gets a wait of its own: {ev:?}"
+    );
+    assert!(!ev.iter().any(|l| l.contains("already_waited")), "{ev:?}");
+    assert_eq!(
+        ev[ev.len() - 2..],
+        [
+            "end reason=capacity expired".to_string(),
+            FAILED_EXPIRED.to_string()
+        ],
+        "{ev:?}"
     );
 }
 
@@ -584,20 +625,29 @@ fn ac3_one_stored_login_with_no_reset_skips() {
     assert_skipped(&f, &out, "no_reset");
 }
 
+/// A spend limit never starts a **capacity** wait: it can apply to a whole
+/// organisation, so another login of the same one would not lift it. Issue
+/// #2731 gave the no-reset case a login-change wait instead, covered in
+/// `issue_2731_login_change_wait`; here the weekly-reset case and the
+/// no-rotator case keep their skips.
 #[test]
-fn ac3_a_spend_limit_skips_whatever_it_states_with_a_second_login() {
-    for (message, reason) in [
-        (SPEND_WEEKLY_TEXT, "reset_too_far"),
-        (SPEND_TEXT, "spend_limit"),
-    ] {
-        let f = with_profiles();
-        x_is_live(&f);
-        let _rotator = rotator_running(&f);
-        let mut c = home_step(&f);
-        c.env("LIMIT_MESSAGE", message);
-        let out = f.run(&mut c);
-        assert_skipped(&f, &out, reason);
-    }
+fn ac3_a_spend_limit_never_starts_a_capacity_wait() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_MESSAGE", SPEND_WEEKLY_TEXT);
+    let out = f.run(&mut c);
+    assert_skipped(&f, &out, "reset_too_far");
+
+    // No rotator: nothing could move another login in, so the no-reset
+    // spend limit still ends the step at once.
+    let g = with_profiles();
+    x_is_live(&g);
+    let mut c = home_step(&g);
+    c.env("LIMIT_MESSAGE", SPEND_TEXT);
+    let out = g.run(&mut c);
+    assert_skipped(&g, &out, "spend_limit");
 }
 
 #[test]

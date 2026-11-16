@@ -233,6 +233,9 @@ pub(crate) struct Limited {
     /// The limit as read, for a capacity wait (issue #1801). `None` for a
     /// spend limit, which keeps its skip whatever reset it states.
     pub(crate) seen: Option<(Harness, Option<i64>)>,
+    /// The harness of an organisation spend limit that states no reset, for
+    /// a login-change wait (issue #2731); `None` for every other limit.
+    pub(crate) spend: Option<Harness>,
 }
 
 /// `Some` when `attempt` hit its usage limit. `now` is the wait's clock.
@@ -252,6 +255,9 @@ pub(crate) fn usage_limited(attempt: &Attempt, now: i64) -> Option<Limited> {
         ledger_reset,
         wait: plan::wait_for_message(message, now),
         seen: message.filter(|m| !m.spend).map(|m| (m.harness, m.reset)),
+        spend: message
+            .filter(|m| m.spend && m.reset.is_none())
+            .map(|m| m.harness),
     })
 }
 
