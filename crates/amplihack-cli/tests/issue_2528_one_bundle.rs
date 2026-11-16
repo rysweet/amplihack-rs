@@ -670,9 +670,60 @@ fn t6_steps_see_the_real_state_root_not_the_snapshot() {
     );
 }
 
+/// What an auto-drive fixture run did, under main's #2663 rule that a run is
+/// reported a success only when it merged.
+///
+/// These fixtures merge nothing, so the command ends without success however
+/// well its steps ran. Main's own auto-drive fixtures tie the two together
+/// the same way (`issue_2329_autodrive_outcomes::assert_child_ran` asserts
+/// `status.success() == (stop_reason == "completed")`). The claims the #2528
+/// tests make are about which bundle a run's recipes and tools came from, so
+/// this asserts what the run itself did - the final record reports the runner
+/// exited 0 with status `success` - and then that any non-success of the
+/// command is #2663's verdict and nothing else.
+fn autodrive_fixture_ran(output: &Output, stderr: &str, detail: &str) {
+    final_record_is_success(stderr, detail);
+    assert!(
+        output.status.success() || merged_nothing(stderr),
+        "the run ended without success for a reason other than #2663's \
+         \"did not merge\":\n{stderr}\n{detail}"
+    );
+}
+
+/// The run's own result, as its final record states it: the runner exited 0
+/// with status `success`, so every step ran. Separate from the command's exit
+/// status, which #2663 decides from the merge.
+fn final_record_is_success(stderr: &str, detail: &str) {
+    let final_record = records(stderr)
+        .into_iter()
+        .find(|record| record["event"] == "final")
+        .unwrap_or_else(|| panic!("no final record:\n{stderr}\n{detail}"));
+    assert_eq!(
+        final_record["status"], "success",
+        "{final_record}\n{detail}"
+    );
+    assert_eq!(final_record["exit_code"], 0, "{final_record}\n{detail}");
+}
+
+/// True when the run reported #2663's "did not merge" verdict, the one reason
+/// an auto-drive fixture here ends without success.
+fn merged_nothing(stderr: &str) -> bool {
+    stderr.contains("auto-drive did not complete") && stderr.contains("[#2663]")
+}
+
 // ------------------------------------------------------- auto-drive (D5, D7)
 
 /// The assets `LaunchBundle::prepare` requires before an auto-drive run.
+///
+/// The same list as `commands::orch::autodrive::trusted::REQUIRED_ASSETS`,
+/// which is `pub(crate)` and so out of reach from this test binary. Kept in
+/// step by hand; a missing entry is not silent, because `prepare` names the
+/// first asset it cannot find and the run stops there. Compare with:
+///
+/// ```text
+/// grep -A 14 'REQUIRED_ASSETS' \
+///   crates/amplihack-cli/src/commands/orch/autodrive/trusted.rs
+/// ```
 const AUTODRIVE_ASSETS: &[&str] = &[
     "skills/merge-ready/SKILL.md",
     "skills/crusty-old-engineer/SKILL.md",
@@ -683,6 +734,10 @@ const AUTODRIVE_ASSETS: &[&str] = &[
     "tools/autodrive_loop.sh",
     "tools/autodrive_merge_message.sh",
     "tools/autodrive_expected_checks.sh",
+    // Added on main by #2637 and #2686, after these tests were written.
+    "tools/autodrive_merge.sh",
+    "tools/autodrive_round_word.sh",
+    "recipes/autodrive-handoff.yaml",
 ];
 
 #[test]
@@ -765,10 +820,7 @@ fn autodrive_run_turns_default_search_off_and_nested_runs_inherit_the_snapshot()
     );
     let stderr = text(&output.stderr);
     let nested = fs::read_to_string(world.records.join("nested.stderr")).unwrap_or_default();
-    assert!(
-        output.status.success(),
-        "run failed:\n{stderr}\nnested:\n{nested}"
-    );
+    autodrive_fixture_ran(&output, &stderr, &format!("nested:\n{nested}"));
 
     // The outer runner gets the launch copy's agents and no default search.
     let args = fs::read_to_string(&args_file).unwrap_or_default();
@@ -1162,10 +1214,7 @@ fn b3_a_step_starts_a_nested_round_by_the_path_into_its_own_bundle_copy() {
     );
     let stderr = text(&output.stderr);
     let round = fs::read_to_string(world.records.join("round.stderr")).unwrap_or_default();
-    assert!(
-        output.status.success(),
-        "run failed:\n{stderr}\nround:\n{round}"
-    );
+    autodrive_fixture_ran(&output, &stderr, &format!("round:\n{round}"));
     let lines = world.lines();
 
     // The round started, from the path the loop builds, and exited 0.
@@ -1173,9 +1222,18 @@ fn b3_a_step_starts_a_nested_round_by_the_path_into_its_own_bundle_copy() {
         !round.contains("belongs to the bundle at"),
         "a path into the run's own bundle copy is not another bundle:\n{round}"
     );
+    // The round is an `autodrive-` recipe too, so #2663 judges it by its own
+    // merge: it merged nothing, so its exit status is 1 even though every
+    // step ran. Its own final record is what says the steps ran.
+    final_record_is_success(&round, &format!("{lines:?}"));
+    let round_rc = lines
+        .iter()
+        .find_map(|l| l.strip_prefix("round_rc="))
+        .unwrap_or_else(|| panic!("the round did not run: {lines:?}\n{round}"));
     assert!(
-        lines.iter().any(|l| l == "round_rc=0"),
-        "the round did not run: {lines:?}\n{round}"
+        round_rc == "0" || merged_nothing(&round),
+        "the round exited {round_rc} for a reason other than #2663's \
+         \"did not merge\": {lines:?}\n{round}"
     );
     assert!(lines.iter().any(|l| l == "round=ran"), "{lines:?}\n{round}");
 
