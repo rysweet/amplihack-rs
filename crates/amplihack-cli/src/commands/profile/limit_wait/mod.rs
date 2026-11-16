@@ -390,7 +390,6 @@ impl Waiter {
         };
         self.marks.record(mark.clone());
         let account = mark.as_deref();
-        let capacity = p.kind == PlanKind::Capacity;
         // Each wait chooses its own retry login and only its own. The
         // clear is here, above the retry-before-wait return below, so a
         // value an earlier wait left behind can never pick the login a
@@ -438,6 +437,7 @@ impl Waiter {
         // it ended (#1801), and after a wait of any kind that ended because
         // another login has room (#2694).
         let room_was_seen = end == End::OtherCapacity;
+        let capacity = p.kind == PlanKind::Capacity;
         self.retry_move = (capacity || room_was_seen).then_some(RetryMove {
             start: now,
             room_was_seen,

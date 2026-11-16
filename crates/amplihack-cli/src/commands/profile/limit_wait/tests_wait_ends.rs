@@ -346,14 +346,6 @@ fn a_fresh_rotator_cycle_without_a_swap_does_not_end_a_login_change_wait() {
 }
 
 #[test]
-fn neither_capacity_source_ends_a_login_change_wait_even_together() {
-    let mut f = Fake::new();
-    f.capacity_from = Some(0);
-    f.other_from = Some(0);
-    assert_eq!(wait(&login_change_plan_in(120), &mut f), End::MaxReached);
-}
-
-#[test]
 fn a_login_change_wait_still_ends_when_the_login_changes() {
     // The suppression is of the capacity sources alone: the fingerprint is
     // what this wait is for, and it still ends the wait at the second poll
@@ -392,10 +384,9 @@ fn a_login_change_wait_that_reaches_its_deadline_reads_as_max_reached() {
     assert_eq!(f.elapsed(), 0, "a zero-length wait never sleeps");
 }
 
-/// A login-change wait makes neither capacity read at all, rather than
-/// making them and ignoring what they say: the two checks are the only
-/// readers of the stored readings during a wait, and a wait that is not
-/// going to act on them has no business taking them.
+/// A login-change wait never asks another login's capacity at all, rather
+/// than asking and ignoring the answer: a wait that is not going to act on
+/// a reading has no business taking one.
 #[test]
 fn a_login_change_wait_takes_no_capacity_reading() {
     let mut f = Fake::new();

@@ -101,11 +101,12 @@ fn there_is_no_reset_to_show() {
 }
 
 #[test]
-fn the_wait_itself_is_a_reset_wait_so_no_reading_is_consulted() {
-    // `PlanKind::Capacity` would make the wait probe the stored readings for
-    // another login's capacity. No reading says whether the next login's
-    // organisation has credit, and the rotator picks what goes into
-    // `~/.claude` in any case.
+fn the_deadline_means_what_a_reset_waits_deadline_means() {
+    // The kind says what reaching the deadline means, and nothing else:
+    // `wait::End::at_deadline` maps `Reset` to `MaxReached`, which `mod.rs`
+    // turns into `failed reason=spend_limit`. `Capacity` would instead read
+    // as `CapacityExpired`. Which readings the wait consults is
+    // `Plan::capacity_may_end`'s answer, asserted below.
     assert_eq!(p(Some(600), None).kind, PlanKind::Reset);
 }
 

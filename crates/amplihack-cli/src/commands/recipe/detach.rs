@@ -1007,8 +1007,8 @@ mod tests {
         // discipline is not this code's to assume. Past `MAX_HELD` the hold
         // is given up and the bytes are written: the log is worth more than
         // the line boundary, and dropping them is never the answer.
-        // Past any hold the implementation could sensibly keep: its bound
-        // is one mebibyte.
+        // Two mebibytes, so the input is past `MAX_HELD` whatever rounding
+        // the reads happen to fall on.
         let long = "x".repeat(2 << 20);
         let mut reader = Chunks::new([long.as_str(), "\n"]);
         let (mut out, mut log) = (Writes::default(), Writes::default());
