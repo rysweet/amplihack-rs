@@ -341,6 +341,12 @@ journal means the observer ran and saw no Git commands that can write.
 `GitRecord::dry_run()` is the only state with recording switched off, and only
 a dry run reaches it. See the [Git command record](recipe-runner-logging.md#git-command-record).
 
+A traced task that exits between its ptrace stop and the observer's next
+request is not a failure of the observation. The observer records it, keeps
+observing, and the run reports the runner's own exit; the journal's receipt
+carries a `vanished` count and one bounded warning per task reaches stderr.
+See [Vanished observed tasks in the Linux run observer](run-isolation-vanished-observed-tasks.md).
+
 Off Linux there is no observer. The run still executes in its private
 checkout, without command recording, and says so in `git-recording.json` and
 `run.json` with `"coverage":"unavailable"`. See
@@ -542,7 +548,7 @@ These are internal modules, not a public API.
 | `run_isolation/input_snapshot.rs` | Captures `HEAD`, index and working tree separately; rejects unsafe inputs. |
 | `commands/recipe/run/run_checkout.rs` | Finds the repository (fails closed), provisions the private checkout, rebuilds the `origin` refspec, `origin/*` and `origin/HEAD`, maps paths, releases owned paths. |
 | `commands/recipe/run/git_record.rs` | `GitRecord::begin` delegates to `begin_on(run_dir, RecordingPlatform::current())`. `RecordingPlatform::Linux` starts the observer; `RecordingPlatform::Other` gives the unobserved `Unavailable` state. `GitRecord::dry_run()` is the disabled state for dry runs; `finish` publishes. |
-| `run_isolation/observer/linux.rs` | ptrace observer, built only with `cfg(target_os = "linux")`. |
+| `run_isolation/observer/linux.rs` | ptrace observer, built only with `cfg(target_os = "linux")`. `vanished_task` and `vanished_proc_entry` classify a task that has gone by error number; `Scopes::vanished` counts it into every journal in its chain and prints the capped warning. See [vanished observed tasks](run-isolation-vanished-observed-tasks.md). |
 | `run_isolation/review_generation.rs` | Review generations: provision, four-part validation (including a clean working tree), retirement of superseded generations in `advance`, release. `read_live` refuses retired generations; plain `read` is used only by `release`, `release_state` and the child walk. |
 | `run_isolation/exec_storage.rs` | Claims `<work root>/exec/<identity>/` and decides when it may be reclaimed; used by preparation and by `amplihack cleanup`. |
 | `commands/cleanup/run_dir.rs` | `RunWorkspace::begin_durable` for real runs, `RunWorkspace::dry_runtime` for dry runs; `record_attempt_checked` and `finish_checked` return errors. |
@@ -562,6 +568,7 @@ workspace code. None of them is discarded with `.ok()`, `let _ =` or
 | Observer fails to start on Linux for any other reason | The runner never starts. Without a writable work root: `cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry`. |
 | Not Linux | The run proceeds unobserved and records `coverage: "unavailable"`. Without a writable work root it stops with the same message as above. |
 | Seeding `origin/*` (for example an `origin/*` ref whose objects are missing from the caller's repository) or copying `origin/HEAD` fails | Preparation fails with `cannot seed origin refs` and `partial resources retained at <exec dir>`; no step runs. |
+| A traced task exits between its stop and the next ptrace request (`ESRCH`) | One warning on stderr naming the task and the request, a `vanished` count in the journal receipt, observation continues, and the run reports the runner's own exit. See [vanished observed tasks](run-isolation-vanished-observed-tasks.md). |
 | Observer lost, storage or attribution error | Controlled teardown, partial evidence kept, run fails. |
 | Checkout identity changed at release | Resources kept, run fails. |
 | Review dir fails a check | `REVIEW_DIR_CHANGED` or `REVIEW_DIR_UNSTAMPED`; no judging. |
@@ -751,5 +758,6 @@ The double cannot detect faults in real review isolation. The
 - [Run a recipe](../howto/run-a-recipe.md#know-where-the-run-works)
 - [Clean up after recipe runs](../howto/clean-up-after-recipe-runs.md#what-happens-when-a-run-ends)
 - [Recipe runner logging](recipe-runner-logging.md#git-command-record)
+- [Vanished observed tasks in the Linux run observer](run-isolation-vanished-observed-tasks.md)
 - [Auto-drive to merge](auto-drive-to-merge.md#review-generations)
 - [Recipe runner architecture](../concepts/recipe-runner-architecture.md#the-runs-own-checkout)

@@ -406,6 +406,8 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - CLI/runner responsibility split, stream ownership, progress events, and additive JSON preservation
 - [Recipe Run and Auto-Drive Checkout Isolation](reference/recipe-checkout-isolation.md) - What a run copies from your checkout, where steps and reviews run, Git recording, and owned release
 - [Inspect a Local-Input Snapshot](tutorials/recipe-checkout-isolation.md) - Run a recipe against staged, unstaged and untracked changes and confirm your index is untouched
+- [Vanished Observed Tasks in the Linux Run Observer](reference/run-isolation-vanished-observed-tasks.md) - What the ptrace observer does when a traced task exits mid-request, the `vanished` receipt count, and what still fails the run
+- [Diagnose a Vanished Observed Task](howto/diagnose-a-vanished-observed-task.md) - Read the `observed task ... was gone` warning, confirm the run was unharmed, and count the tasks that were lost
 - [Trace2 Recording Investigation](operations/issue-2096-recording-probe.md) - Retained diagnostic evidence and the limits of cooperative recording
 - [Recipe Runner Logging Reference](reference/recipe-runner-logging.md) - stderr progress, heartbeats, bounded snippets, JSONL events, and additive result fields
 - [Recipe Run Correlation Reference](reference/recipe-run-correlation.md) - Stable run IDs, `AMPLIHACK_RECIPE_RUN_ID`, pointer event schema, and final result fields

@@ -121,6 +121,64 @@ fn traceme_refused(error: &std::io::Error) -> bool {
     matches!(error.raw_os_error(), Some(libc::EPERM) | Some(libc::ENOSYS))
 }
 
+/// Issue #2716: a ptrace request issued inside the observation loop failed
+/// because the task it addressed has gone. `ESRCH` from a request on a
+/// stopped tracee is the documented result when that tracee died between the
+/// stop and the request: a thread of a group whose leader called `exit_group`,
+/// a tracee killed with SIGKILL, or a tid retired by a sibling's exec. That
+/// is an ordinary event in a traced tree of agent, node, cargo and shell
+/// processes, not a broken observation.
+///
+/// This is the one deliberate fail-open case in a fail-closed design, and it
+/// is safe only because of the structure around it: every site that
+/// classifies a task as gone is a site that does **not** resume it, so a task
+/// misclassified while still alive stays in its ptrace-stop and executes
+/// nothing further. No exit status is ever synthesized either — the runner's
+/// status comes only from a real wait status, and
+/// `observer lost runner exit status` stays as the backstop. A future change
+/// that resumes a task on a classifying path, or that registers a task before
+/// the site that may classify it, invalidates that reasoning.
+///
+/// Classified by error number only, never by message text: a traced process
+/// can influence strings that surface in an error chain, so no
+/// tracee-reachable text may steer a control decision. The chain's root cause
+/// is what is read, so an unrelated inner `ESRCH` cannot be mistaken for the
+/// result of the ptrace request itself. `ENOENT` is deliberately not accepted
+/// here; see [`vanished_proc_entry`].
+fn vanished_task(error: &anyhow::Error) -> bool {
+    error
+        .root_cause()
+        .downcast_ref::<std::io::Error>()
+        .and_then(std::io::Error::raw_os_error)
+        == Some(libc::ESRCH)
+}
+
+/// A `/proc/<tid>` read failed because that task has gone. The kernel answers
+/// `ENOENT` for a retired entry and `ESRCH` for a task that died while the
+/// read was in flight, so both mean the same thing here.
+///
+/// Kept separate from [`vanished_task`] so that `ENOENT` can never be
+/// accepted from a ptrace request. Used at exactly one site: the newborn
+/// thread-group read, whose subject is still at its initial `SIGSTOP` and has
+/// therefore by definition executed nothing that is not already recorded. The
+/// `environ` read in [`Scopes::exec`] and the `exe` read-link in
+/// [`record_exec`] sit at an exec stop, where that argument does not hold,
+/// and stay fatal.
+fn vanished_proc_entry(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::ENOENT))
+}
+
+/// Builds the line reporting one task that had gone. Fixed text plus the task
+/// and a closed-vocabulary request name: no error chain, path, command line,
+/// working directory or environment value reaches it. The observer reads
+/// `environ` and `cmdline`, which hold tokens and private paths, and run
+/// stderr reaches CI logs and retained evidence folders, so nothing else may
+/// pass. One line names one call site, which is what makes it diagnostic
+/// alone.
+fn vanished_warning(task: i32, request: &'static str) -> String {
+    format!("amplihack: warning: observed task {task} was gone at {request}")
+}
+
 pub(crate) struct Observer {
     result: mpsc::Receiver<Result<ExitStatus>>,
     thread: Option<JoinHandle<()>>,
@@ -216,6 +274,7 @@ impl Observer {
                     complete: false,
                     root,
                     root_closed: false,
+                    vanished: 0,
                 },
                 &observed_pids,
                 &scope_tx,
@@ -422,6 +481,11 @@ struct Journal {
     complete: bool,
     root: i32,
     root_closed: bool,
+    /// Issue #2716: how many tasks this scope found gone. A count, never a
+    /// list of tasks: the receipt is read back under a 4096-byte cap that
+    /// fails above it, so a list a traced tree can inflate would hand that
+    /// tree a new way to fail the run.
+    vanished: u64,
 }
 impl Journal {
     fn finish(&mut self) -> Result<()> {
@@ -430,7 +494,12 @@ impl Journal {
         }
         verify_journal(&self.path, self.identity)?;
         self.file.sync_all()?;
-        let receipt = json!({"schema_version":1,"coverage":"established","complete":true,"run_id":self.run_id,"attempt_id":self.attempt_id,"scope":"runner-descendants","backend":"linux-ptrace-exec"});
+        // The seven keys the recording reader checks are unchanged. It
+        // compares named keys and ignores any other, so the count rides
+        // along here rather than in `observer-*.jsonl`, where every line is
+        // validated as a Git command and a new shape would make a lost task
+        // a run failure every time.
+        let receipt = json!({"schema_version":1,"coverage":"established","complete":true,"run_id":self.run_id,"attempt_id":self.attempt_id,"scope":"runner-descendants","backend":"linux-ptrace-exec","vanished":self.vanished});
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -528,6 +597,7 @@ impl Scopes {
                     complete: false,
                     root: pid,
                     root_closed: false,
+                    vanished: 0,
                 });
             }
         }
@@ -548,6 +618,37 @@ impl Scopes {
             )?;
         }
         Ok(())
+    }
+    /// Issue #2716: records one task the observation loop found gone.
+    /// Infallible on purpose: this runs on a path that must continue, so it
+    /// has no failure to report and nothing here may end the run.
+    ///
+    /// The count goes on every journal in `owner`'s chain. Every chain holds
+    /// index 0, so `journals[0].vanished` is the run's exact total, and a
+    /// relay scope counts only the tasks it owned. An owner whose chain is
+    /// already gone (its group retired by a sibling's exec, say) still counts
+    /// on the run, so no task is lost from the evidence.
+    ///
+    /// The warning is capped while the count is not: a traced tree can create
+    /// unbounded tasks, so an uncapped per-task line is log amplification and
+    /// a way to fill a disk. The cap bounds the lines such a tree can make us
+    /// write, never the evidence.
+    fn vanished(&mut self, task: i32, owner: i32, request: &'static str) {
+        /// Warning lines one run may write about tasks that had gone.
+        const WARNINGS: u64 = 16;
+        let chain = self
+            .tasks
+            .get(&owner)
+            .cloned()
+            .unwrap_or_else(|| vec![0usize]);
+        for index in chain {
+            if let Some(journal) = self.journals.get_mut(index) {
+                journal.vanished = journal.vanished.saturating_add(1);
+            }
+        }
+        if self.journals[0].vanished <= WARNINGS {
+            eprintln!("{}", vanished_warning(task, request));
+        }
     }
     fn exited(&mut self, pid: i32, teardown: &mpsc::Sender<Vec<i32>>) -> Result<()> {
         self.tasks.remove(&pid);
@@ -603,6 +704,11 @@ fn observe(
                 exited_before_registration.insert(pid);
             }
             groups.remove(&pid);
+            // Issue #2716: a stop this task never had resumed cannot outlive
+            // it. Left behind, a stale entry would resume a reused pid whose
+            // stop was never consumed, and the task that reused the number
+            // would be the one counted as gone.
+            pending_stops.remove(&pid);
             scopes.exited(pid, teardown)?;
             if pid == root {
                 root_status = Some(ExitStatus::from_raw(status));
@@ -623,7 +729,7 @@ fn observe(
         let event = status >> 16;
         let mut deliver = 0;
         if pid == root && !initialized {
-            ptrace(
+            if let Err(error) = ptrace(
                 libc::PTRACE_SETOPTIONS,
                 pid,
                 (libc::PTRACE_O_TRACEFORK
@@ -631,7 +737,19 @@ fn observe(
                     | libc::PTRACE_O_TRACECLONE
                     | libc::PTRACE_O_TRACEEXEC
                     | libc::PTRACE_O_EXITKILL) as usize,
-            )?;
+            ) {
+                // Issue #2716: the runner itself has gone before its own
+                // options were set. It is left unresumed and unregistered
+                // for observation, so it executes nothing further; its own
+                // wait status still arrives and is still what the run
+                // reports. Never an early return: taking a status from here
+                // would be inventing one.
+                if !vanished_task(&error) {
+                    return Err(error);
+                }
+                scopes.vanished(pid, pid, "PTRACE_SETOPTIONS");
+                continue;
+            }
             initialized = true;
             scopes.exec(pid)?;
         } else if [
@@ -641,47 +759,122 @@ fn observe(
         ]
         .contains(&event)
         {
-            let child = event_message(pid)? as i32;
-            if !exited_before_registration.remove(&child) {
-                pids.lock().expect("observer pids").insert(child);
-                let status = fs::read_to_string(format!("/proc/{child}/status"))?;
-                let group = status
-                    .lines()
-                    .find_map(|line| line.strip_prefix("Tgid:")?.trim().parse::<i32>().ok())
-                    .context("missing observed thread group")?;
-                groups.insert(child, group);
-                scopes.tasks.insert(
-                    child,
-                    scopes
-                        .tasks
-                        .get(&pid)
-                        .context("missing fork observation ownership")?
-                        .clone(),
-                );
-                if scopes.tasks[&child]
-                    .iter()
-                    .any(|index| scopes.journals[*index].root_closed)
-                {
-                    teardown
-                        .send(vec![child])
-                        .context("observer teardown controller was lost")?;
-                }
-                if let Some(status) = pending_stops.remove(&child) {
-                    if libc::WSTOPSIG(status) != libc::SIGSTOP {
-                        bail!("unexpected newborn observation stop");
+            let child = match event_message(pid) {
+                Ok(message) => message as i32,
+                Err(error) => {
+                    // Issue #2716: the parent has gone before it could say
+                    // which task it had just created. The newborn is left at
+                    // its initial SIGSTOP, unregistered, so it executes
+                    // nothing; its own stop is held in `pending_stops` and
+                    // released when it dies with its parent's group.
+                    if !vanished_task(&error) {
+                        return Err(error);
                     }
-                    ptrace(libc::PTRACE_CONT, child, 0)?;
+                    scopes.vanished(pid, pid, "PTRACE_GETEVENTMSG (fork)");
+                    continue;
+                }
+            };
+            // The newborn's identity is a kernel word cast to a tid and
+            // interpolated into a `/proc` path. An implausible value used to
+            // fail loudly on ENOENT; that answer is now read as "gone", so
+            // it is checked here instead and still fails the run.
+            if child <= 0 {
+                bail!("implausible observed newborn identity");
+            }
+            if !exited_before_registration.remove(&child) {
+                // Issue #2716, registration order: the newborn's identity is
+                // read before it is registered anywhere. A newborn abandoned
+                // below therefore leaves no registration behind, so if it is
+                // in fact alive its initial SIGSTOP still lands in the
+                // unregistered-stop branch above and it is never resumed.
+                // Registering first would instead leave it in `pids` with no
+                // ownership chain, skip that branch, and let the resume at
+                // the foot of this loop run it unjournaled.
+                'newborn: {
+                    let group = match fs::read_to_string(format!("/proc/{child}/status")) {
+                        Ok(status) => status
+                            .lines()
+                            .find_map(|line| line.strip_prefix("Tgid:")?.trim().parse::<i32>().ok())
+                            .context("missing observed thread group")?,
+                        Err(error) => {
+                            if !vanished_proc_entry(&error) {
+                                return Err(anyhow::Error::new(error))
+                                    .context("read observed newborn thread group");
+                            }
+                            // Still at its initial SIGSTOP, so it has run no
+                            // code at all and nothing can be missing from
+                            // the evidence. The parent is resumed below.
+                            scopes.vanished(child, pid, "thread group identity");
+                            break 'newborn;
+                        }
+                    };
+                    pids.lock().expect("observer pids").insert(child);
+                    groups.insert(child, group);
+                    scopes.tasks.insert(
+                        child,
+                        scopes
+                            .tasks
+                            .get(&pid)
+                            .context("missing fork observation ownership")?
+                            .clone(),
+                    );
+                    if scopes.tasks[&child]
+                        .iter()
+                        .any(|index| scopes.journals[*index].root_closed)
+                    {
+                        teardown
+                            .send(vec![child])
+                            .context("observer teardown controller was lost")?;
+                    }
+                    if let Some(status) = pending_stops.remove(&child) {
+                        if libc::WSTOPSIG(status) != libc::SIGSTOP {
+                            bail!("unexpected newborn observation stop");
+                        }
+                        if let Err(error) = ptrace(libc::PTRACE_CONT, child, 0) {
+                            // Issue #2716: the newborn has gone. Its
+                            // registration stays, so its own wait
+                            // notification reaps it and removes it through
+                            // the one existing exit path. What must not
+                            // happen is losing the parent's resume below:
+                            // this arm is handling the parent's stop, and
+                            // continuing the loop here would leave the
+                            // parent stopped for good.
+                            if !vanished_task(&error) {
+                                return Err(error);
+                            }
+                            scopes.vanished(child, pid, "PTRACE_CONT (newborn)");
+                            break 'newborn;
+                        }
+                    }
                 }
             }
         } else if event == libc::PTRACE_EVENT_EXEC {
             // exec from a nonleader thread changes its tid to the leader pid.
-            let old = event_message(pid)? as i32;
-            // A nonleader exec destroys the rest of its thread group before
-            // this event. Those tids need not all produce separate waits.
-            let retired: Vec<_> = groups
-                .iter()
-                .filter_map(|(task, group)| (*group == pid && *task != pid).then_some(*task))
-                .collect();
+            let old = match event_message(pid) {
+                Ok(message) => message as i32,
+                Err(error) => {
+                    if !vanished_task(&error) {
+                        return Err(error);
+                    }
+                    // Issue #2716: the task that execed has gone, so its
+                    // previous tid can no longer be asked for. Its thread
+                    // group was already destroyed by that exec and those
+                    // tids produce no further wait, so they are retired
+                    // here: left in `pids`, they would keep this loop
+                    // waiting for tasks the kernel will never report.
+                    let mut set = pids.lock().expect("observer pids");
+                    retire_thread_group(
+                        pid,
+                        &mut set,
+                        &mut groups,
+                        &mut scopes,
+                        &mut pending_stops,
+                    );
+                    drop(set);
+                    scopes.vanished(pid, pid, "PTRACE_GETEVENTMSG (exec)");
+                    continue;
+                }
+            };
             let chain = scopes
                 .tasks
                 .get(&old)
@@ -692,12 +885,7 @@ fn observe(
             let mut set = pids.lock().expect("observer pids");
             set.remove(&old);
             set.insert(pid);
-            for task in retired {
-                set.remove(&task);
-                groups.remove(&task);
-                scopes.tasks.remove(&task);
-                pending_stops.remove(&task);
-            }
+            retire_thread_group(pid, &mut set, &mut groups, &mut scopes, &mut pending_stops);
             groups.insert(pid, pid);
             drop(set);
             if old != pid {
@@ -707,12 +895,46 @@ fn observe(
         } else if signal != libc::SIGSTOP && signal != libc::SIGTRAP {
             deliver = signal;
         }
-        ptrace(libc::PTRACE_CONT, pid, deliver as usize)?;
+        if let Err(error) = ptrace(libc::PTRACE_CONT, pid, deliver as usize) {
+            // Issue #2716: the task whose stop this was has gone. It is left
+            // unresumed, which it already is, so nothing it had not already
+            // recorded can run. Its own wait notification still arrives and
+            // removes it from the observed set through the one existing exit
+            // path, and if it was the runner its status comes from there.
+            if !vanished_task(&error) {
+                return Err(error);
+            }
+            scopes.vanished(pid, pid, "PTRACE_CONT");
+        }
     }
     for journal in &mut scopes.journals {
         journal.finish()?;
     }
     root_status.context("observer lost runner exit status")
+}
+/// Drops every nonleader tid of `leader`'s thread group from all four places
+/// the observation loop tracks a task. A nonleader exec destroys the rest of
+/// its thread group before the exec event arrives, and those tids need not
+/// each produce a separate wait, so a tid left behind would keep the loop
+/// waiting for a task the kernel will never report. The leader itself always
+/// stays.
+fn retire_thread_group(
+    leader: i32,
+    pids: &mut BTreeSet<i32>,
+    groups: &mut BTreeMap<i32, i32>,
+    scopes: &mut Scopes,
+    pending_stops: &mut BTreeMap<i32, i32>,
+) {
+    let retired: Vec<_> = groups
+        .iter()
+        .filter_map(|(task, group)| (*group == leader && *task != leader).then_some(*task))
+        .collect();
+    for task in retired {
+        pids.remove(&task);
+        groups.remove(&task);
+        scopes.tasks.remove(&task);
+        pending_stops.remove(&task);
+    }
 }
 fn ptrace(request: libc::c_uint, pid: i32, data: usize) -> Result<()> {
     // SAFETY: request uses no pointer output; pid is a stopped tracee.
@@ -1101,6 +1323,234 @@ mod tests_not_established {
             assert!(
                 !line.contains(word),
                 "{word} belongs to the returned error, not this warning: {line}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_vanished_task {
+    //! Issue #2716: a ptrace request in the observation loop that fails with
+    //! `ESRCH` means that task has gone, not that the observation broke. The
+    //! eight field failures on 1.2.167 all ended with
+    //! "required process observation failed: No such process (os error 3)".
+    //!
+    //! These tests pin the classification, the recording and the two helpers
+    //! the per-site control flow depends on. The loop's own behaviour is
+    //! covered by `tests/issue_2716_vanished_observed_task.rs`.
+    use super::*;
+
+    /// Every name `Scopes::vanished` may be given, one per call site. One
+    /// warning line names one site, so a stderr line is diagnostic alone.
+    const SITES: [&str; 6] = [
+        "PTRACE_SETOPTIONS",
+        "PTRACE_GETEVENTMSG (fork)",
+        "PTRACE_GETEVENTMSG (exec)",
+        "thread group identity",
+        "PTRACE_CONT (newborn)",
+        "PTRACE_CONT",
+    ];
+
+    /// What a failed request in the loop hands to the classifier: the
+    /// `ptrace` helper's own context over the call's `io::Error`.
+    fn ptrace_failure(errno: i32) -> anyhow::Error {
+        anyhow::Error::new(std::io::Error::from_raw_os_error(errno))
+            .context("required process observation failed")
+    }
+
+    fn journal(dir: &Path, attempt_id: &str, root: i32) -> Journal {
+        let path = dir.join(format!("observer-{attempt_id}.jsonl"));
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&path)
+            .unwrap();
+        let identity = file.metadata().unwrap();
+        Journal {
+            file,
+            path,
+            identity: (identity.dev(), identity.ino()),
+            run_id: "run-2716".to_owned(),
+            attempt_id: attempt_id.to_owned(),
+            acknowledgement: None,
+            complete: false,
+            root,
+            root_closed: false,
+            vanished: 0,
+        }
+    }
+
+    #[test]
+    fn only_esrch_means_a_ptrace_request_found_the_task_gone() {
+        assert!(vanished_task(&ptrace_failure(libc::ESRCH)));
+        for errno in [
+            libc::EPERM,
+            libc::EIO,
+            libc::EINVAL,
+            libc::ENOENT,
+            libc::EBUSY,
+            libc::EFAULT,
+        ] {
+            assert!(
+                !vanished_task(&ptrace_failure(errno)),
+                "errno {errno} stays fatal; this change opens exactly one hole"
+            );
+        }
+        assert!(
+            !vanished_task(&anyhow::anyhow!("no errno")),
+            "an error with no error number is not a task that has gone"
+        );
+        // Classified by error number only. A tracee can influence strings
+        // that surface in an error chain, so no tracee-reachable text may
+        // steer a control decision.
+        assert!(
+            !vanished_task(
+                &anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EPERM))
+                    .context("No such process (os error 3)")
+            ),
+            "the message text must never decide this"
+        );
+    }
+
+    #[test]
+    fn a_proc_entry_is_gone_only_for_esrch_or_enoent() {
+        for errno in [libc::ESRCH, libc::ENOENT] {
+            assert!(vanished_proc_entry(&std::io::Error::from_raw_os_error(
+                errno
+            )));
+        }
+        for errno in [
+            libc::EPERM,
+            libc::EACCES,
+            libc::EIO,
+            libc::EINVAL,
+            libc::EMFILE,
+        ] {
+            assert!(
+                !vanished_proc_entry(&std::io::Error::from_raw_os_error(errno)),
+                "errno {errno} is not a task that has gone"
+            );
+        }
+        assert!(!vanished_proc_entry(&std::io::Error::other("no errno")));
+        // The two predicates stay separate for exactly this reason: a
+        // ptrace request never means "gone" on ENOENT.
+        assert!(!vanished_task(&ptrace_failure(libc::ENOENT)));
+    }
+
+    #[test]
+    fn the_receipt_counts_the_tasks_that_were_gone() {
+        for (gone, attempt) in [(3u64, "attempt-a"), (0, "attempt-b")] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut journal = journal(dir.path(), attempt, 11);
+            journal.vanished = gone;
+            journal.finish().unwrap();
+            let receipt: serde_json::Value = serde_json::from_slice(
+                &fs::read(dir.path().join(format!("observer-{attempt}.receipt"))).unwrap(),
+            )
+            .unwrap();
+            // The seven keys the recording reader checks, unchanged: a new
+            // shape here would make a lost task a run failure every time.
+            assert_eq!(receipt["schema_version"], 1, "{receipt}");
+            assert_eq!(receipt["coverage"], "established", "{receipt}");
+            assert_eq!(receipt["complete"], true, "{receipt}");
+            assert_eq!(receipt["run_id"], "run-2716", "{receipt}");
+            assert_eq!(receipt["attempt_id"], attempt, "{receipt}");
+            assert_eq!(receipt["scope"], "runner-descendants", "{receipt}");
+            assert_eq!(receipt["backend"], "linux-ptrace-exec", "{receipt}");
+            // A count, never a list of tasks: the receipt is read under a
+            // 4096-byte cap that fails above it, so a list a traced tree can
+            // inflate would hand that tree a new way to fail the run.
+            assert_eq!(receipt["vanished"], serde_json::json!(gone), "{receipt}");
+            assert!(receipt["vanished"].is_u64(), "{receipt}");
+            assert_eq!(
+                receipt.as_object().unwrap().len(),
+                8,
+                "the receipt gained a key no reader was told about: {receipt}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_task_that_was_gone_is_counted_on_the_run_journal() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut scopes = Scopes {
+            journals: vec![
+                journal(dir.path(), "run", 11),
+                journal(dir.path(), "relay", 21),
+            ],
+            tasks: BTreeMap::from([(11, vec![0]), (21, vec![0, 1]), (22, vec![0, 1])]),
+        };
+        scopes.vanished(12, 11, "PTRACE_CONT");
+        scopes.vanished(22, 21, "PTRACE_CONT (newborn)");
+        // Every chain holds index 0, so journal 0 carries the run's total.
+        assert_eq!(scopes.journals[0].vanished, 2);
+        assert_eq!(
+            scopes.journals[1].vanished, 1,
+            "a relay scope counts only the tasks it owned"
+        );
+        // An owner with no chain left still counts on the run, so a task
+        // that goes after its own group was retired is never lost.
+        scopes.vanished(99, 99, "PTRACE_SETOPTIONS");
+        assert_eq!(scopes.journals[0].vanished, 3);
+        assert_eq!(scopes.journals[1].vanished, 1);
+        // The count stays exact past the warning cap: the cap bounds the
+        // lines a traced tree can make us write, not the evidence.
+        for _ in 0..40 {
+            scopes.vanished(31, 11, "PTRACE_CONT");
+        }
+        assert_eq!(scopes.journals[0].vanished, 43);
+    }
+
+    #[test]
+    fn retiring_a_thread_group_drops_every_nonleader_tid_everywhere() {
+        // A nonleader exec destroys the rest of its thread group before the
+        // event arrives, and those tids produce no further wait. Leaving any
+        // of them behind would keep the loop waiting for a task the kernel
+        // will never report, so the vanished path at the exec stop retires
+        // them through this one helper before it continues.
+        let dir = tempfile::tempdir().unwrap();
+        let mut pids = BTreeSet::from([11, 12, 13, 21]);
+        let mut groups = BTreeMap::from([(11, 11), (12, 11), (13, 11), (21, 21)]);
+        let mut scopes = Scopes {
+            journals: vec![journal(dir.path(), "run", 11)],
+            tasks: BTreeMap::from([(11, vec![0]), (12, vec![0]), (13, vec![0]), (21, vec![0])]),
+        };
+        let mut pending_stops = BTreeMap::from([(12, 0x57f), (21, 0x57f)]);
+        retire_thread_group(11, &mut pids, &mut groups, &mut scopes, &mut pending_stops);
+        assert_eq!(pids, BTreeSet::from([11, 21]), "the leader itself stays");
+        assert_eq!(groups, BTreeMap::from([(11, 11), (21, 21)]));
+        assert_eq!(
+            scopes.tasks.keys().copied().collect::<Vec<_>>(),
+            vec![11, 21]
+        );
+        assert_eq!(pending_stops, BTreeMap::from([(21, 0x57f)]));
+    }
+
+    #[test]
+    fn a_vanished_warning_names_one_site_and_carries_no_path_or_argv() {
+        const PREFIX: &str = "amplihack: warning: observed task ";
+        let mut seen = BTreeSet::new();
+        for site in SITES {
+            let line = vanished_warning(4242, site);
+            assert!(line.starts_with(PREFIX), "{line}");
+            assert!(
+                line.contains("4242"),
+                "the task is what the line identifies: {line}"
+            );
+            assert!(line.contains(&format!("was gone at {site}")), "{line}");
+            assert!(!line.contains('\n'), "one warning is one line: {line:?}");
+            // The observer reads environ and cmdline, which hold tokens and
+            // private paths, and run stderr reaches CI logs and retained
+            // evidence folders. Nothing but the task and the site may pass.
+            assert!(
+                !line.contains('/'),
+                "no path reaches the line, so it can be quoted unread: {line}"
+            );
+            assert!(
+                seen.insert(line.clone()),
+                "two sites share a warning line, so a line names no site: {site}"
             );
         }
     }

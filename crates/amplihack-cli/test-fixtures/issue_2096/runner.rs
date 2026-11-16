@@ -3,6 +3,108 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::{env, fs, path::PathBuf, process::Command};
 
+// Issue #2716: the process primitives the vanishing-task modes need. This
+// fixture is compiled with a bare `rustc` and has no crates available, so
+// they are declared here rather than taken from `libc`.
+unsafe extern "C" {
+    fn fork() -> i32;
+    fn kill(pid: i32, signal: i32) -> i32;
+    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+    fn _exit(status: i32) -> !;
+}
+
+/// Linux numbers. This fixture only ever runs on the observed platform.
+const SIGKILL: i32 = 9;
+const ECHILD: i32 = 10;
+
+/// How many times each vanishing-task mode repeats its race. Bounded
+/// repetition is the only determinism these modes may use: no sleep, timer,
+/// retry or poll appears here or in the tests that drive them. A race that
+/// never lands fails its test rather than passing it, and the only remedy
+/// is a larger number here.
+const ISSUE_2716_ITERATIONS: usize = 128;
+
+/// Threads of a child's group that clone, so that cloning is still in
+/// flight when the group is destroyed underneath them.
+const ISSUE_2716_CLONERS: usize = 2;
+
+/// Threads each cloner clones. This is what holds the window open: every
+/// one of them costs the observer a registration and two ptrace requests,
+/// so while this loop runs there is at any moment a thread of the group at
+/// a clone event and a newborn at its initial SIGSTOP.
+const ISSUE_2716_THREADS: usize = 32;
+
+/// The result line the CLI reads from its runner. Printed and flushed before
+/// a mode starts forking, so no child can inherit it unflushed.
+fn announce_success() {
+    println!(
+        "{{\"recipe_name\":\"issue-2096\",\"success\":true,\"step_results\":[],\"context\":{{}}}}"
+    );
+    std::io::stdout().flush().unwrap();
+}
+
+/// Forks once and returns the child's pid to the parent. The child runs
+/// `in_child` and never returns: it leaves through `_exit`, which is
+/// `exit_group`, so it runs no destructor and flushes no inherited buffer.
+fn fork_child(in_child: impl FnOnce()) -> i32 {
+    // SAFETY: this fixture has no threads of its own here, so the child
+    // inherits no held lock. The child only clones threads and leaves.
+    let child = unsafe { fork() };
+    assert_ne!(child, -1, "fork: {}", std::io::Error::last_os_error());
+    if child == 0 {
+        in_child();
+        // SAFETY: leaving the forked child through exit_group, which
+        // destroys the thread group including any thread still at its stop.
+        unsafe { _exit(0) }
+    }
+    assert!(child > 0, "implausible fork result {child}");
+    child
+}
+
+/// Clones threads that do nothing but yield. Each one stops this thread at a
+/// clone event and holds the newborn at its initial SIGSTOP until the
+/// observer has registered and resumed it.
+fn clone_threads() {
+    for _ in 0..ISSUE_2716_THREADS {
+        // Detached on purpose: the group is destroyed underneath them.
+        drop(std::thread::spawn(std::thread::yield_now));
+    }
+}
+
+/// Starts the cloners and returns while they are still cloning. A thread
+/// stopped at a clone event cannot itself destroy its group, because the
+/// observer holds it until it has registered and resumed the newborn. So the
+/// cloning is handed to threads that run freely, and the group is destroyed
+/// underneath them by the caller. Starting the cloners costs one observer
+/// round trip each, which is what guarantees they are running by then.
+fn clone_underneath() {
+    for _ in 0..ISSUE_2716_CLONERS {
+        drop(std::thread::spawn(clone_threads));
+    }
+}
+
+/// Waits for one pid this fixture created, by number. Never a process group,
+/// never -1, never a name or a pattern. The observer is this child's tracer
+/// and reaps it first, so ECHILD is an ordinary answer here.
+fn wait_for(child: i32) {
+    let mut status = 0;
+    loop {
+        // SAFETY: status is writable storage; child is a pid forked above.
+        if unsafe { waitpid(child, &mut status, 0) } >= 0 {
+            return;
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(ECHILD) {
+            return;
+        }
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::Interrupted,
+            "wait for fixture child {child}: {error}"
+        );
+    }
+}
+
 fn git(args: &[&str], clean_environment: bool) -> std::process::Output {
     let mut command = Command::new(env::var_os("ISSUE_2096_GIT").unwrap());
     if clean_environment {
@@ -289,6 +391,59 @@ fn run() {
             fs::rename(&trace, out.join("retained-trace")).unwrap();
             fs::write(&trace, b"collector destination lost").unwrap();
             fs::write(out.join("collection-lost"), b"yes").unwrap();
+        }
+        // Issue #2716: a thread group whose leader calls exit_group while a
+        // freshly cloned thread of that group is still at its initial ptrace
+        // stop, and while another thread of the group is stopped at its own
+        // clone event. The observer's resume of either then fails with
+        // ESRCH, and the newborn's /proc entry may already be gone.
+        //
+        // The concurrency is what makes this land. A thread stopped at a
+        // clone event cannot itself destroy the group: the observer holds it
+        // until it has registered and resumed the newborn. So the group's
+        // leader hands the cloning to threads that run freely and then calls
+        // exit_group underneath them. Nothing here reaches an exec stop.
+        "exit-group-thread" => {
+            announce_success();
+            for _ in 0..ISSUE_2716_ITERATIONS {
+                // The closure returns through `_exit`, which is exit_group,
+                // while the cloners it started are still cloning.
+                let child = fork_child(clone_underneath);
+                wait_for(child);
+            }
+            return;
+        }
+        // Issue #2716: a task killed with SIGKILL between its stop and the
+        // continue. A SIGKILLed tracee dies even in ptrace-stop, so the
+        // resume it was waiting for fails with ESRCH.
+        //
+        // Each child clones threads, so while it runs there is at any moment
+        // a thread of its group at a clone event and a newborn at its initial
+        // SIGSTOP. What the kill must not do is arrive before any of that
+        // exists: a child signalled in the same breath as its fork dies
+        // before it has cloned anything, and there is then no held stop to
+        // interrupt. So the signal goes to the previous child, which has been
+        // cloning throughout the fork of this one. Only ever one pid this
+        // fixture forked and recorded, by number: never a group, a negative
+        // pid, a name or a pattern, and never more than two children alive.
+        // No child execs, so this reaches no exec stop either.
+        "sigkill-child" => {
+            announce_success();
+            let mut cloning = 0;
+            for _ in 0..ISSUE_2716_ITERATIONS {
+                let next = fork_child(clone_underneath);
+                if cloning > 0 {
+                    // SAFETY: a pid forked and recorded above, still this
+                    // fixture's own child. SIGKILL needs no handler.
+                    unsafe { kill(cloning, SIGKILL) };
+                    wait_for(cloning);
+                }
+                cloning = next;
+            }
+            // SAFETY: as above, for the last child still cloning.
+            unsafe { kill(cloning, SIGKILL) };
+            wait_for(cloning);
+            return;
         }
         other => panic!("unknown fixture mode {other}"),
     }

@@ -33,10 +33,19 @@ records executables named `git` or `git-*` except known read-only commands.
 Journals carry run and attempt identities, executable, cwd, launch-selected Git
 directory/index, routing environment, redacted argv, and timestamp. Required
 storage and attribution failures fail supervision; journals and receipts are
-synchronized before final publication. A verified ancestor observer can relay
-an independent nested scope into that run's own journal. An environment marker
-alone cannot authorize reuse. This observes neither unrelated host processes,
-arbitrary non-Git index writes, nor preparation/release commands. It does not
+synchronized before final publication. A ptrace request that fails with
+`ESRCH`, and the newborn `/proc` status read that fails with `ESRCH` or
+`ENOENT`, mean that task has exited: the observer counts it in every journal
+of its chain, prints one bounded stderr warning, and keeps observing, so the
+run reports the runner's own exit. No classifying site resumes the task it
+classified, and the newborn status read runs before that newborn joins the
+observed set so that abandoning it leaves no registration. Every other ptrace
+error still ends supervision. See
+`docs/reference/run-isolation-vanished-observed-tasks.md`. A verified ancestor
+observer can relay an independent nested scope into that run's own journal. An
+environment marker alone cannot authorize reuse. This observes neither
+unrelated host processes, arbitrary non-Git index writes, nor
+preparation/release commands. It does not
 establish same-user tamper resistance. Non-Linux production execution is
 rejected rather than falling back to advisory Trace2.
 

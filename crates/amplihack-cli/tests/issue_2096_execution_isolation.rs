@@ -40,6 +40,11 @@ mod recording_coverage;
 mod recording_failures;
 #[path = "issue_2096_review_isolation.rs"]
 mod review_isolation;
+// Declared without a `#[cfg]`: a cfg-gated declaration looks wired and never
+// compiles, which the test-wiring contract check rejects. The file gates
+// itself on Linux from the inside.
+#[path = "issue_2716_vanished_observed_task.rs"]
+mod vanished_observed_task;
 
 /// The stub runner. It enters the runner's `-C`, records what it finds and,
 /// with `ISSUE_2096_STAGE` set, stages and commits a file there. With
