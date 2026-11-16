@@ -165,7 +165,14 @@ starts. All five clauses, read from `github.event.workflow_run`, must hold:
 a write-capable token — and `ci.yml` runs on `pull_request` in a public
 repository. These clauses are therefore a security boundary, not a convenience
 filter: they are joined with `&&`, and the only other way into the release jobs
-is `github.event_name == 'workflow_dispatch'`.
+is `github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'`.
+
+Passing all five clauses admits the run, not the commit. One more condition is
+checked inside `version-bump`'s `bump` step, because it cannot be expressed as
+a job-level `if:`: on the `workflow_run` path the tested commit must still be
+the tip of `origin/main`. A CI re-run on a superseded commit satisfies every
+clause in the table above, so this is the check that stops it — see
+[What this guarantees](#what-this-guarantees).
 
 The release's own tag push does not start a second release. The tag is pushed
 with `secrets.GITHUB_TOKEN` (`release.yml`), and GitHub creates no workflow run
@@ -178,7 +185,9 @@ already been released (see
 [Release tags point at a stamp commit](#release-tags-point-at-a-stamp-commit)).
 It then reports the existing version rather than computing a new one, and the
 `release` job finds that tag already on the remote and skips stamping and
-pushing. No new tag is created and no version number is consumed.
+pushing. The tip comparison stops that path sooner still, since a stamp commit
+is a child of `main`'s tip rather than the tip itself. No new tag is created
+and no version number is consumed.
 
 #### Which commit is built
 
@@ -216,9 +225,45 @@ Either path therefore names the CI run that admitted the release.
 - **A later push decides for itself.** The concurrency group is keyed on the CI
   run's repository and branch
   (`${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name || github.repository }}-${{ github.event.workflow_run.head_branch || github.ref_name }}`)
-  with `cancel-in-progress: true`. One release is in flight per branch and the
-  newest wins, so a later commit's own CI decides whether that commit ships. A
-  cancelled run leaves nothing behind (#1356).
+  with `cancel-in-progress: false`. One release is in flight per branch and a
+  second one queues behind it instead of cancelling it, so a stale run can
+  never stop a newer commit's release part-way through. #1356's invariant holds
+  without cancellation: nothing is written to `main` or to the tag namespace
+  before the `release` job, so a run that never reaches that job leaves nothing
+  behind either way. Queueing cannot resurrect an old commit, because a queued
+  run that finally starts finds that `main` has moved past its commit and
+  publishes nothing (next bullet). A later commit's own CI therefore decides
+  whether that commit ships.
+- **A commit `main` has moved past publishes nothing.** Re-running CI on an
+  older commit produces a CI completion that satisfies every admission clause
+  above: it succeeded, on `main`, from a `push`, in this repository. Before any
+  tag is created and before the `version` output is written, `version-bump`
+  compares the commit CI tested with the current tip of `origin/main` and stops
+  when they differ:
+
+  ```text
+  CI tested 5bc4defc4 but origin/main is now 8a51b29e8
+  no release published for a commit that main has moved past
+  ```
+
+  Without that comparison the older tree is published under a *higher* version
+  number and marked `latest`, and every host running `amplihack update`
+  installs code older than the code it already has. A rising version number
+  does not imply a later commit; this comparison is what binds the two
+  together. The comparison sits just after the next-patch arithmetic, so a
+  skipped run's log prints a `next patch:` line immediately above the skip
+  message; that arithmetic is local to the step and persists nothing.
+
+  The job then writes no `version` output, `build` is skipped by
+  `if: needs.version-bump.outputs.version != ''`, `release` skips as a
+  dependant of a skipped job, and `sccache-prune` — which runs under
+  `always()` — skips on its own `needs.build.result != 'skipped'` clause.
+
+  The tip is read from the checkout's `origin/main`, falling back to a single
+  `git ls-remote origin refs/heads/main`; if neither resolves, the job fails
+  visibly rather than skipping quietly, so an infrastructure fault is never
+  mistaken for a superseded commit. The cost of that failure is bounded — the
+  next push to `main` releases normally.
 - **Every CI completion creates an Auto Release run.** Most skip every job
   immediately — pull-request CI, merge-group CI, failed CI, the twice-weekly
   schedule run, and CI's own `workflow_dispatch` run. The release's own `v*` tag
@@ -232,21 +277,29 @@ Either path therefore names the CI run that admitted the release.
 
 #### Releasing by hand
 
-`workflow_dispatch` is held to the same rule. Choose the ref in the Actions UI
-or on the command line; there are no workflow inputs and no SHA to type:
+`workflow_dispatch` is held to the same rule, and to one more: it runs only
+from `main`. `version-bump`'s dispatch clause is
+`github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'`,
+so a dispatch from a tag or a topic branch skips every job. Choose the ref in
+the Actions UI or on the command line; there are no workflow inputs and no SHA
+to type:
 
 ```bash
 gh workflow run release.yml --ref main
 ```
 
 `version-bump` resolves that ref to a SHA and, before computing any version,
-asks for a successful `ci.yml` run on that exact SHA. To ask the same question
-first, read the SHA from the remote rather than from a possibly stale local
-branch, since that is what the runner resolves:
+asks for a successful `ci.yml` run on that exact SHA — one started by a `push`
+whose branch was `main`. Because the dispatch is restricted to
+`refs/heads/main`, the SHA it resolves is already the tip of `main`, which is
+why the tip-of-`main` comparison described above is scoped to the
+`workflow_run` path and not repeated here. To ask the same question first, read
+the SHA from the remote rather than from a possibly stale local branch, since
+that is what the runner resolves:
 
 ```bash
 gh api "repos/rysweet/amplihack-rs/actions/workflows/ci.yml/runs?head_sha=$(git rev-parse origin/main)&status=success&per_page=100" \
-  --jq '[.workflow_runs[] | select(.event != "pull_request")] | length'
+  --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main")] | length'
 # Output: 1
 ```
 
@@ -255,17 +308,22 @@ A count of `0` ends the job with
 any tag arithmetic, so a rejected dispatch cannot disturb the version series.
 The check runs once, with no retry, sleep or polling; it reads the API only.
 
-The lookup discards `pull_request` runs and keeps every other event. A
+The lookup keeps `push` runs on `main` and discards every other event. A
 pull-request run reports the PR head commit as its `head_sha`, but no checkout
 in `ci.yml` sets `ref:`, so it builds `refs/pull/N/merge` — the head merged into
 the base — and is evidence about a different tree from the one being released.
-Every other event builds the commit it reports, so a merge-queue-validated
-commit remains a legitimate manual release target.
+A `merge_group` run is excluded without losing a reachable case: a merge-queue
+commit that actually lands on `main` gets its own push CI run on `main`, and
+that is the run this lookup finds. Both conditions are needed — `.event ==
+"push"` alone would admit a push run from a fork branch, and `.head_branch ==
+"main"` alone would admit a fork branch that happens to be named `main` — so
+keep them joined with `and`, here and in the workflow.
 
 The check is a safety control rather than an authorization control — anyone who
-can push to `main` can let CI pass and then dispatch, and the dispatch path does
-not itself require `main`. What it rules out is publishing a commit that CI did
-not build and pass on.
+can push to `main` can let CI pass and then dispatch. Restricting the dispatch
+to `refs/heads/main` hardens a maintainer-error path, such as dispatching from
+a stale tag or a topic branch, rather than an outsider path. What the check
+rules out is publishing a commit that CI did not build and pass on.
 
 #### Keeping the trigger attached
 

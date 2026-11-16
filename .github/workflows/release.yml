@@ -103,7 +103,7 @@ jobs:
     # and independently by the already-released short-circuit below: the tag
     # push's head_sha is the stamp commit, which already carries its tag.
     if: >-
-      github.event_name == 'workflow_dispatch'
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
       || (github.event.workflow_run.conclusion == 'success'
       && github.event.workflow_run.head_branch == 'main'
       && github.event.workflow_run.event == 'push'
@@ -131,21 +131,30 @@ jobs:
       # before any version arithmetic, so a rejected dispatch cannot disturb
       # the version series. It asks once and reads the API only.
       #
-      # The lookup discards `pull_request` runs and keeps every other event.
-      # A pull-request run reports the PR head commit as its `head_sha`, but
-      # no checkout in ci.yml sets `ref:`, so it builds `refs/pull/N/merge` --
-      # the head merged into the base, which is not the tree being released.
-      # Admitting one would pass this check on evidence for a different tree.
-      # Every other event (`push`, `merge_group`, `schedule`, ci.yml's own
-      # `workflow_dispatch`) builds its reported `head_sha`, and a
-      # merge-queue-validated commit is a legitimate manual release target, so
-      # the filter names the one event to exclude rather than listing those
-      # admitted.
+      # The lookup keeps `push` runs whose branch was `main` and discards
+      # every other event. A pull-request run reports the PR head commit as
+      # its `head_sha`, but no checkout in ci.yml sets `ref:`, so it builds
+      # `refs/pull/N/merge` -- the head merged into the base, which is not the
+      # tree being released. Evidence about a different tree is not evidence.
+      #
+      # A `merge_group` run is excluded without losing a reachable case: a
+      # merge-queue commit that actually lands on main gets its own push CI
+      # run on main, and that is the run this lookup finds. Both conditions
+      # are needed -- `.event == "push"` alone would admit a push run from a
+      # fork branch, and `.head_branch == "main"` alone would admit a fork
+      # branch that happens to be named `main` -- so keep them joined with
+      # `and`, here and in the example in docs/reference/ci-pipeline.md.
       #
       # `ci.yml` appears here as a literal filename in the API path. That is a
       # third coupling to the same workflow, beside `workflows: [CI]` above
       # and ci.yml's `name: CI`; renaming the file fails this check closed
       # (#2744).
+      #
+      # The job's `if:` admits a dispatch only from refs/heads/main, so the
+      # ref resolved here is main's tip by construction. That hardens a
+      # maintainer-error path -- dispatching from a stale tag or a topic
+      # branch -- rather than an outsider path, and it is why the
+      # tip-of-main comparison below is scoped to the workflow_run path.
       #
       # This is a safety control, not an authorization control: anyone who can
       # push to main can let CI pass and then dispatch. What it rules out is
@@ -168,7 +177,7 @@ jobs:
           SHA=$(git rev-parse HEAD)
           ANSWER=$(gh api \
             "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&status=success&per_page=100" \
-            --jq '[.workflow_runs[] | select(.event != "pull_request")]
+            --jq '[.workflow_runs[] | select(.event == "push" and .head_branch == "main")]
                   | "\(length)\t\(.[0].html_url // "(run URL unavailable)")"')
           COUNT=$(printf '%s' "${ANSWER}" | cut -f1)
           RUN_URL=$(printf '%s' "${ANSWER}" | cut -f2)
