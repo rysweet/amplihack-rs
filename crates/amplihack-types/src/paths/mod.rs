@@ -128,12 +128,21 @@ pub fn resolve_state_root(
 /// variable first.
 pub const STATE_HOME_ENV: &str = "AMPLIHACK_STATE_HOME";
 
-/// `AMPLIHACK_STATE_HOME` when it is set and passes the path rule (absolute,
-/// no `..` component); `None` otherwise, without a message, so callers apply
-/// their usual rules (#2528).
+/// `AMPLIHACK_STATE_HOME` when it is set, passes the path rule (absolute, no
+/// `..` component) and is not a Git checkout root; `None` otherwise, without
+/// a message, so callers apply their usual rules (#2528).
+///
+/// The checkout probe is the same [`is_git_checkout`] gate `AMPLIHACK_HOME`
+/// passes through, and is here rather than in each caller because this
+/// variable names a *state* root and outranks `AMPLIHACK_HOME`: without it,
+/// the highest-precedence candidate would be the one candidate that reaches
+/// a state write unchecked, which is exactly #2361's symptom -- runtime
+/// state at a checkout root, picked up by the recipe stagers.
 pub fn state_home_override() -> Option<PathBuf> {
     let value = env::var_os(STATE_HOME_ENV)?;
-    usable_root(&value).map(Path::to_path_buf)
+    usable_root(&value)
+        .filter(|root| !is_git_checkout(root))
+        .map(Path::to_path_buf)
 }
 
 /// The amplihack state root for hook-written runtime state (#1963, #2361).

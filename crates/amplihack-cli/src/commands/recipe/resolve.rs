@@ -416,6 +416,19 @@ fn classify_recipe_path(
     // canonicalised: E15 names the path the way the user typed it. The two
     // `Bundle` arms above return `canonical` instead, because what they name
     // is the bundle the run is pinned to, not the user's spelling of it.
+    //
+    // This arm, and only this arm, therefore checks and uses different
+    // paths: every check above ran on `canonical`, while the `path` returned
+    // here is what the run parses and executes, what `build_search_dirs`
+    // turns into a `-R` search dir from its parent, and what
+    // `set_recipe_file` records. A symlink in `path` re-pointed between the
+    // `canonicalize` above and those uses would be followed again. That is
+    // accepted rather than closed: re-pointing it needs write access to a
+    // component of a path the caller itself named, so the only actor who can
+    // is the invoking uid, which can equally edit the recipe's own bytes --
+    // nothing crosses a trust boundary. Keep the two apart anyway, because
+    // the asymmetry is deliberate and not an oversight to be "tidied" by
+    // returning `canonical` here (that would silently change E15's output).
     Ok((path.clone(), RecipeOrigin::File(path)))
 }
 

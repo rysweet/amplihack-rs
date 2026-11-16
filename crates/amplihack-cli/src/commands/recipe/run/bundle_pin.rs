@@ -443,6 +443,12 @@ pub(crate) fn is_snapshot_path(path: &Path, work_root: &Path) -> bool {
 /// cannot be read, or that parses but holds a relative `source` or a version
 /// `sanitize_version` rejects, leaves the source as the snapshot and the
 /// version `unknown` -- each with a note naming which field was unusable.
+///
+/// Those three are the whole list. An *absolute* `source` is taken as given,
+/// with no note and no check that it still exists: it is provenance only --
+/// `pin` formats it into the record and nothing ever opens it -- so probing
+/// the file system here would buy nothing and put a stat on the path that
+/// writes the record.
 fn inherited_selection(accepted: AcceptedMarker) -> Selection {
     let AcceptedMarker {
         home,

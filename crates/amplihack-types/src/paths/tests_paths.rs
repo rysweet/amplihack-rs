@@ -718,4 +718,37 @@ mod state_home_2528 {
             Some(PathBuf::from("/work/bundle-pins/0123456789abcdef01234567"))
         );
     }
+
+    /// `AMPLIHACK_STATE_HOME` outranks `AMPLIHACK_HOME`, so it must clear the
+    /// same #2361 gate: runtime state at a checkout root is picked up by the
+    /// recipe stagers. Were the override exempt, the highest-precedence
+    /// candidate would be the only unchecked one.
+    #[test]
+    fn a_state_home_at_a_checkout_root_is_rejected_like_amplihack_home() {
+        let dir = std::env::temp_dir().join(format!(
+            "amplihack-state-home-checkout-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // The same directory is accepted before it is a checkout, so the
+        // rejection below is the `.git` probe and not the path rule.
+        assert_eq!(
+            root_with(Some(&dir.display().to_string())),
+            Some(dir.clone()),
+            "a plain absolute directory is a usable state root"
+        );
+
+        // A `.git` *file* is the linked-worktree form -- the #2361 case.
+        std::fs::write(dir.join(".git"), "gitdir: /elsewhere\n").unwrap();
+        assert_eq!(
+            root_with(Some(&dir.display().to_string())),
+            Some(PathBuf::from("/work/bundle-pins/0123456789abcdef01234567")),
+            "a checkout root is skipped; the usual rules apply"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

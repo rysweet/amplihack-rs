@@ -1020,9 +1020,17 @@ fn a_pin_record_with_an_unusable_field_is_noted_not_silently_dropped() {
         );
         fs::write(marker.join("pin.json"), record).unwrap();
     };
+    // Both notes interpolate `pin.json`'s absolute path, which is rooted at
+    // `scratch_base()` -- `TMPDIR` first. So a no-leak guard may not test for
+    // a substring a path could hold: `"dev"` alone fails on any host whose
+    // `TMPDIR` sits under `/dev/shm` or `/home/dev`, and reports a leak that
+    // is really the temp root. Each unusable field carries a sentinel no path
+    // on any host contains, so `!contains(SENTINEL)` is exact, and catches a
+    // `{}` leak as well as a `{:?}` one.
+    const LEAK: &str = "zzLEAKzz";
 
     // A relative `source`: the snapshot stands in, and the note says so.
-    write("amplifier-bundle", "1.2.3");
+    write(&format!("{LEAK}-bundle"), "1.2.3");
     let relative = select();
     assert!(relative.inherited());
     assert_eq!(relative.version(), "1.2.3", "only the source was unusable");
@@ -1030,7 +1038,7 @@ fn a_pin_record_with_an_unusable_field_is_noted_not_silently_dropped() {
     assert!(note.contains("relative source"), "{note}");
     assert!(note.contains("pin.json"), "{note}");
     assert!(
-        !note.contains("amplifier-bundle\""),
+        !note.contains(LEAK),
         "the note names the field, not its contents: {note}"
     );
     let pinned = pin(&relative, &work, false).unwrap();
@@ -1044,13 +1052,16 @@ fn a_pin_record_with_an_unusable_field_is_noted_not_silently_dropped() {
     // A version `sanitize_version` rejects: `unknown`, and the note says so.
     write(
         &marker.join("amplifier-bundle").display().to_string(),
-        "1.2 (dev)",
+        &format!("1.2 ({LEAK})"),
     );
     let version = select();
     assert_eq!(version.version(), "unknown");
     let note = version.notes().join("\n");
     assert!(note.contains("unusable version"), "{note}");
-    assert!(!note.contains("dev"), "the note names the field: {note}");
+    assert!(
+        !note.contains(LEAK),
+        "the note names the field, not its contents: {note}"
+    );
 }
 
 #[test]

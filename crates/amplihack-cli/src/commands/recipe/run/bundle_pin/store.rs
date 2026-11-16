@@ -458,6 +458,11 @@ pub(super) fn place(
     Ok(Placement::Replaced)
 }
 
+/// Issue #2528: the reuse gate below, which is private to this module.
+#[cfg(all(test, unix))]
+#[path = "tests_store.rs"]
+mod tests_store;
+
 /// True when `home` holds exactly a real `amplifier-bundle/` folder and a
 /// regular `pin.json`, neither a symlink. Steps read files directly under
 /// `AMPLIHACK_HOME` (such as `config` or `.claude/`), so a snapshot holding
