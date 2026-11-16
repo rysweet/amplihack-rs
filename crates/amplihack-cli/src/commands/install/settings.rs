@@ -311,7 +311,10 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     }
     let limit_resume = claude_too_old_for_limit_resume().is_none();
     let results = refresh_profile_settings(hooks_bin, &|settings| {
-        register_hooks(settings, hooks_bin, limit_resume)
+        register_hooks(settings, hooks_bin, limit_resume);
+        // Issue #2589: every managed profile gets the same deny entries as
+        // the user's own settings file.
+        apply_deny_policy(settings, "a managed profile settings file");
     });
     let updated = results
         .iter()
@@ -530,6 +533,26 @@ pub(super) fn ensure_permissions(settings: &mut Value) {
         if !additional.iter().any(|value| value.as_str() == Some(dir)) {
             additional.push(Value::String(dir.to_string()));
         }
+    }
+
+    // Issue #2589: the dangerous-command deny entries, from amplihack's one
+    // policy list plus this installation's own additions. The entries
+    // already in the file, including the user's own, are kept.
+    apply_deny_policy(settings, "the user settings file");
+}
+
+/// Issue #2589: adds the dangerous-command deny entries to `settings`,
+/// reporting rather than replacing a `permissions` value that cannot take
+/// them (SEC-C2). `label` names the file in the log line and never holds
+/// file content.
+pub(crate) fn apply_deny_policy(settings: &mut Value, label: &str) {
+    use crate::policy::claude::{DenyOutcome, ensure_deny};
+    let instance = crate::user_config::policy_deny_commands();
+    if let DenyOutcome::Unparseable(reason) = ensure_deny(settings, &instance) {
+        tracing::warn!(
+            "{label}: the dangerous-command deny entries were not written ({reason}); the \
+             existing permissions value was left as it is"
+        );
     }
 }
 

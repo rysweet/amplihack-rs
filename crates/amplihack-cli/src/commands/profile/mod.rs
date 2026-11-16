@@ -152,7 +152,7 @@ pub(crate) use auto_switch::{
     statusline_entry::is_amplihack_statusline,
 };
 use clap::Subcommand;
-use name::ProfileName;
+pub(crate) use name::ProfileName;
 #[cfg(test)]
 use root_cmd::{render_list, render_show};
 pub(crate) use root_config::store_from_env;

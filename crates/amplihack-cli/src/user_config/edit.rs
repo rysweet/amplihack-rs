@@ -130,6 +130,17 @@ fn set_value_with(path: &Path, key: &KeyDef, value: &Value, sync: bool) -> Resul
             })?)
         }
         Value::Text(s) => toml_edit::value(s.as_str()),
+        // Issue #2589: `config set` writes scalars. A list key is rejected
+        // by `parse_cli` before it reaches here; this arm keeps that true in
+        // every build rather than half-writing an array.
+        Value::List(_) => {
+            return Err(ConfigError::InvalidValue {
+                key: key.name.to_string(),
+                reason: "is a list and is set by editing the user file \
+                         ~/.amplihack/config.toml, not with `config set`"
+                    .to_string(),
+            });
+        }
     };
     // Replace an existing value in place: `insert` would also replace the key,
     // and with it any comment written above the line.

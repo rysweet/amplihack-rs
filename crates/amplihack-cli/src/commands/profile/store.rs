@@ -8,7 +8,10 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::commands::install::hook_block::{FileMerge, HookTarget, hook_target, merge_file};
+use crate::commands::install::apply_deny_policy;
+use crate::commands::install::hook_block::{
+    FileMerge, HookTarget, hook_target, merge_file, update_file,
+};
 pub use amplihack_utils::rotator_status::ROOT_ENV;
 const SHARED_ASSET_DIRS: &[&str] = &["agents", "commands", "output-styles", "rules", "skills"];
 const MAX_COPY_DEPTH: usize = 16;
@@ -88,6 +91,26 @@ impl ProfileStore {
             FileMerge::Written | FileMerge::AlreadyCurrent | FileMerge::Absent => {}
             FileMerge::Unparseable(reason) | FileMerge::Refused(reason) => {
                 tracing::warn!("new profile settings.json: hooks block not written ({reason})");
+            }
+        }
+    }
+
+    /// Issue #2589: gives a newly seeded profile the dangerous-command deny
+    /// entries. Seeding copies `permissions` from the user's settings file,
+    /// so a profile seeded from a file written before this change would
+    /// otherwise carry no entry at all. Never creates the file and never
+    /// fails the seeding: a refusal is logged.
+    fn seed_policy_into(&self, profile_dir: &Path) {
+        let path = profile_dir.join("settings.json");
+        match update_file(&path, &|settings| {
+            apply_deny_policy(settings, "a new profile settings file");
+        }) {
+            FileMerge::Written | FileMerge::AlreadyCurrent | FileMerge::Absent => {}
+            FileMerge::Unparseable(reason) | FileMerge::Refused(reason) => {
+                tracing::warn!(
+                    "new profile settings.json: dangerous-command deny entries not written \
+                     ({reason})"
+                );
             }
         }
     }
@@ -190,6 +213,7 @@ impl ProfileStore {
         if self.shared_assets.is_some() {
             self.seed_hooks_into(&staging);
         }
+        self.seed_policy_into(&staging);
         if let Err(error) = rename_noreplace(&staging, &dir) {
             let error = if error.kind() == std::io::ErrorKind::AlreadyExists {
                 ProfileError::AlreadyExists(name.to_string())

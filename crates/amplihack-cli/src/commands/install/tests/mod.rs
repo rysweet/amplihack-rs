@@ -43,6 +43,12 @@ mod issue_1955_support;
 mod issue_1955_tag_fetch;
 #[cfg(unix)]
 mod issue_2279_launch_repair;
+#[cfg(unix)]
+mod issue_2589_claude_deny;
+#[cfg(unix)]
+mod issue_2589_codex_rules;
+#[cfg(unix)]
+mod issue_2589_update_coverage;
 mod issue_527_tests;
 mod issue_911_durable_hooks_path;
 #[cfg(unix)]

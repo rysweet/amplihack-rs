@@ -12,6 +12,7 @@ can override the defaults.
 - [--dangerously-skip-permissions](#-dangerously-skip-permissions)
 - [--model](#-model)
 - [--resume and --continue](#-resume-and-continue)
+- [--deny-tool (Copilot CLI)](#-deny-tool)
 - [Codex agent-step flags](#codex-agent-step-flags)
 - [Extra args passthrough](#extra-args-passthrough)
 - [Complete command-line assembly](#complete-command-line-assembly)
@@ -28,6 +29,7 @@ can override the defaults.
 | `--model <value>` | tool is Claude-compatible AND user did not pass `--model`, unless `AMPLIHACK_DEFAULT_MODEL` is set to an empty value outside the LiteLLM gateway path. Unset, the value is `claude-opus-5[1m]`; see [--model](#-model) | `claude`, `rusty`, `rustyclawd`, `amplifier` | pass `--model`, or set `AMPLIHACK_DEFAULT_MODEL=` (empty) to pass none |
 | `--resume` | only when `amplihack launch --resume` | `launch` only (not `claude`) | pass `--resume` to the `launch` subcommand |
 | `--continue` | only when `amplihack launch --continue` | `launch` only (not `claude`) | pass `--continue` to the `launch` subcommand |
+| `--deny-tool shell(<prefix>)` | always, once per entry in the [dangerous-command policy](./dangerous-command-policy.md) that the caller has not already denied | `copilot` | pass the same `--deny-tool` yourself; change the policy with `policy.deny_commands`; see [--deny-tool](#-deny-tool) |
 | `--sandbox danger-full-access` | argv after `--` contains an `exec`/`e` subcommand AND the caller chose no sandbox | `codex` | pass your own sandbox (`--sandbox`, `--sandbox=`, `-s`, `-s<mode>`, `-s=<mode>`, `-c sandbox_mode=…`); see [Codex agent-step flags](#codex-agent-step-flags) |
 | `--dangerously-bypass-hook-trust` | argv after `--` contains an `exec`/`e` subcommand AND the flag is not already present | `codex` | none; it is added once on every Codex `exec` launch |
 
@@ -395,6 +397,75 @@ prompt. The preconditions, including the trusted-checkout requirement, are in
 
 ---
 
+## --deny-tool
+
+Every Copilot CLI launch receives one `--deny-tool shell(<prefix>)` argument
+pair per entry in amplihack's
+[dangerous-command policy](./dangerous-command-policy.md). amplihack spawns
+`copilot` directly, with no shell in between, so each value is one argv
+element:
+
+```text
+copilot
+--deny-tool
+shell(pkill)
+--deny-tool
+shell(killall)
+--deny-tool
+shell(pgrep)
+--deny-tool
+shell(tmux kill-server)
+--deny-tool
+shell(tmux kill-session -a)
+--deny-tool
+shell(git push --force)
+--deny-tool
+shell(git push -f)
+--deny-tool
+shell(git push --force-with-lease)
+--deny-tool
+shell(git push --delete)
+--deny-tool
+shell(git push -d)
+```
+
+The quotes in `--deny-tool 'shell(pkill)'` are shell syntax, needed only when
+you type the flag at a prompt yourself. The value amplihack passes holds no
+quotes; do not copy them into a config file.
+
+Copilot CLI is the only tool that receives these flags. Claude Code and Codex
+read the same policy from files amplihack writes at install time, so their
+command lines are unchanged; see
+[Dangerous Command Policy](./dangerous-command-policy.md).
+
+They are not the only flags a `copilot` launch receives. amplihack also
+injects `--allow-all` (issue #303), unless the caller passed an allow-all flag
+of its own or set `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1`. The deny flags are what
+makes that allow survivable, so the opt-out suppresses `--allow-all` and
+leaves the deny flags in place.
+
+- Copilot CLI has no user-level file for command deny rules, only per-session
+  flags, so the policy is applied here rather than at install.
+- A `--deny-tool` already present in the caller's own arguments for the same
+  prefix is not repeated. Both spellings count: `--deny-tool shell(pkill)` as
+  two arguments, and the joined `--deny-tool=shell(pkill)`. The comparison is
+  on the exact `shell(<prefix>)` text, so `shell(pkill -f)` is a different
+  value and both are passed.
+- Entries from `policy.deny_commands` in `~/.amplihack/config.toml` follow the
+  shipped defaults, in the order written. A change applies to the next launch;
+  no install or update is needed.
+- A `copilot` started by hand, outside `amplihack`, receives none of this.
+
+Whether Copilot CLI resolves a `--deny-tool` over a session approval or an
+allow flag, and whether it accepts a multi-token prefix such as
+`shell(git push --force)` at all, are third-party behaviours recorded with the
+version they were checked against in
+[Verified behaviour and open checks](./dangerous-command-policy.md#verified-behaviour-and-open-checks).
+Until those checks are settled, the Copilot rendering is the weakest of the
+three.
+
+---
+
 ## Extra args passthrough
 
 All positional arguments and flags after the subcommand name are forwarded
@@ -433,7 +504,10 @@ assembles the final command line. The assembly order is:
    `AMPLIHACK_DEFAULT_MODEL` outside the gateway means no `--model`
 4. `--resume` (if requested — `launch` subcommand only)
 5. `--continue` (if requested — `launch` subcommand only)
-6. All `extra_args` in the order they were passed on the command line. For
+6. `--allow-all`, then `--deny-tool shell(<prefix>)` once per
+   dangerous-command policy entry the caller has not already denied.
+   `copilot` only; see [--deny-tool](#-deny-tool)
+7. All `extra_args` in the order they were passed on the command line. For
    `codex`, `codex_agent_step_args()` first inserts the
    [Codex agent-step flags](#codex-agent-step-flags) after an `exec`/`e`
    subcommand, if there is one. When the sandbox is among them,
@@ -451,7 +525,8 @@ amplihack claude --skip-permissions
 # → claude --dangerously-skip-permissions --model claude-opus-5[1m]
 
 amplihack copilot
-# → copilot
+# → copilot --allow-all --deny-tool shell(pkill) … (one --deny-tool argument
+#   pair per policy entry; see the --deny-tool section above)
 
 amplihack codex
 # → codex
@@ -500,3 +575,4 @@ Intentional divergences (not bugs) are documented in
 - [Parity Test Scenarios](./parity-test-scenarios.md) — tier5 and tier7 test cases that verify flag injection
 - [Run amplihack in Non-interactive Mode](../howto/run-in-noninteractive-mode.md) — CI configuration guide
 - [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) — How the pre-launch update check interacts with the launch sequence
+- [Dangerous Command Policy](./dangerous-command-policy.md): the policy list behind the injected `--deny-tool` flags, and the files written for Claude Code and Codex

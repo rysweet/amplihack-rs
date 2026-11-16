@@ -175,6 +175,19 @@ pub(super) fn build_command_for_dir(
         cmd.arg("--allow-all");
     }
 
+    // Issue #2589: amplihack's dangerous-command policy, in Copilot CLI's own
+    // mechanism. Copilot keeps no user-level file for command deny rules, so
+    // the policy is supplied as session arguments; its documented precedence
+    // is that a deny rule wins over an allow rule, including over the
+    // `--allow-all` injected just above. Deliberately not conditional on that
+    // injection: the deny flags are what makes `--allow-all` survivable, so
+    // the `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` opt-out leaves them in place.
+    // Injected before the user's own arguments, as every other injection is.
+    if binary.name == "copilot" {
+        let instance = crate::user_config::policy_deny_commands();
+        cmd.args(crate::policy::copilot::deny_args(&instance, extra_args));
+    }
+
     // Issue #621: Subprocess-safe defense-in-depth — granular allow-all flags.
     //
     // When subprocess_safe is active, we ALSO inject the granular

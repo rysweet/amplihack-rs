@@ -45,6 +45,9 @@ use directories::*;
 use filesystem::{all_rel_dirs, get_all_files_and_dirs};
 use manifest::{manifest_path, write_manifest};
 use paths::*;
+/// Issue #2589: the dangerous-command deny entries, for every writer of a
+/// Claude `settings.json` outside this module (the profile seeding).
+pub(crate) use settings::apply_deny_policy;
 use settings::*;
 #[cfg(test)]
 pub(in crate::commands) use types::SourceLayout as SourceLayoutForTest;
@@ -394,6 +397,46 @@ pub(crate) fn binary_is_current() -> bool {
     matches!(newer_install_stamp(), Ok(None))
 }
 
+/// What [`apply_dangerous_command_policy`] did: the lines an explicit
+/// install prints, and one warning per harness whose rules could not be
+/// written.
+pub(super) struct PolicyReport {
+    pub(crate) lines: Vec<String>,
+    pub(crate) warnings: Vec<String>,
+}
+
+/// Issue #2589: applies amplihack's dangerous-command policy to the harness
+/// mechanisms that are written as files of their own.
+///
+/// Claude Code's `permissions.deny` is written by the settings writer, the
+/// profile refresh and the profile seeding, because those already own the
+/// files it lives in; Copilot CLI has no such file and takes the policy as
+/// session arguments at launch. What is left here is the Codex rules file.
+///
+/// Never fatal. A harness that could not be written yields a warning and the
+/// install carries on, because the rest of the install is worth having; but
+/// the warning is loud and unsuppressed, since a security control that is not
+/// installed must not be silent (SEC-C3).
+pub(super) fn apply_dangerous_command_policy() -> PolicyReport {
+    let mut warnings = Vec::new();
+    match codex_plugin::install_deny_rules() {
+        codex_plugin::DenyRulesWrite::Written | codex_plugin::DenyRulesWrite::AlreadyCurrent => {}
+        codex_plugin::DenyRulesWrite::Absent => {
+            tracing::debug!("no Codex home to write the dangerous-command rules into");
+        }
+        codex_plugin::DenyRulesWrite::Refused(reason) => {
+            warnings.push(crate::policy::write_failure_warning("Codex", &reason));
+        }
+    }
+    PolicyReport {
+        lines: crate::policy::install_report_lines()
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        warnings,
+    }
+}
+
 pub(crate) fn ensure_framework_installed() -> Result<()> {
     ensure_framework_installed_with(&mut std::io::stderr())
 }
@@ -470,6 +513,19 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
                  matches v{} yet.",
                 crate::VERSION
             );
+        }
+    }
+    // Issue #2589: a Codex launch keeps its deny rules current too, so a
+    // machine that never runs `amplihack install` again is still covered.
+    // Gated on the selected client for the same reason as the reconcile
+    // above: an explicit `claude` or `copilot` launch leaves a Codex home
+    // byte-identical (issue #1538), and the rules file lives in that home.
+    // The Claude entries need no gate here: `repair_settings_hooks` writes
+    // the user's own settings file, which `ensure_permissions` already
+    // covers.
+    if crate::freshness::codex_selected() {
+        for warning in apply_dangerous_command_policy().warnings {
+            let _ = writeln!(notice, "amplihack: warning: {warning}");
         }
     }
     launch_repair::repair_settings_hooks(notice, &staging_dir, &hooks_bin)
@@ -882,6 +938,25 @@ fn local_install_scoped(
         // `amplihack install`. Issue #1526's downgrade refusal runs earlier.
         codex_plugin::install(repo_root, &durable_hooks_bin)
             .context("failed native Codex installation")?;
+    }
+
+    // Issue #2589: an explicit `amplihack install` (and `amplihack update`,
+    // which reaches this through the post-update install) writes the deny
+    // rules for every harness home it manages, whether or not Codex is the
+    // selected client. An implicit re-stage does not: it runs on the launch
+    // path, where an explicit `claude` or `copilot` launch must leave a
+    // Codex home byte-identical (issue #1538). A Codex launch refreshes its
+    // own rules from `ensure_framework_installed_with` instead.
+    if mode == InstallMode::Explicit {
+        println!();
+        println!("🛡️  Configuring dangerous-command deny rules:");
+        let policy = apply_dangerous_command_policy();
+        for line in &policy.lines {
+            println!("  ℹ️  {line}");
+        }
+        for warning in &policy.warnings {
+            eprintln!("  ⚠️  {warning}");
+        }
     }
 
     println!("📝 Generating uninstall manifest:");

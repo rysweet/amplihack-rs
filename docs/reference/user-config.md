@@ -22,6 +22,7 @@ files.
   - [Governor keys](#governor-keys)
   - [sessions.daily_archive](#sessionsdaily_archive)
   - [sessions.archive_days and sessions.archive_dest](#sessionsarchive_days-and-sessionsarchive_dest)
+  - [policy.deny_commands](#policydeny_commands)
 - [The config command](#the-config-command)
   - [config get](#config-get)
   - [config set](#config-set)
@@ -61,6 +62,7 @@ recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
 recipe.log_dir = (unset)  # default
 recipe.usage_limit_wait = true  # default
 recipe.usage_limit_max_wait_secs = 21600  # default
+policy.deny_commands = (unset)  # default
 orchestrator.max_depth = 3  # default
 sessions.daily_archive = true  # default
 sessions.archive_days = 3  # default
@@ -152,6 +154,7 @@ command, so it never prints `flag`.
 | `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
 | `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
 | `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | `21600` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
+| `policy.deny_commands` | list of command prefixes | (unset: the shipped defaults only) | — | — | user only |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 | `governor.enabled` | bool | `false` | — | — | user only |
 | `governor.max_concurrency` | integer, 1 to 64 | `4` | — | — | user only |
@@ -472,6 +475,57 @@ value is not replaced by the default. The command prints
 `sessions archive: cannot read <key> (<why>); not run`. A flag still works,
 because the key is then not read.
 
+### policy.deny_commands
+
+Extra entries for amplihack's
+[dangerous-command policy](./dangerous-command-policy.md), the list it writes
+into Claude Code's `permissions.deny`, the Codex execpolicy rules file and the
+Copilot CLI command line.
+
+This is the only list-valued key. `config set` writes scalars, so it is set by
+editing the user file:
+
+```toml
+[policy]
+deny_commands = ["shutdown", "systemctl stop", "docker rm -f"]
+```
+
+```console
+$ amplihack config get policy.deny_commands --show-origin
+shutdown, systemctl stop, docker rm -f  # user (/home/alice/.amplihack/config.toml)
+```
+
+The entries print on one line, separated by `, `; a comma is not an accepted
+character in an entry, so the separator is unambiguous. `config get` prints
+one value and `--show-origin` adds one trailing comment for it, not one per
+entry. `config list` prints every value in TOML syntax rather than bare, so
+its row reads
+`policy.deny_commands = ["shutdown", "systemctl stop", "docker rm -f"]`, and
+`(unset)` when the key is absent. `config set policy.deny_commands <value>`
+is a usage error that names the file to edit. `config unset
+policy.deny_commands` removes the key.
+
+- Entries are added **after** the shipped defaults, in the order written, with
+  duplicates removed. An entry can never remove a default; there is no
+  removal mechanism for the defaults.
+- Each entry is a command prefix: ASCII letters, digits and `. _ / @ = + -`,
+  single spaces between 1 to 8 tokens, 1 to 128 bytes. Quotes, backslashes,
+  parentheses, colons, globs, control characters and NUL are rejected, because
+  each is syntax in at least one harness's rule format. One rejected entry is
+  reported once and rejects the whole value, which then reverts to unset: an
+  entry silently dropped from a deny list would leave a shorter list that is
+  still believed. The shipped defaults live in code and are written either
+  way, so a bad line here cannot switch the policy off.
+- The key is user-only, because it decides what your agents may run. A project
+  file's value is reported and ignored, and an insecure user file (group- or
+  world-writable, or owned by somebody else) contributes no entries, while the
+  shipped defaults are still written.
+- On Copilot CLI the entries become command-line arguments of the launched
+  process, so they are visible to every user on the host.
+
+The defaults apply whether or not this key is set. Run `amplihack update`
+after changing it; Copilot picks a change up on the next launch without one.
+
 ## The config command
 
 ```
@@ -660,7 +714,8 @@ have just cloned, so it is trusted less.
 
 - **The user file must be owned by you and not writable by group or others.**
   If it is not, its user-only keys (`agent.binary`, `paths.home`, `node.*`,
-  `recipe.log_dir`, `governor.*`) are ignored and reported. Its other keys still apply.
+  `recipe.log_dir`, `governor.*`, `policy.deny_commands`) are ignored and
+  reported. Its other keys still apply.
 - **The project file never names a path, a command, an executable or the
   agent CLI.** `agent.binary` and every path-valued key are user-only.
 - **The project file cannot change the capacity governor.** Every
@@ -791,3 +846,4 @@ so the user file is the only place the consent lives.
 - [Capacity Governor](./capacity-governor.md): What the `governor.*` keys control
 - [Memory Configuration Consent](../features/memory-consent-prompt.md) — The NODE_OPTIONS prompt whose answer `node.heap_consent` stores
 - [Config Write Durability](../concepts/config-write-durability.md): Why the launcher's consent save skips the `fsync` that other config writes perform
+- [Dangerous Command Policy](./dangerous-command-policy.md): The policy list `policy.deny_commands` adds to, and the files each harness receives

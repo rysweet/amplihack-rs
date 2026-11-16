@@ -24,6 +24,7 @@ fn keys_are_in_documented_order() {
             "recipe.log_dir",
             "recipe.usage_limit_wait",
             "recipe.usage_limit_max_wait_secs",
+            "policy.deny_commands",
             "orchestrator.max_depth",
             "governor.enabled",
             "governor.max_concurrency",
@@ -56,7 +57,7 @@ fn no_project_scoped_key_names_a_path() {
 }
 
 #[test]
-fn user_only_keys_are_agent_home_node_log_dir_governor_and_sessions() {
+fn user_only_keys_are_agent_home_node_log_dir_policy_governor_and_sessions() {
     let user_only: Vec<&str> = KEYS
         .iter()
         .filter(|k| k.scope == Scope::UserOnly)
@@ -70,6 +71,9 @@ fn user_only_keys_are_agent_home_node_log_dir_governor_and_sessions() {
             "node.heap_consent",
             "node.max_old_space_mb",
             "recipe.log_dir",
+            // Issue #2589: a cloned repository must not change what any
+            // harness denies, so the instance additions are user-only.
+            "policy.deny_commands",
             "governor.enabled",
             "governor.max_concurrency",
             "governor.reserve_points",
@@ -229,4 +233,95 @@ fn governor_keys_are_user_only_with_documented_ranges_and_defaults() {
     }
     assert!(parse_cli("governor.wait_secs", "0").is_ok());
     assert!(parse_cli("governor.reserve_points", "100").is_ok());
+}
+
+// --- issue #2589: policy.deny_commands, a list-valued key -------------------
+//
+// Expected additions to the schema:
+//   * `ValueKind::CommandList`
+//   * `Value::List(Vec<String>)`
+//   * `KeyDef { name: "policy.deny_commands", scope: UserOnly,
+//               kind: ValueKind::CommandList, env: None, default: None }`
+//   * `MAX_DENY_COMMANDS`, the bound on how many entries one file may add.
+
+#[test]
+fn the_deny_commands_key_is_user_only_list_valued_and_has_no_variable() {
+    let def = key_def("policy.deny_commands").expect("the key is registered");
+    assert_eq!(def.scope, Scope::UserOnly);
+    assert_eq!(def.kind, ValueKind::CommandList);
+    assert_eq!(
+        def.env, None,
+        "no variable: a deny list that one shell can unset is not one"
+    );
+    assert_eq!(
+        def.default, None,
+        "unset by default; the defaults are in code"
+    );
+    assert!(!def.lower_only);
+}
+
+#[test]
+fn a_list_value_prints_its_entries_on_one_line_for_config_get() {
+    let value = Value::List(vec!["pkill".into(), "tmux kill-server".into()]);
+    assert_eq!(value.bare(), "pkill, tmux kill-server");
+}
+
+#[test]
+fn a_list_value_renders_as_a_toml_array_with_escaped_strings() {
+    let value = Value::List(vec!["a".into(), "b".into()]);
+    assert_eq!(value.to_string(), "[\"a\", \"b\"]");
+    assert_eq!(Value::List(Vec::new()).to_string(), "[]");
+}
+
+/// `config set` writes scalars only (`edit.rs`). Rather than half-write a
+/// list, the command says plainly that the key is set by editing the user
+/// file. Recorded as a follow-up, not a defect.
+#[test]
+fn a_list_key_cannot_be_set_from_the_command_line() {
+    let err = parse_cli("policy.deny_commands", "pkill").unwrap_err();
+    let text = err.to_string();
+    assert!(text.contains("policy.deny_commands"), "{text}");
+    assert!(
+        text.contains("user file") || text.contains("config.toml"),
+        "the error must say where the key is set: {text}"
+    );
+    assert_eq!(err.exit_code(), 2, "a usage error");
+}
+
+#[test]
+fn a_command_list_entry_is_validated_as_a_prefix() {
+    use super::schema::{from_toml, parse_command_list};
+
+    assert_eq!(
+        parse_command_list(&["pkill".to_string(), "tmux kill-server".to_string()]).unwrap(),
+        Value::List(vec!["pkill".into(), "tmux kill-server".into()])
+    );
+    for bad in [
+        vec!["".to_string()],
+        vec!["shell(x)".to_string()],
+        vec!["a\u{0}b".to_string()],
+        vec!["a\nb".to_string()],
+        vec!["x".repeat(200)],
+    ] {
+        assert!(parse_command_list(&bad).is_err(), "{bad:?}");
+    }
+
+    // A TOML value of the wrong shape is rejected with the kind's own
+    // requirement text, never accepted as a one-element list.
+    let doc: toml_edit::DocumentMut = "x = \"pkill\"\ny = [1, 2]\n".parse().unwrap();
+    for name in ["x", "y"] {
+        let item = doc.as_table().get(name).unwrap().as_value().unwrap();
+        assert!(from_toml(ValueKind::CommandList, item).is_err(), "{name}");
+    }
+}
+
+#[test]
+fn a_file_may_not_add_more_entries_than_the_bound() {
+    use super::schema::{MAX_DENY_COMMANDS, parse_command_list};
+    let at_limit: Vec<String> = (0..MAX_DENY_COMMANDS).map(|i| format!("cmd-{i}")).collect();
+    assert!(parse_command_list(&at_limit).is_ok());
+    let over: Vec<String> = (0..MAX_DENY_COMMANDS + 1)
+        .map(|i| format!("cmd-{i}"))
+        .collect();
+    assert!(parse_command_list(&over).is_err());
 }
