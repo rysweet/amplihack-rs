@@ -12,9 +12,11 @@ completion_context loop_findings_previous "$PREV_FINDINGS" &&
 completion_context loop_test_signal_previous "$PREV_TEST" &&
 completion_context loop_ci_signal_previous "$PREV_CI" &&
 completion_context loop_clean_token "$TOKEN_SAFE" || { rm -rf -- "$CTX_DIR"; return 2; }
+PR_ARG=() # #2333: the dispatch reads this PR's head; a bad or empty number passes nothing
+[[ "${AD_PR:-}" =~ ^[1-9][0-9]{0,9}$ ]] && PR_ARG=(--pr "$AD_PR")
 PREPARED="$("$AMPLIHACK_BIN" orch helper autodrive-completion-prepare \
   --state-dir "$STATE_DIR" --round-label "$ROUND_LABEL" --record "$RECORD" \
-  --repo "$REPO" --review-dir "$REVIEW_REAL" --launch-tools "$LOOP_HOME" "${CTX_FILES[@]}")"
+  --repo "$REPO" --review-dir "$REVIEW_REAL" --launch-tools "$LOOP_HOME" "${CTX_FILES[@]}" ${PR_ARG[@]+"${PR_ARG[@]}"})"
 CTX_RC=$?
 rm -rf -- "$CTX_DIR"
 [ "$CTX_RC" -eq 0 ] || return 2

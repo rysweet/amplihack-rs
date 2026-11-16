@@ -173,11 +173,16 @@ stops_preflight() {
   [ $? -ne 3 ] || PROGRESS_OFF=1
 }
 
-# progress_stop <head sha> [<ci signal>]: the no-progress rule for a round that is not clean.
+# progress_stop <head sha> [<ci signal>] [<round waiting>]: the no-progress
+# rule for a round that is not clean. The third value is the round's own
+# `round_waiting` field, asserted by the round and carried straight through to
+# `check` argument seven: "true" exempts the round from the rule. It can only
+# narrow a stop, never widen one, and every other value leaves the rule as it
+# was. The round is still recorded with the CI signal, as before.
 progress_stop() {
   local why rc
   [ -z "${PROGRESS_OFF:-}" ] || return 0
-  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}")"
+  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}" "${3:-}")"
   rc=$?
   [ "$rc" -eq 10 ] || { [ "$rc" -eq 0 ] || echo "WARNING: the no-progress check exited ${rc}; the evaluator decides." >&2; return 0; }
   # Record the stopped round too, so a resumed run's summary names it.

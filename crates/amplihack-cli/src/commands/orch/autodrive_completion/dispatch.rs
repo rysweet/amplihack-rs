@@ -3,7 +3,7 @@ use super::{
     decision::{Action, Decision},
     evaluator, evidence, private_state, secure_fs,
 };
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 
 pub fn run(args: Dispatch) -> Result<i32> {
     let state = private_state::load(&args.private_state)?;
@@ -37,6 +37,48 @@ pub fn run(args: Dispatch) -> Result<i32> {
         record["crusty_verdict"].as_str(),
         Some("CLEAN" | "MINOR_ONLY")
     );
+    // The remote head is read only for a completion claim, after every record
+    // check (#2333). Each outcome is matched by name: a head that moved fails
+    // closed as before, while a read that did not answer leaves the head
+    // unconfirmed and is judged by the loop-health evaluator, with the fault
+    // in front of it. It is not an invalid decision, and it is not a
+    // completion either.
+    let mut head_unavailable = None;
+    if complete {
+        match evidence::head_check(&state)? {
+            evidence::HeadCheck::Matches => {}
+            evidence::HeadCheck::Differs { local, remote } => bail!(
+                "current PR head {remote} differs from the reviewed evidence at {local}; \
+                 the completion claim does not cover the branch as it now stands"
+            ),
+            evidence::HeadCheck::Unavailable(u) => {
+                // The guard the Complete arm applies, kept ahead of the
+                // evaluator so an unreadable head cannot route a decision
+                // past a check it would otherwise have failed.
+                ensure!(
+                    decision.action == Action::Complete && args.child_exit_code == 0,
+                    "the PR head could not be read and the decision cannot complete"
+                );
+                head_unavailable = Some(u);
+            }
+        }
+    }
+    if let Some(u) = head_unavailable {
+        eprintln!(
+            "WARNING: the PR head could not be read on either route ({}); the round goes to the loop-health evaluator rather than completing",
+            u.token()
+        );
+        secure_fs::create(
+            secure_fs::Scope::of(&state.state_dir),
+            &args.private_state.with_extension("dispatched"),
+            state.run_id.as_bytes(),
+        )?;
+        let (mut result, code) =
+            evaluator::run(&state, &record, args.child_exit_code, Some(u.token()))?;
+        result["head_read"] = serde_json::json!(format!("unavailable:{}", u.token()));
+        println!("{result}");
+        return Ok(code);
+    }
     let (result, code) = match decision.action {
         Action::Complete => {
             ensure!(
@@ -51,7 +93,8 @@ pub fn run(args: Dispatch) -> Result<i32> {
             )?;
             (
                 serde_json::json!({"loop":"crusty","loop_result":"DONE","round_label":state.round_label,
-                "round_verdict":record["crusty_verdict"],"source":"objective-completion","evaluator_invoked":false}),
+                "round_verdict":record["crusty_verdict"],"source":"objective-completion","evaluator_invoked":false,
+                "head_read":"matches"}),
                 0,
             )
         }
@@ -65,7 +108,7 @@ pub fn run(args: Dispatch) -> Result<i32> {
                 &args.private_state.with_extension("dispatched"),
                 state.run_id.as_bytes(),
             )?;
-            evaluator::run(&state, &record, args.child_exit_code)?
+            evaluator::run(&state, &record, args.child_exit_code, None)?
         }
     };
     // The dispatch result is iteration evidence only. Follow-up receipts and

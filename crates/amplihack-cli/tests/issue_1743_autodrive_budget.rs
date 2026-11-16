@@ -232,8 +232,23 @@ impl Fixture {
             tmp.path(),
             &["worktree", "add", "-q", "--detach", &wt],
         );
+        // A drive runs against a GitHub remote, and the completion dispatch
+        // reads this PR's head there before it grants a completion (#2333).
+        git(
+            &cwd,
+            tmp.path(),
+            &["remote", "add", "origin", "https://github.com/o/r"],
+        );
         crate::support::exec_stub::write_executable(&bin.join("amplihack"), AMPLIHACK_STUB, 0o755);
         crate::support::exec_stub::write_executable(&bin.join("gh"), GH_STUB, 0o755);
+        // The fake `git` answers `ls-remote` with `$FAKE_GH_HEAD`, set below
+        // to the repository's current head, and execs the real `git` for
+        // everything else: no case here reaches the network.
+        crate::support::exec_stub::write_executable(
+            &bin.join("git"),
+            crate::support::auto_drive_light::FAKE_GIT,
+            0o755,
+        );
         let fx = Fixture {
             tmp,
             bin,
@@ -293,6 +308,9 @@ impl Fixture {
         }
         c.args(extra)
             .env("PATH", path)
+            .env("FAKE_BIN", &self.bin)
+            .env("FAKE_LOG", &self.log)
+            .env("FAKE_GH_HEAD", self.head())
             .env("STUB_LOG", &self.log)
             .env("STUB_STATE", &self.stub)
             .env("STUB_REPO", &self.repo)

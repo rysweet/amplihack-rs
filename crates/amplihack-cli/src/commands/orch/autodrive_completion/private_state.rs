@@ -22,6 +22,9 @@ pub struct State {
     pub review_stamp: String,
     pub depth: Option<String>,
     pub ceiling: Option<String>,
+    /// The PR whose head the dispatch compares (#2333). 0 is treated as none.
+    #[serde(default)]
+    pub pr: Option<u64>,
 }
 
 /// Reads the private `state.json`. The state folder is not known yet, so the
@@ -168,6 +171,7 @@ pub fn prepare(args: Prepare) -> Result<()> {
         context,
         depth: std::env::var("AMPLIHACK_SESSION_DEPTH").ok(),
         ceiling: std::env::var("AMPLIHACK_MAX_DEPTH").ok(),
+        pr: args.pr,
     };
     secure_fs::create(
         Scope::of(&state.state_dir),

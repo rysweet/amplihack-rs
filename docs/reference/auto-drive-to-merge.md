@@ -1,7 +1,7 @@
 ---
 title: Auto Drive To Merge Reference
 description: responsibilities, authorization, recovery, completion outcomes, and target compatibility for auto-drive-to-merge.
-last_updated: 2026-11-13
+last_updated: 2026-11-15
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -426,6 +426,16 @@ governs calls to the hosting service:
 - Before retrying an ambiguous write, observe its effect. A changed head
   requires a fresh readiness assessment. Exit `79` remains terminal.
 
+GitHub counts GraphQL calls against a different allowance from REST calls,
+so the read that decides a Crusty completion does not use GraphQL: the
+completion dispatch reads the PR's head with `git ls-remote` and then with
+`gh api repos/{owner}/{repo}/pulls/{n}`. These are two routes to one fact,
+not a retry schedule; nothing sleeps between them. A read that neither
+route answered is unavailable, and the dispatch does not report a decided
+negative it never observed: it runs the loop-health evaluator with the
+fault stated in its context instead of calling the head changed (#2333).
+See [Head check outcomes](autodrive-crusty-completion.md#head-check-outcomes).
+
 ### Two absolute prohibitions
 
 Never skip commit hooks or bypass branch protection. Fix failures and satisfy
@@ -469,10 +479,13 @@ Missing or unreadable evaluator output is never success. See
 ### No-progress stop and usage budget
 
 For a non-clean crusty round, unchanged head, sorted open-item set, and CI
-signal, with CI no longer pending, produces `STUCK`. For the merge-ready
-loop, a round whose only open item is a required check still running at the
-head ends the loop `WAITING` and goes to finalisation; it is never counted as
-no progress. A pending CI signal at an unchanged head is `CONTINUE`, never
+signal, with CI no longer pending, produces `STUCK`. A crusty round whose
+record says `round_waiting` is `true` is exempt from this check and goes to
+the evaluator instead; see
+[waiting is not an absence of progress](autodrive-crusty-completion.md#waiting-is-not-an-absence-of-progress).
+For the merge-ready loop, a round whose only open item is a required check
+still running at the head ends the loop `WAITING` and goes to finalisation;
+it is never counted as no progress. A pending CI signal at an unchanged head is `CONTINUE`, never
 `STUCK`, for the evaluator. Other not-ready rounds that change nothing are
 judged `STUCK` and the PR is handed off. Budget exhaustion is separate,
 checked before starting more work. Budgets limit cost, not convergence.

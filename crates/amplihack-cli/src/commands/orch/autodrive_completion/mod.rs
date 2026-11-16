@@ -30,6 +30,10 @@ pub struct Prepare {
     /// Declared evaluator data, copied into trusted state before the child.
     #[arg(long = "context-from-file")]
     context_files: Vec<String>,
+    /// The PR number, so the dispatch reads this PR's head (#2333). Older
+    /// state files have none; the dispatch then resolves it from the branch.
+    #[arg(long, value_parser = parse_pr)]
+    pr: Option<u64>,
 }
 
 #[derive(Args, Debug)]
@@ -48,6 +52,19 @@ pub struct Dispatch {
     private_state: PathBuf,
     #[arg(long, allow_hyphen_values = true)]
     child_exit_code: i32,
+}
+
+/// The PR number, as `prepare` accepts it (#2333 S7): typed, positive, with
+/// no leading zero and bounded, so it can only ever have come from the loop's
+/// own `AD_PR`. Never read from the round record or from any file the round's
+/// agent writes.
+fn parse_pr(s: &str) -> Result<u64, String> {
+    let digits = !s.is_empty() && s.len() <= 10 && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits || s.starts_with('0') {
+        return Err("the PR number must be 1-9999999999".to_string());
+    }
+    s.parse()
+        .map_err(|_| "the PR number must be 1-9999999999".to_string())
 }
 
 pub fn prepare(args: Prepare) -> Result<()> {

@@ -1,6 +1,6 @@
 ---
 title: Loop-Health Evaluator Reference
-last_updated: 2026-11-11
+last_updated: 2026-11-15
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -26,6 +26,13 @@ including `fail@<head>`, are still `STUCK`. A round whose only open item is a
 pending check does not reach the evaluator at all; it ends the loop
 `WAITING`. See
 [A pending check is a wait](autodrive-merge-ready-round.md#a-pending-check-is-a-wait-not-a-lack-of-progress).
+
+The Crusty completion dispatch sets `loop_head_read` when it could not read
+the PR's head on GitHub. A non-empty value is a fault in a read, not
+evidence about the branch: the round's own verdict still stands and the
+usual rules decide the verdict. The dispatch inserts it directly, so a
+context key of that name supplied through the shell is still rejected. See
+[Head check outcomes](autodrive-crusty-completion.md#head-check-outcomes).
 
 It is deliberately **not** an iteration counter. See
 [Why not a numeric iteration cap](#why-not-a-numeric-iteration-cap).
@@ -638,6 +645,7 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | `loop_findings_current` / `loop_findings_previous` | `""` | Newline-separated finding identifiers for the last two rounds. |
 | `loop_test_signal` / `loop_test_signal_previous` | `""` | Test result summaries for the last two rounds. |
 | `loop_ci_signal` / `loop_ci_signal_previous` | `""` | CI result summaries for the last two rounds. |
+| `loop_head_read` | `""` | Empty unless the caller could not read the PR's head on GitHub. A non-empty value is one of the tokens `read-failed`, `origin-not-github`, `pr-number-unresolved`, `ambiguous-ref` and `bad-sha`, and says that a read failed, not that anything about the branch changed; the round's own verdict still stands. Only the Crusty completion dispatch sets it, directly rather than through the context fields a caller may supply ([Head check outcomes](autodrive-crusty-completion.md#head-check-outcomes)). |
 | `loop_clean_token` | `""` | The verdict that makes a round clean for this loop: `CLEAN` (crusty) or `MERGE_READY` (merge-ready). `DONE` is legal only when `loop_round_verdict` equals it. Empty means: use the reviewer verdict for this round in `loop_history` if there is one, otherwise decide as before. |
 | `loop_round_verdict` | `""` | The reviewer's verdict for the round just finished, for example `CONCERNS` or `MERGE_READY`, or `MISSING` when the round wrote no record. `autodrive_loop.sh` passes it with every character outside `A-Za-z0-9_` removed; a non-clean verdict that would then equal the clean token (`CLEAN!`) arrives as `CLEAN_NONCANONICAL`. |
 | `loop_health_enforce` | `"true"` | When `"false"`, `STUCK` is reported loudly but exits `0`, leaving the stop entirely to the caller's `condition:`. |
@@ -1062,3 +1070,6 @@ comes from this workspace. A predictable path in a shared directory such as
 - [Recipe Quick Reference](recipe-quick-reference.md) — recipe authoring basics.
 - [Usage-limit wait](profile-command.md#usage-limit-wait): how an agent step
   waits for a reset or for another login, and retries once.
+- [Crusty completion contract](autodrive-crusty-completion.md) — the head
+  read behind `loop_head_read`, and the `round_waiting` exemption from the
+  no-progress rule that runs before this brick.

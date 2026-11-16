@@ -362,6 +362,12 @@ mod issue_2211_live_freshness;
 mod issue_2218_excluded;
 #[path = "issue_2317_codex_step_commits_in_worktree.rs"]
 mod issue_2317_codex_step_commits_in_worktree;
+#[path = "issue_2333_ci_wait.rs"]
+mod issue_2333_ci_wait;
+#[path = "issue_2333_head_read.rs"]
+mod issue_2333_head_read;
+#[path = "issue_2333_retired_layer.rs"]
+mod issue_2333_retired_layer;
 #[path = "issue_2336_autodrive_completion.rs"]
 mod issue_2336_autodrive_completion;
 #[path = "issue_2535_recipe_guide_cli.rs"]

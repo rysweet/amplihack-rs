@@ -59,16 +59,18 @@ impl Drive {
             fakes,
             task,
         };
-        let origin = d.tmp.path().join("origin.git");
-        d.git(
-            d.tmp.path(),
-            &["init", "-q", "--bare", origin.to_str().unwrap()],
-        );
         d.git(&d.review, &["init", "-q", "-b", "main"]);
+        // A drive runs against a GitHub remote, and the completion dispatch
+        // reads this PR's head there before it grants a completion (#2333).
+        // The fake `git` of `FAKE_GIT` answers `ls-remote` with
+        // `$FAKE_GH_HEAD`, which `cmd` sets to the worktree's current head,
+        // and execs the real `git` for everything else, so no test reaches
+        // the network and the ordinary completion path is the one exercised.
         d.git(
             &d.review,
-            &["remote", "add", "origin", origin.to_str().unwrap()],
+            &["remote", "add", "origin", "https://github.com/o/r"],
         );
+        d.fakes.with_fake_git();
         d.git(&d.review, &["commit", "--allow-empty", "-qm", "baseline"]);
         d.git(
             &d.review,
@@ -130,6 +132,7 @@ impl Drive {
             .env("AMPLIHACK_HOME", repo_root())
             .env("FIXTURE", self.tmp.path())
             .env("FAKE_LOG", &self.fakes.log)
+            .env("FAKE_BIN", &self.fakes.bin)
             .env("FAKE_GH_HEAD", self.head())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("AMPLIHACK_SESSION_DEPTH", "2")
