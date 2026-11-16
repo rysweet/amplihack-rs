@@ -139,6 +139,14 @@ fn u1_pr_key_matches_autodrive_state_sh_for_an_https_origin() {
 
 #[test]
 fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
+    // The `PATH` pinned on each spawn below reaches the child, not the lookup
+    // that finds `bash` and `git`: an `execvp` after `fork` reads the parent's
+    // own environment, which sibling tests in this binary replace while they
+    // run. So this test holds the shared environment lock for as long as those
+    // spawns are in flight.
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     // Runs the real shell function against a scratch repo whose origin is an
     // https remote. Skips quietly where bash or git is missing.
     let (_tmp, root) = private_root();
