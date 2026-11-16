@@ -15,6 +15,7 @@ unsafe extern "C" {
 
 /// Linux numbers. This fixture only ever runs on the observed platform.
 const SIGKILL: i32 = 9;
+const ESRCH: i32 = 3;
 const ECHILD: i32 = 10;
 
 /// How many times each vanishing-task mode repeats its race. Bounded
@@ -94,10 +95,25 @@ fn clone_underneath() {
 /// a name or a pattern, so this can reach no process group and nothing this
 /// fixture did not create. SIGKILL needs no handler and reaches a tracee even
 /// in ptrace-stop, which is the point of the mode that calls this.
+///
+/// `ESRCH` is accepted and nothing else is: the child often leaves through
+/// `exit_group` on its own and the observer reaps it before we get here, so
+/// "no such process" is an ordinary answer. Any other errno means the signal
+/// could never be delivered, and this mode would then quietly become a
+/// duplicate of `exit-group-thread` while still passing — the test's only
+/// non-vacuity assertion is already satisfied by the `exit_group` races the
+/// child makes by itself. Failing loudly here is what keeps the mode honest.
 fn kill_child(child: i32) {
     assert!(child > 0, "refusing to signal {child}");
     // SAFETY: a positive pid forked and recorded by this fixture.
-    unsafe { kill(child, SIGKILL) };
+    if unsafe { kill(child, SIGKILL) } != 0 {
+        let error = std::io::Error::last_os_error();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(ESRCH),
+            "kill fixture child {child}: {error}"
+        );
+    }
     wait_for(child);
 }
 

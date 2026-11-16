@@ -517,12 +517,18 @@ env -u AMPLIHACK_OBSERVER_PID amplihack recipe run default-workflow -w "$PWD"
 
 #### Other failures
 
+One case is deliberately not a failure: a traced task that exited between
+its stop and the next ptrace request. The run writes one stderr line,
+`amplihack: warning: observed task <pid> was gone at <request>`, at most 16
+per run, records a `vanished` count in the journal receipt, and reports the
+runner's own exit. See
+[vanished observed tasks](run-isolation-vanished-observed-tasks.md).
+
 Every other recording failure still fails the run, as before:
 
 | Case | Result |
 | --- | --- |
 | The observer attached, but its receipt is missing | `required observer did not finalize; partial evidence retained: ...` |
-| A traced task exited between its stop and the next ptrace request | Not a failure. One stderr line, `amplihack: warning: observed task <pid> was gone at <request>`, at most 16 per run; a `vanished` count in the journal receipt; the run reports the runner's own exit. See [vanished observed tasks](run-isolation-vanished-observed-tasks.md). |
 | The tracing thread panicked before it reported the runner spawn, so its sender is dropped | The thread is joined before anything else is decided, and that join reports the panic, so the run fails with `required observer panicked before runner handoff`. The attempt is not marked as one that never started, because the thread may have spawned the runner before it died, so the journal is kept and the run fails closed on it. |
 | The sender is dropped without a panic | The join succeeds and the run fails with `required observer exited before runner handoff`. The thread sends on every path except a panic, so nothing is expected to reach this case; the arm exists so that a dropped sender can never be read as a successful handoff. The journal is kept for the same reason as the row above. |
 | The journal is not empty, or `git-trace2/` holds a receipt or any other entry | The downgrade is refused; the files are kept; the run fails. |

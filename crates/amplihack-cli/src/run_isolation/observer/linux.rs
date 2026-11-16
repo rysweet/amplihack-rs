@@ -638,7 +638,9 @@ impl Scopes {
                 journal.vanished = journal.vanished.saturating_add(1);
             }
         }
-        if self.journals[0].vanished <= WARNINGS {
+        if let Some(run) = self.journals.first()
+            && run.vanished <= WARNINGS
+        {
             eprintln!("{}", vanished_warning(task, request));
         }
     }
