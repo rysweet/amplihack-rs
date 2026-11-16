@@ -12,8 +12,6 @@ mod failure_class;
 pub(crate) mod failure_evidence;
 mod failure_markers;
 mod format;
-/// Issue #2096 — the record of index-writing git commands a run's steps ran.
-pub(crate) mod git_record;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.
 pub(crate) mod limit_patterns;
 mod limit_reset;
@@ -499,8 +497,6 @@ mod tests_failure_class;
 mod tests_failure_class_1437;
 #[cfg(test)]
 mod tests_format;
-#[cfg(all(test, unix))]
-mod tests_git_record;
 #[cfg(test)]
 mod tests_limit_patterns;
 #[cfg(test)]
@@ -511,6 +507,8 @@ mod tests_merge_guard_pin;
 mod tests_parent_watch;
 #[cfg(test)]
 mod tests_root_sandbox;
+#[cfg(test)]
+mod tests_run_checkout_trace_vars;
 #[cfg(test)]
 mod tests_teardown;
 #[cfg(test)]

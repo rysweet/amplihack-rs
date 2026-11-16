@@ -317,6 +317,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recovery after a Recipe Usage Limit](concepts/recipe-usage-limit-recovery.md) - **Planned:** latest-attempt eligibility, nested replay, and compatibility
 - [Recipe Recovery Reference](reference/recipe-recovery.md) - **Planned:** persistence policies, resources, durable storage, and runner contracts
 - [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
+- [Why a Recipe Run Does Not Trace Git Commands](concepts/no-git-command-tracing.md) - Why the ptrace observer and the Git-command journal were removed, what the private clone does instead, and what a tamper-resistant record would require (#2738)
 - [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, and recovery decisions
 
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
@@ -405,9 +406,8 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [AppendHandler](reference/append-handler.md) - `AppendResult` class, timestamp filename format, atomic file writes
 - [Rust Runner Execution Reference](reference/rust-runner-execution.md) - Wrapper contract, stderr/stdout streams, JSONL events, environment variables, and security model
 - [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - CLI/runner responsibility split, stream ownership, progress events, and additive JSON preservation
-- [Recipe Run and Auto-Drive Checkout Isolation](reference/recipe-checkout-isolation.md) - What a run copies from your checkout, where steps and reviews run, Git recording, and owned release
+- [Recipe Run and Auto-Drive Checkout Isolation](reference/recipe-checkout-isolation.md) - What a run copies from your checkout, where steps and reviews run, and owned release
 - [Inspect a Local-Input Snapshot](tutorials/recipe-checkout-isolation.md) - Run a recipe against staged, unstaged and untracked changes and confirm your index is untouched
-- [Trace2 Recording Investigation](operations/issue-2096-recording-probe.md) - Retained diagnostic evidence and the limits of cooperative recording
 - [Recipe Runner Logging Reference](reference/recipe-runner-logging.md) - stderr progress, heartbeats, bounded snippets, JSONL events, and additive result fields
 - [Recipe Run Correlation Reference](reference/recipe-run-correlation.md) - Stable run IDs, `AMPLIHACK_RECIPE_RUN_ID`, pointer event schema, and final result fields
 - [Observe Recipe Progress Tutorial](tutorials/recipe-progress-transparency.md) - Watch live workflow progress, capture JSON, and debug failed steps

@@ -602,8 +602,6 @@ pub(crate) struct RunReport {
     pub steps: Vec<StepStatus>,
     #[serde(default)]
     pub log_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub git_recording: Option<serde_json::Value>,
 }
 
 impl RunReport {
@@ -680,7 +678,6 @@ impl RunScope {
             attempts: Vec::new(),
             steps: Vec::new(),
             log_path: None,
-            git_recording: None,
         };
         let runtime_dir = runtime_dir_for(&work_root.path, &run_id);
         let scope = Self {
@@ -743,14 +740,6 @@ impl RunWorkspace {
     ) -> Result<()> {
         match self {
             Self::Scoped { mut scope, guard } => {
-                let recording = scope.run_dir.join("git-recording.json");
-                match read_capped_nofollow(&recording, 4096) {
-                    Ok(bytes) => scope.report.git_recording = Some(serde_json::from_slice(&bytes)?),
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(error).context("read required recording finalization");
-                    }
-                }
                 let runtime = guard.remove();
                 scope.report.ended_at = Some(now_rfc3339());
                 scope.report.outcome = if runtime.is_err() {
