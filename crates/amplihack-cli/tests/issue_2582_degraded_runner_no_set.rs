@@ -356,6 +356,16 @@ fn a_valid_report_without_the_capability_still_reaches_the_runner_with_set() {
          supplied this runner:\n{}",
         describe(&out)
     );
+    // stderr and NOT stdout. stdout is the run's machine-readable channel —
+    // the log-pointer JSON a caller parses — so a human-readable notice there
+    // would corrupt a consumer. Asserting only "it is on stderr" leaves the
+    // choice of stream untested, since a notice printed to BOTH would pass.
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        !stdout.contains("recipe context is on the runner's argv"),
+        "the downgrade notice must go to stderr alone, never stdout:\n{}",
+        describe(&out)
+    );
     // The notice is printed because the context is already exposed; it must
     // not add to the exposure. (The run's other output is covered by
     // `assert_ends_before_a_transport_is_chosen`; here the values are on argv
