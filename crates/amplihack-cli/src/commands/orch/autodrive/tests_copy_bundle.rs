@@ -378,3 +378,94 @@ fn an_unreadable_file_is_reported_as_unopenable_not_changed() {
     );
     assert!(!text.contains("changed while being copied"), "{text}");
 }
+
+// E7 "changed while being copied", from the other side: the three swaps
+// `copy_checked_file` must refuse. The test above pins only that the message
+// does *not* fire for an unreadable file, so without these the detection
+// itself was never observed firing. Each case performs the swap in the window
+// the real race would use — between the `symlink_metadata` the walk takes and
+// the `O_NOFOLLOW` open the copy makes — by calling `copy_checked_file`
+// directly with metadata captured before the swap. Nothing here is timing
+// dependent: the swap has already happened when the copy starts.
+
+/// `checked` as `walk_bundle` captures it, before `swap` replaces `path`.
+fn after_swap(path: &Path, to: &Path, swap: impl FnOnce()) -> String {
+    let checked = fs::symlink_metadata(path).unwrap();
+    swap();
+    err_text(super::copy_checked_file(path, &checked, to))
+}
+
+#[test]
+fn a_file_swapped_for_a_symlink_is_refused_as_changed() {
+    let (_tmp, src, _dest) = bundle();
+    let path = src.join("agents/x.md");
+    let text = after_swap(&path, &src.join("out"), || {
+        fs::remove_file(&path).unwrap();
+        // An absolute link out of the bundle: what the swap would be for.
+        symlink("/etc/passwd", &path).unwrap();
+    });
+    assert_eq!(
+        text,
+        format!(
+            "untrusted bundle entry {}: changed while being copied",
+            path.display()
+        ),
+        "O_NOFOLLOW's ELOOP must be reported as E7, not as a bare open failure"
+    );
+    assert!(
+        !src.join("out").exists(),
+        "a refused entry must leave no partial copy behind"
+    );
+}
+
+#[test]
+fn a_file_swapped_for_a_different_file_is_refused_as_changed() {
+    let (_tmp, src, _dest) = bundle();
+    let path = src.join("agents/x.md");
+    let text = after_swap(&path, &src.join("out"), || {
+        // A plain regular file with the same mode: only dev/ino differ, so
+        // this passes every check except the identity comparison.
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, "# swapped\n").unwrap();
+        set_mode(&path, 0o644);
+    });
+    assert_eq!(
+        text,
+        format!(
+            "untrusted bundle entry {}: changed while being copied",
+            path.display()
+        )
+    );
+    assert!(!src.join("out").exists(), "no partial copy");
+}
+
+#[test]
+fn a_file_swapped_for_a_directory_is_refused_as_changed() {
+    let (_tmp, src, _dest) = bundle();
+    let path = src.join("agents/x.md");
+    let text = after_swap(&path, &src.join("out"), || {
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        set_mode(&path, 0o755);
+    });
+    assert_eq!(
+        text,
+        format!(
+            "untrusted bundle entry {}: changed while being copied",
+            path.display()
+        ),
+        "a directory opens under O_RDONLY, so only the is_file check catches it"
+    );
+    assert!(!src.join("out").exists(), "no partial copy");
+}
+
+#[test]
+fn an_unswapped_file_is_copied_so_the_check_is_not_simply_always_refusing() {
+    let (_tmp, src, _dest) = bundle();
+    let path = src.join("tools/run.sh");
+    let to = src.join("out");
+    let checked = fs::symlink_metadata(&path).unwrap();
+    super::copy_checked_file(&path, &checked, &to).unwrap();
+    assert_eq!(fs::read_to_string(&to).unwrap(), "#!/bin/sh\n");
+    assert_eq!(mode_of(&to), 0o755, "the exec bit carries to the copy");
+}
