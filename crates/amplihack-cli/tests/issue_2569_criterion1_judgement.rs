@@ -13,7 +13,7 @@
 //! case runs anything under `tests/gadugi/`.
 
 use crate::support::criterion1_world::{
-    GadugiCall, SCENARIO_NAME, World, all_strings, field, json_of, last_line, show,
+    GadugiCall, SCENARIO_NAME, World, all_strings, field, json_of, last_line, read_json, show,
 };
 use serde_json::Value;
 
@@ -403,7 +403,7 @@ fn a_service_the_drive_cannot_reach_ends_in_a_recorded_handoff() {
     w.feature_pr();
     w.record(&[]);
 
-    let j = w.judgement("auto", "refused");
+    let j = w.judgement("auto", "unreachable");
     assert_judgement_shape(&j);
     assert_eq!(field(&j, "qa_judgement"), "user_facing");
 
@@ -842,7 +842,7 @@ fn the_measurement_and_the_guidance_come_from_the_bundle_not_the_worktree() {
 /// is none of those: the judgement hands off instead, and nothing from
 /// outside the root reaches the record or the judgement.
 #[test]
-fn a_fallback_scenario_directory_that_leaves_the_repository_is_refused() {
+fn a_fallback_scenario_directory_that_leaves_the_repository_is_not_used() {
     let w = World::new();
     let outside = w.base.join("outside-scenarios");
     std::fs::create_dir_all(&outside).expect("mkdir outside");
@@ -1136,5 +1136,236 @@ fn a_record_measured_before_the_first_commit_names_no_head_sha() {
             .any(|c| c.subcommand == "run" || c.subcommand == "validate"),
         "the measurement runs no scenario: {:?}",
         w.gadugi_calls()
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Case 12 — the base the round measures against
+// ─────────────────────────────────────────────────────────────────────────
+
+/// A repository whose clone defaults to `trunk` while the PR's own base is
+/// `main`, so the three sources `step-02a-qa-inputs` consults give three
+/// different answers and a test can tell which one it used:
+///
+/// ```text
+/// A  base            -> refs/remotes/origin/trunk, refs/remotes/origin/HEAD
+/// B  src/app.js      -> refs/remotes/origin/main   (the PR's own base)
+/// D  docs/install.md -> feature                    (the PR)
+/// ```
+///
+/// Measured against `main` the change set is `docs/install.md` alone, so
+/// `docs_only` is `true`. Measured against `trunk` it also carries
+/// `src/app.js`, so `docs_only` is `false`. The two answers are what makes
+/// the resolution order observable instead of a reading of the step's text.
+fn divergent_default_world() -> World {
+    let w = World::new();
+    w.git(&["init", "-q", "-b", "main"]);
+    w.write(
+        "package.json",
+        r#"{"name":"shop","version":"1.0.0","scripts":{"test":"node test.js"}}"#,
+    );
+    w.write("src/app.js", "console.log(\"shop\");\n");
+    w.write("README.md", "# Shop\n");
+    let a = w.commit("base");
+    w.git(&["update-ref", "refs/remotes/origin/trunk", &a]);
+    w.git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/HEAD",
+        "refs/remotes/origin/trunk",
+    ]);
+    w.write(
+        "src/app.js",
+        "console.log(\"shop\");\nmodule.exports = {};\n",
+    );
+    let b = w.commit("feat: export the module");
+    w.git(&["update-ref", "refs/remotes/origin/main", &b]);
+    w.git(&["checkout", "-q", "-b", "feature"]);
+    w.write("docs/install.md", "# Install\n\nRun `npm install`.\n");
+    w.commit("docs: explain install");
+    w
+}
+
+/// The step's record, with the evidence path the recipe passes it and the
+/// base environment this case wants.
+fn inputs_with_base(w: &World, base: Option<&str>) -> Value {
+    let evidence = w.evidence_path().display().to_string();
+    let mut extra: Vec<(&str, &str)> = vec![("RECIPE_VAR_autodrive_qa_evidence", &evidence)];
+    // An empty value is no answer: the step reads `${AUTODRIVE_QA_BASE:-}`,
+    // so an operator who exported it empty falls through to the next source.
+    extra.push(("AUTODRIVE_QA_BASE", base.unwrap_or("")));
+    let o = w.run_step(
+        "autodrive-merge-evidence.yaml",
+        "step-02a-qa-inputs",
+        &extra,
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "the step names what it measured and exits 0: {}",
+        show(&o)
+    );
+    let j = json_of(&o);
+    assert_ne!(
+        field(&j, "qa_reason"),
+        "qa-measurement-unavailable",
+        "this case measures: {j}"
+    );
+    j
+}
+
+/// Source 1. The operator's `AUTODRIVE_QA_BASE` is the PR's own base, and
+/// it outranks the clone's default: the change set is measured against
+/// `main` even though the clone defaults to `trunk`.
+#[test]
+fn an_operator_base_outranks_the_clone_default() {
+    let w = divergent_default_world();
+    let j = inputs_with_base(&w, Some("main"));
+
+    assert_eq!(
+        field(&j, "docs_only"),
+        "true",
+        "measured against main the PR changes documentation only: {j}"
+    );
+    assert_eq!(
+        field(&j, "qa_command_paths"),
+        "docs/install.md",
+        "the change set is the diff against the operator's base: {j}"
+    );
+}
+
+/// Source 2, and the hazard it carries. With no operator base the step
+/// answers with `refs/remotes/origin/HEAD`, the clone's default branch,
+/// stripped of its `origin/` prefix. That is the clone's default and not
+/// this PR's base: this PR targets `main`, and the step measures it against
+/// `trunk`, which reports a change set the PR does not have.
+#[test]
+fn without_an_operator_base_the_step_answers_with_the_clone_default() {
+    let w = divergent_default_world();
+    let j = inputs_with_base(&w, None);
+
+    assert_eq!(
+        field(&j, "docs_only"),
+        "false",
+        "the clone's default is trunk, and against trunk the PR touches source: {j}"
+    );
+    let paths = field(&j, "qa_command_paths");
+    assert!(
+        paths.contains("src/app.js"),
+        "the change set measured against trunk carries the source file: {paths}"
+    );
+}
+
+/// Source 3. With no operator base and no `refs/remotes/origin/HEAD` the
+/// step answers with the literal `main`. Here `main` happens to be this
+/// PR's base, so the answer is right by coincidence rather than by
+/// resolution -- which is why source 3 is the order's residual hazard and
+/// not a resolution.
+#[test]
+fn without_a_clone_default_the_step_answers_with_the_literal_main() {
+    let w = divergent_default_world();
+    w.git(&["symbolic-ref", "-d", "refs/remotes/origin/HEAD"]);
+    let j = inputs_with_base(&w, None);
+
+    assert_eq!(
+        field(&j, "docs_only"),
+        "true",
+        "the literal main is the last source, and against main this PR is documentation only: {j}"
+    );
+    assert_eq!(field(&j, "qa_command_paths"), "docs/install.md");
+}
+
+/// The step exports a base on every path, so the preflight shape -- no base
+/// at all, where the head stands in for the merge base and the change set
+/// reads `(none)` -- is unreachable from a round. Where the exported base
+/// names no remote-tracking branch the change set is `(unknown)`, which the
+/// judgement carries on from, and never `(none)`, which would read as a PR
+/// that changed nothing.
+#[test]
+fn a_round_never_measures_the_preflight_shape() {
+    let w = divergent_default_world();
+    // Neither source 2 nor the branch source 3 names resolves: the step
+    // still exports `main`, and `refs/remotes/origin/main` is gone.
+    w.git(&["symbolic-ref", "-d", "refs/remotes/origin/HEAD"]);
+    w.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    let j = inputs_with_base(&w, None);
+
+    assert_eq!(
+        field(&j, "qa_command_paths"),
+        "(unknown)",
+        "a base that resolves to no branch leaves the change set unknown, never empty: {j}"
+    );
+    assert_eq!(
+        field(&j, "docs_only"),
+        "unknown",
+        "with no change set measured, docs_only is unknown: {j}"
+    );
+
+    // An unknown change set is a fact the judgement carries on from, and
+    // the round continues: the judgement is still reached and recorded.
+    let judged = w.judgement("auto", "pass");
+    assert_judgement_shape(&judged);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Case 13 — a measurement that could not run owns no record
+// ─────────────────────────────────────────────────────────────────────────
+
+/// `autodrive_qa_evidence.sh` is the record's only writer. Where
+/// `step-02a-qa-inputs` cannot reach the measurement at all it names the
+/// blocker on standard output and writes nothing, so the drive's one
+/// `qa-evidence.json` still holds whatever the previous round measured.
+///
+/// This is why the judgement reads the object the step printed and not the
+/// file: a reader of the file alone, and the hash
+/// `autodrive_round_evidence.sh` takes of it, would both see a record this
+/// round did not measure.
+#[test]
+fn a_measurement_that_could_not_run_leaves_the_previous_round_record_in_place() {
+    let w = divergent_default_world();
+
+    // Round 1 measures and writes the record.
+    let first = w.record(&[]);
+    assert_record_contract(&first);
+    let as_written = std::fs::read(w.evidence_path()).expect("round 1 record");
+
+    // Round 2 cannot reach the measurement: the tree it is pointed at is no
+    // git repository, which the step names rather than ending the round.
+    let not_a_repo = w.base.join("round-2-tree");
+    std::fs::create_dir_all(&not_a_repo).expect("mkdir");
+    let evidence = w.evidence_path().display().to_string();
+    let o = w.run_step(
+        "autodrive-merge-evidence.yaml",
+        "step-02a-qa-inputs",
+        &[
+            ("RECIPE_VAR_autodrive_qa_evidence", &evidence),
+            ("RECIPE_VAR_repo_path", &not_a_repo.display().to_string()),
+        ],
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "a measurement it could not make never ends the round: {}",
+        show(&o)
+    );
+
+    let printed = json_of(&o);
+    assert_eq!(field(&printed, "qa_status"), "BLOCKED");
+    assert_eq!(field(&printed, "qa_reason"), "qa-measurement-unavailable");
+    assert!(
+        printed.get("docs_only").is_none(),
+        "the blocker record measures nothing, so it carries no docs_only: {printed}"
+    );
+
+    // The file is untouched: one writer, and it did not run.
+    assert_eq!(
+        std::fs::read(w.evidence_path()).expect("the record is still there"),
+        as_written,
+        "the no-measurement path writes no record, so the previous round's stands"
+    );
+    let on_disk = read_json(&w.evidence_path());
+    assert_ne!(
+        field(&on_disk, "qa_reason"),
+        "qa-measurement-unavailable",
+        "the record on disk is round 1's measurement, not round 2's blocker: {on_disk}"
     );
 }
