@@ -297,9 +297,37 @@ const RESERVED_ENV_DENYLIST: &[&str] = &[
     "IFS",
     // interpreter option injection
     "PYTHONPATH",
+    "PYTHONSTARTUP",
     "NODE_OPTIONS",
     "PERL5OPT",
     "RUBYOPT",
+];
+
+/// Names whose VALUE is executed, or which select the executable that will
+/// be. Context cannot set these on either transport — see
+/// [`is_reserved_context_key`], which refuses them outright rather than
+/// merely skipping the env mirror.
+///
+/// The Git/SSH entries are the command-running subset of
+/// `install::clone::GIT_SCRUBBED_ENV`, plus the two named in
+/// `amplihack-hooks`' tmux guard ("`GIT_EXTERNAL_DIFF=…`, `GIT_SSH_COMMAND=…`
+/// and the like run their value"). Both places already classify these as
+/// code execution; this is the same list applied to recipe context, which is
+/// untrusted in exactly the same way.
+const EXECUTABLE_SELECTOR_ENV: &[&str] = &[
+    // The recipe runner this run and every nested `amplihack` execs, and
+    // (issue #2582) the switch deciding whether context lands on argv.
+    "RECIPE_RUNNER_RS_PATH",
+    // Git and SSH names whose value is run as a command.
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_EDITOR",
+    "GIT_PAGER",
 ];
 
 /// `true` when `name` is a valid POSIX environment-variable identifier,
@@ -333,31 +361,35 @@ fn env_entry_bytes(name: &str, value: &str) -> usize {
     name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES
 }
 
-/// Context cannot select an amplihack profile or restore Git routing and
+/// Context cannot select an amplihack profile, restore Git routing and
 /// executable configuration that the command policy removed before launch,
-/// and cannot select the recipe-runner binary.
+/// or name a program that this run (or anything it spawns) will execute.
 ///
 /// Issue #2582: `pub(super)` so `context_transport::refuse_reserved_keys`
 /// applies the same predicate before it writes a context file, rather than
 /// carrying a second copy of the rule that could drift from this one.
 ///
-/// `RECIPE_RUNNER_RS_PATH` is reserved here rather than only in
-/// [`RESERVED_ENV_DENYLIST`] because it is an *executable selector*, not
-/// merely a dangerous env name: it decides which `recipe-runner-rs` binary
-/// this run and every nested `amplihack` execs, and (issue #2582) whether
-/// context reaches that binary in a file or on argv. Context is untrusted
-/// input — issue bodies and third-party recipes flow into it — so a
-/// `recipe_runner_rs_path` key must be refused by the same rule both
-/// transports consult, not by the env filter alone.
+/// [`EXECUTABLE_SELECTOR_ENV`] names are reserved here rather than only in
+/// [`RESERVED_ENV_DENYLIST`] because they are *executable selectors*, not
+/// merely dangerous env names: their value is run, or chooses what is run.
+/// Context is untrusted input — issue bodies and third-party recipes flow
+/// into it — so these must be refused by the same rule BOTH transports
+/// consult, not dropped by the env filter alone. Dropping is wrong here: the
+/// `--set` path would still hand the pair to the runner for `{{placeholder}}`
+/// substitution even after the env mirror skipped it.
+///
+/// `*_BINARY_PATH` is a suffix rule, not a list, because
+/// `amplihack_utils::launch_target` resolves `{TOOL}_BINARY_PATH` for ANY
+/// tool name as an explicit, user-supplied override at the highest
+/// precedence. Enumerating today's tools would leave the next one open.
 pub(super) fn is_reserved_context_key(key: &str) -> bool {
     let name = key.to_ascii_uppercase();
     name.starts_with("AMPLIHACK_")
         || amplihack_git::REPOSITORY_ENV_VARS.contains(&name.as_str())
         || name.starts_with("GIT_CONFIG")
-        || matches!(
-            name.as_str(),
-            "GIT_EXEC_PATH" | "GIT_TEMPLATE_DIR" | "RECIPE_RUNNER_RS_PATH"
-        )
+        || name.ends_with("_BINARY_PATH")
+        || EXECUTABLE_SELECTOR_ENV.contains(&name.as_str())
+        || matches!(name.as_str(), "GIT_EXEC_PATH" | "GIT_TEMPLATE_DIR")
 }
 
 /// Validate a single recipe context entry for env export (issue #784 / #1023),

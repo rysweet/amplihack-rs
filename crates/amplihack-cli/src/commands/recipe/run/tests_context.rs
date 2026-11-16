@@ -1340,18 +1340,41 @@ mod context_transport_2582 {
         assert!(refuse_reserved_keys(&self::context()).is_ok());
     }
 
-    /// Issue #2582 (security review S1): `RECIPE_RUNNER_RS_PATH` selects the
-    /// `recipe-runner-rs` binary this run and every nested `amplihack` execs,
-    /// and decides whether context travels in a file or on argv. Context is
-    /// untrusted input, so a `recipe_runner_rs_path` key must be refused —
-    /// on BOTH transports and in ANY letter case, never merely dropped from
-    /// the env by the denylist.
+    /// Issue #2582 (security review S1, widened after re-review): a context
+    /// key whose value is RUN, or which chooses what is run, must be refused
+    /// — on BOTH transports and in ANY letter case — never merely dropped
+    /// from the env mirror by the denylist. Dropping is not enough: the
+    /// `--set` path would still hand the pair to the runner.
+    ///
+    /// The list is deliberately the whole family rather than the one name
+    /// #2582 made topical. `GIT_SSH_COMMAND` and friends are run by git
+    /// itself (the repo already scrubs them in `install::clone` and flags
+    /// them in the hooks' tmux guard), and `{TOOL}_BINARY_PATH` is resolved
+    /// by `launch_target` as a user-supplied override at the highest
+    /// precedence for ANY tool name — so the next tool added there is
+    /// covered by the suffix rule without anyone remembering to come back.
     #[test]
-    fn runner_path_key_is_reserved_on_both_paths() {
+    fn executable_selector_keys_are_reserved_on_both_paths() {
         for key in [
+            // The runner selector (#2582).
             "recipe_runner_rs_path",
             "RECIPE_RUNNER_RS_PATH",
             "Recipe_Runner_Rs_Path",
+            // Git/SSH names whose value git executes.
+            "git_ssh_command",
+            "git_ssh",
+            "git_proxy_command",
+            "git_askpass",
+            "ssh_askpass",
+            "git_external_diff",
+            "git_sequence_editor",
+            "git_editor",
+            "git_pager",
+            // `{TOOL}_BINARY_PATH`, including a tool that does not exist yet.
+            "claude_binary_path",
+            "codex_binary_path",
+            "copilot_binary_path",
+            "some_future_tool_binary_path",
         ] {
             let (_tmp, runtime) = runtime();
             let mut context = context();
@@ -1469,6 +1492,15 @@ mod context_transport_2582 {
             Ok(_) => panic!("a write failure must be an error"),
             Err(error) => {
                 let text = format!("{error:#}");
+                // Pin WHICH failure this is. Without it, an earlier failure
+                // mode added to `choose` later would let all three cases
+                // report a pass for a reason that has nothing to do with the
+                // write.
+                assert!(
+                    text.contains("failed to write recipe context file"),
+                    "the refusal must be the write failure, not some earlier \
+                     error: {text}"
+                );
                 assert!(!text.contains("ZQXV2582"), "values must not be printed");
             }
         }

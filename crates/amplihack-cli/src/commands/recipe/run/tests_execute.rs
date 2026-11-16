@@ -3733,13 +3733,24 @@ printf '%s\n' '{{"recipe_name":"ctx-2582","success":true,"step_results":[],"cont
 /// What one stub run leaves behind, with everything that owns a directory
 /// still alive.
 ///
-/// Issue #2582 (review 17b, finding 2): the work root, the env guard and the
-/// environment lock are FIELDS rather than locals of `run_2582_with`, so the
-/// run's tree still exists while the caller asserts over it. Dropping
+/// Issue #2582 (review 17b, finding 2): the work root and the environment
+/// lock are FIELDS rather than locals of `run_2582_with`, so the run's tree
+/// still exists while the caller asserts over it. Dropping
 /// `FixtureEnvironment` at the end of the helper would delete the whole
 /// private work root, and every `!context_file.exists()` assertion would then
 /// pass no matter what the production teardown did — the test would be unable
 /// to fail. `assert_live_tree` below is the positive control for exactly that.
+///
+/// NOT held: the second `EnvGuard` inside `run_2582_with`, which sets `HOME`,
+/// `RECIPE_RUNNER_RS_PATH` and `RECORD_2582`. It is restored when the helper
+/// returns, which is correct for today's callers — they assert over the
+/// filesystem only. An assertion that re-read those variables, or re-ran the
+/// stub, would need that guard moved in here too.
+///
+/// `lock` holds a process-global, non-reentrant mutex for as long as the
+/// returned value lives. A caller that invoked another fixture helper taking
+/// the same lock would hang the test binary rather than fail it, so keep the
+/// assertions after `run_2582*` filesystem-only.
 #[cfg(unix)]
 #[allow(dead_code)]
 struct Run2582 {
@@ -4093,11 +4104,19 @@ fn test_2582_a_dry_run_writes_the_same_private_file_and_leaves_nothing_behind() 
         "the dry run's context must still reach the runner byte-exact"
     );
 
-    // A dry run writes its context under a private `amplihack-dry-*` folder
-    // in TMPDIR rather than under the work root; TMPDIR is the ancestor that
-    // must outlive the run.
-    let dry_tmpdir = run.runtime_dir(&path).parent().unwrap().to_path_buf();
-    run.assert_live_tree(&path, &dry_tmpdir);
+    // No `assert_live_tree` here. A dry run writes its context under a private
+    // `amplihack-dry-*` folder in TMPDIR, not under the work root, and the
+    // only ancestor left to name would be TMPDIR itself — which no guard in
+    // this test owns and nothing could have deleted. Asserting it exists
+    // would be the same unfalsifiable shape that control exists to prevent.
+    //
+    // What the two assertions below DO establish is the end state an operator
+    // cares about: a dry run leaves no 0600 context file behind. They do not
+    // establish WHICH teardown removed it — the dry folder is removed whole
+    // when the run ends, so they still pass with `ContextFile::drop` gutted
+    // (measured, not assumed). The discriminating proof is the unit test
+    // named on `assert_live_tree`, which is the only place the `Drop` is the
+    // sole remover.
     assert!(
         !run.runtime_dir(&path).exists(),
         "a dry run must remove its whole private folder: {}",
