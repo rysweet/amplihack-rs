@@ -42,11 +42,12 @@ pub fn write_executable(path: &Path, body: impl AsRef<[u8]>, mode: u32) {
         ])
         .arg(path)
         .arg(format!("{mode:o}"))
-        // A fixed PATH for `cat`, `chmod` and `mv`. Several tests in this
-        // process set the process-wide PATH to one temp directory while
-        // checking PATH resolution, and `sh` would inherit that one and fail
-        // with 127 — which looked like a failure of whichever unrelated test
-        // happened to be writing a stub at the time.
+        // `cat`, `chmod` and `mv` are resolved through the child's PATH.
+        // Sibling tests in this process set PATH to a directory of their own
+        // (an empty one, or a fixture bin) while they run, and the variable
+        // is process-wide, so an inherited PATH makes this `sh` exit 127 at
+        // random. The three are in `/usr/bin` or `/bin` on every platform
+        // these tests run on.
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::piped())
         .spawn()

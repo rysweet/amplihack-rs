@@ -4,8 +4,11 @@
 //! runner's own classifier calls a usage limit, reruns it under the next
 //! eligible profile while auto-switch is on (#1569). When none is left, or
 //! auto-switch is off or no profile was inherited, the usage-limit wait may
-//! run the step once more in the inherited environment (#1618), or, after a
-//! capacity wait, on the login that showed capacity (#1801). Only the final
+//! run the step once more in the inherited environment (#1618), or on the
+//! login that showed capacity: after a capacity wait (#1801), and after a
+//! reset wait that ended early because a reading taken during it showed
+//! another login had room (#2694). A step pinned to a profile can therefore
+//! finish on a different account from the one it started on. Only the final
 //! attempt's stdout is printed.
 
 use super::candidate::{self, Pool};
@@ -62,6 +65,80 @@ pub fn nested_candidate(
     current: &str,
     skip: &[String],
 ) -> Option<Pick> {
+    candidate(
+        Reads {
+            state,
+            ledger,
+            profiles,
+            readings,
+            cfg,
+        },
+        current,
+        skip,
+        KeyAlert::Write,
+    )
+}
+
+/// [`nested_candidate`] without the held-key alert: the same choice, made
+/// without writing or printing anything (issue #2694). This is for the
+/// usage-limit wait's 30-second probe only, which asks the same question for
+/// the whole of a wait, so the alert would repeat for hours in the step's
+/// stderr and crowd the runner's evidence tail. The step that is waiting has
+/// already hit a limit under auto-switch, so the alert for its held-back key
+/// was written once by the rerun check before the wait began.
+///
+/// The retry's own single selection after the wait keeps [`nested_candidate`]
+/// and so keeps the alert: it runs once, and it is the call that decides the
+/// login the step actually moves to.
+pub(super) fn silent_candidate(
+    state: &State,
+    ledger: &Ledger,
+    profiles: &[ProfileName],
+    readings: &BTreeMap<String, Reading>,
+    cfg: &Config,
+    current: &str,
+    skip: &[String],
+) -> Option<Pick> {
+    candidate(
+        Reads {
+            state,
+            ledger,
+            profiles,
+            readings,
+            cfg,
+        },
+        current,
+        skip,
+        KeyAlert::Silent,
+    )
+}
+
+/// Whether a caller of [`candidate`] wants the held-key ALERT written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum KeyAlert {
+    Write,
+    Silent,
+}
+
+/// Everything a candidate choice is read from, bundled so that [`candidate`]
+/// stays inside clippy's argument limit without an exemption. Shared
+/// references only: the choice reads this state and never writes it.
+struct Reads<'a> {
+    state: &'a State,
+    ledger: &'a Ledger,
+    profiles: &'a [ProfileName],
+    readings: &'a BTreeMap<String, Reading>,
+    cfg: &'a Config,
+}
+
+fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) -> Option<Pick> {
+    let Reads {
+        state,
+        ledger,
+        profiles,
+        readings,
+        cfg,
+    } = reads;
     let source_host = current;
     let current = ledger.account_in(source_host);
     let now = fsx::now();
@@ -102,7 +179,7 @@ pub fn nested_candidate(
         |p| eligible(p) && restriction.allowed.contains(p),
         |p| restriction.plan_room.contains(p),
     );
-    if picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
+    if alert == KeyAlert::Write && picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
         let held = per_token::key_held(&pool, &overflow, current, eligible);
         per_token::record_key_held(state, &held);
     }
@@ -342,10 +419,11 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // The profile this attempt runs under; `None` keeps the inherited
     // environment.
     let mut profile: Option<ProfileName> = None;
-    // The inherited profile's own limit. The retry after a wait always runs
-    // under that profile, so only its reset times the wait; the limits of
-    // the profiles auto-switch tried matter only to its choice of candidate,
-    // which `next_profile` records (#1618).
+    // The inherited profile's own limit. Only its reset times the wait: the
+    // limits of the profiles auto-switch tried matter only to its choice of
+    // candidate, which `next_profile` records (#1618). The retry runs under
+    // that profile too, unless the wait ended on another login's capacity,
+    // in which case it moves to that login (#1801, #2694).
     let mut inherited_wait: Option<WaitFor> = None;
     // Set when the step was moved off the inherited profile only for being
     // over the auto-switch threshold (no window at 100%). That profile still
@@ -354,16 +432,28 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // free for the inherited profile's own limit, which is the likelier one
     // on a nearly-empty window (#1618).
     let mut inherited_has_capacity = false;
-    // Whether another login could end a capacity wait: the one read-only
-    // check, made when a limit is seen (#1801). Both kinds of step need a
-    // running rotator, so a wait never starts when nothing could end it.
+    // Whether another login could take over, so a capacity wait is worth
+    // starting: the one read-only check, made when a limit is seen (#1801).
+    // Both kinds of step need a running rotator, so a capacity wait never
+    // starts when nothing could end it.
     let takeover = |waiter: &Waiter| match &switch {
         Some(sw) => profile_check(sw.store, sw.inherited.as_str()),
         None => waiter.takeover_home(),
     };
+    // Silent: this runs every 30 s for the whole of a wait, and it only
+    // answers whether a move is possible; the retry's own selection below
+    // is the call that moves the step and writes the alert (#2694).
     let probe = |start, now| {
         switch.as_ref().is_some_and(|sw| {
-            capacity_candidate(sw.store, &sw.state, &sw.inherited, start, now).is_some()
+            capacity_candidate(
+                sw.store,
+                &sw.state,
+                &sw.inherited,
+                start,
+                now,
+                KeyAlert::Silent,
+            )
+            .is_some()
         })
     };
     if let Some(sw) = &switch {
@@ -536,14 +626,54 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
 }
 
 /// The profile the retry after a wait runs under; `None` keeps the inherited
-/// environment. After a capacity wait that is the login that showed capacity,
-/// never the exhausted inherited one; after a reset wait, always `None`. The
-/// candidate is chosen again here and may now be `None`: the one retry then
-/// runs on the inherited profile, at a cost of one more attempt.
+/// environment. After a capacity wait, and after a wait of any kind that
+/// ended because another login has room (#2694), that is the login which
+/// showed capacity, never the exhausted inherited one; after a reset wait
+/// that ran to its deadline, `None`. The candidate is chosen again here
+/// rather than carried over from the wait's own probe, because the live
+/// login may have changed since: an in-session swap on this host leases the
+/// login it moves to and can remove the candidate, and a newer reading can
+/// disqualify it. A waiting step takes no lease, so waiting steps do not
+/// remove each other's candidates; several of them land on the same login
+/// together, which is issue #2733. So the pick may now be `None`, and the
+/// one retry then runs on the inherited profile.
+///
+/// What that costs is [`room_was_seen`]'s decision, not this
+/// function's: only a wait that a reading ended early gave up something, so
+/// only that case prints. A capacity wait that reached its own reset, or saw
+/// its login change, never had room to lose and retries on a login that has
+/// just recovered, which is the designed outcome and stays as silent as it
+/// was before #2694. Resuming the original wait instead of spending the
+/// retry is issue #2719.
+///
+/// [`room_was_seen`]: crate::commands::profile::limit_wait::RetryMove::room_was_seen
 fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<ProfileName> {
     let sw = switch?;
-    let start = waiter.capacity_start()?;
-    let pick = capacity_candidate(sw.store, &sw.state, &sw.inherited, start, waiter.now())?;
+    let mv = waiter.retry_move()?;
+    let Some(pick) = capacity_candidate(
+        sw.store,
+        &sw.state,
+        &sw.inherited,
+        mv.start(),
+        waiter.now(),
+        KeyAlert::Write,
+    ) else {
+        if mv.room_was_seen() {
+            // A reading ended this wait early, but the login no longer
+            // qualifies at the moment the retry moves: an in-session swap on
+            // this host took it, or a newer reading disqualified it (#2694).
+            // Not another waiting step, which takes no lease and would land
+            // on the same login rather than remove it (#2733). Say so. Every
+            // other transition in this loop prints, and without a line here
+            // the log reads
+            // `end reason=login capacity` and then fails on the login that
+            // had none, with nothing in between to name the cause.
+            eprintln!(
+                "amplihack: no login has room now; this step retries under the limited profile (auto-switch)"
+            );
+        }
+        return None;
+    };
     // The run log names the login the retry moves to, as every other move
     // in this loop does (#1801, item 3).
     eprintln!(

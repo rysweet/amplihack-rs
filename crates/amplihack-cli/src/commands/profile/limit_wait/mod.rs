@@ -111,6 +111,49 @@ impl WaitDeps for RealDeps<'_> {
     }
 }
 
+/// Why the retry after a wait may run under another login, and from when a
+/// capacity reading counts as fresh enough to choose one.
+///
+/// The two are separate decisions and are deliberately not one field: *may
+/// the retry move* is true after any capacity wait, while *was room actually
+/// seen* is true only when a reading ended the wait early. A capacity wait
+/// that reached its reset may still move, but finding no room is then the
+/// expected outcome, not a loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RetryMove {
+    /// When the wait began, on the wait's clock: read in `after_limit`
+    /// just before `wait` takes its own `start`, so it is that instant or a
+    /// hair before it, never after. The freshness bound that decides which
+    /// readings may move a step onto another account, and not a tuning
+    /// parameter: a later instant would make every reading taken during the
+    /// wait look stale, so the step would silently retry on the exhausted
+    /// profile, and an earlier one would admit readings taken before the
+    /// limit was hit. Where the two differ the retry's window is the wider
+    /// one, which can only admit a reading the probe already accepted.
+    start: i64,
+    /// Whether a reading taken during the wait showed another login had
+    /// room, which is what ended the wait (#2694). Only then does finding
+    /// no room at the retry mean something was lost: the room was taken in
+    /// between, and the step gave up a wait that would have run to its
+    /// reset and succeeded. A capacity wait that ended any other way never
+    /// saw room at all, so finding none is what the step already expected
+    /// and costs it one more attempt and nothing else.
+    room_was_seen: bool,
+}
+
+impl RetryMove {
+    /// The floor for a reading to count towards the retry's choice.
+    pub(crate) fn start(self) -> i64 {
+        self.start
+    }
+
+    /// Whether losing the race for the room costs this step a wait that
+    /// would have succeeded, rather than merely an attempt.
+    pub(crate) fn room_was_seen(self) -> bool {
+        self.room_was_seen
+    }
+}
+
 /// The wait's state for one step: at most one wait per step.
 pub(crate) struct Waiter {
     /// `None` when `AMPLIHACK_NONINTERACTIVE` is not exactly `1`.
@@ -130,8 +173,10 @@ pub(crate) struct Waiter {
     /// (#1801), called only when a limit is seen. Always false for a step
     /// with an explicit login or an inherited profile.
     home_takeover: Box<dyn Fn() -> bool>,
-    /// When this step's wait began, on the wait's clock, if a capacity wait.
-    capacity_start: Option<i64>,
+    /// Set when the retry after this step's wait may run under another
+    /// login. Written once, when the wait returns; `None` leaves the retry
+    /// on the inherited profile.
+    retry_move: Option<RetryMove>,
 }
 
 impl Waiter {
@@ -162,7 +207,7 @@ impl Waiter {
             blocked: None,
             prompt_in_args,
             home_takeover,
-            capacity_start: None,
+            retry_move: None,
         }
     }
 
@@ -199,9 +244,10 @@ impl Waiter {
         (self.home_takeover)()
     }
 
-    /// When this step's capacity wait began, on the wait's clock.
-    pub(crate) fn capacity_start(&self) -> Option<i64> {
-        self.capacity_start
+    /// Whether the retry may run under another login, and what it costs if
+    /// none has room; `None` keeps the inherited profile.
+    pub(crate) fn retry_move(&self) -> Option<RetryMove> {
+        self.retry_move
     }
 
     /// The wait's clock, for reading a reset relative to it.
@@ -217,10 +263,18 @@ impl Waiter {
 
     /// After attempt `n` hit its usage limit and no auto-switch rerun is
     /// left: pass the result up, or wait once and ask for a retry. `inherited`
-    /// is the inherited profile's own limit: the retry runs under that
-    /// profile, so other profiles' limits do not time or cancel the wait.
-    /// `probe(start, now)`, both on the wait's clock, ends a capacity wait:
-    /// a reading taken after `start` shows another login has capacity.
+    /// is the inherited profile's own limit, and it times the wait: other
+    /// profiles' limits neither lengthen nor cancel it.
+    ///
+    /// `probe(start, now)`, both on the wait's clock, ends a wait of any
+    /// kind, reset as well as capacity: a reading taken after `start` shows
+    /// that another login has room (#2694). The retry then runs under that
+    /// login, so a step pinned to a profile may change account part way
+    /// through a run; auto-switch off, or the other profiles in the
+    /// auto-switch exclude list, holds it on its own login. Whether the step
+    /// may move at all is `probe`'s own decision and belongs nowhere else:
+    /// it is false for a step with no auto-switch candidate, which is how a
+    /// step on `$HOME/.claude` or under an explicit login stays put.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
@@ -260,7 +314,6 @@ impl Waiter {
         };
         self.used = true;
         let capacity = p.kind == PlanKind::Capacity;
-        self.capacity_start = capacity.then_some(now);
         log(&Event::Start {
             harness,
             reset: p.reset,
@@ -280,6 +333,14 @@ impl Waiter {
         // Real time, not the test clock: auto-drive compares it with its own
         // wall time (issue #1743).
         ledger::record(waited_from.elapsed());
+        // The retry may move to another login after a capacity wait however
+        // it ended (#1801), and after a wait of any kind that ended because
+        // another login has room (#2694).
+        let room_was_seen = end == End::OtherCapacity;
+        self.retry_move = (capacity || room_was_seen).then_some(RetryMove {
+            start: now,
+            room_was_seen,
+        });
         log(&Event::End(end));
         match end {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),
