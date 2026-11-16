@@ -221,12 +221,16 @@ Either path therefore names the CI run that admitted the release.
   cancelled run leaves nothing behind (#1356).
 - **Every CI completion creates an Auto Release run.** Most skip every job
   immediately — pull-request CI, merge-group CI, failed CI, the twice-weekly
-  schedule run, and CI's own `workflow_dispatch` run. The `v*` tag push is the
-  exception that is not skipped by the table; it stops one step later, in
-  `version-bump`, having published nothing. A skipped "Auto Release" entry in
-  the Actions list is the expected shape, not a fault.
-- **Publication trails the merge by one CI duration.** A release appears after
-  CI completes rather than beside it.
+  schedule run, and CI's own `workflow_dispatch` run. The `v*` tag push may or
+  may not be excluded by the table, since what GitHub reports as `head_branch`
+  for a tag push is not contractual. If it is admitted, it stops one step later
+  in `version-bump`, on the commit that already carries its series tag, having
+  published nothing. A skipped "Auto Release" entry in the Actions list is the
+  expected shape, not a fault.
+- **Publication trails the merge by one CI duration.** A release appears once CI
+  on that commit has completed, rather than beside it. Nothing waits or polls
+  for it: the Auto Release run is created by CI's completion event, so the delay
+  is CI's own duration and no step sleeps or retries.
 
 #### Releasing by hand
 
