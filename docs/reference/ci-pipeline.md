@@ -245,21 +245,27 @@ first, read the SHA from the remote rather than from a possibly stale local
 branch, since that is what the runner resolves:
 
 ```bash
-gh api "repos/rysweet/amplihack-rs/actions/workflows/ci.yml/runs?head_sha=$(git rev-parse origin/main)&status=success&per_page=1" \
-  --jq '.total_count'
+gh api "repos/rysweet/amplihack-rs/actions/workflows/ci.yml/runs?head_sha=$(git rev-parse origin/main)&status=success&per_page=100" \
+  --jq '[.workflow_runs[] | select(.event != "pull_request")] | length'
 # Output: 1
 ```
 
 A count of `0` ends the job with
-`::error::no successful CI run for <sha>; not publishing a release` — before any
-tag arithmetic, so a rejected dispatch cannot disturb the version series. The
-check runs once, with no retry, sleep or polling; it reads the API only.
+`::error::no successful CI run built <sha>; not publishing a release` — before
+any tag arithmetic, so a rejected dispatch cannot disturb the version series.
+The check runs once, with no retry, sleep or polling; it reads the API only.
 
-Unlike the automatic path, the manual lookup does not filter on `event`: a
-commit validated through a merge group is a legitimate manual release target.
+The lookup discards `pull_request` runs and keeps every other event. A
+pull-request run reports the PR head commit as its `head_sha`, but no checkout
+in `ci.yml` sets `ref:`, so it builds `refs/pull/N/merge` — the head merged into
+the base — and is evidence about a different tree from the one being released.
+Every other event builds the commit it reports, so a merge-queue-validated
+commit remains a legitimate manual release target.
+
 The check is a safety control rather than an authorization control — anyone who
-can push to `main` can let CI pass and then dispatch. What it rules out is
-publishing a commit whose CI did not pass.
+can push to `main` can let CI pass and then dispatch, and the dispatch path does
+not itself require `main`. What it rules out is publishing a commit that CI did
+not build and pass on.
 
 #### Keeping the trigger attached
 
@@ -682,9 +688,11 @@ does not offer one on a user-owned repository. See
 > workflow file.
 
 Branch protection governs what reaches `main`. A separate rule governs what
-reaches a published release: **Auto Release** starts only from a successful `CI`
-run and builds the commit that run tested, so the seven required checks also
-stand between a commit and its release. See
+reaches a published release: on the automatic path **Auto Release** starts only
+from a successful `CI` run on a `main` push and builds the commit that run
+tested, so the seven required checks also stand between such a commit and its
+release. A `workflow_dispatch` release is held to a successful CI run on the
+same commit, but not to `main`: see
 [A release follows green CI on the same commit](#a-release-follows-green-ci-on-the-same-commit).
 
 ## Action pinning and token permissions

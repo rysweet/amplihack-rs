@@ -115,10 +115,21 @@ jobs:
       # before any version arithmetic, so a rejected dispatch cannot disturb
       # the version series. It asks once and reads the API only.
       #
-      # The lookup deliberately does not filter on `event`: the `event ==
-      # 'push'` clause above exists to stop re-entry and fork commits, and
-      # neither applies when an operator names a ref in this repository. A
-      # merge-queue-validated commit is a legitimate manual release target.
+      # The lookup discards `pull_request` runs and keeps every other event.
+      # A pull-request run reports the PR head commit as its `head_sha`, but
+      # no checkout in ci.yml sets `ref:`, so it builds `refs/pull/N/merge` --
+      # the head merged into the base, which is not the tree being released.
+      # Admitting one would pass this check on evidence for a different tree.
+      # Every other event (`push`, `merge_group`, `schedule`, ci.yml's own
+      # `workflow_dispatch`) builds its reported `head_sha`, and a
+      # merge-queue-validated commit is a legitimate manual release target, so
+      # the filter names the one event to exclude rather than listing those
+      # admitted.
+      #
+      # `ci.yml` appears here as a literal filename in the API path. That is a
+      # third coupling to the same workflow, beside `workflows: [CI]` above
+      # and ci.yml's `name: CI`; renaming the file fails this check closed
+      # (#2744).
       #
       # This is a safety control, not an authorization control: anyone who can
       # push to main can let CI pass and then dispatch. What it rules out is
@@ -140,8 +151,9 @@ jobs:
           set -euo pipefail
           SHA=$(git rev-parse HEAD)
           ANSWER=$(gh api \
-            "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&status=success&per_page=1" \
-            --jq '"\(.total_count)\t\(.workflow_runs[0].html_url // "")"')
+            "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&status=success&per_page=100" \
+            --jq '[.workflow_runs[] | select(.event != "pull_request")]
+                  | "\(length)\t\(.[0].html_url // "")"')
           COUNT=$(printf '%s' "${ANSWER}" | cut -f1)
           RUN_URL=$(printf '%s' "${ANSWER}" | cut -f2)
           case "${COUNT}" in
@@ -151,7 +163,7 @@ jobs:
               ;;
           esac
           if [ "${COUNT}" -eq 0 ]; then
-            echo "::error::no successful CI run for ${SHA}; not publishing a release"
+            echo "::error::no successful CI run built ${SHA}; not publishing a release"
             exit 1
           fi
           {
