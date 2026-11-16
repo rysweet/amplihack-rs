@@ -13,7 +13,8 @@
 #                 so the recipe is keyed on its base name. Every call is logged
 #                 to $STUB_STATE/calls.
 #     loop-health-evaluator, call h:
-#                 saves loop_history to $STUB_STATE/history-h, prints
+#                 saves loop_history (from -c or --context-from-file,
+#                 #2582) to $STUB_STATE/history-h, prints
 #                 $STUB_HEALTH_EXTRA_h, then the runner's step-04 block (#1512)
 #                 with $STUB_HEALTH_h (default CONTINUE for h=1, DONE after),
 #                 and exits $STUB_HEALTH_RC_h (default 0).
@@ -135,6 +136,25 @@ if [ "${1:-} ${2:-}" = "recipe run" ]; then
         loop_*=*)
           context_name="$(printf '%s' "${a%%=*}" | tr '[:lower:]' '[:upper:]')"
           export "$context_name=${a#*=}"
+          ;;
+      esac
+    fi
+    # #2582: the loop hands the evaluator's free-text keys to the nested run
+    # by file, so they are no longer `-c key=value`. Read the file and treat
+    # the value exactly as the `-c` form above does, or this stub sees an
+    # empty history and the tests that read it assert nothing.
+    if [ "$prev" = "--context-from-file" ]; then
+      ctx_key="${a%%=*}"
+      ctx_file="${a#*=}"
+      ctx_value=""
+      [ -f "$ctx_file" ] && ctx_value="$(cat -- "$ctx_file")"
+      case "$ctx_key" in
+        loop_history) HISTORY="$ctx_value" ;;
+      esac
+      case "$ctx_key" in
+        loop_*)
+          context_name="$(printf '%s' "$ctx_key" | tr '[:lower:]' '[:upper:]')"
+          export "$context_name=$ctx_value"
           ;;
       esac
     fi
