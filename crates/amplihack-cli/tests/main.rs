@@ -24,16 +24,20 @@
 
 #[path = "../../../tests/support/isolated_amplihack.rs"]
 mod isolated_amplihack;
+// Issue #2658: shared pinned recipe-runner-rs resolution.
+#[path = "../../../tests/support/pinned_runner.rs"]
+mod pinned_runner;
 mod support;
 
 #[path = "issue_2096_execution_isolation.rs"]
 mod issue_2096_execution_isolation;
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
-#[path = "issue_2545_autodrive_repo_context.rs"]
-mod issue_2545_autodrive_repo_context;
 #[path = "issue_2556_autodrive_evidence.rs"]
 mod issue_2556_autodrive_evidence;
+#[path = "issue_2575_agentic_merge_ready.rs"]
+mod issue_2575_agentic_merge_ready;
+mod issue_2575_finalize_recovery_runner;
 #[path = "issue_2585_launch_notices_stderr.rs"]
 mod issue_2585_launch_notices_stderr;
 
@@ -340,6 +344,8 @@ mod issue_1985_codex_agent_step_flags;
 mod issue_2001_codex_usage;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
+#[path = "issue_2019_private_binary.rs"]
+mod issue_2019_private_binary;
 #[path = "issue_2042_fake_proc_seam.rs"]
 mod issue_2042_fake_proc_seam;
 #[path = "issue_2042_host_proc_strace.rs"]
@@ -384,6 +390,8 @@ mod issue_2539_step_recovery_report;
 mod issue_2539_step_recovery_stop;
 #[path = "issue_2539_step_recovery_validation.rs"]
 mod issue_2539_step_recovery_validation;
+#[path = "issue_2658_routing_replay.rs"]
+mod issue_2658_routing_replay;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

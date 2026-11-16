@@ -1,6 +1,6 @@
 ---
 title: Step Failure Recovery Reference
-last_updated: 2026-11-14
+last_updated: 2026-11-15
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -66,9 +66,8 @@ record is an ordinary failure.
 | `autodrive-crusty-loop` | `step-03-record-crusty-phase` (agent), recovered by `step-03r-record-crusty-phase-recovery` | `--essential` |
 | `autodrive-crusty-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
 | `autodrive-merge-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
-| `autodrive-merge-round` | `step-00-merge-ready-files` | `--essential --stop-on-handoff` |
 | `autodrive-merge-loop` | `step-02-merge-ready-loop` | `--essential --stop-on-handoff` |
-| `autodrive-merge-loop` | `step-03-finalize` (sub-recipe), recovered by `step-03r-finalize-recovery` | `--already-failed --essential` |
+| `autodrive-merge-loop` | `step-03-finalize` (sub-recipe), recovered by `step-03r-finalize-recovery` only when the loop asked for finalisation | `--already-failed --essential` |
 | `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff --no-repair` |
 | `workflow-finalize` | `step-21-pr-ready` | `--essential --stop-on-handoff` |
 | `workflow-finalize` | `validate-agentic-finalization` | `--guard` |
@@ -363,6 +362,34 @@ empty recovery directory.
 
 Directory mode `0700`; record, evidence and spool files `0600`.
 
+### The directory path as a recovery input
+
+`step_recovery_dir` is an ordinary context key, so the Rust runner counts it as
+an input of every bash and recipe step that can see it, whether or not the step
+mentions it. Runner #208 widened that coverage to bash steps; agent steps are
+outside it. The key is set in every `default-workflow` run, and a key that
+cannot be saved makes its steps non-replayable, so `default-workflow`,
+`workflow-prep` and `workflow-design` name it in `recovery.persist.context`.
+
+Without that entry the bash `replay: reuse` steps of the two phase recipes
+cannot replay after a usage-limit relaunch:
+`step-02d-detect-host-type`, `step-03-create-issue` and
+`step-03b-extract-issue-number` in `workflow-prep`, and
+`step-06b-checkpoint-doc-review` and `step-06d-goal-already-met-probe` in
+`workflow-design`. The relaunch then restarts at the earliest of them and
+redoes work the first attempt had finished, including issue creation. Their
+agent steps are unaffected either way.
+
+Neither phase recipe reads the value; they persist it because the runner counts
+it, not because a step consults it. Inside the phase tree the readers are
+`workflow-worktree`, which writes `build-branch.txt` under the directory, and
+`workflow-finalize`, which guards three of its steps with it and, at its first
+step, runs `init --created-by workflow-finalize` and rebinds the key to its own
+output. An empty inherited value therefore means recovery is off everywhere
+except in `workflow-finalize`, where it means the phase makes a directory of its
+own. See
+[caller-set keys in routing and workflow recipes](recipe-recovery.md#caller-set-keys-in-routing-and-workflow-recipes).
+
 ## Security
 
 - Files go through `secure_fs`: opened with `O_NOFOLLOW` relative to a
@@ -390,12 +417,13 @@ Directory mode `0700`; record, evidence and spool files `0600`.
 Integration tests are modules of `cli_integration` in
 `crates/amplihack-cli/tests/issue_2539_step_recovery_*.rs`; unit tests are in
 `step_recovery/tests.rs` and `tests_review.rs`. The agent is a stub runner
-replaying scripted replies. Tests that need the real `recipe-runner-rs`
-skip without it, and fail without it when
-`AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER` is set (as in CI).
+replaying scripted replies. Tests that need the real `recipe-runner-rs` use
+the pinned build from `tests/support/pinned_runner.rs` and never skip; see
+[Run tests against the pinned recipe runner](../howto/run-tests-against-the-pinned-recipe-runner.md).
+The loop tests also need `jq` and fail without it.
 
 ```bash
-AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER=1 cargo test -p amplihack-cli --test cli_integration issue_2539_step_recovery
+cargo test -p amplihack-cli --test cli_integration issue_2539_step_recovery
 cargo test -p amplihack-cli --lib step_recovery
 ```
 
@@ -406,3 +434,4 @@ cargo test -p amplihack-cli --lib step_recovery
 - [Recipe Check Exit Status](./recipe-check-exit-status.md)
 - [Auto Drive To Merge](./auto-drive-to-merge.md)
 - [Default Workflow Agentic Finalization](./default-workflow-agentic-finalization.md)
+- [Recipe Recovery Reference](./recipe-recovery.md#caller-set-keys-in-routing-and-workflow-recipes)

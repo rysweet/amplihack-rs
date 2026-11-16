@@ -7,15 +7,14 @@
 use super::*;
 use crate::test_support::{ClearedGraphDbEnv, home_env_lock};
 use amplihack_utils::root_sandbox::{SKIP_PERMISSIONS_FLAG, SkipPermissionsEnv};
-use std::os::unix::fs::PermissionsExt;
 
 const ARG_MAX_STRLEN: usize = 131_072;
 /// Room for the fixed labels and short fields around a bounded section.
 const SLACK: usize = 4 * 1024;
 
+/// Through the shared stub writer, so no ETXTBSY (#2019).
 fn write_executable(path: &Path, content: &str) {
-    fs::write(path, content).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_support::write_executable(path, content);
 }
 
 fn context() -> SessionContext {

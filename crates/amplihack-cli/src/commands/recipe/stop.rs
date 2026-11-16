@@ -29,9 +29,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use amplihack_utils::clock::{Clock, SystemClock};
 use anyhow::{Result, bail};
 
 /// How long the tree gets to exit after SIGTERM. `recipe run` itself waits up
@@ -152,7 +152,7 @@ fn stop_run_id(run_id: &str) -> Result<()> {
     // and members that ignored SIGTERM are left to `recipe run`'s own
     // teardown (`snapshot_group` in `run/execute.rs`), which got SIGTERM
     // above.
-    let survivors = wait_for_exit(&tree, STOP_GRACE);
+    let survivors = wait_for_exit(&tree, STOP_GRACE, &SystemClock, &|| false);
     signal_group_if_leader(group, libc::SIGKILL);
     kill_survivors(&tree, &survivors);
     let killed = survivors.len();
@@ -279,23 +279,45 @@ pub(crate) fn terminate(tree: &Tree) {
 /// Wait up to `grace` for every process in `tree` to exit, then SIGKILL the
 /// ones still running. Returns how many had to be killed.
 pub(crate) fn sweep(tree: &Tree, grace: Duration) -> usize {
-    let survivors = wait_for_exit(tree, grace);
+    sweep_on(tree, grace, &SystemClock, &|| false)
+}
+
+/// [`sweep`] with `grace` measured on `clock`. `give_up` ends the wait at
+/// once and the survivors are killed. `recipe run` passes the clock its
+/// runner's timeout is measured on (see `RunnerClock` in `run/execute.rs`),
+/// so a lib test's frozen virtual grace holds until the tree exits, and a
+/// cancelled test is not left waiting on it.
+pub(crate) fn sweep_on(
+    tree: &Tree,
+    grace: Duration,
+    clock: &dyn Clock,
+    give_up: &dyn Fn() -> bool,
+) -> usize {
+    let survivors = wait_for_exit(tree, grace, clock, give_up);
     kill_survivors(tree, &survivors);
     survivors.len()
 }
 
-/// Wait up to `grace` for every process in `tree` to exit. Returns the pids
-/// still running.
-fn wait_for_exit(tree: &Tree, grace: Duration) -> Vec<i32> {
+/// Wait up to `grace`, measured on `clock`, for every process in `tree` to
+/// exit, or until `give_up` holds. Returns the pids still running.
+fn wait_for_exit(
+    tree: &Tree,
+    grace: Duration,
+    clock: &dyn Clock,
+    give_up: &dyn Fn() -> bool,
+) -> Vec<i32> {
     let alive = || {
         tree.iter()
             .filter(|(pid, start)| same_process(**pid, **start))
             .map(|(pid, _)| *pid)
             .collect::<Vec<_>>()
     };
-    let started = Instant::now();
-    while started.elapsed() < grace && !alive().is_empty() {
-        thread::sleep(POLL);
+    let started = clock.now();
+    while !give_up()
+        && clock.now().saturating_duration_since(started) < grace
+        && !alive().is_empty()
+    {
+        clock.sleep(POLL);
     }
     alive()
 }

@@ -2,7 +2,7 @@
 title: Recipe Run and Auto-Drive Checkout Isolation
 description: Where recipe runs and auto-drive reviews execute, what they copy from the caller, how they record Git, and how they release what they own.
 doc_type: reference
-last_updated: 2026-11-13
+last_updated: 2026-11-15
 ---
 
 # Recipe run and auto-drive checkout isolation
@@ -171,12 +171,35 @@ git fetch origin   # updates refs/remotes/origin/* from the real remote
 find their base the same way.
 
 The private repository is bare, so `workflow_worktree_root.sh root` gives the
-folder beside it (the run's storage folder) as the main root, and that folder
-is not a repository. The worktree helpers therefore ask Git through the
-checkout, which shares the same refs, configuration and worktree list:
-`workflow_worktree_root.sh base` is given the checkout, `assert-not-nested`
-lists worktrees from the current repository when the main root is not one, and
-`workflow_caller_branch_alias.sh` runs its Git commands in the caller path.
+folder beside it (the run's storage folder, `<work root>/exec/<hash>`) as the
+main root, and that folder is not a repository. The worktree helpers therefore
+ask Git through the checkout, which shares the same refs, configuration and
+worktree list: `workflow_worktree_root.sh base` is given the checkout,
+`assert-not-nested` lists worktrees from the current repository when the main
+root is not one, and `workflow_caller_branch_alias.sh` runs its Git commands in
+the caller path.
+
+A `step-04-setup-worktree` from before #2290, for example one found first in
+the caller's own `amplifier-bundle/`, passes the `root` answer back to the
+helper (`base "$MAIN_REPO_PATH"`). The helper accepts that: when the folder it
+is given is not a work tree, but it is exactly the `root` answer for the
+checkout named by `AMPLIHACK_RUN_CHECKOUT`, `root` prints that folder as its
+own root and `base` resolves as it would from the checkout. Both print the
+same path under `<work root>/worktrees`:
+
+```sh
+# In a step of a new-branch run started with
+#   amplihack recipe run smart-orchestrator -w ~/src/amplihack-rs \
+#     -c repo_path=. -c issue_number=2677 -c force_single_workstream=true
+h=amplifier-bundle/tools/workflow_worktree_root.sh
+main=$("$h" root .)          # <work root>/exec/<hash>
+"$h" base .                  # <work root>/worktrees/amplihack-rs-<hash8>
+"$h" base "$main"            # the same path
+```
+
+Any other folder that is not a work tree still fails with
+`'<path>' is not inside a git work tree.`, whether or not
+`AMPLIHACK_RUN_CHECKOUT` is set.
 
 Path inputs are mapped before launch:
 
@@ -310,7 +333,10 @@ Each record has schema version `1` and `run_id`, `attempt_id`, `executable`,
 - `<run dir>/git-recording.json`, with scope `runner-descendants`
 
 Failure to start the observer, losing it during the run, a storage or
-attribution error, or a failed publication makes the run fail. An empty
+attribution error, or a failed publication makes the run fail. The one
+exception is an observer that could not attach to the runner at all (the
+kernel refused `PTRACE_TRACEME` with `EPERM` or `ENOSYS`): the run continues unobserved and records `"coverage":"unavailable"`, as off Linux.
+See [The Linux observer could not attach](recipe-runner-logging.md#the-linux-observer-could-not-attach). An empty
 journal means the observer ran and saw no Git commands that can write.
 `GitRecord::dry_run()` is the only state with recording switched off, and only
 a dry run reaches it. See the [Git command record](recipe-runner-logging.md#git-command-record).
@@ -380,12 +406,70 @@ When `review-next` finds that the PR head has moved, it provisions the next
 generation, records it in the current generation's `children` and writes the
 manifest. It then retires the generation it replaced:
 
-1. It checks the device and inode of the old storage, repository and checkout
-   again.
+1. It checks the device and inode of the old storage, its `repository.git`,
+   its checkout and its launch directory against the pairs the manifest
+   recorded for them. A review generation manifest records four pairs, in
+   this order: the storage directory, `repository.git`, the checkout and
+   `launch`. All four are checked here, before anything is removed, so every
+   resource the storage removal in step 4 will require has been checked
+   while the checkout is still intact. Were `launch` left out, a generation
+   whose launch directory had changed would lose its checkout in step 2 and
+   then be refused in step 4, leaking the storage and reporting a changed
+   identity for a tree step 1 had just accepted. `review-next` also reads
+   the generation as live before it provisions the successor, and reading a
+   live generation compares all four pairs, so on that path a changed launch
+   directory stops the call before retirement starts;
+   `advance_destroys_nothing_when_the_recorded_launch_directory_is_replaced`
+   pins that. The check in step 1 covers the window between that read and
+   the worktree removal, and refuses with the same message the read gives,
+   `review generation resource identity changed; retained for recovery`.
 2. It runs `git worktree remove --force` on the old checkout.
 3. It sets `"retired": true` in the old manifest and writes it atomically.
-4. It removes the old storage, only when the path is a directory (not a
-   symlink) whose device and inode still match the manifest.
+4. It removes the old storage, only when the path still exists, is a
+   directory and not a symlink, carries the device and inode the manifest
+   recorded for the storage directory, and still holds `repository.git` and
+   `launch` at the device and inode recorded for each of those two. An absent
+   storage path counts as already freed. Anything else keeps the directory
+   and fails with `review storage identity changed; retained: <path>`,
+   including a recorded child that is absent, is a symlink, is no longer a
+   directory, or cannot be read. Every path is examined without following a
+   symlink, and being a symlink is itself a refusal, so a link that points at
+   the recorded directory does not pass.
+
+Storage removal compares three recorded pairs, not just the storage
+directory's own, because one pair is a weak answer to "is this still the
+directory I made?". `fs::remove_dir_all` frees an inode, and the filesystem
+may hand that same inode straight back to the next directory created at that
+path, so a directory that has nothing to do with the generation can carry the
+single pair the manifest recorded. A directory made after the removal does not
+also hold `repository.git` and `launch` at their recorded inodes, so the
+three-pair check separates the two cases without depending on whether the
+filesystem reused anything. The three are required together: storage whose
+own pair and `repository.git` both match, but whose `launch` is gone, is
+refused like any other mismatch, because a tree that is only partly the
+recorded one is not the recorded one. That case is
+`retired_release_refuses_storage_whose_launch_child_is_gone`, which is
+`retired_release_frees_storage_the_removal_never_reached` with `launch`
+removed and nothing else changed, so the storage directory and
+`repository.git` still carry the identities the manifest recorded for them;
+release refuses it and leaves `repository.git` on disk.
+
+The paths compared are not read from the manifest as free text, and the
+removal does not rely on its caller having checked them. Loading a manifest
+pins `repository.git` and `launch` to `<storage>/repository.git` and
+`<storage>/launch`, confines the storage directory to the checkout's own
+allocation directory, requires its name to begin with `review-generation-`,
+and refuses the manifest otherwise. The removal then repeats that work on the
+record it is handed: it derives the storage path from the record rather than
+accepting one as an argument, and re-checks the containment, the name and both
+child paths itself before it removes anything.
+
+The repetition is not redundant. Retirement and release are not the only
+sources of a generation: provisioning builds one in memory and writes it out
+without ever reading it back through the manifest loader, so a removal that
+trusted its caller would be checked on one path into it and unchecked on the
+other. Deriving and re-checking at removal time makes the guarantee a property
+of the removal rather than of how the record happened to arrive.
 
 `review-next` prints the new generation's checkout on success. If the
 identity check or the worktree removal fails, the old generation stays as it
@@ -406,8 +490,14 @@ so the loop's first generation stays the release anchor. Its rules:
   `review-bind-record`, `review-next` and state registration refuse it:
   `review generation is superseded and retired`.
 - `review-release` does not run `git worktree remove` for it. It removes the
-  storage if any is left, but only when the identity still matches; a
-  mismatch stops release with `review storage identity changed; retained`.
+  storage if any is left, under the same three-pair check as step 4 of
+  retirement: a retired record skips the four-way identity check on read that
+  a live record gets, so those three pairs are the only pairs that authorise
+  the storage removal. A mismatch, or a recorded child that is gone, stops
+  release with `review storage identity changed; retained`. Other recorded
+  pairs are still compared for other purposes on the same call: each child's
+  own manifest is read on the recursive walk, and the allocation parent's
+  recorded pair is checked before its directory is removed.
   It then removes the manifest and the allocation directory and releases each
   child, as for a live generation.
 - Nothing sets `retired` back to `false`, and retirement never changes the
@@ -467,15 +557,19 @@ workspace code. None of them is discarded with `.ok()`, `let _ =` or
 | Failure | Result |
 | --- | --- |
 | Unsafe input, unborn `HEAD`, bare or malformed repository | Preparation fails naming the path; no step runs; admission finished as `Failure`. |
-| Observer fails to start on Linux | The runner never starts. Without a writable work root: `cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry`. |
+| Observer could not attach on Linux (`PTRACE_TRACEME` refused with `EPERM` or `ENOSYS`) | One notice on stderr naming `PTRACE_TRACEME` and the error number; the runner starts once unobserved; `coverage: "unavailable"` is recorded. |
+| Runner cannot start on Linux (missing binary or folder, or another spawn error) | The run fails with `failed to spawn recipe-runner-rs` and the spawn error number; no unobserved start. No missing-receipt error follows unless the attempt's journal has content or `git-trace2/` holds another entry, in which case the files are kept and that error is also reported. |
+| Observer fails to start on Linux for any other reason | The runner never starts. Without a writable work root: `cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry`. |
 | Not Linux | The run proceeds unobserved and records `coverage: "unavailable"`. Without a writable work root it stops with the same message as above. |
-| Seeding `origin/*` or copying `origin/HEAD` fails | Preparation fails with `partial resources retained at <exec dir>`; no step runs. |
+| Seeding `origin/*` (for example an `origin/*` ref whose objects are missing from the caller's repository) or copying `origin/HEAD` fails | Preparation fails with `cannot seed origin refs` and `partial resources retained at <exec dir>`; no step runs. |
 | Observer lost, storage or attribution error | Controlled teardown, partial evidence kept, run fails. |
 | Checkout identity changed at release | Resources kept, run fails. |
 | Review dir fails a check | `REVIEW_DIR_CHANGED` or `REVIEW_DIR_UNSTAMPED`; no judging. |
 | Review checkout has edited or untracked files | `review-validate` and `index-check` refuse it, naming the first changed path. |
 | Retiring a superseded review generation fails | One warning; the new generation is used and the old one is freed by `review-release` at loop exit. |
 | A command is given a retired review generation | Refused: `review generation is superseded and retired`. |
+| A live review generation's recorded resource is a different directory: its storage directory, `repository.git`, its checkout or `launch` no longer carries the device and inode the manifest recorded for it | The command that read it is refused with `review generation resource identity changed; retained for recovery`. Nothing is removed, the record stays live with `"retired": false`, and the checkout and storage are left in place. `review-next` stops here rather than retiring the generation it would have replaced. A recorded path that is absent, is a symlink or is no longer a directory is refused earlier, by `review resource is not an owned directory: <path>` or the underlying I/O error. |
+| A storage path is no longer the recorded directory: a symlink, a non-directory, a different directory, or a directory missing one of the two children the manifest recorded inside it | Nothing is deleted. `review-next` warns and carries on; `review-release` fails with `review storage identity changed; retained` and the path. |
 | Stable execution path still held | The attempt prints the reason and uses a fresh random path. |
 | Git recording trace folder cannot be removed | The error is returned: the folder may contain command lines. |
 | Every step passed but release or publication failed | The run fails. |
@@ -490,7 +584,7 @@ everywhere; only command recording depends on Linux.
 
 | Platform | Steps run in | Git command recording |
 | --- | --- | --- |
-| Linux | The private checkout | Required. The ptrace observer runs and its failure fails the run. |
+| Linux | The private checkout | Required. The ptrace observer runs and its failure fails the run. If it could not attach at all, the run continues unobserved with `coverage: "unavailable"`. |
 | macOS and every other non-Linux target | The private checkout | Unavailable. No observer is started and the run is not failed for it. |
 
 Off Linux, `GitRecord` enters its `Unavailable` state:
@@ -535,8 +629,11 @@ isolation test cannot pass on empty data.
 | `crates/amplihack-cli/tests/issue_2096_execution_isolation.rs` | Caller `HEAD` and index unchanged; dry run makes no checkout, recording or run folder; resumed run gets a fresh `exec dir`; unborn caller finishes admission as `Failure`. |
 | `crates/amplihack-cli/tests/issue_2096_private_base_ref.rs` | Base resolution inside a private checkout made by `RunCheckout::prepare`, whose caller has an origin: the `resolve_base_ref` bodies taken from `workflow-worktree.yaml`, `consensus-issue-worktree.yaml` and `workflow-terminal-state.yaml`, and `workflow_delivery_inputs.sh worktree main false "" ""`, all without a prior fetch; `git fetch origin` in the private repository moves `origin/main`; a caller without an origin gets no refspec; a foreign `origin/HEAD` target is refused while preparation still succeeds; a plain caller `origin/HEAD` is not copied. |
 | `crates/amplihack-cli/tests/issue_2096_recording.rs` | Observer coverage and failure cases. |
-| `crates/amplihack-cli/src/commands/recipe/run/tests_git_record.rs` | `begin_on(RecordingPlatform::Other)`: the run is unobserved, no observer or trace variables reach the runner, `git-recording.json` says `unavailable`, and a missing run dir still fails. `begin_on(RecordingPlatform::Linux)` still requires the observer. |
-| `crates/amplihack-cli/tests/issue_2096_review_isolation.rs` | Review generations, including retirement: after `advance` the old checkout and storage are gone and the manifest says `retired`; commands on a retired generation are refused; `release` of the first generation removes everything, including storage a failed retirement left behind. |
+| `crates/amplihack-cli/tests/issue_2677_private_main_root.rs`, module `private_main_root` of `issue_2096_execution_isolation` | A new-branch run launched from the caller's main checkout with `-c repo_path=.` and an issue number: `workflow_worktree_root.sh root` names the run's storage folder, `base` resolves from it to the same worktree path as from the checkout, and a folder that is not a work tree and not that answer still fails. |
+| `crates/amplihack-cli/tests/issue_2677_nested_unobserved.rs`, module `nested_unobserved` of `issue_2096_execution_isolation` (Linux only) | A second `amplihack recipe run` started from a step of an observed run, with `AMPLIHACK_OBSERVER_PID` removed, so the kernel declines its `PTRACE_TRACEME`: a step runs, the nested run exits zero, and its `git-recording.json` says `coverage: "unavailable"`. |
+| `crates/amplihack-cli/src/run_isolation/observer/linux.rs` (module tests) | `a_failed_join_never_displaces_the_spawn_error` and `a_successful_join_leaves_the_spawn_error_alone`: when the runner's own spawn failed, the error the caller gets is the spawn error, with its `failed to spawn recipe-runner-rs` first line, its error number as root cause and the marker that an attempt never started, whatever the tracing thread did. That the thread is joined before the rule runs comes from the rule's signature, which takes the join's finished `Result`, not from these tests. `a_join_failure_warning_carries_its_fixed_prefix_and_no_path` holds the stderr warning's fixed text. |
+| `crates/amplihack-cli/src/commands/recipe/run/tests_git_record.rs` | `begin_on(RecordingPlatform::Other)`: the run is unobserved, no observer or trace variables reach the runner, `git-recording.json` says `unavailable`, and a missing run dir still fails. `begin_on(RecordingPlatform::Linux)` still requires the observer. `a_runner_that_cannot_start_reports_its_own_error_first` covers a spawn failure naming its own error number and leaving no missing-receipt error behind it, `a_refused_release_keeps_the_attempt_and_still_reports_the_spawn_error` covers the case where that attempt's journal cannot be released, and `a_refused_release_warning_carries_its_fixed_prefix_and_no_path` holds that refusal warning's fixed text. The downgrade's preconditions are covered by `downgrade_rests_on_what_was_recorded_not_on_the_required_flag`, `downgrade_still_refuses_a_journal_with_content_on_an_unrequired_record` and `a_second_downgrade_of_one_record_is_refused_and_deletes_nothing`. |
+| `crates/amplihack-cli/tests/issue_2096_review_isolation.rs` | Review generations and both call sites of the three-pair storage check. `advance_retires_superseded_generation` covers the retirement call site: after `advance` the old checkout and storage are gone and the manifest says `retired`. `release_frees_storage_left_by_failed_retirement` covers the release call site, where a retirement that did not reach the removal leaves storage behind. `advance_destroys_nothing_when_the_recorded_launch_directory_is_replaced` covers the fourth recorded pair on the retirement path: a generation whose recorded `launch` directory was replaced keeps its checkout, its storage and `retired: false`, because the read that precedes retirement compares all four pairs and refuses first. `retired_generation_is_refused` covers the commands that refuse a retired generation, and `release_root_after_retirement_removes_everything` the release of the whole chain. On the release path, `retired_release_refuses_symlinked_storage` and `retired_release_refuses_substituted_storage` cover the storage directory's own identity, and five tests cover the recorded children: storage whose recorded children are absent, whose recorded children were replaced by a tree of the same shape, whose recorded child is a symlink, and whose `launch` alone is gone while the other two pairs still match (`retired_release_refuses_storage_whose_launch_child_is_gone`), are each refused with nothing deleted, while `retired_release_frees_storage_the_removal_never_reached` holds the opposite side, that a whole recorded tree a failed retirement left behind is still freed. The substitution tests do not wait for the kernel to reuse an inode: they give the substitute the recorded top-level pair outright, which is the most inode reuse can hand it. |
 | `crates/amplihack-cli/tests/issue_2096_real_hooks.rs` | Pre-commit and push hooks run in the execution checkout. |
 | `crates/amplihack-git/tests/issue_2096_git_policy.rs` | Git environment and configuration policy. |
 | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` | Review generation checks, `REVIEW_DIR_CHANGED` and `REVIEW_DIR_UNSTAMPED`. |
@@ -613,6 +710,30 @@ The double cannot detect faults in real review isolation. The
   Git that preparation and release run themselves, unrelated host processes,
   or non-Git writes to an index.
 - Evidence files are not tamper-proof against the same user.
+- Identity checks resolve a path by name, and so does the delete that
+  follows. A path swapped between the last check and the delete is not caught.
+  The window is narrow, because the recursive delete walks the tree with
+  `openat` and `unlinkat` and follows no symlink below the top, but it is
+  there. Closing it needs the directory to be opened once, with `O_DIRECTORY`
+  and `O_NOFOLLOW`, and every later operation done through that descriptor.
+  This too is residual risk on
+  [#2701](https://github.com/rysweet/amplihack-rs/issues/2701).
+- Storage whose removal stopped halfway is kept, not finished. If a delete
+  removed `repository.git` or `launch` and then failed, the recorded child is
+  gone, so every later attempt reports `review storage identity changed;
+  retained` and leaves the rest on disk for a person to look at and remove.
+  The alternative, treating a missing child as permission to delete, is the
+  case this check exists to refuse.
+- The allocation directory that holds a generation's storage is not itself
+  checked for owner, or for group and world writability, as the review state
+  directory is. A user who can write that directory can put something at the
+  storage path, and can create and delete directories there to groom inode
+  reuse. What they have no practical way to do is make three specific recorded
+  pairs line up at once, so the expected outcome is a refusal rather than a
+  deletion. Extending the state directory's owner and mode check to the
+  allocation directory would close the gap. It is recorded as residual risk on
+  [#2701](https://github.com/rysweet/amplihack-rs/issues/2701), the issue the
+  three-pair check answers.
 - Ignored files other than the recipe file are not copied. A recipe that needs
   one must take its path as a context value outside the checkout.
 - `origin/*` is seeded only from refs the caller already has. A caller with an

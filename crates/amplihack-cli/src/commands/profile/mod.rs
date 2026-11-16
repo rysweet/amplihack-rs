@@ -136,6 +136,8 @@ mod tests_usage_view;
 mod tests_verify;
 #[cfg(all(test, unix))]
 mod tests_verify_cmd;
+#[cfg(all(test, unix))]
+mod tests_wait_for_refreshes;
 
 use anyhow::Result;
 /// For `amplihack sessions` (issue #1746): the live check and profile root.
