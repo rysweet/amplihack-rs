@@ -1,11 +1,21 @@
 //! The wait itself (issue #1618), over a `WaitDeps` so tests drive it with
 //! their own clock. Each pass checks, in order: a stop signal, the end of
 //! the session that started the step, the deadline, the login fingerprint,
-//! the rotator's capacity and, on a capacity wait, another login's capacity
-//! (every 30 s), and the progress line (every 60 s), then sleeps at most one
-//! second. The login baseline is the first value two probes in a row agree
-//! on, and a change is a different value that two probes in a row agree on,
-//! so a torn or failed read of `.claude.json`, first or later, never ends the
+//! the rotator's capacity and another login's capacity (both every 30 s),
+//! and the progress line (every 60 s), then sleeps at most one second.
+//! Another login's capacity ends a wait of any kind, not only a capacity
+//! wait (issue #2694): a step whose own reset is hours away still moves to
+//! a login with room as soon as one is seen.
+//!
+//! The one exception is a login-change wait (issue #2731), where both
+//! capacity sources are skipped: it is waiting for an organisation spend
+//! limit to be replaced by another organisation's credit, and no capacity
+//! reading reports credit. The plan says so with
+//! [`Plan::capacity_may_end`].
+//!
+//! The login baseline is the first value two probes in a row agree on, and
+//! a change is a different value that two probes in a row agree on, so a
+//! torn or failed read of `.claude.json`, first or later, never ends the
 //! wait.
 
 use super::events::{Event, line};
@@ -80,10 +90,9 @@ impl End {
     }
 }
 
-/// Waits until `plan.until`, a login change, rotator capacity, on a capacity
-/// wait another login's capacity, the end of the step's session or a stop
-/// signal. Writes only `progress` lines; `start`, `end` and `resume` are the
-/// caller's.
+/// Waits until `plan.until`, a login change, rotator capacity, another
+/// login's capacity, the end of the step's session or a stop signal. Writes
+/// only `progress` lines; `start`, `end` and `resume` are the caller's.
 pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
     let start = deps.now();
     // The previous probe, and the value two probes in a row agreed on.
@@ -115,11 +124,19 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
                     last = probe;
                 }
             }
-            if deps.rotator_capacity(start) {
-                return End::RotatorCapacity;
-            }
-            if plan.kind == PlanKind::Capacity && deps.other_capacity(start) {
-                return End::OtherCapacity;
+            // Both capacity sources, or neither (#2731). They are read on
+            // a reset wait as well as a capacity wait (#2694): whether the
+            // step may move at all is `other_capacity`'s own decision, and
+            // it is false for a step with no auto-switch candidate. A
+            // login-change wait reads neither, because neither reports what
+            // it is waiting for; the fingerprint above is what ends it.
+            if plan.capacity_may_end() {
+                if deps.rotator_capacity(start) {
+                    return End::RotatorCapacity;
+                }
+                if deps.other_capacity(start) {
+                    return End::OtherCapacity;
+                }
             }
             next_poll = now.saturating_add(POLL_SECS);
         }

@@ -200,3 +200,50 @@ fn the_rotator_is_checked_only_for_a_spend_limit_that_could_be_promoted() {
     upgrade_spend(WaitFor::Skip(NoWait::SpendLimit), SPEND, check);
     assert_eq!(calls.get(), 1);
 }
+
+// --- which readings may end the wait (issue #2731, deputy point 4) ---------
+//
+// A login-change wait is waiting for an organisation's credit to be replaced
+// by another organisation's. No capacity reading says anything about that: a
+// session or weekly window that looks healthy is exactly what an exhausted
+// credit leaves behind. `Plan::capacity_may_end` is what the wait loop asks
+// before it consults either capacity source, and it is false for this plan
+// and true for every other, so #2717's rule stands where it applies and is
+// suppressed only here.
+
+#[test]
+fn a_reset_plan_may_be_ended_by_a_capacity_reading() {
+    let plan = super::plan::plan(NOW, NOW + 1800, None, None);
+    assert!(
+        plan.capacity_may_end(),
+        "#2717: another login with room ends a reset wait"
+    );
+}
+
+#[test]
+fn a_capacity_plan_may_be_ended_by_a_capacity_reading() {
+    let plan = super::plan::plan_capacity(NOW, None, None, None);
+    assert!(plan.capacity_may_end(), "#1801: that is what it waits for");
+}
+
+#[test]
+fn a_login_change_plan_may_not_be_ended_by_any_capacity_reading() {
+    assert!(
+        !p(Some(600), None).capacity_may_end(),
+        "no reading says whether the next login's organisation has credit"
+    );
+}
+
+#[test]
+fn the_flag_rides_with_the_plan_and_not_with_its_kind() {
+    // Both plans are `PlanKind::Reset`, because that is what their deadline
+    // means; only the login-change one suppresses the capacity sources.
+    let reset = super::plan::plan(NOW, NOW + 1800, None, None);
+    let login_change = p(Some(600), None);
+    assert_eq!(reset.kind, login_change.kind, "the same kind");
+    assert_ne!(
+        reset.capacity_may_end(),
+        login_change.capacity_may_end(),
+        "and still different answers"
+    );
+}

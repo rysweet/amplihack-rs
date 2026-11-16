@@ -176,6 +176,43 @@ pub(crate) struct Plan {
     pub(crate) kind: PlanKind,
     /// The reset as read, for the log line; a capacity wait may have none.
     pub(crate) reset: Option<i64>,
+    /// This wait is for the login in `$HOME/.claude` changing, and for
+    /// nothing else (issue #2731). Set by [`plan_login_change`] alone, which
+    /// is why it is private: no other constructor, and no test, may raise
+    /// it. It is not a [`PlanKind`], because the kind says what the deadline
+    /// means and this plan's deadline means what [`PlanKind::Reset`]'s does.
+    login_change: bool,
+}
+
+impl Plan {
+    /// Whether a capacity reading may end this wait.
+    ///
+    /// True for a reset wait (issue #2694: a login with room ends it rather
+    /// than the step sleeping to a reset hours away) and for a capacity wait
+    /// (issue #1801: that is what it waits for). False for a login-change
+    /// wait, whose limit is on an organisation's credit: no reading reports
+    /// credit, and an exhausted credit leaves the session and weekly windows
+    /// looking healthy, so a reading would end the wait and send the step
+    /// back onto the same spent login.
+    pub(crate) fn capacity_may_end(&self) -> bool {
+        !self.login_change
+    }
+
+    /// A plan with a deadline the caller chooses, for the wait's own tests.
+    ///
+    /// There is deliberately no way to raise `login_change` here:
+    /// [`plan_login_change`] is its one source, so a test that wants such a
+    /// plan must call that and is then testing what the code does.
+    #[cfg(test)]
+    pub(super) fn for_test(until: i64, bound: Bound, kind: PlanKind, reset: Option<i64>) -> Self {
+        Self {
+            until,
+            bound,
+            kind,
+            reset,
+            login_change: false,
+        }
+    }
 }
 
 /// The deadline for a wait starting at `now` for `reset`, which
@@ -206,6 +243,7 @@ pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>, step: Option<(i64, u6
         bound,
         kind: PlanKind::Reset,
         reset: Some(reset),
+        login_change: false,
     }
 }
 
@@ -253,6 +291,7 @@ pub(crate) fn plan_capacity(
         bound,
         kind: PlanKind::Capacity,
         reset,
+        login_change: false,
     }
 }
 
@@ -261,12 +300,12 @@ pub(crate) fn plan_capacity(
 /// `now`. A tie is named `MaxWait`. There is no reset row, because the limit
 /// stated none, and no five-hour ceiling.
 ///
-/// The plan's kind is [`PlanKind::Reset`] on purpose: the wait itself is
-/// unchanged, so it never consults the stored readings for another login's
-/// capacity. No reading says whether the next login's organisation has
-/// credit, and the rotator picks what goes into `~/.claude` in any case.
-/// Reaching the deadline is `End::MaxReached`, which the caller turns into
-/// `failed reason=spend_limit`.
+/// The plan's kind is [`PlanKind::Reset`] on purpose: the kind says what
+/// the deadline means, and reaching this one is `End::MaxReached`, which the
+/// caller turns into `failed reason=spend_limit`. What this wait does *not*
+/// consult is carried by [`Plan::capacity_may_end`] instead: no reading says
+/// whether the next login's organisation has credit, and the rotator picks
+/// what goes into `~/.claude` in any case.
 pub(crate) fn plan_login_change(now: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
     let mut until = now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX)));
     let mut bound = Bound::MaxWait;
@@ -281,6 +320,7 @@ pub(crate) fn plan_login_change(now: i64, max: Option<u64>, step: Option<(i64, u
         bound,
         kind: PlanKind::Reset,
         reset: None,
+        login_change: true,
     }
 }
 

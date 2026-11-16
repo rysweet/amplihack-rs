@@ -35,6 +35,21 @@ impl Shape {
             Shape::LoginChange => " wait=login_change",
         }
     }
+
+    /// The limit that started the wait, for the `start` line's `reason=`.
+    ///
+    /// `reason` names the limit and `wait` names what the step is waiting
+    /// for; the two answer different questions and both are written. A
+    /// login-change wait is started by an organisation spend limit and by
+    /// nothing else (`plan::upgrade_spend`), so a reader grepping the recipe
+    /// log for `spend_limit` finds the wait as well as the step's closing
+    /// line (issue #2731).
+    fn reason(self) -> &'static str {
+        match self {
+            Shape::Reset | Shape::Capacity => "usage_limit",
+            Shape::LoginChange => "spend_limit",
+        }
+    }
 }
 
 /// One log line's content.
@@ -119,7 +134,8 @@ where
     Z::Offset: Display,
 {
     format!(
-        "start reason=usage_limit{} {} reset={} until={} bound={}",
+        "start reason={}{} {} reset={} until={} bound={}",
+        shape.reason(),
         shape.token(),
         who,
         reset.map_or_else(|| "none".to_string(), |r| fmt_time(r, tz)),

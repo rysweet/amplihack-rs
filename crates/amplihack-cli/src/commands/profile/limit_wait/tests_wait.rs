@@ -26,7 +26,11 @@ pub(super) struct Fake {
     signal_seen_at_ms: Option<i64>,
     sleeps: Vec<Duration>,
     pub(super) sleeps_after_signal: usize,
-    probes: Vec<i64>,
+    /// The virtual second of each login fingerprint. `tests_wait_ends`
+    /// derives from this where another login's capacity may be read, so the
+    /// reading's cadence is stated against the checks the wait already
+    /// makes rather than against their interval (issue #2694).
+    pub(super) probes: Vec<i64>,
     logs: Vec<String>,
     /// Virtual second from which the step's parent is gone.
     pub(super) parent_gone_from: Option<i64>,
@@ -34,6 +38,9 @@ pub(super) struct Fake {
     pub(super) capacity_from: Option<i64>,
     /// Virtual second from which another stored login reports capacity.
     pub(super) other_from: Option<i64>,
+    /// The virtual second of each reading of another login's capacity, so a
+    /// test can show the wait adds no cadence of its own (issue #2694).
+    pub(super) other_probes: Vec<i64>,
 }
 
 impl Fake {
@@ -50,6 +57,7 @@ impl Fake {
             parent_gone_from: None,
             capacity_from: None,
             other_from: None,
+            other_probes: Vec::new(),
         }
     }
 
@@ -118,6 +126,7 @@ impl WaitDeps for Fake {
 
     fn other_capacity(&mut self, start: i64) -> bool {
         assert_eq!(start, T0, "capacity is judged from the wait's start");
+        self.other_probes.push(self.elapsed());
         self.other_from.is_some_and(|t| self.elapsed() >= t)
     }
 
@@ -127,20 +136,20 @@ impl WaitDeps for Fake {
 }
 
 pub(super) fn plan_in(secs: i64, bound: Bound) -> Plan {
-    Plan {
-        until: T0 + secs,
-        bound,
-        kind: PlanKind::Reset,
-        reset: Some(T0),
-    }
+    Plan::for_test(T0 + secs, bound, PlanKind::Reset, Some(T0))
 }
 
 pub(super) fn capacity_plan_in(secs: i64, bound: Bound) -> Plan {
-    Plan {
-        kind: PlanKind::Capacity,
-        reset: None,
-        ..plan_in(secs, bound)
-    }
+    Plan::for_test(T0 + secs, bound, PlanKind::Capacity, None)
+}
+
+/// A login-change plan ending `secs` after `T0` (issue #2731), built by the
+/// real constructor rather than by hand: the flag that suppresses the two
+/// capacity sources is `plan_login_change`'s to set, and a test that could
+/// set it itself would stop proving that the constructor does.
+pub(super) fn login_change_plan_in(secs: i64) -> Plan {
+    let max = u64::try_from(secs).expect("a login-change wait's length is not negative");
+    super::plan::plan_login_change(T0, Some(max), None)
 }
 
 #[test]

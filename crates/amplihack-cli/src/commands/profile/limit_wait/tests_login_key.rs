@@ -8,9 +8,18 @@
 //! swap record's `live_login`. It is never read from `.claude.json`, whose
 //! account field may hold an e-mail address or a UUID.
 //!
+//! The key carries the [`Source`] it was read from, because the two readers
+//! answer slightly different questions and a reading from one is not
+//! comparable with a reading from the other. A ledger that becomes
+//! unreadable between two readings would otherwise look like a swap: the
+//! second reading falls back to the swap record, which names whatever login
+//! the last swap put in place, and two readings taken a minute apart with no
+//! rotator activity at all would disagree. `mod.rs`'s `changed` compares
+//! like with like for that reason.
+//!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_login_key;`.
 
-use super::fingerprint::Watch;
+use super::fingerprint::{Source, Watch};
 use super::tests_fingerprint::{Env, env, private, rotate_ledger};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -33,18 +42,39 @@ fn home(e: &Env) -> Watch {
     e.home_watch()
 }
 
+/// The key's name alone, for the cases that are about which login it is.
+fn name(w: &Watch) -> Option<String> {
+    w.login().map(|(_, n)| n)
+}
+
+/// The key's source alone, for the cases that are about which file said so.
+fn source(w: &Watch) -> Option<Source> {
+    w.login().map(|(s, _)| s)
+}
+
 // --- which file the key comes from ---------------------------------------
 
 #[test]
 fn the_rotate_ledgers_live_profile_is_the_key() {
     let e = env();
     e.rotator("a");
-    assert_eq!(home(&e).login().as_deref(), Some("a"));
+    assert_eq!(name(&home(&e)).as_deref(), Some("a"));
     e.rotator("b");
     assert_eq!(
-        home(&e).login().as_deref(),
+        name(&home(&e)).as_deref(),
         Some("b"),
         "the key is read now, never cached"
+    );
+}
+
+#[test]
+fn a_key_from_the_ledger_says_so() {
+    let e = env();
+    e.rotator("a");
+    assert_eq!(
+        home(&e).login(),
+        Some((Source::Cycle, "a".to_string())),
+        "the name and where it was read, together"
     );
 }
 
@@ -53,14 +83,14 @@ fn the_swap_record_is_the_fallback_when_the_ledger_names_no_live_profile() {
     let e = env();
     swap_record(e.store.root(), "b", "a");
     assert_eq!(
-        home(&e).login().as_deref(),
-        Some("b"),
-        "no ledger at all: the swap record's live login"
+        home(&e).login(),
+        Some((Source::Swap, "b".to_string())),
+        "no ledger at all: the swap record's live login, named as such"
     );
     e.rotator("a");
     assert_eq!(
-        home(&e).login().as_deref(),
-        Some("a"),
+        home(&e).login(),
+        Some((Source::Cycle, "a".to_string())),
         "the ledger outranks the swap record"
     );
 }
@@ -76,7 +106,33 @@ fn an_unreadable_ledger_falls_back_to_the_swap_record() {
     )
     .unwrap();
     swap_record(e.store.root(), "b", "a");
-    assert_eq!(home(&e).login().as_deref(), Some("b"));
+    assert_eq!(name(&home(&e)).as_deref(), Some("b"));
+}
+
+/// The case the source exists for. Nothing about the rotator changed
+/// between the two readings: the ledger simply stopped being readable, and
+/// the swap record it falls back to names the login some earlier swap put
+/// in place. Without the source these two readings are "a" then "b", which
+/// is indistinguishable from a swap.
+#[test]
+fn a_ledger_that_stops_being_readable_changes_the_source_not_just_the_name() {
+    let e = env();
+    e.rotator("a");
+    swap_record(e.store.root(), "b", "a");
+    let before = home(&e).login();
+    assert_eq!(before, Some((Source::Cycle, "a".to_string())));
+    fs::set_permissions(
+        rotate_ledger(e.store.root()),
+        fs::Permissions::from_mode(0o622),
+    )
+    .unwrap();
+    let after = home(&e).login();
+    assert_eq!(after, Some((Source::Swap, "b".to_string())));
+    assert_ne!(
+        before.map(|(s, _)| s),
+        after.map(|(s, _)| s),
+        "the readings are not comparable, and the source is what says so"
+    );
 }
 
 // --- when there is no key ------------------------------------------------
@@ -132,6 +188,30 @@ fn a_name_the_rotator_would_not_write_is_not_a_key() {
     assert_eq!(home(&e).login(), None);
 }
 
+// --- the source is about the reader, never about the content -------------
+
+#[test]
+fn the_source_names_the_file_that_answered_and_nothing_else() {
+    let e = env();
+    // The same name in both files. The source still says which reader
+    // produced it, because it is derived from which one succeeded and not
+    // from any field either file holds.
+    e.rotator("a");
+    swap_record(e.store.root(), "a", "b");
+    assert_eq!(source(&home(&e)), Some(Source::Cycle));
+    fs::set_permissions(
+        rotate_ledger(e.store.root()),
+        fs::Permissions::from_mode(0o622),
+    )
+    .unwrap();
+    assert_eq!(source(&home(&e)), Some(Source::Swap));
+    assert_eq!(
+        name(&home(&e)).as_deref(),
+        Some("a"),
+        "the name is the same either way"
+    );
+}
+
 // --- what the key must never be ------------------------------------------
 
 #[test]
@@ -141,7 +221,7 @@ fn the_key_never_comes_from_claude_json() {
     // into the key, which reaches the recipe log as `account=`.
     assert_eq!(home(&e).login(), None);
     e.rotator("a");
-    let key = home(&e).login().unwrap();
+    let key = name(&home(&e)).unwrap();
     assert_eq!(key, "a");
     for forbidden in ["@", "uuid-", "example.invalid"] {
         assert!(!key.contains(forbidden), "{forbidden:?} in {key:?}");
@@ -152,7 +232,7 @@ fn the_key_never_comes_from_claude_json() {
 fn the_key_is_a_bare_name_with_no_path_and_no_separator() {
     let e = env();
     e.rotator("a");
-    let key = home(&e).login().unwrap();
+    let key = name(&home(&e)).unwrap();
     assert!(
         !key.is_empty() && key.len() <= 64,
         "the rotator's own name form: {key:?}"
@@ -163,4 +243,21 @@ fn the_key_is_a_bare_name_with_no_path_and_no_separator() {
         "{key:?} must need no quoting in a log line"
     );
     assert!(!key.contains('/') && !key.contains('='), "{key:?}");
+}
+
+#[test]
+fn the_swap_records_name_is_held_to_the_same_form() {
+    // The fallback reader must not be the one place a name reaches the log
+    // unchecked.
+    let e = env();
+    private(
+        &e.store
+            .root()
+            .join(".auto-switch.d")
+            .join("rotate")
+            .join("swap.json"),
+        r#"{"seq":3,"live_login":"../escape","from_login":"a","swapped_at":1,
+            "reading":{"session":12,"week":40,"measured_at":1}}"#,
+    );
+    assert_eq!(home(&e).login(), None);
 }

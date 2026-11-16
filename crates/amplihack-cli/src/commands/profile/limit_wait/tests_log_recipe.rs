@@ -6,9 +6,14 @@
 //! `account=` put in its place, and the recipe-log `end` is identical to the
 //! stderr one, so one `grep` over both sinks reads as one stream.
 //!
+//! The `start` line's `reason` names the limit that started the wait rather
+//! than the shape of the wait: `spend_limit` for an organisation spend limit
+//! and `usage_limit` for every other, so a reader grepping the recipe log
+//! for a spend limit finds the wait as well as the step's closing line
+//! (issue #2731, the deputy's point 5).
+//!
 //! No other event reaches the recipe log: not `progress`, not `resume`, not
-//! `skipped`, and not the closing `failed` line, whose `reason=spend_limit`
-//! is a different token from the `start` line's `reason=usage_limit`.
+//! `skipped`, and not the closing `failed` line.
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_log_recipe;`.
 
@@ -67,9 +72,28 @@ fn a_capacity_waits_start_line_is_unchanged() {
 fn a_login_change_waits_start_line_says_so_in_the_same_place() {
     assert_eq!(
         stderr(&start(Shape::LoginChange, None, T32, Bound::MaxWait)),
-        "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=login_change \
+        "amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change \
          harness=claude reset=none until=2026-10-18 08:32:00 -07:00 bound=max_wait"
     );
+}
+
+/// The two tokens answer different questions and both are needed. `reason`
+/// says which limit stopped the step, and is what a reader looking for a
+/// spend limit greps for; `wait` says what the step is waiting for, and is
+/// the only thing that distinguishes this wait from a reset wait on a
+/// spend limit that did state a reset.
+#[test]
+fn the_reason_and_the_wait_token_are_not_the_same_field() {
+    let l = stderr(&start(Shape::LoginChange, None, T32, Bound::MaxWait));
+    assert!(l.contains(" reason=spend_limit "), "{l}");
+    assert!(l.contains(" wait=login_change "), "{l}");
+    for shape in [Shape::Reset, Shape::Capacity] {
+        let l = stderr(&start(shape, None, T32, Bound::MaxWait));
+        assert!(
+            l.contains(" reason=usage_limit "),
+            "{shape:?} is a session or weekly limit: {l}"
+        );
+    }
 }
 
 #[test]
@@ -100,11 +124,11 @@ fn the_recipe_log_keeps_the_wait_token_where_stderr_has_it() {
     assert_eq!(
         recipe(
             &start(Shape::LoginChange, None, T32, Bound::MaxWait),
-            Some("calypso")
+            Some("work")
         )
         .unwrap(),
-        "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=login_change \
-         account=calypso reset=none until=2026-10-18 08:32:00 -07:00 bound=max_wait"
+        "amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change \
+         account=work reset=none until=2026-10-18 08:32:00 -07:00 bound=max_wait"
     );
     assert_eq!(
         recipe(
@@ -132,16 +156,33 @@ fn the_recipe_log_start_line_is_the_stderr_one_with_one_field_replaced() {
 }
 
 #[test]
-fn the_reason_token_is_always_usage_limit_in_the_recipe_log() {
-    // The closing line's `reason=spend_limit` is a different event and must
-    // not split the meaning of `reason=` across the two sinks.
+fn the_reason_token_is_the_same_in_both_sinks() {
+    // `reason=` must mean one thing across stderr and the recipe log, so a
+    // reader greps once and finds the wait in whichever sink they have.
+    for shape in [Shape::Reset, Shape::Capacity, Shape::LoginChange] {
+        let e = start(shape, None, T32, Bound::MaxWait);
+        let (l, s) = (recipe(&e, Some("w")).unwrap(), stderr(&e));
+        let token = |line: &str| {
+            line.split_whitespace()
+                .find_map(|w| w.strip_prefix("reason="))
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(token(&l), token(&s), "{shape:?}: {l} / {s}");
+    }
+}
+
+#[test]
+fn a_spend_limits_wait_is_found_by_grepping_for_the_spend_limit() {
+    // The field report: a reader looking for why a step stopped searched the
+    // recipe log for `spend_limit` and found nothing, because the only line
+    // that carried the token was the step's closing line on stderr.
     let l = recipe(
         &start(Shape::LoginChange, None, T32, Bound::MaxWait),
         Some("w"),
     )
     .unwrap();
-    assert!(l.contains("start reason=usage_limit "), "{l}");
-    assert!(!l.contains("reason=spend_limit"), "{l}");
+    assert!(l.contains("start reason=spend_limit "), "{l}");
 }
 
 // --- the account name -----------------------------------------------------
@@ -182,7 +223,7 @@ fn a_name_outside_the_rotators_form_is_rejected_not_trimmed() {
 
 #[test]
 fn a_name_in_the_rotators_form_is_written_whole() {
-    for good in ["a", "work", "calypso-2", "team_1.main", &"n".repeat(64)] {
+    for good in ["a", "work", "second-2", "team_1.main", &"n".repeat(64)] {
         let l = recipe(&start(Shape::Reset, None, T32, Bound::MaxWait), Some(good)).unwrap();
         assert!(l.contains(&format!(" account={good} ")), "{good:?}: {l}");
     }

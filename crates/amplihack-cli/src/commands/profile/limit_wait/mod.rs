@@ -28,6 +28,8 @@ pub(crate) mod settings;
 pub(crate) mod wait;
 
 #[cfg(test)]
+mod tests_changed;
+#[cfg(test)]
 mod tests_claude_args;
 #[cfg(test)]
 mod tests_fingerprint;
@@ -50,6 +52,8 @@ mod tests_plan_reading;
 #[cfg(test)]
 mod tests_recipe_log;
 #[cfg(test)]
+mod tests_retry_move;
+#[cfg(test)]
 mod tests_scratch;
 #[cfg(test)]
 mod tests_settings;
@@ -63,7 +67,7 @@ use super::store::ProfileStore;
 use anyhow::Result;
 use clock::Clock;
 use events::{Event, FailReason, Shape, Skip, log, recipe_line};
-use fingerprint::{Fingerprint, Watch};
+use fingerprint::{Fingerprint, Source, Watch};
 use marks::Marks;
 use plan::{NoWait, PlanKind, WaitFor, plan, plan_capacity, plan_login_change};
 pub(crate) use recipe_log::RECIPE_LOG_ENV;
@@ -129,15 +133,61 @@ impl WaitDeps for RealDeps<'_> {
     }
 }
 
+/// Why the retry after a wait may run under another login, and from when a
+/// capacity reading counts as fresh enough to choose one.
+///
+/// The two are separate decisions and are deliberately not one field: *may
+/// the retry move* is true after any capacity wait, while *was room actually
+/// seen* is true only when a reading ended the wait early. A capacity wait
+/// that reached its reset may still move, but finding no room is then the
+/// expected outcome, not a loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RetryMove {
+    /// When the wait began, on the wait's clock: read in `after_limit`
+    /// just before `wait` takes its own `start`, so it is that instant or a
+    /// hair before it, never after. The freshness bound that decides which
+    /// readings may move a step onto another account, and not a tuning
+    /// parameter: a later instant would make every reading taken during the
+    /// wait look stale, so the step would silently retry on the exhausted
+    /// profile, and an earlier one would admit readings taken before the
+    /// limit was hit. Where the two differ the retry's window is the wider
+    /// one, which can only admit a reading the probe already accepted.
+    start: i64,
+    /// Whether a reading taken during the wait showed another login had
+    /// room, which is what ended the wait (#2694). Only then does finding
+    /// no room at the retry mean something was lost: the room was taken in
+    /// between, and the step gave up a wait that would have run to its
+    /// reset and succeeded. A capacity wait that ended any other way never
+    /// saw room at all, so finding none is what the step already expected
+    /// and costs it one more attempt and nothing else.
+    room_was_seen: bool,
+}
+
+impl RetryMove {
+    /// The floor for a reading to count towards the retry's choice.
+    pub(crate) fn start(self) -> i64 {
+        self.start
+    }
+
+    /// Whether losing the race for the room costs this step a wait that
+    /// would have succeeded, rather than merely an attempt.
+    pub(crate) fn room_was_seen(self) -> bool {
+        self.room_was_seen
+    }
+}
+
 /// The wait's state for one step: one wait per login, inside one budget.
 pub(crate) struct Waiter {
     /// `None` when `AMPLIHACK_NONINTERACTIVE` is not exactly `1`.
     settings: Option<WaitSettings>,
     /// Which logins this step has waited on, and what it has spent (#2731).
     marks: Marks,
-    /// The login the attempt now running was launched on, read before it
-    /// started. `None` for any step the rotator cannot move.
-    attempt_login: Option<String>,
+    /// The login the attempt now running was launched on, and which file
+    /// named it, read before the attempt started. `None` for any step the
+    /// rotator cannot move. The source is kept so the reading after the
+    /// limit is compared with this one only when both came from the same
+    /// file (`changed`).
+    attempt_login: Option<(Source, String)>,
     clock: Clock,
     step_start: i64,
     step_timeout: Option<u64>,
@@ -155,8 +205,10 @@ pub(crate) struct Waiter {
     /// Whether a rotator is running that could move another login into
     /// `$HOME/.claude` (#2731), called only when a spend limit is seen.
     home_rotator: Box<dyn Fn() -> bool>,
-    /// When this step's wait began, on the wait's clock, if a capacity wait.
-    capacity_start: Option<i64>,
+    /// Set when the retry after this step's wait may run under another
+    /// login. Written once, when the wait returns; `None` leaves the retry
+    /// on the inherited profile.
+    retry_move: Option<RetryMove>,
 }
 
 impl Waiter {
@@ -190,7 +242,7 @@ impl Waiter {
             prompt_in_args,
             home_takeover,
             home_rotator,
-            capacity_start: None,
+            retry_move: None,
         }
     }
 
@@ -249,9 +301,11 @@ impl Waiter {
         (self.home_takeover)()
     }
 
-    /// When this step's capacity wait began, on the wait's clock.
-    pub(crate) fn capacity_start(&self) -> Option<i64> {
-        self.capacity_start
+    /// Whether the retry may run under another login, and what it costs if
+    /// none has room; `None` keeps the inherited profile. Cleared as each
+    /// wait is planned, so it only ever describes the wait that just ran.
+    pub(crate) fn retry_move(&self) -> Option<RetryMove> {
+        self.retry_move
     }
 
     /// The wait's clock, for reading a reset relative to it.
@@ -267,10 +321,18 @@ impl Waiter {
 
     /// After attempt `n` hit its usage limit and no auto-switch rerun is
     /// left: pass the result up, or wait once and ask for a retry. `inherited`
-    /// is the inherited profile's own limit: the retry runs under that
-    /// profile, so other profiles' limits do not time or cancel the wait.
-    /// `probe(start, now)`, both on the wait's clock, ends a capacity wait:
-    /// a reading taken after `start` shows another login has capacity.
+    /// is the inherited profile's own limit, and it times the wait: other
+    /// profiles' limits neither lengthen nor cancel it.
+    ///
+    /// `probe(start, now)`, both on the wait's clock, ends a wait of any
+    /// kind, reset as well as capacity: a reading taken after `start` shows
+    /// that another login has room (#2694). The retry then runs under that
+    /// login, so a step pinned to a profile may change account part way
+    /// through a run; auto-switch off, or the other profiles in the
+    /// auto-switch exclude list, holds it on its own login. Whether the step
+    /// may move at all is `probe`'s own decision and belongs nowhere else:
+    /// it is false for a step with no auto-switch candidate, which is how a
+    /// step on `$HOME/.claude` or under an explicit login stays put.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
@@ -295,7 +357,7 @@ impl Waiter {
         // The mark is the login the failed attempt ran on, read before it
         // was launched. A login this step has already waited on, or a spent
         // budget after an earlier wait, refuses this one (#2731).
-        let mark = self.attempt_login.clone();
+        let mark = self.attempt_login.as_ref().map(|(_, n)| n.clone());
         let max = settings.max_wait_secs;
         if self.marks.refuses(&mark, max) {
             log(&Event::Skipped(Skip::AlreadyWaited));
@@ -329,7 +391,13 @@ impl Waiter {
         self.marks.record(mark.clone());
         let account = mark.as_deref();
         let capacity = p.kind == PlanKind::Capacity;
-        self.capacity_start = capacity.then_some(now);
+        // Each wait chooses its own retry login and only its own. The
+        // clear is here, above the retry-before-wait return below, so a
+        // value an earlier wait left behind can never pick the login a
+        // later retry runs on: its freshness floor is older and would admit
+        // readings taken before this limit was hit (issue #2731). It is
+        // written again only by a wait that actually ran.
+        self.retry_move = None;
         emit(
             &Event::Start {
                 harness,
@@ -345,7 +413,7 @@ impl Waiter {
         // nothing left to wait for. The comparison fails closed, so a ledger
         // the rotator is mid-replace reads as no change and the step waits
         // as it otherwise would.
-        if changed(&mark, self.watch.login()) {
+        if changed(&self.attempt_login, self.watch.login()) {
             emit(&Event::End(End::LoginChanged), account);
             log(&Event::Resume {
                 attempt: n.saturating_add(1),
@@ -366,6 +434,14 @@ impl Waiter {
         // Real time, not the test clock: auto-drive compares it with its own
         // wall time (issue #1743).
         ledger::record(waited_from.elapsed());
+        // The retry may move to another login after a capacity wait however
+        // it ended (#1801), and after a wait of any kind that ended because
+        // another login has room (#2694).
+        let room_was_seen = end == End::OtherCapacity;
+        self.retry_move = (capacity || room_was_seen).then_some(RetryMove {
+            start: now,
+            room_was_seen,
+        });
         // The budget is spent on the wait's own clock, the one that planned
         // the deadline.
         self.marks
@@ -405,12 +481,22 @@ impl Waiter {
 }
 
 /// Whether the login changed between `was`, read before the attempt, and
-/// `now`, read after its limit. Fails closed: a change counts only when both
-/// readings name a login and the names differ, so unreadable evidence costs
-/// at most the wait the step was going to make, never an attempt burnt on a
-/// login that is still at its limit (issue #2731).
-fn changed(was: &Option<String>, now: Option<String>) -> bool {
-    matches!((was, &now), (Some(a), Some(b)) if a != b)
+/// `now`, read after its limit (issue #2731).
+///
+/// Fails closed. A change counts only when both readings name a login, both
+/// came from the same [`Source`], and the names differ. The cost of the two
+/// answers is not symmetric: a missed change costs the step the wait it was
+/// going to make anyway, and the rotator's next swap is still seen, while a
+/// false change spends the step's one retry on a login that is still at its
+/// limit and ends the step. So the three ways the question cannot be
+/// answered all read as no change: either reading failed, or they came from
+/// different files and are answers to different questions, or the names
+/// agree.
+fn changed(was: &Option<(Source, String)>, now: Option<(Source, String)>) -> bool {
+    matches!(
+        (was, &now),
+        (Some((sa, a)), Some((sb, b))) if sa == sb && a != b
+    )
 }
 
 /// Writes `e` to the step's stderr and, for a wait's `start` and `end`, to

@@ -16,7 +16,15 @@
 //! - AC3: a swap to a login that is also limited starts a second wait, keyed
 //!   to that login, and a login already waited on does not;
 //! - AC5, AC6: the wait's `start` and `end` lines reach the run's recipe log,
-//!   and a run without one behaves exactly as it did;
+//!   and a run without one behaves exactly as it did. The `start` line's
+//!   `reason` names the limit that started the wait, so `spend_limit` for an
+//!   organisation spend limit and `usage_limit` for the rest;
+//! - a rotator cycle that swaps nothing ends no login-change wait: a cycle
+//!   that finds room on the live login and stays put is the ordinary cycle
+//!   on a host whose credit has run out, and it lifts nothing;
+//! - a shared `$HOME/.claude` spend limit waits for the swap where a
+//!   profiled one still skips, which is the second half of #2717's
+//!   `issue_2694_a_spend_limit_still_skips_with_room_on_another_login`;
 //! - AC7: an explicit `CLAUDE_CONFIG_DIR` step and an inherited-profile step
 //!   are untouched by a `~/.claude` login change.
 //!
@@ -32,7 +40,8 @@ use crate::issue_1618_fixture::{
 };
 use crate::issue_1618_wait_profiles::with_profiles;
 use crate::issue_1801_capacity_wait::{
-    OLD_CYCLE, assert_no_account_detail, real_clock, real_now, rotator_running, x_is_live,
+    OLD_CYCLE, assert_no_account_detail, real_clock, real_now, rotator_running, write_cycle,
+    x_is_live,
 };
 use crate::support::wait::{CEILING, wait_until};
 use std::fs;
@@ -121,6 +130,29 @@ fn home_step(f: &Fixture) -> Command {
         .env("LEDGER_DIR", rotate_dir(f))
         .env("OLD_AT", OLD_CYCLE.to_string());
     c
+}
+
+/// Auto-switch readings in which X is spent and Y has room, written as the
+/// prototype rotator writes them. The same shape #1801 and #2717 use: the
+/// readings a capacity probe would accept. Kept here rather than shared with
+/// `issue_1801_capacity_wait.rs` because the question this file asks of them
+/// is the opposite one, that they end nothing.
+fn readings_with_room(profiles: &Path, at: i64) {
+    let dir = profiles.join(".auto-switch.d");
+    fs::create_dir_all(&dir).unwrap();
+    let reading = |pct: f64| {
+        serde_json::json!({
+            "five_hour": {"used_percentage": pct, "resets_at": at + 3600},
+            "seven_day": {"used_percentage": 5.0, "resets_at": at + 86_400},
+            "observed_at": at,
+            "source": "statusline",
+        })
+    };
+    let body = serde_json::json!({
+        "version": 1,
+        "accounts": {"X": reading(100.0), "Y": reading(10.0)},
+    });
+    private_file(&dir.join("usage.json"), &body.to_string());
 }
 
 /// The recipe log a detached run would have: private, regular, empty.
@@ -334,7 +366,7 @@ fn ac2_a_spend_limit_on_a_home_step_waits_for_the_login_to_change() {
     assert_eq!(
         events(&out),
         [
-            "start reason=usage_limit wait=login_change harness=claude reset=none \
+            "start reason=spend_limit wait=login_change harness=claude reset=none \
              until=2026-10-18 14:00:00 -07:00 bound=max_wait",
             "end reason=login changed",
             "resume attempt=2",
@@ -358,7 +390,7 @@ fn a_spend_limit_that_nothing_lifts_ends_the_step_naming_it() {
     assert_eq!(
         events(&out),
         [
-            "start reason=usage_limit wait=login_change harness=claude reset=none \
+            "start reason=spend_limit wait=login_change harness=claude reset=none \
              until=2026-10-18 08:00:00 -07:00 bound=max_wait",
             "end reason=max reached",
             FAILED_SPEND,
@@ -390,6 +422,105 @@ fn a_step_timeout_ends_a_login_change_wait_with_the_closing_line() {
             "end reason=step timeout",
             "failed reason=step_timeout: usage limit not lifted",
         ]
+    );
+}
+
+/// Issue #2717's `issue_2694_a_spend_limit_still_skips_with_room_on_another_login`
+/// is two cases wearing one name. On a step with an inherited profile the
+/// skip is still right: another login of the same organisation would not
+/// lift an organisation spend limit, so there is nowhere to go and nothing
+/// to wait for, and that half keeps the old name in
+/// `issue_1801_capacity_wait.rs`. On a shared `$HOME/.claude` step with the
+/// rotator running, the login that arrives next may belong to another
+/// organisation, so the same message now starts a login-change wait. This is
+/// the second half.
+///
+/// The readings in front of it show another login with room throughout, so
+/// this also proves the capacity reading does not end the wait: the swap
+/// does.
+#[test]
+fn issue_2731_a_shared_home_spend_limit_waits_for_the_swap_instead() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    readings_with_room(&f.profiles, TEST_NOW + 60);
+    let mut c = home_step(&f);
+    c.env(TOGGLE_ENV, "1")
+        .env("LIMIT_MESSAGE", SPEND_TEXT)
+        .env("SWAP_ON_CALL", "1:Y")
+        .env("LIMIT_CALLS", "1");
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(
+        f.count("0"),
+        2,
+        "the wait ends on the swap and the step retries once: {}",
+        describe(&out)
+    );
+    let ev = events(&out);
+    assert!(
+        ev[0].contains(" wait=login_change "),
+        "a spend limit on a shared login waits for the swap: {ev:?}"
+    );
+    assert_eq!(
+        ev[1..],
+        ["end reason=login changed", "resume attempt=2"],
+        "the swap ends it, and the reading that showed room does not: {ev:?}"
+    );
+    assert!(
+        !events(&out).iter().any(|l| l.contains("login capacity")),
+        "no capacity reading may end a login-change wait: {ev:?}"
+    );
+    assert_eq!(
+        f.call("0", 2)["CLAUDE_CONFIG_DIR"],
+        "<unset>",
+        "the retry runs on the login the rotator put in ~/.claude, not on \
+         the one a reading picked"
+    );
+    assert_no_account_detail(&f, &out);
+}
+
+/// The deputy's point 4. A rotator cycle is not a swap. A cycle that looks
+/// at the live login, finds its five-hour window has room and stays put
+/// records fresh capacity, and on a host whose organisation credit has run
+/// out that is the ordinary outcome of every cycle: the session windows look
+/// healthy because no work is being done. Ending the wait there sends the
+/// step straight back onto the same spent login.
+#[test]
+fn a_fresh_rotator_cycle_without_a_swap_does_not_end_a_spend_limit_wait() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_MESSAGE", SPEND_TEXT).env(MAX_WAIT_ENV, "300");
+    real_clock(&mut c);
+    // 300 s of wait at this scale is half a minute of real time, and the
+    // cycle below lands a little after the wait's baseline settles.
+    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "10");
+    let profiles = f.profiles.clone();
+    let out = run_during_wait(&f, &mut c, move || {
+        // A fresh cycle, measured now, naming the same login live: the
+        // rotator looked and stayed.
+        write_cycle(&profiles, "X", real_now());
+    });
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 1, "no retry on the login that is still spent");
+    let ev = events(&out);
+    assert!(ev[0].contains(" wait=login_change "), "{ev:?}");
+    assert_eq!(
+        ev[1..],
+        ["end reason=max reached", FAILED_SPEND],
+        "the wait ran to its own deadline: a cycle that swapped nothing \
+         lifted nothing: {ev:?}"
+    );
+    assert!(
+        !ev.iter().any(|l| l.contains("rotator capacity")),
+        "fresh capacity on the live login is not a login change: {ev:?}"
+    );
+    assert_eq!(
+        live_login(&f).as_deref(),
+        Some("X"),
+        "the test's own premise: the live login never changed"
     );
 }
 
@@ -577,11 +708,12 @@ fn a_login_change_wait_names_its_kind_and_its_account_in_the_log() {
     assert_eq!(
         log_lines(&log),
         [
-            "start reason=usage_limit wait=login_change account=X reset=none \
+            "start reason=spend_limit wait=login_change account=X reset=none \
              until=2026-10-18 08:00:00 -07:00 bound=max_wait",
             "end reason=max reached",
         ],
-        "the closing line's reason=spend_limit never reaches this sink"
+        "the start line names the limit, so a reader grepping the recipe \
+         log for a spend limit finds the wait as well as the failure"
     );
 }
 

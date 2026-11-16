@@ -8,6 +8,15 @@
 //! `AMPLIHACK_RECIPE_LOG`, and each wait appends its `start` and `end` lines
 //! there as well.
 //!
+//! The log is a report and never evidence. Anything the runner's child
+//! writes to its own output reaches the same file, so a line in a wait's
+//! shape proves nothing about a wait: nothing in the control path reads this
+//! file back. Which waits a step may still make comes from `marks`, which
+//! login it is on from the rotator's own files through `fingerprint`, and
+//! which login a retry runs on from `RetryMove`. Both writers append whole
+//! lines (`recipe::detach::copy_output` holds an unterminated tail), so a
+//! wait's line always stands on a line of its own.
+//!
 //! The write is best effort and silent. The stderr lines already carry the
 //! information, so a log that cannot be appended to never changes what the
 //! step does. Nothing is ever written to `AMPLIHACK_RECIPE_LOG_JSONL`:
