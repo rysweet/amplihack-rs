@@ -2110,9 +2110,9 @@ enum RunnerWait {
 /// and whether the attempt has been cancelled. Production reads the system
 /// clock and is never cancelled. A lib test that runs the executor under
 /// `test_runner::RunnerWorker` gets that worker's control instead: its
-/// (optionally virtual) clock and its cancel flag. Both runner paths, the
-/// plain child and the observed one, take it from here, so neither can wait
-/// or tear down on a clock the test does not control.
+/// (optionally virtual) clock and its cancel flag. The wait and every
+/// teardown take it from here, so neither runs on a clock the test does not
+/// control.
 pub(super) struct RunnerClock {
     #[cfg(all(test, unix))]
     control: Option<Arc<super::test_runner::Control>>,
@@ -2145,27 +2145,33 @@ impl RunnerClock {
     }
 }
 
-/// Polls `try_wait` until the runner exits, a stop signal arrives, or
-/// `timeout` passes on `runner`'s clock. Both runner paths wait here.
+/// Polls the runner until it exits, a stop signal arrives, or `timeout`
+/// passes on `runner`'s clock.
 ///
 /// Each poll asks `try_wait` first, so a runner that has exited is reported
 /// as `Exited` even when the run was cancelled in the meantime. A cancelled
-/// run whose runner `try_wait` has just found still running calls
-/// `on_cancel` and is reported as a timeout, so the usual teardown ends it.
-fn wait_for_runner(
+/// run whose runner `try_wait` has just found still running has its process
+/// group killed and is reported as a timeout, so the usual teardown ends it.
+fn wait_for_recipe_runner(
+    child: &mut Child,
     timeout: Duration,
     runner: &RunnerClock,
-    mut try_wait: impl FnMut() -> std::io::Result<Option<ExitStatus>>,
-    on_cancel: impl FnOnce(),
 ) -> std::io::Result<RunnerWait> {
     let clock = runner.clock();
     let started = clock.now();
     loop {
-        if let Some(status) = try_wait()? {
+        if let Some(status) = child.try_wait()? {
             return Ok(RunnerWait::Exited(status));
         }
         if runner.cancelled() {
-            on_cancel();
+            // SAFETY: `try_wait` has just found the child still running, and
+            // only this executor waits on it, so it is still unreaped and its
+            // pid, the id of the group it leads, is still this runner's.
+            // Cancel only that group before the test worker is joined.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL)
+            };
             return Ok(RunnerWait::TimedOut);
         }
         if let Some(signal) = super::stop_signal::pending() {
@@ -2180,34 +2186,6 @@ fn wait_for_runner(
         };
         clock.sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }
-}
-
-/// Waits for a runner spawned as a plain child: a dry run on Linux, and
-/// every run elsewhere.
-fn wait_for_recipe_runner(
-    child: &mut Child,
-    timeout: Duration,
-    runner: &RunnerClock,
-) -> std::io::Result<RunnerWait> {
-    let pid = child.id();
-    wait_for_runner(
-        timeout,
-        runner,
-        || child.try_wait(),
-        || {
-            // SAFETY: `try_wait` has just found the child still running, and
-            // only this executor waits on a plain child, so it is still
-            // unreaped and its pid, the id of the group it leads, is still
-            // this runner's. Cancel only that group before the test worker
-            // is joined.
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(-(pid as libc::pid_t), libc::SIGKILL)
-            };
-            #[cfg(not(unix))]
-            let _ = pid;
-        },
-    )
 }
 
 fn terminate_recipe_runner(child: &mut Child, runner: &RunnerClock) -> Result<()> {

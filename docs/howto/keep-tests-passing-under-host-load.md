@@ -985,8 +985,8 @@ The executor reads that control through one value, `RunnerClock` in
 `run/execute.rs`, taken once per attempt. The runner is spawned as a plain
 child on every platform, and every wait and grace reads that value:
 
-- The wait. `wait_for_recipe_runner` polls in `wait_for_runner`, so the
-  timeout cannot be measured on a clock the test does not control.
+- The wait. `wait_for_recipe_runner` polls on that clock, so the timeout
+  cannot be measured on a clock the test does not control.
 - Every teardown grace. `terminate_recipe_runner` waits on it in
   `wait_until_exited`, and so does `reap_recipe_runner_group`, which sweeps
   the group of a runner that has already exited. Every tree sweep waits on

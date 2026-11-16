@@ -19,7 +19,6 @@
 //! use it are wired there too.
 
 #![cfg(unix)]
-#![allow(dead_code)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,7 +26,7 @@ use std::process::{Command, Output};
 
 /// The stub runner. `--capabilities` answers the launch-time probe; otherwise
 /// it enters the runner's `-C` directory and records what it finds there.
-pub(crate) const STUB_RUNNER: &str = r#"#!/bin/sh
+const STUB_RUNNER: &str = r#"#!/bin/sh
 set -eu
 if [ "${1:-}" = --capabilities ]; then
   printf '%s\n' '{"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]}'
@@ -112,8 +111,8 @@ pub(crate) struct Fixture {
     pub(crate) repo: PathBuf,
     /// The bare repository `repo` pushes to, and a local remote for #2737.
     pub(crate) origin: PathBuf,
-    pub(crate) home: PathBuf,
-    pub(crate) runner: PathBuf,
+    home: PathBuf,
+    runner: PathBuf,
 }
 
 impl Fixture {
@@ -178,7 +177,7 @@ impl Fixture {
 
     /// A disposable home and no global or system Git configuration; the
     /// test's own `PATH`.
-    pub(crate) fn environment(&self, c: &mut Command) {
+    fn environment(&self, c: &mut Command) {
         c.env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &self.home)
@@ -197,7 +196,7 @@ impl Fixture {
         self.git_in(&self.repo, args)
     }
 
-    pub(crate) fn git_in(&self, dir: &Path, args: &[&str]) -> Vec<u8> {
+    fn git_in(&self, dir: &Path, args: &[&str]) -> Vec<u8> {
         let mut c = amplihack_git::command();
         self.environment(&mut c);
         let out = c.current_dir(dir).args(args).output().unwrap();
@@ -237,10 +236,6 @@ impl Fixture {
 
     pub(crate) fn command(&self, label: &str) -> Command {
         self.command_in(label, &self.repo)
-    }
-
-    pub(crate) fn run(&self, label: &str) -> Output {
-        self.command(label).output().unwrap()
     }
 
     pub(crate) fn observed(&self, label: &str, name: &str) -> Vec<u8> {
