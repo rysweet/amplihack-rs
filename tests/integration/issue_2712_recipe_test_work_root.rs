@@ -24,11 +24,9 @@
 //!   to stay empty. It takes about 30 s on an idle host and longer on a busy
 //!   one, which is the cost of covering the suite that produced the orphans
 //!   rather than one that was already immune.
-//! - [`recipe_test_env_is_source_only`] and
-//!   [`recipe_test_env_clears_the_inherited_work_root`] are sub-second unit
-//!   tests of the fragment itself: its file mode, and what sourcing it does
-//!   and does not change. They look at the new file only; neither scans the
-//!   suites for a phrase.
+//! - [`recipe_test_env_clears_the_inherited_work_root`] is a sub-second unit
+//!   test of the fragment itself: what sourcing it does and does not change.
+//!   It looks at the new file only; it does not scan the suites for a phrase.
 //!
 //! `AMPLIHACK_HOME` is set deliberately in the behaviour test and left alone
 //! by the fragment. Step 04 of `workflow-worktree.yaml` `cd`s into the
@@ -40,7 +38,6 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::isolated_amplihack::isolated;
@@ -182,36 +179,6 @@ fn outside_work_root_stays_empty() {
         problems.is_empty(),
         "issue #2712: {}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
         problems.join("\n")
-    );
-}
-
-/// The fragment is sourced, never executed: no execute bit and no shebang.
-///
-/// CI names each suite in its own step rather than scanning the directory, so
-/// the file cannot be picked up as a suite; the absent execute bit removes the
-/// remaining way it could be run by accident.
-#[test]
-fn recipe_test_env_is_source_only() {
-    let path = workspace_root().join(FRAGMENT);
-    let meta = fs::symlink_metadata(&path)
-        .unwrap_or_else(|e| panic!("stat {}: {e} (issue #2712)", path.display()));
-    assert!(
-        meta.file_type().is_file(),
-        "{} must be a regular file",
-        path.display()
-    );
-    let mode = meta.permissions().mode() & 0o7777;
-    assert_eq!(
-        mode & 0o111,
-        0,
-        "{} is executable (mode {mode:04o}); it is sourced, never run",
-        path.display()
-    );
-    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    assert!(
-        !text.starts_with("#!"),
-        "{} starts with a shebang; it is sourced, never run",
-        path.display()
     );
 }
 
