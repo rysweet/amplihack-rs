@@ -7,15 +7,21 @@
 //!
 //! ```ignore
 //! struct Staged { dir: PathBuf, files: Vec<PathBuf> }
+//! struct Outcome { staged: Option<Staged>, notices: Vec<Notice> }
 //! fn stage(
 //!     run_dir: &Path,
 //!     recipe_dirs: &[PathBuf],
 //!     top_level_recipe: &Path,
 //!     overrides: &BTreeMap<String, Tier>,
-//! ) -> Result<Option<Staged>, String>;
+//! ) -> Result<Outcome, String>;
 //! fn validate_step_id(raw: &str) -> bool;
 //! const RECIPE_DIR_ENV: &str = "AMPLIHACK_PACKAGE_RECIPE_DIR";
 //! ```
+//!
+//! Staging has no output channel of its own: it hands its diagnostics back
+//! and `execute.rs` renders them, once per run. A step id nothing matches is
+//! the likeliest operator error in this feature and the one with no other
+//! symptom, so it is a notice rather than a silence.
 //!
 //! Why the override is applied recipe-side rather than at launch: the step id
 //! never reaches the child process. The recipe runner sets no step-id
@@ -26,7 +32,8 @@
 //!
 //! Homes and recipe directories here are tempfile directories only.
 
-use super::step_tiers::{RECIPE_DIR_ENV, Staged, stage, validate_step_id};
+use super::step_tiers::{Outcome, RECIPE_DIR_ENV, Staged, stage, validate_step_id};
+use crate::commands::launch::model_tiers::notice::Notice;
 use crate::commands::launch::model_tiers::table::Tier;
 use std::collections::BTreeMap;
 use std::fs;
@@ -75,7 +82,7 @@ impl Fixture {
         self.recipes.join("sample.yaml")
     }
 
-    fn stage(&self, overrides: &[(&str, Tier)]) -> Result<Option<Staged>, String> {
+    fn stage(&self, overrides: &[(&str, Tier)]) -> Result<Outcome, String> {
         let map: BTreeMap<String, Tier> = overrides
             .iter()
             .map(|(id, tier)| ((*id).to_string(), *tier))
@@ -86,6 +93,17 @@ impl Fixture {
             &self.recipe(),
             &map,
         )
+    }
+
+    /// The staged copies of an override that is expected to match a step.
+    fn staged(&self, overrides: &[(&str, Tier)]) -> Staged {
+        let outcome = self.stage(overrides).expect("stage");
+        assert!(
+            outcome.notices.is_empty(),
+            "an override that matches a step reports nothing: {:?}",
+            outcome.notices
+        );
+        outcome.staged.expect("one file is staged")
     }
 }
 
@@ -114,9 +132,14 @@ fn model_of(text: &str, step_id: &str) -> Option<String> {
 #[test]
 fn nothing_is_staged_when_no_step_tier_is_configured() {
     let f = Fixture::new();
-    let staged = f.stage(&[]).expect("no overrides is not an error");
+    let outcome = f.stage(&[]).expect("no overrides is not an error");
     assert!(
-        staged.is_none(),
+        outcome.notices.is_empty(),
+        "nothing configured is nothing to say: {:?}",
+        outcome.notices
+    );
+    assert!(
+        outcome.staged.is_none(),
         "with nothing configured, nothing is staged, no environment variable is set, \
          and the run behaves byte for byte as it did before"
     );
@@ -142,10 +165,7 @@ fn the_environment_variable_is_the_runners_first_search_directory() {
 #[test]
 fn an_existing_model_line_is_rewritten() {
     let f = Fixture::new();
-    let staged = f
-        .stage(&[("step-08-implement", Tier::Standard)])
-        .expect("stage")
-        .expect("one file is staged");
+    let staged = f.staged(&[("step-08-implement", Tier::Standard)]);
     let text = staged_text(&staged, "sample.yaml");
     assert_eq!(
         model_of(&text, "step-08-implement").as_deref(),
@@ -156,10 +176,7 @@ fn an_existing_model_line_is_rewritten() {
 #[test]
 fn a_step_with_no_model_line_gains_one() {
     let f = Fixture::new();
-    let staged = f
-        .stage(&[("step-20-final-cleanup", Tier::Fast)])
-        .expect("stage")
-        .expect("one file is staged");
+    let staged = f.staged(&[("step-20-final-cleanup", Tier::Fast)]);
     let text = staged_text(&staged, "sample.yaml");
     assert_eq!(
         model_of(&text, "step-20-final-cleanup").as_deref(),
@@ -170,10 +187,7 @@ fn a_step_with_no_model_line_gains_one() {
 #[test]
 fn only_the_named_step_is_touched() {
     let f = Fixture::new();
-    let staged = f
-        .stage(&[("step-20-final-cleanup", Tier::Fast)])
-        .expect("stage")
-        .expect("staged");
+    let staged = f.staged(&[("step-20-final-cleanup", Tier::Fast)]);
     let text = staged_text(&staged, "sample.yaml");
     assert_eq!(
         model_of(&text, "step-08-implement").as_deref(),
@@ -196,10 +210,7 @@ fn only_one_of_three_literal_words_is_ever_written() {
     // reach a prompt or a shell body.
     let f = Fixture::new();
     for tier in [Tier::Fast, Tier::Standard, Tier::Strong] {
-        let staged = f
-            .stage(&[("step-08-implement", tier)])
-            .expect("stage")
-            .expect("staged");
+        let staged = f.staged(&[("step-08-implement", tier)]);
         let text = staged_text(&staged, "sample.yaml");
         assert_eq!(
             model_of(&text, "step-08-implement").as_deref(),
@@ -209,18 +220,51 @@ fn only_one_of_three_literal_words_is_ever_written() {
 }
 
 #[test]
-fn a_step_id_no_recipe_contains_stages_nothing_for_that_step() {
+fn a_step_id_no_recipe_contains_is_reported_and_stages_nothing() {
+    // The likeliest operator error in this feature, and the one with no
+    // other symptom: the run simply proceeds on the tiers the recipes
+    // declare. Staging nothing is not a report, so there is a line.
     let f = Fixture::new();
-    let staged = f
+    let outcome = f
         .stage(&[("step-99-polish", Tier::Fast)])
         .expect("an unknown step id is reported, not an error");
-    match staged {
-        None => {}
-        Some(staged) => assert!(
-            staged.files.is_empty(),
-            "only files that contain a named step id are staged"
-        ),
-    }
+    assert_eq!(
+        outcome.notices,
+        vec![Notice::StepTierUnmatched {
+            step: "step-99-polish".to_string()
+        }],
+        "an id no recipe declares is named back to the operator"
+    );
+    assert!(
+        outcome.staged.is_none(),
+        "only files that contain a named step id are staged"
+    );
+}
+
+#[test]
+fn a_step_id_that_matches_is_not_reported_as_unmatched() {
+    let f = Fixture::new();
+    let outcome = f
+        .stage(&[
+            ("step-08-implement", Tier::Fast),
+            ("step-99-polish", Tier::Fast),
+        ])
+        .expect("stage");
+    assert_eq!(
+        outcome.notices,
+        vec![Notice::StepTierUnmatched {
+            step: "step-99-polish".to_string()
+        }],
+        "only the id nothing declared is reported: {:?}",
+        outcome.notices
+    );
+    let staged = outcome
+        .staged
+        .expect("the matching id still stages its recipe");
+    assert_eq!(
+        model_of(&staged_text(&staged, "sample.yaml"), "step-08-implement").as_deref(),
+        Some("fast")
+    );
 }
 
 #[test]
@@ -231,10 +275,7 @@ fn only_files_containing_a_named_step_are_copied() {
         "name: \"other\"\nsteps:\n  - id: \"x\"\n    type: \"bash\"\n    command: \"true\"\n",
     )
     .unwrap();
-    let staged = f
-        .stage(&[("step-08-implement", Tier::Fast)])
-        .expect("stage")
-        .expect("staged");
+    let staged = f.staged(&[("step-08-implement", Tier::Fast)]);
     assert!(
         !staged.dir.join("other.yaml").exists(),
         "a recipe with no named step is left to be found in its own directory"
@@ -255,10 +296,7 @@ fn a_recipe_that_only_mentions_a_named_step_is_not_copied() {
          Read what step-08-implement produced.\n",
     )
     .unwrap();
-    let staged = f
-        .stage(&[("step-08-implement", Tier::Fast)])
-        .expect("stage")
-        .expect("staged");
+    let staged = f.staged(&[("step-08-implement", Tier::Fast)]);
     assert!(
         !staged.dir.join("mentions.yaml").exists(),
         "naming a step in a prompt does not declare it, so nothing is patched"
@@ -306,30 +344,47 @@ fn step_ids_amplihack_rejects() {
 }
 
 #[test]
-fn a_rejected_step_id_stages_nothing_and_is_not_an_error() {
+fn a_rejected_step_id_is_reported_and_stages_nothing() {
     let f = Fixture::new();
     let mut map: BTreeMap<String, Tier> = BTreeMap::new();
     map.insert("../../escape".to_string(), Tier::Fast);
-    let staged = stage(
+    let outcome = stage(
         &f.run_dir,
         std::slice::from_ref(&f.recipes),
         &f.recipe(),
         &map,
     )
     .expect("a bad step id is reported, not fatal");
+    assert_eq!(
+        outcome.notices,
+        vec![Notice::BadStepId {
+            step: "../../escape".to_string()
+        }],
+        "a rejected id is named back to the operator rather than dropped in silence"
+    );
     assert!(
-        staged.is_none() || staged.unwrap().files.is_empty(),
+        outcome.staged.is_none(),
         "a step id that is not an identifier never reaches a path join"
+    );
+}
+
+#[test]
+fn a_rejected_step_id_is_escaped_where_it_is_printed() {
+    // The id comes from an operator's file and the line lands in a terminal.
+    let line = Notice::BadStepId {
+        step: "a\u{1b}[31mb".to_string(),
+    }
+    .render();
+    assert!(
+        !line.contains('\u{1b}') && line.contains("\\u{1b}"),
+        "a control character is escaped, not printed: {line:?}"
     );
 }
 
 #[test]
 fn staged_file_names_come_only_from_the_discovered_recipe() {
     let f = Fixture::new();
-    let staged = f
-        .stage(&[("step-08-implement", Tier::Fast)])
-        .expect("stage")
-        .expect("staged");
+    let staged = f.staged(&[("step-08-implement", Tier::Fast)]);
     for file in &staged.files {
         assert_eq!(
             file.parent(),
@@ -354,10 +409,7 @@ fn staged_file_names_come_only_from_the_discovered_recipe() {
 fn the_staging_directory_and_its_files_are_private() {
     use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new();
-    let staged = f
-        .stage(&[("step-08-implement", Tier::Fast)])
-        .expect("stage")
-        .expect("staged");
+    let staged = f.staged(&[("step-08-implement", Tier::Fast)]);
     let dir_mode = fs::metadata(&staged.dir).unwrap().permissions().mode() & 0o777;
     assert_eq!(dir_mode, 0o700, "directory mode was {dir_mode:o}");
     for file in &staged.files {
@@ -369,10 +421,7 @@ fn the_staging_directory_and_its_files_are_private() {
 #[test]
 fn the_staging_directory_lives_under_the_run_directory() {
     let f = Fixture::new();
-    let staged = f
-        .stage(&[("step-08-implement", Tier::Fast)])
-        .expect("stage")
-        .expect("staged");
+    let staged = f.staged(&[("step-08-implement", Tier::Fast)]);
     assert!(
         staged.dir.starts_with(&f.run_dir),
         "the patched copies belong to the run that made them: {:?}",
@@ -384,9 +433,7 @@ fn the_staging_directory_lives_under_the_run_directory() {
 fn the_original_recipe_file_is_never_modified() {
     let f = Fixture::new();
     let before = fs::read_to_string(f.recipe()).unwrap();
-    let _ = f
-        .stage(&[("step-08-implement", Tier::Fast)])
-        .expect("stage");
+    let _ = f.staged(&[("step-08-implement", Tier::Fast)]);
     assert_eq!(
         fs::read_to_string(f.recipe()).unwrap(),
         before,
@@ -395,15 +442,22 @@ fn the_original_recipe_file_is_never_modified() {
 }
 
 #[test]
-fn a_recipe_directory_that_cannot_be_read_is_reported_rather_than_fatal() {
+fn a_recipe_directory_that_cannot_be_read_is_skipped_rather_than_fatal() {
+    // Skipped without a line of its own: the runner would have skipped it
+    // too, so a directory amplihack cannot read is not news. The
+    // operator-visible consequence — a configured step id that now matches
+    // nothing — is what gets reported, and this fixture's top-level recipe
+    // still declares the step, so there is nothing to say here at all.
     let f = Fixture::new();
     let missing: PathBuf = f.run_dir.join("no-such-recipe-dir");
     let mut map: BTreeMap<String, Tier> = BTreeMap::new();
     map.insert("step-08-implement".to_string(), Tier::Fast);
-    let result = stage(&f.run_dir, &[missing], &f.recipe(), &map);
+    let outcome = stage(&f.run_dir, &[missing], &f.recipe(), &map)
+        .expect("a missing search directory must not stop a run of 100 agent steps");
+    assert!(outcome.notices.is_empty(), "{:?}", outcome.notices);
     assert!(
-        result.is_ok(),
-        "a missing search directory must not stop a run of 100 agent steps: {result:?}"
+        outcome.staged.is_some(),
+        "the recipe named on the command line is reached whatever the search path does"
     );
 }
 
@@ -421,6 +475,7 @@ fn the_top_level_recipe_is_staged_even_when_it_is_outside_the_search_directories
     map.insert("step-08-implement".to_string(), Tier::Fast);
     let staged = stage(&f.run_dir, &[], &recipe, &map)
         .expect("stage")
+        .staged
         .expect("the recipe named on the command line is always reachable");
     let text = staged_text(&staged, "named.yaml");
     assert_eq!(

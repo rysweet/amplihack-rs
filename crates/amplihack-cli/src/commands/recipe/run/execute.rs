@@ -2756,13 +2756,25 @@ fn stage_step_tier_overrides(
     search_dirs: &[PathBuf],
     recipe: &Path,
 ) -> Option<super::step_tiers::Staged> {
+    let (overrides, file_notices) = crate::commands::launch::model_tiers::step_tier_overrides();
+    // Once per run, before anything is staged: this process is the only
+    // reader of `[step_tiers]`, so a line it does not print is a line nobody
+    // sees. The file's own diagnostics come first — they explain why a
+    // mapping is not what the operator wrote.
+    for notice in file_notices {
+        eprintln!("{}", notice.render());
+    }
     let run_dir = run_dir?;
-    let overrides = crate::commands::launch::model_tiers::step_tier_overrides();
     if overrides.is_empty() {
         return None;
     }
     match super::step_tiers::stage(run_dir, search_dirs, recipe, overrides) {
-        Ok(staged) => staged,
+        Ok(outcome) => {
+            for notice in &outcome.notices {
+                eprintln!("{}", notice.render());
+            }
+            outcome.staged
+        }
         Err(reason) => {
             eprintln!(
                 "amplihack: model tiers: the per-step tier override could not be staged \

@@ -489,6 +489,11 @@ mod issue_2552_build_preflight_decision;
 mod issue_1619_tier_argv_safety;
 #[path = "issue_1619_tier_propagation.rs"]
 mod issue_1619_tier_propagation;
+// `issue_1619_step_tier_diagnostics` pins that what `[step_tiers]` could not
+// act on reaches the operator: the recipe-run process performs no launch of
+// its own, so a line it does not print is a line nobody sees.
+#[path = "issue_1619_step_tier_diagnostics.rs"]
+mod issue_1619_step_tier_diagnostics;
 
 // Issue #1619: a step whose shell body was extracted into
 // amplifier-bundle/tools/ for the brick budget still has to be readable by

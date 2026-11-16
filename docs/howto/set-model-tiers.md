@@ -131,7 +131,14 @@ step-08-implement = "standard"
 step-11b-implement-feedback = "standard"
 ```
 
-A step id that no recipe contains changes nothing: no recipe is copied for it, and the rest of the table still applies.
+A step id that no recipe contains changes nothing, and `amplihack recipe run`
+says so before the run starts:
+
+```text
+amplihack: model tiers: step_tiers.step-99-polish: no recipe in this run declares a step with that id, so nothing is overridden and every step keeps the tier its recipe declares. …
+```
+
+The rest of the table still applies, and the run proceeds either way.
 
 ### 4. Force one model for every step
 
@@ -294,7 +301,7 @@ strong
 | A removed `[claude.*]` model still launches with `--model` | The tier falls back to amplihack's own default chain on Claude-compatible tools | Set `AMPLIHACK_DEFAULT_MODEL` to an empty value, or to the id you want |
 | Lines in `Model tiers:` say `launch 1` instead of a step id | The launch count does not match the agent-step count — a parallel group, a rate-limit retry or a resumed run | Read the record file, which carries the same data per launch |
 | `config set model.tier_map` in a project file is ignored | Path-valued keys are user-only, so a cloned repository cannot name the file that rewrites recipe YAML | Set it in your user config |
-| A step id in `[step_tiers]` does nothing | No recipe in the run contains it | Check the id with the `grep` in step 3 |
+| A step id in `[step_tiers]` does nothing | No recipe in the run contains it | The run says so by name at the top of its output; check the id with the `grep` in step 3 |
 | `~/.amplihack/model-tiers.toml` is ignored, with a line about permissions | The file is writable by group or others, or owned by another user — the same gate `model.force` gets | `chmod 600 ~/.amplihack/model-tiers.toml` |
 
 ## Related

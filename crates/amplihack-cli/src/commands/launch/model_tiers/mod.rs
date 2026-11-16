@@ -204,11 +204,20 @@ fn resolve_for_launch(
     out
 }
 
-/// The per-step tier overrides an instance has configured, read from the one
-/// override file in force. Empty when nothing is configured, which is what
-/// makes a run with no overrides byte-identical to one before this feature.
-pub(crate) fn step_tier_overrides() -> &'static BTreeMap<String, Tier> {
-    loaded_table().table.step_tiers()
+/// The per-step tier overrides an instance has configured, and the
+/// diagnostics gathered while reading the file they came from.
+///
+/// Empty when nothing is configured, which is what makes a run with no
+/// overrides byte-identical to one before this feature.
+///
+/// The notices come back with the map rather than being dropped here. This is
+/// the recipe-run process's only entry into the tier file, and it has no
+/// launch of its own to print them from: a tier file that will not parse, or
+/// a `[step_tiers]` value that is not a tier, would otherwise be read,
+/// discarded and never mentioned.
+pub(crate) fn step_tier_overrides() -> (&'static BTreeMap<String, Tier>, &'static [Notice]) {
+    let loaded = loaded_table();
+    (loaded.table.step_tiers(), &loaded.notices)
 }
 
 /// The mapping and the diagnostics gathered while loading it, read once per

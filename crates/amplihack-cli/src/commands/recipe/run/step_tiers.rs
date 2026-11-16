@@ -22,6 +22,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::commands::launch::model_tiers::notice::Notice;
 use crate::commands::launch::model_tiers::table::Tier;
 
 /// The runner's first recipe search directory, and the one amplihack sets
@@ -43,26 +44,45 @@ pub(crate) struct Staged {
     pub(crate) files: Vec<PathBuf>,
 }
 
+/// What one run's staging produced: the patched copies, if any, and the lines
+/// the caller prints about what it could not act on.
+#[derive(Debug, Default)]
+pub(crate) struct Outcome {
+    /// The patched copies, or `None` when nothing was staged.
+    pub(crate) staged: Option<Staged>,
+    /// Diagnostics, in order. The caller renders them: staging has no second
+    /// output channel of its own.
+    pub(crate) notices: Vec<Notice>,
+}
+
 /// Write patched copies of the recipes that declare any step in `overrides`.
 ///
-/// `Ok(None)` when there is nothing to do, which is the case for every run
-/// that configures no per-step tier. A search directory that cannot be read,
-/// a step id no recipe declares and a step id that is not an identifier are
-/// all reported by staging nothing for them: none of them may stop a run of a
-/// hundred agent steps.
+/// `Outcome::staged` is `None` when there is nothing to do, which is the case
+/// for every run that configures no per-step tier. A step id that is not an
+/// identifier and a step id no candidate recipe declares each come back as a
+/// notice and stage nothing: neither may stop a run of a hundred agent steps,
+/// and neither may pass in silence, because a typo'd step id has no other
+/// symptom. A search directory that cannot be read is skipped without a line
+/// of its own — the runner would have skipped it too — and the step ids it
+/// would have matched are reported as unmatched, which is the operator-
+/// visible consequence.
 pub(crate) fn stage(
     run_dir: &Path,
     recipe_dirs: &[PathBuf],
     top_level_recipe: &Path,
     overrides: &BTreeMap<String, Tier>,
-) -> Result<Option<Staged>, String> {
-    let wanted: BTreeMap<&str, Tier> = overrides
-        .iter()
-        .filter(|(id, _)| validate_step_id(id))
-        .map(|(id, tier)| (id.as_str(), *tier))
-        .collect();
+) -> Result<Outcome, String> {
+    let mut out = Outcome::default();
+    let mut wanted: BTreeMap<&str, Tier> = BTreeMap::new();
+    for (id, tier) in overrides {
+        if validate_step_id(id) {
+            wanted.insert(id.as_str(), *tier);
+        } else {
+            out.notices.push(Notice::BadStepId { step: id.clone() });
+        }
+    }
     if wanted.is_empty() {
-        return Ok(None);
+        return Ok(out);
     }
 
     let dir = run_dir.join(STAGING_DIR);
@@ -71,6 +91,7 @@ pub(crate) fn stage(
         files: Vec::new(),
     };
     let mut written: BTreeSet<String> = BTreeSet::new();
+    let mut matched: BTreeSet<String> = BTreeSet::new();
     for source in candidates(recipe_dirs, top_level_recipe) {
         let Some(name) = source.file_name().map(|n| n.to_string_lossy().into_owned()) else {
             continue;
@@ -91,14 +112,20 @@ pub(crate) fn stage(
         if staged.files.is_empty() {
             create_private_dir(&staged.dir)?;
         }
-        write_private(&target, &patched)?;
+        write_private(&target, &patched.text)?;
         written.insert(name);
+        matched.extend(patched.matched);
         staged.files.push(target);
     }
-    if staged.files.is_empty() {
-        return Ok(None);
+    for id in wanted.keys() {
+        if !matched.contains(*id) {
+            out.notices.push(Notice::StepTierUnmatched {
+                step: (*id).to_string(),
+            });
+        }
     }
-    Ok(Some(staged))
+    out.staged = (!staged.files.is_empty()).then_some(staged);
+    Ok(out)
 }
 
 /// Every recipe file worth looking at: those in the search directories, and
@@ -131,6 +158,15 @@ fn candidates(recipe_dirs: &[PathBuf], top_level_recipe: &Path) -> Vec<PathBuf> 
     out
 }
 
+/// One patched recipe, and which of the named steps it actually declared.
+struct Patched {
+    text: String,
+    /// The step ids rewritten in this file. The caller diffs these against
+    /// what was configured, so a step id no recipe declares is reported
+    /// rather than passing in silence.
+    matched: Vec<String>,
+}
+
 /// `text` with the `model:` of every named step rewritten or inserted, or
 /// `None` when it declares none of them.
 ///
@@ -143,13 +179,13 @@ fn candidates(recipe_dirs: &[PathBuf], top_level_recipe: &Path) -> Vec<PathBuf> 
 /// line walk cannot change it. Saying so first keeps the 64 bundled recipes
 /// this runs over — 22,000 lines, of which one file typically matches — a
 /// substring scan rather than 22,000 string allocations thrown away.
-fn patch(text: &str, wanted: &BTreeMap<&str, Tier>) -> Option<String> {
+fn patch(text: &str, wanted: &BTreeMap<&str, Tier>) -> Option<Patched> {
     if !wanted.keys().any(|id| text.contains(id)) {
         return None;
     }
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len() + wanted.len());
-    let mut changed = false;
+    let mut matched: Vec<String> = Vec::new();
     let mut index = 0;
     while index < lines.len() {
         let line = lines[index];
@@ -181,10 +217,13 @@ fn patch(text: &str, wanted: &BTreeMap<&str, Tier>) -> Option<String> {
             // where every other field of the step already sits.
             out.insert(id_position + 1, model_line);
         }
-        changed = true;
+        matched.push(id);
         index = end;
     }
-    changed.then(|| out.join("\n"))
+    (!matched.is_empty()).then(|| Patched {
+        text: out.join("\n"),
+        matched,
+    })
 }
 
 /// `(indent, id)` when `line` opens a step, as the bundled recipes write it:

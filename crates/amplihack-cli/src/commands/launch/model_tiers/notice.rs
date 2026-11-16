@@ -8,6 +8,7 @@
 //! configure: these lines land in run logs that get pasted into issues.
 
 use super::table::{ACCEPTED_EFFORTS, Effort, TIER_WORDS, Tier};
+use crate::user_config::safe::display_safe;
 
 /// Something amplihack decided about a tier, or found in a tier file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +77,14 @@ pub(crate) enum Notice {
     },
     /// A `[step_tiers]` entry whose value is not one of the three tiers.
     BadStepTier { step: String, value: String },
+    /// A `[step_tiers]` key that is not an identifier, so amplihack will not
+    /// act on it.
+    BadStepId { step: String },
+    /// A `[step_tiers]` key that is a step id no recipe in this run's search
+    /// path declares. The likeliest operator error in the feature, and the
+    /// one with no other symptom: the run simply proceeds on the tier the
+    /// recipe declares.
+    StepTierUnmatched { step: String },
     /// A tier file's top-level key is not a table.
     NotATable { key: String },
 }
@@ -167,44 +176,69 @@ impl Notice {
             Notice::TableLoadFailed { path, reason } => format!(
                 "amplihack: {path}: {reason}; the model tiers amplihack ships are used instead."
             ),
-            Notice::UnknownTier { column, word } => format!(
-                "amplihack: model tiers: `{column}.{word}`: `{word}` is not a tier; the entry \
-                 is ignored. The tiers are {}.",
-                TIER_WORDS.join(", ")
-            ),
+            Notice::UnknownTier { column, word } => {
+                let (column, word) = (display_safe(column), display_safe(word));
+                format!(
+                    "amplihack: model tiers: `{column}.{word}`: `{word}` is not a tier; the \
+                     entry is ignored. The tiers are {}.",
+                    TIER_WORDS.join(", ")
+                )
+            }
             Notice::UnknownField {
                 column,
                 tier,
                 field,
             } => format!(
-                "amplihack: model tiers: `{column}.{tier}`: unknown field `{field}`; it is \
-                 ignored. A cell may name `model` and `effort`."
+                "amplihack: model tiers: `{}.{}`: unknown field `{}`; it is ignored. A cell \
+                 may name `model` and `effort`.",
+                display_safe(column),
+                display_safe(tier),
+                display_safe(field)
             ),
             Notice::RejectedModel {
                 column,
                 tier,
                 reason,
             } => format!(
-                "amplihack: model tiers: `{column}.{tier}`: the model {reason}; the entry is \
-                 ignored and the shipped value applies."
+                "amplihack: model tiers: `{}.{}`: the model {reason}; the entry is ignored \
+                 and the shipped value applies.",
+                display_safe(column),
+                display_safe(tier)
             ),
             Notice::BadEffort {
                 column,
                 tier,
                 value,
             } => format!(
-                "amplihack: model tiers: `{column}.{tier}`: `{value}` is not an accepted \
-                 reasoning effort; it is ignored and the model still applies. The accepted \
-                 values are {}.",
+                "amplihack: model tiers: `{}.{}`: `{}` is not an accepted reasoning effort; \
+                 it is ignored and the model still applies. The accepted values are {}.",
+                display_safe(column),
+                display_safe(tier),
+                display_safe(value),
                 ACCEPTED_EFFORTS.join(", ")
             ),
             Notice::BadStepTier { step, value } => format!(
-                "amplihack: model tiers: step_tiers.{step}: `{value}` is not a tier; the step \
-                 keeps the tier its recipe declares."
+                "amplihack: model tiers: step_tiers.{}: `{}` is not a tier; the step keeps \
+                 the tier its recipe declares.",
+                display_safe(step),
+                display_safe(value)
             ),
-            Notice::NotATable { key } => {
-                format!("amplihack: model tiers: `{key}` is not a table of tiers; it is ignored.")
-            }
+            Notice::BadStepId { step } => format!(
+                "amplihack: model tiers: step_tiers.{}: a step id is an identifier — letters, \
+                 digits, `.`, `_` and `-`, starting with a letter or a digit — so this entry \
+                 is ignored. {ADVICE}",
+                display_safe(step)
+            ),
+            Notice::StepTierUnmatched { step } => format!(
+                "amplihack: model tiers: step_tiers.{}: no recipe in this run declares a step \
+                 with that id, so nothing is overridden and every step keeps the tier its \
+                 recipe declares. {ADVICE}",
+                display_safe(step)
+            ),
+            Notice::NotATable { key } => format!(
+                "amplihack: model tiers: `{}` is not a table of tiers; it is ignored.",
+                display_safe(key)
+            ),
         }
     }
 }

@@ -416,8 +416,15 @@ three words.
   characters. `.` and `..` are not step ids. Staged file names come only from
   the names of the recipe files amplihack found, never from the override file,
   and the staging directory is created with mode 0700 and its files with 0600.
-- A step id that no recipe contains changes nothing: no recipe is copied
-  for it, and the other named steps are still staged.
+- **A step id that no recipe in the run declares is reported by name** and
+  changes nothing: no recipe is copied for it, and the other named steps are
+  still staged. This is the likeliest typo in the feature and the only one
+  with no other symptom — without the line the run would simply proceed on
+  the tier the recipe declares.
+- **A key that is not an identifier is reported by name** and ignored.
+- A search directory amplihack cannot read is skipped without a line of its
+  own; the runner would have skipped it too. A step id it would have matched
+  is then reported as unmatched, which is the consequence you would see.
 - **A value that is not one of the three words is reported by name and that
   one entry is dropped**; the rest of the table still applies and the step
   keeps the tier its recipe declares.
@@ -678,10 +685,15 @@ it, so the two cannot drift apart.
 | An unknown field in a cell | ``amplihack: model tiers: `claude.fast`: unknown field `modle`; it is ignored. A cell may name `model` and `effort`.`` |
 | A model id amplihack will not write | ``amplihack: model tiers: `claude.fast`: the model begins with `-`, so it could act as another argument; the entry is ignored and the shipped value applies.`` |
 | A `[step_tiers]` value that is not a tier | ``amplihack: model tiers: step_tiers.step-08-implement: `heavy` is not a tier; the step keeps the tier its recipe declares.`` |
+| A `[step_tiers]` key no recipe declares | ``amplihack: model tiers: step_tiers.step-99-polish: no recipe in this run declares a step with that id, so nothing is overridden and every step keeps the tier its recipe declares. …`` |
+| A `[step_tiers]` key that is not an identifier | ``amplihack: model tiers: step_tiers.../../escape: a step id is an identifier — letters, digits, `.`, `_` and `-`, starting with a letter or a digit — so this entry is ignored. …`` |
 | A per-step override that cannot be staged | ``amplihack: model tiers: the per-step tier override could not be staged (<reason>); the recipes run with the tiers they declare.`` |
 
-A step id no recipe contains stages nothing for that step; the other named
-steps are still staged, and the run proceeds.
+The `[step_tiers]` lines are printed once per run by `amplihack recipe run`,
+before anything is staged — that process is the only reader of the table, and
+it performs no launch of its own. Every one of them leaves the run going: a
+tier is a preference about which model runs a step, and no typo in it may
+stop a run of a hundred agent steps.
 
 One launch gets one line about its tier. A launch that fell back and still
 got something from the tier — every shipped Codex cell, which names an effort
