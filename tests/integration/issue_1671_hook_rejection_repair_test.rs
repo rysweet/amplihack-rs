@@ -358,12 +358,14 @@ fn hook_rejection_repair_shell_contract_passes() {
             .collect()
     };
     let before = names(fixture.path());
-    // Keep all real user configuration and harness overrides out. `isolated()`
-    // replaces the hand-rolled allowlist this site carried, and also keeps a
-    // recipe run's work root from reaching the suite (#2712). The `.env()`
-    // calls below still win, so the owned repository selectors the harness
-    // must drop are injected exactly as before, and HOME stays this fixture's
-    // own rather than the temp home `isolated()` supplies.
+    // `isolated()` replaces the hand-rolled allowlist this site carried, and
+    // also keeps a recipe run's work root from reaching the suite (#2712).
+    // It is a shade more permissive than the `env_clear()` it replaces: it
+    // readmits the host's `CARGO*`, `RUST*` and `LC_*` values so a child that
+    // runs cargo still finds the toolchain. This suite runs no cargo, and the
+    // `.env()` calls below still win, so the owned repository selectors the
+    // harness must drop are injected exactly as before, and HOME stays this
+    // fixture's own rather than the temp home `isolated()` supplies.
     let out = isolated("bash")
         .arg(&script)
         .current_dir(fixture.path().join("cwd"))

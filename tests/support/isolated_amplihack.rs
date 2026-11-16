@@ -42,9 +42,11 @@
 //!   shell suite starts it through [`isolated`], because a suite that
 //!   inherits an explicit work root puts its worktrees under
 //!   `<work root>/worktrees` instead of its own scratch, outside its `EXIT`
-//!   trap. The suites clear the same four names themselves by sourcing
-//!   `amplifier-bundle/recipes/tests/recipe-test-env.sh`; this is the other
-//!   half of that contract, for the Rust side.
+//!   trap. The suites clear the same names themselves by sourcing
+//!   `amplifier-bundle/recipes/tests/recipe-test-env.sh`, which also clears
+//!   the five `AMPLIHACK_RUN_IDENTITY_VARS` of
+//!   `amplifier-bundle/tools/git-repo-env.sh`; this is the other half of that
+//!   contract, for the Rust side.
 //! - `AMPLIHACK_TEST_PROC_ROOT` ([`PROC_ROOT_ENV`], issue #2042) set to
 //!   [`shared_empty_proc_root`], so `profile` and `sessions` commands read an
 //!   empty fake process table instead of the host's `/proc`. A test that

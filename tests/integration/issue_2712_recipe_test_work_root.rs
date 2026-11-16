@@ -14,14 +14,16 @@
 //!
 //! The fix is one sourced setup fragment,
 //! `amplifier-bundle/recipes/tests/recipe-test-env.sh`, which clears the
-//! inherited work root, plus `isolated()` for the Rust tests that start a
-//! suite. These tests hold both halves:
+//! inherited work root and delegates the run-identity names to
+//! `amplifier-bundle/tools/git-repo-env.sh`, plus `isolated()` for the Rust
+//! tests that start a suite. These tests hold both halves:
 //!
 //! - [`outside_work_root_stays_empty`] is the behaviour test the issue asks
 //!   for. It runs the suite that actually leaked, with an explicit work root
 //!   supplied from outside, and requires the suite to pass and that directory
-//!   to stay empty. It takes 30-45 s, which is the cost of covering the suite
-//!   that produced the orphans rather than one that was already immune.
+//!   to stay empty. It takes about 30 s on an idle host and longer on a busy
+//!   one, which is the cost of covering the suite that produced the orphans
+//!   rather than one that was already immune.
 //! - [`recipe_test_env_is_source_only`] and
 //!   [`recipe_test_env_clears_the_inherited_work_root`] are sub-second unit
 //!   tests of the fragment itself: its file mode, and what sourcing it does
@@ -50,12 +52,19 @@ const SUITE: &str = "amplifier-bundle/recipes/tests/test-default-workflow-reliab
 /// The shared setup fragment the suites source.
 const FRAGMENT: &str = "amplifier-bundle/recipes/tests/recipe-test-env.sh";
 
-/// The names the fragment clears.
-const CLEARED: [&str; 4] = [
+/// The names the fragment clears: its own two, then the five of
+/// `AMPLIHACK_RUN_IDENTITY_VARS`, which it clears by sourcing
+/// `amplifier-bundle/tools/git-repo-env.sh` rather than restating them.
+/// `tests/issue_1278_git_env_isolation.sh` keeps that list in step with the
+/// Rust one, so this array follows both.
+const CLEARED: [&str; 7] = [
     "AMPLIHACK_WORK_ROOT",
     "AMPLIHACK_WORK_ROOT_EXPLICIT",
+    "AMPLIHACK_RECIPE_RUN_ID",
     "AMPLIHACK_RUN_DIR",
     "AMPLIHACK_RUN_ID",
+    "AMPLIHACK_SESSION_TREE_DIR",
+    "AMPLIHACK_TREE_ID",
 ];
 
 /// A name the fragment must leave alone: the suites' step bodies resolve their
@@ -206,7 +215,7 @@ fn recipe_test_env_is_source_only() {
     );
 }
 
-/// Sourcing the fragment clears the four inherited names, leaves
+/// Sourcing the fragment clears every inherited name in [`CLEARED`], leaves
 /// `AMPLIHACK_HOME` alone, prints nothing, and is safe to source twice.
 ///
 /// The variables are supplied through the child's environment rather than
@@ -244,8 +253,14 @@ done
         .env(KEPT, &root)
         .env("AMPLIHACK_WORK_ROOT", "/nonexistent/shared/work-root")
         .env("AMPLIHACK_WORK_ROOT_EXPLICIT", "1")
+        .env("AMPLIHACK_RECIPE_RUN_ID", "issue-2712-recipe-run")
         .env("AMPLIHACK_RUN_DIR", "/nonexistent/runs/issue-2712")
         .env("AMPLIHACK_RUN_ID", "issue-2712-unit")
+        .env(
+            "AMPLIHACK_SESSION_TREE_DIR",
+            "/nonexistent/trees/issue-2712",
+        )
+        .env("AMPLIHACK_TREE_ID", "issue-2712-tree")
         .output()
         .unwrap_or_else(|e| panic!("source {}: {e}", path.display()));
 

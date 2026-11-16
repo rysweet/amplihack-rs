@@ -60,22 +60,17 @@ test "$(ls -1 "${WORKTREES}" | wc -l)" = "${BEFORE}" && echo "work root untouche
 
 `amplifier-bundle/recipes/tests/recipe-test-env.sh` is sourced, never
 executed. It produces no output, creates nothing, and is safe to source twice.
+Read the file rather than a copy of it; it is nine lines of code under a
+comment that explains each one:
 
 ```bash
-# shellcheck shell=bash
-# recipe-test-env.sh — sourced (never run) by the recipe shell test suites.
-#
-# No shebang and no execute bit, deliberately: unlike the sibling fixture
-# expected-checks-fixtures.sh, which keeps a shebang while also being
-# source-only, this file carries nothing that would read as a runnable suite.
-#
-# A recipe run exports AMPLIHACK_WORK_ROOT and AMPLIHACK_WORK_ROOT_EXPLICIT=1,
-# and every process it starts inherits them. workflow_worktree_root.sh base
-# then puts a suite's worktrees under <work root>/worktrees/<name>-<hash8>
-# instead of under the suite's own scratch, where its EXIT trap would remove
-# them (#2712, #1808).
-unset AMPLIHACK_WORK_ROOT AMPLIHACK_WORK_ROOT_EXPLICIT AMPLIHACK_RUN_DIR AMPLIHACK_RUN_ID
+cat amplifier-bundle/recipes/tests/recipe-test-env.sh
 ```
+
+It clears two names of its own, then sources
+`amplifier-bundle/tools/git-repo-env.sh` and calls
+`amplihack_clear_run_identity_env`, which clears the five names of
+`AMPLIHACK_RUN_IDENTITY_VARS`:
 
 | Variable | Why it is cleared |
 | --- | --- |
@@ -83,11 +78,26 @@ unset AMPLIHACK_WORK_ROOT AMPLIHACK_WORK_ROOT_EXPLICIT AMPLIHACK_RUN_DIR AMPLIHA
 | `AMPLIHACK_WORK_ROOT_EXPLICIT` | The flag that turns the work root into the worktree base (#1808). Clearing only this one leaves a stale root for anything that reads it directly. |
 | `AMPLIHACK_RUN_DIR` | A run's artefact directory holds prompts and step output. A suite writing fixtures there mixes test content into a real run's record. |
 | `AMPLIHACK_RUN_ID` | Pairs with the run directory; a suite that reports it would attribute its own artefacts to the enclosing run. |
+| `AMPLIHACK_RECIPE_RUN_ID` | Scopes the branch-deletion manifest under the git common directory, so a suite inheriting it writes into the outer run's record. |
+| `AMPLIHACK_SESSION_TREE_DIR`, `AMPLIHACK_TREE_ID` | Name the session tree the outer run is working in. |
 
-The list stops there. Credential and git-identity variables such as
-`GH_TOKEN`, `SSH_AUTH_SOCK` and `GIT_CONFIG_*` are not touched: dropping them
-changes which remote operations a suite can perform, which is a separate
-decision from where worktrees land.
+Only the first two names are this file's own contract. The last five are
+`AMPLIHACK_RUN_IDENTITY_VARS` in `amplifier-bundle/tools/git-repo-env.sh`,
+which `tests/issue_1278_git_env_isolation.sh` keeps in step with
+`amplihack_git`'s Rust list; the fragment sources that file rather than
+restating the names, so adding a sixth run-identity name reaches the suites
+without a second edit here. `AMPLIHACK_SESSION_DEPTH` and
+`AMPLIHACK_MAX_DEPTH` are deliberately absent from that list: they feed the
+recursion guard. The git-repository selectors are a separate list in the same
+file and are not cleared by the fragment; a suite that needs them gone calls
+`amplihack_clear_git_repo_env` itself, as `test-issue-2033-qa-git-env.sh`
+does.
+
+Credential and git-identity variables such as `GH_TOKEN`, `SSH_AUTH_SOCK` and
+`GIT_CONFIG_*` are not touched: dropping them changes which remote operations
+a suite can perform, which is a separate decision from where worktrees land.
+This is where the fragment and `isolated()` stop being halves of one contract:
+`isolated()` does drop them.
 
 Two facts about the file's placement are easy to get wrong. CI does not
 discover suites by scanning the directory; `.github/workflows/ci.yml` names
@@ -97,7 +107,7 @@ called, and the absent execute bit removes the remaining way it could be run
 by accident. Directory-wide static guards are a different matter: the scan in
 `crates/amplihack-cli/tests/issue_1570_recipe_text.rs:418-427` reads every file under
 `amplifier-bundle/recipes/tests` regardless of name, so the fragment is
-checked by it. A file containing one `unset` has nothing for it to catch.
+checked by it. Four lines of `unset` and a `.` have nothing for it to catch.
 
 ### Why clear rather than redirect
 
@@ -113,7 +123,7 @@ needs explicit-root behaviour sets the variables itself, per case, as
 
 ## Add the setup to a new suite
 
-Put the same four lines in every suite, immediately after the script-directory
+Put the same five lines in every suite, immediately after the script-directory
 resolution and before any step extraction, fixture build, scratch allocation or
 execution:
 
@@ -121,11 +131,12 @@ execution:
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
 [[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=recipe-test-env.sh
 . "${TEST_ENV}"
 ```
 
-Three details carry weight:
+Four details carry weight:
 
 - **Resolve from `${BASH_SOURCE[0]}`, never from the current directory or
   `PATH`.** A `source` argument with no slash is searched along `PATH`, so the
@@ -133,6 +144,10 @@ Three details carry weight:
 - **Keep the `[[ -f ]]` guard.** Without it a rename or an incomplete install
   silently reverts the suite to the leaking behaviour. Exit 2 is the harness
   error code the suites already use.
+- **Keep both shellcheck directives.** `source=` alone is resolved against the
+  invoking directory, not the script's, so `shellcheck -x` from the repository
+  root reports SC1091 for every suite. `source-path=SCRIPTDIR` resolves it
+  against the file being checked, which is correct from any directory.
 - **Keep the block byte-identical across suites.** `grep -n recipe-test-env.sh
   amplifier-bundle/recipes/tests/*.sh` then shows the guard on the adjacent
   line everywhere, which is how a missing guard is spotted.
@@ -152,8 +167,8 @@ the source as a standing contract, because they pass an explicit path to
 | Suite | Effect |
 | --- | --- |
 | `test-default-workflow-reliability.sh` | Behaviour change. It executes the extracted step-04 body with an inherited environment and was the demonstrated leaker. |
-| `test-issue-1808-worktree-base.sh` | The inline `unset` it carried, of the same four names, is replaced by the shared source. |
-| `test-issue-2061-sweep-no-push.sh` | It cleared only `AMPLIHACK_WORK_ROOT_EXPLICIT` inline; now it clears all four. |
+| `test-issue-1808-worktree-base.sh` | The inline `unset` it carried, of four of the same names, is replaced by the shared source. |
+| `test-issue-2061-sweep-no-push.sh` | It cleared only `AMPLIHACK_WORK_ROOT_EXPLICIT` inline; now it clears all seven. |
 | `test-issue-1121-relative-repo-path.sh`, `test-issue-1494-1560-worktree-safety.sh`, `test-issue-1543-pr-head-worktree.sh`, `test-issue-1565-rerun-preserves-dirty-worktree.sh`, `test-issue-1626-consensus-rerun-preserves-work.sh`, `test-issue-1671-hook-rejection-repair.sh`, `test-issue-840-worktree-leak-proof.sh`, `test-foreign-worktree-deconflict.sh`, `test-issue-962-implementation-evidence-fallback.sh`, `test-checkpoint-scoped-format.sh` | Inert today; they take the contract so a later case that does start a worktree from the inherited environment is covered. |
 
 Several suites mention worktrees without creating one, and they are left
@@ -161,7 +176,7 @@ alone:
 
 - `test-issue-1937-no-stray-git.sh` executes three of the adopting suites as
   children. They source the fragment themselves, so adding it to the parent
-  would clear the same four names twice and prove nothing.
+  would clear the same names twice and prove nothing.
 - `test-issue-1060-existing-pr-is-idempotent.sh` has a `make_worktree()`
   helper, but it is a plain `git init` and clone pair, not a linked worktree.
 - `test-issue-1337-loop-health-evaluator.sh`,
@@ -226,7 +241,7 @@ allowlist; that is now `isolated()`, with its deliberate `GIT_DIR`,
 One site already follows the pattern and is left as it is:
 `crates/amplihack-cli/tests/issue_1808_run_cleanup/scripts.rs:355` starts
 `test-issue-1808-worktree-base.sh` through `isolated()` and then calls
-`.env_remove()` on three of the four names. The removals are now redundant
+`.env_remove()` on three of the cleared names. The removals are now redundant
 with both `isolated()` and the suite's own source, but they are harmless and
 record the test's intent.
 
@@ -255,8 +270,9 @@ cargo test -p amplihack --test integration issue_2712_recipe_test_work_root::
 # Output includes: test ...::outside_work_root_stays_empty ... ok
 ```
 
-The test takes roughly 28 seconds, which is the cost of covering the suite that
-actually leaked. The four-second `test-issue-1808-worktree-base.sh` was the
+The test takes about 30 seconds on an idle host and longer on a busy one,
+which is the cost of covering the suite that actually leaked. The four-second
+`test-issue-1808-worktree-base.sh` was the
 cheaper candidate and was rejected: it already cleared the variables, so it
 would pin the setup without exercising the path that produced the orphans.
 
@@ -281,7 +297,7 @@ directory by `amplihack install`; reinstall, or confirm the file is present in
 the checkout the suite resolved.
 
 **A helper fails with `AMPLIHACK_WORK_ROOT: unbound variable` under `set -u`.**
-It is reading one of the four names without a default. That failure is the
+It is reading one of the cleared names without a default. That failure is the
 intended direction: it fails closed instead of acting on a stale root. Guard
 the read, as `cmd_base` in `workflow_worktree_root.sh` does: its bare
 `work="$AMPLIHACK_WORK_ROOT"` at line 189 is reached only through the
