@@ -2194,12 +2194,16 @@ pub(super) fn pass_context(
         .find(|(k, v)| k.len() + 1 + v.len() + 1 > MAX_ARG_STRLEN_BYTES)
     {
         anyhow::bail!(
-            "recipe context value for key {} is {} bytes; recipe-runner-rs takes context only \
-             as --set arguments, and one argument cannot exceed {} bytes. Pass a file path \
-             in the context instead and read the file in the step",
+            "recipe context value for key {} is {} bytes; the runner supplied through \
+             RECIPE_RUNNER_RS_PATH does not report {}, so this run passes context as --set \
+             arguments, and one argument cannot exceed {} bytes. Use a runner that reports \
+             {}, which takes the context as a file and has no per-value limit; failing that, \
+             pass a file path in the context instead and read the file in the step",
             crate::commands::profile::escape_for_error(key),
             value.len(),
-            MAX_ARG_STRLEN_BYTES
+            super::context_transport::CONTEXT_FILE_CAPABILITY,
+            MAX_ARG_STRLEN_BYTES,
+            super::context_transport::CONTEXT_FILE_CAPABILITY
         );
     }
     let mut argv_bytes = 0;

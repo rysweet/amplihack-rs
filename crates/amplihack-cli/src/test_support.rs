@@ -29,6 +29,14 @@ pub(crate) fn home_env_lock() -> &'static Mutex<()> {
 /// never a narrowed one. Spawns then use it with no lock, and stay parallel:
 /// `Command::env("PATH", ..)` sets the search path for the program itself as
 /// well as the child's environment.
+///
+/// **Must not be called while holding [`env_lock`].** The initializer takes
+/// that lock, which is a plain non-reentrant `Mutex`, so a caller that
+/// already holds it deadlocks — and only sometimes, since a sibling test that
+/// initialized the `OnceLock` first makes the initializer never run. A test
+/// that holds the lock across its spawns wants a `PATH` constant of its own
+/// instead (`run_guidance::tests::CHILD_PATH`), or should call this before
+/// taking the lock.
 pub(crate) fn host_path() -> OsString {
     static PATH: OnceLock<OsString> = OnceLock::new();
     PATH.get_or_init(|| {

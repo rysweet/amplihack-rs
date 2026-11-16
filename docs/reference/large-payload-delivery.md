@@ -502,9 +502,10 @@ at `warn` with the path only.
 
 Precedence, lowest to highest: `--context-file`, `--context-from-file`,
 `-c`. `infer_missing_context` then fills keys that are still empty. The merged
-context is passed to the runner unchanged as `--set KEY=VALUE` arguments, the
-only context input `recipe-runner-rs` has (it has no `--context-file` option),
-unless the runner reports `context_file_v1`; see
+context is passed to the runner as `--context-file <path>` when the runner
+reports `context_file_v1`, which the pinned runner does, and unchanged as
+`--set KEY=VALUE` arguments otherwise — the only context input a runner older
+than v0.7.0 has; see
 [Recipe context transport](recipe-context-transport.md).
 
 A `KEY=VALUE` pair longer than one argv string (131072 bytes,

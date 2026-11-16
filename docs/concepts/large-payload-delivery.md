@@ -289,10 +289,13 @@ with the file path as its prompt. There is no fallback to argv.
   text, so a value containing the delimiter line ends the heredoc and runs as
   shell. Recipes converted by this change read such values with
   `write_context_value` instead.
-- `recipe-runner-rs` takes context only as `--set` arguments, so
-  `amplihack recipe run` refuses, before spawning the runner, a context value
-  longer than one argument (128 KiB), naming the key and size. Many values may
-  together exceed 128 KiB. Values that grow past that size inside a run, such
+- A runner that does not report `context_file_v1` takes context only as
+  `--set` arguments, so `amplihack recipe run` refuses, before spawning that
+  runner, a context value longer than one argument (128 KiB), naming the key
+  and size. Many values may together exceed 128 KiB. The pinned runner does
+  report it and takes the context as a file, which has no per-value limit
+  (#2582); only a runner supplied through `RECIPE_RUNNER_RS_PATH` and older
+  than v0.7.0 reaches the refusal. Values that grow past that size inside a run, such
   as step outputs, reach bash steps intact.
 - Remote and admiral runs support auto mode only.
 - An auto-switch [usage-limit rerun](../reference/profile-command.md#usage-limit-reruns)

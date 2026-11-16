@@ -139,11 +139,19 @@ fn u1_pr_key_matches_autodrive_state_sh_for_an_https_origin() {
 
 #[test]
 fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
-    // The `PATH` pinned on each spawn below reaches the child, not the lookup
-    // that finds `bash` and `git`: an `execvp` after `fork` reads the parent's
-    // own environment, which sibling tests in this binary replace while they
-    // run. So this test holds the shared environment lock for as long as those
-    // spawns are in flight.
+    // Holds the shared environment lock for as long as the spawns below are
+    // in flight. Not because of `PATH` lookup — `Command::env("PATH", ..)`
+    // does set the search path for the program itself, since Rust declines
+    // `posix_spawn` when a custom `PATH` is set for a non-path program and
+    // falls back to `fork` + `execvp` against the assigned environment (see
+    // `test_support::host_path`). The race is `amplihack_git::command()`,
+    // which calls `scrub()`, which iterates `std::env::vars_os()` while
+    // sibling tests in this binary call `set_var` on the same process-global
+    // environment. That is a data race, and the lock is what prevents it.
+    //
+    // Do not call `test_support::host_path()` from inside this block: its
+    // `OnceLock` initializer takes this same non-reentrant lock and would
+    // deadlock. `CHILD_PATH` below is a constant and takes no lock.
     let _env = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
