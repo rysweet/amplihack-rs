@@ -969,17 +969,26 @@ fn issue_2694_a_home_step_sleeps_to_its_reset_though_another_login_has_room() {
 /// Requirement 14 / D8: the profiled half, with a rotator running.
 ///
 /// Issue #2731 promotes a no-reset spend limit to a login-change wait only
-/// on a `$HOME/.claude` step, and production says so twice: `rerun` filters
-/// the spend harness through `Waiter::is_home`, and `upgrade_spend` then
-/// asks whether a rotator is running. A rotator *is* running here, so the
-/// second guard is satisfied and the first one alone has to hold. It must:
-/// the rotator swaps logins into `~/.claude` and nowhere else, so a step
-/// pinned to profile X would not see the new login even if one arrived, and
-/// another login of the same organisation would not lift the limit anyway.
+/// on a `$HOME/.claude` step, and two separate things refuse the promotion
+/// here, either of which would be enough on its own. `rerun` filters the
+/// spend harness through `Waiter::is_home`, which is false for a step with
+/// `CLAUDE_CONFIG_DIR` set; and `supervise_gate` builds an inherited
+/// profile's `Waiter` with `home_rotator` hardcoded to `|| false`, so
+/// `upgrade_spend` is told no rotator is running however the host is really
+/// set up. A real rotator does run in this test and changes nothing, which
+/// is the property worth asserting: the rotator swaps logins into
+/// `~/.claude` and nowhere else, so a step pinned to profile X would not see
+/// the new login even if one arrived, and another login of the same
+/// organisation would not lift the limit anyway.
 ///
-/// The sibling below is the `$HOME/.claude` step with no rotator, where the
-/// other guard is the one doing the work. The case where both are satisfied
-/// — a home step with a rotator — is the login-change wait itself, in
+/// Because either refusal is sufficient, removing one of them alone leaves
+/// this test passing. It fails when both go, which is what makes it a check
+/// on the pair rather than on `is_home` by itself.
+///
+/// The sibling below is the `$HOME/.claude` step with no rotator, where
+/// `upgrade_spend` does ask a live rotator question and gets `false`. The
+/// case where a promotion is actually allowed — a home step with a rotator
+/// — is the login-change wait itself, in
 /// `issue_2731_login_change_wait.rs`.
 #[test]
 fn issue_2731_an_inherited_profile_spend_limit_skips_though_a_rotator_runs() {
