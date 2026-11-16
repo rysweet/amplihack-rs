@@ -2176,8 +2176,10 @@ pub(super) const MAX_ARG_STRLEN_BYTES: usize = 131_072;
 /// `context_file_v1`. The pinned runner reports it, so in a normal run
 /// `context_transport` passes `--context-file <path>` instead and no value is
 /// on argv at all. This path is reached only by a runner older than the pin
-/// supplied through `RECIPE_RUNNER_RS_PATH`; `ContextTransport::record` names
-/// the transport each run took, so that case is visible in the run's log.
+/// supplied through `RECIPE_RUNNER_RS_PATH`; `ContextTransport::record`
+/// prints a line to stderr when it is taken, unconditionally, so that case is
+/// visible to an operator who set no `RUST_LOG` and would otherwise find it
+/// only in `/proc`.
 ///
 /// Returns the argv bytes the pairs occupy, so the caller can take them out
 /// of the env-mirror budget. A pair longer than one argv string allows is

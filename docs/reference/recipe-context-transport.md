@@ -103,22 +103,44 @@ file is written.
 
 ## Seeing which transport a run used
 
-The transport is recorded once in the run's log, at info level, by name:
+A run that takes the set transport says so on stderr, once, with no
+environment variable set:
+
+<!-- prettier-ignore -->
+```text
+amplihack: recipe context is on the runner's argv (--set): the runner supplied through RECIPE_RUNNER_RS_PATH does not report context_file_v1
+```
+
+It is one line; it is shown unwrapped above because that is what is printed.
+
+This is the line that matters, and it is unconditional. The file and none
+transports print nothing: `file` is what a normal run takes, and a line on
+every run teaches an operator to skip the one worth reading.
+
+Every transport, including those two, is also recorded by name at info level:
 
 ```text
 INFO recipe context transport=file
 ```
 
-The record holds the transport name and nothing else: no key, no value and no
-count derived from one. It is there so that a run which took the set transport
-is visible to whoever reads the log. The pinned runner reports the capability
-on every host amplihack runs on, so in practice `transport=set` means a runner
-older than v0.7.0 was in use: usually one supplied through
-`RECIPE_RUNNER_RS_PATH`, more rarely an older installed runner the freshness
-check kept, since a failed check is a warning rather than an error and a
-recorded skip holds across launches within its cooldown. Either way it is a
-local condition that would otherwise show up only in `/proc`. See
-[Set transport](#set-transport-older-runners).
+That record needs `RUST_LOG` to be seen. `amplihack` installs
+`EnvFilter::from_default_env()`, whose default directive is `ERROR`, so with
+`RUST_LOG` unset nothing at info level is written anywhere — run with
+`RUST_LOG=info` to see the `file` and `none` records. The stderr notice above
+does not depend on it, which is why the set transport has one: an operator
+who sets nothing must still learn that this run's context went onto argv.
+
+Both forms hold the transport name and fixed text and nothing else: no key, no
+value and no count derived from one, since a count of a one-key context says
+which key it was.
+
+The pinned runner reports the capability on every host amplihack runs on, so
+in practice `transport=set` means a runner older than v0.7.0 was in use:
+usually one supplied through `RECIPE_RUNNER_RS_PATH`, more rarely an older
+installed runner the freshness check kept, since a failed check is a warning
+rather than an error and a recorded skip holds across launches within its
+cooldown. Either way it is a local condition that would otherwise show up only
+in `/proc`. See [Set transport](#set-transport-older-runners).
 
 ## File transport
 
@@ -269,8 +291,9 @@ the capability on every host amplihack runs on.
 There is no second case, because amplihack itself is Unix-only. `amplihack-cli`
 has no non-Unix build: `mod context_transport` is declared unconditionally and
 the module imports `std::os::unix::fs`, as hundreds of other files in the crate
-do, and CI compiles Linux and macOS targets only. So `transport=set` in a run
-log has exactly one explanation, and it is the one above.
+do, and CI compiles Linux and macOS targets only. So the stderr notice — or
+`transport=set` in a run log — has exactly one explanation, and it is the one
+above.
 
 This is a compatibility path for that one case, not a transport to rely on.
 The argv is identical, byte for byte, to the one amplihack built before

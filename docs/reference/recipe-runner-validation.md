@@ -56,8 +56,10 @@ Both are absent from a runner older than v0.7.0 and present in the pinned
 revision. amplihack reads the report it already takes before every run and
 makes no second probe. A report that fails the validation above ends the run
 before a transport is chosen; a report that validates but omits an optional
-capability selects the older behaviour for that capability alone, and for the
-context transport the run's log then names which path it took (see
+capability selects the older behaviour for that capability alone. For the
+context transport, a run that falls back to `--set` because the report omits
+`context_file_v1` prints a line to stderr saying so, with no `RUST_LOG`
+needed (see
 [Seeing which transport a run used](recipe-context-transport.md#seeing-which-transport-a-run-used)).
 
 ### Recovery capability enforcement
