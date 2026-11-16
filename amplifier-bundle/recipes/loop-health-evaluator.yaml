@@ -64,6 +64,11 @@ context:
   loop_test_signal_previous: ""
   loop_ci_signal: ""
   loop_ci_signal_previous: ""
+  # #2333: the head-read token from the crusty completion dispatch, empty
+  # unless a read of the PR head on GitHub did not answer. Inserted by the
+  # dispatch itself, never by a caller-supplied context. Declared so a nested
+  # run never reads an inherited RECIPE_VAR_<key> (#1561).
+  loop_head_read: ""
   loop_clean_token: ""    # #1597: the verdict that makes a round clean (CLEAN, MERGE_READY)
   loop_round_verdict: ""  # #1597: the reviewer's verdict for the round just finished
   # "false": step-04 reports STUCK loudly but exits 0; the caller's `condition:` owns the stop.
@@ -136,6 +141,11 @@ steps:
         never arrives. The CI signal `{{loop_ci_signal}}` is `<pass|pending|fail|none>@<head>`:
         `pending@<head>` with the head unchanged is a required check still running, a wait,
         so answer `CONTINUE`, never `STUCK`. `fail@<head>` with no movement is still `STUCK`.
+        A non-empty head-read token `{{loop_head_read}}` means a read of the PR head on
+        GitHub did not answer. It says nothing about the branch, so it is neither progress
+        nor its absence, and the round's own verdict still stands: judge the round on the
+        rest of the evidence and name the unread head as the reason any head comparison is
+        missing.
       - `infrastructure_fault` / `infrastructure_fault_class` — the last round
         ended on an infrastructure fault (an overloaded model endpoint, a
         missing credential), not on the work. `amplihack recipe run` already
