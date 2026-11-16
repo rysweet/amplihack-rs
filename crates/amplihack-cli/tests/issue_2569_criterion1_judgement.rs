@@ -13,9 +13,10 @@
 //! case runs anything under `tests/gadugi/`.
 
 use crate::support::criterion1_world::{
-    GadugiCall, SCENARIO_NAME, World, all_strings, field, json_of, last_line, read_json, show,
+    GadugiCall, SCENARIO_NAME, World, all_strings, field, json_of, last_line, read_json, show, text,
 };
 use serde_json::Value;
+use std::process::Output;
 
 /// The fields of the record that the judgement is defined against. A value
 /// outside one of these sets is `qa-measurement-unavailable`, never a pass,
@@ -29,7 +30,12 @@ const SCENARIO_DIR_STATES: [&str; 5] = [
 ];
 const GADUGI_STATUSES: [&str; 4] = ["NOT_REQUIRED", "NOT_INSTALLED", "NO_SCENARIOS", "FOUND"];
 const QA_STATUSES: [&str; 4] = ["PASS", "FAIL", "BLOCKED", "QA_UNRESOLVED"];
-const BASE_SOURCES: [&str; 3] = ["operator", "clone-default", "none"];
+// The five names the measurement accepts. A merge round writes one of the
+// first three, or `none`; `clone-default` is reachable only from
+// `light-qa-inputs`, before a PR exists and so before any PR base exists for
+// it to be wrong against. This array is the one executable cross-check that
+// the recipes, the tool and the guidance name the same set.
+const BASE_SOURCES: [&str; 5] = ["operator", "recipe", "pr-base", "clone-default", "none"];
 
 /// Every value the record carries is inside its closed set, and the
 /// run-shaped fields are empty because the measurement runs no scenario.
@@ -1197,23 +1203,47 @@ fn divergent_default_world() -> World {
     w
 }
 
-/// The step's record, with the evidence path the recipe passes it and the
-/// base environment this case wants.
-fn inputs_with_base(w: &World, base: Option<&str>) -> Value {
+/// What `step-02a-qa-inputs` is given to resolve its base from. `None` is
+/// "this source does not answer": the step reads `${AUTODRIVE_QA_BASE:-}`
+/// and `${RECIPE_VAR_autodrive_base_branch:-}`, so a variable exported empty
+/// is no answer, and an empty `pr_number` is a PR the step cannot ask about.
+/// The step decides what, if anything, to pass the measurement, so nothing
+/// set here reaches the record unchanged.
+#[derive(Default)]
+struct Sources<'a> {
+    /// `AUTODRIVE_QA_BASE`, an operator's override for the run.
+    operator: Option<&'a str>,
+    /// `autodrive_base_branch`, the base the round's own preflight observed
+    /// for this PR and passed down through `autodrive-merge-round.yaml`.
+    recipe: Option<&'a str>,
+    /// `pr_number`, which the lookup needs before it can be made at all.
+    pr_number: Option<&'a str>,
+    /// What this world's `gh` answers a `pr view` with. `None` leaves it
+    /// offline, which is the lookup-cannot-be-made case and not an answer.
+    pr_base: Option<&'a str>,
+}
+
+/// Runs the step with those sources and nothing else.
+fn run_qa_inputs(w: &World, s: &Sources) -> Output {
     let evidence = w.evidence_path().display().to_string();
-    // An empty value is no answer: the step reads `${AUTODRIVE_QA_BASE:-}`,
-    // so an operator who exported it empty falls through to the next source.
-    // The step decides whether to pass a base on at all, so this environment
-    // never reaches the measurement unchanged.
-    let extra = [
-        ("RECIPE_VAR_autodrive_qa_evidence", evidence.as_str()),
-        ("AUTODRIVE_QA_BASE", base.unwrap_or("")),
-    ];
-    let o = w.run_step(
+    w.run_step(
         "autodrive-merge-evidence.yaml",
         "step-02a-qa-inputs",
-        &extra,
-    );
+        &[
+            ("RECIPE_VAR_autodrive_qa_evidence", evidence.as_str()),
+            ("AUTODRIVE_QA_BASE", s.operator.unwrap_or("")),
+            ("RECIPE_VAR_autodrive_base_branch", s.recipe.unwrap_or("")),
+            ("RECIPE_VAR_pr_number", s.pr_number.unwrap_or("")),
+            ("FAKE_GH_BASE_REF", s.pr_base.unwrap_or("")),
+        ],
+    )
+}
+
+/// The record the step measured from those sources. Every case here
+/// measures: a base that resolves to nothing is still a measured record,
+/// never the `qa-measurement-unavailable` blocker.
+fn inputs_from(w: &World, s: Sources) -> Value {
+    let o = run_qa_inputs(w, &s);
     assert_eq!(
         o.status.code(),
         Some(0),
@@ -1229,13 +1259,42 @@ fn inputs_with_base(w: &World, base: Option<&str>) -> Value {
     j
 }
 
-/// Source 1. The operator's `AUTODRIVE_QA_BASE` is the PR's own base, and
-/// it outranks the clone's default: the change set is measured against
-/// `main` even though the clone defaults to `trunk`.
+/// The operator's base alone, for the cases that need no other source.
+fn inputs_with_base(w: &World, base: Option<&str>) -> Value {
+    inputs_from(
+        w,
+        Sources {
+            operator: base,
+            ..Sources::default()
+        },
+    )
+}
+
+/// The base and the source the record names, as one pair.
+fn base_of(j: &Value) -> (String, String) {
+    (field(j, "qa_base"), field(j, "qa_base_source"))
+}
+
+/// Source 1. The operator's `AUTODRIVE_QA_BASE` is the PR's own base, and it
+/// outranks every source under it: the change set is measured against `main`
+/// though the round passed `trunk` and the hosting interface would have
+/// answered `trunk` as well.
+///
+/// Where a higher source answers, the lookup is not made. The step asks the
+/// hosting interface nothing it does not need, so a drive that already knows
+/// its base spends no authenticated read on learning it again.
 #[test]
-fn an_operator_base_outranks_the_clone_default() {
+fn an_operator_base_outranks_the_rounds_base_and_the_pr_lookup() {
     let w = divergent_default_world();
-    let j = inputs_with_base(&w, Some("main"));
+    let j = inputs_from(
+        &w,
+        Sources {
+            operator: Some("main"),
+            recipe: Some("trunk"),
+            pr_number: Some("2618"),
+            pr_base: Some("trunk"),
+        },
+    );
 
     assert_eq!(
         field(&j, "docs_only"),
@@ -1248,60 +1307,297 @@ fn an_operator_base_outranks_the_clone_default() {
         "the change set is the diff against the operator's base: {j}"
     );
     assert_eq!(
-        (field(&j, "qa_base"), field(&j, "qa_base_source")),
+        base_of(&j),
         ("main".into(), "operator".into()),
         "the record names the base it measured and how that base was reached: {j}"
     );
+    assert!(
+        w.gh_calls().is_empty(),
+        "no lookup is made where a source above it answered: {:?}",
+        w.gh_calls()
+    );
 }
 
-/// Source 2, and the hazard it carries. With no operator base the step
-/// answers with `refs/remotes/origin/HEAD`, the clone's default branch,
-/// stripped of its `origin/` prefix. That is the clone's default and not
-/// this PR's base: this PR targets `main`, and the step measures it against
-/// `trunk`, which reports a change set the PR does not have.
+/// Source 2. With no operator override the base is the one the round itself
+/// passed in `autodrive_base_branch`: the base `step-01-merge-loop-preflight`
+/// observed for this PR on the hosting interface, forwarded through
+/// `autodrive-merge-round.yaml` into this sub-recipe. It is not a
+/// `base_branch` an operator gave `auto-drive-to-merge`, which is never
+/// forwarded here.
 ///
-/// The hazard is no longer invisible. The record names `trunk` and says it
-/// came from the clone's default, so the assessment can compare it against
-/// the base `step-01-sync-with-base` observed and withhold the declaration
-/// where they differ.
+/// This is the fix. The clone's own default is `trunk` and is no longer
+/// consulted: measured against the round's `main` the change set is this
+/// PR's documentation file alone, and `src/app.js` -- which only a
+/// measurement against `trunk` picks up -- is absent from it. A fall-back to
+/// the clone default fails all four assertions, not just the one naming the
+/// source.
 #[test]
-fn without_an_operator_base_the_step_answers_with_the_clone_default() {
+fn the_rounds_own_base_is_measured_against_not_the_clone_default() {
     let w = divergent_default_world();
-    let j = inputs_with_base(&w, None);
+    let j = inputs_from(
+        &w,
+        Sources {
+            recipe: Some("main"),
+            ..Sources::default()
+        },
+    );
 
+    assert_eq!(
+        base_of(&j),
+        ("main".into(), "recipe".into()),
+        "the record names the base the round observed, and says the round named it: {j}"
+    );
     assert_eq!(
         field(&j, "docs_only"),
-        "false",
-        "the clone's default is trunk, and against trunk the PR touches source: {j}"
+        "true",
+        "against the PR's own base the change is documentation only: {j}"
     );
     let paths = field(&j, "qa_command_paths");
-    assert!(
-        paths.contains("src/app.js"),
-        "the change set measured against trunk carries the source file: {paths}"
-    );
     assert_eq!(
-        (field(&j, "qa_base"), field(&j, "qa_base_source")),
-        ("trunk".into(), "clone-default".into()),
-        "the record names the clone default it fell back to, so a reader can          see this is not the PR's own base: {j}"
+        paths, "docs/install.md",
+        "the change set is the diff against the round's base: {j}"
+    );
+    assert!(
+        !paths.contains("src/app.js"),
+        "a measurement against the clone default would carry the source file: {paths}"
+    );
+    assert!(
+        w.gh_calls().is_empty(),
+        "the round already answered, so no lookup is made: {:?}",
+        w.gh_calls()
     );
 }
 
-/// Neither source answers, so the step guesses nothing. It used to fall
-/// back to the literal `main`, which was right here only by coincidence --
-/// this PR's base happens to be `main` -- and would have measured a PR into
-/// `develop` against `main` and recorded the result as fact.
+/// Source 3. Where neither the operator nor the round named a base, the step
+/// reads the PR's own base from the hosting interface and records that that
+/// is where it came from. It is one read-only lookup, for the digits it was
+/// given, and the answer is taken as a branch name and nothing else.
+#[test]
+fn the_prs_own_base_is_read_where_no_higher_source_answered() {
+    let w = divergent_default_world();
+    let j = inputs_from(
+        &w,
+        Sources {
+            pr_number: Some("2618"),
+            pr_base: Some("main"),
+            ..Sources::default()
+        },
+    );
+
+    assert_eq!(
+        base_of(&j),
+        ("main".into(), "pr-base".into()),
+        "the record names the PR's own base, and says it was read from the PR: {j}"
+    );
+    assert_eq!(
+        field(&j, "docs_only"),
+        "true",
+        "against the PR's own base the change is documentation only: {j}"
+    );
+    assert_eq!(
+        field(&j, "qa_command_paths"),
+        "docs/install.md",
+        "the change set is the diff against the PR's own base: {j}"
+    );
+
+    let calls = w.gh_calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "one read-only lookup per round, and no more: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("pr view") && calls[0].contains("2618"),
+        "the lookup asks about the PR it was given: {calls:?}"
+    );
+    assert!(
+        calls[0].contains("baseRefName"),
+        "it asks for the base and nothing else: {calls:?}"
+    );
+}
+
+/// A lookup that cannot be made is not an answer. The hosting interface is
+/// unreachable in this world, so no source answered, and the step records no
+/// base: it does not fall back to the clone's default `trunk`, which is this
+/// PR's base only where the PR happens to target it. Measuring against the
+/// wrong base and recording the answer as fact is the defect; measuring
+/// nothing, and saying so, is the fix.
+#[test]
+fn a_lookup_that_cannot_be_made_resolves_none_and_never_the_clone_default() {
+    let w = divergent_default_world();
+    let j = inputs_from(
+        &w,
+        Sources {
+            pr_number: Some("2618"),
+            ..Sources::default()
+        },
+    );
+
+    assert_eq!(
+        base_of(&j),
+        (String::new(), "none".into()),
+        "no source answered, so the record names no base and says so: {j}"
+    );
+    assert_eq!(
+        field(&j, "qa_command_paths"),
+        "(unknown)",
+        "with no base there is no change set to measure, and none is guessed: {j}"
+    );
+    assert_eq!(
+        field(&j, "docs_only"),
+        "unknown",
+        "an unmeasured change set is unknown, never a documentation-only claim: {j}"
+    );
+    assert_eq!(
+        field(&j, "qa_criterion1_declaration"),
+        "none",
+        "an unset base takes the decl-only path, so no merge-base declaration counts: {j}"
+    );
+    assert!(
+        !w.gh_calls().is_empty(),
+        "the lookup was attempted: it is the unreachable interface that gave no answer"
+    );
+
+    // An unmeasured change set is an input the judgement carries on from.
+    assert_judgement_shape(&w.judgement("auto", "pass"));
+}
+
+/// The question is screened before it is asked. `gh pr view` takes a number,
+/// a URL or a branch name and parses options of its own, so an option-shaped
+/// `pr_number` could otherwise redirect the lookup at another repository and
+/// make the answer entirely caller-chosen -- and a plain branch name passes
+/// every screen the answer itself goes through. Anything but one to ten
+/// digits therefore makes no lookup at all, and since the two sources above
+/// it were empty for the step to have reached the lookup, the base resolves
+/// to `none`.
+#[test]
+fn a_pr_number_that_is_not_digits_makes_no_lookup_at_all() {
+    for bad in [
+        "--repo attacker/evil",
+        "-R attacker/evil",
+        "2618 --repo attacker/evil",
+        "https://github.com/attacker/evil/pull/1",
+        "trunk",
+        "12345678901",
+    ] {
+        let w = divergent_default_world();
+        let j = inputs_from(
+            &w,
+            Sources {
+                pr_number: Some(bad),
+                pr_base: Some("attacker-chosen"),
+                ..Sources::default()
+            },
+        );
+        assert!(
+            w.gh_calls().is_empty(),
+            "{bad:?}: no lookup is made: {:?}",
+            w.gh_calls()
+        );
+        assert_eq!(
+            base_of(&j),
+            (String::new(), "none".into()),
+            "{bad:?}: no source answered, so the record names no base: {j}"
+        );
+        assert_eq!(
+            field(&j, "qa_command_paths"),
+            "(unknown)",
+            "{bad:?}: no base, so no change set: {j}"
+        );
+    }
+}
+
+/// The answer is screened too, and the screen is fail-closed: a candidate
+/// that fails it resolves the base to `none`. The step does not hand on to
+/// the next source, because measuring against the next source's base is
+/// measuring against a base other than the one the failing source named --
+/// the hazard the whole order exists to avoid. The round names `main` below
+/// each rejected value here and the step still measures nothing.
 ///
-/// Now the step passes no base to the measurement at all. The record says
-/// so (`qa_base` empty, `qa_base_source` `none`), the change set is not
-/// measured rather than measured against a guess, and the merge-base
-/// declaration is `none` because `autodrive_qa_sources.sh` takes its
-/// `decl-only` path when `AUTODRIVE_QA_BASE` is unset (#2458). Every one of
-/// those is a fact the judgement carries on from; none is a hold.
+/// The rejected value is never echoed. It is untrusted, it may carry control
+/// bytes, and this step has no sanitiser on its own stderr. What the step
+/// does say is that a base was rejected and which source offered it, so the
+/// cause is diagnosable from the round's log.
+#[test]
+fn a_rejected_base_resolves_none_and_does_not_fall_through() {
+    for bad in [
+        "main..evil",
+        "-x",
+        "--upload-pack=run-this",
+        "refs/heads/main with a space",
+        "main^{}",
+        "main~1",
+        "main:evil",
+    ] {
+        let w = divergent_default_world();
+        let o = run_qa_inputs(
+            &w,
+            &Sources {
+                operator: Some(bad),
+                recipe: Some("main"),
+                ..Sources::default()
+            },
+        );
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{bad:?}: the step still names what it measured and exits 0: {}",
+            show(&o)
+        );
+        let j = json_of(&o);
+        assert_eq!(
+            base_of(&j),
+            (String::new(), "none".into()),
+            "{bad:?}: a rejected base resolves none, and the round's base below it is not \
+             measured against instead: {j}"
+        );
+        assert_eq!(
+            field(&j, "qa_command_paths"),
+            "(unknown)",
+            "{bad:?}: no base was resolved, so no change set was measured: {j}"
+        );
+        let err = text(&o.stderr);
+        assert!(
+            err.contains("rejected"),
+            "{bad:?}: the step says a base was rejected: {}",
+            show(&o)
+        );
+        assert!(
+            err.contains("operator"),
+            "{bad:?}: and which source offered it: {}",
+            show(&o)
+        );
+        assert!(
+            !err.contains(bad),
+            "{bad:?}: the rejected value itself is never echoed: {}",
+            show(&o)
+        );
+    }
+}
+
+/// No source answers at all -- this recipe run on its own, with no operator
+/// override, no round above it to pass a base down and no PR number to ask
+/// about -- so the step guesses nothing. The clone still names `trunk` as its
+/// default here and the step does not take it; nor does it fall back to the
+/// literal `main` it once used, which was right in this world only by
+/// coincidence and would have measured a PR into `develop` against `main`
+/// and recorded the answer as fact.
+///
+/// The step passes no base to the measurement at all. The record says so
+/// (`qa_base` empty, `qa_base_source` `none`), the change set is not measured
+/// rather than measured against a guess, and the merge-base declaration is
+/// `none` because `autodrive_qa_sources.sh` takes its `decl-only` path when
+/// `AUTODRIVE_QA_BASE` is unset (#2458). Every one of those is a fact the
+/// judgement carries on from; none is a hold.
 #[test]
 fn an_unresolved_base_is_recorded_as_none_and_measures_no_change_set() {
     let w = divergent_default_world();
-    w.git(&["symbolic-ref", "-d", "refs/remotes/origin/HEAD"]);
     let j = inputs_with_base(&w, None);
+    assert!(
+        w.gh_calls().is_empty(),
+        "with no PR number there is nothing to ask about, so nothing is asked: {:?}",
+        w.gh_calls()
+    );
 
     assert_eq!(
         (field(&j, "qa_base"), field(&j, "qa_base_source")),

@@ -23,8 +23,8 @@ use serde_yaml::Value;
 use sha2::{Digest, Sha256};
 
 use crate::support::auto_drive_light::{
-    Fakes, LightRepo, fake_bin, jq_available, private_dir, read, recipe, repo_root, run_bash, show,
-    stderr, stdout, step_command,
+    Fakes, LightRepo, fake_bin, git, jq_available, private_dir, read, recipe, repo_root, run_bash,
+    show, stderr, stdout, step_command,
 };
 
 const NAME: &str = "auto-drive-light";
@@ -1046,6 +1046,104 @@ fn light_task_id_accepts_exactly_the_task_ids_resolve_task_accepts() {
     assert!(
         e.fakes.gh_calls().is_empty(),
         "light-task-id makes no gh call: {:?}",
+        e.fakes.gh_calls()
+    );
+}
+
+/// #2569: `light-qa-inputs` measures the change set against the clone's own
+/// default branch, and consults nothing else.
+///
+/// This step runs only on the new-change path, where the `quick/` branch
+/// starts from `origin/HEAD` and `light-open-pr` opens the PR against that
+/// same default. The clone's default is therefore both the branch the change
+/// was made from and the branch the PR will target, and it stays a legitimate
+/// answer here: with no PR open there is no PR base for it to be wrong
+/// against, which is why the merge path dropped it and this path keeps it.
+///
+/// A `base_branch` the operator gave the run is neither of those branches,
+/// and an `AUTODRIVE_QA_BASE` inherited from the environment is not this
+/// step's to use: the step resolves the base itself and sets that variable
+/// from what it found. Both are set to `trunk` here, and `trunk` would give a
+/// different change set, so taking either would show in all three of the base
+/// name, the source and the measured paths.
+///
+/// No PR exists yet, so nothing is asked of the hosting interface:
+/// `clone-default` and `none` are this step's only two answers.
+#[test]
+fn light_qa_inputs_measures_against_the_clone_default_only() {
+    if skip() {
+        return;
+    }
+    let e = StepEnv::new();
+
+    // origin/trunk keeps the base commit; origin/main moves on with a source
+    // file and is the clone's default. Measured against main the change set is
+    // the documentation file alone; measured against trunk it also carries
+    // the source file.
+    let a = e.repo.base.clone();
+    git(&e.repo.wt, &["update-ref", "refs/remotes/origin/trunk", &a]);
+    e.repo
+        .write("crates/foo/src/added.rs", "pub fn added() {}\n");
+    let b = e.repo.commit("feat: add a module");
+    git(&e.repo.wt, &["update-ref", "refs/remotes/origin/main", &b]);
+    git(
+        &e.repo.wt,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    e.repo.write("docs/guide.md", "# guide\n\nand more\n");
+    e.repo.commit("docs: extend the guide");
+
+    let wt = e
+        .repo
+        .wt
+        .canonicalize()
+        .expect("the worktree path is the one worktree_setup_path.sh accepts");
+    let setup = format!(r#"{{"worktree_path":"{}"}}"#, wt.display());
+    // `cargo` is kept off PATH: the measurement runs the suite it detects,
+    // and this fixture is not a tree to build. An absent command is a fact
+    // the record carries, which is all this case needs of it.
+    let path = format!("{}:/usr/bin:/bin", e.fakes.bin.display());
+    let o = e.run(
+        "light-qa-inputs",
+        &[
+            ("RECIPE_VAR_worktree_setup", setup.as_str()),
+            ("RECIPE_VAR_base_branch", "trunk"),
+            ("AUTODRIVE_QA_BASE", "trunk"),
+            ("PATH", path.as_str()),
+        ],
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+
+    let line = stdout(&o)
+        .lines()
+        .rev()
+        .find(|l| l.starts_with('{'))
+        .map(str::to_string)
+        .unwrap_or_else(|| panic!("the step prints the measured record: {}", show(&o)));
+    let rec: serde_json::Value = serde_json::from_str(&line).expect("the record is one JSON line");
+    let f = |k: &str| rec[k].as_str().unwrap_or_default().to_string();
+
+    assert_eq!(
+        (f("qa_base"), f("qa_base_source")),
+        ("main".into(), "clone-default".into()),
+        "the base is the clone's own default, and the record says that is what it is: {rec}"
+    );
+    assert_eq!(
+        f("docs_only"),
+        "true",
+        "against the clone's default the committed change set is documentation only: {rec}"
+    );
+    assert!(
+        !f("qa_command_paths").contains("added.rs"),
+        "taking trunk instead would carry the source file: {rec}"
+    );
+    assert!(
+        e.fakes.gh_calls().is_empty(),
+        "there is no PR yet, so no base is asked of the hosting interface: {:?}",
         e.fakes.gh_calls()
     );
 }

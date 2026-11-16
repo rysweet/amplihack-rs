@@ -296,10 +296,25 @@ exit 0
             &self.bin.join("qa-suite"),
             &format!("#!/bin/sh\nprintf 'qa-suite %s\\n' \"$*\" >> '{log}'\necho ok\nexit 0\n"),
         );
+        // The hosting interface, which logs every call it is given. By
+        // default it answers nothing and exits 1: that is the offline
+        // fixture, and it is also the real "the lookup could not be made"
+        // case. With `FAKE_GH_BASE_REF` set it answers a `pr view` with that
+        // branch name on one line, as `gh pr view <n> --json baseRefName
+        // --jq .baseRefName` does. No other verb ever answers, so a step
+        // that asks it anything else is as offline as before.
         write_exec(
             &self.bin.join("gh"),
             &format!(
-                "#!/bin/sh\nprintf 'gh %s\\n' \"$*\" >> '{log}'\necho 'gh: offline fixture' >&2\nexit 1\n"
+                r#"#!/bin/sh
+printf 'gh %s\n' "$*" >> '{log}'
+if [ -n "${{FAKE_GH_BASE_REF:-}}" ] && [ "${{1:-}}" = pr ] && [ "${{2:-}}" = view ]; then
+  printf '%s\n' "$FAKE_GH_BASE_REF"
+  exit 0
+fi
+echo 'gh: offline fixture' >&2
+exit 1
+"#
             ),
         );
         // Only `command -v jq` is checked by the steps under test.
@@ -787,6 +802,16 @@ printf '"qa_cited_files":%s,"qa_blockers":%s,"qa_scenario_runs":%s,"qa_fallback_
             .unwrap_or_default()
             .lines()
             .map(str::to_string)
+            .collect()
+    }
+
+    /// Every recorded `gh` call, in order, as the argument line the fake
+    /// logged. The base lookup is the only `gh` call the steps under test
+    /// make, so an empty list means no lookup was attempted at all.
+    pub fn gh_calls(&self) -> Vec<String> {
+        self.tool_calls()
+            .into_iter()
+            .filter(|l| l.starts_with("gh "))
             .collect()
     }
 
