@@ -273,8 +273,10 @@ while :; do
   # #1743, decided in code before the evaluator: no progress, then the budget. RF: 1 clean, 2 failed (rc!=0 or no verdict; the evaluator judges faults), 0 otherwise.
   # #2575: merge-ready round files hold only the verdict (no CI_SIGNAL/findings), so no-progress skips it; the budget bounds it.
   HEAD_NOW="$(git -C "$REPO" rev-parse HEAD || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
+  # #2333: a round that says it waited on something outside the loop is exempt from the rule above.
+  ROUND_WAITING="$(field "$RAW" round_waiting "")"
   RF=0; [ "$ROUND_CLEAN" = "true" ] && RF=1 || { [ "$ROUND_RC" -eq 0 ] && [ "$ROUND_VERDICT" != "MISSING" ]; } || RF=2
-  [ "$RF" != 0 ] || [ "$LOOP_NAME" = merge-ready ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
+  [ "$RF" != 0 ] || [ "$LOOP_NAME" = merge-ready ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL" "$ROUND_WAITING"
   bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$HEAD_NOW" "$RF" "${RECORD}.findings" "$CI_SIGNAL"
   [ "$ROUND_CLEAN" = "true" ] || budget_stop post
   TEST_SIGNAL="$(field "$RAW" test_signal "")"
