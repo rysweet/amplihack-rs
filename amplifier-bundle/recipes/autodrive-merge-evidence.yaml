@@ -1,10 +1,10 @@
 name: "autodrive-merge-evidence"
 description: |
   Deterministic evidence collection for one round of the auto-drive-to-merge
-  merge-ready loop: bring the branch up to date with its base, run the
-  repository's own tests and, where qa-team's repo-type table requires
-  gadugi, validate and run the `qa-team` scenarios with gadugi-test, and wait
-  for CI on the current head to reach a terminal state.
+  merge-ready loop: bring the branch up to date with its base, measure the
+  change set against the base this pull request merges into, run the
+  repository's own tests, collect the inputs the criterion-1 judgement reads,
+  and wait for CI on the current head to reach a terminal state.
 
   Everything here is MEASURED. No step in this brick forms an opinion, and
   nothing it reports is a model's impression. Unreadable is never reported as
@@ -30,6 +30,11 @@ context:
   autodrive_dry_run: "false"
   # The round's step-00-tools-dir result; empty when this recipe runs alone.
   autodrive_tools_dir: ""
+  # The base the round's own preflight observed for this PR, passed down by
+  # autodrive-merge-round.yaml. step-02a-qa-inputs measures the change set
+  # against it (#2569). Empty when no round passed one, and then the step
+  # reads the PR's own base from the hosting interface instead.
+  autodrive_base_branch: ""
   # step-02a-qa-inputs' measured record; step-02 judges criterion 1 from it.
   qa_inputs: ""
 
@@ -65,7 +70,12 @@ steps:
       unset CDPATH
       WT="${RECIPE_VAR_repo_path:-.}"
       # Built from these literals and nothing else. This step has no
-      # sanitiser, so no command output is interpolated into parsed JSON.
+      # sanitiser of its own, so nothing it prints as JSON comes from a
+      # command's output: the one value it reads from a command, the PR's
+      # own base, reaches the record only through the measurement tool,
+      # which sanitises and caps it, and only after passing the branch-name
+      # screen below. Its own stderr is unsanitised too, so a value this
+      # step refused is never echoed there.
       unavailable() {
         printf '{"qa_status":"BLOCKED","qa_reason":"qa-measurement-unavailable","qa_summary":"%s","qa_guidance":""}\n' "$1"
         exit 0
@@ -106,19 +116,65 @@ steps:
         echo "[skip] not a git repo at ${WT}; the QA measurement needs one, so this step reports the named blocker instead" >&2
         unavailable "the worktree under review is not a git repository"
       }
-      # The base the measurement uses: the operator's, else the clone's own
-      # default. There is no third source. A literal fallback here would
-      # measure a PR into another branch against the wrong change set and
-      # record the answer as fact, so where neither source answers the base
-      # is left unset: autodrive_qa_sources.sh reads unset (not empty) as
-      # the signal to count no merge-base declaration at all (#2458), and
+      # The base the measurement uses is the base this PR merges into, from
+      # the first of three sources that answers: the operator's override,
+      # then the base this round's own preflight observed and passed down as
+      # autodrive_base_branch, then the PR's own base read from the hosting
+      # interface. The clone's own default branch is not among them: it is
+      # this PR's base only where the PR happens to target it, and a PR into
+      # any other branch measured against it recorded another branch's
+      # commits as this PR's change set, and the answer as fact (#2569). Nor
+      # is there a literal fallback. Where none of the three answers, the
+      # base is left unset: autodrive_qa_sources.sh reads unset (not empty)
+      # as the signal to count no merge-base declaration at all (#2458), and
       # the record then carries no change set rather than a guessed one.
-      # BSRC is one of three literals, assigned at the branch that was
-      # taken, so no environment value reaches the record through it.
-      BASE="${AUTODRIVE_QA_BASE:-}"; BSRC="operator"
-      if [ -z "$BASE" ]; then
-        BASE="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-        BASE="${BASE#origin/}"; BSRC="clone-default"
+      # BSRC is one of four literals, assigned at the branch that was taken,
+      # so no environment value and no command output reaches the record
+      # through it.
+      base_ok() { # one line of branch-name characters that git itself accepts
+        case "$1" in
+          ''|-*|*..*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*) return 1 ;;
+        esac
+        git check-ref-format --branch "$1" >/dev/null 2>&1
+      }
+      # Fail-closed, and once only: a candidate the screen refuses resolves
+      # to no base at all. Handing on to the next source would measure
+      # against a base other than the one the refused source named, which is
+      # the hazard this order exists to avoid.
+      BASE=""; BSRC="none"
+      if [ -n "${AUTODRIVE_QA_BASE:-}" ]; then
+        CAND="$AUTODRIVE_QA_BASE"; FROM="operator"
+      elif [ -n "${RECIPE_VAR_autodrive_base_branch:-}" ]; then
+        CAND="$RECIPE_VAR_autodrive_base_branch"; FROM="recipe"
+      else
+        CAND=""; FROM=""
+        # `gh pr view` takes a number, a URL or a branch name and parses
+        # options of its own, so an option-shaped pr_number could redirect
+        # the lookup at another repository and make the answer entirely
+        # caller-chosen. Digits only, and no lookup at all otherwise.
+        PRN="${RECIPE_VAR_pr_number:-}"
+        case "$PRN" in
+          ''|*[!0123456789]*) ;;
+          ???????????*) ;;   # eleven digits or more is no pull request number
+          *)
+            # One read-only lookup, non-interactive so it exits instead of
+            # waiting on a terminal, with its stderr discarded: that text
+            # names the host, the API URL and the account, and this step's
+            # own stderr reaches the round's log.
+            CAND="$(GH_PAGER=cat GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 GIT_TERMINAL_PROMPT=0 \
+              gh pr view "$PRN" --json baseRefName --jq .baseRefName </dev/null 2>/dev/null \
+              | head -n 1 | LC_ALL=C tr -d '\000-\037\177' || true)"
+            [ -z "$CAND" ] || FROM="pr-base"
+            ;;
+        esac
+      fi
+      if [ -n "$CAND" ]; then
+        if base_ok "$CAND"; then
+          BASE="$CAND"; BSRC="$FROM"
+        else
+          # What was refused, and who offered it. Never the value itself.
+          echo "[base] the ${FROM} base was rejected: it is not one line that git check-ref-format accepts, so no base was resolved and no change set is measured" >&2
+        fi
       fi
       if [ -n "$BASE" ]; then export AUTODRIVE_QA_BASE="$BASE"; else unset AUTODRIVE_QA_BASE; BSRC="none"; fi
       REC="$(REPO_PATH="$WT" AUTODRIVE_QA_BASE_SOURCE="$BSRC" \

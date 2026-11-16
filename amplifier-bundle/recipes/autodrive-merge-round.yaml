@@ -31,6 +31,12 @@ context:
   autodrive_round_record: ""
   autodrive_round_label: "round"
   autodrive_qa_evidence: ""
+  # The base this round's own preflight observed for the PR, forwarded by
+  # autodrive_loop.sh and autodrive_crusty_rereview.sh. The QA measurement
+  # takes its base from this, so the change set it reports is the diff
+  # against the branch the PR merges into (#2569). Empty where a caller
+  # does not pass it; the measurement then reads the PR's own base itself.
+  autodrive_base_branch: ""
   autodrive_resolved_concerns_file: ""
   autodrive_state_dir: ""
   ci_evidence: ""
@@ -106,6 +112,7 @@ steps:
       no_merge: "{{no_merge}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
       autodrive_tools_dir: "{{autodrive_tools_dir}}"
+      autodrive_base_branch: "{{autodrive_base_branch}}"
   # D5: hash qa-evidence.json before any agent runs; step-03 re-hashes, step-05 records.
   - id: "step-00d-qa-evidence-hash"
     type: "bash"

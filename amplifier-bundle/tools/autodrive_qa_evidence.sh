@@ -35,7 +35,7 @@
 #   AUTODRIVE_QA_EVIDENCE  file the record is written to, private (optional)
 #   AUTODRIVE_ROUND_LABEL  recorded as qa_round
 #   AUTODRIVE_QA_BASE      the base branch name, for the changed paths; unset means no base was resolved, and nothing here guesses one
-#   AUTODRIVE_QA_BASE_SOURCE  how the caller reached that base, checked here: operator, clone-default or none. Unset beside a base is operator; no base, or any other word, is none
+#   AUTODRIVE_QA_BASE_SOURCE  how the caller reached that base, checked here: operator, recipe, pr-base, clone-default or none. Unset beside a base is operator; no base is none, and any other word is none with the base cleared, so a newer caller's name reaching an older copy of this tool never records a source beside a change set it did not measure
 #   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
 #   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
 # Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE
@@ -121,7 +121,7 @@ san() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr '\
 # character leaves invalid UTF-8, which every JSON reader rejects.
 ascii() { LC_ALL=C tr -d '\200-\377'; }
 CAUSES=""; QBASE="$(printf '%s' "${AUTODRIVE_QA_BASE:-}" | san | ascii | cut -c1-200)"; QBSRC="${AUTODRIVE_QA_BASE_SOURCE-operator}"
-case "$QBSRC" in operator|clone-default) [ -n "$QBASE" ] || QBSRC="none" ;; *) QBSRC="none" ;; esac
+case "$QBSRC" in operator|recipe|pr-base|clone-default) [ -n "$QBASE" ] || QBSRC="none" ;; *) QBSRC="none"; QBASE="" ;; esac
 # No base means no change set was measured: the scope helper's `(none)` would read as a pull request that changed nothing.
 [ -n "$QBASE" ] || PATHS="(unknown)"
 cause() { CAUSES="${CAUSES}${CAUSES:+; }$1"; }
