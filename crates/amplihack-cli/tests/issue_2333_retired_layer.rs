@@ -121,6 +121,8 @@ fn the_crusty_wait_result_and_its_exit_code_are_gone() {
     let rust = files_under(&repo_root().join("crates"));
     for path in rust
         .iter()
+        // This file names the retired constant, by design.
+        .filter(|p| !p.ends_with("issue_2333_retired_layer.rs"))
         .filter(|p| p.extension().is_some_and(|e| e == "rs"))
     {
         let body = std::fs::read_to_string(path).unwrap_or_default();

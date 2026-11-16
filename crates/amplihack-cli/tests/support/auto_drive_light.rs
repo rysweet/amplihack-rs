@@ -263,15 +263,11 @@ pub fn fault(o: &Output, token: &str) {
 /// - `issue create`              `https://github.com/o/r/issues/$FAKE_GH_NEW_ISSUE`
 /// - `issue comment`, `pr comment` nothing
 ///
-/// REST answers, so a tool may read the same facts without GraphQL (#2333):
+/// REST answers the one read the head check needs without GraphQL (#2333):
 ///
 /// - `api repos/*/*/pulls/<n>`   `$FAKE_GH_REST_PR`, by default PR 7 open at
 ///   `$FAKE_GH_HEAD` with `mergeable_state` `$FAKE_GH_REST_MERGE_STATE`
 ///   (default `clean`)
-/// - `api repos/*/*/commits/*/check-runs*` `$FAKE_GH_REST_CHECK_RUNS`
-///   (default one completed, successful run)
-/// - `api repos/*/*/commits/*/status*`     `$FAKE_GH_REST_STATUS`
-///   (default `success` with no statuses)
 ///
 /// When `$FAKE_GH_FAIL` is set and the joined argv contains it, the call
 /// prints `HTTP 404: Not Found` on stderr and exits `$FAKE_GH_EXIT_CODE`
@@ -330,10 +326,6 @@ case "$1 ${2:-}" in
   *)
     if [ "$1" = api ] && [[ "$2" == repos/*/*/pulls/* ]] && [[ "$2" != */pulls/*/* ]]; then
       emit "${FAKE_GH_REST_PR:-{\"number\":7,\"state\":\"open\",\"merged\":false,\"title\":\"fixture pull request\",\"body\":\"fixture body\",\"draft\":false,\"mergeable_state\":\"${FAKE_GH_REST_MERGE_STATE:-clean}\",\"head\":{\"sha\":\"${FAKE_GH_HEAD:-}\",\"ref\":\"quick/demo\"},\"base\":{\"ref\":\"${FAKE_GH_BASE_NAME:-main}\",\"sha\":\"${FAKE_GH_BASE_OID:-}\"}}}"
-    elif [ "$1" = api ] && [[ "$2" == repos/*/*/commits/*/check-runs* ]]; then
-      emit "${FAKE_GH_REST_CHECK_RUNS:-{\"total_count\":1,\"check_runs\":[{\"name\":\"ci\",\"status\":\"completed\",\"conclusion\":\"success\"}]}}"
-    elif [ "$1" = api ] && [[ "$2" == repos/*/*/commits/*/status* ]]; then
-      emit "${FAKE_GH_REST_STATUS:-{\"state\":\"success\",\"statuses\":[],\"total_count\":0}}"
     elif [ "$1" = api ] && [[ "$joined" == *search/issues* ]]; then
       emit "{\"total_count\":0,\"items\":${FAKE_GH_SEARCH_API:-[]}}"
     elif [ "$1" = api ] && [[ "$joined" == *repos/o/r/issues/* ]]; then
