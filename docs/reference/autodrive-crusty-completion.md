@@ -1,6 +1,6 @@
 ---
 title: Auto-drive Crusty Completion Contract
-description: Completion-first dispatch, decision integrity, the PR head check without GraphQL, and follow-up finalization for Crusty reviews.
+description: Completion-first dispatch, decision integrity, the PR head check without GraphQL, the waiting exemption from the no-progress rule, and follow-up finalization for Crusty reviews.
 last_updated: 2026-11-15
 review_schedule: quarterly
 owner: workflow-team
@@ -29,6 +29,7 @@ loop's own evaluator and completion policy are unchanged.
 - [Decision format](#decision-format)
 - [Dispatch validation](#dispatch-validation)
 - [Head check outcomes](#head-check-outcomes)
+- [Waiting is not an absence of progress](#waiting-is-not-an-absence-of-progress)
 - [Results and accounting](#results-and-accounting)
 - [Follow-up finalization](#follow-up-finalization)
 - [Readiness assessment outcomes](#readiness-assessment-outcomes)
@@ -195,8 +196,10 @@ step from arbitrary code running as that user.
 Dispatch reads the PR's head on GitHub and compares it with the head the
 round reviewed. No GraphQL call is made on this path: `gh pr view --json
 headRefOid` is not used, so an exhausted GraphQL allowance cannot decide a
-clean round (#2333). The merge step's own reads are separate and are
-described in [Auto-drive REST Reads](autodrive-rest-reads.md).
+clean round (#2333). The merge step reads its own facts separately: merge
+readiness is an agentic write-up (#2575), and the expected checks at the
+head are read with REST `gh api` GETs, described in
+[Expected checks at the head](autodrive-expected-checks.md).
 
 ### Where the PR number comes from
 
@@ -228,11 +231,27 @@ resolve the repository from the worktree's remotes, and `git ls-remote` is
 invoked with the canonical HTTPS URL as a literal argument, from a directory
 outside the PR worktree, with `GIT_CONFIG_NOSYSTEM=1`,
 `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_PARAMETERS` and `GIT_CONFIG_COUNT`
-removed, `GIT_TERMINAL_PROMPT=0`, and `GIT_ASKPASS` and `SSH_ASKPASS`
-removed. The round's own agent writes inside that worktree, so a remote, an
-`insteadOf` rewrite or a credential helper configured there must not reach
-this read; and a remote that asks for credentials must fail rather than wait
-for an answer that will not come.
+removed, `GIT_TERMINAL_PROMPT=0`, `GIT_SSH_COMMAND` set to `ssh -o
+BatchMode=yes`, and `GIT_ASKPASS` and `SSH_ASKPASS` removed. The round's own
+agent writes inside that worktree, so a remote, an `insteadOf` rewrite or a
+credential helper configured there must not reach this read; and a remote
+that asks for credentials must fail rather than wait for an answer that will
+not come.
+
+That scrubbing also means route 1 carries no credential at all, by
+construction. On a private repository it is therefore an unauthenticated read
+that returns no line, and the read falls through to route 2, which is the
+only authenticated route. A private repository without a working `gh`
+credential has no route that answers, and reaches the unavailable outcome
+with `read-failed`.
+
+Route 2 is given the verified `<owner>/<repo>` as a literal path segment and
+runs with `GH_REPO` removed and `GH_PROMPT_DISABLED=1`, so `gh` never
+resolves the repository from the worktree's remotes and never stops for an
+answer. `GH_HOST` is removed as well: the origin has already been checked as
+github.com, so any other host is wrong by construction and the credential is
+not offered to it. `GH_CONFIG_DIR` is left alone, because the loop's own `gh`
+authentication may legitimately use it.
 
 Both SHAs are validated as 40 or 64 lowercase hex characters and compared as
 whole strings. Exactly one `ls-remote` line with a valid first field counts
@@ -259,15 +278,21 @@ their existing meanings, and nothing new enters that space.
 A `Matches` completion is unchanged except for an additive `head_read` field:
 
 ```json
-{"loop":"crusty","loop_result":"DONE","round_label":"round-14","round_verdict":"CLEAN","source":"objective-completion","evaluator_invoked":false,"head_read":"matches"}
+{"evaluator_invoked":false,"head_read":"matches","loop":"crusty","loop_result":"DONE","round_label":"round-14","round_verdict":"CLEAN","source":"objective-completion"}
 ```
 
 An unavailable read runs the evaluator, so the line is the evaluator's, with
-`evaluator_invoked` `true` and `head_read` naming the fault:
+`source` `evaluator`, `evaluator_invoked` `true`, the evaluator's own verdict
+beside the loop result, and `head_read` naming the fault:
 
 ```json
-{"loop":"crusty","loop_result":"CONTINUE","round_label":"round-14","source":"loop-health-evaluator","evaluator_invoked":true,"head_read":"unavailable:read-failed"}
+{"evaluator_invoked":true,"evaluator_verdict":"CONTINUE","head_read":"unavailable:read-failed","loop":"crusty","loop_result":"CONTINUE","round_label":"round-14","round_verdict":"CLEAN","source":"evaluator"}
 ```
+
+Both samples are the bytes the helper prints. Keys are serialized in sorted
+order, because the helper builds the object with `serde_json`'s default map,
+so a reader that matches on position rather than on key name will break on
+the next added field.
 
 ### What the evaluator is told
 
@@ -334,6 +359,110 @@ becoming a completion:
 
 The third property is not special-cased for this path. The cost is one round
 on a rare fault, against a clean round discarded every time a read failed.
+
+### Reading the outcome from a run
+
+The head is read only for a completion claim, which means only when the
+round's verdict is `CLEAN` or `MINOR_ONLY`. A round that goes to the
+evaluator on its own account, and the lines dispatch prints for the exit
+codes `79` and `75`, carry no `head_read` at all. Its absence is not a read
+failure.
+
+Of the three outcomes, only `matches` survives into the loop's result.
+`autodrive_loop.sh` captures the helper's standard output and prints it
+through `record_result` on the completion path alone, so `matches` is the one
+value that reaches `<state>/crusty-result.json`. On the unavailable path the
+loop consumes the dispatch line and rebuilds its final result from the
+health-log verdict, without the field; what is observable there is the
+warning dispatch writes to standard error before calling the evaluator.
+
+```sh
+# A round that completed:
+cat <state>/crusty-result.json
+
+# A head that could not be read, in the run log:
+grep 'WARNING: the PR head could not be read' <run log>
+```
+
+| What the run shows | What happened | What it asks of you |
+| --- | --- | --- |
+| `"head_read":"matches"` in `crusty-result.json` | The PR's head on GitHub is the head the round reviewed. | Nothing. The round completed. |
+| `WARNING: the PR head could not be read on either route (<token>)` on standard error, and no `head_read` in the result line | No route answered, or the read could not be set up. | Nothing is wrong with the pull request. The round went to the evaluator and costs one further round; the token says which fault. |
+| No dispatch line, a dispatch error naming two commits, then `INVALID_DECISION` | The head moved after the round reviewed it. | The loop stops here with exit 1 and the merge loop reports `crusty-rereview-not-done`. Review the new head in a fresh run. |
+| Neither a `head_read` nor that warning | The round made no completion claim, so no head was read. | Nothing. |
+
+`read-failed` is the only token a later run may not repeat: both routes
+failed to answer, which is what an exhausted allowance, a network fault or an
+unauthenticated read of a private repository looks like from here.
+`origin-not-github` and `pr-number-unresolved` are settings of the worktree
+the run was launched against, and are fixed there. `ambiguous-ref` and
+`bad-sha` describe what the remote answered, more than one line for the ref
+or a first field that is not a valid SHA, and the same remote state answers
+the same way again.
+
+Two things this field does not ask for. It is not a reason to add a wait, a
+retry or a polling loop: nothing on this path sleeps, and the next run reads
+again. And when reproducing a case by hand, do not read the head with `gh pr
+view --json headRefOid`; that is the GraphQL call that stops answering while
+REST still does. Use the two routes dispatch itself uses, `git ls-remote
+origin refs/pull/<n>/head` and `gh api repos/{owner}/{repo}/pulls/<n> --jq
+.head.sha`.
+
+To confirm that an exhausted allowance was the cause:
+
+```sh
+gh api rate_limit --jq '.resources.graphql, .resources.core'
+```
+
+A `remaining` of `0` with a `reset` in the future on `graphql`, while `core`
+still has budget, is the condition this path exists for.
+
+## Waiting is not an absence of progress
+
+A round that produced no commit because it was waiting on something outside
+the run has not failed to converge. The #1743 no-progress rule runs in code
+in `autodrive_loop.sh` before the evaluator sees the round, and it compares
+only the head SHA, the open-item set and the CI signal, so a round that
+waited is indistinguishable there from a round that achieved nothing.
+
+The round record carries the distinction. `autodrive_loop.sh` reads
+`round_waiting` from the record beside `ci_signal`, passes it to
+`progress_stop`, and `progress_stop` forwards it as the seventh argument of
+`autodrive_progress.sh check`. No sidecar file and no helper command are
+involved: the record is the only channel.
+
+| Where | Name | Form |
+| --- | --- | --- |
+| Round record | `round_waiting` | `true`, or absent |
+| `autodrive_loop.sh` | third argument to `progress_stop` | passed through unchanged |
+| `autodrive_progress.sh check` | seventh argument | compared with `true` as a whole string |
+
+The value `true`, exactly that string, exits the check `0`, so the loop does
+not stop: it records the round's progress row as it always does and goes on
+to the evaluator. Every other value, including `TRUE`, a padded ` true` and
+an absent field, leaves #1743's behaviour byte-identical to what it was. The merge-ready loop never reaches
+this check, so the field has no effect there.
+
+No recipe in the bundle writes `round_waiting` today. The field is read
+wherever a round record carries it, and a record without it behaves exactly
+as records did before.
+
+### What this trusts, and what bounds it
+
+`round_waiting` is the round's own account of itself, so a round that
+asserts it every time is never stopped by the no-progress rule. Three things
+bound that:
+
+- the budget stop runs after the no-progress check and is not exempt, so
+  rounds, total rounds and wall seconds still end the loop;
+- the loop-health evaluator judges every round the no-progress rule did not
+  stop, with the evidence in front of it;
+- the comparison is an exact string match, so the exemption cannot be taken
+  by accident or by a near-miss value.
+
+The exemption can only narrow a stop, never widen one. Nothing it touches
+decides a merge, and it waives no part of
+[dispatch validation](#dispatch-validation).
 
 ## Results and accounting
 

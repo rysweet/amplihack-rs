@@ -427,15 +427,14 @@ governs calls to the hosting service:
   requires a fresh readiness assessment. Exit `79` remains terminal.
 
 GitHub counts GraphQL calls against a different allowance from REST calls,
-so the reads that decide a round have a second route that does not use
-GraphQL: the PR's head in the Crusty completion dispatch, and the PR's
-state and its checks in the merge step. These are two routes to one fact,
+so the read that decides a Crusty completion does not use GraphQL: the
+completion dispatch reads the PR's head with `git ls-remote` and then with
+`gh api repos/{owner}/{repo}/pulls/{n}`. These are two routes to one fact,
 not a retry schedule; nothing sleeps between them. A read that neither
-route answered is unreadable, and the step that needed it does not report
-a decided negative it never observed: the merge step reports
-`checks-pending`, and the completion dispatch runs the loop-health
-evaluator with the fault stated in its context (#2333). See
-[REST reads on the merge path](autodrive-rest-reads.md).
+route answered is unavailable, and the dispatch does not report a decided
+negative it never observed: it runs the loop-health evaluator with the
+fault stated in its context instead of calling the head changed (#2333).
+See [Head check outcomes](autodrive-crusty-completion.md#head-check-outcomes).
 
 ### Two absolute prohibitions
 
@@ -480,10 +479,13 @@ Missing or unreadable evaluator output is never success. See
 ### No-progress stop and usage budget
 
 For a non-clean crusty round, unchanged head, sorted open-item set, and CI
-signal, with CI no longer pending, produces `STUCK`. For the merge-ready
-loop, a round whose only open item is a required check still running at the
-head ends the loop `WAITING` and goes to finalisation; it is never counted as
-no progress. A pending CI signal at an unchanged head is `CONTINUE`, never
+signal, with CI no longer pending, produces `STUCK`. A crusty round whose
+record says `round_waiting` is `true` is exempt from this check and goes to
+the evaluator instead; see
+[waiting is not an absence of progress](autodrive-crusty-completion.md#waiting-is-not-an-absence-of-progress).
+For the merge-ready loop, a round whose only open item is a required check
+still running at the head ends the loop `WAITING` and goes to finalisation;
+it is never counted as no progress. A pending CI signal at an unchanged head is `CONTINUE`, never
 `STUCK`, for the evaluator. Other not-ready rounds that change nothing are
 judged `STUCK` and the PR is handed off. Budget exhaustion is separate,
 checked before starting more work. Budgets limit cost, not convergence.
@@ -661,4 +663,3 @@ runtime compatibility.
 - [Crusty completion contract](autodrive-crusty-completion.md)
 - [Git repository environment helper](git-repo-env-helper.md)
 - [Expected checks at the head](autodrive-expected-checks.md)
-- [REST reads on the merge path](autodrive-rest-reads.md)

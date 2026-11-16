@@ -27,6 +27,13 @@ pending check does not reach the evaluator at all; it ends the loop
 `WAITING`. See
 [A pending check is a wait](autodrive-merge-ready-round.md#a-pending-check-is-a-wait-not-a-lack-of-progress).
 
+The Crusty completion dispatch sets `loop_head_read` when it could not read
+the PR's head on GitHub. A non-empty value is a fault in a read, not
+evidence about the branch: the round's own verdict still stands and the
+usual rules decide the verdict. The dispatch inserts it directly, so a
+context key of that name supplied through the shell is still rejected. See
+[Head check outcomes](autodrive-crusty-completion.md#head-check-outcomes).
+
 It is deliberately **not** an iteration counter. See
 [Why not a numeric iteration cap](#why-not-a-numeric-iteration-cap).
 
@@ -1061,3 +1068,6 @@ comes from this workspace. A predictable path in a shared directory such as
 - [Recipe Quick Reference](recipe-quick-reference.md) — recipe authoring basics.
 - [Usage-limit wait](profile-command.md#usage-limit-wait): how an agent step
   waits for a reset or for another login, and retries once.
+- [Crusty completion contract](autodrive-crusty-completion.md) — the head
+  read behind `loop_head_read`, and the `round_waiting` exemption from the
+  no-progress rule that runs before this brick.
