@@ -700,7 +700,13 @@ fn the_seeding_path_writes_its_warning_to_stderr() {
         .split("fn seed_policy_into")
         .nth(1)
         .expect("seed_policy_into is defined in profile/store.rs");
-    let body = &seeding[..seeding.len().min(1200)];
+    // To the end of this function, not a fixed number of bytes: the check is
+    // "the seeding path reaches stderr", which a comment reworded above it
+    // must not decide. `    }` at the method's indent closes it.
+    let body = seeding
+        .split_once("\n    }\n")
+        .expect("seed_policy_into is a closed method")
+        .0;
     assert!(
         body.contains("eprintln!"),
         "a refusal met while seeding must reach stderr, not only tracing:\n{body}"

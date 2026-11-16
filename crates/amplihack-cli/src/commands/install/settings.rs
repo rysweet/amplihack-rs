@@ -514,39 +514,39 @@ pub(super) fn ensure_permissions(settings: &mut Value) {
     // SEC-C2: a `permissions` value amplihack cannot merge is left exactly as
     // the user wrote it. Replacing it with these defaults would discard what
     // they set and hide the fact that the file took no deny entries; the
-    // policy writer below reports it instead.
-    if !matches!(root.get("permissions"), None | Some(Value::Object(_))) {
-        apply_deny_policy(settings, HOME_SETTINGS_LABEL);
-        return;
-    }
-    let permissions = root
-        .entry("permissions")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let permissions = ensure_object(permissions);
+    // policy writer below reports it instead of overwriting it.
+    if matches!(root.get("permissions"), None | Some(Value::Object(_))) {
+        let permissions = root
+            .entry("permissions")
+            .or_insert_with(|| Value::Object(Map::new()));
+        let permissions = ensure_object(permissions);
 
-    permissions
-        .entry("allow")
-        .or_insert_with(|| json!(["Bash", "TodoWrite", "WebSearch", "WebFetch"]));
-    permissions
-        .entry("deny")
-        .or_insert_with(|| Value::Array(Vec::new()));
-    permissions
-        .entry("defaultMode")
-        .or_insert_with(|| Value::String("bypassPermissions".to_string()));
+        permissions
+            .entry("allow")
+            .or_insert_with(|| json!(["Bash", "TodoWrite", "WebSearch", "WebFetch"]));
+        permissions
+            .entry("deny")
+            .or_insert_with(|| Value::Array(Vec::new()));
+        permissions
+            .entry("defaultMode")
+            .or_insert_with(|| Value::String("bypassPermissions".to_string()));
 
-    let additional = permissions
-        .entry("additionalDirectories")
-        .or_insert_with(|| json!([".claude", "Specs"]));
-    let additional = ensure_array(additional);
-    for dir in [".claude", "Specs"] {
-        if !additional.iter().any(|value| value.as_str() == Some(dir)) {
-            additional.push(Value::String(dir.to_string()));
+        let additional = permissions
+            .entry("additionalDirectories")
+            .or_insert_with(|| json!([".claude", "Specs"]));
+        let additional = ensure_array(additional);
+        for dir in [".claude", "Specs"] {
+            if !additional.iter().any(|value| value.as_str() == Some(dir)) {
+                additional.push(Value::String(dir.to_string()));
+            }
         }
     }
 
     // Issue #2589: the dangerous-command deny entries, from amplihack's one
     // policy list plus this installation's own additions. The entries
-    // already in the file, including the user's own, are kept.
+    // already in the file, including the user's own, are kept. Reached
+    // whichever way the branch above went, so an unmergeable `permissions`
+    // value is still met and reported.
     apply_deny_policy(settings, HOME_SETTINGS_LABEL);
 }
 

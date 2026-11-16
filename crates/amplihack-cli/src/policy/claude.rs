@@ -144,10 +144,7 @@ pub(crate) fn take_record() -> (super::HarnessWrite, Vec<String>) {
         .collect();
     let outcome = match (entries.len(), refused.len()) {
         (0, _) => HarnessWrite::NothingToWriteInto,
-        (met, 0) => {
-            debug_assert!(met > 0);
-            HarnessWrite::Written
-        }
+        (_, 0) => HarnessWrite::Written,
         (met, bad) if met == bad => HarnessWrite::AllRefused,
         _ => HarnessWrite::Partial,
     };

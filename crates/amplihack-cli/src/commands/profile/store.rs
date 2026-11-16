@@ -103,37 +103,28 @@ impl ProfileStore {
     /// and named on stderr, because `amplihack profile add` runs off the
     /// install path and nothing else would print it (SEC-C3).
     fn seed_policy_into(&self, profile_dir: &Path, name: &ProfileName) {
+        use crate::policy::claude::{DenyOutcome, record};
         let label = format!("new profile {}", name.as_str());
-        // Seeding runs off the install path, on `amplihack profile add`, so
-        // this is the only place a refusal met here is printed (SEC-C3).
-        let warn = |reason: &str| {
-            eprintln!(
-                "amplihack: warning: {}",
-                crate::policy::write_failure_warning(&format!("Claude Code ({label})"), reason)
-            );
-        };
         let refusal = std::cell::RefCell::new(None);
         let merge = update_file(&profile_dir.join("settings.json"), &|settings| {
             *refusal.borrow_mut() = apply_deny_policy(settings, &label);
         });
-        if let Some(reason) = refusal.into_inner() {
-            warn(&reason);
-            return;
-        }
-        match merge {
-            FileMerge::Written | FileMerge::AlreadyCurrent | FileMerge::Absent => {}
+        // `apply_deny_policy` records the file it met; a merge that refused
+        // the file never ran it, so that case is recorded here instead.
+        let reason = refusal.into_inner().or_else(|| match merge {
+            FileMerge::Written | FileMerge::AlreadyCurrent | FileMerge::Absent => None,
             FileMerge::Unparseable(reason) | FileMerge::Refused(reason) => {
-                // The closure never ran, so the file is recorded here.
-                crate::policy::claude::record(
-                    &label,
-                    &crate::policy::claude::DenyOutcome::Unparseable(reason.clone()),
-                );
-                tracing::warn!(
-                    "new profile settings.json: dangerous-command deny entries not written \
-                     ({reason})"
-                );
-                warn(&reason);
+                record(&label, &DenyOutcome::Unparseable(reason.clone()));
+                Some(reason)
             }
+        });
+        // `amplihack profile add` runs off the install path, so this is the
+        // only place a refusal met here is printed (SEC-C3).
+        if let Some(reason) = reason {
+            eprintln!(
+                "amplihack: warning: {}",
+                crate::policy::write_failure_warning(&format!("Claude Code ({label})"), &reason)
+            );
         }
     }
 
