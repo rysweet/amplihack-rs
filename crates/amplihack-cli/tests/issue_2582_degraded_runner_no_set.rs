@@ -23,10 +23,17 @@
 //! never to be written: the stub was asked for its capabilities and nothing
 //! else.
 //!
-//! The last test is the control. It gives a report that validates but omits
-//! `context_file_v1`, and asserts the stub *is* run with `--set` pairs that
-//! hold the values. Without it every assertion above could pass because the
-//! fixture never reached the runner at all.
+//! The last test is the control, and it carries a second assertion of its
+//! own. It gives a report that validates but omits `context_file_v1`, and
+//! asserts the stub *is* run with `--set` pairs that hold the values —
+//! without that, every assertion above could pass because the fixture never
+//! reached the runner at all. It then asserts that the run said so on
+//! stderr. That notice is the only compensating control for a runner that
+//! puts the whole context back on argv, and it is checked here rather than in
+//! a unit test because only the real binary shows what an operator actually
+//! sees: the `tracing` record of the same event is filtered out entirely
+//! unless `RUST_LOG` is set, and `eprintln!` under `cargo test` writes to
+//! libtest's capture buffer rather than to fd 2. This run sets no `RUST_LOG`.
 //!
 //! No sleep, deadline or poll: no case leaves a process running, so each run
 //! is started and waited for with `output()`.
@@ -171,6 +178,10 @@ impl Fixture {
             .env("AMPLIHACK_CLEANUP_ON_EXIT", "0")
             .env("AMPLIHACK_GOVERNOR", "off")
             .env("AMPLIHACK_USAGE_LIMIT_WAIT", "0")
+            // The environment is inherited, so an operator running the suite
+            // with `RUST_LOG=info` set would otherwise make the `tracing`
+            // record appear and mask a missing stderr notice.
+            .env_remove("RUST_LOG")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -326,5 +337,38 @@ fn a_valid_report_without_the_capability_still_reaches_the_runner_with_set() {
             "the fallback must still carry {token} on argv, or the absence \
              the other cases assert would mean nothing: {argv:?}"
         );
+    }
+
+    // The downgrade is announced. `Fixture::run` sets no `RUST_LOG`, so this
+    // is what an operator sees with no opt-in of any kind. Matched on the
+    // distinctive middle of the line rather than the whole of it, so
+    // rewording the sentence does not fail the test while dropping it does.
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        stderr.contains("recipe context is on the runner's argv"),
+        "the run took the --set transport and must say so on stderr, or the \
+         downgrade is visible only in /proc:\n{}",
+        describe(&out)
+    );
+    assert!(
+        stderr.contains("context_file_v1") && stderr.contains("RECIPE_RUNNER_RS_PATH"),
+        "the notice must name the missing capability and the override that \
+         supplied this runner:\n{}",
+        describe(&out)
+    );
+    // The notice is printed because the context is already exposed; it must
+    // not add to the exposure. (The run's other output is covered by
+    // `assert_ends_before_a_transport_is_chosen`; here the values are on argv
+    // by design, so only the notice's own line is checked.)
+    for line in stderr
+        .lines()
+        .filter(|l| l.contains("recipe context is on the runner's argv"))
+    {
+        for token in TOKENS {
+            assert!(
+                !line.contains(token),
+                "the downgrade notice printed the context value {token}: {line}"
+            );
+        }
     }
 }

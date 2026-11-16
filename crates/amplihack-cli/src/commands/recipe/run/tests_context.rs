@@ -940,8 +940,8 @@ mod issue_1976_removed_keys {
 
 mod context_transport_2582 {
     use super::super::context_transport::{
-        CONTEXT_FILE_CAPABILITY, ContextTransport, refuse_reserved_keys, supports_context_file,
-        write_context_file,
+        CONTEXT_FILE_CAPABILITY, ContextTransport, DOWNGRADE_NOTICE, refuse_reserved_keys,
+        supports_context_file, write_context_file,
     };
     use super::super::execute::pass_context;
     use std::collections::BTreeMap;
@@ -1326,6 +1326,16 @@ mod context_transport_2582 {
     /// What the `fmt` subscriber would write for one transport's record, with
     /// `info` as the maximum level, so a record emitted below it is invisible
     /// here and the test fails on the empty string.
+    ///
+    /// This is strictly *more* permissive than production, where the binary
+    /// installs `EnvFilter::from_default_env()` and an unset `RUST_LOG` means
+    /// `ERROR`. So no assertion built on this helper can show that an
+    /// operator sees anything at all; it can only show what the record
+    /// carries when something is listening. The claim that the `--set`
+    /// downgrade is actually visible belongs to
+    /// `the_set_downgrade_prints_to_stderr_without_rust_log` below and to the
+    /// integration assertion in
+    /// `tests/issue_2582_degraded_runner_no_set.rs`.
     fn captured_record(transport: &ContextTransport) -> String {
         use std::sync::{Arc, Mutex};
         use tracing_subscriber::fmt::MakeWriter;
@@ -1357,6 +1367,92 @@ mod context_transport_2582 {
         tracing::subscriber::with_default(subscriber, || transport.record());
         let bytes = buffer.0.lock().unwrap().clone();
         String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// The notice names the capability whose absence it reports. The constant
+    /// spells the name out because a `const` cannot be formatted, so without
+    /// this a rename of [`CONTEXT_FILE_CAPABILITY`] would leave the operator
+    /// reading about a capability that no longer exists.
+    #[test]
+    fn the_notice_names_the_capability_and_the_override() {
+        assert!(
+            DOWNGRADE_NOTICE.contains(CONTEXT_FILE_CAPABILITY),
+            "{DOWNGRADE_NOTICE}"
+        );
+        assert!(
+            DOWNGRADE_NOTICE.contains("RECIPE_RUNNER_RS_PATH"),
+            "the notice must name what to change: {DOWNGRADE_NOTICE}"
+        );
+        assert!(
+            DOWNGRADE_NOTICE.starts_with("amplihack: "),
+            "the house prefix: {DOWNGRADE_NOTICE}"
+        );
+        assert!(
+            !DOWNGRADE_NOTICE.contains('\n'),
+            "one line: {DOWNGRADE_NOTICE}"
+        );
+    }
+
+    /// The `--set` downgrade prints to stderr; the other two arms do not.
+    ///
+    /// This is the half of the control a unit test can hold. `captured_record`
+    /// above cannot: it installs a subscriber at `INFO`, which is strictly
+    /// more permissive than production, where `bins/amplihack` installs
+    /// `EnvFilter::from_default_env()` and an unset `RUST_LOG` means `ERROR`
+    /// — so the `tracing` record is written nowhere in a default run and no
+    /// assertion on it shows that an operator sees anything. Nor can a test
+    /// here read the bytes: `eprintln!` under `cargo test` goes to libtest's
+    /// capture buffer rather than fd 2, so a test that searched fd 2 would
+    /// pass whether or not the line were emitted at all. What this asserts is
+    /// the decision `record` acts on; that the bytes really reach stderr is
+    /// asserted against the real binary in
+    /// `tests/issue_2582_degraded_runner_no_set.rs`.
+    #[test]
+    fn only_the_set_transport_has_a_downgrade_notice() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let set = ContextTransport::choose(&without_capability(), &runtime, &context).unwrap();
+        let notice = set
+            .downgrade_notice()
+            .expect("the --set downgrade must be printed, or the control exists only in prose");
+        assert_eq!(notice, DOWNGRADE_NOTICE);
+        // The line is printed because the context is already exposed; it must
+        // not add to the exposure.
+        for key in context.keys() {
+            assert!(
+                !notice.contains(key.as_str()),
+                "a key was printed: {notice}"
+            );
+        }
+        for value in context.values() {
+            assert!(
+                !notice.contains(value.as_str()),
+                "a value was printed: {notice}"
+            );
+        }
+        assert!(
+            !notice.contains("ZQXV2582"),
+            "a value was printed: {notice}"
+        );
+
+        // `file` is what a normal run takes, and a notice on every run teaches
+        // an operator to skip the one that matters.
+        for (transport, name) in [
+            (
+                ContextTransport::choose(&with_capability(), &runtime, &context).unwrap(),
+                "file",
+            ),
+            (
+                ContextTransport::choose(&with_capability(), &runtime, &BTreeMap::new()).unwrap(),
+                "none",
+            ),
+        ] {
+            assert_eq!(
+                transport.downgrade_notice(),
+                None,
+                "the {name} transport must print nothing"
+            );
+        }
     }
 
     #[test]

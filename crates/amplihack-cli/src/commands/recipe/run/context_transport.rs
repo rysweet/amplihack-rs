@@ -11,8 +11,11 @@
 //! run takes. The `--set` path ([`super::execute::pass_context`]) remains for
 //! a runner older than the pin supplied through `RECIPE_RUNNER_RS_PATH`, and
 //! runs unchanged there. [`ContextTransport::record`] names the transport each
-//! run took, so that downgrade is visible in the run's log rather than only
-//! in `/proc`.
+//! run took: every transport at info level, and the `--set` downgrade also on
+//! stderr, unconditionally. The stderr line is the one that matters, because
+//! the binary's log filter is `ERROR` unless `RUST_LOG` says otherwise — so
+//! without it the downgrade would be visible only in `/proc`, which is what
+//! this change takes the context out of.
 //!
 //! The two paths are never mixed, and a failed file write is an error: it
 //! never falls back to `--set`.
@@ -38,6 +41,20 @@ pub(super) const CONTEXT_FILE_CAPABILITY: &str = "context_file_v1";
 
 /// The argv flag that names the context file.
 const CONTEXT_FILE_FLAG: &str = "--context-file";
+
+/// The stderr line printed once per run that takes the `--set` transport.
+///
+/// It is the operator-visible evidence that this run's context is on the
+/// runner's argv after all, and it must stay free of any key or value: it is
+/// printed precisely because the context is already exposed.
+/// The capability name is spelled out rather than interpolated, because a
+/// `const` cannot be formatted; `the_notice_names_the_capability_and_the_override`
+/// holds the two equal.
+pub(super) const DOWNGRADE_NOTICE: &str = concat!(
+    "amplihack: recipe context is on the runner's argv (--set): ",
+    "the runner supplied through RECIPE_RUNNER_RS_PATH does not report ",
+    "context_file_v1",
+);
 
 /// Folder under the runtime folder that holds the context file. It is not
 /// `tmp/`, which every step gets as `TMPDIR`.
@@ -185,20 +202,47 @@ impl ContextTransport {
         }
     }
 
-    /// Records which transport this run took, at info level, so an operator
-    /// reading a run's log can see it.
+    /// Records which transport this run took.
+    ///
+    /// Every transport is named at info level for a reader of the run's log.
+    /// That line alone is not enough for the one case that matters: the
+    /// binary installs `EnvFilter::from_default_env()` (`bins/amplihack`),
+    /// whose default directive is `ERROR`, so with `RUST_LOG` unset an
+    /// `info` record is written nowhere. The [`Self::Set`] arm therefore
+    /// also prints to stderr, unconditionally.
     ///
     /// The pinned runner reports [`CONTEXT_FILE_CAPABILITY`], so `set` means
     /// a runner older than the pin was supplied through
     /// `RECIPE_RUNNER_RS_PATH` and this run's context is on the runner's
-    /// argv after all. Without this record that downgrade is visible only in
-    /// `/proc`, which is the thing this change takes the context out of.
+    /// argv after all. Without a line nobody has to opt into, that downgrade
+    /// is visible only in `/proc`, which is the thing this change takes the
+    /// context out of. The other two arms stay on `tracing` alone: `file` is
+    /// what a normal run does, and a line on every run is noise that teaches
+    /// an operator to skip the one line here that is worth reading.
     ///
-    /// The record holds [`Self::name`] and nothing else: no key, no value,
-    /// and no count derived from one, since a count of a one-key context
-    /// says which key it was.
+    /// Both forms hold [`Self::name`] and fixed text and nothing else: no
+    /// key, no value, and no count derived from one, since a count of a
+    /// one-key context says which key it was. The stderr line goes to
+    /// stderr and never stdout, which stays data-only (#1525).
     pub(super) fn record(&self) {
         tracing::info!(transport = %self.name(), "recipe context transport");
+        if let Some(notice) = self.downgrade_notice() {
+            eprintln!("{notice}");
+        }
+    }
+
+    /// The stderr line [`Self::record`] prints for this transport, if any.
+    ///
+    /// The decision is split out from the printing because `eprintln!` under
+    /// `cargo test` writes to libtest's per-test capture buffer rather than
+    /// to fd 2, so an in-process test cannot observe the real stream and
+    /// would pass whether or not the line were ever emitted. This function is
+    /// what the unit tests assert; that the line actually reaches an
+    /// operator's stderr, from the real binary with no `RUST_LOG` set, is
+    /// asserted by
+    /// `tests/issue_2582_degraded_runner_no_set.rs::a_valid_report_without_the_capability_still_reaches_the_runner_with_set`.
+    pub(super) fn downgrade_notice(&self) -> Option<&'static str> {
+        matches!(self, Self::Set).then_some(DOWNGRADE_NOTICE)
     }
 
     /// Adds this transport's arguments to `command` and returns the argv
