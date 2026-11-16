@@ -92,17 +92,9 @@ fn under_umask_2546(
     // sibling tests in this binary set the process-global PATH to a single
     // private directory while they run. A child spawned in that window finds
     // neither `bash` nor `git` and fails with "cannot stamp trusted review
-    // directory", which says nothing about what it was testing. Reading it
-    // under the lock those tests hold gives the real PATH. An explicit PATH
-    // in `env` still wins: it is applied after this.
-    if let Some(path) = {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        std::env::var_os("PATH")
-    } {
-        command.env("PATH", path);
-    }
+    // directory", which says nothing about what it was testing. An explicit
+    // PATH in `env` still wins: it is applied after this.
+    command.env("PATH", crate::test_support::host_path());
     for (key, value) in env {
         match value {
             Some(value) => command.env(key, value),

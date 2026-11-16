@@ -128,6 +128,13 @@ fn u1_pr_key_matches_autodrive_state_sh_for_an_https_origin() {
 
 #[test]
 fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
+    // The code under test resolves `git` through the process-global PATH,
+    // which sibling tests set to a single private directory while they run,
+    // so this test holds the lock those tests take. The PATH pinned on this
+    // test's own spawns below cannot cover the production call.
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     // Runs the real shell function against a scratch repo whose origin is an
     // https remote. Skips quietly where bash or git is missing.
     let (_tmp, root) = private_root();
@@ -142,6 +149,7 @@ fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
         .args(["init", "-q"])
         .current_dir(&repo)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", crate::test_support::host_path())
         .status()
         .is_ok_and(|s| s.success());
     if !git_ok || !script.is_file() {
@@ -155,9 +163,11 @@ fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
             "https://github.com/octo-org/my.repo.git",
         ])
         .current_dir(&repo)
+        .env("PATH", crate::test_support::host_path())
         .status()
         .unwrap();
     let out = std::process::Command::new("bash")
+        .env("PATH", crate::test_support::host_path())
         .arg("-c")
         .arg(format!(
             "source {} && autodrive_state_key {} 42",
@@ -1209,6 +1219,13 @@ fn d6_runner_env_value_without_pr_lists_the_run_folder_only() {
 
 #[test]
 fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
+    // The code under test resolves `git` through the process-global PATH,
+    // which sibling tests set to a single private directory while they run,
+    // so this test holds the lock those tests take. The PATH pinned on this
+    // test's own spawns below cannot cover the production call.
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let (_tmp, root) = private_root();
     let repo = root.join("repo");
     fs::create_dir(&repo).unwrap();
@@ -1216,6 +1233,7 @@ fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
         .args(["init", "-q"])
         .current_dir(&repo)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", crate::test_support::host_path())
         .status()
         .is_ok_and(|s| s.success());
     if !ok {
@@ -1224,6 +1242,7 @@ fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
     amplihack_git::command()
         .args(["remote", "add", "origin", "git@github.com:o/r.git"])
         .current_dir(&repo)
+        .env("PATH", crate::test_support::host_path())
         .status()
         .unwrap();
     let state = root.join("state");

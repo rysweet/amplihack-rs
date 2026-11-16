@@ -699,7 +699,8 @@ fn a_real_git_add_run_under_the_record_is_summarised() {
     let home = tempfile::tempdir().unwrap();
     let git = |args: &[&str], record: Option<&GitRecord>| {
         let mut c = amplihack_git::command();
-        c.env("HOME", home.path())
+        c.env("PATH", crate::test_support::host_path())
+            .env("HOME", home.path())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("PWD", &work_dir)

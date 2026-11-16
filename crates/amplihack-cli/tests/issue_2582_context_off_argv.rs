@@ -25,7 +25,7 @@
 //! The pinned runner reports `context_file_v1`, so the file transport is the
 //! live path. The `--set` case here is the one a runner older than the pin,
 //! supplied through `RECIPE_RUNNER_RS_PATH`, would still take: it checks that
-//! path is unchanged, and it is the walker's negative control — the walk must
+//! path is unchanged, and it is the walker's positive control — the walk must
 //! find the values there, or the absence the other cases assert would mean
 //! nothing.
 

@@ -348,6 +348,7 @@ fn runtime_with_tmp() -> (tempfile::TempDir, PathBuf) {
 /// environment stays readable.
 fn cat_holder(cwd: &Path, tmpdir: &Path) -> Holder {
     let mut child = Command::new("sh")
+        .env("PATH", crate::test_support::host_path())
         .arg("-c")
         .arg("echo ready; while read -r _; do :; done")
         .current_dir(cwd)
@@ -428,6 +429,7 @@ fn runtime_guard_keeps_folder_with_a_file_open_in_it() {
     let procs = fake_proc_scope();
     let (tmp, rt) = runtime_with_tmp();
     let mut child = Command::new("sh")
+        .env("PATH", crate::test_support::host_path())
         .arg("-c")
         .arg("exec 3<\"$1\"; echo ready; exec cat")
         .arg("sh")

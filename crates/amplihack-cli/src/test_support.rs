@@ -16,6 +16,28 @@ pub(crate) fn home_env_lock() -> &'static Mutex<()> {
     env_lock()
 }
 
+/// A `PATH` that still holds this host's real directories, for a test that
+/// starts a program resolved through it.
+///
+/// Tests in this binary set the process-global `PATH` to a single private
+/// directory while they run (the install and update suites do, to test
+/// shadowing and absence). A sibling test that spawns `sh`, `bash` or `git`
+/// in that window finds none of them, and fails with `NotFound` or exit 127
+/// for a reason that has nothing to do with what it was testing.
+///
+/// The value is read once, under the same lock those tests hold, so it is
+/// never a narrowed one. Spawns then use it with no lock, and stay parallel:
+/// `Command::env("PATH", ..)` sets the search path for the program itself as
+/// well as the child's environment.
+pub(crate) fn host_path() -> OsString {
+    static PATH: OnceLock<OsString> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin"))
+    })
+    .clone()
+}
+
 /// Alias for `env_lock()` — all env locks use the same underlying mutex.
 pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
     env_lock()
