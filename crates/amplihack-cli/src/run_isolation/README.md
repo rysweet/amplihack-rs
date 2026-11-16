@@ -27,19 +27,6 @@ paths are rejected. Release validates the manifest and filesystem identities;
 durable child worktrees retain their repository metadata. Descriptor-relative
 cleanup and later reclamation of retained repositories remain acceptance gaps.
 
-`observer/linux.rs` observes successful executable launches in the runner's
-descendant tree using Linux ptrace. It follows fork, vfork, clone, and exec, and
-records executables named `git` or `git-*` except known read-only commands.
-Journals carry run and attempt identities, executable, cwd, launch-selected Git
-directory/index, routing environment, redacted argv, and timestamp. Required
-storage and attribution failures fail supervision; journals and receipts are
-synchronized before final publication. A verified ancestor observer can relay
-an independent nested scope into that run's own journal. An environment marker
-alone cannot authorize reuse. This observes neither unrelated host processes,
-arbitrary non-Git index writes, nor preparation/release commands. It does not
-establish same-user tamper resistance. Non-Linux production execution is
-rejected rather than falling back to advisory Trace2.
-
 `review_generation.rs` provisions exact recorded PR commits in private
 repositories and preserves PR instruction files as review data. Separate launch
 directories contain explicitly supplied trusted instructions. A review
@@ -54,9 +41,19 @@ Advancing a PR creates a new generation, and cleanup releases only its owner's
 generation chain. Actual agent automatic instruction/configuration discovery
 still requires production validation.
 
-Regression contracts live in `tests/issue_2096_*`. The focused suite uses
-temporary repositories and explicit temporary profiles. Socket handshakes and
-observer acknowledgements establish overlap and completion. The opt-in real-hook
-replay is separate from the controlled Rust runner/agent/hook fixtures. See
+Nothing here traces, journals or attributes the Git commands a run makes. A
+run needs no `ptrace` privilege on any platform; the private clone is the whole
+of the isolation.
+
+Regression contracts live in `tests/issue_2096_*` and `tests/issue_2738_*`.
+The crate sets `autotests = false`, so each of those files is compiled only
+through a `#[path = "..."] mod ...;` line: the `issue_2738_*` files are wired
+into `tests/main.rs`, the `issue_2096_*` files into
+`tests/issue_2096_execution_isolation.rs`. A file named in neither is never
+built, and `cargo test --workspace` stays green without running it. The
+focused suite uses temporary repositories and explicit temporary profiles.
+Socket handshakes, readiness files and child exits establish overlap and
+completion. The opt-in real-hook replay is separate from the controlled Rust
+runner/agent/hook fixtures. See
 `docs/operations/evidence/issue-2096-step8-implementation.md` for completed checks,
 remaining review findings, and delivery blockers.

@@ -117,8 +117,6 @@ The runner creates one folder per run:
 │       ├── run.json              # the run report (kept)
 │       ├── owned-paths           # worktrees and targets this run created
 │       ├── cleanup-record.json   # written only when cleanup removed something
-│       ├── git-commands.jsonl    # index-writing git commands the run made (kept)
-│       ├── git-trace2/           # raw git events; deleted once summarised
 │       ├── recovery/             # private completions and required artifact copies
 │       ├── procs/                # one record per running attempt, for recipe stop (Linux)
 │       └── runtime/              # removed when the run ends
@@ -392,14 +390,9 @@ earlier one failed, and the final error names every failure.
    not change the caller's worktree list. A substituted path is kept and the
    run fails. When a durable worktree depends on the private repository, the
    repository stays and is listed in `durable-dependencies`.
-2. Publishes the Git command record (`git_record.finish()`):
-   `git-commands.jsonl`, `diagnostics/git/commands.jsonl` and
-   `git-recording.json`, then removes `git-trace2/`. See
-   [Git command record](../reference/recipe-runner-logging.md#git-command-record).
-   A publication failure makes the run fail.
-3. Finishes the recovery admission with an outcome judged from the run and
-   the first two steps.
-4. Finishes the workspace (`finish_workspace`):
+2. Finishes the recovery admission with an outcome judged from the run and
+   the first step.
+3. Finishes the workspace (`finish_workspace`):
    1. Removes `<run dir>/runtime/`, including everything steps wrote to
       `TMPDIR` and `artifacts/`, unless a running process still uses it.
       Durable `recovery/` state and copied artifacts remain outside that
@@ -418,8 +411,8 @@ earlier one failed, and the final error names every failure.
       the same sweep, whether the run recorded it as `created` or `reused`; see
       [When a target is removed](#when-a-target-is-removed).
 
-`AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 4. Steps 1 to 3
-always run.
+`AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 3.3. Everything
+before it always runs.
 
 A run that fails before its first step, for example on an unborn `HEAD`,
 still finishes its recovery admission as `Failure`, so the next launch does
@@ -466,7 +459,7 @@ fails before any step starts, with an error that names the work root. Fix
 its permissions (`chmod g-w,o-w`) or point `AMPLIHACK_WORK_ROOT` at a private
 absolute directory. A real run never falls back to a temporary folder. A `--dry-run` uses
 `RunWorkspace::dry_runtime`: a temporary `amplihack-dry-*` folder that is
-removed on exit, with no run folder, checkout or recording.
+removed on exit, with no run folder and no checkout.
 
 ### A runtime folder still in use is kept
 
@@ -475,7 +468,7 @@ language server or a background job a test left behind. If the runner removed
 `runtime/` under such a process, the process, and any agent that inherited its
 `TMPDIR`, would be left pointing at a folder that no longer exists.
 
-So before step 4.1 removes `runtime/`, the runner checks the process table once.
+So before step 3.1 removes `runtime/`, the runner checks the process table once.
 The folder is in use if any running process other than the runner itself:
 
 - has its working folder inside it;
@@ -616,7 +609,7 @@ run fails with:
 runtime resource identity changed; replacement retained at /home/ryan/.amplihack/work/r/3f0c9a526d1e
 ```
 
-See step 4.1 in [What happens when a run ends](#what-happens-when-a-run-ends).
+See step 3.1 in [What happens when a run ends](#what-happens-when-a-run-ends).
 
 The open folder does not count as "in use" when the run ends, because the runner
 skips its own process. Step processes do not inherit it, because it is opened

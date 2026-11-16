@@ -22,8 +22,6 @@ mod contract_support;
 mod exec_reclaim;
 #[path = "issue_2096_input_preservation.rs"]
 mod input_preservation;
-#[path = "issue_2677_nested_unobserved.rs"]
-mod nested_unobserved;
 #[path = "issue_2096_ownership_lifecycle.rs"]
 mod ownership_lifecycle;
 #[path = "issue_2096_private_base_ref.rs"]
@@ -32,12 +30,6 @@ mod private_base_ref;
 mod private_main_root;
 #[path = "issue_2096_real_hooks.rs"]
 mod real_hooks;
-#[path = "issue_2096_recording.rs"]
-mod recording;
-#[path = "issue_2096_recording_coverage.rs"]
-mod recording_coverage;
-#[path = "issue_2096_recording_failures.rs"]
-mod recording_failures;
 #[path = "issue_2096_review_isolation.rs"]
 mod review_isolation;
 
@@ -89,15 +81,14 @@ if [ -n "${ISSUE_2677_ROOT_HELPER:-}" ]; then
   AMPLIHACK_WORK_ROOT_EXPLICIT=1 AMPLIHACK_WORK_ROOT="$ISSUE_2677_WORK_ROOT" \
     bash "$ISSUE_2677_ROOT_HELPER" base . > "$out/base_from_checkout"
 fi
-# Issue #2677 B1: the drive's launch shape. A step of this (observed) run
-# starts another `amplihack recipe run` without the observer marker, so the
-# outer observer still traces it. Removing ISSUE_2677_NESTED_BIN stops the
-# nested stub from recursing.
+# Issue #2677 B1: the drive's launch shape. A step of this run starts another
+# `amplihack recipe run`. Removing ISSUE_2677_NESTED_BIN stops the nested stub
+# from recursing.
 if [ -n "${ISSUE_2677_NESTED_BIN:-}" ]; then
   nested="$ISSUE_2677_NESTED_OUT"
   mkdir -p "$nested"
   status=0
-  env -u AMPLIHACK_OBSERVER_PID -u ISSUE_2677_NESTED_BIN \
+  env -u ISSUE_2677_NESTED_BIN \
     ISSUE_2096_OBSERVATIONS="$nested/observations" \
     AMPLIHACK_WORK_ROOT="$nested/work" \
     "$ISSUE_2677_NESTED_BIN" recipe run "$ISSUE_2677_NESTED_RECIPE" -w "$PWD" \
@@ -573,12 +564,6 @@ fn a_dry_run_uses_the_callers_directory_and_makes_no_checkout() {
         "a dry run made run folders: {:?}",
         f.run_folders()
     );
-    let mut recordings = Vec::new();
-    find_named(&f.root.join("work"), "git-recording.json", &mut recordings);
-    assert!(
-        recordings.is_empty(),
-        "a dry run wrote a git recording: {recordings:?}"
-    );
 }
 
 impl Fixture {
@@ -673,10 +658,10 @@ fn an_unborn_head_finishes_the_recovery_admission_as_failure() {
     assert!(report["ended_at"].is_string(), "{report:#}");
 }
 
-/// A failed run releases in order: checkout, recording, admission,
-/// workspace. Each one must have happened.
+/// A failed run releases in order: checkout, admission, workspace. Each one
+/// must have happened.
 #[test]
-fn a_failed_run_finishes_checkout_recording_admission_and_workspace() {
+fn a_failed_run_finishes_checkout_admission_and_workspace() {
     let f = Fixture::new();
     let before = f.run_folders();
     let out = f
@@ -693,10 +678,6 @@ fn a_failed_run_finishes_checkout_recording_admission_and_workspace() {
     let report = json_file(&run.join("run.json"));
     assert_eq!(report["outcome"], "failure", "{report:#}");
     assert!(report["ended_at"].is_string(), "{report:#}");
-    assert!(
-        run.join("git-recording.json").is_file(),
-        "the git recording was not finished before the workspace"
-    );
 }
 
 /// A relaunch with the same identity after a failure gets a freshly prepared

@@ -982,35 +982,24 @@ the executor reads (`recipe_runner_timeout()`). The test sets
 `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` once, and the advance follows it.
 
 The executor reads that control through one value, `RunnerClock` in
-`run/execute.rs`, taken once per attempt. Every real run on Linux is
-spawned under the native Git observer, and a dry run, or any run on another
-platform, as a plain child. Both paths use it:
+`run/execute.rs`, taken once per attempt. The runner is spawned as a plain
+child on every platform, and every wait and grace reads that value:
 
-- The wait. `wait_for_recipe_runner` (plain child) and
-  `wait_for_observed_runner` (observer) both poll in `wait_for_runner`.
-  They differ only in how they ask whether the runner has exited, so
-  neither can measure the timeout on a clock the test does not control.
-- Every teardown grace. The plain child's `terminate_recipe_runner` waits
-  on it in `wait_until_exited`, and so does `reap_recipe_runner_group`,
-  which sweeps the group of a runner that has already exited. Every tree
-  sweep waits on it in `sweep_runner_tree`, which calls `stop::sweep_on`:
-  the observed teardown (`terminate_observed_runner`, which sends SIGTERM
-  to the runner's tree, waits, kills the survivors and only then calls
-  `Observer::terminate`), the observer's finished-scope sweeps and the
-  sweep after a runner that exited with a stop signal pending. In virtual
-  time the grace stays frozen until the tree exits, so the SIGTERM handler
-  in `test_timeout_teardown_sends_sigterm_before_sigkill` always runs
-  before SIGKILL, on either path.
+- The wait. `wait_for_recipe_runner` polls in `wait_for_runner`, so the
+  timeout cannot be measured on a clock the test does not control.
+- Every teardown grace. `terminate_recipe_runner` waits on it in
+  `wait_until_exited`, and so does `reap_recipe_runner_group`, which sweeps
+  the group of a runner that has already exited. Every tree sweep waits on
+  it in `sweep_runner_tree`, which calls `stop::sweep_on`. In virtual time
+  the grace stays frozen until the tree exits, so the SIGTERM handler in
+  `test_timeout_teardown_sends_sigterm_before_sigkill` always runs before
+  SIGKILL.
 - Cancellation. Each poll asks whether the runner has exited before it
   checks the cancel flag, so a runner that has exited is reported as
   exited. Otherwise a cancelled worker ends the wait as a timeout and ends
-  any grace at once. On the plain path the wait first kills the runner's
-  group: only the executor waits on a plain child, and it has just found
-  it running, so its pid is still the runner's. On the observed path the
-  tracing thread reaps the runner as soon as it exits, so the runner's pid
-  is never used: the timeout and stop teardowns take their snapshot from
-  the tasks the observer still traces (`Observer::traced_tasks`), and
-  `Observer::terminate` kills every task it still traces.
+  any grace at once. The wait first kills the runner's group: only the
+  executor waits on the child, and it has just found it running, so its pid
+  is still the runner's.
 
 `tests_teardown.rs` checks the clock wiring of the tree sweep directly:
 `test_sweep_runner_tree_measures_the_grace_on_the_runner_clock` runs

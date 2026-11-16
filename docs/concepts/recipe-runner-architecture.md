@@ -88,17 +88,24 @@ Identity and execution are kept apart. Recovery admission keys on your
 to one attempt: a resumed run prepares a fresh one.
 
 The runner still owns step order and context evaluation. The CLI owns what
-surrounds it, in this order: prepare the checkout, start the observer (Linux only),
-launch the runner, then remove the checkout, publish the Git record, finish
-the recovery admission and finish the workspace. Each step's error is kept and
-joined to the others, so a failed release cannot hide a failed publication.
+surrounds it, in this order: prepare the checkout, launch the runner, then
+remove the checkout, finish the recovery admission and finish the workspace.
+Each step's error is kept and joined to the others, so a failed release cannot
+hide a failed admission. The run's status follows the runner's own exit.
 
-A dry run plans only. It uses the caller's directory, prepares no checkout,
-records nothing and writes no run folder.
+Nothing traces the runner while it runs. The CLI starts it, waits for it and
+tears its process group down at the end; it does not trace, journal or
+attribute the Git commands the tree makes, and it needs no `ptrace` privilege
+to supervise it. Teardown still walks the tree, but it reads the process table
+like any other program would.
+
+A dry run plans only. It uses the caller's directory, prepares no checkout and
+writes no run folder.
 
 Private Git state is not an OS sandbox. See the
 [checkout isolation reference](../reference/recipe-checkout-isolation.md)
-and the [Git command record](../reference/recipe-runner-logging.md#git-command-record).
+and the
+[recipe runner logging reference](../reference/recipe-runner-logging.md#git-commands-a-run-makes).
 
 ---
 
