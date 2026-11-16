@@ -154,8 +154,9 @@ fn vanished_task(error: &anyhow::Error) -> bool {
 /// so [`vanished_task`] never has to walk an error chain to find one. Walking
 /// a chain is what would let an `ESRCH` raised by something other than the
 /// request being classified — a `/proc` read at an exec stop, say — open the
-/// one fail-open path in this module. Only [`ptrace`] and [`event_message`]
-/// construct this, so nothing else can.
+/// one fail-open path in this module. It is private, and inside this module
+/// only [`ptrace`] and [`event_message`] construct it, so nothing outside can
+/// — and a new site inside that wants to is the thing to question in review.
 ///
 /// Displays as the request's own context text, with the `io::Error` as its
 /// source, so `{:#}` and [`anyhow::Error::root_cause`] read exactly as the
@@ -1435,13 +1436,22 @@ mod tests_vanished_task {
         );
         // Classified by error number only. A tracee can influence strings
         // that surface in an error chain, so no tracee-reachable text may
-        // steer a control decision.
+        // steer a control decision. Fed in the shape the classifier really
+        // reads, so this pins the property rather than being rejected at the
+        // type check before any text could be consulted.
+        assert!(
+            !vanished_task(&anyhow::Error::new(PtraceRequestFailed {
+                context: "No such process (os error 3)",
+                error: std::io::Error::from_raw_os_error(libc::EPERM),
+            })),
+            "the message text must never decide this"
+        );
         assert!(
             !vanished_task(
                 &anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EPERM))
                     .context("No such process (os error 3)")
             ),
-            "the message text must never decide this"
+            "nor may it when the text is a context layer"
         );
     }
 

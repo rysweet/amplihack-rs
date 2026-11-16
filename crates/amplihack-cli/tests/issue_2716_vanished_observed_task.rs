@@ -92,10 +92,17 @@ fn a_vanished_task_leaves_the_run_alone(label: &str, mode: &str) {
     // that the cloning is still done by freely running threads and that
     // `sigkill-child` still signals the *previous* child. Never add a sleep,
     // timer, retry or poll.
+    // Three things to check before the iteration count, in this order: the
+    // cloning is still done by freely running threads; `sigkill-child` still
+    // signals the *previous* child; and the kernel is not refusing the
+    // clones. The fixture uses `Builder::spawn`, so a refused clone is
+    // silent — it just leaves fewer threads holding the window open — and a
+    // thread-starved host is the one cause this message cannot see.
     assert!(
         stderr.contains("was gone at"),
         "no task went away, so {mode} proved nothing; check the mode's \
-         structure before its iteration count:\n{stderr}"
+         structure, and whether the host is refusing clones, before its \
+         iteration count:\n{stderr}"
     );
 }
 

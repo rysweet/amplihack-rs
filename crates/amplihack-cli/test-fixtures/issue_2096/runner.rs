@@ -54,12 +54,20 @@ fn announce_success() {
 /// `in_child` and never returns: it leaves through `_exit`, which is
 /// `exit_group`, so it runs no destructor and flushes no inherited buffer.
 ///
-/// `in_child` is run under `catch_unwind` so that guarantee holds even if it
-/// panics. Without it a panic would unwind out of the forked child, print to
-/// the inherited stderr and run destructors over state inherited from the
-/// parent — the opposite of what this function promises, and an unexplained
-/// flake in the run log. A panic is still a failure: the child leaves with a
-/// non-zero status.
+/// `in_child` is run under `catch_unwind` so that one guarantee — leaving
+/// through `_exit` — holds even if it panics. Without it a panic would unwind
+/// out of `fork_child` into `main`, running destructors over state inherited
+/// from the parent and leaving through the normal exit path, which flushes
+/// the inherited stdio buffers and duplicates the runner's result line.
+///
+/// Two things it does not do, so nobody reads more into it. The default panic
+/// hook has already written to the inherited stderr by the time unwinding
+/// starts, and this fixture installs no hook, so a panic is still announced
+/// there; and the destructors of frames *inside* `in_child` still run, since
+/// unwinding stops only at this boundary. The non-zero status is for a reader
+/// of a core file or a strace, not an assertion: the observer is this child's
+/// tracer and reaps it first, so `wait_for` usually sees `ECHILD` and could
+/// not read a status even if it tried.
 fn fork_child(in_child: impl FnOnce()) -> i32 {
     // SAFETY: this fixture has no threads of its own here, so the child
     // inherits no held lock. The child only clones threads and leaves.
