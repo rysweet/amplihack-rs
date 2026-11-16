@@ -89,6 +89,24 @@ fn shipped_tools() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/tools")
 }
 
+fn shipped_agents() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/agents")
+}
+
+/// Stage the shipped agent definitions in the fixture's own installed bundle.
+///
+/// Issue #2528: a run resolves its agents from the bundle it selected and
+/// hands the runner that bundle's `agents/` with the default search off, so a
+/// shipped recipe's agent steps need the shipped agents under the fixture's
+/// `AMPLIHACK_HOME`. Without them the run stops at the first agent step with
+/// "not resolved and default search is off". Copied, like the tools, so no
+/// host install is reached.
+fn stage_shipped_agents(f: &Fixture) {
+    let bundle = f.home.join(".amplihack/amplifier-bundle");
+    fs::create_dir_all(&bundle).unwrap();
+    copy_tree(&shipped_agents(), &bundle.join("agents"));
+}
+
 /// A private `bin` holding the fixture's runner and the binary under test.
 /// `preflight-validation` looks for `recipe-runner-rs` on `PATH` and several
 /// steps call `amplihack orch helper`; neither may find a host install.
@@ -171,6 +189,7 @@ impl Routing {
         let recipe = f.root.join("smart-classify-route.yaml");
         fs::copy(shipped_recipe("smart-classify-route.yaml"), &recipe)
             .expect("copy the shipped smart-classify-route recipe");
+        stage_shipped_agents(&f);
 
         let bin = fixture_bin(&f);
 
@@ -304,6 +323,7 @@ impl Phases {
         let bundle = f.home.join(".amplihack/amplifier-bundle");
         fs::create_dir_all(&bundle).unwrap();
         copy_tree(&shipped_tools(), &bundle.join("tools"));
+        stage_shipped_agents(&f);
 
         let recovery_dir = f.root.join("step-recovery");
         fs::create_dir(&recovery_dir).unwrap();
