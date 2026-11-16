@@ -11135,7 +11135,10 @@ A reading counts only when it was taken after the wait began and no more
 than 60 s in the future (`start < observed_at <= now + 60`). No `/usage`
 probe is made: a profile whose window has reset is only seen once a status
 line or the rotator records a new reading for it, so a wait on a profile
-step may run until its deadline after a login has in fact recovered.
+step may run until its deadline after a login has in fact recovered. The
+how-to lists the reasons a wait reaches its reset with another login idle
+beside it, in the order to check them, under
+[A wait that ran to its reset while another login had room](../howto/claude-profiles.md#a-wait-that-ran-to-its-reset-while-another-login-had-room).
 
 A reset wait starts on its reset alone, so it never consults the start check
 in [When a capacity wait starts](#when-a-capacity-wait-starts) and does not

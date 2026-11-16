@@ -2203,6 +2203,41 @@ The rerun starts the step from the beginning, so anything the failed
 attempt already did, such as a push or a comment, may happen again. Keep
 agent steps safe to run twice.
 
+### A wait that ran to its reset while another login had room
+
+A step under a stored profile ends its wait as soon as a usage reading
+shows another profile with room, so `end reason=reset reached` on a step
+that sat beside an idle login means the check found no candidate it could
+take. Work through these:
+
+- **Nothing recorded a reading while the wait ran.** The check reads
+  stored readings and makes no usage probe of its own, and only a reading
+  taken after the wait began counts. Status lines and the
+  [login rotator](claude-profile-rotation.md) are what write them, so an
+  unattended run with neither has nothing to see and goes to its reset.
+  `amplihack profile rotate status` says whether the rotator is running.
+- **Auto-switch is off.** `amplihack profile auto-switch status` shows it.
+  With it off the step keeps its own login and has no `login capacity`
+  exit.
+- **The other profiles are in the exclude list.** The same command lists
+  them. An excluded profile is never read and never counts.
+- **The step chose its own login.** A step launched with an explicit
+  `CLAUDE_CONFIG_DIR` is left where it was put. A step on `~/.claude` ends
+  on `rotator capacity` or `login changed` instead.
+- **The other login is not one auto-switch would choose.** A spend block,
+  a weekly-limit record, a reading over the auto-switch threshold, a login
+  for another platform and an API-key profile that `overflow=` does not
+  mark all keep a profile out. The rules are in
+  [Capacity for a profile step](../reference/profile-command.md#capacity-for-a-profile-step).
+- **The limit was an organisation spend limit with no reset.** No wait
+  starts at all (`skipped reason=spend_limit`), whatever room other logins
+  have: see [When it does not wait](#when-it-does-not-wait).
+
+The `observed` column of
+[`amplihack profile auto-switch status`](#3-check-what-it-sees) is the
+quickest check for the first of these: a profile whose last reading is
+older than the wait showed the wait nothing.
+
 ### What the log shows
 
 Each line goes to the step's standard error and starts with
@@ -2213,6 +2248,20 @@ amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=
 amplihack.recipe.usage_limit_wait progress remaining=3540s
 amplihack.recipe.usage_limit_wait end reason=rotator capacity
 amplihack.recipe.usage_limit_wait resume attempt=2
+```
+
+A wait for a reset that ended instead on a reading showing another stored
+profile has room looks the same up to its `end` line. The `start` line
+carries no `wait=capacity`, because the wait was timed by the reset, so
+`end reason=login capacity` is what tells you the step moved. The line
+after the resume names the profile the retry runs under:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait progress remaining=3540s
+amplihack.recipe.usage_limit_wait end reason=login capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack: a login has capacity again; rerunning this step under profile "personal" (auto-switch)
 ```
 
 A wait for another login has `wait=capacity` on its `start` line, and
