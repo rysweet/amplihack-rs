@@ -11188,14 +11188,22 @@ One record is not suppressed, and it is not part of the step's own output: a
 profile marked in `overflow=` and detected as an API-key profile that fails
 auto-switch's [own login check](#api-key-profiles-and-auto-switch) emits a
 `WARN` through `tracing` naming the profile and the reason, never a key
-value, each time the check reads it. On a wait of several hours it therefore
-repeats on the 30 s cadence, so a misconfigured API-key profile shows as a
-run of identical warnings rather than one. Where the record goes depends on
-the tracing subscriber the process installed, and a run with none keeps no
-copy. Fixing the profile's `.claude.json` or `settings.json`, or taking the
-mark off with `amplihack profile overflow remove <name>`, ends the
-repetition; either way that profile stays out of the candidate pool and the
-wait is unaffected.
+value. One check reads that profile's login several times over, because the
+candidate rules test it as they narrow the field by organisation, make the
+selection, and work out which logins are being held back, so each check
+emits several identical warnings rather than one, and a wait of several
+hours leaves hundreds of them. Where the record goes depends on the tracing
+subscriber the process installed, and a run with none keeps no copy.
+
+The two ways to stop them do not have the same effect on the wait. While
+the login check fails, the profile stays out of the candidate pool and the
+wait runs on as though it were not there. Fixing the profile's
+`.claude.json` or `settings.json` ends the warnings **and makes the profile
+selectable**, which is what the `overflow=` mark is for: a wait may then end
+on it. Taking the mark off with `amplihack profile overflow remove <name>`
+ends the warnings and leaves the profile unselectable, because an unmarked
+API-key profile is neither a plan login nor in the overflow order, so no
+selection ever chooses it.
 
 **A step pinned to a profile can therefore change account part way through a
 run.** Where one profile must be kept for billing or data separation, there
@@ -11218,10 +11226,13 @@ by this check at all: such a step is the login the user chose.
 | `$HOME/.claude` | the live `$HOME/.claude` | the live `$HOME/.claude` | not used |
 | inherited profile, auto-switch on | the profile auto-switch chooses from fresh readings, else the inherited profile | not used | the profile a second selection chooses, else the inherited profile |
 
-Every column holds for a capacity wait. For a reset wait only the
-`login capacity` column does: that is the one exit which moves a reset
-wait's retry to another account. A reset wait that ends on `login changed`
-retries under the inherited profile, because the
+The `$HOME/.claude` row holds for both kinds of wait: a step with no
+inherited profile has nothing for the retry to choose between, so either of
+its exits leaves the retry on the live `$HOME/.claude`. In the
+inherited-profile row, every column holds for a capacity wait, but for a
+reset wait only the `login capacity` column does: that is the one exit which
+moves a reset wait's retry to another account. A reset wait that ends on
+`login changed` retries under the inherited profile, because the
 [fingerprint](#ending-the-wait-early) watches that profile's own directory,
 so a change there is a new login for the same profile, and because the wait
 was timed by that profile's reset. The profile is passed only as a validated
