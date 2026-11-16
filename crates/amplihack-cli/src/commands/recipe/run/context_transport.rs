@@ -5,11 +5,22 @@
 //! pattern kill (`pkill -f <word>`) can match it. When the runner reports the
 //! [`CONTEXT_FILE_CAPABILITY`] capability, the whole context goes into a 0600
 //! file under the run's private runtime folder and the argv carries only
-//! `--context-file <path>`. Without the capability, today's `--set` path
-//! ([`super::execute::pass_context`]) runs unchanged.
+//! `--context-file <path>`.
+//!
+//! The pinned runner reports the capability, so the file is the path a normal
+//! run takes. The `--set` path ([`super::execute::pass_context`]) remains for
+//! a runner older than the pin supplied through `RECIPE_RUNNER_RS_PATH`, and
+//! runs unchanged there. [`ContextTransport::record`] names the transport each
+//! run took, so that downgrade is visible in the run's log rather than only
+//! in `/proc`.
 //!
 //! The two paths are never mixed, and a failed file write is an error: it
 //! never falls back to `--set`.
+//!
+//! The file is 0600 in a 0700 folder, so no other account can read it. It is
+//! still readable by a process running as this user, as the environment
+//! mirror of the same values always has been; what this module removes is the
+//! world-readable copy on argv.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;

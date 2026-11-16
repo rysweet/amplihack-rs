@@ -2170,10 +2170,14 @@ fn parse_recipe_output_with_stderr_drops(
 pub(super) const MAX_ARG_STRLEN_BYTES: usize = 131_072;
 
 /// Pass context key-value pairs to the command as `--set KEY=VALUE`
-/// arguments. This is the fallback when the runner does not report
-/// `context_file_v1` (issue #2582); the pinned runner does not, so on it the
-/// values are still on the runner's argv. When the capability is reported,
-/// `context_transport` passes only `--context-file <path>` instead.
+/// arguments, which puts every value on the runner's argv.
+///
+/// Issue #2582: this runs only for a runner that does not report
+/// `context_file_v1`. The pinned runner reports it, so in a normal run
+/// `context_transport` passes `--context-file <path>` instead and no value is
+/// on argv at all. This path is reached only by a runner older than the pin
+/// supplied through `RECIPE_RUNNER_RS_PATH`; `ContextTransport::record` names
+/// the transport each run took, so that case is visible in the run's log.
 ///
 /// Returns the argv bytes the pairs occupy, so the caller can take them out
 /// of the env-mirror budget. A pair longer than one argv string allows is

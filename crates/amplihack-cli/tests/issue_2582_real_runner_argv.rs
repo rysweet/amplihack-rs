@@ -113,7 +113,7 @@ steps:
       RECIPE_RUNNER_RS_PATH="$AMPLIHACK_2582_RUNNER" \
         "$AMPLIHACK_2582_AMPLIHACK" recipe run "$AMPLIHACK_2582_INNER_RECIPE" \
           --context-file "$AMPLIHACK_2582_INNER_CONTEXT" \
-          -w "$AMPLIHACK_2582_ROOT" \
+          -w "$AMPLIHACK_2582_PROJECT" \
           --no-detach
 "#;
 
@@ -239,6 +239,7 @@ fn pinned_runner_with_the_capability() -> PathBuf {
 struct Fixture {
     _tmp: tempfile::TempDir,
     root: PathBuf,
+    project: PathBuf,
     home: PathBuf,
     records: PathBuf,
     tools: PathBuf,
@@ -280,6 +281,18 @@ impl Fixture {
         }
         fs::write(agents.join("builder.md"), AGENT_MD).unwrap();
 
+        // Both runs work in `project`, a real Git repository: since #2096 the
+        // checkout discovery fails closed without one, and #2176's Git
+        // recording otherwise ends the run with "required observer did not
+        // finalize". It is its own directory rather than `root` because the
+        // work root holds each run's private checkout, and a work root inside
+        // the repository being isolated is refused ("unsupported local
+        // input ... checkout/"). This fixture is about argv, not Git, so it
+        // takes the shared helper's repository and nothing more.
+        let project = root.join("project");
+        crate::support::git_fixture::init_with_commit(&project);
+        fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).unwrap();
+
         let agent = tools.join("claude");
         crate::support::exec_stub::write_executable(&agent, AGENT_STUB, 0o700);
 
@@ -306,6 +319,7 @@ impl Fixture {
         Self {
             _tmp: tmp,
             root,
+            project,
             home,
             records,
             tools,
@@ -334,9 +348,9 @@ impl Fixture {
             .arg("--context-file")
             .arg(&self.outer_context)
             .arg("-w")
-            .arg(&self.root)
+            .arg(&self.project)
             .arg("--no-detach")
-            .current_dir(&self.root)
+            .current_dir(&self.project)
             .env(HOME_GUARD_ENV, "1")
             .env("PATH", &path)
             .env("HOME", &self.home)
@@ -356,7 +370,7 @@ impl Fixture {
             // Read by the bash step and the fake agent.
             .env("AMPLIHACK_2582_AMPLIHACK", amplihack_bin())
             .env("AMPLIHACK_2582_RUNNER", &self.runner)
-            .env("AMPLIHACK_2582_ROOT", &self.root)
+            .env("AMPLIHACK_2582_PROJECT", &self.project)
             .env("AMPLIHACK_2582_HOME", &self.home)
             .env("AMPLIHACK_2582_PATH", &path)
             .env("AMPLIHACK_2582_RECORD_DIR", &self.records)

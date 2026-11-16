@@ -22,9 +22,12 @@
 //! no value is on the test's own command line and the root is part of the
 //! walk. Every value is a synthetic `ZQXV2582*` token.
 //!
-//! The pinned runner does not report `context_file_v1`; the fallback case
-//! checks that today's `--set` path is unchanged, and that the walk does see
-//! the values there (the negative control for the walker).
+//! The pinned runner reports `context_file_v1`, so the file transport is the
+//! live path. The `--set` case here is the one a runner older than the pin,
+//! supplied through `RECIPE_RUNNER_RS_PATH`, would still take: it checks that
+//! path is unchanged, and it is the walker's negative control — the walk must
+//! find the values there, or the absence the other cases assert would mean
+//! nothing.
 
 #![cfg(target_os = "linux")]
 
