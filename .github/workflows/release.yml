@@ -1,8 +1,20 @@
 name: Auto Release
 
+# Started by CI finishing, not by the push to main. Auto Release used to run
+# on `push: branches: [main]`, a sibling of CI on the same event rather than a
+# consumer of its result, so it built and published while CI was still
+# deciding. Two releases went out over red CI and were then installed on
+# hosts: v1.2.163 (this workflow's run 43619141276 against CI run 43619141356,
+# which failed) and v1.2.164 (run 43647760173 against CI run 43647760163).
+# Issue #2740.
+#
+# `workflows: [CI]` matches ci.yml's `name: CI` as a literal string. Renaming
+# that workflow detaches this one silently -- no run is created and nothing
+# reports an error. Change both in the same commit.
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
   workflow_dispatch:
 
 # Read-only by default; only the `release` job, which pushes the tag and
@@ -13,8 +25,21 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# Under `workflow_run`, `github.ref` is always the default branch, so the old
+# key collapsed every release into one global group. Rebuild it from the CI
+# run's repository and branch to keep today's behaviour: one release in flight
+# per branch, newest wins (#1356 depends on a cancelled run leaving nothing
+# behind).
+#
+# The group is claimed when the run is created, before `version-bump`'s `if:`
+# is evaluated, so the admission clauses below do not protect it. On the fork
+# pull-request path `head_branch` is attacker-chosen -- a fork branch named
+# `main` would otherwise share this key and cancel a legitimate release. The
+# repository component separates them. `github.ref_name` (not `github.ref`) is
+# the fallback so a manual dispatch lands in the same group as the automatic
+# path rather than a second one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_repository.full_name || github.repository }}-${{ github.event.workflow_run.head_branch || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -27,18 +52,128 @@ jobs:
   version-bump:
     name: Auto-bump version
     runs-on: ubuntu-latest
-    # Prevent infinite loop: skip if this push is already a version-bump commit
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    # `actions: read` is for the dispatch-path CI lookup below. It is scoped to
+    # this job: the workflow default stays `contents: read`, `contents: write`
+    # stays on `release` alone and `actions: write` on `sccache-prune` alone
+    # (#1526 SR-12).
+    permissions:
+      contents: read
+      actions: read
+    # This condition is a security boundary, not a convenience filter. Under
+    # `workflow_run` the run holds repository secrets and a write-capable
+    # token, and ci.yml runs on `pull_request` in a public repository, so every
+    # fork pull request completes a CI run that reaches this trigger. These
+    # clauses are the only thing between such a run and a job that compiles
+    # repository source and publishes a release. Keep them joined with `&&`;
+    # do not relax one for convenience.
+    #
+    #   conclusion == 'success'   CI that failed, was cancelled or timed out.
+    #   head_branch == 'main'     CI on a topic branch.
+    #   event == 'push'           CI from pull_request, from merge_group,
+    #                             CI's twice-weekly schedule, and CI's own
+    #                             workflow_dispatch run.
+    #   head_repository           a commit that came from a fork.
+    #   [skip ci]                 a commit whose author asked for no
+    #                             automation. Retained from the old push
+    #                             trigger: the loop is now closed structurally
+    #                             by head_branch + event, and GitHub skips the
+    #                             CI run itself, so this clause is
+    #                             belt-and-braces and must not be made
+    #                             load-bearing -- on the dispatch path the
+    #                             message is empty and `contains` is
+    #                             permissive.
+    #
+    # The workflow's own `v*` tag push is kept out by `head_branch == 'main'`,
+    # and independently by the already-released short-circuit below: the tag
+    # push's head_sha is the stamp commit, which already carries its tag.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.event == 'push'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+      && !contains(github.event.workflow_run.head_commit.message, '[skip ci]'))
     outputs:
       version: ${{ steps.bump.outputs.version }}
       sha: ${{ steps.bump.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # The exact commit CI tested, not the current head of main. This is
+          # the only place the released commit is resolved: `build` and
+          # `release` check out this job's `sha` output, so the three jobs
+          # cannot disagree about it. On the dispatch path there is no
+          # triggering CI run, so the operator-selected ref is used.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 0
           fetch-tags: true
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: false
+
+      # A manual release is held to the same rule as an automatic one: one
+      # read-only API query for a successful ci.yml run on this exact commit,
+      # before any version arithmetic, so a rejected dispatch cannot disturb
+      # the version series. It asks once and reads the API only.
+      #
+      # The lookup deliberately does not filter on `event`: the `event ==
+      # 'push'` clause above exists to stop re-entry and fork commits, and
+      # neither applies when an operator names a ref in this repository. A
+      # merge-queue-validated commit is a legitimate manual release target.
+      #
+      # This is a safety control, not an authorization control: anyone who can
+      # push to main can let CI pass and then dispatch. What it rules out is
+      # publishing a commit whose CI did not pass.
+      #
+      # No field of the triggering event is interpolated into this script with
+      # ${{ }}. On the fork pull-request path those fields are attacker-chosen
+      # strings and GitHub substitutes expressions as text before the shell
+      # parses the line. Values arrive through `env:` and are quoted. The SHA
+      # comes from the checkout itself, which also confirms it landed where
+      # intended.
+      - name: Confirm CI passed on this commit
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          SHA=$(git rev-parse HEAD)
+          ANSWER=$(gh api \
+            "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&status=success&per_page=1" \
+            --jq '"\(.total_count)\t\(.workflow_runs[0].html_url // "")"')
+          COUNT=$(printf '%s' "${ANSWER}" | cut -f1)
+          RUN_URL=$(printf '%s' "${ANSWER}" | cut -f2)
+          case "${COUNT}" in
+            '' | *[!0-9]*)
+              echo "::error::could not read a CI run count for ${SHA} (got '${COUNT}'); not publishing a release"
+              exit 1
+              ;;
+          esac
+          if [ "${COUNT}" -eq 0 ]; then
+            echo "::error::no successful CI run for ${SHA}; not publishing a release"
+            exit 1
+          fi
+          {
+            echo "Released by workflow_dispatch · validated by CI run ${RUN_URL}"
+            echo "commit ${SHA} · branch ${BRANCH}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # Provenance for the automatic path, so a disputed release can be traced
+      # back to the CI run that admitted it rather than inferred. The values
+      # reach the shell through `env:`, never through `${{ }}` in the body.
+      - name: Record the CI run that admitted this release
+        if: github.event_name == 'workflow_run'
+        env:
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Released from CI run ${CI_RUN_ID} · conclusion ${CI_CONCLUSION}"
+            echo "commit $(git rev-parse HEAD) · branch ${CI_HEAD_BRANCH}"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Compute next version from tags
         id: bump
@@ -471,7 +606,14 @@ jobs:
   sccache-prune:
     name: Prune sccache caches
     needs: build
-    if: always() && github.ref == 'refs/heads/main'
+    # `needs.build.result != 'skipped'` is required, not cosmetic. Under
+    # `workflow_run` `github.ref` is always the default branch, so the old
+    # condition was permanently true, and `always()` runs the job even when
+    # `version-bump` and `build` skip. Without this clause the one job holding
+    # `actions: write` would fire on every CI completion -- including every
+    # fork pull-request run -- turning a per-release prune into a per-CI-run
+    # prune of the caches the twice-weekly schedule exists to preserve.
+    if: always() && needs.build.result != 'skipped' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
