@@ -29,6 +29,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::isolated_amplihack::isolated;
+
 // The brick budget for a recipe or tool: at most this many lines.
 // The #1528 recipe-length test in `artifact_guard_workflow_tests.rs`
 // imports this rather than restating it (PR #1586 review, round 6).
@@ -3634,7 +3636,9 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
         }
     }
 
-    let mut cmd = Command::new("bash");
+    // Issue #2712: `isolated()` keeps a recipe run's AMPLIHACK_WORK_ROOT out
+    // of the suite, so its worktrees cannot land in the shared work root.
+    let mut cmd = isolated("bash");
     cmd.arg(&script)
         .current_dir(&root)
         .env_remove("AMPLIHACK_MERGE_GUARD_USER_BASH_ENV")
@@ -3694,7 +3698,9 @@ fn the_squash_message_suite_passes_and_keeps_its_named_cases() {
     let root = workspace_root();
     let script = root.join("amplifier-bundle/recipes/tests/test-issue-2056-squash-message.sh");
     assert!(script.is_file(), "missing {}", script.display());
-    let out = Command::new("bash")
+    // Issue #2712: `isolated()` keeps a recipe run's AMPLIHACK_WORK_ROOT out
+    // of the suite, so its worktrees cannot land in the shared work root.
+    let out = isolated("bash")
         .arg(&script)
         .current_dir(&root)
         .env_remove("BASH_ENV")
@@ -3804,7 +3810,9 @@ fn run_shell_test_copy(
         Ok(p) => format!("{}:{p}", path_dir.display()),
         Err(_) => path_dir.display().to_string(),
     };
-    let mut cmd = Command::new("bash");
+    // Issue #2712: `isolated()` keeps a recipe run's AMPLIHACK_WORK_ROOT out
+    // of the suite, so its worktrees cannot land in the shared work root.
+    let mut cmd = isolated("bash");
     cmd.arg(&script)
         .current_dir(scratch)
         .env("PATH", path)

@@ -42,13 +42,12 @@ pub fn write_executable(path: &Path, body: impl AsRef<[u8]>, mode: u32) {
         ])
         .arg(path)
         .arg(format!("{mode:o}"))
-        // `cat`, `chmod` and `mv` are resolved through the child's PATH, and
-        // the inherited one is not ours to rely on: tests across this process
-        // set the process-global PATH to a single private directory while they
-        // run (the install and update suites do), and `sh` then reports 127
-        // for each of the three. The parent's PATH says nothing about where
-        // these three live, so name the standard locations outright instead of
-        // inheriting a value another test is in the middle of changing.
+        // `cat`, `chmod` and `mv` are resolved through the child's PATH.
+        // Sibling tests in this process set PATH to a directory of their own
+        // (an empty one, or a fixture bin) while they run, and the variable
+        // is process-wide, so an inherited PATH makes this `sh` exit 127 at
+        // random. The three are in `/usr/bin` or `/bin` on every platform
+        // these tests run on.
         .env("PATH", "/usr/bin:/bin")
         .stdin(Stdio::piped())
         .spawn()

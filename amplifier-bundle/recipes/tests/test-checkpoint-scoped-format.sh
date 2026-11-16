@@ -15,6 +15,15 @@ done < <(compgen -e)
 unset git_variable
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd -P)"
+# This suite resolves ROOT from $0; the shared setup below is resolved from
+# ${BASH_SOURCE[0]} instead, so a source argument always carries a directory
+# component and is never searched along PATH (#2712).
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
+[[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=recipe-test-env.sh
+. "${TEST_ENV}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/checkpoint-scoped-format-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
