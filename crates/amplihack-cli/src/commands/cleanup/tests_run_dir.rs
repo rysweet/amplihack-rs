@@ -913,3 +913,104 @@ fn restore_on_a_missing_root_reports_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     assert!(restore_owner_access(&tmp.path().join("gone"), euid()).is_empty());
 }
+
+// -------------------------------------------------------------------------
+// Issue #2738: the Git-command tracer is gone. Two things it touched here
+// still have to hold afterwards: an older release's `run.json` must still
+// read, and the end of a run must no longer depend on a recording file.
+// -------------------------------------------------------------------------
+
+/// Releases 1.2.163 to 1.2.167 wrote a `git_recording` object into
+/// `run.json`. Those run folders survive the upgrade, and the sweep reads
+/// every one of them to find the worktrees and targets each run owns: a
+/// report it cannot parse leaves that run's paths behind (`collect_runs`
+/// skips them with "run.json cannot be read"). `RunReport` must therefore
+/// ignore an unknown field rather than reject the file.
+#[test]
+fn a_run_json_written_before_the_tracer_was_removed_still_reads() {
+    let tmp = tempfile::tempdir().unwrap();
+    let id = "0123abcd-0000-0000-0000-00000000002a";
+    let dir = tmp.path().join("runs").join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    // The shape 1.2.167 wrote, field for field.
+    let before = serde_json::json!({
+        "schema_version": RUN_SCHEMA_VERSION,
+        "run_id": id,
+        "recipe": "default-workflow",
+        "pid": 4242,
+        "pid_start_ticks": 99_887_766_u64,
+        "cwd": "/d0/src/project",
+        "started_at": "2026-11-15T09:00:00Z",
+        "ended_at": "2026-11-15T09:31:00Z",
+        "outcome": "success",
+        "attempts": [],
+        "steps": [],
+        "log_path": "/d0/src/project/.amplihack/logs/run.log",
+        "git_recording": {
+            "mode": "required",
+            "status": "established",
+            "commands": 17,
+        },
+    });
+    std::fs::write(dir.join(RUN_JSON), before.to_string()).unwrap();
+
+    let report = RunReport::read(&dir).expect("a pre-change run.json still reads");
+
+    assert_eq!(report.run_id, id);
+    assert_eq!(report.outcome, "success");
+    assert_eq!(report.pid, 4242);
+    assert_eq!(report.ended_at.as_deref(), Some("2026-11-15T09:31:00Z"));
+    // Reading one does not carry the field forward: a folder rewritten by
+    // this release holds no recording of its own.
+    let after = serde_json::to_string(&report).unwrap();
+    assert!(
+        !after.contains("git_recording"),
+        "the report still carries a recording field: {after}"
+    );
+}
+
+/// The end of a run used to read `<run dir>/git-recording.json` and fail the
+/// whole run when that file could not be parsed. An interrupted 1.2.167 run
+/// can leave a half-written one behind, and the recording files sit beside
+/// `run.json` rather than under `runtime/`, so they outlive the run folder's
+/// own cleanup. Finishing must now ignore all of them and record the outcome
+/// it was given.
+#[test]
+fn a_run_finishes_with_an_older_releases_recording_files_beside_its_report() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = WorkRoot {
+        path: tmp.path().join("work"),
+        explicit: false,
+    };
+    let (scope, guard) = RunScope::begin(work, "issue-2738", Path::new("/d0/src/project")).unwrap();
+    let run_dir = scope.run_dir.clone();
+    // What the removed code wrote, in the state an interrupted run leaves:
+    // a truncated recording, the journal and its trace folder.
+    std::fs::write(run_dir.join("git-recording.json"), b"{\"mode\":\"req").unwrap();
+    std::fs::create_dir_all(run_dir.join("git-trace2")).unwrap();
+    std::fs::write(run_dir.join("git-commands.jsonl"), b"{\"argv\":[]}\n").unwrap();
+
+    let workspace = RunWorkspace::Scoped {
+        scope: Box::new(scope),
+        guard,
+    };
+    workspace
+        .finish_checked(Outcome::Success, Vec::new(), None, false)
+        .expect("the end of a run no longer reads a recording file");
+
+    let report = RunReport::read(&run_dir).unwrap();
+    assert_eq!(
+        report.outcome, "success",
+        "the run's own outcome must reach the report"
+    );
+    assert!(report.ended_at.is_some(), "the run was not marked ended");
+    let text = std::fs::read_to_string(run_dir.join(RUN_JSON)).unwrap();
+    assert!(
+        !text.contains("git_recording"),
+        "the report carries a recording field: {text}"
+    );
+    assert!(
+        !run_dir.join("runtime").exists(),
+        "the runtime folder outlived the run"
+    );
+}

@@ -1,18 +1,22 @@
 ---
 title: Recipe Run and Auto-Drive Checkout Isolation
-description: Where recipe runs and auto-drive reviews execute, what they copy from the caller, how they record Git, and how they release what they own.
+description: Where recipe runs and auto-drive reviews execute, what they copy from the caller, and how they release what they own.
 doc_type: reference
-last_updated: 2026-11-15
+last_updated: 2026-11-16
 ---
 
 # Recipe run and auto-drive checkout isolation
 
 `amplihack recipe run` never runs a step in the caller's checkout. Each real
 run copies the caller's committed, staged and working state into a private
-repository and a detached checkout, runs every step, agent and hook there,
-records the Git commands they run, and removes the checkout when the run ends.
-Auto-drive judges each pull request in a private checkout at the exact PR
-head commit it recorded. This is issue #2096.
+repository and a detached checkout, runs every step, agent and hook there, and
+removes the checkout when the run ends. Auto-drive judges each pull request in
+a private checkout at the exact PR head commit it recorded. This is issue
+#2096.
+
+The private clone is the whole of the isolation. A run does not trace, journal
+or attribute the Git commands it makes, and it needs no `ptrace` privilege on
+any platform.
 
 ## Contents
 
@@ -22,7 +26,7 @@ head commit it recorded. This is issue #2096.
   - [The origin remote in the private repository](#the-origin-remote-in-the-private-repository)
 - [Independent, nested and resumed runs](#independent-nested-and-resumed-runs)
 - [Ownership and release](#ownership-and-release)
-- [Required recording](#required-recording)
+- [Git commands a run makes](#git-commands-a-run-makes)
 - [Private review generations](#private-review-generations)
   - [Superseded generations are retired](#superseded-generations-are-retired)
 - [Configuration](#configuration)
@@ -71,12 +75,11 @@ There is no fallback to committed content or to the caller's checkout.
 | Invocation | Steps run in |
 | --- | --- |
 | Inside a Git checkout | `<run dir>/execution-<id>/checkout`, at the same relative subdirectory as `-w`. |
-| Outside any Git checkout | The requested directory, as given. Recording still applies. |
+| Outside any Git checkout | The requested directory, as given. |
 | Git missing, or `.git` unreadable or corrupt | Nowhere: preparation fails. |
 | `--dry-run` | Nothing runs. The caller's directory is used for planning only. |
 
-A dry run prepares no checkout, writes no `git-recording.json`, and creates no
-run folder under the work root. It uses a temporary `amplihack-dry-*`
+A dry run prepares no checkout and creates no run folder under the work root. It uses a temporary `amplihack-dry-*`
 directory for scratch space and removes it on exit.
 
 The runner gets `-C <exec dir>`. Steps, hooks and agents start there.
@@ -218,8 +221,7 @@ Commits a recipe means to keep go there, not into the execution checkout.
 ## Independent, nested and resumed runs
 
 Every independent `amplihack recipe run`, including one started inside
-another run, gets its own repository, checkout, index, recording and owner
-record. An inherited `AMPLIHACK_RUN_CHECKOUT` is ignored with a message:
+another run, gets its own repository, checkout, index and owner record. An inherited `AMPLIHACK_RUN_CHECKOUT` is ignored with a message:
 
 ```text
 amplihack: ignoring inherited AMPLIHACK_RUN_CHECKOUT; this independent invocation owns a fresh checkout
@@ -261,9 +263,6 @@ in a private `exec dir` that belongs to one attempt:
   checkout-dependent steps. `amplihack cleanup` applies the same rules to
   every path under `exec/` (category `run-exec`).
 
-Each attempt keeps its own recording. A later successful attempt does not
-remove an earlier attempt's evidence.
-
 ## Ownership and release
 
 Preparation writes `<run dir>/execution-<id>/owner.json` at mode `0600`:
@@ -282,9 +281,8 @@ Preparation writes `<run dir>/execution-<id>/owner.json` at mode `0600`:
 `identities` holds the device and inode of the storage directory, the private
 repository and the checkout, in that order.
 
-The run directories are created at `0700`, and `owner.json`,
-`git-recording.json` and the recovery descriptor at `0600`, when they are
-created rather than by a later `chmod`.
+The run directories are created at `0700`, and `owner.json` and the recovery
+descriptor at `0600`, when they are created rather than by a later `chmod`.
 
 Release checks the manifest and the device and inode of every path again just
 before deleting. It deletes only paths the manifest proves the run owns, never
@@ -301,50 +299,41 @@ kept and listed in `durable-dependencies`.
 At the end of a real run, release happens in this order:
 
 1. `checkout.remove()` removes the execution checkout.
-2. `git_record.finish()` publishes the Git command record.
-3. The recovery admission is finished with an outcome judged from the result
-   of the first two steps.
-4. `finish_workspace` writes `run.json` and runs the cleanup sweep.
+2. The recovery admission is finished with an outcome judged from that result.
+3. `finish_workspace` writes `run.json` and runs the cleanup sweep.
 
 Each step runs even when an earlier one failed. Errors are joined with
 `.context()`, so the final error names every failure. A failure before the
-first step (in `GitRecord::begin`, `prepare_with_inputs`, or path mapping)
-still finishes the recovery admission, with `Failure`, unless the run was
-stopped by a signal. The next launch therefore does not resume a run that
+first step (in `prepare_with_inputs`, or in path mapping) still finishes the
+recovery admission, with `Failure`, unless the run was stopped by a signal. The next launch therefore does not resume a run that
 never started.
 
 Copied inputs, which may include `.env` files, live only in the `0700`
 `exec dir` and go with it. Error messages name paths, never file contents or
 environment values.
 
-## Required recording
+## Git commands a run makes
 
-On Linux, a ptrace observer follows the runner's whole process tree across
-`fork`, `vfork`, `clone` and `exec`. It records every successful launch of an
-executable named `git` or `git-*`, except known read-only commands. This
-covers absolute Git paths and children started with a cleared environment.
+Nothing traces, journals or attributes the Git commands a run's runner, steps,
+agents and hooks launch. A run folder holds no `git-commands.jsonl`, no
+`git-trace2/` directory, no `git-recording.json` and no `diagnostics/git/`
+directory, and `run.json` carries no `git_recording` field.
 
-Each record has schema version `1` and `run_id`, `attempt_id`, `executable`,
-`argv` (redacted), `cwd`, `git_dir`, `index_file`, `git_environment`, `time`,
-`sid` and `pid`. The run publishes:
+A run therefore starts no tracer and needs no `ptrace` privilege. It works the
+same on Linux, on macOS, in a container that denies `ptrace`, under a debugger,
+and inside a step of another recipe run.
 
-- `<run dir>/git-commands.jsonl`
-- `<run dir>/diagnostics/git/commands.jsonl`
-- `<run dir>/git-recording.json`, with scope `runner-descendants`
+What keeps a run out of the caller's checkout is the private clone described
+above: every step starts in `<run dir>/execution-<id>/checkout`, the caller's
+repository is read only during preparation, and a Git command a step makes acts
+on the private repository because that is the only checkout it is given. A
+command that runs outside any repository, such as `git clone` or
+`git ls-remote`, is ordinary work and has no effect on the run.
 
-Failure to start the observer, losing it during the run, a storage or
-attribution error, or a failed publication makes the run fail. The one
-exception is an observer that could not attach to the runner at all (the
-kernel refused `PTRACE_TRACEME` with `EPERM` or `ENOSYS`): the run continues unobserved and records `"coverage":"unavailable"`, as off Linux.
-See [The Linux observer could not attach](recipe-runner-logging.md#the-linux-observer-could-not-attach). An empty
-journal means the observer ran and saw no Git commands that can write.
-`GitRecord::dry_run()` is the only state with recording switched off, and only
-a dry run reaches it. See the [Git command record](recipe-runner-logging.md#git-command-record).
-
-Off Linux there is no observer. The run still executes in its private
-checkout, without command recording, and says so in `git-recording.json` and
-`run.json` with `"coverage":"unavailable"`. See
-[Platform support](#platform-support).
+Caller `GIT_TRACE2*` variables are cleared from the runner's environment, so
+a trace target set outside a run cannot collect the run's Git traffic; see
+[Caller Git trace variables are cleared](recipe-runner-logging.md#caller-git-trace-variables-are-cleared)
+in the logging reference.
 
 ## Private review generations
 
@@ -519,19 +508,19 @@ relies on. Retirement gives the disk saving instead.
 
 ## Configuration
 
-Isolation and recording cannot be switched off.
+Isolation cannot be switched off.
 
 | Setting | Effect |
 | --- | --- |
 | `-w`, `--working-dir` | Source checkout and the relative directory steps start in. Also the run's recovery identity. |
 | `-c repo_path=...` | Mapped into the execution checkout when it is a caller-checkout path. |
 | `--context-file`, `--context-from-file` | Read before launch; their contents are context values and follow the same mapping rules. |
-| `--dry-run` | Plans only. No checkout, no recording, no run folder. |
+| `--dry-run` | Plans only. No checkout and no run folder. |
 | `AMPLIHACK_WORK_ROOT` | Where run folders and execution storage go; see [cleanup settings](../howto/clean-up-after-recipe-runs.md#settings). |
-| `RECIPE_RUNNER_RS_PATH` | Runner binary. It runs under the observer like any step. |
+| `RECIPE_RUNNER_RS_PATH` | Runner binary. It starts in the private checkout like any step. |
 | `AMPLIHACK_RUN_CHECKOUT` | Set for steps. An inherited value is ignored and grants no ownership. |
-| `AMPLIHACK_CLEANUP_ON_EXIT=0` | Skips the cleanup sweep only. Release and recording still run. |
-| Caller `GIT_TRACE2_*` | Has no effect on the Git command record. |
+| `AMPLIHACK_CLEANUP_ON_EXIT=0` | Skips the cleanup sweep only. Release still runs. |
+| Caller `GIT_TRACE2_*` | Cleared from the runner's environment, so they reach neither the runner nor the Git processes a run starts. amplihack sets none of them and reads none of them. |
 
 ## Rust components
 
@@ -541,15 +530,13 @@ These are internal modules, not a public API.
 | --- | --- |
 | `run_isolation/input_snapshot.rs` | Captures `HEAD`, index and working tree separately; rejects unsafe inputs. |
 | `commands/recipe/run/run_checkout.rs` | Finds the repository (fails closed), provisions the private checkout, rebuilds the `origin` refspec, `origin/*` and `origin/HEAD`, maps paths, releases owned paths. |
-| `commands/recipe/run/git_record.rs` | `GitRecord::begin` delegates to `begin_on(run_dir, RecordingPlatform::current())`. `RecordingPlatform::Linux` starts the observer; `RecordingPlatform::Other` gives the unobserved `Unavailable` state. `GitRecord::dry_run()` is the disabled state for dry runs; `finish` publishes. |
-| `run_isolation/observer/linux.rs` | ptrace observer, built only with `cfg(target_os = "linux")`. |
 | `run_isolation/review_generation.rs` | Review generations: provision, four-part validation (including a clean working tree), retirement of superseded generations in `advance`, release. `read_live` refuses retired generations; plain `read` is used only by `release`, `release_state` and the child walk. |
 | `run_isolation/exec_storage.rs` | Claims `<work root>/exec/<identity>/` and decides when it may be reclaimed; used by preparation and by `amplihack cleanup`. |
 | `commands/cleanup/run_dir.rs` | `RunWorkspace::begin_durable` for real runs, `RunWorkspace::dry_runtime` for dry runs; `record_attempt_checked` and `finish_checked` return errors. |
 | `commands/recipe/run/execute.rs` | Order of preparation, launch and release; joins errors. |
 
-Callers use `?` on every `Result` from recording, checkout, admission and
-workspace code. None of them is discarded with `.ok()`, `let _ =` or
+Callers use `?` on every `Result` from checkout, admission and workspace
+code. None of them is discarded with `.ok()`, `let _ =` or
 `unwrap_or_default`.
 
 ## Failure behavior
@@ -557,12 +544,8 @@ workspace code. None of them is discarded with `.ok()`, `let _ =` or
 | Failure | Result |
 | --- | --- |
 | Unsafe input, unborn `HEAD`, bare or malformed repository | Preparation fails naming the path; no step runs; admission finished as `Failure`. |
-| Observer could not attach on Linux (`PTRACE_TRACEME` refused with `EPERM` or `ENOSYS`) | One notice on stderr naming `PTRACE_TRACEME` and the error number; the runner starts once unobserved; `coverage: "unavailable"` is recorded. |
-| Runner cannot start on Linux (missing binary or folder, or another spawn error) | The run fails with `failed to spawn recipe-runner-rs` and the spawn error number; no unobserved start. No missing-receipt error follows unless the attempt's journal has content or `git-trace2/` holds another entry, in which case the files are kept and that error is also reported. |
-| Observer fails to start on Linux for any other reason | The runner never starts. Without a writable work root: `cannot initialize required Git recording; provide a writable absolute AMPLIHACK_WORK_ROOT and retry`. |
-| Not Linux | The run proceeds unobserved and records `coverage: "unavailable"`. Without a writable work root it stops with the same message as above. |
+| Runner cannot start (missing binary or folder, or another spawn error) | The run fails with `failed to spawn recipe-runner-rs` and the spawn error number. |
 | Seeding `origin/*` (for example an `origin/*` ref whose objects are missing from the caller's repository) or copying `origin/HEAD` fails | Preparation fails with `cannot seed origin refs` and `partial resources retained at <exec dir>`; no step runs. |
-| Observer lost, storage or attribution error | Controlled teardown, partial evidence kept, run fails. |
 | Checkout identity changed at release | Resources kept, run fails. |
 | Review dir fails a check | `REVIEW_DIR_CHANGED` or `REVIEW_DIR_UNSTAMPED`; no judging. |
 | Review checkout has edited or untracked files | `review-validate` and `index-check` refuse it, naming the first changed path. |
@@ -571,77 +554,68 @@ workspace code. None of them is discarded with `.ok()`, `let _ =` or
 | A live review generation's recorded resource is a different directory: its storage directory, `repository.git`, its checkout or `launch` no longer carries the device and inode the manifest recorded for it | The command that read it is refused with `review generation resource identity changed; retained for recovery`. Nothing is removed, the record stays live with `"retired": false`, and the checkout and storage are left in place. `review-next` stops here rather than retiring the generation it would have replaced. A recorded path that is absent, is a symlink or is no longer a directory is refused earlier, by `review resource is not an owned directory: <path>` or the underlying I/O error. |
 | A storage path is no longer the recorded directory: a symlink, a non-directory, a different directory, or a directory missing one of the two children the manifest recorded inside it | Nothing is deleted. `review-next` warns and carries on; `review-release` fails with `review storage identity changed; retained` and the path. |
 | Stable execution path still held | The attempt prints the reason and uses a fresh random path. |
-| Git recording trace folder cannot be removed | The error is returned: the folder may contain command lines. |
-| Every step passed but release or publication failed | The run fails. |
+| Every step passed but release failed | The run fails. |
 
-Output formats keep their existing fields. A runner exit code of zero is not
-enough for success: recording, release and publication must also succeed.
+Output formats keep their existing fields. The run's status follows the
+runner's own exit; a zero exit still fails the run when release fails.
 
 ## Platform support
 
-Real recipe runs work on every platform. Checkout isolation is the same
-everywhere; only command recording depends on Linux.
+Real recipe runs work on every platform, and checkout isolation is the same on
+each. Nothing in a run depends on the build target or on a kernel facility.
 
-| Platform | Steps run in | Git command recording |
-| --- | --- | --- |
-| Linux | The private checkout | Required. The ptrace observer runs and its failure fails the run. If it could not attach at all, the run continues unobserved with `coverage: "unavailable"`. |
-| macOS and every other non-Linux target | The private checkout | Unavailable. No observer is started and the run is not failed for it. |
+| Platform | Steps run in |
+| --- | --- |
+| Linux | The private checkout |
+| macOS and every other target | The private checkout |
 
-Off Linux, `GitRecord` enters its `Unavailable` state:
-
-- It prints one notice to stderr:
-
-  ```text
-  amplihack: Git command recording is unavailable on this platform; the run continues in its private checkout without recording
-  ```
-
-- The runner's environment has `AMPLIHACK_OBSERVER_PID`, the observer's event
-  variables and every caller trace variable (`GIT_TRACE2`, `GIT_TRACE2_EVENT`,
-  `GIT_TRACE2_ENV_VARS`, `GIT_TRACE2_PERF`, `GIT_TRACE2_CONFIG_PARAMS`,
-  `GIT_TRACE2_REDACT`) removed, so no step writes trace output anywhere.
-- `finish` writes `<run dir>/git-recording.json` (`0600`) and `run.json`
-  carries it in `git_recording`. No `git-commands.jsonl` is written. See
-  [When recording is unavailable](recipe-runner-logging.md#when-recording-is-unavailable).
-- A run dir is still required. Without a usable work root the run stops, as on
-  Linux.
-
-The platform is decided once, by `RecordingPlatform::current()`, from the
-build target. There is no environment variable or flag that switches a Linux
-run to the unobserved path.
+A run needs no `ptrace` privilege, so it works where `ptrace` is denied: a
+container with `CAP_SYS_PTRACE` dropped or a `seccomp` filter that blocks the
+call, a host with Yama `ptrace_scope` at `2` or `3`, and a step of another
+recipe run.
 
 `--dry-run`, `recipe list`, `recipe show` and `recipe validate` work on every
-platform, and the crate builds on macOS. Auto-drive still refuses macOS (see
-[#1646](https://github.com/rysweet/amplihack-rs/issues/1646)); that refusal is
-separate from recording.
+platform, and the crate builds on macOS. Auto-drive is still unavailable on
+macOS (see
+[#1646](https://github.com/rysweet/amplihack-rs/issues/1646)), which is a
+separate matter from where a run executes.
 
 ## Tests
 
 The cargo tests run the real CLI against temporary repositories, with temporary
 `HOME`, `AMPLIHACK_HOME`, profile root and `TMPDIR`. They never read or write
 the real `~/.claude`, `~/.amplihack` or profile root. Concurrency uses socket
-handshakes and observer acknowledgements; there are no sleeps, timers or
+handshakes, readiness files and child exits; there are no sleeps, timers or
 elapsed-time checks. Test helpers fail on any I/O error or non-zero exit, so an
 isolation test cannot pass on empty data.
 
 | Test file | Covers |
 | --- | --- |
 | `crates/amplihack-cli/tests/issue_2096_checkout_units.rs` | Snapshot layers, byte paths, symlinks, special files, batch blob query. |
-| `crates/amplihack-cli/tests/issue_2096_execution_isolation.rs` | Caller `HEAD` and index unchanged; dry run makes no checkout, recording or run folder; resumed run gets a fresh `exec dir`; unborn caller finishes admission as `Failure`. |
+| `crates/amplihack-cli/tests/issue_2096_execution_isolation.rs` | Caller `HEAD` and index unchanged; dry run makes no checkout and no run folder; resumed run gets a fresh `exec dir`; unborn caller finishes admission as `Failure`. |
 | `crates/amplihack-cli/tests/issue_2096_private_base_ref.rs` | Base resolution inside a private checkout made by `RunCheckout::prepare`, whose caller has an origin: the `resolve_base_ref` bodies taken from `workflow-worktree.yaml`, `consensus-issue-worktree.yaml` and `workflow-terminal-state.yaml`, and `workflow_delivery_inputs.sh worktree main false "" ""`, all without a prior fetch; `git fetch origin` in the private repository moves `origin/main`; a caller without an origin gets no refspec; a foreign `origin/HEAD` target is refused while preparation still succeeds; a plain caller `origin/HEAD` is not copied. |
-| `crates/amplihack-cli/tests/issue_2096_recording.rs` | Observer coverage and failure cases. |
+| `crates/amplihack-cli/tests/issue_2738_no_ptrace.rs` (Linux) | A real run's runner and every process in its tree report `TracerPid: 0` in `/proc/<pid>/status` while the run is in flight, and a run whose release succeeds reports the runner's own exit status. |
+| `crates/amplihack-cli/tests/issue_2738_git_outside_repo.rs` | A `git clone` and a `git ls-remote` against a tempfile bare repository, run outside any repository while a run is in flight, both succeed and leave the run's outcome unchanged. |
+| `crates/amplihack-cli/tests/issue_2738_drive_shaped_layout.rs` | A clone holding a `worktrees/pr-N` worktree runs to a terminal outcome, and `git -C <main root> worktree list` still shows the worktree. |
+| `crates/amplihack-cli/tests/issue_2738_private_clone.rs` | A step that writes to the index works in a private clone whose path differs from the caller's checkout; the caller's index and working tree are unchanged. |
 | `crates/amplihack-cli/tests/issue_2677_private_main_root.rs`, module `private_main_root` of `issue_2096_execution_isolation` | A new-branch run launched from the caller's main checkout with `-c repo_path=.` and an issue number: `workflow_worktree_root.sh root` names the run's storage folder, `base` resolves from it to the same worktree path as from the checkout, and a folder that is not a work tree and not that answer still fails. |
-| `crates/amplihack-cli/tests/issue_2677_nested_unobserved.rs`, module `nested_unobserved` of `issue_2096_execution_isolation` (Linux only) | A second `amplihack recipe run` started from a step of an observed run, with `AMPLIHACK_OBSERVER_PID` removed, so the kernel declines its `PTRACE_TRACEME`: a step runs, the nested run exits zero, and its `git-recording.json` says `coverage: "unavailable"`. |
-| `crates/amplihack-cli/src/run_isolation/observer/linux.rs` (module tests) | `a_failed_join_never_displaces_the_spawn_error` and `a_successful_join_leaves_the_spawn_error_alone`: when the runner's own spawn failed, the error the caller gets is the spawn error, with its `failed to spawn recipe-runner-rs` first line, its error number as root cause and the marker that an attempt never started, whatever the tracing thread did. That the thread is joined before the rule runs comes from the rule's signature, which takes the join's finished `Result`, not from these tests. `a_join_failure_warning_carries_its_fixed_prefix_and_no_path` holds the stderr warning's fixed text. |
-| `crates/amplihack-cli/src/commands/recipe/run/tests_git_record.rs` | `begin_on(RecordingPlatform::Other)`: the run is unobserved, no observer or trace variables reach the runner, `git-recording.json` says `unavailable`, and a missing run dir still fails. `begin_on(RecordingPlatform::Linux)` still requires the observer. `a_runner_that_cannot_start_reports_its_own_error_first` covers a spawn failure naming its own error number and leaving no missing-receipt error behind it, `a_refused_release_keeps_the_attempt_and_still_reports_the_spawn_error` covers the case where that attempt's journal cannot be released, and `a_refused_release_warning_carries_its_fixed_prefix_and_no_path` holds that refusal warning's fixed text. The downgrade's preconditions are covered by `downgrade_rests_on_what_was_recorded_not_on_the_required_flag`, `downgrade_still_refuses_a_journal_with_content_on_an_unrequired_record` and `a_second_downgrade_of_one_record_is_refused_and_deletes_nothing`. |
 | `crates/amplihack-cli/tests/issue_2096_review_isolation.rs` | Review generations and both call sites of the three-pair storage check. `advance_retires_superseded_generation` covers the retirement call site: after `advance` the old checkout and storage are gone and the manifest says `retired`. `release_frees_storage_left_by_failed_retirement` covers the release call site, where a retirement that did not reach the removal leaves storage behind. `advance_destroys_nothing_when_the_recorded_launch_directory_is_replaced` covers the fourth recorded pair on the retirement path: a generation whose recorded `launch` directory was replaced keeps its checkout, its storage and `retired: false`, because the read that precedes retirement compares all four pairs and refuses first. `retired_generation_is_refused` covers the commands that refuse a retired generation, and `release_root_after_retirement_removes_everything` the release of the whole chain. On the release path, `retired_release_refuses_symlinked_storage` and `retired_release_refuses_substituted_storage` cover the storage directory's own identity, and five tests cover the recorded children: storage whose recorded children are absent, whose recorded children were replaced by a tree of the same shape, whose recorded child is a symlink, and whose `launch` alone is gone while the other two pairs still match (`retired_release_refuses_storage_whose_launch_child_is_gone`), are each refused with nothing deleted, while `retired_release_frees_storage_the_removal_never_reached` holds the opposite side, that a whole recorded tree a failed retirement left behind is still freed. The substitution tests do not wait for the kernel to reuse an inode: they give the substitute the recorded top-level pair outright, which is the most inode reuse can hand it. |
 | `crates/amplihack-cli/tests/issue_2096_real_hooks.rs` | Pre-commit and push hooks run in the execution checkout. |
 | `crates/amplihack-git/tests/issue_2096_git_policy.rs` | Git environment and configuration policy. |
 | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` | Review generation checks, `REVIEW_DIR_CHANGED` and `REVIEW_DIR_UNSTAMPED`. |
 | `tests/issue_1437_autodrive_loop.sh` | The #1437 loop contract with review generations in place; the default case (`NOT_READY`, then `MERGE_READY`, ending `DONE`) also checks that `review-release` runs exactly once and that no round starts in the PR worktree or the main checkout. Failure cases are listed below. |
 
+Every file under `crates/amplihack-cli/tests/` is a module of one test
+binary. The crate sets `autotests = false`, so a test file is compiled only
+when a `#[path = "..."] mod ...;` line names it: the four `issue_2738_*.rs`
+files are wired into `crates/amplihack-cli/tests/main.rs`, and the
+`issue_2096_*` files into `tests/issue_2096_execution_isolation.rs`. A file
+left out of both is silently never built. Select them by module path within
+the one `cli_integration` target:
+
 ```bash
-cargo test -p amplihack-cli --test main issue_2096
-cargo test -p amplihack-cli --lib git_record
+cargo test -p amplihack-cli --test cli_integration issue_2096_execution_isolation::
+cargo test -p amplihack-cli --test cli_integration issue_2738_
 cargo test -p amplihack-git --test issue_2096_git_policy
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 bash tests/issue_1437_autodrive_loop.sh
@@ -706,10 +680,9 @@ The double cannot detect faults in real review isolation. The
 
 - A private repository isolates Git state. It is not an OS sandbox: a step
   can still write any path its user can write.
-- The observer sees Git launched in the runner's process tree. It does not see
-  Git that preparation and release run themselves, unrelated host processes,
-  or non-Git writes to an index.
-- Evidence files are not tamper-proof against the same user.
+- No record is kept of the Git commands a run makes. A run is isolated by the
+  clone it works in, not by an account of what it did, so there is nothing to
+  read afterwards to find out which commands ran.
 - Identity checks resolve a path by name, and so does the delete that
   follows. A path swapped between the last check and the delete is not caught.
   The window is narrow, because the recursive delete walks the tree with
@@ -742,14 +715,12 @@ The double cannot detect faults in real review isolation. The
 - A relative `remote.origin.url` in the caller (for example `../upstream.git`)
   is copied as written and resolves against the private repository, not the
   caller. Use an absolute path or URL for such remotes.
-- Off Linux, no Git command evidence is produced. `coverage: "unavailable"`
-  records that fact; no gate accepts it as evidence.
 
 ## Related
 
 - [Inspect a local-input snapshot](../tutorials/recipe-checkout-isolation.md)
 - [Run a recipe](../howto/run-a-recipe.md#know-where-the-run-works)
 - [Clean up after recipe runs](../howto/clean-up-after-recipe-runs.md#what-happens-when-a-run-ends)
-- [Recipe runner logging](recipe-runner-logging.md#git-command-record)
+- [Recipe runner logging](recipe-runner-logging.md#git-commands-a-run-makes)
 - [Auto-drive to merge](auto-drive-to-merge.md#review-generations)
 - [Recipe runner architecture](../concepts/recipe-runner-architecture.md#the-runs-own-checkout)

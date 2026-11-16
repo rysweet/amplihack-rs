@@ -851,26 +851,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // Prepare private Git metadata outside disposable runtime/ before any
     // executable step. An unborn or unsupported caller state rejects launch.
     let scratch = workspace.borrow().runtime_dir().to_path_buf();
-    // Required recording storage is established before preparation. Native
-    // runner supervision starts at spawn; its evidence is finalized after
-    // the observed runner tree has ended and the checkout has been released.
-    // A dry run has no run folder and runs no step, so it records nothing.
-    let recording = if dry_run {
-        Ok(super::git_record::GitRecord::dry_run())
-    } else {
-        super::git_record::GitRecord::begin(workspace.borrow().run_dir())
-    };
-    let git_record = match recording {
-        Ok(record) => record,
-        Err(error) => {
-            return fail_before_execution(
-                workspace.into_inner(),
-                admission.as_ref(),
-                error,
-                dry_run,
-            );
-        }
-    };
     // A run with a recovery identity (its own admission, or a nested run under
     // its parent's delegated recovery) prepares each attempt's fresh checkout
     // at a path derived from that identity, so a relaunch presents the same
@@ -904,10 +884,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         stable_storage,
     ) {
         Ok(checkout) => checkout,
-        Err(mut error) => {
-            if let Err(discard) = git_record.discard() {
-                error = error.context(format!("Git recording release also failed: {discard:#}"));
-            }
+        Err(error) => {
             return fail_before_execution(
                 workspace.into_inner(),
                 admission.as_ref(),
@@ -942,9 +919,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
             if let Err(release) = checkout.remove() {
                 error = error.context(format!("execution release also failed: {release:#}"));
             }
-            if let Err(discard) = git_record.discard() {
-                error = error.context(format!("Git recording release also failed: {discard:#}"));
-            }
             return fail_before_execution(
                 workspace.into_inner(),
                 admission.as_ref(),
@@ -968,8 +942,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
     //
     // A failed write (or a reserved key, normally refused earlier at intake)
     // ends the run as a failure and never falls back to `--set`. The checkout
-    // and the Git record are released first, as on every other preparation
-    // error here.
+    // is released first, as on every other preparation error here.
     // Owned before the match: a `workspace.borrow()` temporary in the
     // scrutinee would still be live in the error arm, where the workspace is
     // moved into `fail_before_execution`.
@@ -983,9 +956,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
         Err(mut error) => {
             if let Err(release) = checkout.remove() {
                 error = error.context(format!("execution release also failed: {release:#}"));
-            }
-            if let Err(discard) = git_record.discard() {
-                error = error.context(format!("Git recording release also failed: {discard:#}"));
             }
             return fail_before_execution(
                 workspace.into_inner(),
@@ -1039,7 +1009,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
         // Issue #2096: no inherited GIT_DIR, GIT_INDEX_FILE or git config
         // override may send the run's git commands back to the caller.
         checkout.apply_to(&mut command);
-        git_record.apply_to(&mut command)?;
 
         if fresh {
             command.arg("--fresh");
@@ -1255,9 +1224,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 Err(error) => return AttemptOutcome::Final(Err(error)),
             };
             let mut stderr_tail = String::new();
-            // Issue #2677: the one unobserved fallback start needs the
-            // command built again after the record is downgraded.
-            let correlation_run_id = correlation.run_id().to_string();
             // Cloned so no RefCell borrow is held across the attempt.
             let run_dir = workspace.borrow().run_dir().map(Path::to_path_buf);
             let attempt_result = spawn_with_streaming_stderr(
@@ -1268,8 +1234,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 timeout,
                 &guard.tree_id,
                 &mut stderr_tail,
-                &git_record,
-                &|| build_command(correlation_run_id.as_str()),
             );
 
             // Structured runner failures and spawn/parse errors both enter
@@ -1385,14 +1349,12 @@ pub(super) fn execute_recipe_via_rust_fresh(
         }
         Err(error) => Err(error),
     };
-    // Release order: the private checkout, then the Git record, then the
-    // recovery admission (judged from the result after the first two), then
-    // the run folder.
+    // Release order: the private checkout, then the recovery admission
+    // (judged from the result after it), then the run folder.
     release_in_order(
         final_result,
         vec![
             ("execution release", Box::new(|_| checkout.remove())),
-            ("Git recording", Box::new(|_| git_record.finish())),
             (
                 "recovery admission finish",
                 Box::new(|result| {
@@ -1581,7 +1543,6 @@ fn terminal_action(summary: &RetrySummary) -> &'static str {
 /// and stderr "teed": each line is forwarded live to our own stderr AND
 /// captured in a buffer so the error path can still surface a meaningful
 /// stderr tail. (#357)
-#[allow(clippy::too_many_arguments)]
 fn spawn_with_streaming_stderr(
     mut command: Command,
     correlation: RecipeRunCorrelation,
@@ -1590,53 +1551,9 @@ fn spawn_with_streaming_stderr(
     timeout: Duration,
     tree_id: &str,
     stderr_sink: &mut String,
-    git_record: &super::git_record::GitRecord,
-    rebuild: &dyn Fn() -> Result<Command>,
 ) -> Result<RecipeRunResult> {
     arm_runner(&mut command);
-    // A required record is spawned under the native observer. A dry run's
-    // record is not required and never reaches `GitRecord::spawn`: it spawns
-    // the runner plainly. A record downgraded by #2677 is also not required,
-    // so later attempts in the same run start unobserved.
-    #[cfg(target_os = "linux")]
-    let (spawned, mut observer) = if git_record.is_required() {
-        match git_record.spawn(command, correlation.run_id()) {
-            Ok((child, observer)) => (Ok(child), Some(observer)),
-            Err(error) => match error
-                .downcast_ref::<super::git_record::observer::ObserverNotEstablished>()
-                .map(|refused| refused.errno())
-            {
-                Some(errno) => {
-                    // Issue #2677: the observer never attached, so it watched
-                    // nothing. Not a retry: this is the single unobserved start
-                    // that replaces the observed one, decided by what happened,
-                    // and it happens at most once because the downgrade makes
-                    // the record not required. If the record refuses (evidence
-                    // may exist), the run fails closed with both errors.
-                    match git_record.attempt_not_established(correlation.run_id(), errno) {
-                        Ok(()) => {
-                            // Built again after the downgrade, so `apply_to`
-                            // removes every observer and trace variable.
-                            let spawned = rebuild().map(|mut command| {
-                                arm_runner(&mut command);
-                                command
-                            });
-                            (spawned.and_then(spawn_unobserved), None)
-                        }
-                        Err(refused) => (Err(error.context(format!("{refused:#}"))), None),
-                    }
-                }
-                None => (Err(error), None),
-            },
-        }
-    } else {
-        (spawn_unobserved(command), None)
-    };
-    #[cfg(not(target_os = "linux"))]
-    let spawned = {
-        let _ = (git_record, rebuild);
-        spawn_unobserved(command)
-    };
+    let spawned = command.spawn().context("failed to spawn recipe-runner-rs");
     let mut child = spawned.map_err(|error| {
         correlation.emit_early();
         fail_with_final_record(
@@ -1713,17 +1630,10 @@ fn spawn_with_streaming_stderr(
         let _ = stdout_tx.send(result);
     });
 
-    // One clock for this attempt's timeout and every teardown grace below,
-    // whichever way the runner was spawned: `terminate_recipe_runner`,
-    // `sweep_runner_tree` (and so `terminate_observed_runner`) and
+    // One clock for this attempt's timeout and every teardown grace below:
+    // `terminate_recipe_runner`, `sweep_runner_tree` and
     // `reap_recipe_runner_group` all wait on it.
     let runner = RunnerClock::current();
-    #[cfg(target_os = "linux")]
-    let waited = match &observer {
-        Some(observer) => wait_for_observed_runner(observer, timeout, &runner),
-        None => wait_for_recipe_runner(&mut child, timeout, &runner),
-    };
-    #[cfg(not(target_os = "linux"))]
     let waited = wait_for_recipe_runner(&mut child, timeout, &runner);
     let status = match waited
         .context("failed to wait for recipe-runner-rs")
@@ -1773,17 +1683,8 @@ fn spawn_with_streaming_stderr(
             // setsid'd again): the whole tree is found before anything is
             // signalled, and swept after the group teardown.
             //
-            // A plain child is reaped only by this executor's own wait, so
-            // its pid is still the runner's and the walk starts there. An
-            // observed runner is reaped by the observer's tracing thread as
-            // soon as it exits, so its pid may already name another process:
-            // the walk starts from the tasks the observer still traces.
-            #[cfg(target_os = "linux")]
-            let roots = match observer.as_ref() {
-                Some(observer) => observer.traced_tasks(),
-                None => std::collections::BTreeSet::from([child.id() as i32]),
-            };
-            #[cfg(not(target_os = "linux"))]
+            // The child is reaped only by this executor's own wait, so its
+            // pid is still the runner's and the walk starts there.
             let roots = std::collections::BTreeSet::from([child.id() as i32]);
             let tree = crate::commands::recipe::stop::snapshot_tree(&roots);
             // Issue #1976: the flag value alone decides the status; a signal
@@ -1801,12 +1702,6 @@ fn spawn_with_streaming_stderr(
             let detail = super::format::format_log_pointer_summary(&summary);
             // The sweep runs whatever the group teardown reports: a runner
             // that could not be reaped must not leave its descendants behind.
-            #[cfg(target_os = "linux")]
-            let teardown = match observer.as_mut() {
-                Some(observer) => terminate_observed_runner(&tree, observer, &runner),
-                None => terminate_recipe_runner(&mut child, &runner),
-            };
-            #[cfg(not(target_os = "linux"))]
             let teardown = terminate_recipe_runner(&mut child, &runner);
             sweep_runner_tree(&tree, &runner);
             let stopped = anyhow::Error::new(super::stop_signal::StoppedBySignal(signal));
@@ -1832,19 +1727,6 @@ fn spawn_with_streaming_stderr(
             );
             let detail = super::format::format_log_pointer_summary(&summary);
             let run_id = summary.run_id.clone();
-            #[cfg(target_os = "linux")]
-            let teardown = match observer.as_mut() {
-                Some(observer) => {
-                    // As for a stop signal above: never seeded from the
-                    // runner's pid, which the tracing thread may already
-                    // have reaped.
-                    let tree =
-                        crate::commands::recipe::stop::snapshot_tree(&observer.traced_tasks());
-                    terminate_observed_runner(&tree, observer, &runner)
-                }
-                None => terminate_recipe_runner(&mut child, &runner),
-            };
-            #[cfg(not(target_os = "linux"))]
             let teardown = terminate_recipe_runner(&mut child, &runner);
             teardown.with_context(|| {
                 format!("recipe run {run_id} timed out and could not be terminated: {detail}")
@@ -1867,7 +1749,7 @@ fn spawn_with_streaming_stderr(
     // process group. Deterministically reap that tree BEFORE draining pipes so
     // a failed/early-exiting runner cannot leak a recursive subprocess tree and
     // cannot wedge the drain by holding the inherited stdout pipe open.
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(unix)]
     reap_recipe_runner_group(child.id(), &runner);
 
     let stdout_buf = stdout_rx
@@ -1952,10 +1834,8 @@ fn spawn_with_streaming_stderr(
     }
 }
 
-/// The runner's process setup, shared by the observed start and the single
-/// unobserved fallback (issue #2677), so neither can lose it: captured
-/// stdout and stderr, its own session, and on Linux a SIGTERM when this
-/// process dies.
+/// The runner's process setup: captured stdout and stderr, its own session,
+/// and on Linux a SIGTERM when this process dies.
 fn arm_runner(command: &mut Command) {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
@@ -1990,64 +1870,6 @@ fn arm_runner(command: &mut Command) {
             });
         }
     }
-}
-
-/// Spawns the runner without the native observer: a dry run on Linux, the
-/// single fallback start after the Linux observer could not attach (#2677),
-/// and every launch elsewhere.
-fn spawn_unobserved(mut command: Command) -> Result<Child> {
-    command.spawn().context("failed to spawn recipe-runner-rs")
-}
-
-/// Waits for a runner spawned under the native observer (every real run on
-/// Linux). The observer's tracing thread reaps the runner, so its exit comes
-/// from `observer.try_wait`, never from `Child::try_wait`. The timeout is
-/// measured on `runner`'s clock in [`wait_for_runner`], the same loop as
-/// [`wait_for_recipe_runner`].
-#[cfg(target_os = "linux")]
-fn wait_for_observed_runner(
-    observer: &super::git_record::observer::Observer,
-    timeout: Duration,
-    runner: &RunnerClock,
-) -> std::io::Result<RunnerWait> {
-    wait_for_runner(
-        timeout,
-        runner,
-        || {
-            if let Some(status) = observer.try_wait().map_err(std::io::Error::other)? {
-                return Ok(Some(status));
-            }
-            if let Some(tasks) = observer.finished_scope() {
-                let tree =
-                    crate::commands::recipe::stop::snapshot_tree(&tasks.into_iter().collect());
-                sweep_runner_tree(&tree, runner);
-            }
-            Ok(None)
-        },
-        // Nothing is signalled here. The tracing thread reaps the runner as
-        // soon as it exits, so its pid and group id may already name another
-        // process. The wait then reports a timeout, and the timeout teardown
-        // ends the run without using that pid: it snapshots the tree from
-        // `Observer::traced_tasks`, with start times, sends it SIGTERM,
-        // abandons the grace at once because the run is cancelled (see
-        // `sweep_runner_tree`), sends SIGKILL to what is left of that
-        // snapshot, and `Observer::terminate` then kills every task the
-        // observer still traces.
-        || {},
-    )
-}
-
-/// The teardown for an observed runner: SIGTERM to `tree`, the teardown grace
-/// on `runner`'s clock, SIGKILL to whatever of `tree` is left, then the
-/// observer kills and reaps every task it still traces and joins its thread.
-#[cfg(target_os = "linux")]
-fn terminate_observed_runner(
-    tree: &crate::commands::recipe::stop::Tree,
-    observer: &mut super::git_record::observer::Observer,
-    runner: &RunnerClock,
-) -> Result<()> {
-    sweep_runner_tree(tree, runner);
-    observer.terminate()
 }
 
 /// SIGTERM every process of `tree`, wait up to the teardown grace on
@@ -2357,9 +2179,9 @@ enum RunnerWait {
 /// and whether the attempt has been cancelled. Production reads the system
 /// clock and is never cancelled. A lib test that runs the executor under
 /// `test_runner::RunnerWorker` gets that worker's control instead: its
-/// (optionally virtual) clock and its cancel flag. Both runner paths, the
-/// plain child and the observed one, take it from here, so neither can wait
-/// or tear down on a clock the test does not control.
+/// (optionally virtual) clock and its cancel flag. The wait and every
+/// teardown take it from here, so neither runs on a clock the test does not
+/// control.
 pub(super) struct RunnerClock {
     #[cfg(all(test, unix))]
     control: Option<Arc<super::test_runner::Control>>,
@@ -2392,27 +2214,33 @@ impl RunnerClock {
     }
 }
 
-/// Polls `try_wait` until the runner exits, a stop signal arrives, or
-/// `timeout` passes on `runner`'s clock. Both runner paths wait here.
+/// Polls the runner until it exits, a stop signal arrives, or `timeout`
+/// passes on `runner`'s clock.
 ///
 /// Each poll asks `try_wait` first, so a runner that has exited is reported
 /// as `Exited` even when the run was cancelled in the meantime. A cancelled
-/// run whose runner `try_wait` has just found still running calls
-/// `on_cancel` and is reported as a timeout, so the usual teardown ends it.
-fn wait_for_runner(
+/// run whose runner `try_wait` has just found still running has its process
+/// group killed and is reported as a timeout, so the usual teardown ends it.
+fn wait_for_recipe_runner(
+    child: &mut Child,
     timeout: Duration,
     runner: &RunnerClock,
-    mut try_wait: impl FnMut() -> std::io::Result<Option<ExitStatus>>,
-    on_cancel: impl FnOnce(),
 ) -> std::io::Result<RunnerWait> {
     let clock = runner.clock();
     let started = clock.now();
     loop {
-        if let Some(status) = try_wait()? {
+        if let Some(status) = child.try_wait()? {
             return Ok(RunnerWait::Exited(status));
         }
         if runner.cancelled() {
-            on_cancel();
+            // SAFETY: `try_wait` has just found the child still running, and
+            // only this executor waits on it, so it is still unreaped and its
+            // pid, the id of the group it leads, is still this runner's.
+            // Cancel only that group before the test worker is joined.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL)
+            };
             return Ok(RunnerWait::TimedOut);
         }
         if let Some(signal) = super::stop_signal::pending() {
@@ -2427,34 +2255,6 @@ fn wait_for_runner(
         };
         clock.sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }
-}
-
-/// Waits for a runner spawned as a plain child: a dry run on Linux, and
-/// every run elsewhere.
-fn wait_for_recipe_runner(
-    child: &mut Child,
-    timeout: Duration,
-    runner: &RunnerClock,
-) -> std::io::Result<RunnerWait> {
-    let pid = child.id();
-    wait_for_runner(
-        timeout,
-        runner,
-        || child.try_wait(),
-        || {
-            // SAFETY: `try_wait` has just found the child still running, and
-            // only this executor waits on a plain child, so it is still
-            // unreaped and its pid, the id of the group it leads, is still
-            // this runner's. Cancel only that group before the test worker
-            // is joined.
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(-(pid as libc::pid_t), libc::SIGKILL)
-            };
-            #[cfg(not(unix))]
-            let _ = pid;
-        },
-    )
 }
 
 fn terminate_recipe_runner(child: &mut Child, runner: &RunnerClock) -> Result<()> {

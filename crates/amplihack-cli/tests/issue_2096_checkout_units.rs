@@ -237,3 +237,136 @@ fn map_path_refuses_a_caller_path_that_climbs_out_with_parent_dirs() {
         },
     );
 }
+
+/// Index isolation between a linked worktree and the main checkout, kept from
+/// the recording tests removed in #2738. The recipe runner is not involved:
+/// this pins an observation about Git itself that candidate 1 of the #2096
+/// investigation rested on, and `GIT_TRACE2_EVENT` is used here only as the
+/// test's own instrument for reading which index each command ran against.
+///
+/// Observed with git 2.56 on 10 Nov 2026, a pre-commit hook's `git diff`,
+/// `git checkout -- .` and `git apply` all ran with `GIT_INDEX_FILE` set by
+/// git to the linked worktree's own index (`.git/worktrees/<name>/index`),
+/// and the main checkout's index was byte-identical before and after. This
+/// pins that synthetic observation, without ruling out the real hook chain
+/// or identifying the historical writer. A regression names the commands
+/// that ran with which index.
+#[test]
+fn a_precommit_stash_and_restore_in_a_worktree_leaves_the_main_index_alone() {
+    use serde_json::Value;
+
+    let f = Fixture::new();
+    fs::write(f.repo.join("untracked-in-main"), "u").unwrap();
+    let wt = f.root.join("wt");
+    f.git(&["worktree", "add", "-q", "-b", "feat", wt.to_str().unwrap()]);
+    let wt = fs::canonicalize(wt).unwrap();
+    let wt_index = PathBuf::from(
+        String::from_utf8(f.git_in(
+            &wt,
+            &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+        ))
+        .unwrap()
+        .trim(),
+    );
+
+    // pre-commit's staged_files_only: save unstaged changes as a patch,
+    // check out the index, run hooks, apply the patch back.
+    let hook = f.repo.join(".git/hooks/pre-commit");
+    crate::support::exec_stub::write_executable(
+        &hook,
+        r#"#!/bin/sh
+set -e
+patch="$(git rev-parse --git-dir)/stash.patch"
+if ! git diff --ignore-submodules --binary --exit-code --no-color --no-ext-diff > "$patch"; then
+  git checkout -- .
+  : > "$(git rev-parse --git-dir)/hook-stashed"
+  git apply "$patch"
+fi
+rm -f "$patch"
+"#,
+        0o755,
+    );
+
+    fs::write(wt.join("staged"), "s").unwrap();
+    f.git_in(&wt, &["add", "staged"]);
+    fs::write(wt.join("tracked"), "base\nunstaged\n").unwrap();
+
+    let main_index = f.repo.join(".git/index");
+    let before = fs::read(&main_index).unwrap();
+    let trace = f.root.join("replay-trace");
+    fs::create_dir(&trace).unwrap();
+    let mut c = amplihack_git::command();
+    f.environment(&mut c);
+    let mut target = trace.clone().into_os_string();
+    target.push("/");
+    let out = c
+        .current_dir(&wt)
+        .env("GIT_TRACE2_EVENT", target)
+        .env(
+            "GIT_TRACE2_ENV_VARS",
+            "GIT_DIR,GIT_INDEX_FILE,GIT_WORK_TREE,PWD",
+        )
+        .args(["commit", "-qm", "worktree commit"])
+        .output()
+        .unwrap();
+    succeeds(&out);
+    let after = fs::read(&main_index).unwrap();
+
+    // The hook did take the stash path.
+    let wt_git_dir = wt_index.parent().unwrap();
+    assert!(
+        wt_git_dir.join("hook-stashed").exists(),
+        "the hook never stashed"
+    );
+    assert_eq!(
+        fs::read_to_string(wt.join("tracked")).unwrap(),
+        "base\nunstaged\n",
+        "the hook restored the unstaged change"
+    );
+
+    // Which index each of the hook's git commands ran against.
+    let mut indexes: std::collections::BTreeMap<String, (Vec<String>, Option<String>)> =
+        Default::default();
+    for file in fs::read_dir(&trace).unwrap() {
+        let text = fs::read_to_string(file.unwrap().path()).unwrap();
+        for line in text.lines() {
+            let Ok(event) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let sid = event["sid"].as_str().unwrap_or_default().to_string();
+            match event["event"].as_str() {
+                Some("start") => {
+                    indexes.entry(sid).or_default().0 = event["argv"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|s| s.as_str().map(String::from))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                }
+                Some("def_param") if event["param"] == "GIT_INDEX_FILE" => {
+                    indexes.entry(sid).or_default().1 = event["value"].as_str().map(String::from);
+                }
+                _ => {}
+            }
+        }
+    }
+    let hook_commands: Vec<_> = indexes
+        .values()
+        .filter(|(argv, _)| argv.get(1).is_some_and(|s| s == "checkout" || s == "apply"))
+        .collect();
+    assert_eq!(hook_commands.len(), 2, "{indexes:#?}");
+    for (argv, index) in &hook_commands {
+        assert_eq!(
+            index.as_deref(),
+            wt_index.to_str(),
+            "{argv:?} ran against an index other than the worktree's"
+        );
+    }
+
+    assert!(
+        before == after,
+        "the main index changed; commands and their indexes: {indexes:#?}"
+    );
+}

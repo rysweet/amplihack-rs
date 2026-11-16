@@ -17,6 +17,26 @@ pub(crate) mod exec_storage;
 
 pub(crate) const RUN_CHECKOUT_ENV: &str = "AMPLIHACK_RUN_CHECKOUT";
 
+/// Git's Trace2 variables, removed from every run so that a caller's tracing
+/// settings cannot follow a run's Git commands (#2738).
+///
+/// The Git-command tracer removed in #2738 owned this: it had to clear these
+/// to keep a caller's trace target from colliding with its own. The tracer is
+/// gone, but the reason to clear them is not, and it is a stronger one.
+/// `GIT_TRACE2_REDACT=0` turns off Git's redaction of `Authorization:`
+/// headers in Trace2 output, so a caller environment carrying that together
+/// with a `GIT_TRACE2*` target would write this run's auth headers to a sink
+/// of the caller's choosing. Clearing them here keeps that out of a run
+/// whether or not anything inside it is tracing.
+pub(crate) const CALLER_TRACE_VARS: &[&str] = &[
+    "GIT_TRACE2",
+    "GIT_TRACE2_CONFIG_PARAMS",
+    "GIT_TRACE2_ENV_VARS",
+    "GIT_TRACE2_EVENT",
+    "GIT_TRACE2_PERF",
+    "GIT_TRACE2_REDACT",
+];
+
 /// The stable path an attempt with a recovery identity prepares at, the run
 /// folder that claims it, and how to tell whether an earlier owner has ended.
 #[derive(Clone, Copy)]
@@ -345,6 +365,9 @@ impl RunCheckout {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .env("GIT_CONFIG_GLOBAL", "/dev/null");
+        for var in CALLER_TRACE_VARS {
+            command.env_remove(var);
+        }
         match self {
             Self::Caller(_) => {
                 command.env_remove(RUN_CHECKOUT_ENV);
