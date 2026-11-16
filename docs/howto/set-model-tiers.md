@@ -166,6 +166,8 @@ For the `key = value  # origin` row form, use `amplihack config list
 
     A launch through the LiteLLM gateway ignores both tiers and
     `model.force`; `AMPLIHACK_LITELLM_MODEL` keeps deciding the model there.
+    That covers Claude Code, RustyClawd and Copilot CLI — every tool the
+    gateway routes — including a Copilot column you have filled in yourself.
 
 ### 5. Read back what the run spent
 
@@ -293,6 +295,7 @@ strong
 | Lines in `Model tiers:` say `launch 1` instead of a step id | The launch count does not match the agent-step count — a parallel group, a rate-limit retry or a resumed run | Read the record file, which carries the same data per launch |
 | `config set model.tier_map` in a project file is ignored | Path-valued keys are user-only, so a cloned repository cannot name the file that rewrites recipe YAML | Set it in your user config |
 | A step id in `[step_tiers]` does nothing | No recipe in the run contains it | Check the id with the `grep` in step 3 |
+| `~/.amplihack/model-tiers.toml` is ignored, with a line about permissions | The file is writable by group or others, or owned by another user — the same gate `model.force` gets | `chmod 600 ~/.amplihack/model-tiers.toml` |
 
 ## Related
 

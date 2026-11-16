@@ -311,7 +311,11 @@ fn run_launch_core(
     // check below refuses a launch whose explicit `--model` is not
     // AMPLIHACK_LITELLM_MODEL, so a tier word left in place would stop every
     // gateway launch before it started.
-    let extra_args = model_tiers::resolve_passthrough(tool, &extra_args);
+    //
+    // `proxy_target` names which harnesses the gateway routes, and is handed
+    // down rather than re-derived: Copilot CLI is a gateway target that
+    // `is_claude_compatible_tool` excludes.
+    let extra_args = model_tiers::resolve_passthrough(tool, &extra_args, proxy_target.is_some());
     let proxy_config = amplihack_utils::litellm_proxy::ProxyConfig::from_env()
         .context("invalid external LiteLLM proxy configuration")?;
     let proxy_enabled = proxy_config.is_some();

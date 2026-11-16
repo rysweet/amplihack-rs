@@ -418,6 +418,84 @@ fn a_forced_model_supplies_one_where_the_command_has_none() {
 }
 
 #[test]
+fn a_forced_model_lands_before_the_end_of_options_marker() {
+    // Everything past `--` is the caller's, forwarded verbatim (D9). A pair
+    // appended there is not an option amplihack set: for `-p` it makes a
+    // second prompt, which the Claude passthrough rewriter refuses outright,
+    // and outside print mode it reaches the harness as positional text while
+    // `Notice::Forced` says the model was applied.
+    let table = Table::shipped();
+    for args in [
+        argv(&["-p", "--", "the user prompt"]),
+        argv(&["--", "--settings", "/x"]),
+    ] {
+        let out = resolve(&Request {
+            harness: "claude",
+            argv: &args,
+            table,
+            force: Some("claude-haiku-5-5"),
+            through_gateway: false,
+        });
+        let marker = out
+            .argv
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("the marker survives");
+        let model = out
+            .argv
+            .iter()
+            .position(|arg| arg == "--model")
+            .expect("the forced model is on the command line");
+        assert!(
+            model < marker,
+            "the pair belongs in amplihack's own region: {:?}",
+            out.argv
+        );
+        assert_eq!(model_of(&out), Some("claude-haiku-5-5"), "{:?}", out.argv);
+    }
+}
+
+#[test]
+fn a_forced_model_does_not_make_a_second_prompt_in_print_mode() {
+    // The reproduction: `-p -- <prompt>` plus `model.force` used to come back
+    // with the pair after the marker, and `rewrite_claude_passthrough` then
+    // failed the launch with "the prompt was given twice".
+    use crate::commands::launch::passthrough_rewrite::rewrite_claude_passthrough;
+    let table = Table::shipped();
+    let args = argv(&["-p", "--", "the user prompt"]);
+    let out = resolve(&Request {
+        harness: "claude",
+        argv: &args,
+        table,
+        force: Some("claude-haiku-5-5"),
+        through_gateway: false,
+    });
+    assert!(
+        rewrite_claude_passthrough(&out.argv).is_ok(),
+        "a forced model must not stop a launch the same tail runs without it: {:?}",
+        out.argv
+    );
+}
+
+#[test]
+fn a_forced_model_with_no_marker_is_appended_as_before() {
+    let table = Table::shipped();
+    let args = argv(&["-p"]);
+    let out = resolve(&Request {
+        harness: "claude",
+        argv: &args,
+        table,
+        force: Some("claude-haiku-5-5"),
+        through_gateway: false,
+    });
+    assert_eq!(
+        out.argv,
+        argv(&["-p", "--model", "claude-haiku-5-5"]),
+        "with no end-of-options marker the whole tail is amplihack's region"
+    );
+}
+
+#[test]
 fn a_forced_model_outranks_an_explicit_concrete_id() {
     // The one narrow, documented exception to issue #1527. It fires only from
     // the operator's own user config or environment.

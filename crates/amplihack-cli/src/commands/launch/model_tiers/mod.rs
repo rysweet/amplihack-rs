@@ -67,11 +67,22 @@ const RUN_ID_ENV: &str = "AMPLIHACK_RUN_ID";
 /// rewrite and the Codex agent-step injection must see the same argv the
 /// harness will.
 ///
+/// `gateway_target` is whether this launch has a LiteLLM gateway target at
+/// all — `proxy_target.is_some()` at the call site. It arrives as data rather
+/// than being re-derived here: Copilot CLI is a gateway target that
+/// `is_claude_compatible_tool` excludes, so deriving it a second time gave a
+/// filled `[copilot]` column a `--model` the gateway refuses, and refused
+/// every tiered Copilot step with it.
+///
 /// Prints the stderr lines the resolution produced and returns the tail to
 /// use in place of `extra_args`. A tail with no tier and no forced model
 /// comes back byte-identical.
-pub(crate) fn resolve_passthrough(tool: &str, extra_args: &[String]) -> Vec<String> {
-    let mut resolved = resolve_for_launch(tool, extra_args);
+pub(crate) fn resolve_passthrough(
+    tool: &str,
+    extra_args: &[String],
+    gateway_target: bool,
+) -> Vec<String> {
+    let mut resolved = resolve_for_launch(tool, extra_args, gateway_target);
     let (argv, effort) = reasoning_effort(tool, resolved.argv, resolved.effort);
     for notice in &resolved.notices {
         eprintln!("{}", notice.render());
@@ -164,11 +175,17 @@ fn reasoning_effort(
 /// Reads the instance mapping, `model.force` and the gateway variables, calls
 /// [`resolve::resolve`], writes the measurement record and hands the stderr
 /// lines back to the caller. It decides nothing itself.
-fn resolve_for_launch(binary_name: &str, extra_args: &[String]) -> Resolution {
+fn resolve_for_launch(
+    binary_name: &str,
+    extra_args: &[String],
+    gateway_target: bool,
+) -> Resolution {
     let loaded = loaded_table();
     let force = forced_model();
-    let through_gateway = super::command::is_claude_compatible_tool(binary_name)
-        && amplihack_utils::litellm_proxy::proxy_requested();
+    // One source of truth for which harnesses the gateway routes: the target
+    // the caller already resolved. The environment read stays here, in the
+    // module that owns every syscall.
+    let through_gateway = gateway_target && amplihack_utils::litellm_proxy::proxy_requested();
     let mut out = resolve::resolve(&Request {
         harness: binary_name,
         argv: extra_args,
@@ -226,11 +243,19 @@ fn read_tier_file(path: &Path) -> (Table, Vec<Notice>) {
         (
             Table::default(),
             vec![Notice::TableLoadFailed {
-                path: display_path(path),
+                path: tier_file_display(path),
                 reason,
             }],
         )
     };
+    // The same ownership and permission gate `model.force` and
+    // `model.tier_map` get in the config loader. These settings moved out of
+    // the schema into this file when the feature consolidated to one override
+    // file; the gate has to follow them, or a group-writable home chooses the
+    // model every agent step runs on and can retarget one named step.
+    if let Some(reason) = user_config::safe::insecure_reason(path) {
+        return failed(reason.to_string());
+    }
     // The same bounded, type-checked, non-blocking read every amplihack
     // config file gets: at most 64 KiB, regular files only, no hang on a
     // FIFO or a device.
@@ -298,6 +323,19 @@ fn user_only() -> &'static user_config::Effective {
             migrate: false,
         })
     })
+}
+
+/// The tier file as a diagnostic names it: home-relative where it sits under
+/// the operator's home, escaped either way.
+///
+/// These lines land in run logs that get pasted into issues, and the absolute
+/// path carries the operator's username. `~/.amplihack/model-tiers.toml` says
+/// everything the reader needs.
+fn tier_file_display(path: &Path) -> String {
+    let shown = user_config::home_dir()
+        .and_then(|home| path.strip_prefix(&home).ok().map(Path::to_path_buf))
+        .map(|rest| Path::new("~").join(rest));
+    display_path(shown.as_deref().unwrap_or(path))
 }
 
 /// `AMPLIHACK_RUN_DIR`, when it names something. Empty means unset to every

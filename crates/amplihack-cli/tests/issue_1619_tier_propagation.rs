@@ -645,6 +645,102 @@ fn a_gateway_launch_uses_the_gateway_model_and_not_the_tier() {
     );
 }
 
+#[test]
+fn a_gateway_launch_of_copilot_is_not_refused_by_its_own_tier() {
+    // Copilot CLI is a gateway target that `is_claude_compatible_tool`
+    // excludes. Deriving "through the gateway" from Claude-compatibility
+    // instead of from the target left a filled `[copilot]` column resolving
+    // to a model the gateway was never configured to route, and
+    // `validate_launch_args` then refused the launch outright — every tiered
+    // Copilot step, not just this one. The shipped column is empty; the
+    // shipped file invites an operator to fill it.
+    let f = Fixture::new();
+    crate::support::exec_stub::write_executable(
+        &f.tools.join("copilot"),
+        FAKE_HARNESS.replace("'0.0.400'", "'1.0.83-2'"),
+        0o755,
+    );
+    f.write_override("version = 1\n\n[copilot.strong]\nmodel = \"gpt-5-codex\"\n");
+    let launch = {
+        let _ = fs::remove_file(&f.argv_log);
+        let output = f
+            .launch("copilot", &["--model", "strong", "-p", "go"])
+            .env("AMPLIHACK_RUN_DIR", &f.run_dir)
+            .env("AMPLIHACK_RUN_ID", "20261116-000000-test")
+            .env("AMPLIHACK_LITELLM_MODEL", "gateway-routed-model")
+            .env("AMPLIHACK_LITELLM_ENDPOINT", "http://127.0.0.1:1")
+            .env("AMPLIHACK_LITELLM_API_KEY", "test-key")
+            .output()
+            .expect("run amplihack");
+        Launch {
+            argv: read_argv(&f.argv_log),
+            output,
+        }
+    };
+    assert!(
+        launch.output.status.success(),
+        "a tiered copilot step under the gateway must launch; stderr:\n{}",
+        launch.stderr()
+    );
+    assert_eq!(
+        launch.model(),
+        None,
+        "the gateway routes on the model name, so the tier resolves by deletion and \
+         copilot runs on the model the gateway routes. argv: {:?}",
+        launch.argv
+    );
+    let text = fs::read_to_string(f.run_dir.join("model-tiers.jsonl")).expect("a record");
+    let record: serde_json::Value =
+        serde_json::from_str(text.lines().next().expect("one line")).expect("JSON");
+    assert_eq!(
+        record["fallback"],
+        serde_json::json!("gateway"),
+        "the record names the gateway as the reason, as it does for claude. \
+         record: {record}"
+    );
+}
+
+// -------------------------------------------------------------------------
+// The tier file passes the same trust gate as the config file
+// -------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn a_group_writable_tier_file_is_ignored_and_the_shipped_mapping_applies() {
+    // `model.force` and `model.tier_map` are dropped from a config file
+    // another user can write; the settings that moved into this file when the
+    // feature consolidated to one override file get the same gate, or a
+    // group-writable home chooses the model every agent step runs on.
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    f.write_override("version = 1\n\n[claude.strong]\nmodel = \"planted-model\"\n");
+    let path = f.home.join(".amplihack").join("model-tiers.toml");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+    let launch = f.run("claude", &["--model", "strong", "-p"]);
+    assert_eq!(
+        launch.model(),
+        Some("claude-opus-5[1m]"),
+        "the shipped mapping applies when the override file cannot be trusted. \
+         argv: {:?}",
+        launch.argv
+    );
+    let stderr = launch.stderr();
+    assert!(
+        stderr.contains("writable by group or others"),
+        "the operator is told why their file was ignored:\n{stderr}"
+    );
+    assert_eq!(
+        stderr.matches("model-tiers.toml").count(),
+        1,
+        "one diagnostic, once:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("~/.amplihack/model-tiers.toml"),
+        "the path is named home-relative: these lines get pasted into issues, and the \
+         absolute path carries the operator's username.\n{stderr}"
+    );
+}
+
 // -------------------------------------------------------------------------
 // F8/F11 — the measurement record
 // -------------------------------------------------------------------------

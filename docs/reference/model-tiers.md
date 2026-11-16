@@ -185,20 +185,25 @@ install defaults to. The variable is off unless you set it.
 Two more exceptions are worth stating next to the promises they qualify:
 
 - **A LiteLLM gateway launch ignores tiers.** A launch goes through the
-  gateway when the tool is Claude-compatible **and**
-  `AMPLIHACK_LITELLM_ENDPOINT`, `AMPLIHACK_LITELLM_API_KEY` or
-  `AMPLIHACK_LITELLM_MODEL` is set. There amplihack removes the tier's
-  `--model` pair, and its existing model chain then writes
-  `--model $AMPLIHACK_LITELLM_MODEL` in its place — the same argument that
-  launch carried before this feature existed. The gateway routes on the model
-  name, has no default of its own, and was never configured to route the ids
-  in the shipped mapping. A forced model does not route past it either.
+  gateway when the tool is one the gateway routes — Claude Code, RustyClawd
+  or GitHub Copilot CLI — **and** `AMPLIHACK_LITELLM_ENDPOINT`,
+  `AMPLIHACK_LITELLM_API_KEY` or `AMPLIHACK_LITELLM_MODEL` is set. There
+  amplihack removes the tier's `--model` pair. The gateway routes on the
+  model name, has no default of its own, and was never configured to route
+  the ids in the shipped mapping; it refuses outright a launch whose explicit
+  `--model` is not `AMPLIHACK_LITELLM_MODEL`, so leaving a tier's model in
+  place would stop the step rather than route it badly. A forced model does
+  not route past it either.
 
-  Codex and Copilot CLI never take this path: the gateway condition requires a
-  Claude-compatible tool, so gateway variables do not change a `codex` or
-  `copilot` launch. On those, the tier word is removed and nothing is written
-  in its place, because amplihack passes no `--model` to a non-Claude tool at
-  all.
+  On Claude Code and RustyClawd, amplihack's existing model chain then writes
+  `--model $AMPLIHACK_LITELLM_MODEL` in the tier's place — the same argument
+  that launch carried before this feature existed. On Copilot CLI nothing is
+  written in its place, because amplihack passes no `--model` to Copilot at
+  all; the gateway routes it by environment. This holds whether or not you
+  have filled in the `[copilot]` column.
+
+  Codex never takes this path: the gateway does not route it, so gateway
+  variables do not change a `codex` launch and its tiers apply as usual.
 - **`model.force` outranks an explicit `--model`.** This is the one narrow
   exception to issue #1527, which asks that a value an operator typed be left
   alone. The forced value comes only from your own user config or your own
@@ -348,6 +353,13 @@ Rules the file is held to:
   `. _ [ ] @ : -`. That
   admits `claude-opus-5[1m]` and `claude-sonnet-5.5` and excludes anything
   that could act as another argument.
+- **The file is held to the same trust rules as `~/.amplihack/config.toml`.**
+  A file owned by another user, or writable by group or others, is ignored
+  with one stderr line, and the shipped mapping applies. The settings in this
+  file choose the model every agent step runs on and can retarget one named
+  step, which is exactly what `model.force` and `model.tier_map` are gated
+  for in the config file; the gate follows the settings rather than the file
+  they happen to live in. Fix it with `chmod 600 ~/.amplihack/model-tiers.toml`.
 - **The file is read once per process, through the same reader every other
   amplihack config file uses** (`user_config::safe::read_bounded`): at most
   64 KiB, a regular file only, opened non-blocking so a FIFO cannot stall the
@@ -355,13 +367,15 @@ Rules the file is held to:
   read, and a dangling symlink is reported rather than mistaken for "no file".
   A symlink that resolves to a regular file **is** followed, exactly as
   `~/.amplihack/config.toml` is — this file is in your own amplihack home and
-  is held to that home's trust rules, not to a stricter one invented here.
+  is held to that home's trust rules, which the bullet above applies in full,
+  not to a stricter one invented here.
 - **A file amplihack cannot use changes nothing else.** A missing, malformed,
   over-size, unreadable or wrongly versioned file produces one stderr line
   naming the file and the reason, and then the shipped mapping applies and the
-  run proceeds. The path and any quoted key are printed through the same
-  `display_path` / `display_safe` escaping and 200-character truncation as
-  every other config diagnostic.
+  run proceeds. The path is printed home-relative — `~/.amplihack/model-tiers.toml`,
+  not `/home/alice/.amplihack/...` — because these lines get pasted into
+  issues. It and any quoted key go through the same `display_safe` escaping
+  and 200-character truncation as every other config diagnostic.
 
 `model.tier_map` is a user-only key, like every path-valued key in amplihack.
 A project file cannot name it: a cloned repository must not be able to choose
@@ -431,6 +445,14 @@ so a model id in a later error traces back to this setting:
 ```text
 model.force = "claude-sonnet-5-5"  # user (/home/alice/.amplihack/config.toml)
 ```
+
+Where the pair lands: when the command line already carries a `--model`, the
+forced value replaces that value in place. When it carries none, the pair is
+inserted at the end of amplihack's own options — before any `--` on the
+command line, never after it. Everything after `--` is forwarded to the
+harness verbatim, so a pair written there would not be an option amplihack
+set at all: with `-p` it would read as a second prompt and the launch would
+be refused.
 
 A gateway launch is the one place a forced model does not take effect; see
 [Precedence](#precedence).
@@ -650,7 +672,8 @@ it, so the two cannot drift apart.
 | A cell that names no model | ``amplihack: model tier `strong` names no model in the `claude` column, so `claude` runs on its own default model. …`` — followed by the existing issue #1421 line naming what was passed |
 | A gateway launch | ``amplihack: model tier `strong` is not applied to `claude`: the LiteLLM gateway routes on the model name. Set AMPLIHACK_LITELLM_MODEL to change it.`` |
 | An effort value amplihack does not accept | ``amplihack: model tiers: `codex.fast`: `turbo` is not an accepted reasoning effort; it is ignored and the model still applies. The accepted values are minimal, low, medium, high, xhigh.`` |
-| An override file amplihack cannot use | ``amplihack: /home/alice/.amplihack/model-tiers.toml: is not valid TOML; ignored; the model tiers amplihack ships are used instead.`` |
+| An override file amplihack cannot use | ``amplihack: ~/.amplihack/model-tiers.toml: is not valid TOML; ignored; the model tiers amplihack ships are used instead.`` |
+| An override file another user can write | ``amplihack: ~/.amplihack/model-tiers.toml: ignored because the file is writable by group or others; the model tiers amplihack ships are used instead.`` |
 | A tier word amplihack does not know | ``amplihack: model tiers: `claude.heavy`: `heavy` is not a tier; the entry is ignored. The tiers are fast, standard, strong.`` |
 | An unknown field in a cell | ``amplihack: model tiers: `claude.fast`: unknown field `modle`; it is ignored. A cell may name `model` and `effort`.`` |
 | A model id amplihack will not write | ``amplihack: model tiers: `claude.fast`: the model begins with `-`, so it could act as another argument; the entry is ignored and the shipped value applies.`` |

@@ -39,18 +39,29 @@ impl ModelOccurrence {
     }
 }
 
+/// Where amplihack's own region of the command line ends: the index of the
+/// first bare `--`, or `args.len()` when there is none.
+///
+/// Every scan here stops at that index, and so must every insertion. The two
+/// are the same function so they cannot drift: everything past `--` is the
+/// caller's, forwarded verbatim (D9), so a pair written there reaches the
+/// harness as positional text while amplihack's line claims it was applied.
+pub(crate) fn options_end(args: &[String]) -> usize {
+    args.iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len())
+}
+
 /// Every `--model` before the end-of-options marker.
 ///
 /// A `--model` with no value is not an occurrence: amplihack has nothing to
 /// replace it with, and Codex's own reader already refuses it by name.
 pub(crate) fn find_model_options(args: &[String], arity_aware: bool) -> Vec<ModelOccurrence> {
     let mut out = Vec::new();
+    let end = options_end(args);
     let mut i = 0;
-    while i < args.len() {
+    while i < end {
         let arg = args[i].as_str();
-        if arg == "--" {
-            break;
-        }
         if let Some(value) = arg.strip_prefix("--model=") {
             out.push(ModelOccurrence {
                 flag_index: i,
@@ -61,7 +72,9 @@ pub(crate) fn find_model_options(args: &[String], arity_aware: bool) -> Vec<Mode
             continue;
         }
         if arg == "--model" {
-            if let Some(value) = args.get(i + 1) {
+            // `args.get(i + 1)`, not `end`: `--model --` is a `--model` with
+            // no value, which is not an occurrence.
+            if let Some(value) = args.get(i + 1).filter(|_| i + 1 < end) {
                 out.push(ModelOccurrence {
                     flag_index: i,
                     value_index: Some(i + 1),
@@ -81,16 +94,14 @@ pub(crate) fn find_model_options(args: &[String], arity_aware: bool) -> Vec<Mode
 /// Whether `-c`/`--config` already sets `key` before the end-of-options
 /// marker, in any spelling Codex accepts.
 pub(crate) fn caller_set_config_key(args: &[String], key: &str) -> bool {
+    let end = options_end(args);
     let mut i = 0;
-    while i < args.len() {
+    while i < end {
         let arg = args[i].as_str();
-        if arg == "--" {
-            return false;
-        }
         let value = if let Some((name, attached)) = arg.split_once('=').filter(|_| is_long(arg)) {
             (name == "--config").then_some(attached)
         } else if arg == "-c" || arg == "--config" {
-            args.get(i + 1).map(String::as_str)
+            args.get(i + 1).filter(|_| i + 1 < end).map(String::as_str)
         } else if let Some(rest) = arg.strip_prefix("-c").filter(|_| short_with_value(arg)) {
             Some(rest.strip_prefix('=').unwrap_or(rest))
         } else {

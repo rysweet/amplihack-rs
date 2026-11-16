@@ -23,7 +23,7 @@
 //! what lets a gateway launch get `--model $AMPLIHACK_LITELLM_MODEL` written
 //! in the tier's place. No path here invents a model name (issue #1421).
 
-use super::argv_scan::{ModelOccurrence, find_model_options};
+use super::argv_scan::{ModelOccurrence, find_model_options, options_end};
 use super::notice::Notice;
 use super::record::{Fallback, Record};
 use super::table::{Effort, Entry, Table, Tier, column_for, validate_model_id};
@@ -121,8 +121,22 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
     if let Some(model) = force
         && occurrences.is_empty()
     {
-        out.argv.push("--model".to_string());
-        out.argv.push(model.to_string());
+        // The pair goes inside amplihack's own region of the command line,
+        // before the end-of-options marker. Appended instead, it would land
+        // past `--`, which `passthrough_rewrite` forwards verbatim: Claude's
+        // print mode then refuses the launch for a second prompt, and outside
+        // print mode `--model <id>` reaches the harness as positional text
+        // while `Notice::Forced` says it was applied.
+        //
+        // The index comes from the same `argv_scan` function that decided
+        // there were no occurrences, so the scanner and the inserter cannot
+        // disagree about where the options end. `codex_effort::inject`
+        // prepends rather than inserting here, for a reason of its own:
+        // `exec` must stay the first positional. Both positions are inside
+        // the options region; this one leaves a leading subcommand alone.
+        let at = options_end(&out.argv);
+        out.argv
+            .splice(at..at, ["--model".to_string(), model.to_string()]);
     }
 
     if let Some(seen) = seen {
