@@ -11160,9 +11160,11 @@ marked API-key candidate costs auto-switch's
 [own login check](#api-key-profiles-and-auto-switch) against the profile's
 `.claude.json` and `settings.json`. None of them makes a network call.
 There is no new timer, poll or retry; the check rides the 30 s probe the
-fingerprint already uses. A read that fails, and a file that is missing or
-damaged, counts as no candidate, so the wait runs on to its deadline rather
-than moving the step.
+fingerprint already uses, so the first check falls 30 s after the wait
+begins, the rest every 30 s after that, and a wait that ends sooner makes
+none. A read that fails, and a file that is missing or damaged, counts as
+no candidate, so the wait runs on to its deadline rather than moving the
+step.
 
 **The check writes nothing.** It applies the same candidate rules as the
 auto-switch rerun check, narrowed by the freshness restriction above, but
@@ -11181,6 +11183,19 @@ removed, is recorded nowhere until the next launch or rerun check. A
 `key-held` marker left by an earlier check is likewise not cleared during
 the wait, even if the held profiles gain readings while it runs; the next
 launch or rerun check clears it.
+
+One record is not suppressed, and it is not part of the step's own output: a
+profile marked in `overflow=` and detected as an API-key profile that fails
+auto-switch's [own login check](#api-key-profiles-and-auto-switch) emits a
+`WARN` through `tracing` naming the profile and the reason, never a key
+value, each time the check reads it. On a wait of several hours it therefore
+repeats on the 30 s cadence, so a misconfigured API-key profile shows as a
+run of identical warnings rather than one. Where the record goes depends on
+the tracing subscriber the process installed, and a run with none keeps no
+copy. Fixing the profile's `.claude.json` or `settings.json`, or taking the
+mark off with `amplihack profile overflow remove <name>`, ends the
+repetition; either way that profile stays out of the candidate pool and the
+wait is unaffected.
 
 **A step pinned to a profile can therefore change account part way through a
 run.** Where one profile must be kept for billing or data separation, there
@@ -11203,8 +11218,22 @@ by this check at all: such a step is the login the user chose.
 | `$HOME/.claude` | the live `$HOME/.claude` | the live `$HOME/.claude` | not used |
 | inherited profile, auto-switch on | the profile auto-switch chooses from fresh readings, else the inherited profile | not used | the profile a second selection chooses, else the inherited profile |
 
-The table holds for both kinds of wait. It is passed only as a validated
+Every column holds for a capacity wait. For a reset wait only the
+`login capacity` column does: that is the one exit which moves a reset
+wait's retry to another account. A reset wait that ends on `login changed`
+retries under the inherited profile, because the
+[fingerprint](#ending-the-wait-early) watches that profile's own directory,
+so a change there is a new login for the same profile, and because the wait
+was timed by that profile's reset. The profile is passed only as a validated
 profile name.
+
+The second selection reads the stored [readings](#readings) with the same
+freshness window as the check that ended the wait: taken after the wait
+began and no more than 60 s in the future, both measured from the wait's own
+start, not from its end. That window is what lets the retry act on the very
+reading that ended the wait. Measured from the end instead, every reading
+taken while the step slept would count as stale, no candidate would be
+found, and the step would retry on the exhausted profile every time.
 
 **The reading that ended the wait is advisory, not a reservation.** The
 candidate is chosen once to end the wait and again when the retry is built,
