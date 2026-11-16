@@ -1311,4 +1311,194 @@ mod context_transport_2582 {
         assert!(write_context_file(&gone, &context()).is_err());
         assert!(!gone.exists(), "the runtime folder is not created here");
     }
+
+    // ---------------------------------------------------------------------
+    // The operator-visible record of the chosen transport.
+    //
+    // The pinned runner reports the capability on every host, so a run that
+    // took the `--set` path means a runner older than the pin was supplied
+    // through `RECIPE_RUNNER_RS_PATH`. Without a record that is visible only
+    // in `/proc`, which is the thing this change removes. The record is at
+    // info level and holds the transport name and nothing else: no key, no
+    // value, and no count derived from one.
+    // ---------------------------------------------------------------------
+
+    /// What the `fmt` subscriber would write for one transport's record, with
+    /// `info` as the maximum level, so a record emitted below it is invisible
+    /// here and the test fails on the empty string.
+    fn captured_record(transport: &ContextTransport) -> String {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Buffer {
+            type Writer = Buffer;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buffer = Buffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || transport.record());
+        let bytes = buffer.0.lock().unwrap().clone();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    #[test]
+    fn transport_names_are_none_file_and_set() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let empty = BTreeMap::new();
+        assert_eq!(
+            ContextTransport::choose(&with_capability(), &runtime, &empty)
+                .unwrap()
+                .name(),
+            "none"
+        );
+        assert_eq!(
+            ContextTransport::choose(&with_capability(), &runtime, &context)
+                .unwrap()
+                .name(),
+            "file"
+        );
+        assert_eq!(
+            ContextTransport::choose(&without_capability(), &runtime, &context)
+                .unwrap()
+                .name(),
+            "set"
+        );
+    }
+
+    #[test]
+    fn the_record_is_at_info_and_carries_the_name_alone() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        for (transport, name) in [
+            (
+                ContextTransport::choose(&with_capability(), &runtime, &context).unwrap(),
+                "file",
+            ),
+            (
+                ContextTransport::choose(&without_capability(), &runtime, &context).unwrap(),
+                "set",
+            ),
+            (
+                ContextTransport::choose(&with_capability(), &runtime, &BTreeMap::new()).unwrap(),
+                "none",
+            ),
+        ] {
+            let text = captured_record(&transport);
+            assert!(
+                !text.trim().is_empty(),
+                "the transport must be recorded at info level, not below it"
+            );
+            assert!(text.contains("INFO"), "the record must be at info: {text}");
+            assert!(
+                text.contains("recipe context transport"),
+                "the record must be findable by its message: {text}"
+            );
+            let (_, fields) = text
+                .split_once("recipe context transport")
+                .expect("the record's message");
+            assert_eq!(
+                fields.trim(),
+                format!("transport={name}"),
+                "the record carries the transport name and nothing else: {text}"
+            );
+            for key in context.keys() {
+                assert!(!text.contains(key.as_str()), "a key was recorded: {text}");
+            }
+            for value in context.values() {
+                assert!(
+                    !text.contains(value.as_str()),
+                    "a value was recorded: {text}"
+                );
+            }
+            assert!(!text.contains("ZQXV2582"), "a value was recorded: {text}");
+            // Against the fields, not the whole line: the subscriber's
+            // timestamp carries arbitrary digits, so a whole-line search for
+            // `context.len()` would pass or fail by the clock. The exact
+            // equality above is the stronger statement anyway — it pins the
+            // fields to the transport name and nothing else — and this keeps
+            // the reason a count is unwanted written down: a count of a
+            // one-key context says which key it was.
+            assert!(
+                !fields.contains(&context.len().to_string()),
+                "a count derived from the context was recorded: {text}"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // A planted entry at `<runtime_dir>/context`.
+    //
+    // `context_dir_preexisting_refused` covers a real folder and a symbolic
+    // link to a folder that exists, which is the case a `create_dir_all` (or
+    // a `DirBuilder` relaxed to `recursive(true)`) would accept and then
+    // write through. These are the other three shapes: a dangling link, a
+    // link to a file, and a regular file. `mkdir` refuses each, so nothing is
+    // created at the link's target and nothing is written.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_planted_entry_at_the_context_path_is_refused_with_nothing_written() {
+        // A dangling symbolic link: `create_dir_all` would create the target.
+        let (_dangling, runtime) = runtime();
+        let target = runtime.join("planted-target");
+        std::os::unix::fs::symlink(&target, runtime.join("context")).unwrap();
+        let error = format!(
+            "{:#}",
+            write_context_file(&runtime, &context()).unwrap_err()
+        );
+        assert!(error.contains("already exists"), "{error}");
+        assert!(!error.contains("ZQXV2582"), "{error}");
+        assert!(
+            fs::symlink_metadata(&target).is_err(),
+            "nothing may be created through a dangling link"
+        );
+        assert!(
+            fs::symlink_metadata(runtime.join("context"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the planted link is left as it is"
+        );
+
+        // A symbolic link to a file that exists elsewhere.
+        let (tmp, runtime) = self::runtime();
+        let elsewhere = tmp.path().join("elsewhere.txt");
+        fs::write(&elsewhere, b"keep me").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, runtime.join("context")).unwrap();
+        assert!(write_context_file(&runtime, &context()).is_err());
+        assert_eq!(
+            fs::read(&elsewhere).unwrap(),
+            b"keep me",
+            "the link's target is untouched"
+        );
+
+        // A regular file where the folder would go.
+        let (_file, runtime) = self::runtime();
+        fs::write(runtime.join("context"), b"not a folder").unwrap();
+        assert!(write_context_file(&runtime, &context()).is_err());
+        assert_eq!(
+            fs::read(runtime.join("context")).unwrap(),
+            b"not a folder",
+            "the planted file is left as it is"
+        );
+    }
 }

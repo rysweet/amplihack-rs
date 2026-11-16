@@ -226,7 +226,7 @@ Understand the philosophy and architecture behind amplihack.
 - [amplihack-rs Parity Reference](amplihack-rs-parity.md) - Subprocess prompt delivery capabilities, configuration, diagnostics, and Rust API
 - [Large Payload Delivery to Child Processes](concepts/large-payload-delivery.md) - Why large prompts, recipe context and GitHub bodies stay out of argv and environment values (`E2BIG`, `MAX_ARG_STRLEN`)
 - [Why Prompt Text Stays Out of argv](concepts/prompt-text-out-of-argv.md) - Why no contract, prompt or brief text appears in an agent's `/proc/<pid>/cmdline` (#2030)
-- [Recipe Context Transport Reference](reference/recipe-context-transport.md) - `context_file_v1`, the 0600 context file in the runtime folder, the `--set` fallback, cleanup and errors (#2582)
+- [Recipe Context Transport Reference](reference/recipe-context-transport.md) - `context_file_v1`, the 0600 context file in the runtime folder, the `--set` path for a runner older than the pin, cleanup and errors (#2582)
 - [Stop Background Jobs by PID](howto/stop-background-jobs-by-pid.md) - Stop your own job by `$!` or process group, never by pattern, and time-box tests with the runner's options (#2582)
 - [Agent Prompt Channels Reference](reference/agent-prompt-channels.md) - Per-launch-path channels, the contract file, the Claude Code 2.1.319 version gate, the `amplihack claude` passthrough rewrite and errors
 - [Launcher Output Streams Reference](reference/launcher-output-streams.md) - Launcher notices go to stderr, so stdout of `amplihack <agent> -p` is only the agent's output (#2585)

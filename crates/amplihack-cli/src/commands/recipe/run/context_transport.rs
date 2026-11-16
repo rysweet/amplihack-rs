@@ -156,9 +156,40 @@ impl ContextTransport {
         Ok(Self::Set)
     }
 
+    /// This transport's name, for the operator-visible record. It is derived
+    /// from the variant alone, so it can never carry a key or a value.
+    pub(super) fn name(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::File(_) => "file",
+            Self::Set => "set",
+        }
+    }
+
+    /// Records which transport this run took, at info level, so an operator
+    /// reading a run's log can see it.
+    ///
+    /// The pinned runner reports [`CONTEXT_FILE_CAPABILITY`], so `set` means
+    /// a runner older than the pin was supplied through
+    /// `RECIPE_RUNNER_RS_PATH` and this run's context is on the runner's
+    /// argv after all. Without this record that downgrade is visible only in
+    /// `/proc`, which is the thing this change takes the context out of.
+    ///
+    /// The record holds [`Self::name`] and nothing else: no key, no value,
+    /// and no count derived from one, since a count of a one-key context
+    /// says which key it was.
+    pub(super) fn record(&self) {
+        tracing::info!(transport = %self.name(), "recipe context transport");
+    }
+
     /// Adds this transport's arguments to `command` and returns the argv
     /// bytes they occupy (strings, NULs and argv pointers), which the caller
     /// takes out of the env-mirror budget (#1570).
+    ///
+    /// `context` is read only on the [`Self::Set`] arm, which still builds
+    /// `--set key=value` pairs from it. Pass the same map that was given to
+    /// [`Self::choose`]: a different one would be silently ignored on the
+    /// [`Self::File`] arm and silently used on the `Set` arm.
     pub(super) fn apply(
         &self,
         command: &mut Command,

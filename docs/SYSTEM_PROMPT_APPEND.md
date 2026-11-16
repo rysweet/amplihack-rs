@@ -438,7 +438,11 @@ privilege go through code review.
 ## The fragment
 
 The shipped fragment is capped at 25 lines, asserted by test. It is injected
-into every session, so every line costs context on every launch.
+into every session, so every line costs context on every launch. That cap is
+why the closing rule about stopping a background job spends two lines and no
+more: one for what to do, one for what never to do and why. The worked
+examples, the other patterns that match the runner, and the hook that denies
+them live in [Stop Background Jobs by PID](howto/stop-background-jobs-by-pid.md).
 
 ```markdown
 <!-- Compiled into the binary and written at launch to a 0600 file passed with
@@ -575,8 +579,9 @@ keeps the remaining assertion, at build time.
 
 ## Related documentation
 
-- [Agent Prompt Channels Reference](reference/agent-prompt-channels.md) — the contract file, the version gate and every launch path's channel
+- [Agent Prompt Channels Reference](reference/agent-prompt-channels.md) — the contract file, the Claude Code version requirement and every launch path's channel
 - [Why Prompt Text Stays Out of argv](concepts/prompt-text-out-of-argv.md) — the incident behind delivery by file
+- [Stop Background Jobs by PID](howto/stop-background-jobs-by-pid.md) — the worked examples behind the fragment's two-line stop-a-job rule
 
 - [Launch Target Resolution](LAUNCH_TARGET_RESOLUTION.md) — the other half of the launch path: which binary gets executed and why
 - [`amplihack copilot` — Subprocess-Safe Defaults](COPILOT_SUBPROCESS_SAFE.md) — the flag-injection pattern this feature follows

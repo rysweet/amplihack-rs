@@ -24,6 +24,9 @@
 
 #[path = "../../../tests/support/isolated_amplihack.rs"]
 mod isolated_amplihack;
+// Issue #2658: shared pinned recipe-runner-rs resolution.
+#[path = "../../../tests/support/pinned_runner.rs"]
+mod pinned_runner;
 mod support;
 
 #[path = "issue_2329_autodrive_outcomes.rs"]
@@ -36,6 +39,8 @@ mod issue_2556_autodrive_evidence;
 mod issue_2582_context_off_argv;
 #[path = "issue_2582_nested_context_off_argv.rs"]
 mod issue_2582_nested_context_off_argv;
+#[path = "issue_2582_real_runner_argv.rs"]
+mod issue_2582_real_runner_argv;
 #[path = "issue_2585_launch_notices_stderr.rs"]
 mod issue_2585_launch_notices_stderr;
 

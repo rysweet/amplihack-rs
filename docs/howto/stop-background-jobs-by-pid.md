@@ -1,7 +1,7 @@
 ---
 title: "Stop Background Jobs by PID"
 description: "Stop a background job you started by its recorded PID or by a process group you created, never by name or command-line pattern, and time-box test runs with the test runner's own options."
-last_updated: 2026-11-14
+last_updated: 2026-11-16
 review_schedule: quarterly
 owner: rysweet
 doc_type: howto
@@ -13,13 +13,15 @@ related:
 
 # Stop Background Jobs by PID
 
-On 13 November an agent in a live auto-drive ran
-`pkill -f "vitest.mjs"` to stop a hung test run. The pattern also matched the
-recipe runner driving that agent, because the task text on the runner's command
-line contained the word "vitest", and the drive ended with SIGTERM
-([#2582](https://github.com/rysweet/amplihack-rs/issues/2582)). This guide
-shows how to stop only the processes you started. It is written for recipe
-authors and for anyone running agents.
+A pattern kill matches every process whose command line contains the pattern,
+not the one the agent meant. Twice an agent stopping its own hung job this way
+also stopped the recipe runners driving other runs on the same host, because
+their task text shared a word with the pattern
+([#2582](https://github.com/rysweet/amplihack-rs/issues/2582)). amplihack no
+longer puts that text on any command line it builds, but the hazard belongs to
+the pattern, not to one source of text: other processes on the host carry their
+own. This guide shows how to stop only the processes you started. It is written
+for recipe authors and for anyone running agents.
 
 ## Contents
 
@@ -51,12 +53,12 @@ examples:
 > instead of killing the run afterwards.
 
 **System-prompt fragment.** `amplifier-bundle/context/SYSTEM_PROMPT_APPEND.md`
-is written to a file, but it is limited to 25 lines, so it uses a two-line
-bullet:
+is written to a file, but it is capped at 25 lines and goes into every session,
+so it states the rule in one line and leaves the examples to the skills and to
+this guide:
 
 ```markdown
-- Stop only a job you started: by its `$!` PID, or a group you created with `set -m` or `setsid`.
-  Never select processes by name or pattern (`pkill -f`, `killall`); it may match the runner.
+- Stop only a job you started, by `$!` PID or a group you created; never by name or pattern.
 ```
 
 **Recipe agent steps.** The copies inside recipe prompts name no tool, binary
@@ -70,13 +72,15 @@ or process:
 
 ### Why the recipe copies name no tools
 
-On the pinned recipe runner, the first 8 KiB of each agent step's prompt is on
-the command line of the `amplihack claude` wrapper that the runner starts for
-that step. A prompt that names `vitest`, `nextest`, `pkill` or `killall` puts
-those words in the wrapper's argv, so a `pkill -f vitest` run by any agent on
-the host would also end every wrapper whose prompt contains the paragraph. The
-recipe copies therefore keep the rule and leave the examples to the skills, the
-fragment and this guide, none of which is on argv.
+A recipe prompt is delivered to many agents, so any word in it is a word that
+many processes would have shared had the prompt reached them through a command
+line. Recipe runners older than v0.7.0 put the first 8 KiB of an agent step's
+prompt on the `amplihack claude` wrapper's argv, which would have given every
+wrapper in every drive the words `vitest`, `nextest`, `pkill` and `killall`
+whatever its task. The pinned runner passes the prompt by file, so this no
+longer happens at the pin; a runner selected through `RECIPE_RUNNER_RS_PATH`
+may still be older. The recipe copies therefore keep the rule and leave the
+examples to the skills, the fragment and this guide.
 
 ### Why the group clause matters
 
@@ -157,20 +161,33 @@ but it does not end a hung test. Use nextest when a run needs a time limit.
 | `kill $(pgrep -f <pattern>)` | The same match, in one line |
 | `killall <name>` | Kills every process with that name, including other sessions' copies |
 
-amplihack keeps recipe context off the runner's command line when the runner
-supports it, and the bundled nested recipe calls pass agent text by file (see
+On the pinned runner, nothing amplihack hands a child reaches a command line
+as text: the recipe context goes in a private file, the bundled nested recipe
+calls pass agent text by file, and the runner passes each agent step's prompt
+by file (see
 [Recipe Context Transport Reference](../reference/recipe-context-transport.md)).
-On the pinned runner, the runner's own argv and the first 8 KiB of each agent
-wrapper's prompt still hold arbitrary text, and other processes on the host
-have their own. The guidance applies whatever the runner version.
+That removes the handle a pattern had on amplihack's own processes. It does not
+make a pattern kill safe. Other processes on the host, including ones from
+other users and other tools, carry their own text, and a runner selected
+through `RECIPE_RUNNER_RS_PATH` may be older than the pin. The guidance applies
+whatever the runner version.
 
 ## Where agents are told
 
 | Location | Wording |
 | --- | --- |
 | `amplifier-bundle/context/SYSTEM_PROMPT_APPEND.md`, next to the guidance on waiting (quoted in [System Prompt Append](../SYSTEM_PROMPT_APPEND.md)) | Fragment bullet |
-| Skills `auto-drive-to-merge`, `default-workflow`, `smart-test` and `quality/testing-code`, and their copies under `docs/claude/skills/` | Full wording |
+| `amplifier-bundle/skills/`: `auto-drive-to-merge`, `default-workflow`, `smart-test`, `quality/testing-code` | Full wording |
+| `docs/claude/skills/`: `auto-drive-to-merge`, `default-workflow`, `quality/testing-code` | Full wording |
 | Recipe agent steps, listed below | Recipe paragraph |
+
+`smart-test` has no copy under `docs/claude/skills/`; the bundle is its only
+home. To list every file that carries the full wording:
+
+```bash
+grep -rl 'Stop a background job you started by the PID' amplifier-bundle/skills docs/claude/skills
+# Output: four files under amplifier-bundle/skills, three under docs/claude/skills
+```
 
 The recipe paragraph appears in these ten agent steps:
 
@@ -188,8 +205,10 @@ grep -n 'by the PID you recorded from' amplifier-bundle/recipes/*.yaml
 # Output: ten lines, in the four recipes above
 ```
 
-It is guidance only. No hook refuses pattern kills and no check scans for the
-text.
+It is guidance only. No hook stops a pattern kill, and no test scans for the
+wording. Taking the text off the command lines amplihack builds is what
+removes the hazard; the guidance is what keeps an agent from aiming a pattern
+at command lines amplihack does not own.
 
 ## Related
 

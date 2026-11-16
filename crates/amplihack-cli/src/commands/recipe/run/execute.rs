@@ -817,13 +817,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
             return final_result;
         }
     };
-    tracing::debug!(
-        file = matches!(
-            transport,
-            super::context_transport::ContextTransport::File(_)
-        ),
-        "recipe context transport"
-    );
+    transport.record();
 
     // Issue #964: snapshot the caller checkout's git state BEFORE spawning so a
     // runner that corrupts it (e.g. flips `core.bare=true`, which breaks

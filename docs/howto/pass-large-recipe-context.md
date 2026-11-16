@@ -1,7 +1,7 @@
 ---
 title: "Pass Large Recipe Context and Agent Text"
 description: "Pass large recipe context with --context-file and --context-from-file, and publish agent-generated text with --body-file and git commit -F, without hitting Argument list too long."
-last_updated: 2026-11-13
+last_updated: 2026-11-16
 review_schedule: quarterly
 owner: rysweet
 doc_type: howto
@@ -9,6 +9,7 @@ related:
   - ../reference/large-payload-delivery.md
   - ../concepts/large-payload-delivery.md
   - ../reference/recipe-cli-reference.md
+  - ../reference/recipe-context-transport.md
 ---
 
 # Pass Large Recipe Context and Agent Text
@@ -207,6 +208,14 @@ the nested recipe reads:
 `PATH`, `HOME` and the other `AMPLIHACK_*` variables are still inherited. See
 [Nested recipe environment](../reference/large-payload-delivery.md#nested-recipe-environment).
 
+Pass every free-text value this way rather than with `-c key="$VALUE"`. A
+value given with `-c` is on the nested `amplihack` process's own command line,
+where any account on the host can read it and a pattern kill can match it;
+a path, a label or an exit code is short, is not agent text, and is fine there.
+The bundled callers follow this rule, and
+[Bundled nested calls](../reference/recipe-context-transport.md#bundled-nested-calls)
+lists which of their keys go by file.
+
 ## Create an issue or pull request with agent text
 
 Write the text with `write_context_value`, pass it through `write_body_file`
@@ -295,7 +304,7 @@ for `--ultrathink`, `--analyze` or `--fix`.
 | `--context-from-file: key 'AMPLIHACK_HOME' is reserved` | File sources cannot set `AMPLIHACK_*` keys | Use a recipe context key instead |
 | `--context-from-file: expected KEY=PATH` | The `=` is missing | Write `task_description=/tmp/issue.md` |
 | A nested recipe fails with `unbound variable` | It relied on an inherited parent alias | Pass the key with `-c` or `--context-from-file` |
-| `recipe context value for key "<KEY>" is <N> bytes; ... cannot exceed 131072 bytes` | One context value is larger than a single argument may be, and the runner does not report `context_file_v1`, so amplihack falls back to `--set` arguments | Pass a file path in the context and read the file in the step, or produce the value inside the run, for example as a step output |
+| `recipe context value for key "<KEY>" is <N> bytes; ... cannot exceed 131072 bytes` | One context value is larger than a single argument may be, and the runner does not report `context_file_v1`, so the whole context goes on argv as `--set` arguments. Only an override runner older than v0.7.0 does that | Pass a file path in the context and read the file in the step, or produce the value inside the run, for example as a step output |
 | `failed to write recipe context file <path>: <io error>` | The runner supports `--context-file`, but amplihack could not write the file in the run's runtime folder (disk full, read-only folder, or an existing `context` entry) | Free space or fix the runtime folder's permissions. The run does not fall back to `--set`. |
 | `error: unexpected argument '--prompt-file' found` | The amplihack release on this machine or VM predates `--prompt-file` | Update amplihack there |
 | `remote command 'ultrathink' is not supported: only 'auto' accepts --prompt-file` | Only auto mode can take a prompt file | Run the remote command as `auto` |
@@ -304,6 +313,6 @@ for `--ultrathink`, `--analyze` or `--fix`.
 
 - [Large Payload Delivery Reference](../reference/large-payload-delivery.md) - Options, validation and constants
 - [Large Payload Delivery to Child Processes](../concepts/large-payload-delivery.md) - Background and design
-- [Recipe Context Transport Reference](../reference/recipe-context-transport.md) - `--context-file` to the runner, the `--set` fallback, and cleanup
+- [Recipe Context Transport Reference](../reference/recipe-context-transport.md) - `--context-file` to the runner, the `--set` path for an older runner, and cleanup
 - [Recipe CLI Reference](../reference/recipe-cli-reference.md) - All `amplihack recipe run` options
 - [Quality Audit Cycle Recipe](../reference/quality-audit-cycle-recipe.md) - The `run-recursive-cycle` step

@@ -2,7 +2,7 @@
 title: Clean up after recipe runs
 description: Locate, retain, remove, or archive run-owned files and recovery state.
 doc_type: howto
-last_updated: 2026-11-12
+last_updated: 2026-11-16
 ---
 
 # Clean Up After Recipe Runs
@@ -114,6 +114,7 @@ The runner creates one folder per run:
 │       ├── procs/                # one record per running attempt, for recipe stop (Linux)
 │       └── runtime/              # removed when the run ends
 │           ├── tmp/              # TMPDIR, TMP and TEMP for every step
+│           ├── context/          # 0700; holds the run's 0600 context file
 │           └── artifacts/        # AMPLIHACK_WORKFLOW_ARTIFACT_DIR
 ├── targets/                      # one cargo target per checkout, from git-hook-cargo.sh
 ├── clones/                       # repositories cloned by the launcher inside a run (never swept)

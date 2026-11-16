@@ -5,6 +5,8 @@ pub mod auto_drive_light;
 pub mod events;
 pub mod exec_stub;
 pub mod fake_proc;
+/// Issue #2582 — hold a process tree live on a FIFO while a test walks it.
+pub mod fifo_release;
 pub mod proc_root_scan;
 pub mod proc_tree;
 pub mod profile_1962;
