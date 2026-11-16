@@ -42,6 +42,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
+[[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source=recipe-test-env.sh
+. "${TEST_ENV}"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 TOOLS="${REPO_ROOT}/amplifier-bundle/tools"
 

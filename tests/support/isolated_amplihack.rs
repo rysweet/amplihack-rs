@@ -36,6 +36,15 @@
 //!   debug build's `--version` probe of a stub waits for the stub to exit
 //!   instead of giving up after 3 s on a busy host. Release builds never read
 //!   it.
+//! - no `AMPLIHACK_WORK_ROOT`, `AMPLIHACK_WORK_ROOT_EXPLICIT`,
+//!   `AMPLIHACK_RUN_DIR` or `AMPLIHACK_RUN_ID` (issue #2712). `env_clear()`
+//!   already drops them; what matters is that a test which starts a recipe
+//!   shell suite starts it through [`isolated`], because a suite that
+//!   inherits an explicit work root puts its worktrees under
+//!   `<work root>/worktrees` instead of its own scratch, outside its `EXIT`
+//!   trap. The suites clear the same four names themselves by sourcing
+//!   `amplifier-bundle/recipes/tests/recipe-test-env.sh`; this is the other
+//!   half of that contract, for the Rust side.
 //! - `AMPLIHACK_TEST_PROC_ROOT` ([`PROC_ROOT_ENV`], issue #2042) set to
 //!   [`shared_empty_proc_root`], so `profile` and `sessions` commands read an
 //!   empty fake process table instead of the host's `/proc`. A test that

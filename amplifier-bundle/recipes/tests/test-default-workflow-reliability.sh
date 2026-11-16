@@ -35,6 +35,10 @@ exec </dev/null
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
+[[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source=recipe-test-env.sh
+. "${TEST_ENV}"
 WORKTREE_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-worktree.yaml"
 PUBLISH_RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-publish.yaml"
 PUBLISH_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_publish_pr.sh"
