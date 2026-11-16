@@ -20,7 +20,7 @@ use super::super::fsx;
 use super::super::name::ProfileName;
 use super::super::rotate::identify::Account;
 use super::super::store::ProfileStore;
-use amplihack_utils::rotator_status::{CycleStatus, read_cycle};
+use amplihack_utils::rotator_status::{CycleStatus, read_cycle, swap_record};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -43,6 +43,27 @@ enum Kind {
         json: PathBuf,
         root: Option<PathBuf>,
     },
+}
+
+/// Which file a [`Watch::login`] key was read from.
+///
+/// Derived from which reader succeeded and from nothing either file holds,
+/// so no field of a ledger or a swap record can influence it.
+///
+/// It exists because the fallback is silent. `login` prefers the rotate
+/// ledger's `live` and falls back to the swap record's `live_login`, and the
+/// two name different things: the ledger names the login that is live now,
+/// the record names the login the *last* swap put in place. A ledger that is
+/// missing, unreadable or stale between two readings therefore moves the
+/// answer to the other file, and on a host that has swapped before the two
+/// readings carry different names with no swap between them at all. Comparing
+/// them would report a change that did not happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Source {
+    /// The rotate ledger's `live` profile.
+    Cycle,
+    /// The swap record's `live_login`, read when the ledger names none.
+    Swap,
 }
 
 pub(crate) struct Watch {
@@ -107,6 +128,39 @@ impl Watch {
             identity: identity(json_dir),
             creds: fsx::exists(&dir.join(CREDS)),
         })
+    }
+
+    /// The **login key**: the name of the login a `$HOME/.claude` step would
+    /// run on now, and which file said so (issue #2731). It is the rotate
+    /// ledger's `live` profile, else the swap record's live login, both
+    /// written by the rotator under its own lock and both held to
+    /// [`valid_live_name`] by their own readers. `None` for any other kind
+    /// of step, for a step with no profile root, and whenever neither file
+    /// can be read.
+    ///
+    /// The [`Source`] rides with the name because the two readers answer
+    /// slightly different questions, so a reading from one is not comparable
+    /// with a reading from the other: see that type. Callers comparing two
+    /// readings must compare the pair, never the two names alone.
+    ///
+    /// This is not the fingerprint. The fingerprint says when a wait ends and
+    /// has no readable form; the key says which waits a step may still make
+    /// and is the `account=` field of the recipe-log lines. It is never taken
+    /// from `.claude.json`, whose account may hold an e-mail address or a
+    /// UUID, and it is always in the rotator's own name form, so it needs no
+    /// quoting in a log line.
+    ///
+    /// [`valid_live_name`]: amplihack_utils::rotator_status::valid_live_name
+    pub(crate) fn login(&self) -> Option<(Source, String)> {
+        let Kind::Home { root, .. } = &self.kind else {
+            return None;
+        };
+        let root = root.as_deref()?;
+        let now = fsx::now();
+        if let Some(live) = read_cycle(root, now).and_then(|c| c.live) {
+            return Some((Source::Cycle, live));
+        }
+        swap_record::read_swap(root, now).map(|r| (Source::Swap, r.live_login))
     }
 
     /// The rotate ledger's last cycle, for a `$HOME/.claude` watch only:

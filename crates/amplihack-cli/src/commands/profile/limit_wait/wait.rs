@@ -7,10 +7,33 @@
 //! wait (issue #2694): a step whose own reset is hours away still moves to
 //! a login with room as soon as one is seen.
 //!
+//! The one exception is a login-change wait (issue #2731), where both
+//! capacity sources are skipped: it is waiting for an organisation spend
+//! limit to be replaced by another organisation's credit, and no capacity
+//! reading reports credit. The plan says so with
+//! [`Plan::capacity_may_end`].
+//!
 //! The login baseline is the first value two probes in a row agree on, and
 //! a change is a different value that two probes in a row agree on, so a
 //! torn or failed read of `.claude.json`, first or later, never ends the
 //! wait.
+//!
+//! That rule costs the fingerprint its first poll interval: a swap landing
+//! before two probes have agreed is absorbed into the baseline, because to
+//! the fingerprint it is indistinguishable from a torn first read. Both are
+//! "the first reading differs from the stable one that follows", and no
+//! comparison of opaque values can tell them apart. For a `$HOME/.claude`
+//! step the wait therefore also watches [`WaitDeps::login_changed`], the
+//! named login key, which is anchored on a reading taken *before the
+//! attempt was launched* and so has no baseline to settle. That is the
+//! check that ends a login-change wait when the rotator swaps in the
+//! wait's first seconds (issue #2731) — the one case where the fingerprint
+//! is the only other exit.
+//!
+//! It is read last of the four, after both capacity sources, so it renames
+//! no end that already had a name: a swapping rotator cycle moves the key
+//! and reports capacity in the same write, and such a wait still ends
+//! `rotator capacity` as it always has.
 
 use super::events::{Event, line};
 use super::plan::{Bound, Plan, PlanKind};
@@ -29,6 +52,16 @@ pub(crate) trait WaitDeps {
     fn now(&mut self) -> i64;
     fn sleep(&mut self, d: Duration);
     fn fingerprint(&mut self) -> Option<Self::Print>;
+    /// The login in `$HOME/.claude` is no longer the one this step's
+    /// attempt ran on (issue #2731); always false for a step whose login
+    /// the rotator never changes.
+    ///
+    /// Unlike [`WaitDeps::fingerprint`] this needs no baseline: it is
+    /// anchored on a login key read before the attempt was launched, so a
+    /// swap landing at any point after that is seen, including inside the
+    /// first poll interval. It compares names the rotator itself wrote and
+    /// fails closed, so a reading that cannot be made is not a change.
+    fn login_changed(&mut self) -> bool;
     /// A stop signal received, if any.
     fn signal(&mut self) -> Option<i32>;
     /// The process that started the step is gone, so nobody is left to
@@ -118,14 +151,31 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
                     last = probe;
                 }
             }
-            if deps.rotator_capacity(start) {
-                return End::RotatorCapacity;
-            }
-            // Any wait kind, not only a capacity wait (#2694): whether the
+            // Both capacity sources, or neither (#2731). They are read on
+            // a reset wait as well as a capacity wait (#2694): whether the
             // step may move at all is `other_capacity`'s own decision, and
-            // it is false for a step with no auto-switch candidate.
-            if deps.other_capacity(start) {
-                return End::OtherCapacity;
+            // it is false for a step with no auto-switch candidate. A
+            // login-change wait reads neither, because neither reports what
+            // it is waiting for; the fingerprint above and the login key
+            // below are what end it.
+            if plan.capacity_may_end() {
+                if deps.rotator_capacity(start) {
+                    return End::RotatorCapacity;
+                }
+                if deps.other_capacity(start) {
+                    return End::OtherCapacity;
+                }
+            }
+            // The named login key last, so it changes no wait's reported
+            // reason. A rotator cycle that swaps moves this key and sets
+            // `rotator_capacity` in the same write, and that end is the
+            // one such a wait has always reported; checking the key first
+            // would relabel it `login changed`. What the key adds is the
+            // case no capacity source speaks for: a login-change wait,
+            // where both are suppressed and the fingerprint's baseline has
+            // not settled yet (issue #2731).
+            if deps.login_changed() {
+                return End::LoginChanged;
             }
             next_poll = now.saturating_add(POLL_SECS);
         }

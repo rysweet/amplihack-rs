@@ -340,23 +340,28 @@ like every path.
 ### recipe.usage_limit_wait
 
 Whether a recipe agent step that fails on a Claude usage limit waits, for
-the reset or for another login with capacity, and runs once more, instead of
-ending the run. See the
+the reset, for another login with capacity, or for the login in `~/.claude`
+to change, and runs once more, instead of ending the run. See the
 [usage-limit wait](./profile-command.md#usage-limit-wait). With no setting
 in the environment or a file, it is on, except in CI: any `CI` that is
 not, after trimming, empty, `0` or `false` in any case. Setting it in a file or the variable turns it on
 in CI too. The environment variable also accepts `1` and `0`.
 
-`recipe.usage_limit_max_wait_secs` bounds one wait and defaults to `21600`
-(six hours). It shortens a wait for a reset, which never lasts beyond the
-reset plus 120 seconds, and sets how long a
-[capacity wait](./profile-command.md#capacity-wait) for another login lasts.
-`0` means one more attempt with no wait for a reset, and an immediate
-`usage_limit` failure for a capacity wait.
+`recipe.usage_limit_max_wait_secs` bounds the time one step spends waiting,
+across every wait it makes, and defaults to `21600` (six hours). It shortens
+a wait for a reset, which never lasts beyond the reset plus 120 seconds, and
+sets how long a [capacity wait](./profile-command.md#capacity-wait) for
+another login, or a
+[login-change wait](./profile-command.md#login-change-wait) on an
+organisation spend limit with no reset, lasts. `0` means one more attempt
+with no wait for a reset, and an immediate `usage_limit` failure for a
+capacity or login-change wait. A step that waits again after the login in
+`~/.claude` changes gets only what its earlier waits left; see
+[One wait per login](./profile-command.md#one-wait-per-login).
 
 The default is not a ceiling. A user file or
 `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a higher value, and a capacity
-wait honours it. A project file is `lower only`: it can shorten the maximum
+or login-change wait honours it. A project file is `lower only`: it can shorten the maximum
 but never raise it above the user or default value, so a repository cannot
 make your runs wait longer.
 
