@@ -1,7 +1,7 @@
 ---
 title: "Why Dangerous Commands Are Denied in the Harness"
 description: "Why amplihack writes each harness's own deny configuration from a single policy list, rather than adding a hook, and what a prefix matcher can and cannot do."
-last_updated: 2026-11-16
+last_updated: 2026-11-17
 review_schedule: quarterly
 owner: rysweet
 doc_type: explanation
@@ -9,6 +9,7 @@ related:
   - ../reference/dangerous-command-policy.md
   - ../reference/hook-specifications.md
   - ../howto/add-dangerous-command-deny-rules.md
+  - ../howto/stop-background-jobs-by-pid.md
   - ./prompt-text-out-of-argv.md
   - ./hook-block-single-source.md
 ---
@@ -76,7 +77,9 @@ deny rule does not.
 
 The deny rules do not replace the guidance. The guidance still says to record
 `$!` and to wait with `wait $pid`, because an agent that cannot run `pkill`
-still needs to know what to run instead.
+still needs to know what to run instead. That instruction is written out in
+[Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md), which
+covers the same incidents from the other side.
 
 Each policy entry carries justification text saying what to run instead, and
 the intent is that the agent reads it at the moment it is stopped, which is
@@ -294,5 +297,6 @@ later mistakes the one for the other.
 - [Add Dangerous-Command Deny Rules](../howto/add-dangerous-command-deny-rules.md): adding instance entries
 - [Why Prompt Text Stays Out of argv](./prompt-text-out-of-argv.md): the related change that removed task text from the process table
 - [Wait Without Leaving Orphan Processes](../howto/wait-without-orphan-processes.md): the guidance the deny rules sit on top of
+- [Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md): what to run in place of a pattern kill
 - [Hook Specifications](../reference/hook-specifications.md#tmux-server-guard): the `tmux_guard` hook the two tmux entries sit behind
 - [Hook Block: One Source of Truth](./hook-block-single-source.md): the merge-and-replace machinery the Claude writer reuses

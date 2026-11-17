@@ -1,7 +1,7 @@
 ---
 title: "Dangerous Command Policy"
 description: "The single list of dangerous commands amplihack ships, and the deny configuration it writes for Claude Code, Codex and Copilot CLI from that list."
-last_updated: 2026-11-16
+last_updated: 2026-11-17
 review_schedule: quarterly
 owner: rysweet
 doc_type: reference
@@ -11,6 +11,7 @@ related:
   - ./launch-flag-injection.md
   - ../concepts/dangerous-command-policy.md
   - ../howto/add-dangerous-command-deny-rules.md
+  - ../howto/stop-background-jobs-by-pid.md
 ---
 
 # Dangerous Command Policy
@@ -105,6 +106,7 @@ Copilot CLI's `--deny-tool` is a flag with one argument. On those two the agent
 gets the harness's own denial message, which names the rule that matched but
 carries none of amplihack's text. The remedy there is the agent guidance, not
 the deny entry; see
+[Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md) and
 [Wait Without Leaving Orphan Processes](../howto/wait-without-orphan-processes.md).
 
 The pattern-kill entries (`pkill`, `killall`, `pgrep`) share this text:
@@ -825,4 +827,5 @@ the build.
 - [Hook Specifications](./hook-specifications.md#tmux-server-guard): the `tmux_guard` hook the tmux entries are aligned with
 - [Launch Flag Injection](./launch-flag-injection.md#-deny-tool): the `--deny-tool` arguments, and the Claude-compatible tool list
 - [Wait Without Leaving Orphan Processes](../howto/wait-without-orphan-processes.md): what to do instead of a pattern kill or a wait loop
+- [Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md): the recorded-PID and process-group forms the justification text names
 - [Why Prompt Text Stays Out of argv](../concepts/prompt-text-out-of-argv.md): the related rule about what appears in a process's command line

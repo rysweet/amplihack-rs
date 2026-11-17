@@ -1,7 +1,7 @@
 ---
 title: "Add Dangerous-Command Deny Rules"
 description: "Add your own commands to amplihack's dangerous-command policy, write them into every harness, and check what arrived."
-last_updated: 2026-11-16
+last_updated: 2026-11-17
 review_schedule: quarterly
 owner: rysweet
 doc_type: howto
@@ -9,6 +9,7 @@ related:
   - ../reference/dangerous-command-policy.md
   - ../reference/user-config.md
   - ../concepts/dangerous-command-policy.md
+  - ./stop-background-jobs-by-pid.md
 ---
 
 # Add Dangerous-Command Deny Rules
@@ -299,6 +300,7 @@ This is a known limit, not a defect: the policy prevents mistakes and is not a
 boundary. The full list is in
 [What the policy does not stop](../reference/dangerous-command-policy.md#what-the-policy-does-not-stop).
 For stopping processes safely, see
+[Stop Background Jobs by PID](./stop-background-jobs-by-pid.md) and
 [Wait Without Leaving Orphan Processes](./wait-without-orphan-processes.md).
 
 ## Related
@@ -306,4 +308,5 @@ For stopping processes safely, see
 - [Dangerous Command Policy](../reference/dangerous-command-policy.md): the default list, the file formats and the limits
 - [Why Dangerous Commands Are Denied in the Harness](../concepts/dangerous-command-policy.md): why this is harness configuration rather than a hook
 - [User Configuration](../reference/user-config.md#policydeny_commands): the `policy.deny_commands` key, its scope and its trust rules
+- [Stop Background Jobs by PID](./stop-background-jobs-by-pid.md): the commands to use in place of the denied pattern kills
 - [Manage Claude Login Profiles](./claude-profiles.md): the managed profiles the Claude writer covers
