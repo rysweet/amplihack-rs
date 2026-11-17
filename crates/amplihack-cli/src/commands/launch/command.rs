@@ -182,7 +182,11 @@ pub(super) fn build_command_for_dir(
     // `--allow-all` injected just above. Deliberately not conditional on that
     // injection: the deny flags are what makes `--allow-all` survivable, so
     // the `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` opt-out leaves them in place.
-    // Injected before the user's own arguments, as every other injection is.
+    // Injected before the user's own arguments, as every other injection is,
+    // and `extra_args` is deliberately not passed down: the renderer used to
+    // skip a prefix that already followed a `--deny-tool` there, which an
+    // adjacent pair Copilot parses as another flag's value was enough to
+    // trigger, dropping the rule from both sides at once.
     if binary.name == "copilot" {
         let instance = crate::user_config::policy_deny_commands();
         cmd.args(crate::policy::copilot::deny_args(&instance));
