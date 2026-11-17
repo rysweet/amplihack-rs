@@ -1591,7 +1591,13 @@ if [ "$name" = "loop-health-evaluator" ]; then
   # The evaluator contract (#2575 B2): a round with no movement since the last
   # one is STUCK, unless loop_ci_signal says a check is pending at that head.
   ci=""; prev=""
-  for a in "$@"; do case "$prev:$a" in -c:loop_ci_signal=*) ci="${a#loop_ci_signal=}" ;; esac; prev=$a; done
+  # Both forms: #2582 moved the evaluator's free-text keys, loop_ci_signal
+  # among them, from `-c key=<text>` to `--context-from-file key=<file>`, as
+  # loop_round_label is read above.
+  for a in "$@"; do case "$prev:$a" in
+    -c:loop_ci_signal=*) ci="${a#loop_ci_signal=}" ;;
+    --context-from-file:loop_ci_signal=*) ci="$(cat -- "${a#*=}")" ;;
+  esac; prev=$a; done
   printf '%s\n' "$ci" >> "$S/evaluator-ci"
   h="$(git -C "$STUB_REPO" rev-parse HEAD)"
   last="$(cat "$S/evaluator-head" 2>/dev/null || :)"; printf '%s' "$h" > "$S/evaluator-head"

@@ -2,7 +2,7 @@
 title: Run a Recipe End-to-End
 description: Launch a recipe, inspect its result, and distinguish current checkout behavior from planned isolation.
 doc_type: howto
-last_updated: 2026-11-10
+last_updated: 2026-11-17
 ---
 
 # Run a Recipe End-to-End
@@ -157,6 +157,14 @@ change, even when a step runs `git add` or `git commit`.
   `-c repo_path=$PWD`, is mapped to the same path in the run's checkout.
   A path buried inside longer text is refused; pass it as its own value.
 - Ignored files are not copied, except the recipe file itself.
+- Steps read your own Git configuration, so your credential helper,
+  `safe.directory` entries, aliases and filters apply inside the run. An https
+  push or fetch from a step authenticates the same way one in your own shell
+  does, and fails the same way if no helper can answer without a terminal.
+  Your global `user.name` does not change who a workflow commit is attributed
+  to: commit-producing recipes set an explicit identity first, which
+  [Configure workflow commit identity](./configure-workflow-commit-identity.md)
+  covers.
 - `--dry-run` prepares no checkout and writes no run folder.
 - A resumed run gets a fresh checkout.
 - Real runs work the same on every platform. A run starts no tracer and needs

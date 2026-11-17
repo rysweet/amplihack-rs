@@ -73,6 +73,7 @@ nav:
       - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
       - Run Tests Against the Pinned Recipe Runner: howto/run-tests-against-the-pinned-recipe-runner.md
       - Keep Tests from Prompting for Git Credentials: howto/keep-tests-from-prompting-for-git.md
+      - Keep Shell Test Stubs from Blocking on stdin: howto/keep-test-stubs-from-blocking-on-stdin.md
       - Run recipe::run Tests Inside a Recipe Session: howto/run-recipe-tests-inside-a-recipe-session.md
       - Keep Recipe Shell Tests out of the Shared Work Root: howto/keep-recipe-shell-tests-out-of-the-shared-work-root.md
       - Wait Without Leaving Orphan Processes: howto/wait-without-orphan-processes.md
@@ -131,6 +132,9 @@ nav:
           - Explanation: concepts/large-payload-delivery.md
           - How-To: howto/pass-large-recipe-context.md
           - Reference: reference/large-payload-delivery.md
+      - Recipe Context Transport: reference/recipe-context-transport.md
+      - Prompt Text Out of Argv: concepts/prompt-text-out-of-argv.md
+      - Stop Background Jobs by PID: howto/stop-background-jobs-by-pid.md
       - Clean Result Channel: reference/clean-result-channel.md
       - PR Recovery Readiness:
           - Overview: features/pr-recovery-readiness.md

@@ -627,6 +627,7 @@ the foreground group, and the trap does not appear.
 
 ## Related
 
+- [Keep Shell Test Stubs from Blocking on stdin](./keep-test-stubs-from-blocking-on-stdin.md) - The same null stdin at a shell call site, and the stub dispatch that makes it unnecessary
 - [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md) - What else `isolated(..)` removes and sets
 - [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md) - The rotator stops that `isolated(..)` sets
 - [Run in Non-Interactive Mode](./run-in-noninteractive-mode.md) - Running amplihack without a terminal

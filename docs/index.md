@@ -138,6 +138,7 @@ amplihack copilot
 
 - [Use Amplihack with Codex](howto/install-codex-plugin.md) - Install native skills and hooks, launch sessions, and run recipes
 - [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, installer downgrade guard, and diagnostics
+- [Recipe Context Transport Reference](reference/recipe-context-transport.md) - How `recipe run` hands context to the runner without argv
 - [Workflow context transport](reference/workflow-context-transport.md) - File-first authority, structured verifier objects, legacy compatibility, and consumer verdict policies
 - [Native plugin probe](reference/codex-native-plugin-probe.md) - Probe time limits, failure classification and error messages
 - [Native installer ownership](concepts/codex-installation-ownership.md) - Packaging, hook ownership, locking, and recovery
@@ -173,6 +174,7 @@ amplihack copilot
 - [Give Test Logins a Fake Account Identity](howto/give-test-logins-a-fake-account-identity.md) - How profile tests give fake logins a server identity, seed logins in rotate unit tests, re-issue a credential when its account changes, and test the no-record case
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
 - [Keep Tests from Prompting for Git Credentials](howto/keep-tests-from-prompting-for-git.md) - Why git under plain `timeout` stops on `SIGTTIN`, the settings that stop test and amplihack git from prompting, and how to run long commands safely
+- [Keep Shell Test Stubs from Blocking on stdin](howto/keep-test-stubs-from-blocking-on-stdin.md) - Why a multi-mode shell stub dispatches before it reads stdin, which `orch helper` modes take a blob, the null stdin the bundled-tool helper gives every call, and the FIFO check that proves a stub never opens stdin (#2582)
 - [Run recipe::run Tests Inside a Recipe Session](howto/run-recipe-tests-inside-a-recipe-session.md) - How `recipe::run` tests clear the outer run's `AMPLIHACK_*` variables with `clear_outer_run_env()` and `OUTER_RUN_IDENTITY_VARS`, so they pass inside a recipe run (#1984)
 - [Keep Recipe Shell Tests out of the Shared Work Root](howto/keep-recipe-shell-tests-out-of-the-shared-work-root.md) - How the recipe shell suites source `recipe-test-env.sh` to clear an inherited `AMPLIHACK_WORK_ROOT`, how a Rust test starts a suite through `isolated()`, and the behaviour test that checks the outside work root stays empty (#2712)
 - [Run Tests Against the Pinned Recipe Runner](howto/run-tests-against-the-pinned-recipe-runner.md) - How runner-backed tests build `recipe-runner-rs` at the pinned revision into a test-private cache, the `RECIPE_RUNNER_RS_PATH` and `RECIPE_RUNNER_QA_BINARY` overrides and their receipt check, and how to prove a test does not use the host runner (#2658)
@@ -228,6 +230,8 @@ Understand the philosophy and architecture behind amplihack.
 - [amplihack-rs Parity Reference](amplihack-rs-parity.md) - Subprocess prompt delivery capabilities, configuration, diagnostics, and Rust API
 - [Large Payload Delivery to Child Processes](concepts/large-payload-delivery.md) - Why large prompts, recipe context and GitHub bodies stay out of argv and environment values (`E2BIG`, `MAX_ARG_STRLEN`)
 - [Why Prompt Text Stays Out of argv](concepts/prompt-text-out-of-argv.md) - Why no contract, prompt or brief text appears in an agent's `/proc/<pid>/cmdline` (#2030)
+- [Recipe Context Transport Reference](reference/recipe-context-transport.md) - `context_file_v1`, the 0600 context file in the runtime folder, the `--set` path for a runner older than the pin, cleanup and errors (#2582)
+- [Stop Background Jobs by PID](howto/stop-background-jobs-by-pid.md) - Stop your own job by `$!` or process group, never by pattern, and time-box tests with the runner's options (#2582)
 - [Agent Prompt Channels Reference](reference/agent-prompt-channels.md) - Per-launch-path channels, the contract file, the Claude Code 2.1.319 version gate, the `amplihack claude` passthrough rewrite and errors
 - [Launcher Output Streams Reference](reference/launcher-output-streams.md) - Launcher notices go to stderr, so stdout of `amplihack <agent> -p` is only the agent's output (#2585)
 - [Check Agent Processes for Prompt Text](howto/check-agent-argv-for-prompt-text.md) - Run the `/proc` check and fix version-gate failures

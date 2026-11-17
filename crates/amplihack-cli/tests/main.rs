@@ -38,6 +38,14 @@ mod issue_2556_autodrive_evidence;
 #[path = "issue_2575_agentic_merge_ready.rs"]
 mod issue_2575_agentic_merge_ready;
 mod issue_2575_finalize_recovery_runner;
+#[path = "issue_2582_context_off_argv.rs"]
+mod issue_2582_context_off_argv;
+#[path = "issue_2582_degraded_runner_no_set.rs"]
+mod issue_2582_degraded_runner_no_set;
+#[path = "issue_2582_nested_context_off_argv.rs"]
+mod issue_2582_nested_context_off_argv;
+#[path = "issue_2582_real_runner_argv.rs"]
+mod issue_2582_real_runner_argv;
 #[path = "issue_2585_launch_notices_stderr.rs"]
 mod issue_2585_launch_notices_stderr;
 
@@ -496,3 +504,8 @@ mod issue_2738_private_clone;
 mod issue_2738_run_status;
 #[path = "issue_2738_support.rs"]
 mod issue_2738_support;
+
+// Issue #2756: a step reads the user's own global and system Git
+// configuration again, while #2096's repository-routing protection stays.
+#[path = "issue_2756_user_git_config.rs"]
+mod issue_2756_user_git_config;
