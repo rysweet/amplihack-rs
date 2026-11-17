@@ -364,8 +364,8 @@ fn bundle_digest(root: &Path) -> Result<String> {
 
 /// #2769: `applies` and `is_top_level_drive` hold the same two literals, and
 /// nothing in the type system keeps them in step. These tests are the link:
-/// the narrower predicate must stay a subset of the wider one, and its
-/// literals must match byte for byte.
+/// the narrower predicate must stay a subset of the wider one, must never
+/// judge a sub-recipe, and must match an entry-point name byte for byte.
 #[cfg(test)]
 mod invocation_name_tests {
     use super::{applies, is_top_level_drive};

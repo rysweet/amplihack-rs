@@ -52,9 +52,11 @@ pub fn run(args: Dispatch) -> Result<i32> {
             // is fatal. That is an assumption about the shipped recipe, not a
             // property enforced here: a step marked `continue_on_error` would
             // let a failed round exit 0 and complete the objective.
-            // `tests/issue_2769_autodrive_outcome_scope.rs` covers the
-            // direction that matters here: a drive over a round whose own step
-            // fails stops at that round.
+            // `tests/issue_2769_autodrive_outcome_scope.rs` holds the
+            // end-to-end direction that matters here, with this dispatcher
+            // stood in for by the fixture's own exit-status propagation: a
+            // drive over a round whose own step fails stops at that round.
+            // The check below is not itself exercised by a test.
             ensure!(
                 args.child_exit_code == 0,
                 "unsuccessful child cannot complete the objective"
