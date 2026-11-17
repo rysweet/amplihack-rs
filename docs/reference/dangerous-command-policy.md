@@ -472,7 +472,7 @@ value was too long, held a non-string element, or held one entry with a
 rejected character:
 
 ```text
-warning: /home/alice/.amplihack/config.toml: policy.deny_commands: must be a TOML array of at most 64 command prefixes, each 1 to 8 words of ASCII letters, digits and the characters . _ - / @ = +
+warning: /home/alice/.amplihack/config.toml: policy.deny_commands: must be a TOML array of at most 64 command prefixes, each 1 to 128 bytes of ASCII letters, digits and the characters . _ - / @ = +, holding at most 8 words separated by exactly one space
 ```
 
 The line is the config diagnostic form, `<path>: <key>: <reason>` behind

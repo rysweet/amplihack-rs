@@ -325,3 +325,33 @@ fn a_file_may_not_add_more_entries_than_the_bound() {
         .collect();
     assert!(parse_command_list(&over).is_err());
 }
+
+/// One requirement line stands for every way the value can be rejected, so
+/// it has to name every bound the validator enforces. A user whose entry was
+/// refused for a reason the line omits has nothing to correct.
+#[test]
+fn the_requirement_names_every_bound_the_validator_enforces() {
+    use super::schema::{MAX_DENY_COMMANDS, kind_requirement, parse_command_list};
+    use crate::policy::prefix::{MAX_BYTES, MAX_TOKENS};
+
+    let text = kind_requirement(ValueKind::CommandList);
+    for bound in [MAX_DENY_COMMANDS, MAX_BYTES, MAX_TOKENS] {
+        assert!(
+            text.contains(&bound.to_string()),
+            "the requirement omits {bound}: {text}"
+        );
+    }
+    assert!(
+        text.contains("exactly one space"),
+        "the requirement omits the separator rule: {text}"
+    );
+
+    // Each bound the line names is one the validator actually applies.
+    assert!(parse_command_list(&["x".repeat(MAX_BYTES)]).is_ok());
+    assert!(parse_command_list(&["x".repeat(MAX_BYTES + 1)]).is_err());
+    let words = |n: usize| vec![vec!["a"; n].join(" ")];
+    assert!(parse_command_list(&words(MAX_TOKENS)).is_ok());
+    assert!(parse_command_list(&words(MAX_TOKENS + 1)).is_err());
+    assert!(parse_command_list(&["a  b".to_string()]).is_err());
+    assert!(parse_command_list(&["a\tb".to_string()]).is_err());
+}

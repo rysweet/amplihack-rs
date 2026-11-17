@@ -172,7 +172,7 @@ directory makes the `mv` a rename rather than a copy.
 ### An entry was reported and ignored
 
 ```text
-warning: /home/alice/.amplihack/config.toml: policy.deny_commands: must be a TOML array of at most 64 command prefixes, each 1 to 8 words of ASCII letters, digits and the characters . _ - / @ = +
+warning: /home/alice/.amplihack/config.toml: policy.deny_commands: must be a TOML array of at most 64 command prefixes, each 1 to 128 bytes of ASCII letters, digits and the characters . _ - / @ = +, holding at most 8 words separated by exactly one space
 ```
 
 One bad entry rejects the whole value rather than being dropped from it, so

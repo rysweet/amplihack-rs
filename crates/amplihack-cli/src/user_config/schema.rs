@@ -461,7 +461,9 @@ pub(crate) fn kind_requirement(kind: ValueKind) -> String {
         ValueKind::Bool => "must be true or false".to_string(),
         ValueKind::CommandList => format!(
             "must be a TOML array of at most {MAX_DENY_COMMANDS} command prefixes, each 1 to \
-             {} words of ASCII letters, digits and the characters . _ - / @ = +",
+             {} bytes of ASCII letters, digits and the characters . _ - / @ = +, holding at \
+             most {} words separated by exactly one space",
+            crate::policy::prefix::MAX_BYTES,
             crate::policy::prefix::MAX_TOKENS
         ),
         ValueKind::Choice(words) => format!("must be one of {}", words.join(", ")),
