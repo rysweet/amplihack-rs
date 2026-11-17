@@ -119,8 +119,11 @@ pub(crate) fn provision(source: &Path, destination: &Path, head: Option<&str>) -
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )?)
     .canonicalize()?;
+    // 0700 whatever the umask: git makes repository.git's folders with the
+    // umask's modes, so this folder alone keeps other users out (#2778).
     let storage = tempfile::Builder::new()
         .prefix("review-generation-")
+        .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(&parent)?
         .keep();
     let repository = storage.join("repository.git");
@@ -410,8 +413,11 @@ pub(crate) fn bind_record(checkout: &Path, record: &Path) -> Result<()> {
 }
 pub(crate) fn allocate(source: &Path, parent: &Path) -> Result<PathBuf> {
     state_path(parent)?;
+    // 0700 whatever the umask: the drive's trust scan sets aside a
+    // group-writable entry (#2778).
     let directory = tempfile::Builder::new()
         .prefix("review-")
+        .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(parent)?
         .keep();
     let checkout = provision(source, &directory.join("checkout"), None)?;
