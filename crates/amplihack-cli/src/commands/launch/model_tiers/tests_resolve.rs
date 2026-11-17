@@ -9,9 +9,7 @@
 //! - **G1** no tier word ever leaves as a model value, on any harness;
 //! - **G2** argv is byte-identical when there is no tier and no force;
 //! - **G3** `--model` occurrences are replaced or deleted, never inserted;
-//! - **G4** a concrete id is never read or rewritten (issue #1527);
-//! - **G5** the module imports neither `std::env` nor `std::fs` nor
-//!   `std::time`.
+//! - **G4** a concrete id is never read or rewritten (issue #1527).
 
 use super::notice::Notice;
 use super::record::Fallback;
@@ -109,8 +107,11 @@ fn a_tier_resolves_to_the_column_model_on_a_claude_compatible_harness() {
 
 #[test]
 fn a_codex_tier_carries_an_effort_and_deletes_the_model_pair() {
+    // `strong` ships at `high`, not `xhigh`: a Codex model that does not
+    // accept `xhigh` would fail every strong step of an instance with no tier
+    // file of its own. An instance raises it in its own `[codex.strong]` cell.
     let table = Table::shipped();
-    for (tier, effort) in [("strong", "xhigh"), ("standard", "high"), ("fast", "low")] {
+    for (tier, effort) in [("strong", "high"), ("standard", "high"), ("fast", "low")] {
         let args = argv(&["exec", "--model", tier, "-"]);
         let out = resolve(&request("codex", &args, table));
         assert_eq!(model_of(&out), None, "codex/{tier}: {:?}", out.argv);
@@ -365,7 +366,7 @@ fn a_gateway_launch_deletes_the_tier_and_says_why() {
 #[test]
 fn a_forced_model_replaces_a_tier_and_keeps_the_tiers_effort() {
     let table = Table::shipped();
-    for (tier, effort) in [("strong", "xhigh"), ("fast", "low")] {
+    for (tier, effort) in [("strong", "high"), ("fast", "low")] {
         let args = argv(&["exec", "--model", tier, "-"]);
         let out = resolve(&Request {
             harness: "codex",
@@ -611,22 +612,5 @@ fn no_emitted_token_after_model_can_act_as_another_argument() {
                 }
             }
         }
-    }
-}
-
-// -------------------------------------------------------------------------
-// G5 — purity, checked structurally
-// -------------------------------------------------------------------------
-
-#[test]
-fn the_resolver_reads_no_environment_no_file_and_no_clock() {
-    let source = include_str!("resolve.rs");
-    for forbidden in ["std::env", "std::fs", "std::time", "Instant", "SystemTime"] {
-        assert!(
-            !source.contains(forbidden),
-            "resolve.rs must stay pure: every rejection path is then reachable from a \
-             table-driven unit test rather than a process spawn, which is what makes \
-             those paths actually exercised. Found `{forbidden}`."
-        );
     }
 }

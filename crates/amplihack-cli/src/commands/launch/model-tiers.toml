@@ -28,9 +28,12 @@ model = "claude-haiku-5-5"
 # Codex. Opus and Sonnet do not exist there, and naming a Codex model in a
 # shipped default would guess at the account, so the tiers differ by
 # reasoning effort and leave the model to Codex. The effort reaches Codex as
-# its own `-c model_reasoning_effort=...` argument.
+# its own `-c model_reasoning_effort=...` argument. `strong` ships at `high`
+# so that a model which does not accept `xhigh` still runs the step; an
+# instance whose model accepts it sets `effort = "xhigh"` in its own
+# `[codex.strong]` cell.
 [codex.strong]
-effort = "xhigh"
+effort = "high"
 
 [codex.standard]
 effort = "high"

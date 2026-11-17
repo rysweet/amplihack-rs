@@ -1,21 +1,25 @@
-//! Issue #1619, B2 (TDD): an operator's own model choice outranks the shipped
-//! tier column.
+//! Issue #1619, B2 and B-new-1 (TDD): an operator's own model choice
+//! outranks the shipped Claude tier column, and reaches no other column.
 //!
 //! Before this feature, `AMPLIHACK_DEFAULT_MODEL` chose the model for every
-//! launch amplihack made. The tier table must not take that lever away, or a
-//! backend with no Opus and no Sonnet — Ryan's condition on the issue — loses
-//! the only setting that made amplihack usable there: every tiered step would
-//! ask for a Claude id the account does not have.
+//! Claude-compatible launch amplihack made (`claude`, `rusty`, `rustyclawd`
+//! and `amplifier`) and was never read for Codex or Copilot. The tier table
+//! must not take that lever away from the Claude column, and must not hand it
+//! to the others: the #1619 issue comment of 16 November says amplihack runs
+//! on harnesses where Opus and Sonnet do not exist, and a Claude id written
+//! onto a Codex command line fails the step.
 //!
 //! The rank is 3, below `model.force` and below an explicit concrete
-//! `--model`, and above the per-step override and the table. It replaces a
-//! tier word and only a tier word, on every column, so:
+//! `--model`, and above the per-step override and the table. On the Claude
+//! column it replaces a tier word and only a tier word, so:
 //!
 //! - a concrete id is still forwarded as typed (issue #1527);
 //! - no `--model` pair is ever inserted where the command line had none
-//!   (G3), which is what keeps the untiered command line byte-identical;
-//! - the tier's Codex reasoning effort still reaches the harness, because
-//!   the substitution is a resolved model, not a fall-back.
+//!   (G3), which is what keeps the untiered command line byte-identical.
+//!
+//! On every other column the variable is not read at all: the column's own
+//! cell decides, a Codex user names a model in a `[codex.<tier>]` cell, and
+//! no line about the variable is printed.
 //!
 //! The value is held to [`validate_model_id`] by the same code and in the
 //! same position as `model.force`: it is an environment variable, so a
@@ -27,6 +31,10 @@ use super::notice::Notice;
 use super::record::Fallback;
 use super::resolve::{Request, resolve};
 use super::table::{Effort, Table, Tier};
+
+/// A Claude model id an operator might export for their Claude launches. It
+/// is the shipped `standard` cell, so it passes validation everywhere.
+const CLAUDE_ID: &str = "claude-sonnet-5-5";
 
 fn argv(words: &[&str]) -> Vec<String> {
     words.iter().map(|w| (*w).to_string()).collect()
@@ -68,8 +76,32 @@ fn model_of(resolved: &[String]) -> Option<&str> {
     found
 }
 
+/// Neither line about `AMPLIHACK_DEFAULT_MODEL` is in `notices`.
+fn assert_no_default_notice(harness: &str, notices: &[Notice]) {
+    assert!(
+        !notices.iter().any(|n| matches!(
+            n,
+            Notice::DefaultModel { .. } | Notice::DefaultModelRefused { .. }
+        )),
+        "{harness}: the variable is not read on this column, so nothing is said \
+         about it: {notices:?}"
+    );
+}
+
+/// Off the Claude column the variable leaves no trace: resolving with
+/// `default_model` set gives the same argv, effort, notices and record as
+/// resolving with it unset.
+fn assert_same_as_unset(harness: &str, args: &[String], table: &Table, default_model: &str) {
+    let set = resolve(&with_default(harness, args, table, Some(default_model)));
+    let unset = resolve(&with_default(harness, args, table, None));
+    assert_eq!(set.argv, unset.argv, "{harness} {args:?}: argv");
+    assert_eq!(set.effort, unset.effort, "{harness} {args:?}: effort");
+    assert_eq!(set.notices, unset.notices, "{harness} {args:?}: notices");
+    assert_eq!(set.record, unset.record, "{harness} {args:?}: record");
+}
+
 // -------------------------------------------------------------------------
-// It replaces a tier word, on every column
+// It replaces a tier word on the Claude column
 // -------------------------------------------------------------------------
 
 #[test]
@@ -105,31 +137,185 @@ fn an_operator_default_applies_to_every_tier_word() {
     }
 }
 
-/// Ryan's condition, stated on the issue on 16 November: amplihack runs on
-/// harnesses where Opus and Sonnet do not exist. The operator's own id has to
-/// reach those steps, and `codex` is the shipped column that names no model.
 #[test]
-fn an_operator_default_reaches_a_column_with_no_opus_and_no_sonnet() {
+fn every_claude_compatible_tool_takes_the_operator_default() {
+    let table = Table::shipped();
+    for harness in ["claude", "rusty", "rustyclawd", "amplifier"] {
+        let args = argv(&["--model", "strong", "-p"]);
+        let out = resolve(&with_default(harness, &args, table, Some("house-model")));
+        assert_eq!(
+            model_of(&out.argv),
+            Some("house-model"),
+            "{harness} shares the `claude` column, which is where the variable \
+             applied before tiers: {:?}",
+            out.argv
+        );
+    }
+}
+
+// -------------------------------------------------------------------------
+// B-new-1: it never reaches a column other than Claude's
+// -------------------------------------------------------------------------
+
+/// The #1619 issue comment of 16 November: amplihack runs on harnesses where
+/// Opus and Sonnet do not exist. A Claude id an operator exported for their
+/// Claude launches must not become the model every tiered Codex step asks
+/// for; the step would fail.
+#[test]
+fn a_claude_operator_default_never_reaches_codex() {
+    let table = Table::shipped();
+    for tier in Tier::ALL.map(Tier::as_str) {
+        let args = argv(&["exec", "--model", tier, "-"]);
+        let out = resolve(&with_default("codex", &args, table, Some(CLAUDE_ID)));
+        assert_eq!(
+            model_of(&out.argv),
+            None,
+            "codex/{tier}: the shipped codex cell names no model, and the Claude \
+             column's variable is not read here: {:?}",
+            out.argv
+        );
+        assert!(
+            !out.argv.iter().any(|a| a.contains("claude")),
+            "codex/{tier}: no Claude id on a Codex command line: {:?}",
+            out.argv
+        );
+        assert_eq!(out.argv, argv(&["exec", "-"]), "codex/{tier}");
+        assert_eq!(
+            out.record.as_ref().and_then(|r| r.fallback),
+            Some(Fallback::NoModel),
+            "codex/{tier}: the model falls back to Codex's own, as with the variable unset"
+        );
+        assert_no_default_notice("codex", &out.notices);
+        assert_same_as_unset("codex", &args, table, CLAUDE_ID);
+    }
+}
+
+#[test]
+fn a_claude_operator_default_leaves_the_codex_tier_effort_in_place() {
     let table = Table::shipped();
     let args = argv(&["exec", "--model", "strong", "-"]);
-    let out = resolve(&with_default("codex", &args, table, Some("gpt-6.1-sol")));
+    let out = resolve(&with_default("codex", &args, table, Some(CLAUDE_ID)));
+    assert_eq!(
+        out.effort,
+        Some(Effort::High),
+        "the shipped codex `strong` effort reaches Codex whatever the Claude column's \
+         variable says"
+    );
+}
+
+#[test]
+fn a_claude_operator_default_never_reaches_copilot() {
+    let table = Table::shipped();
+    for tier in Tier::ALL.map(Tier::as_str) {
+        let args = argv(&["--model", tier, "-p"]);
+        let out = resolve(&with_default("copilot", &args, table, Some(CLAUDE_ID)));
+        assert_eq!(
+            model_of(&out.argv),
+            None,
+            "copilot/{tier}: the shipped copilot column is empty and the variable is \
+             not read here: {:?}",
+            out.argv
+        );
+        assert!(
+            !out.argv.iter().any(|a| a.contains("claude")),
+            "copilot/{tier}: {:?}",
+            out.argv
+        );
+        assert_eq!(
+            out.record.as_ref().and_then(|r| r.fallback),
+            Some(Fallback::NoMapping),
+            "copilot/{tier}"
+        );
+        assert_no_default_notice("copilot", &out.notices);
+        assert_same_as_unset("copilot", &args, table, CLAUDE_ID);
+    }
+}
+
+#[test]
+fn a_harness_with_no_column_ignores_the_operator_default() {
+    let table = Table::shipped();
+    let args = argv(&["--model", "strong", "-p"]);
+    let out = resolve(&with_default("gemini", &args, table, Some(CLAUDE_ID)));
     assert_eq!(
         model_of(&out.argv),
-        Some("gpt-6.1-sol"),
-        "the shipped codex cell names no model, and the operator's does: {:?}",
+        None,
+        "only the Claude-compatible tools read the variable: {:?}",
         out.argv
     );
     assert_eq!(
-        out.effort,
-        Some(Effort::Xhigh),
-        "the substitution is a resolved model, not a fall-back, so the tier's own \
-         Codex reasoning effort still reaches the harness"
-    );
-    assert_eq!(
         out.record.as_ref().and_then(|r| r.fallback),
-        None,
-        "nothing fell back: a model was chosen"
+        Some(Fallback::NoColumn)
     );
+    assert_no_default_notice("gemini", &out.notices);
+    assert_same_as_unset("gemini", &args, table, CLAUDE_ID);
+}
+
+#[test]
+fn an_instance_codex_cell_names_the_codex_model_whatever_the_operator_default() {
+    // What a Codex user who knows their account's model does instead: name it
+    // in a `[codex.<tier>]` cell of their own tier file.
+    let (overrides, notices) = Table::parse_override(
+        "version = 1\n[codex.strong]\nmodel = \"gpt-6.1-sol\"\neffort = \"high\"\n",
+    )
+    .expect("valid override");
+    assert!(notices.is_empty(), "{notices:?}");
+    let table = overrides.merged_over(Table::shipped());
+    let args = argv(&["exec", "--model", "strong", "-"]);
+    let out = resolve(&with_default("codex", &args, &table, Some(CLAUDE_ID)));
+    assert_eq!(
+        out.argv,
+        argv(&["exec", "--model", "gpt-6.1-sol", "-"]),
+        "the instance cell decides the Codex model"
+    );
+    assert_eq!(out.effort, Some(Effort::High));
+    assert_eq!(out.record.as_ref().and_then(|r| r.fallback), None);
+    assert_no_default_notice("codex", &out.notices);
+}
+
+#[test]
+fn an_argument_shaped_operator_default_is_not_reported_on_codex_or_copilot() {
+    // The variable is not read on these columns, so a value it would reject
+    // is not reported there either: the Claude-column launch that reads it
+    // says so.
+    let table = Table::shipped();
+    for (harness, args) in [
+        ("codex", argv(&["exec", "--model", "fast", "-"])),
+        ("copilot", argv(&["--model", "fast", "-p"])),
+    ] {
+        let out = resolve(&with_default(
+            harness,
+            &args,
+            table,
+            Some("--dangerously-skip-permissions"),
+        ));
+        assert!(
+            !out.argv
+                .iter()
+                .any(|a| a == "--dangerously-skip-permissions"),
+            "{harness}: {:?}",
+            out.argv
+        );
+        assert_no_default_notice(harness, &out.notices);
+        assert_same_as_unset(harness, &args, table, "--dangerously-skip-permissions");
+    }
+}
+
+#[test]
+fn a_forced_model_still_reaches_codex_with_an_operator_default_set() {
+    // `model.force` keeps its rank and its reach: the user chose it for every
+    // step, on every harness.
+    let table = Table::shipped();
+    let args = argv(&["exec", "--model", "strong", "-"]);
+    let out = resolve(&Request {
+        harness: "codex",
+        argv: &args,
+        table,
+        force: Some("gpt-6.1-mini"),
+        default_model: Some(CLAUDE_ID),
+        through_gateway: false,
+    });
+    assert_eq!(model_of(&out.argv), Some("gpt-6.1-mini"), "{:?}", out.argv);
+    assert_eq!(out.effort, Some(Effort::High));
 }
 
 #[test]

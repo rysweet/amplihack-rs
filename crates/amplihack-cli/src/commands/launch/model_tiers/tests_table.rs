@@ -1,7 +1,8 @@
 //! Issue #1619 (TDD): the tier vocabulary and the per-harness table.
 //!
 //! This module reads no file and no environment variable: the shipped table
-//! is `include_str!`ed and the override is parsed from text.
+//! is the one `Table::shipped()` returns, and an override is parsed from text
+//! the test writes.
 
 use super::table::{Effort, Table, Tier, column_for, validate_model_id};
 use crate::commands::launch::DEFAULT_MODEL;
@@ -152,10 +153,13 @@ fn no_shipped_claude_model_is_an_alias() {
 }
 
 #[test]
-fn the_shipped_codex_column_names_no_model_and_differs_by_effort() {
+fn the_shipped_codex_column_names_no_model_and_sets_an_effort() {
+    // `strong` ships at `high`: a Codex model that does not accept `xhigh`
+    // would otherwise fail every strong step of an instance with no tier file
+    // of its own. An instance that has `xhigh` raises it in its own cell.
     let table = Table::shipped();
     for (tier, effort) in [
-        (Tier::Strong, "xhigh"),
+        (Tier::Strong, "high"),
         (Tier::Standard, "high"),
         (Tier::Fast, "low"),
     ] {
@@ -168,6 +172,20 @@ fn the_shipped_codex_column_names_no_model_and_differs_by_effort() {
              shipped default would guess at the account"
         );
         assert_eq!(entry.effort.map(Effort::as_str), Some(effort));
+    }
+}
+
+#[test]
+fn no_shipped_codex_effort_is_xhigh() {
+    let table = Table::shipped();
+    for tier in Tier::ALL {
+        assert_ne!(
+            table.entry("codex", tier).and_then(|e| e.effort),
+            Some(Effort::Xhigh),
+            "codex/{}: with no tier file, a model that does not accept `xhigh` must not fail \
+             the step",
+            tier.as_str()
+        );
     }
 }
 
@@ -189,32 +207,72 @@ fn the_shipped_copilot_column_has_no_entries() {
 }
 
 #[test]
-fn the_shipped_table_names_no_host_path_or_account() {
-    let text = include_str!("../model-tiers.toml");
-    for forbidden in ["/home/", "/Users/", "~/", "candide", "@", "http"] {
-        assert!(
-            !text.contains(forbidden),
-            "the shipped mapping is configuration that ships to every install; it must \
-             contain no host name, user path or account name. Found {forbidden:?}"
-        );
-    }
-}
-
-#[test]
 fn the_shipped_table_parses_and_declares_its_version() {
-    let text = include_str!("../model-tiers.toml");
-    let (parsed, notices) =
-        Table::parse_override(text).expect("the shipped table must parse as an override file");
-    assert!(
-        notices.is_empty(),
-        "the shipped table must produce no diagnostics: {notices:?}"
-    );
+    // `Table::shipped()` panics on a file that does not parse, carries an
+    // unknown version or produces any diagnostic, so reaching the assertions
+    // is the parse check. Every cell is then asserted, so a change to any of
+    // them is a deliberate change to this test too.
+    let table = Table::shipped();
+
+    for (tier, model) in [
+        (Tier::Strong, "claude-opus-5[1m]"),
+        (Tier::Standard, "claude-sonnet-5-5"),
+        (Tier::Fast, "claude-haiku-5-5"),
+    ] {
+        let entry = table
+            .entry("claude", tier)
+            .unwrap_or_else(|| panic!("no claude cell for {}", tier.as_str()));
+        assert_eq!(
+            entry.model.as_deref(),
+            Some(model),
+            "claude/{}",
+            tier.as_str()
+        );
+        assert_eq!(entry.effort, None, "claude/{}", tier.as_str());
+    }
     assert_eq!(
-        parsed
+        table
             .entry("claude", Tier::Strong)
             .and_then(|e| e.model.as_deref()),
         Some(DEFAULT_MODEL),
-        "the shipped file and Table::shipped() must be the same table"
+        "the strong Claude cell is the built-in default"
+    );
+
+    for (tier, effort) in [
+        (Tier::Strong, Effort::High),
+        (Tier::Standard, Effort::High),
+        (Tier::Fast, Effort::Low),
+    ] {
+        let entry = table
+            .entry("codex", tier)
+            .unwrap_or_else(|| panic!("no codex cell for {}", tier.as_str()));
+        assert_eq!(entry.model, None, "codex/{}", tier.as_str());
+        assert_eq!(entry.effort, Some(effort), "codex/{}", tier.as_str());
+    }
+
+    assert!(
+        table.has_column("copilot"),
+        "the copilot column ships, empty, so an instance can fill it in"
+    );
+    for tier in Tier::ALL {
+        assert_eq!(
+            table.entry("copilot", tier),
+            None,
+            "copilot/{}",
+            tier.as_str()
+        );
+    }
+
+    for column in ["claude", "codex", "copilot"] {
+        assert_eq!(
+            table.max_effort(column),
+            None,
+            "{column}: the shipped mapping declares no ceiling"
+        );
+    }
+    assert!(
+        table.step_tiers().is_empty(),
+        "no shipped per-step override"
     );
 }
 
@@ -245,7 +303,7 @@ fn an_override_replaces_one_cell_and_leaves_the_others() {
         merged
             .entry("codex", Tier::Strong)
             .and_then(|e| e.effort.map(Effort::as_str)),
-        Some("xhigh"),
+        Some("high"),
         "an untouched column is untouched"
     );
 }

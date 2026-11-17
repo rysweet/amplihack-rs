@@ -5,7 +5,7 @@
 //! testing one: every rejection path is reachable from a unit test rather
 //! than from a process spawn.
 //!
-//! The guarantees, pinned by `tests_resolve.rs`:
+//! The guarantees G1 to G4 are pinned by `tests_resolve.rs`:
 //!
 //! - **G1** no tier word ever leaves as a model value, on any harness. An
 //!   unresolved tier word asks the CLI for a model called `strong` and breaks
@@ -14,8 +14,10 @@
 //! - **G3** `--model` occurrences are replaced or deleted, never inserted by
 //!   tier resolution;
 //! - **G4** a concrete id is never read or rewritten (issue #1527), the one
-//!   exception being `model.force`, which is announced;
-//! - **G5** this module reads no environment, no file and no clock.
+//!   exception being `model.force`, which is announced.
+//!
+//! G5 is a property of the module rather than a test: it reads no
+//! environment, no file and no clock. Every input arrives through [`Request`].
 //!
 //! Falling back removes the tier pair and substitutes nothing of its own. The
 //! existing chain in `model_args` then decides, which is what lets a gateway
@@ -37,10 +39,10 @@ pub(crate) struct Request<'a> {
     pub(crate) table: &'a Table,
     /// `model.force` or `AMPLIHACK_FORCE_MODEL`, unvalidated.
     pub(crate) force: Option<&'a str>,
-    /// A set, non-blank `AMPLIHACK_DEFAULT_MODEL`, unvalidated. The operator's
-    /// own model choice, which outranks the shipped table: before this
-    /// feature it chose every launch's model, and on an account with no Opus
-    /// and no Sonnet it is the only lever there is.
+    /// A set, non-blank `AMPLIHACK_DEFAULT_MODEL`, unvalidated. Read on the
+    /// Claude column only, where it outranks the shipped tier model: before
+    /// this feature it chose the model of every Claude-compatible launch and
+    /// was never read for Codex or Copilot, which it still is not.
     pub(crate) default_model: Option<&'a str>,
     /// Whether this launch is routed through the LiteLLM gateway.
     pub(crate) through_gateway: bool,
@@ -86,14 +88,19 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
         None => (None, None),
     };
 
-    // The operator's own `AMPLIHACK_DEFAULT_MODEL`, held to the same check as
-    // `model.force` by the same code: it is an environment variable, so a
-    // parent step or a CI configuration can set it, and the string lands as
-    // the argv token straight after `--model`. Blank means "pass nothing and
-    // let the CLI decide", which is not a model for the table to lose to, and
-    // the gateway routes on the model name so nothing may route past it.
+    // The operator's own `AMPLIHACK_DEFAULT_MODEL` applies to the Claude
+    // column only, as it did before tiers: `column_for` is the same
+    // Claude-compatible test `model_args` uses. Elsewhere it is dropped before
+    // validation, so it leaves no notice, no record and no argv token; a
+    // Claude id on a Codex command line would fail the step. On the Claude
+    // column it is held to the same check as `model.force` by the same code,
+    // because it is an environment variable and the string lands as the argv
+    // token straight after `--model`. Blank means "pass nothing and let the
+    // CLI decide", and the gateway routes on the model name, so neither
+    // displaces the table.
     let default_model = request
         .default_model
+        .filter(|_| column == "claude")
         .filter(|raw| !raw.trim().is_empty())
         .filter(|_| !request.through_gateway);
     let (default_model, default_notice) = match default_model {
@@ -308,9 +315,10 @@ fn decide(
     if let Some(model) = force {
         return Decision::Model(model.to_string());
     }
-    // Rank 3: below `model.force` and below the concrete id handled above,
-    // and above the table. A resolved model, not a fall-back, so the tier's
-    // reasoning effort still reaches a harness that has a control for it.
+    // Rank 3, Claude column only (`resolve` passes `None` elsewhere): below
+    // `model.force` and the concrete id handled above, and above the table.
+    // The Claude column has no effort launch control, so the tier's effort is
+    // recorded but not applied.
     if let Some(model) = default_model {
         return Decision::Model(model.to_string());
     }

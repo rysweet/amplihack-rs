@@ -1,6 +1,6 @@
-//! Issue #1619, B3(c) (TDD): a declared per-column effort ceiling, so the
-//! shipped `strong` tier steps down rather than failing on an account whose
-//! model does not accept `xhigh`.
+//! Issue #1619, B3(c) (TDD): a declared per-column effort ceiling, so a tier
+//! an instance raised steps down rather than failing on an account whose
+//! model does not accept that effort.
 //!
 //! Amplihack cannot learn that a model refuses an effort without making a
 //! live call, and the brief excludes probing, retries and timers. So the
@@ -8,9 +8,11 @@
 //! detection: an optional `max_effort` inside a column, applied to every
 //! tier of that column before the effort is written.
 //!
-//! The shipped `codex.strong = "xhigh"` stays as it is. The issue's 3
-//! November comment requires `xhigh` for orchestration and formal steps, and
-//! an account that cannot run it says so in its own file.
+//! The shipped `codex.strong` is `high`, so with no tier file nothing asks
+//! for `xhigh`. An instance that wants `xhigh` for orchestration and formal
+//! steps, as the issue's 3 November comment does, writes it in its own
+//! `[codex.strong]` cell; the cases below that need an `xhigh` request write
+//! that cell, as `RAISED_STRONG` does.
 //!
 //! Three properties hold the key in place:
 //!
@@ -38,6 +40,10 @@ fn request<'a>(harness: &'a str, args: &'a [String], table: &'a Table) -> Reques
         through_gateway: false,
     }
 }
+
+/// The instance cell that raises Codex `strong` to `xhigh`. The shipped cell
+/// is `high`, so a ceiling below `xhigh` has nothing to lower without it.
+const RAISED_STRONG: &str = "[codex.strong]\neffort = \"xhigh\"\n";
 
 /// An instance file, merged over the shipped mapping the way a real one is.
 fn with_override(text: &str) -> (Table, Vec<Notice>) {
@@ -133,20 +139,24 @@ fn a_max_effort_merges_per_column_over_the_shipped_mapping() {
 
 #[test]
 fn a_ceiling_steps_the_strong_tier_down_on_codex() {
-    let (table, _) = with_override("version = 1\n[codex]\nmax_effort = \"high\"\n");
+    let (table, _) = with_override(&format!(
+        "version = 1\n[codex]\nmax_effort = \"high\"\n{RAISED_STRONG}"
+    ));
     let args = argv(&["exec", "--model", "strong", "-"]);
     let out = resolve(&request("codex", &args, &table));
     assert_eq!(
         out.effort,
         Some(Effort::High),
-        "the shipped `strong` asks for xhigh; this account declares high as its \
+        "the instance's `strong` asks for xhigh; this account declares high as its \
          ceiling, so high is what reaches Codex"
     );
 }
 
 #[test]
 fn a_ceiling_never_raises_an_effort() {
-    let (table, _) = with_override("version = 1\n[codex]\nmax_effort = \"xhigh\"\n");
+    let (table, _) = with_override(&format!(
+        "version = 1\n[codex]\nmax_effort = \"xhigh\"\n{RAISED_STRONG}"
+    ));
     for (tier, expected) in [
         ("fast", Effort::Low),
         ("standard", Effort::High),
@@ -158,6 +168,24 @@ fn a_ceiling_never_raises_an_effort() {
             out.effort,
             Some(expected),
             "`{tier}` sits at or below a ceiling of xhigh and must be untouched"
+        );
+    }
+}
+
+#[test]
+fn a_ceiling_above_the_shipped_efforts_leaves_them_as_shipped() {
+    let (table, _) = with_override("version = 1\n[codex]\nmax_effort = \"xhigh\"\n");
+    for (tier, expected) in [
+        ("fast", Effort::Low),
+        ("standard", Effort::High),
+        ("strong", Effort::High),
+    ] {
+        let args = argv(&["exec", "--model", tier, "-"]);
+        let out = resolve(&request("codex", &args, &table));
+        assert_eq!(
+            out.effort,
+            Some(expected),
+            "`{tier}`: a ceiling of xhigh must not lift the shipped effort to itself"
         );
     }
 }
@@ -178,7 +206,9 @@ fn a_ceiling_applies_to_every_tier_of_its_column() {
 
 #[test]
 fn a_ceiling_on_one_column_does_not_reach_another() {
-    let (table, _) = with_override("version = 1\n[claude]\nmax_effort = \"minimal\"\n");
+    let (table, _) = with_override(&format!(
+        "version = 1\n[claude]\nmax_effort = \"minimal\"\n{RAISED_STRONG}"
+    ));
     let args = argv(&["exec", "--model", "strong", "-"]);
     let out = resolve(&request("codex", &args, &table));
     assert_eq!(
@@ -215,7 +245,9 @@ fn a_capped_step_still_resolves_and_never_fails() {
 
 #[test]
 fn the_record_keeps_both_the_requested_and_the_capped_effort() {
-    let (table, _) = with_override("version = 1\n[codex]\nmax_effort = \"medium\"\n");
+    let (table, _) = with_override(&format!(
+        "version = 1\n[codex]\nmax_effort = \"medium\"\n{RAISED_STRONG}"
+    ));
     let args = argv(&["exec", "--model", "strong", "-"]);
     let out = resolve(&request("codex", &args, &table));
     let record = out.record.expect("a tiered launch records one line");
