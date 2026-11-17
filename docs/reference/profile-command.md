@@ -4343,7 +4343,7 @@ with `AMPLIHACK_`, on both the `--set` and the `--context-file` path, before
 the runner starts:
 
 ```text
-recipe context key "amplihack_claude_profile" is reserved: the AMPLIHACK_ namespace cannot be set from recipe context
+recipe context key "amplihack_claude_profile" is reserved: the AMPLIHACK_ namespace, Git execution configuration and any name that selects or runs a program cannot be set from recipe context
 ```
 
 Only the key is printed, never its value. Keys that merely contain

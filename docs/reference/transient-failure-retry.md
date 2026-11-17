@@ -216,13 +216,14 @@ grep amplihack.recipe.failure_class run.log | jq -r '.class + " " + .action'
 
 `structural_refusal` is a JSON boolean, never a string. It is `true` only when
 an unsuccessful step's terminating error header records the reserved exit code
-`79`. The runner decodes the pinned runner's error envelope (introduced in
-recipe-runner-rs `90286bc`), anchored at the start of `error`, before
-diagnostics. It does not search captured stdout, stderr or diagnostic text for
-refusal phrases or embedded exit-code references. The class is then `work`, and
-the failure is never mechanically retried. The decoder is `termination.rs`. A
-sub-recipe whose `recipe:` value is a template expression is not decoded: from
-`2833a0b` the runner leaves the name out of that header.
+`79`. The runner decodes the pinned runner's error envelope
+(recipe-runner-rs `2833a0b8`), anchored at the start of `error`, before
+diagnostics. It does not search captured stdout, stderr or diagnostic text
+for refusal phrases or embedded exit-code references. The class is then
+`work`, and the failure is never mechanically retried. The decoder is
+`termination.rs`. A sub-recipe whose `recipe:` value is a template
+expression is not decoded: the pinned runner leaves the name out of that
+header.
 
 ```text
 Command failed (exit 79): <any diagnostics>                  -> true, work

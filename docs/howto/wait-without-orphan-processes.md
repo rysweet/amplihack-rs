@@ -199,3 +199,4 @@ PID 1 or a user `systemd` as its parent (`ps -o ppid= -p <pid>`).
 - [CLI reference](../reference/cli.md)
 - [XPIA configuration: check order](../reference/xpia-configuration.md)
 - [Keep Tests from Prompting for Git Credentials](./keep-tests-from-prompting-for-git.md)
+- [Stop Background Jobs by PID](./stop-background-jobs-by-pid.md) - Stop your own job by `$!` or process group, never by pattern (#2582)

@@ -7,13 +7,33 @@
 #                 stand-in for `extract-json --require-field F` (pass the blob
 #                 through when it names F) and `extract-field --field F
 #                 --default D [--require-boolean]` (a string or bare value;
-#                 JSON \n and \t decoded, boolean types checked when required).
+#                 JSON \n and \t decoded, boolean types checked when required),
+#                 and for `normalise-loop-verdict` (pass CONTINUE, DONE or
+#                 STUCK through; anything else becomes STUCK).
+#
+#                 stdin rule (#2582): the mode is dispatched BEFORE stdin is
+#                 opened, and only these five modes read it —
+#                   normalise-loop-verdict  extract-json  extract-field
+#                   normalise-verdict       normalise-type
+#                 Every other mode answers 0 without reading, so a caller that
+#                 passes an open stdin cannot block on a channel the stub does
+#                 not use. `autodrive-completion-seal` is the mode that hung
+#                 tests/issue_1437_autodrive_loop.sh this way.
+#
+#                 The last two have no stand-in and answer nothing, but the
+#                 tree pipes into them, so they must keep draining: a mode that
+#                 is piped into belongs on that list even with no stand-in,
+#                 or its writer takes SIGPIPE and the pipeline ends 141 under
+#                 `set -o pipefail`. Adding a mode means two decisions: whether
+#                 it joins the list above, and whether it needs a stand-in
+#                 below. See docs/howto/keep-test-stubs-from-blocking-on-stdin.md.
 #   recipe show   exit 0.
 #   recipe run    the loop names recipes by absolute launch-side path (#1543),
 #                 so the recipe is keyed on its base name. Every call is logged
 #                 to $STUB_STATE/calls.
 #     loop-health-evaluator, call h:
-#                 saves loop_history to $STUB_STATE/history-h, prints
+#                 saves loop_history (from -c or --context-from-file,
+#                 #2582) to $STUB_STATE/history-h, prints
 #                 $STUB_HEALTH_EXTRA_h, then the runner's step-04 block (#1512)
 #                 with $STUB_HEALTH_h (default CONTINUE for h=1, DONE after),
 #                 and exits $STUB_HEALTH_RC_h (default 0).
@@ -77,7 +97,15 @@ knob() { # knob <prefix> <n> <default>
 
 if [ "${1:-} ${2:-}" = "orch helper" ]; then
   if [ -n "${REAL_AMPLIHACK:-}" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
-  MODE="${3:-}"; FIELD=""; DEFAULT=""; REQUIRE_BOOLEAN=false
+  MODE="${3:-}"
+  # Answer and leave, before stdin or the arguments are touched, for every mode
+  # this stub has no stand-in for: see the stdin rule in this file's header.
+  # Only the five modes below carry a blob, and only they use the arguments.
+  case "$MODE" in
+    normalise-loop-verdict|extract-json|extract-field|normalise-verdict|normalise-type) : ;;
+    *) exit 0 ;;
+  esac
+  FIELD=""; DEFAULT=""; REQUIRE_BOOLEAN=false
   shift 3 || true
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -135,6 +163,25 @@ if [ "${1:-} ${2:-}" = "recipe run" ]; then
         loop_*=*)
           context_name="$(printf '%s' "${a%%=*}" | tr '[:lower:]' '[:upper:]')"
           export "$context_name=${a#*=}"
+          ;;
+      esac
+    fi
+    # #2582: the loop hands the evaluator's free-text keys to the nested run
+    # by file, so they are no longer `-c key=value`. Read the file and treat
+    # the value exactly as the `-c` form above does, or this stub sees an
+    # empty history and the tests that read it assert nothing.
+    if [ "$prev" = "--context-from-file" ]; then
+      ctx_key="${a%%=*}"
+      ctx_file="${a#*=}"
+      ctx_value=""
+      [ -f "$ctx_file" ] && ctx_value="$(cat -- "$ctx_file")"
+      case "$ctx_key" in
+        loop_history) HISTORY="$ctx_value" ;;
+      esac
+      case "$ctx_key" in
+        loop_*)
+          context_name="$(printf '%s' "$ctx_key" | tr '[:lower:]' '[:upper:]')"
+          export "$context_name=$ctx_value"
           ;;
       esac
     fi

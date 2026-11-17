@@ -385,9 +385,14 @@ printf '%s\n' '#!/usr/bin/env bash' 'printf "BIN %s\n" "$*" >> "$AB_LOG"' \
   'esac' 'exit 0' > "${AB}/amplihack-alt"
 chmod 0755 "${AB}/path/amplihack" "${AB}/amplihack-alt"
 ab() { # ab <script> <args...>: run a bundle script with the alternate binary
+  # stdin comes from /dev/null, not this script's own: a bundled tool calls
+  # `amplihack orch helper <mode>` in modes the stub has no stand-in for, and
+  # on an inherited terminal or pipe a tool that reads stdin blocks for ever
+  # (#2582). /dev/null rather than `<&-`, so fd 0 stays taken and a later
+  # open() in a child cannot land on it.
   AB_LOG="${AB}/log" AB_STATE="${AB}/state" AB_STUB="${WORK}/bin/amplihack" REAL_AMPLIHACK="" \
     HOME="${WORK}/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-    AMPLIHACK_BIN="${AB}/amplihack-alt" PATH="${AB}/path:${PATH}" bash "${TOOLS}/$1" "${@:2}"
+    AMPLIHACK_BIN="${AB}/amplihack-alt" PATH="${AB}/path:${PATH}" bash "${TOOLS}/$1" "${@:2}" </dev/null
 }
 bare_calls() { local n; n="$(grep -c '^BARE ' "${AB}/log" 2>/dev/null)" || true; printf '%s' "${n:-0}"; }
 : > "${AB}/log"
