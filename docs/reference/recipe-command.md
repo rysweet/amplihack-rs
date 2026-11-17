@@ -2,7 +2,7 @@
 title: amplihack recipe reference
 description: Commands and options for inspecting and executing recipes.
 doc_type: reference
-last_updated: 2026-11-11
+last_updated: 2026-11-17
 ---
 
 # amplihack recipe — Reference
@@ -411,7 +411,11 @@ log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261020-10
   server holds is removed. The environment travels in a 0600 file in the log
   directory that the pane reads and deletes at once, never on a command line.
   If the pane has not read it within 15 s, or the launch is interrupted, the
-  file is deleted and the launch fails.
+  file is deleted and the launch fails. The run also gets your shell's
+  file-creation mask (umask), not the tmux server's, through the same file,
+  so the files it creates have the modes a foreground run would give them: a
+  run launched from a shell with umask `022` keeps `022` even when the tmux
+  server was started under `002`.
 - **Context** — `-c`, `--context-file` and `--context-from-file` are read
   when you launch, not later, and reach the run in a 0600
   `<session>.context.json` in the log directory, removed when the run ends.
