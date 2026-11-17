@@ -26,14 +26,10 @@ mod input_preservation;
 mod ownership_lifecycle;
 #[path = "issue_2096_private_base_ref.rs"]
 mod private_base_ref;
+#[path = "issue_2677_private_main_root.rs"]
+mod private_main_root;
 #[path = "issue_2096_real_hooks.rs"]
 mod real_hooks;
-#[path = "issue_2096_recording.rs"]
-mod recording;
-#[path = "issue_2096_recording_coverage.rs"]
-mod recording_coverage;
-#[path = "issue_2096_recording_failures.rs"]
-mod recording_failures;
 #[path = "issue_2096_review_isolation.rs"]
 mod review_isolation;
 
@@ -73,6 +69,18 @@ git worktree list --porcelain | grep -c '^worktree ' > "$out/worktrees" || true
 for v in GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_CONFIG_COUNT GIT_CONFIG_KEY_0; do
   if eval "[ -n \"\${$v+set}\" ]"; then : > "$out/$v"; fi
 done
+# Issue #2677: what step-04's worktree helper answers here, asked the way a
+# recipe older than #2290 asks (`base` of `root`'s answer) and the new way.
+if [ -n "${ISSUE_2677_ROOT_HELPER:-}" ]; then
+  git for-each-ref --format='%(refname)' refs/remotes/origin/ > "$out/origin_refs"
+  main="$(bash "$ISSUE_2677_ROOT_HELPER" root .)"
+  printf '%s' "$main" > "$out/main_root"
+  AMPLIHACK_WORK_ROOT_EXPLICIT=1 AMPLIHACK_WORK_ROOT="$ISSUE_2677_WORK_ROOT" \
+    bash "$ISSUE_2677_ROOT_HELPER" base "$main" > "$out/base_from_main" 2> "$out/base_from_main.err" \
+    || echo failed >> "$out/base_from_main.err"
+  AMPLIHACK_WORK_ROOT_EXPLICIT=1 AMPLIHACK_WORK_ROOT="$ISSUE_2677_WORK_ROOT" \
+    bash "$ISSUE_2677_ROOT_HELPER" base . > "$out/base_from_checkout"
+fi
 if [ -n "${ISSUE_2096_STAGE:-}" ]; then
   printf 'private output\n' > run-output
   git add -- run-output
@@ -542,12 +550,6 @@ fn a_dry_run_uses_the_callers_directory_and_makes_no_checkout() {
         "a dry run made run folders: {:?}",
         f.run_folders()
     );
-    let mut recordings = Vec::new();
-    find_named(&f.root.join("work"), "git-recording.json", &mut recordings);
-    assert!(
-        recordings.is_empty(),
-        "a dry run wrote a git recording: {recordings:?}"
-    );
 }
 
 impl Fixture {
@@ -578,27 +580,6 @@ impl Fixture {
             .collect();
         assert_eq!(new.len(), 1, "expected one new run folder: {new:?}");
         new.into_iter().next().unwrap()
-    }
-}
-
-/// Every file called `name` under `dir`, following no symlink. A missing
-/// `dir` adds nothing; any other I/O error fails the test.
-fn find_named(dir: &Path, name: &str, found: &mut Vec<PathBuf>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
-        Err(e) => panic!("read {}: {e}", dir.display()),
-    };
-    for entry in entries {
-        let entry = entry.unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
-        let kind = entry
-            .file_type()
-            .unwrap_or_else(|e| panic!("stat {}: {e}", entry.path().display()));
-        if kind.is_dir() {
-            find_named(&entry.path(), name, found);
-        } else if entry.file_name() == name {
-            found.push(entry.path());
-        }
     }
 }
 
@@ -642,10 +623,10 @@ fn an_unborn_head_finishes_the_recovery_admission_as_failure() {
     assert!(report["ended_at"].is_string(), "{report:#}");
 }
 
-/// A failed run releases in order: checkout, recording, admission,
-/// workspace. Each one must have happened.
+/// A failed run releases in order: checkout, admission, workspace. Each one
+/// must have happened.
 #[test]
-fn a_failed_run_finishes_checkout_recording_admission_and_workspace() {
+fn a_failed_run_finishes_checkout_admission_and_workspace() {
     let f = Fixture::new();
     let before = f.run_folders();
     let out = f
@@ -662,10 +643,6 @@ fn a_failed_run_finishes_checkout_recording_admission_and_workspace() {
     let report = json_file(&run.join("run.json"));
     assert_eq!(report["outcome"], "failure", "{report:#}");
     assert!(report["ended_at"].is_string(), "{report:#}");
-    assert!(
-        run.join("git-recording.json").is_file(),
-        "the git recording was not finished before the workspace"
-    );
 }
 
 /// A relaunch with the same identity after a failure gets a freshly prepared

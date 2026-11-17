@@ -222,22 +222,7 @@ fn read(checkout: &Path) -> Result<Generation> {
     {
         bail!("invalid review generation ownership");
     }
-    let storage = storage_of(&generation)?;
-    // Storage is always created beside the checkout as review-generation-*,
-    // so a record naming storage anywhere else is never trusted or removed.
-    let confined = storage.parent().is_some() && storage.parent() == checkout.parent();
-    let named = storage
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with("review-generation-"));
-    if !confined || !named {
-        bail!("review storage is outside its allocation directory; refusing to trust it");
-    }
-    if generation.repository != storage.join("repository.git")
-        || generation.launch != storage.join("launch")
-    {
-        bail!("invalid review resource paths");
-    }
+    let storage = checked_storage_of(&generation)?;
     // A retired generation's checkout and storage were removed on purpose;
     // `release` checks the storage path itself before removing anything.
     if !generation.retired {
@@ -256,6 +241,38 @@ fn read(checkout: &Path) -> Result<Generation> {
 }
 fn storage_of(generation: &Generation) -> Result<&Path> {
     generation.repository.parent().context("review storage")
+}
+/// The generation's storage directory, checked against the shape every
+/// generation is created with: beside the checkout, named
+/// `review-generation-*`, and holding the recorded `repository.git` and
+/// `launch`. Storage is always created there, so a record naming storage
+/// anywhere else is never trusted and nothing at that path is removed.
+///
+/// Both [`read`] and [`remove_storage`] call this rather than relying on a
+/// single check on the way in. Every caller of `remove_storage` does reach
+/// it through [`read`] (`retire` by way of `read_live`, `release` from
+/// [`read`] directly), so the shape has already been checked once; the
+/// removal re-derives it locally anyway, so the path it deletes is one it
+/// computed itself rather than one handed to it.
+fn checked_storage_of(generation: &Generation) -> Result<&Path> {
+    let storage = storage_of(generation)?;
+    let confined = storage.parent().is_some() && storage.parent() == generation.checkout.parent();
+    let named = storage
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("review-generation-"));
+    if !confined || !named {
+        bail!(
+            "review storage is outside its allocation directory; refusing to trust it: {}",
+            storage.display()
+        );
+    }
+    if generation.repository != storage.join("repository.git")
+        || generation.launch != storage.join("launch")
+    {
+        bail!("invalid review resource paths: {}", storage.display());
+    }
+    Ok(storage)
 }
 /// [`read`] for every caller that trusts or uses the generation: a retired
 /// generation is refused. Only `release`, `release_state` and the child walk
@@ -457,10 +474,17 @@ pub(crate) fn advance(source: &Path, checkout: &Path, state: Option<&Path>) -> R
 /// storage, so no state leaves live storage without a record naming it.
 fn retire(checkout: &Path, mut generation: Generation) -> Result<()> {
     let storage = storage_of(&generation)?.to_path_buf();
+    // Every resource `remove_storage` will require afterwards is checked
+    // here, before `git worktree remove` destroys the checkout. `launch`,
+    // `identities[3]`, is in the set for that reason: without it a changed
+    // or absent `launch` passes this precheck, the checkout is destroyed,
+    // and the removal then refuses, leaking storage and reporting a changed
+    // identity for a tree this precheck had just declared sound.
     for (path, expected) in [
         (storage.as_path(), generation.identities[0]),
         (generation.repository.as_path(), generation.identities[1]),
         (checkout, generation.identities[2]),
+        (generation.launch.as_path(), generation.identities[3]),
     ] {
         if identity(path)? != expected {
             bail!("review generation resource identity changed; retained for recovery");
@@ -481,26 +505,60 @@ fn retire(checkout: &Path, mut generation: Generation) -> Result<()> {
         &manifest_path(checkout)?,
         &serde_json::to_vec(&generation)?,
     )?;
-    remove_storage(&storage, generation.identities[0])
+    remove_storage(&generation)
 }
-/// Removes a generation's storage directory only when the path is still that
-/// directory: not a symlink, and with the recorded device and inode. An
-/// absent path is already freed.
-fn remove_storage(storage: &Path, expected: (u64, u64)) -> Result<()> {
-    let metadata = match fs::symlink_metadata(storage) {
-        Ok(metadata) => metadata,
+/// True when `path` is still the directory recorded as `expected`: a
+/// directory, not a symlink, and carrying the recorded device and inode.
+/// `symlink_metadata` is used rather than a followed `stat`, because a
+/// symlink to a directory satisfies `is_dir()` once followed. Any error,
+/// including a missing path, is `false`; the caller then refuses and removes
+/// nothing.
+fn is_recorded_dir(path: &Path, expected: (u64, u64)) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| {
+        !metadata.file_type().is_symlink()
+            && metadata.is_dir()
+            && (metadata.dev(), metadata.ino()) == expected
+    })
+}
+/// Removes a generation's storage directory only when the whole recorded
+/// tree is still there: the storage directory itself (`identities[0]`), and
+/// the two recorded directories inside it, `repository.git`
+/// (`identities[1]`) and `launch` (`identities[3]`). An absent storage path
+/// is already freed and is the one non-removing success.
+///
+/// Issue #2677 A1: the storage directory's own `(dev, ino)` is not enough on
+/// its own. `retire` frees that inode moments before `release` reads the
+/// path again, so the filesystem may hand the same inode to whatever
+/// directory is created there next, and that directory then presents the
+/// recorded credential. A substitute cannot also reproduce the recorded
+/// children, so the recorded set is what authorises the removal.
+///
+/// `identities[2]`, the checkout, is deliberately not consulted: it is a
+/// sibling of storage rather than part of it, and on the retired path it is
+/// already gone.
+///
+/// The checks are path-based and `remove_dir_all` resolves the root once
+/// more, so substitution of the root component between the two remains
+/// possible; `std` has descended with `openat` since 1.58.1, so nothing
+/// below the root can redirect the walk. The exposure is narrowed to the
+/// root component, not closed.
+fn remove_storage(generation: &Generation) -> Result<()> {
+    let storage = checked_storage_of(generation)?;
+    match fs::symlink_metadata(storage) {
+        Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
-    };
-    if metadata.file_type().is_symlink()
-        || !metadata.is_dir()
-        || (metadata.dev(), metadata.ino()) != expected
+    }
+    if !is_recorded_dir(storage, generation.identities[0])
+        || !is_recorded_dir(&generation.repository, generation.identities[1])
+        || !is_recorded_dir(&generation.launch, generation.identities[3])
     {
         bail!(
             "review storage identity changed; retained: {}",
             storage.display()
         );
     }
+    // Strictly after every check, and the only remover on either path.
     fs::remove_dir_all(storage)?;
     Ok(())
 }
@@ -608,7 +666,7 @@ pub(crate) fn release(checkout: &Path) -> Result<()> {
             bail!("cannot release owned review checkout; generation retained");
         }
     }
-    remove_storage(storage_of(&generation)?, generation.identities[0])?;
+    remove_storage(&generation)?;
     fs::remove_file(manifest_path(checkout)?)?;
     if let Some((parent, expected)) = generation.allocation {
         if checkout.parent() != Some(parent.as_path()) || identity(&parent)? != expected {

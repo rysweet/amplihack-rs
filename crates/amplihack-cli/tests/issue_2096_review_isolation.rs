@@ -833,6 +833,59 @@ fn release_root_after_retirement_removes_everything() {
 }
 
 #[test]
+fn advance_destroys_nothing_when_the_recorded_launch_directory_is_replaced() {
+    // `retire` runs `git worktree remove --force` and only then calls
+    // `remove_storage`, which requires the recorded `launch` directory,
+    // `identities[3]`. Its precheck covers the same set, so a generation
+    // whose `launch` was replaced is never half dismantled: the checkout
+    // is not destroyed only for the storage removal to refuse afterwards,
+    // leaking storage and reporting a changed identity for a tree the
+    // precheck had just declared sound.
+    //
+    // On this path `read_live` refuses first, which is why the command
+    // fails rather than returning a successor. The precheck entry covers
+    // the window between that read and the worktree removal, which a test
+    // driving the CLI cannot open.
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = storage_of(&first);
+    assert!(storage.join("launch").is_dir());
+    // A different directory at the recorded path: present, so it is read,
+    // and carrying an inode the manifest never recorded. The recorded one
+    // is renamed rather than removed, so its inode is still in use and the
+    // replacement cannot be handed the same one.
+    fs::rename(storage.join("launch"), storage.join("launch-displaced")).unwrap();
+    fs::create_dir(storage.join("launch")).unwrap();
+    advance_pr(&f, &pr, "advance");
+    let made = next(&f, &pr, &first, &state);
+    assert!(
+        !made.status.success(),
+        "a generation missing a recorded resource is not advanced: {}",
+        text(&made)
+    );
+    assert!(
+        text(&made).contains("review generation resource identity changed"),
+        "{}",
+        text(&made)
+    );
+    assert!(
+        first.is_dir(),
+        "the superseded checkout survives a refused advance"
+    );
+    assert!(
+        storage.join("repository.git").is_dir(),
+        "storage is retained for recovery"
+    );
+    assert_ne!(
+        manifest(&first)["retired"],
+        true,
+        "nothing is recorded as retired"
+    );
+}
+
+#[test]
 fn release_frees_storage_left_by_failed_retirement() {
     let f = Fixture::new();
     let pr = pr_worktree(&f);
@@ -1003,5 +1056,215 @@ fn storage_not_named_as_a_review_generation_is_refused() {
     assert!(
         misnamed.join("repository.git").is_dir(),
         "misnamed storage is not removed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2677 A1: `remove_storage` authorised a recursive removal on one
+// recorded pair, the storage directory's own `(dev, ino)`. `retire` frees
+// that inode, so the kernel may hand it straight back to whatever directory
+// is created at the same path next, and the substituted directory then
+// presents the recorded credential. The manifest records the storage tree's
+// children as well (`identities[1]` for `repository.git`, `identities[3]`
+// for `launch`), and the removal must verify the recorded set.
+//
+// The tests below do not wait for the kernel to reuse an inode. They grant
+// the substitute the recorded top-level pair outright, which is the worst
+// case reuse can produce, and then require the removal to refuse it.
+// ---------------------------------------------------------------------------
+
+/// Rewrites `checkout`'s manifest so the directory now at `storage` holds the
+/// recorded top-level identity, as an inode the filesystem handed back after
+/// `retire` removed the original would. Only the recorded children tell the
+/// substitute from the storage it replaced.
+fn adopt_storage_identity(checkout: &Path, storage: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(storage).unwrap();
+    let mut record = manifest(checkout);
+    record["identities"][0] = serde_json::json!([metadata.dev(), metadata.ino()]);
+    let path = manifest_of(checkout);
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+}
+
+/// Retires `first` and returns its storage path, which retirement freed.
+fn retired_with_storage_gone(f: &Fixture, pr: &Path, first: &Path, state: &Path) -> PathBuf {
+    let storage = storage_of(first);
+    advance_pr(f, pr, "advance");
+    succeeds(&next(f, pr, first, state));
+    assert_eq!(manifest(first)["retired"], true);
+    assert!(!storage.exists(), "retirement freed the storage");
+    storage
+}
+
+#[test]
+fn retired_release_refuses_storage_whose_recorded_children_are_absent() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = retired_with_storage_gone(&f, &pr, &first, &state);
+    fs::create_dir(&storage).unwrap();
+    fs::write(storage.join("canary"), b"another owner\n").unwrap();
+    adopt_storage_identity(&first, &storage);
+    let out = internal(&f, &["review-release".as_ref(), os(&first)]);
+    assert!(
+        !out.status.success(),
+        "a directory holding none of the recorded storage tree is not the storage"
+    );
+    assert!(
+        text(&out).contains("review storage identity changed; retained"),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(
+        fs::read(storage.join("canary")).unwrap(),
+        b"another owner\n",
+        "the substituted directory is not removed"
+    );
+    assert!(
+        manifest_of(&first).exists(),
+        "the record is retained for recovery"
+    );
+}
+
+#[test]
+fn retired_release_refuses_storage_whose_recorded_children_were_replaced() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = retired_with_storage_gone(&f, &pr, &first, &state);
+    // A substitute built to the storage tree's shape: the recorded names are
+    // all there, but none of them is the recorded directory.
+    fs::create_dir(&storage).unwrap();
+    fs::create_dir(storage.join("repository.git")).unwrap();
+    fs::create_dir(storage.join("launch")).unwrap();
+    fs::write(storage.join("launch").join("canary"), b"another owner\n").unwrap();
+    adopt_storage_identity(&first, &storage);
+    let out = internal(&f, &["review-release".as_ref(), os(&first)]);
+    assert!(
+        !out.status.success(),
+        "children at the recorded names are not the recorded children"
+    );
+    assert!(
+        text(&out).contains("review storage identity changed; retained"),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(
+        fs::read(storage.join("launch").join("canary")).unwrap(),
+        b"another owner\n"
+    );
+}
+
+#[test]
+fn retired_release_refuses_storage_whose_recorded_child_is_a_symlink() {
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = retired_with_storage_gone(&f, &pr, &first, &state);
+    let victim = f.root.join("child-victim");
+    fs::create_dir(&victim).unwrap();
+    fs::write(victim.join("canary"), b"keep me\n").unwrap();
+    fs::create_dir(&storage).unwrap();
+    fs::create_dir(storage.join("repository.git")).unwrap();
+    std::os::unix::fs::symlink(&victim, storage.join("launch")).unwrap();
+    adopt_storage_identity(&first, &storage);
+    let out = internal(&f, &["review-release".as_ref(), os(&first)]);
+    assert!(
+        !out.status.success(),
+        "a symlink at a recorded child's name is not that child"
+    );
+    assert!(
+        text(&out).contains("review storage identity changed; retained"),
+        "{}",
+        text(&out)
+    );
+    assert_eq!(
+        fs::read(victim.join("canary")).unwrap(),
+        b"keep me\n",
+        "the link target is never touched"
+    );
+}
+
+#[test]
+fn retired_release_frees_storage_the_removal_never_reached() {
+    // The check must not refuse the case it exists for. A crash between the
+    // retirement record and the storage removal leaves the whole recorded
+    // tree in place; `release` still frees it.
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = storage_of(&first);
+    assert!(storage.join("repository.git").is_dir());
+    // The crash window inside `retire`: the worktree is gone and the record
+    // says retired, but `remove_storage` never ran, so the whole recorded
+    // storage tree is still there.
+    f.git_in(
+        &storage.join("repository.git"),
+        &["worktree", "remove", "--force", first.to_str().unwrap()],
+    );
+    let mut record = manifest(&first);
+    record["retired"] = serde_json::json!(true);
+    let path = manifest_of(&first);
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    let out = internal(&f, &["review-release".as_ref(), os(&first)]);
+    succeeds(&out);
+    assert!(
+        !storage.exists(),
+        "storage whose recorded tree is intact is freed"
+    );
+    assert!(!manifest_of(&first).exists(), "the record is freed with it");
+}
+
+#[test]
+fn retired_release_refuses_storage_whose_launch_child_is_gone() {
+    // The partial case, and the only one in which `launch` decides the
+    // answer on its own: the storage directory and `repository.git` both
+    // still carry the identities the manifest recorded for them, and
+    // `launch` is gone. A tree that is only partly the recorded one is not
+    // the recorded one, so the removal refuses and leaves the rest on disk.
+    // This is `retired_release_frees_storage_the_removal_never_reached` with
+    // `launch` removed and nothing else changed.
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let first = allocate(&f, &pr, &state);
+    let storage = storage_of(&first);
+    assert!(storage.join("repository.git").is_dir());
+    assert!(storage.join("launch").is_dir());
+    f.git_in(
+        &storage.join("repository.git"),
+        &["worktree", "remove", "--force", first.to_str().unwrap()],
+    );
+    let mut record = manifest(&first);
+    record["retired"] = serde_json::json!(true);
+    let path = manifest_of(&first);
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    // A removal that stopped halfway: `launch` is gone, the other two
+    // recorded pairs are untouched.
+    fs::remove_dir_all(storage.join("launch")).unwrap();
+    let out = internal(&f, &["review-release".as_ref(), os(&first)]);
+    assert!(
+        !out.status.success(),
+        "storage missing a recorded child is not the recorded storage"
+    );
+    assert!(
+        text(&out).contains("review storage identity changed; retained"),
+        "{}",
+        text(&out)
+    );
+    assert!(
+        storage.join("repository.git").is_dir(),
+        "nothing is deleted, so what is left can be looked at"
+    );
+    assert!(
+        manifest_of(&first).exists(),
+        "the record is retained for recovery"
     );
 }

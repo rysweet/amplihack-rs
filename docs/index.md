@@ -96,7 +96,7 @@ Centralized plugin system that works across all your projects:
 - [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
 - [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets, and what to do when install refuses a source
 - [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in separate `CLAUDE_CONFIG_DIR` profiles that share one session store ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
-- [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset and run once more ([reference](reference/profile-command.md#usage-limit-wait))
+- [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset, for another stored login to show capacity, or for the rotator to move a new login into `~/.claude`, and run once more ([reference](reference/profile-command.md#usage-limit-wait))
 
 ### Configuration
 
@@ -174,6 +174,8 @@ amplihack copilot
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
 - [Keep Tests from Prompting for Git Credentials](howto/keep-tests-from-prompting-for-git.md) - Why git under plain `timeout` stops on `SIGTTIN`, the settings that stop test and amplihack git from prompting, and how to run long commands safely
 - [Run recipe::run Tests Inside a Recipe Session](howto/run-recipe-tests-inside-a-recipe-session.md) - How `recipe::run` tests clear the outer run's `AMPLIHACK_*` variables with `clear_outer_run_env()` and `OUTER_RUN_IDENTITY_VARS`, so they pass inside a recipe run (#1984)
+- [Keep Recipe Shell Tests out of the Shared Work Root](howto/keep-recipe-shell-tests-out-of-the-shared-work-root.md) - How the recipe shell suites source `recipe-test-env.sh` to clear an inherited `AMPLIHACK_WORK_ROOT`, how a Rust test starts a suite through `isolated()`, and the behaviour test that checks the outside work root stays empty (#2712)
+- [Run Tests Against the Pinned Recipe Runner](howto/run-tests-against-the-pinned-recipe-runner.md) - How runner-backed tests build `recipe-runner-rs` at the pinned revision into a test-private cache, the `RECIPE_RUNNER_RS_PATH` and `RECIPE_RUNNER_QA_BINARY` overrides and their receipt check, and how to prove a test does not use the host runner (#2658)
 - [Keep Tests Passing Under Host Load](howto/keep-tests-passing-under-host-load.md) - Wait on events and conditions under two hang guards, inject a clock, write stubs without `ETXTBSY`, use the debug-only knobs including the probe wait, review event waits, and validate timing policy with an injected clock
 - [Wait Without Leaving Orphan Processes](howto/wait-without-orphan-processes.md) - Wait with `amplihack wait --seconds N` or `wait $pid`, use uutils `timeout` safely, and what the tail-follow guard in the `pre-tool-use` hook denies
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
@@ -316,6 +318,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recovery after a Recipe Usage Limit](concepts/recipe-usage-limit-recovery.md) - **Planned:** latest-attempt eligibility, nested replay, and compatibility
 - [Recipe Recovery Reference](reference/recipe-recovery.md) - **Planned:** persistence policies, resources, durable storage, and runner contracts
 - [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
+- [Why a Recipe Run Does Not Trace Git Commands](concepts/no-git-command-tracing.md) - Why the ptrace observer and the Git-command journal were removed, what the private clone does instead, and what a tamper-resistant record would require (#2738)
 - [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, and recovery decisions
 
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
@@ -404,9 +407,8 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [AppendHandler](reference/append-handler.md) - `AppendResult` class, timestamp filename format, atomic file writes
 - [Rust Runner Execution Reference](reference/rust-runner-execution.md) - Wrapper contract, stderr/stdout streams, JSONL events, environment variables, and security model
 - [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - CLI/runner responsibility split, stream ownership, progress events, and additive JSON preservation
-- [Recipe Run and Auto-Drive Checkout Isolation](reference/recipe-checkout-isolation.md) - What a run copies from your checkout, where steps and reviews run, Git recording, and owned release
+- [Recipe Run and Auto-Drive Checkout Isolation](reference/recipe-checkout-isolation.md) - What a run copies from your checkout, where steps and reviews run, and owned release
 - [Inspect a Local-Input Snapshot](tutorials/recipe-checkout-isolation.md) - Run a recipe against staged, unstaged and untracked changes and confirm your index is untouched
-- [Trace2 Recording Investigation](operations/issue-2096-recording-probe.md) - Retained diagnostic evidence and the limits of cooperative recording
 - [Recipe Runner Logging Reference](reference/recipe-runner-logging.md) - stderr progress, heartbeats, bounded snippets, JSONL events, and additive result fields
 - [Recipe Run Correlation Reference](reference/recipe-run-correlation.md) - Stable run IDs, `AMPLIHACK_RECIPE_RUN_ID`, pointer event schema, and final result fields
 - [Observe Recipe Progress Tutorial](tutorials/recipe-progress-transparency.md) - Watch live workflow progress, capture JSON, and debug failed steps

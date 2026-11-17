@@ -71,8 +71,10 @@ nav:
       - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
       - Give Test Logins a Fake Account Identity: howto/give-test-logins-a-fake-account-identity.md
       - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
+      - Run Tests Against the Pinned Recipe Runner: howto/run-tests-against-the-pinned-recipe-runner.md
       - Keep Tests from Prompting for Git Credentials: howto/keep-tests-from-prompting-for-git.md
       - Run recipe::run Tests Inside a Recipe Session: howto/run-recipe-tests-inside-a-recipe-session.md
+      - Keep Recipe Shell Tests out of the Shared Work Root: howto/keep-recipe-shell-tests-out-of-the-shared-work-root.md
       - Wait Without Leaving Orphan Processes: howto/wait-without-orphan-processes.md
       - Profile Command Reference: reference/profile-command.md
       - Capacity Governor: reference/capacity-governor.md

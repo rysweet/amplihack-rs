@@ -2,7 +2,7 @@
 title: Clean up after recipe runs
 description: Locate, retain, remove, or archive run-owned files and recovery state.
 doc_type: howto
-last_updated: 2026-11-12
+last_updated: 2026-11-15
 ---
 
 # Clean Up After Recipe Runs
@@ -117,8 +117,6 @@ The runner creates one folder per run:
 │       ├── run.json              # the run report (kept)
 │       ├── owned-paths           # worktrees and targets this run created
 │       ├── cleanup-record.json   # written only when cleanup removed something
-│       ├── git-commands.jsonl    # index-writing git commands the run made (kept)
-│       ├── git-trace2/           # raw git events; deleted once summarised
 │       ├── recovery/             # private completions and required artifact copies
 │       ├── procs/                # one record per running attempt, for recipe stop (Linux)
 │       └── runtime/              # removed when the run ends
@@ -392,14 +390,9 @@ earlier one failed, and the final error names every failure.
    not change the caller's worktree list. A substituted path is kept and the
    run fails. When a durable worktree depends on the private repository, the
    repository stays and is listed in `durable-dependencies`.
-2. Publishes the Git command record (`git_record.finish()`):
-   `git-commands.jsonl`, `diagnostics/git/commands.jsonl` and
-   `git-recording.json`, then removes `git-trace2/`. See
-   [Git command record](../reference/recipe-runner-logging.md#git-command-record).
-   A publication failure makes the run fail.
-3. Finishes the recovery admission with an outcome judged from the run and
-   the first two steps.
-4. Finishes the workspace (`finish_workspace`):
+2. Finishes the recovery admission with an outcome judged from the run and
+   the first step.
+3. Finishes the workspace (`finish_workspace`):
    1. Removes `<run dir>/runtime/`, including everything steps wrote to
       `TMPDIR` and `artifacts/`, unless a running process still uses it.
       Durable `recovery/` state and copied artifacts remain outside that
@@ -418,8 +411,8 @@ earlier one failed, and the final error names every failure.
       the same sweep, whether the run recorded it as `created` or `reused`; see
       [When a target is removed](#when-a-target-is-removed).
 
-`AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 4. Steps 1 to 3
-always run.
+`AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 3.3. Everything
+before it always runs.
 
 A run that fails before its first step, for example on an unborn `HEAD`,
 still finishes its recovery admission as `Failure`, so the next launch does
@@ -466,7 +459,7 @@ fails before any step starts, with an error that names the work root. Fix
 its permissions (`chmod g-w,o-w`) or point `AMPLIHACK_WORK_ROOT` at a private
 absolute directory. A real run never falls back to a temporary folder. A `--dry-run` uses
 `RunWorkspace::dry_runtime`: a temporary `amplihack-dry-*` folder that is
-removed on exit, with no run folder, checkout or recording.
+removed on exit, with no run folder and no checkout.
 
 ### A runtime folder still in use is kept
 
@@ -475,7 +468,7 @@ language server or a background job a test left behind. If the runner removed
 `runtime/` under such a process, the process, and any agent that inherited its
 `TMPDIR`, would be left pointing at a folder that no longer exists.
 
-So before step 4.1 removes `runtime/`, the runner checks the process table once.
+So before step 3.1 removes `runtime/`, the runner checks the process table once.
 The folder is in use if any running process other than the runner itself:
 
 - has its working folder inside it;
@@ -616,7 +609,7 @@ run fails with:
 runtime resource identity changed; replacement retained at /home/ryan/.amplihack/work/r/3f0c9a526d1e
 ```
 
-See step 4.1 in [What happens when a run ends](#what-happens-when-a-run-ends).
+See step 3.1 in [What happens when a run ends](#what-happens-when-a-run-ends).
 
 The open folder does not count as "in use" when the run ends, because the runner
 skips its own process. Step processes do not inherit it, because it is opened
@@ -1439,8 +1432,73 @@ removed. `git worktree remove` run by hand does not remove the target; call
 the default path is over 80 bytes; a very long `AMPLIHACK_WORK_ROOT` can still
 exceed the socket limit, so choose a shorter one.
 
+**An auto-drive printed `review storage identity changed; retained`.** The
+review generation's storage directory is not the one the drive recorded, so
+nothing under it was deleted and the path is left for a person to look at.
+The check compares three recorded pairs of device and inode number: the
+storage directory itself, the `repository.git` inside it, and the `launch`
+directory inside it. A mismatch in any of the three stops the removal,
+including a recorded child that has been removed, replaced, or turned into a
+symbolic link.
+
+Two causes account for most of these. A retirement that stopped partway
+removed one child and then failed, so the rest is kept rather than finished.
+Or the directory at the path is not the drive's at all. Look before removing
+anything:
+
+```bash
+# the path from the message, under the drive's state directory
+DIR="$HOME/.amplihack/state/auto-drive/pr-2340/review-Qx81Lm/review-generation-5e6f7a8b"
+ls -la "$DIR"
+stat -c '%d %i %N' "$DIR" "$DIR/repository.git" "$DIR/launch" 2>&1
+```
+
+`stat` does not follow symbolic links here, so a link shows as a link rather
+than as its target. The manifest beside the generation's checkout,
+`<checkout>.review-owner.json`, holds the four pairs recorded when the
+generation was made, in the order storage, `repository.git`, checkout,
+`launch`. Compare its first, second and fourth pairs with the output above to
+see which one moved.
+
+When the directory holds only what the drive made, remove it yourself.
+`amplihack cleanup` does not remove it, because it cannot tell a retained
+directory from a replacement:
+
+```bash
+rm -rf "$DIR"
+```
+
+See [Superseded generations are
+retired](../reference/recipe-checkout-isolation.md#superseded-generations-are-retired)
+for what each pair is checked against and why one pair is not enough.
+
+**An auto-drive printed `review generation resource identity changed;
+retained for recovery`.** This is the other identity message, and it reports
+a different thing. It comes from the check made whenever a live
+generation is read, before any removal is attempted, so nothing was deleted
+and the record is still live. Four pairs are compared here rather than three,
+the checkout being the fourth, and any command that uses the generation can
+report it, `review-next` included: that one stops before it provisions a
+successor, so no retirement begins.
+
+Read the two apart this way. `review storage identity changed; retained`
+means a removal was attempted and refused, and a directory is left behind
+that `amplihack cleanup` will not take. `review generation resource identity
+changed; retained for recovery` means no removal was attempted at all: the
+generation is intact on disk, and every command that reads it refuses until
+the path that moved is accounted for.
+A recorded path that is absent, is a symbolic link or is no longer a
+directory gives a third message, `review resource is not an owned directory`
+and the path, and is investigated the same way.
+
+Inspect it with the `stat` command above, adding the checkout, and compare
+all four pairs in `<checkout>.review-owner.json` in their recorded order:
+storage, `repository.git`, checkout, `launch`. Remove nothing on this
+message; the generation may still be in use.
+
 ## Related documentation
 
 - [Hygiene Cleanup](../operations/hygiene-cleanup.md) - Opt-in cleanup of stale worktrees, detached Cargo targets and session artifacts outside recipe runs
 - [Configure Workflow Runtime Isolation](configure-workflow-runtime-isolation.md) - Where workflow runtime output is written
 - [Correlate Recipe Runs with Logs](correlate-recipe-runs.md) - Match a run id to its logs and processes
+- [Recipe Run and Auto-Drive Checkout Isolation](../reference/recipe-checkout-isolation.md) - What a run and a review generation own, and the identity checks that decide what is removed

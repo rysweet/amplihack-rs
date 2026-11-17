@@ -91,11 +91,6 @@ fn main() {
         fs::write(marker, b"untrusted preparation executed\n").unwrap();
         std::process::exit(17);
     }
-    if env::var_os("ISSUE_2096_DRIVER_ROLE").as_deref() == Some(std::ffi::OsStr::new("hook")) {
-        fs::write("hook-output", b"hook descendant\n").unwrap();
-        git(&["add", "--", "hook-output"], true);
-        return;
-    }
     run();
 }
 
@@ -234,61 +229,12 @@ fn run() {
             assert_eq!(git(&["rev-parse", "HEAD"], false).stdout, before);
             fs::write(out.join("outer-still-active"), b"yes").unwrap();
         }
-        "untraced-add" => {
-            fs::write("untraced-output", b"absolute reduced-env git\n").unwrap();
-            git(&["add", "--", "untraced-output"], true);
-            fs::write(out.join("git-succeeded"), b"yes").unwrap();
-        }
-        "hook-commit" => {
-            let hooks = out.join("hooks");
-            fs::create_dir(&hooks).unwrap();
-            fs::copy(env::current_exe().unwrap(), hooks.join("pre-commit")).unwrap();
-            let hooks_arg = format!("core.hooksPath={}", hooks.display());
-            let result = Command::new(env::var_os("ISSUE_2096_GIT").unwrap())
-                .env("ISSUE_2096_DRIVER_ROLE", "hook")
-                .args([
-                    "-c",
-                    &hooks_arg,
-                    "-c",
-                    "user.name=Fixture",
-                    "-c",
-                    "user.email=fixture@example.invalid",
-                    "commit",
-                    "--allow-empty",
-                    "-qm",
-                    "hook coverage",
-                ])
-                .output()
-                .unwrap();
-            assert!(result.status.success(), "hook commit: {result:?}");
-            fs::write(
-                out.join("hook-committed"),
-                git(&["show", "HEAD:hook-output"], false).stdout,
-            )
-            .unwrap();
-        }
-        "publication-failure" => {
-            git(&["add", "--", "tracked"], false);
-            let run_dir = PathBuf::from(env::var_os("AMPLIHACK_RUN_DIR").unwrap());
-            fs::create_dir(run_dir.join("git-commands.jsonl")).unwrap();
-            fs::write(out.join("publication-blocked"), b"yes").unwrap();
-        }
         "runtime-replacement" => {
             let runtime=PathBuf::from(env::var_os("AMPLIHACK_WORKFLOW_RUNTIME_DIR").unwrap());
             fs::rename(&runtime,out.join("retained-runtime")).unwrap();
             fs::create_dir(&runtime).unwrap();
             fs::write(runtime.join("unowned-sentinel"),b"keep\n").unwrap();
             fs::write(out.join("replacement-runtime"),runtime.as_os_str().as_encoded_bytes()).unwrap();
-        }
-        "collection-loss" => {
-            git(&["add", "--", "tracked"], false);
-            let run_dir = PathBuf::from(env::var_os("AMPLIHACK_RUN_DIR").unwrap());
-            let trace = run_dir.join("git-trace2");
-            // Fault-inject the currently implemented collector. This is not
-            // a claim that Trace2 is the required observer backend.
-            fs::rename(&trace, out.join("retained-trace")).unwrap();
-            fs::write(&trace, b"collector destination lost").unwrap();
-            fs::write(out.join("collection-lost"), b"yes").unwrap();
         }
         other => panic!("unknown fixture mode {other}"),
     }

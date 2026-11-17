@@ -2,7 +2,7 @@
 title: Inspect a Local-Input Snapshot
 description: Run a recipe against staged, unstaged and untracked changes and confirm the caller's checkout is untouched.
 doc_type: tutorial
-last_updated: 2026-11-12
+last_updated: 2026-11-16
 ---
 
 # Inspect a local-input snapshot
@@ -93,6 +93,7 @@ steps:
       cat notes.txt
       cat local-notes.txt
       git add -- local-notes.txt
+      git rev-parse --show-toplevel
 YAML
 "$AMPLIHACK_BIN" recipe validate "$DEMO/inspect-inputs.yaml"
 ```
@@ -105,8 +106,8 @@ YAML
 ls "$DEMO/work/runs" 2>/dev/null | wc -l
 ```
 
-The last line prints `0`. A dry run prepares no checkout, records nothing and
-creates no run folder.
+The last line prints `0`. A dry run prepares no checkout and creates no run
+folder.
 
 ## Run it
 
@@ -123,11 +124,14 @@ true
 staged version
 working version
 local recipe input
+/tmp/tmp.XXXXXXXX/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/execution-Xq3TzA/checkout
 ```
 
 The first two lines differ: the step read the staged version from the index
 and the working version from the file. The third line shows the untracked
-file was copied. Progress messages go to stderr.
+file was copied. The fourth is the repository the step actually worked in,
+which is not `$DEMO/caller`. Your identifiers will differ. Progress messages
+go to stderr.
 
 ## Check your checkout
 
@@ -149,19 +153,45 @@ MM notes.txt
 The step's `git add` changed only the execution checkout's index. In real
 workflows, commits you want to keep go to a durable task or PR worktree.
 
-## Read the Git command record
+## Confirm the step worked in a private clone
+
+The step's own `git rev-parse --show-toplevel` named the repository it was
+given. Compare it with the caller's:
+
+`git rev-parse --show-toplevel` resolves symbolic links, so compare against a
+resolved copy of your own paths rather than the literal `$DEMO`:
 
 ```bash
-find "$DEMO/work/runs" -name git-commands.jsonl -type f \
-  -exec jq -c '{argv, cwd, index_file}' {} +
+step_root=$(jq -r '.step_results[].output' "$DEMO/result.json" | tail -n 1)
+caller_root=$(cd "$DEMO/caller" && pwd -P)
+runs_root=$(cd "$DEMO/work/runs" && pwd -P)
+test "$step_root" != "$caller_root" && echo 'step ran in a private clone'
+case "$step_root" in "$runs_root/"*) echo 'under the run folder';; esac
 ```
 
-One line shows `["git","add","--","local-notes.txt"]` with a `cwd` under
-`$DEMO/work/runs/<id>/execution-<id>/checkout`, never `$DEMO/caller`. The
-execution checkout itself is gone; only the record stays:
+Output:
+
+```text
+step ran in a private clone
+under the run folder
+```
+
+That clone is removed when the run ends, so nothing of it is left:
 
 ```bash
 find "$DEMO/work/runs" -maxdepth 2 -name 'execution-*' | wc -l
+```
+
+prints `0`.
+
+The run keeps no account of the Git commands it made. There is no
+`git-commands.jsonl`, no `git-trace2/` directory and no `git-recording.json`
+in the run folder, and nothing traced the step while it ran:
+
+```bash
+find "$DEMO/work/runs" \
+  \( -name git-commands.jsonl -o -name git-recording.json -o -name git-trace2 \) \
+  | wc -l
 ```
 
 prints `0`.
@@ -180,6 +210,7 @@ exit
 
 - What is copied and what is refused:
   [checkout isolation reference](../reference/recipe-checkout-isolation.md#what-the-run-copies)
-- Record fields: [Git command record](../reference/recipe-runner-logging.md#git-command-record)
+- What a run does and does not log:
+  [recipe runner logging](../reference/recipe-runner-logging.md#git-commands-a-run-makes)
 - How auto-drive reviews in its own checkout:
   [private review generations](../reference/recipe-checkout-isolation.md#private-review-generations)

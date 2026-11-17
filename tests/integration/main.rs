@@ -26,6 +26,13 @@ mod investigation_workflow_decomposition;
 mod isolated_amplihack;
 #[path = "isolated_amplihack_scan.rs"]
 mod isolated_amplihack_scan;
+// Issue #2658: the real-runner tests build or reuse recipe-runner-rs at the
+// pinned revision instead of using whatever the host has installed.
+#[path = "../support/pinned_runner.rs"]
+mod pinned_runner;
+// The helper's unit tests run in this binary only.
+#[path = "../support/pinned_runner_tests.rs"]
+mod pinned_runner_tests;
 
 // Issue #1973: condition waits with one ceiling, shared with cli_integration.
 #[path = "../../crates/amplihack-cli/tests/support/wait.rs"]
@@ -534,6 +541,15 @@ mod issue_1764_git_never_prompts;
 // `cargo test --workspace` covers the shell change as well as CI's lint job.
 #[path = "issue_1771_precommit_symlinked_caches_test.rs"]
 mod issue_1771_precommit_symlinked_caches;
+
+// Issue #2712: a recipe shell suite started inside a recipe run inherited
+// AMPLIHACK_WORK_ROOT and AMPLIHACK_WORK_ROOT_EXPLICIT=1 and put its
+// worktrees in the shared work root, outside its own EXIT trap. Runs
+// test-default-workflow-reliability.sh with an explicit work root supplied
+// from outside and requires that directory to stay empty, plus two unit tests
+// of the shared setup fragment the suites source.
+#[path = "issue_2712_recipe_test_work_root.rs"]
+mod issue_2712_recipe_test_work_root;
 
 // Issue #1966: is_critical_code is a required caller input. consensus-workflow
 // step 0 and consensus-tdd-impl reject a missing or malformed value before any
