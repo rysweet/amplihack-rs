@@ -845,11 +845,15 @@ exit status (see
 Step recovery's exit `81` is unchanged, and not for the reason the path
 suggests. `failed_run_exit_code` returns `81` only when a step both did not
 complete and carries `81` as its own
-termination code; otherwise a failed run exits `1`. Recording a hand-off does
-not by itself fail the step that recorded it, so the outcome rule never
-produced `81` on this path: it turned a finalisation that had completed its
-steps into a plain exit `1`. Narrowing the rule therefore cannot suppress a
-hand-off exit, because `81` was never the code it produced. What does change
+termination code; otherwise a failed run exits `1`. No step that invokes
+`step-recovery run` or `step-recovery report` in any `autodrive-*` recipe
+carries `continue_on_error`, so none can both exit `81` and leave its run
+successful, and the outcome rule therefore never produced `81` on this path:
+it turned a finalisation that had completed its steps into a plain exit `1`.
+The loop's hand-off stop does not read the round's exit status in any case,
+since `recovery_stop` in `tools/autodrive_escalate.sh` escalates on
+`step-recovery report`'s own exit `81` and never consults `ROUND_RC`.
+Narrowing the rule cannot suppress a hand-off exit. What does change
 is that such a finalisation now exits `0` rather than `1`, which is the
 1.2.162 behaviour and is what the state folder, not the exit status, is read
 for.
