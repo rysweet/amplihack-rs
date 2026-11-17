@@ -2568,10 +2568,22 @@ fn stage_step_tier_overrides(
     for notice in file_notices {
         eprintln!("{}", notice.render());
     }
-    let run_dir = run_dir?;
     if overrides.is_empty() {
         return None;
     }
+    // Not `run_dir?` above the emptiness check: an operator who configured
+    // `[step_tiers]` and got nothing must be told why. Without this line a
+    // run with no durable directory — a dry run — discards the whole table
+    // with no `BadStepId`, no `StepTierUnmatched` and no line at all, which
+    // is the silence `step_tiers` says a mistyped step id must never have.
+    let Some(run_dir) = run_dir else {
+        eprintln!(
+            "amplihack: model tiers: per-step tier overrides are configured, but this \
+             run has no durable directory to stage them in; the recipes run with the \
+             tiers they declare."
+        );
+        return None;
+    };
     match super::step_tiers::stage(run_dir, search_dirs, recipe, overrides) {
         Ok(outcome) => {
             for notice in &outcome.notices {

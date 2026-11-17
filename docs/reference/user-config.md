@@ -170,8 +170,8 @@ command, so it never prints `flag`.
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 | `model.force` | model id | (unset) | `AMPLIHACK_FORCE_MODEL` | — | user only |
 | `model.tier_map` | absolute path | (unset: `$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`) | — | — | user only |
-| `review.combined_small_diff` | bool | `false` | — | — | user, project |
-| `review.combined_diff_threshold` | integer lines, 1 to 100000 | `200` | — | — | user, project |
+| `review.combined_small_diff` | bool | `false` | — | — | user only |
+| `review.combined_diff_threshold` | integer lines, 1 to 100000 | `200` | — | — | user only |
 | `governor.enabled` | bool | `false` | — | — | user only |
 | `governor.max_concurrency` | integer, 1 to 64 | `4` | — | — | user only |
 | `governor.reserve_points` | integer, 0 to 100 | `10` | — | — | user only |
@@ -477,7 +477,10 @@ amplihack config set review.combined_diff_threshold 120
 ```
 
 Above the threshold the three passes run separately whatever the first key
-says. This applies to the refactor-review phase of a build, not to PR review.
+says. Both keys are user-only: the review step reads them from inside the
+worktree under review, so a project value would let a cloned repository decide
+that its own security and philosophy passes do not run. This applies to the
+refactor-review phase of a build, not to PR review.
 See [Combined review for small
 diffs](./model-tiers.md#combined-review-for-small-diffs).
 

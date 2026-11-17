@@ -301,7 +301,12 @@ pub(crate) static KEYS: &[KeyDef] = &[
         // Issue #1619: a small change may have its code, security and
         // philosophy passes as one review. Off by default, so the three
         // separate passes run exactly as they did before.
-        scope: Scope::UserAndProject,
+        //
+        // User-only for the reason `model.force` above is: the review step
+        // reads this from inside the worktree under review, so a project
+        // value would let a cloned repository replace its own dedicated
+        // security and philosophy passes with one generalist pass.
+        scope: Scope::UserOnly,
         kind: ValueKind::Bool,
         env: None,
         default: Some("false"),
@@ -312,7 +317,11 @@ pub(crate) static KEYS: &[KeyDef] = &[
         // Changed lines at or below which a diff counts as small. A
         // threshold of zero would mean no diff is ever small, which is what
         // turning the switch off already does.
-        scope: Scope::UserAndProject,
+        //
+        // User-only with the switch it bounds: a project-settable threshold
+        // of 100000 makes every diff small and is the same control by
+        // another name.
+        scope: Scope::UserOnly,
         kind: ValueKind::Int {
             min: 1,
             max: 100_000,

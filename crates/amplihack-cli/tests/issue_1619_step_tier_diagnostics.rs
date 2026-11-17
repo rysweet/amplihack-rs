@@ -44,6 +44,11 @@ steps:
 /// Run `amplihack recipe run` with `tier_file` as the instance's
 /// `model-tiers.toml`, and return everything it printed.
 fn run_with(tier_file: &str) -> String {
+    run_with_args(tier_file, &[])
+}
+
+/// As `run_with`, with `extra` appended to the `recipe run` arguments.
+fn run_with_args(tier_file: &str, extra: &[&str]) -> String {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     let (home, tools) = (root.join("home"), root.join("tools"));
@@ -69,6 +74,7 @@ fn run_with(tier_file: &str) -> String {
         .arg(&recipe)
         .arg("-w")
         .arg(root)
+        .args(extra)
         .current_dir(root)
         .env(
             "PATH",
@@ -153,5 +159,22 @@ fn a_run_with_no_step_tier_override_says_nothing_at_all() {
     assert!(
         !text.contains("model tiers:"),
         "with nothing to report the run behaves as it did before this feature:\n{text}"
+    );
+}
+
+#[test]
+fn a_run_with_no_durable_directory_says_the_override_was_not_staged() {
+    // A dry run owns scratch space only, so there is nowhere to stage the
+    // patched recipe copies. Dropping the table there in silence is the one
+    // failure this feature must not have: a dry run is where an operator
+    // checks their `[step_tiers]`, and a mistyped step id has no other
+    // symptom than the line it would otherwise print.
+    let text = run_with_args(
+        "version = 1\n\n[step_tiers]\nstep-08-implement = \"fast\"\n",
+        &["--dry-run"],
+    );
+    assert!(
+        text.contains("no durable directory"),
+        "a configured override that could not be staged is reported, not dropped:\n{text}"
     );
 }

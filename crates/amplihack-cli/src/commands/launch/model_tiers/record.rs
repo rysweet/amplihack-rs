@@ -112,8 +112,12 @@ pub(crate) fn append(run_dir: Option<&Path>, record: &Record) {
     let _ = FileExt::unlock(&file);
 }
 
-/// How many records the open file already holds. A line amplihack cannot
-/// read still counts: the sequence numbers launches, not valid records.
+/// How many records the open file already holds, counting a line that is not
+/// a valid record: the sequence numbers launches, not valid records.
+///
+/// Zero when the file is not valid UTF-8, and short of the truth past the
+/// `MAX_RECORD_BYTES` cut, so `seq` can repeat. The record is a report, not a
+/// control, and neither case is worth a second pass over the file to fix.
 fn count_lines(file: &mut fs::File) -> u64 {
     let mut text = String::new();
     if file

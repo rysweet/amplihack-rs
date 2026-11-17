@@ -179,6 +179,40 @@ fn fewer_launches_than_agent_steps_also_prints_by_sequence() {
 }
 
 #[test]
+fn a_run_of_more_than_fifty_launches_is_truncated_with_a_count() {
+    // A summary is read, not parsed: a thousand launches would otherwise
+    // bury the step results above this section. The remainder is counted
+    // rather than dropped, and the file that holds all of it is named.
+    let records: Vec<Record> = (1..=51)
+        .map(|seq| record(seq, Tier::Fast, Some("claude-haiku-5-5")))
+        .collect();
+    let steps: Vec<RecipeRunStepResult> = (1..=51).map(|n| step(&format!("step-{n:02}"))).collect();
+    let lines = model_tier_lines(&records, &steps);
+    assert_eq!(
+        lines.len(),
+        52,
+        "the heading, fifty named launches and one line for the rest: {lines:#?}"
+    );
+    let text = joined(&lines);
+    assert!(
+        text.contains("… and 1 more launches"),
+        "the launches not named are counted, not dropped: {text}"
+    );
+    assert!(
+        text.contains("model-tiers.jsonl"),
+        "the reader is told where the whole record is: {text}"
+    );
+    assert!(
+        text.contains("step-01") && text.contains("step-50"),
+        "the first fifty are still named one by one: {text}"
+    );
+    assert!(
+        !text.contains("step-51"),
+        "the fifty-first is past the cut: {text}"
+    );
+}
+
+#[test]
 fn a_skipped_step_does_not_break_a_matched_run() {
     // A skipped step launches nothing, so it is not an agent launch and must
     // not be counted as one.

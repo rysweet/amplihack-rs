@@ -350,7 +350,10 @@ separately, exactly as they did before this feature. Turned on, a phase whose
 changed-line count is at or below the threshold runs one combined review step
 on the `standard` tier instead of `step-10-pre-commit-review`,
 `step-10b-security-review` and `step-10c-philosophy-check`; a larger diff still
-runs all three. This applies to `workflow-refactor-review.yaml` only;
+runs all three. Both keys are user-only, for the reason `model.force` is: the
+step reads them from inside the worktree under review, and a repository must
+not choose whether its own security pass runs. This applies to
+`workflow-refactor-review.yaml` only;
 `workflow-pr-review.yaml` is left alone, because its passes are PR-level review
 rather than the review phase of a build.
 

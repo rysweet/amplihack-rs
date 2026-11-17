@@ -127,7 +127,10 @@ steps:
     condition: "merge_loop_preflight.should_run == 'true'"
     type: "agent"
     agent: "amplihack:core:builder"
-    model: "fast"
+    # Reconciles findings against a read-back issue and emits blockers, which
+    # is judgement rather than the read-back and summary work `fast` covers.
+    # A too-weak model here degrades an auto-drive quietly.
+    model: "standard"
     parse_json: true
     prompt: |
       Reconcile every minor crusty finding, including re-reviews, against a read-back follow-up issue and plan task {{plan_task_id}}. Use stable identifiers and preserve mappings in state {{merge_loop_preflight.state_dir}}. Suggested tools: trusted autodrive_followups.sh collect/file/check. They are optional: recover through another authenticated interface, recording equivalent complete evidence. Dry-run {{autodrive_dry_run}} suppresses all issue creation and leaves followup-missing blockers. Return JSON with mappings, blockers, attempts.

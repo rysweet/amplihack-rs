@@ -46,8 +46,10 @@ impl Tier {
     /// `None` when `raw` is anything else — including a concrete model id,
     /// which is forwarded as typed (issue #1527).
     pub(crate) fn parse(raw: &str) -> Option<Tier> {
-        let word = raw.trim().to_ascii_lowercase();
-        Tier::ALL.into_iter().find(|tier| tier.as_str() == word)
+        let word = raw.trim();
+        Tier::ALL
+            .into_iter()
+            .find(|tier| tier.as_str().eq_ignore_ascii_case(word))
     }
 
     pub(crate) fn as_str(self) -> &'static str {
@@ -84,10 +86,10 @@ impl Effort {
     ];
 
     pub(crate) fn parse(raw: &str) -> Option<Effort> {
-        let word = raw.trim().to_ascii_lowercase();
+        let word = raw.trim();
         Effort::ALL
             .into_iter()
-            .find(|effort| effort.as_str() == word)
+            .find(|effort| effort.as_str().eq_ignore_ascii_case(word))
     }
 
     pub(crate) fn as_str(self) -> &'static str {

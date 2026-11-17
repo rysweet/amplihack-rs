@@ -63,7 +63,7 @@ fn no_project_scoped_key_names_a_path() {
 }
 
 #[test]
-fn user_only_keys_are_agent_home_node_log_dir_model_governor_and_sessions() {
+fn user_only_keys_are_agent_home_node_log_dir_model_review_governor_and_sessions() {
     let user_only: Vec<&str> = KEYS
         .iter()
         .filter(|k| k.scope == Scope::UserOnly)
@@ -84,6 +84,12 @@ fn user_only_keys_are_agent_home_node_log_dir_model_governor_and_sessions() {
             // (the reason the review of #1647 gave for `agent.binary`).
             "model.force",
             "model.tier_map",
+            // Issue #1619: the review step reads these two from inside the
+            // worktree under review, so a project value would let a cloned
+            // repository decide that its own security and philosophy passes
+            // do not run. Same reason as the three `model.*` keys above.
+            "review.combined_small_diff",
+            "review.combined_diff_threshold",
             "governor.enabled",
             "governor.max_concurrency",
             "governor.reserve_points",
@@ -274,7 +280,13 @@ fn the_model_tier_keys_exist_with_the_documented_scope_and_variable() {
 #[test]
 fn the_combined_review_keys_default_to_todays_behaviour() {
     let switch = key_def("review.combined_small_diff").expect("a schema key");
-    assert_eq!(switch.scope, Scope::UserAndProject);
+    assert_eq!(
+        switch.scope,
+        Scope::UserOnly,
+        "the review step reads this from inside the worktree under review, so a project \
+         value would let a cloned repository collapse its own security and philosophy \
+         passes into one generalist pass"
+    );
     assert_eq!(switch.kind, ValueKind::Bool);
     assert_eq!(
         switch.default_value(),
@@ -284,7 +296,12 @@ fn the_combined_review_keys_default_to_todays_behaviour() {
     );
 
     let threshold = key_def("review.combined_diff_threshold").expect("a schema key");
-    assert_eq!(threshold.scope, Scope::UserAndProject);
+    assert_eq!(
+        threshold.scope,
+        Scope::UserOnly,
+        "a project-settable threshold of 100000 makes every diff small, which is the \
+         switch above under another name"
+    );
     assert_eq!(
         threshold.default_value(),
         Some(Value::Int(200)),
