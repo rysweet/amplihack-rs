@@ -856,9 +856,9 @@ The loop's hand-off stop does not read the round's exit status in any case,
 since `recovery_stop` in `tools/autodrive_escalate.sh` escalates on
 `step-recovery report`'s own exit `81` and never consults `ROUND_RC`.
 Narrowing the rule cannot suppress a hand-off exit. What does change
-is that such a finalisation now exits `0` rather than `1`, which is the
-1.2.162 behaviour and is what the state folder, not the exit status, is read
-for.
+is that such a finalisation now exits `0`, as it did in every release up to
+1.2.164, instead of the `1` the #2663 rule gave it, and the state folder, not
+the exit status, is what the result is read from.
 
 The rule's other half goes with it, which is a behaviour change in its own
 right. A finalisation child that merged and then failed at `state-outcome` or

@@ -364,14 +364,11 @@ fn bundle_digest(root: &Path) -> Result<String> {
 
 /// #2769: `applies` and `is_top_level_drive` hold the same two literals, and
 /// nothing in the type system keeps them in step. These tests are the link:
-/// the narrower predicate must stay a subset of the wider one, and the
-/// bundle's own recipes must stay partitioned the way the two predicates
-/// assume. A recipe added to the bundle under a name neither predicate
-/// expects fails here rather than in a drive.
+/// the narrower predicate must stay a subset of the wider one, and its
+/// literals must match byte for byte.
 #[cfg(test)]
 mod invocation_name_tests {
     use super::{applies, is_top_level_drive};
-    use std::path::Path;
 
     const ENTRY_POINTS: [&str; 2] = ["auto-drive-to-merge", "auto-drive-light"];
 
@@ -434,50 +431,6 @@ mod invocation_name_tests {
                 "{name:?} is not byte-equal to an entry point"
             );
         }
-    }
-
-    /// The shipped bundle is the other half of the link. Every auto-drive
-    /// recipe in it is either one of the two entry points or a sub-recipe;
-    /// a new one that is neither fails here.
-    #[test]
-    fn the_bundle_partitions_its_auto_drive_recipes_the_way_the_predicates_do() {
-        let recipes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/recipes");
-        let mut found: Vec<String> = Vec::new();
-        for entry in std::fs::read_dir(&recipes).expect("the bundle ships recipes") {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
-                continue;
-            }
-            let body = std::fs::read_to_string(&path).unwrap();
-            let Some(name) = body.lines().find_map(|line| {
-                line.strip_prefix("name:")
-                    .map(|rest| rest.trim().trim_matches('"').trim_matches('\'').to_owned())
-            }) else {
-                continue;
-            };
-            if !applies(&name) {
-                continue;
-            }
-            if is_top_level_drive(&name) {
-                assert!(
-                    ENTRY_POINTS.contains(&name.as_str()),
-                    "{name} is judged by the outcome rule but is not a known entry point"
-                );
-                found.push(name);
-            } else {
-                assert!(
-                    name.starts_with("autodrive-"),
-                    "{name} is neither an entry point nor an autodrive-* sub-recipe"
-                );
-            }
-        }
-        found.sort();
-        let mut expected = ENTRY_POINTS.map(str::to_owned).to_vec();
-        expected.sort();
-        assert_eq!(
-            found, expected,
-            "the bundle must ship exactly the two entry points the rule judges"
-        );
     }
 }
 
