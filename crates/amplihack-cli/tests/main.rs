@@ -509,3 +509,8 @@ mod issue_2738_support;
 // configuration again, while #2096's repository-routing protection stays.
 #[path = "issue_2756_user_git_config.rs"]
 mod issue_2756_user_git_config;
+
+// Issue #2769: the #2663 outcome rule is the top-level drive's, not every
+// `autodrive-*` sub-recipe's.
+#[path = "issue_2769_autodrive_outcome_scope.rs"]
+mod issue_2769_autodrive_outcome_scope;
