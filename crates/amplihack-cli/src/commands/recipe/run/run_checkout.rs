@@ -389,14 +389,7 @@ impl RunCheckout {
     /// Ordering invariant: `scrub` enumerates `GIT_CONFIG_KEY_n` from the parent
     /// environment through `std::env::vars_os()`, so it cannot see variables an
     /// earlier builder stage set on this `Command`. Apply this last, and do not
-    /// set git environment on the command afterwards. `execute.rs`'s
-    /// `build_command` calls this twice on the one runner command: once just
-    /// after construction, and once immediately before returning it. The second
-    /// call is the one that holds the invariant, since `EnvBuilder` and the
-    /// context export run between them. The first is a cheap defence against a
-    /// later edit that moves work past the last call; it costs one more
-    /// environment scan per run, against a run that spawns processes and clones
-    /// a repository.
+    /// set git environment on the command afterwards.
     pub(crate) fn apply_to(&self, command: &mut Command) {
         amplihack_git::scrub(command);
         for var in CALLER_TRACE_VARS {
