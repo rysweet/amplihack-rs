@@ -108,8 +108,9 @@ fn the_deny_flags_are_injected_alongside_allow_all_by_default() {
 /// pair, so `--model --deny-tool "shell(pkill:*)"` -- where Copilot takes
 /// `--deny-tool` as the value of `--model` and never sees a deny rule at all
 /// -- stopped amplihack injecting its own. The cases below are the two
-/// spellings that used to suppress it and the pair that abused them; all four
-/// must now carry the policy flag regardless.
+/// spellings that used to suppress it, the bare stem that never did, and the
+/// adjacent pair that abused the scan. All four must now carry the policy
+/// flag, so neither the old behaviour nor its hole can return unnoticed.
 #[test]
 fn no_caller_argument_suppresses_a_policy_deny_flag() {
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
