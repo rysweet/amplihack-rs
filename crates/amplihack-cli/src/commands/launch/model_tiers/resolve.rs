@@ -2,9 +2,8 @@
 //!
 //! Everything the feature decides about one launch is decided here, from
 //! values the caller gathered. Purity is a security property as much as a
-//! testing one: every rejection path is reachable from a table-driven unit
-//! test rather than from a process spawn, so the rejection paths are
-//! actually exercised.
+//! testing one: every rejection path is reachable from a unit test rather
+//! than from a process spawn.
 //!
 //! The guarantees, pinned by `tests_resolve.rs`:
 //!
@@ -18,10 +17,10 @@
 //!   exception being `model.force`, which is announced;
 //! - **G5** this module reads no environment, no file and no clock.
 //!
-//! Falling back removes the tier pair and substitutes nothing of its own.
-//! The existing, audited chain in `model_args` then decides, which is also
-//! what lets a gateway launch get `--model $AMPLIHACK_LITELLM_MODEL` written
-//! in the tier's place. No path here invents a model name (issue #1421).
+//! Falling back removes the tier pair and substitutes nothing of its own. The
+//! existing chain in `model_args` then decides, which is what lets a gateway
+//! launch get `--model $AMPLIHACK_LITELLM_MODEL` in the tier's place. No path
+//! here invents a model name (issue #1421).
 
 use super::argv_scan::{ModelOccurrence, find_model_options, options_end};
 use super::notice::Notice;
@@ -38,6 +37,11 @@ pub(crate) struct Request<'a> {
     pub(crate) table: &'a Table,
     /// `model.force` or `AMPLIHACK_FORCE_MODEL`, unvalidated.
     pub(crate) force: Option<&'a str>,
+    /// A set, non-blank `AMPLIHACK_DEFAULT_MODEL`, unvalidated. The operator's
+    /// own model choice, which outranks the shipped table: before this
+    /// feature it chose every launch's model, and on an account with no Opus
+    /// and no Sonnet it is the only lever there is.
+    pub(crate) default_model: Option<&'a str>,
     /// Whether this launch is routed through the LiteLLM gateway.
     pub(crate) through_gateway: bool,
 }
@@ -82,9 +86,27 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
         None => (None, None),
     };
 
+    // The operator's own `AMPLIHACK_DEFAULT_MODEL`, held to the same check as
+    // `model.force` by the same code: it is an environment variable, so a
+    // parent step or a CI configuration can set it, and the string lands as
+    // the argv token straight after `--model`. Blank means "pass nothing and
+    // let the CLI decide", which is not a model for the table to lose to, and
+    // the gateway routes on the model name so nothing may route past it.
+    let default_model = request
+        .default_model
+        .filter(|raw| !raw.trim().is_empty())
+        .filter(|_| !request.through_gateway);
+    let (default_model, default_notice) = match default_model {
+        Some(raw) => match validate_model_id(raw) {
+            Ok(()) => (Some(raw), None),
+            Err(reason) => (None, Some(Notice::DefaultModelRefused { reason })),
+        },
+        None => (None, None),
+    };
+
     let mut out = Resolution {
         argv: Vec::new(),
-        notices: force_notice.into_iter().collect(),
+        notices: force_notice.into_iter().chain(default_notice).collect(),
         record: None,
         effort: None,
     };
@@ -93,7 +115,7 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
 
     for occurrence in &occurrences {
         let tier = Tier::parse(&occurrence.value);
-        let decision = decide(request, &column, tier, force);
+        let decision = decide(request, &column, tier, force, default_model);
         if let Some(tier) = tier {
             let cell = request.table.entry(&column, tier);
             seen = Some(Seen {
@@ -106,12 +128,23 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
         apply(&mut actions, occurrence, &decision);
     }
 
-    // `model.force` is the one documented exception to issue #1527: it
-    // replaces even a concrete id, and supplies one where the command line
-    // has none. It fires only from the operator's own user config or
-    // environment.
+    // `model.force` is the documented exception to issue #1527: it replaces
+    // even a concrete id, and supplies one where the command line has none.
     if let Some(model) = force {
         out.notices.push(Notice::Forced {
+            harness: request.harness.to_string(),
+            model: model.to_string(),
+        });
+    }
+
+    // Said once, and only when a tier word was actually displaced: with no
+    // tier on the command line the variable decides nothing here, and the
+    // untiered path in `model_args` prints its own line.
+    if let Some(model) = default_model
+        && force.is_none()
+        && seen.is_some()
+    {
+        out.notices.push(Notice::DefaultModel {
             harness: request.harness.to_string(),
             model: model.to_string(),
         });
@@ -122,25 +155,24 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
         && occurrences.is_empty()
     {
         // The pair goes inside amplihack's own region of the command line,
-        // before the end-of-options marker. Appended instead, it would land
-        // past `--`, which `passthrough_rewrite` forwards verbatim: Claude's
-        // print mode then refuses the launch for a second prompt, and outside
-        // print mode `--model <id>` reaches the harness as positional text
-        // while `Notice::Forced` says it was applied.
-        //
-        // The index comes from the same `argv_scan` function that decided
-        // there were no occurrences, so the scanner and the inserter cannot
-        // disagree about where the options end. `codex_effort::inject`
-        // prepends rather than inserting here, for a reason of its own:
-        // `exec` must stay the first positional. Both positions are inside
-        // the options region; this one leaves a leading subcommand alone.
+        // before the end-of-options marker. Appended instead it would land
+        // past `--`, which `passthrough_rewrite` forwards verbatim, so
+        // `--model <id>` would reach the harness as positional text while
+        // `Notice::Forced` said it was applied. The index comes from the same
+        // `argv_scan` function that decided there were no occurrences, so the
+        // scanner and the inserter cannot disagree about where options end.
         let at = options_end(&out.argv);
         out.argv
             .splice(at..at, ["--model".to_string(), model.to_string()]);
     }
 
     if let Some(seen) = seen {
-        let effort = effective_effort(&column, seen.requested_effort, &seen.decision);
+        let effort = effective_effort(
+            &column,
+            seen.requested_effort,
+            &seen.decision,
+            request.table.max_effort(&column),
+        );
         out.effort = effort;
         // A fall-back that still carried a reasoning effort is announced by
         // the caller's one Applied line instead, so a launch never gets two
@@ -259,6 +291,7 @@ fn decide(
     column: &str,
     tier: Option<Tier>,
     force: Option<&str>,
+    default_model: Option<&str>,
 ) -> Decision {
     let Some(tier) = tier else {
         // A concrete id. Only a forced model touches it.
@@ -271,6 +304,12 @@ fn decide(
         return Decision::Removed(Fallback::Gateway);
     }
     if let Some(model) = force {
+        return Decision::Model(model.to_string());
+    }
+    // Rank 3: below `model.force` and below the concrete id handled above,
+    // and above the table. A resolved model, not a fall-back, so the tier's
+    // reasoning effort still reaches a harness that has a control for it.
+    if let Some(model) = default_model {
         return Decision::Model(model.to_string());
     }
     match request.table.entry(column, tier) {
@@ -288,14 +327,23 @@ fn decide(
 /// The effort that actually reaches the harness. Only Codex has a launch
 /// control for it; elsewhere a configured effort is recorded and documented
 /// as not a launch control, never silently written onto a command line.
+///
+/// `ceiling` is the column's declared `max_effort`, and only ever lowers: an
+/// account whose model refuses `xhigh` says so in its own file, and the step
+/// runs one step down rather than failing. Amplihack does not detect a
+/// refusal — that needs a live call, and there is no probe, retry or timer.
 fn effective_effort(
     column: &str,
     requested: Option<Effort>,
     decision: &Decision,
+    ceiling: Option<Effort>,
 ) -> Option<Effort> {
     match decision {
         Decision::AsTyped => None,
-        _ if column == "codex" => requested,
+        _ if column == "codex" => match (requested, ceiling) {
+            (Some(effort), Some(cap)) => Some(effort.min(cap)),
+            (effort, _) => effort,
+        },
         _ => None,
     }
 }

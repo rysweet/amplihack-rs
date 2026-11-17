@@ -2,15 +2,9 @@
 //! override reaches the model the step actually launches on, through the
 //! runner built at the revision in `claude-plugin/recipe-runner.rev`.
 //!
-//! This is the test the feature did not have. Every other `[step_tiers]`
-//! test checks what staging writes to disk or what amplihack puts on the
-//! runner's command line; none of them asked the runner to resolve a recipe
-//! and report which copy it read. The override was delivered through
-//! `AMPLIHACK_PACKAGE_RECIPE_DIR`, which the runner consults only after every
-//! `-R` — including the bundle amplihack forwards — so a correctly spelled
-//! entry staged a file, printed nothing, and changed nothing.
-//!
-//! The shape is the one the defect needed:
+//! Every other `[step_tiers]` test checks what staging writes to disk or what
+//! amplihack puts on the runner's command line; none asked the runner to
+//! resolve a recipe and report which copy it read.
 //!
 //! ```text
 //! amplihack recipe run <recipes>/issue-1619-tiered.yaml
@@ -21,16 +15,11 @@
 //! ```
 //!
 //! `issue-1619-child.yaml` exists in two directories: the one amplihack
-//! forwards as `-R`, and the staging directory holding the patched copy.
-//! Both steps declare `model: "strong"`; `[step_tiers]` sets both to `fast`.
-//! A launch on `claude-opus-5[1m]` means the runner read the unpatched copy.
+//! forwards as `-R`, and the staging directory holding the patched copy. Both
+//! steps declare `model: "strong"`; `[step_tiers]` sets both to `fast`. A
+//! launch on `claude-opus-5[1m]` means the runner read the unpatched copy.
 //!
-//! Each agent step runs through the real `amplihack claude` wrapper, which is
-//! what turns the tier word on the runner's `--model` into a model id, and a
-//! fake agent CLI records the argv it was given.
-//!
-//! There is no skip path and no `#[ignore]`: a host that cannot resolve the
-//! pinned runner is a host to fix, and a skip here would go green against a
+//! There is no skip path and no `#[ignore]`: a skip would go green against a
 //! runner that resolves recipes in some other order and prove nothing.
 
 #![cfg(unix)]

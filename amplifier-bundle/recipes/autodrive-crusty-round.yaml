@@ -64,7 +64,7 @@ steps:
     working_dir: "{{review_launch_dir}}"
     output: "crusty_round_context"
     agent: "amplihack:core:builder"
-    model: "fast"
+    model: "standard"
     prompt: |-
       Read PR #{{pr_number}} through an available authenticated interface, observe its actual head, and compare to sanitized local Git HEAD in {{repo_path}}. Diagnose and recover stale/unpublished heads without discarding work. Do not issue a review against a different head. Read resolved concern identifiers from the loop-provided private state as data; historical concerns are re-opened only with new concrete evidence. Return JSON {"pr":"number","head_sha":"verified actual head","resolved_concerns":"stable IDs","round_label":"{{autodrive_round_label}}","blockers":[],"attempts":[]}. If head cannot be verified, report incomplete and do not claim clean review. The verified head must equal {{reviewed_head_sha}}, the commit recorded for this round's private review generation (#2096); if it differs, report the blocker review-generation-head-mismatch and do not review.
 

@@ -26,6 +26,10 @@ const VERSION: i64 = 1;
 /// The reserved top-level key that is not a harness column.
 const STEP_TIERS_KEY: &str = "step_tiers";
 
+/// The reserved key inside a column that is not a tier word: the highest
+/// reasoning effort this account's models accept.
+const MAX_EFFORT_KEY: &str = "max_effort";
+
 /// What a recipe step declares instead of a model name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -36,10 +40,9 @@ pub(crate) enum Tier {
 }
 
 impl Tier {
-    /// Every tier there is. One set, used in recipes, in config, in the
-    /// documentation and in the tests: there is no fourth and no alias.
-    /// [`Tier::parse`] and every diagnostic that lists the words read this,
-    /// so a word cannot exist in one place and not another.
+    /// Every tier there is: no fourth and no alias. [`Tier::parse`] and every
+    /// diagnostic that lists the words read this, so a word cannot exist in
+    /// one place and not another.
     pub(crate) const ALL: [Tier; 3] = [Tier::Fast, Tier::Standard, Tier::Strong];
 
     /// The tier `raw` names, trimmed and matched case-insensitively, or
@@ -73,10 +76,9 @@ pub(crate) enum Effort {
 }
 
 impl Effort {
-    /// Every reasoning effort amplihack will write on a command line. This
-    /// is argv safety, not a claim about what the installed harness accepts:
-    /// the value becomes the right-hand side of
-    /// `-c model_reasoning_effort=…`.
+    /// Every reasoning effort amplihack will write on a command line. Argv
+    /// safety, not a claim about what the installed harness accepts: the
+    /// value becomes the right-hand side of `-c model_reasoning_effort=…`.
     pub(crate) const ALL: [Effort; 5] = [
         Effort::Minimal,
         Effort::Low,
@@ -117,14 +119,15 @@ pub(crate) struct Entry {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Table {
     columns: BTreeMap<String, BTreeMap<Tier, Entry>>,
+    /// Each column's declared `max_effort`, which only ever lowers a tier's.
+    ceilings: BTreeMap<String, Effort>,
     step_tiers: BTreeMap<String, Tier>,
 }
 
 impl Table {
     /// The mapping amplihack ships, parsed once from the compiled-in file.
     ///
-    /// A parse failure here is a build error, not an operator error: the file
-    /// is inside the binary and `tests_table.rs` parses it.
+    /// A parse failure here is a build error, not an operator error.
     pub(crate) fn shipped() -> &'static Table {
         static SHIPPED: OnceLock<Table> = OnceLock::new();
         SHIPPED.get_or_init(|| {
@@ -156,9 +159,17 @@ impl Table {
         &self.step_tiers
     }
 
-    /// This table laid over `base`, cell by cell. A column `base` does not
-    /// have is added whole; a cell this table names replaces `base`'s, so an
-    /// empty cell is how an instance clears a shipped model.
+    /// The highest reasoning effort `column` accepts, when it declares one.
+    ///
+    /// A declaration about the operator's own account, not something
+    /// amplihack detected: learning that a model refuses an effort needs a
+    /// live call. The shipped mapping declares none.
+    pub(crate) fn max_effort(&self, column: &str) -> Option<Effort> {
+        self.ceilings.get(column).copied()
+    }
+
+    /// This table laid over `base`, cell by cell. A cell this table names
+    /// replaces `base`'s, so an empty cell clears a shipped model.
     pub(crate) fn merged_over(&self, base: &Table) -> Table {
         let mut out = base.clone();
         for (column, cells) in &self.columns {
@@ -166,6 +177,9 @@ impl Table {
             for (tier, entry) in cells {
                 target.insert(*tier, entry.clone());
             }
+        }
+        for (column, effort) in &self.ceilings {
+            out.ceilings.insert(column.clone(), *effort);
         }
         for (step, tier) in &self.step_tiers {
             out.step_tiers.insert(step.clone(), *tier);
@@ -176,10 +190,9 @@ impl Table {
     /// Parse one tier file's text.
     ///
     /// `Err` is a reason the whole file is refused and the layer below
-    /// applies: malformed TOML, or a version amplihack does not know. The
-    /// reason never quotes the file's contents. Everything else is a
-    /// [`Notice`]: the entry it names is dropped and the rest of the file
-    /// still applies, so one typo cannot stop a run of a hundred steps.
+    /// applies: malformed TOML, or an unknown version. The reason never
+    /// quotes the file's contents. Everything else is a [`Notice`]: the entry
+    /// it names is dropped and the rest of the file still applies.
     pub(crate) fn parse_override(text: &str) -> Result<(Table, Vec<Notice>), String> {
         let document: toml::Table =
             toml::from_str(text).map_err(|_| "is not valid TOML; ignored".to_string())?;
@@ -211,6 +224,14 @@ impl Table {
             }
             let cells = table.columns.entry(key.clone()).or_default();
             for (word, cell) in inner {
+                // Reserved, and matched before `Tier::parse`, so it is never
+                // read as a tier word nor reported as an unknown one. The
+                // reservation is per-position: inside `[step_tiers]` the same
+                // spelling is an ordinary step id.
+                if word == MAX_EFFORT_KEY {
+                    read_ceiling(key, cell, &mut table.ceilings, &mut notices);
+                    continue;
+                }
                 let Some(tier) = Tier::parse(word) else {
                     notices.push(Notice::UnknownTier {
                         column: key.clone(),
@@ -232,6 +253,28 @@ impl Table {
 
 /// The compiled-in shipped mapping.
 const SHIPPED_TEXT: &str = include_str!("../model-tiers.toml");
+
+/// Read one column's `max_effort`. A value that is not an effort leaves the
+/// column with no ceiling: applying some default cap on a typo would silently
+/// change what every step of that column runs at.
+fn read_ceiling(
+    column: &str,
+    value: &toml::Value,
+    out: &mut BTreeMap<String, Effort>,
+    notices: &mut Vec<Notice>,
+) {
+    let raw = value.as_str().unwrap_or_default();
+    match Effort::parse(raw) {
+        Some(effort) => {
+            out.insert(column.to_string(), effort);
+        }
+        None => notices.push(Notice::BadEffort {
+            column: column.to_string(),
+            tier: MAX_EFFORT_KEY.to_string(),
+            value: raw.to_string(),
+        }),
+    }
+}
 
 /// Read a `[step_tiers]` table, dropping and reporting every entry whose
 /// value is not one of the three words.
@@ -316,14 +359,14 @@ pub(crate) fn column_for(binary_name: &str) -> String {
     binary_name.to_string()
 }
 
-/// The one check every model string amplihack can emit crosses, whether it
-/// came from a tier file, from `model.force` or from `AMPLIHACK_FORCE_MODEL`.
+/// The one check every model string amplihack can emit crosses, from a tier
+/// file, `model.force` or `AMPLIHACK_DEFAULT_MODEL`.
 ///
-/// The value lands as the argv token right after `--model`, and both Codex
-/// and Claude carry single-token sandbox-bypass flags, so a value that could
-/// act as another argument is refused rather than written. Checked on the raw
-/// input, before any trimming: a leading space would otherwise hide a leading
-/// dash from a later reader.
+/// The value lands as the argv token right after `--model`, and both Codex and
+/// Claude carry single-token sandbox-bypass flags, so a value that could act
+/// as another argument is refused rather than written. Checked on the raw
+/// input, before trimming: a leading space would otherwise hide a leading dash
+/// from a later reader.
 pub(crate) fn validate_model_id(raw: &str) -> Result<(), String> {
     if raw.is_empty() {
         return Err("is empty".to_string());
@@ -343,10 +386,9 @@ pub(crate) fn validate_model_id(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The characters a model id may use. Admits `claude-opus-5[1m]`,
-/// `claude-sonnet-5.5` and `gpt-6.1-sol:high`, and admits no whitespace, no
-/// control character and nothing a shell or a command line would read as
-/// structure.
+/// The characters a model id may use. Admits `claude-opus-5[1m]` and
+/// `gpt-6.1-sol:high`, and no whitespace, control character or anything a
+/// shell or command line would read as structure.
 fn is_model_id_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '[' | ']' | '@' | ':')
 }

@@ -4,15 +4,29 @@ A recipe agent step says how much model it needs, not which model to use. It
 writes one of three words, `fast`, `standard` or `strong`, and amplihack turns
 that word into a model and, where the harness has one, a reasoning effort for
 the CLI it is about to launch. Claude Code, Codex and Copilot CLI each have
-their own column in the mapping, so the same recipe runs on all of them
-without naming a model that a harness or an account does not have.
+their own column in the mapping, so the same recipe runs on all of them without
+naming a model that a harness or an account does not have.
+
+## Contents
+
+- [The three tier words](#the-three-tier-words)
+- [Declaring a tier on a step](#declaring-a-tier-on-a-step)
+- [The shipped mapping](#the-shipped-mapping)
+- [Precedence](#precedence)
+- [Falling back to the harness default](#falling-back-to-the-harness-default)
+- [Reasoning effort, per harness](#reasoning-effort-per-harness)
+- [Overriding the mapping](#overriding-the-mapping)
+- [Measuring what each step ran on](#measuring-what-each-step-ran-on)
+- [Tiers in the bundled recipes](#tiers-in-the-bundled-recipes)
+- [Combined review for small diffs](#combined-review-for-small-diffs)
+- [Diagnostics](#diagnostics)
 
 ## The three tier words
 
 | Tier | Meant for |
 |------|-----------|
 | `fast` | Mechanical steps: workspace preparation, prerequisite lookups, task read-back, loop-result verification, summaries, cleanup |
-| `standard` | Code, security and philosophy reviews, documentation, PR body writing, test authoring |
+| `standard` | Code, security and philosophy reviews, documentation, PR body writing, test authoring, and the evidence steps that verify a PR's head or adjudicate a review verdict |
 | `strong` | Design, implementation, debugging, recovery decisions, orchestration, classification, planning |
 
 These are the only three. There is no `light`, `medium` or `heavy` tier and no
@@ -35,12 +49,9 @@ steps:
     model: "strong"
 ```
 
-The tier reuses `model:` because that is the one step field the pinned recipe
-runner turns into a launch argument. The runner writes the value on the
-passthrough side itself, so resolving a tier is delete, then decide: amplihack
-finds the `--model <tier-word>` pair the runner wrote, removes it, and puts its
-own answer in its place. Without the delete the tier word would reach the CLI
-as a literal model name.
+The tier reuses `model:` because that is the one step field the pinned runner
+turns into a launch argument: it writes `--model <tier-word>`, and amplihack
+finds that pair, removes it, and puts its own answer in its place.
 
 ## The shipped mapping
 
@@ -54,20 +65,17 @@ no account.
 | `standard` | `claude-sonnet-5-5` | no model named, effort `high` | no model named |
 | `fast` | `claude-haiku-5-5` | no model named, effort `low` | no model named |
 
-Claude ids are concrete, never aliases, because an alias is resolved by the CLI
-and so depends on the CLI version (issue #1421); `claude-opus-5[1m]` is the
-same value as amplihack's built-in default, asserted by a test. Codex names no
-model, because Opus and Sonnet do not exist there and any Codex model would
-guess at the account, so its tiers differ by effort alone. The Copilot section
-ships empty, so all three Copilot tiers fall back until an instance fills it
-in.
+Claude ids are concrete, never aliases: an alias is resolved by the CLI, so its
+meaning depends on the CLI version (issue #1421). Codex names no model, because
+Opus and Sonnet do not exist there and any id would guess at the account, so
+its tiers differ by effort alone; Copilot ships empty and falls back until an
+instance fills it in.
 
 The `claude` column covers every Claude-compatible tool: `amplihack claude`,
-`rusty`, `rustyclawd` and `amplifier`. The `codex` and `copilot` columns cover
-one command each, and a harness with no column takes the fall-back below.
-Unknown column names in an override file are kept rather than reported, so a
-file written for a newer amplihack still loads on an older one. `step_tiers` is
-a reserved table name, matched before that rule.
+`rusty`, `rustyclawd` and `amplifier`. A harness with no column takes the
+fall-back below. An unknown column name in an override file is kept rather than
+reported, so a file written for a newer amplihack still loads on an older one;
+`step_tiers` is a reserved table name, matched first.
 
 ## Precedence
 
@@ -78,22 +86,39 @@ Highest first:
 | 0 | The runner's `AMPLIHACK_RATELIMIT_FALLBACK_AUTO_MODEL` final attempt | Rewrites the step's model to the literal `auto` before amplihack runs |
 | 1 | `model.force` / `AMPLIHACK_FORCE_MODEL` | Replaces a tier word or a concrete id, and supplies a model where the command has none |
 | 2 | An explicit concrete `--model <id>` on the launched command | Forwarded verbatim, unless a model is forced |
-| 3 | A per-step tier override (`[step_tiers]`) | Rewrites the tier the named step declares, before the run starts |
-| 4 | Override-file entries | Replace the matching cells of the shipped mapping |
-| 5 | The shipped mapping | The table above |
-| 6 | The harness default | What a launch carrying no tier gets |
+| 3 | A set, non-blank `AMPLIHACK_DEFAULT_MODEL` | Replaces a tier word, on every column |
+| 4 | A per-step tier override (`[step_tiers]`) | Rewrites the tier the named step declares, before the run starts |
+| 5 | Override-file cells | Replace the matching cells of the shipped mapping |
+| 6 | The shipped mapping | The table above |
+| 7 | The harness default model | What a launch still carrying no model gets |
 
 Rank 0 is not amplihack's. With that variable set, which it is not unless you
-set it, the runner substitutes `auto` on its last rate-limit attempt; `auto` is
-not a tier word, so it is forwarded as a concrete id and the tier's Codex
-effort goes with it.
+set it, the runner substitutes `auto` for the step's model on its last
+rate-limit attempt. `auto` is not a tier word, so amplihack forwards it as
+typed and the launch has no tier at all: no model from the mapping, and no
+reasoning effort either, since an effort belongs to a tier amplihack resolved
+and `auto` is a model it did not choose. Nor does that launch append a record
+line: a line is written for a launch that carried a tier word or a forced
+model, and `auto` is neither.
 
-Rank 3 acts at a different moment from the ranks above it, rather than
-competing with them over one command line. A `[step_tiers]` entry is applied to
-a staged copy of the recipe before the run starts, so the `--model <tier-word>`
-pair the runner later writes already carries the overridden word. It sits below
-ranks 1 and 2 because a forced model, or an explicit concrete `--model`, still
-replaces whatever the overridden tier resolves to.
+Rank 3 keeps the lever an operator had before tiers existed, which on an
+account without the models the mapping names is the only one there is. It
+replaces a tier word and only a tier word, so a concrete `--model` you typed is
+still forwarded as typed, and no `--model` pair is ever inserted where the
+command line had none. It applies to every column, Codex and Copilot CLI
+included, and the tier's reasoning effort still reaches the harness, because a
+model was chosen rather than fallen back from. The value is held to the same
+model-id check as `model.force`. See
+[where `AMPLIHACK_DEFAULT_MODEL` applies](#where-amplihack_default_model-applies).
+
+Rank 2 sits above rank 3, so a recipe that pins a concrete `--model` on a step
+keeps it whatever you set. If that is not what you want, use `model.force`.
+
+Rank 4 acts at a different moment, rather than competing over one command line:
+a `[step_tiers]` entry is applied to a staged copy of the recipe before the run
+starts, so the `--model <tier-word>` pair the runner later writes already
+carries the overridden word. It sits below ranks 1 and 2 because each of those
+still replaces whatever the overridden tier resolves to.
 
 A LiteLLM gateway launch ignores tiers. One goes through the gateway when the
 tool is one the gateway routes (Claude Code, RustyClawd or Copilot CLI) and
@@ -101,7 +126,8 @@ tool is one the gateway routes (Claude Code, RustyClawd or Copilot CLI) and
 `AMPLIHACK_LITELLM_MODEL` is set. The gateway routes on the model name and was
 never configured for the ids in the shipped mapping, so amplihack removes the
 tier's `--model` pair and its existing chain writes `AMPLIHACK_LITELLM_MODEL`
-in its place. Codex is not routed by the gateway, so its tiers apply as usual.
+in its place. Ranks 1 and 3 are dropped on that path for the same reason. Codex
+is not routed by the gateway, so its tiers apply as usual.
 
 `model.force` outranks an explicit `--model`, because the forced value comes
 from your own user config or environment. A forced launch keeps the tier's
@@ -121,17 +147,12 @@ gateway launch, else `AMPLIHACK_DEFAULT_MODEL`, else the built-in
 `--model` at all. On Codex and Copilot CLI nothing is passed, so the CLI uses
 its own default.
 
-The step never fails because of a fall-back. There is no probe: availability is
-a statement in the mapping, not a question asked over the network, and a tier
-with no entry for a harness is what "that model is not available there" looks
-like in configuration. There is no second launch and there are no timers.
-
-Every launch that carried a tier, falling back or not, prints one line to
-stderr and appends one line to [the record file](#the-record-file). The line
-names the launch, the tier, the model asked for, and the substitute: either a
-concrete id, or the harness's own default model where the mapping supplies
-none. The record's `fallback` field is `null` when the launch did not fall
-back, and the line and the field come from one value.
+The step never fails because of a fall-back, and there is no probe:
+availability is a statement in the mapping, not a question asked over the
+network. There is no second launch and there are no timers. Every launch that
+carried a tier, falling back or not, prints to stderr and appends one line to
+[the record file](#the-record-file); the line and the record's `fallback` field
+come from one value.
 
 ## Reasoning effort, per harness
 
@@ -142,21 +163,56 @@ already carries that key, yours is left alone. Claude Code and Copilot CLI have
 no such argument, so an effort written in their column is recorded as requested
 rather than effective.
 
-Accepted effort values are `minimal`, `low`, `medium`, `high` and `xhigh`. That
-list is amplihack's allowlist, not one read from Codex: the value becomes the
-right-hand side of a `-c` argument, so only these five words are written.
-Whether the installed Codex accepts the word is Codex's decision, visible in
-its own output. A value from an override file that is not one of the five is
+Accepted effort values, weakest first, are `minimal`, `low`, `medium`, `high`
+and `xhigh`. That list is amplihack's allowlist, not one read from Codex: the
+value becomes the right-hand side of a `-c` argument, so only these five words
+are written. A value from an override file that is not one of the five is
 reported and dropped, and the tier's model still applies. Model and effort
 resolve independently, so an unavailable or unmapped model drops only the model
 argument.
 
 A recipe's `-c model=...` and `-c reasoning_effort=...` are context variables,
 readable in prompt templates and not passed to the launched CLI, and an outer
-Codex session's own `-c model_reasoning_effort=...` is a setting of that
-session, not inherited by a child launch. Issue #1619's 3 November comment
-reports the consequence: a step assigned `high` ran as `xhigh`. Model and
-effort now reach the child as real arguments.
+Codex session's own `-c model_reasoning_effort=...` is not inherited by a child
+launch. Issue #1619's 3 November comment reports the consequence: a step
+assigned `high` ran as `xhigh`. Both now reach the child as real arguments.
+
+### When an account refuses an effort
+
+The shipped `strong` tier asks Codex for `xhigh`, which not every model
+accepts. amplihack does not ask a model whether it will take an effort: that
+needs a live call, and a tier must not cost a request, a retry or a timer. So
+the limit is something you declare about your own account, as a `max_effort`
+inside a column:
+
+```toml
+# ~/.amplihack/model-tiers.toml
+version = 1
+
+[codex]
+max_effort = "high"
+```
+
+Every tier of that column is then written at its own effort or at the ceiling,
+whichever is lower. A ceiling never raises an effort, and never reaches a
+harness that has no launch control for one. The step runs: stepping an effort
+down is not a fall-back and does not fail the launch. The record keeps both
+values, `requested_effort` beside `effective_effort`, and the one line the
+launch already prints says the tier's effort was lowered.
+
+A `max_effort` that is not one of the five accepted words is reported where you
+wrote it and leaves the column with no ceiling at all. Applying some default
+cap on a typo would silently change what every step of that column runs at.
+
+The other way is to lower the effort in the cell itself, which the
+[override file](#the-override-file) does cell by cell:
+
+```toml
+[codex.strong]
+effort = "high"
+```
+
+The difference is reach: a cell changes one tier, a ceiling bounds all three.
 
 ## Overriding the mapping
 
@@ -184,44 +240,35 @@ effort = "minimal"
 `version` must be `1`; a version amplihack does not know is reported and the
 shipped mapping applies. `<column>.<tier>.model` and `<column>.<tier>.effort`
 set the cell's two values, and omitting `model` leaves the cell with no model,
-which means "fall back". A tier key that is not one of the three words, and an
-unknown field inside a cell such as `modle`, are each reported by name and
-ignored. A model id is held to a check of its own: at most 128 bytes, not
-starting with `-`, and drawn from ASCII letters and digits plus `.`, `_`, `-`,
-`[`, `]`, `@` and `:`. That admits `claude-opus-5[1m]` and excludes whitespace,
-control characters and anything a shell or a command line would read as
-structure.
+which means "fall back". `<column>.max_effort` is the column's
+[effort ceiling](#when-an-account-refuses-an-effort); it is reserved, so it is
+never read as a tier word, and inside `[step_tiers]` the same spelling is an
+ordinary step id. A tier key that is not one of the three words, and an unknown field
+inside a cell such as `modle`, are each reported by name and ignored. A model
+id is held to a check of its own: at most 128 bytes, not starting with `-`, and
+drawn from ASCII letters and digits plus `.`, `_`, `-`, `[`, `]`, `@` and `:`.
+That admits `claude-opus-5[1m]` and excludes whitespace, control characters and
+anything a shell or a command line would read as structure.
 
 The file is held to the trust rules of `~/.amplihack/config.toml`: one owned by
-another user, or writable by group or others, is ignored with one stderr line
-and the shipped mapping applies. The check is made on the open file rather than
-on its path, so it cannot be made to describe a different object from the one
-read. Correct a rejected file with `chmod 600 ~/.amplihack/model-tiers.toml`.
-It is read once per process through the reader every other amplihack config
-file uses: at most 64 KiB, regular files only, opened non-blocking so a FIFO
-cannot stall the launch. A symlink is followed and the file it points at is
-the one judged, because a tier file kept in a dotfiles directory and linked
-into place is an ordinary arrangement. A missing,
-malformed, over-size, unreadable or wrongly versioned file gives one stderr
-line naming the file and the reason, after which the shipped mapping applies
-and the run proceeds; the path is printed home-relative, because these lines
-get pasted into issues.
+another user, or writable by group or others, is ignored with one stderr line,
+correctable with `chmod 600 ~/.amplihack/model-tiers.toml`. The check is made
+on the open file rather than on its path, so it cannot be made to describe a
+different object from the one read. It is read once per process by the reader
+every other amplihack config file uses: at most 64 KiB, regular files only,
+opened non-blocking so a FIFO cannot stall the launch, and a symlink followed
+to the file actually judged. A missing, malformed, over-size, unreadable or
+wrongly versioned file gives one stderr line naming the file, home-relative,
+and the reason, after which the shipped mapping applies and the run
+proceeds.
 
-`model.tier_map` takes an absolute path with no `..` component; a relative
-path, or one written with `~`, is refused by `amplihack config set` with the
-requirement printed. It is user-only, like every path-valued key in amplihack.
-A project file cannot name it: a cloned repository must not choose the file
-that drives amplihack's rewriting of recipe YAML, whose steps run shell
-commands.
-
-The search order leaves the environment the selection route `model.tier_map`
-was denied: `$AMPLIHACK_HOME` is read from the environment, so whatever sets it
-chooses `$AMPLIHACK_HOME/model-tiers.toml` and therefore the `[step_tiers]`
-table that patches recipe files. That is accepted rather than closed, because
-`$AMPLIHACK_HOME` already selects the `config.toml` holding `model.force`, and
-anything able to set it can set `AMPLIHACK_FORCE_MODEL` or edit the recipe
-itself; the chosen file is still held to the ownership and permission rules
-above.
+`model.tier_map` takes an absolute path with no `..` component; a relative path,
+or one written with `~`, is refused by `amplihack config set`. It is user-only,
+like every path-valued key: a cloned repository must not choose the file that
+drives amplihack's rewriting of recipe YAML. `$AMPLIHACK_HOME` is still read
+from the environment, so whatever sets it chooses the tier file; the same
+variable already selects the `config.toml` holding `model.force`, and the
+chosen file is still held to the rules above.
 
 ### Overriding one step's tier
 
@@ -237,59 +284,73 @@ The step id is not visible at launch time, because the runner does not tell a
 child process which step it is, so the override is applied to the recipe
 instead. When `[step_tiers]` is non-empty, `amplihack recipe run` writes
 patched copies of only the recipe files containing a named step id into a
-private directory under the run directory, and gives the runner that
-directory as its **first `-R`**, ahead of the bundle and every other search
-directory amplihack forwards. The patch is one line per named step: that
-step's own `model:` line is rewritten, or added if it had none, to one of the
-three words. With no `[step_tiers]` configured nothing is staged, no extra
-argument is added, and the run behaves as before.
+private directory under the run directory, and gives the runner that directory
+as its **first `-R`**. The patch is one line per named step: that step's own
+`model:` line is rewritten, or added if it had none, to one of the three words.
+With no `[step_tiers]` configured nothing is staged, no extra argument is
+added, and the run behaves as before.
 
 `-R` is the delivery route because it is the only one that wins. The runner
-resolves a recipe name from, in order, its `-R` directories; an anchored
-search from the recipe it is already running; and the package search
-directories named by `AMPLIHACK_PACKAGE_RECIPE_DIR`. amplihack forwards the
-bundle as a `-R` of its own, so a staged copy offered through that variable
-was always outranked by the recipe it had been patched from, and the override
-had no effect at all. amplihack no longer sets that variable.
+resolves a recipe name from its `-R` directories first, then an anchored search
+from the recipe it is running, then `AMPLIHACK_PACKAGE_RECIPE_DIR`; amplihack
+forwards the bundle as a `-R` of its own, so a staged copy offered through that
+variable was always outranked by the recipe it had been patched from.
 
-A `-R` directory is searched for a *name*, and the recipe named on the
-command line is passed to the runner as a path, so `-R` alone never reaches
-it. When that recipe is one of the files staging patched, the positional
-argument becomes its patched copy; the directory the original sits in is then
-appended as the **last** `-R`, because substituting the path moves the
-runner's anchored search to the staging directory and a recipe that resolves
-a sibling sub-recipe by name must keep finding it. Appending rather than
-prepending leaves the existing precedence intact, so a repository-local file
-still does not shadow a bundled one.
+A `-R` directory is searched for a *name*, while the recipe named on the
+command line is passed as a path, so `-R` alone never reaches that one. When it
+is among the files staged, the positional argument becomes its patched copy and
+the directory the original sits in is appended as the **last** `-R`, so a
+recipe resolving a sibling sub-recipe by name keeps finding it. Where a name
+appears both in a search directory and as the recipe named on the command line,
+the search directory's copy is the one patched.
 
-Only agent steps are patched. `model:` is a field the runner ignores on bash,
-recipe and every other kind of step, so a `[step_tiers]` entry naming one of
-those is reported by name and changes nothing rather than writing a line that
-does nothing. The step kind is read from the recipe the same way the runner
-reads it: the declared `type:` if there is one, otherwise a `recipe:` makes a
-sub-recipe, an `agent:` makes an agent step, and a `prompt:` with no
-`command:` makes an agent step.
-
-Where a recipe file name appears both in a search directory and as the recipe
-named on the command line, the search directory's copy is the one patched, so
-staging cannot put a repository-local file of that name ahead of the bundled
-recipe the runner would otherwise have loaded. A patched copy is re-read as
-YAML before it is written, and one that no longer parses is dropped with a
-line, leaving that recipe on the tier it declares.
+Only agent steps are patched, `model:` being a field the runner ignores on
+every other kind of step; an entry naming one of those is reported by name and
+changes nothing. The step kind is read the way the runner reads it: the
+declared `type:` if there is one, else a `recipe:` makes a sub-recipe, an
+`agent:` makes an agent step, and a `prompt:` with no `command:` makes an agent
+step. A patched copy is re-read as YAML before it is written, and one that no
+longer parses is dropped with a line.
 
 A step id must look like an identifier: a letter or digit, then letters,
 digits, `.`, `_` or `-`, at most 128 characters; `.` and `..` are not step ids.
 Staged file names come only from the recipe files amplihack found, never from
 the override file, and the staging directory is mode 0700 with its files 0600.
-A step id no staged recipe declares is reported by name and changes nothing,
-and the line names the causes it cannot tell apart — a mistyped id, a recipe
-amplihack could not read, one over the size bound, and one past the candidate
-cap all look the same from there. A key that is not an identifier is reported
-and ignored; a value that is not a tier word is reported and dropped, leaving
-that step on the tier its recipe declares. A recipe named on the command line
-whose file name a search directory also holds is reported and not staged,
-rather than being allowed to answer every later lookup of that name. Only one of the three tier words is ever written into a recipe
-file, so no text from an override file reaches a prompt or a shell body.
+A step id no staged recipe declares is reported by name and changes nothing;
+the line names the causes it cannot tell apart. A key that is not an
+identifier, and a value that is not a tier word, are reported and dropped. Only
+one of the three tier words is ever written into a recipe file, so no text from
+an override file reaches a prompt or a shell body.
+
+### Where `AMPLIHACK_DEFAULT_MODEL` applies
+
+`AMPLIHACK_DEFAULT_MODEL` chose the model for every launch amplihack made
+before tiers existed, and it still decides which model a tiered step runs on.
+Set to a non-blank value, it replaces the model a tier maps to, on every
+column:
+
+```sh
+AMPLIHACK_DEFAULT_MODEL=gpt-6.1-sol amplihack recipe run default-workflow ...
+```
+
+- **It replaces a tier word, and only a tier word.** A concrete `--model` a
+  recipe or an operator typed is forwarded as typed (issue #1527), and nothing
+  is inserted where the command line carries no `--model` at all.
+- **It reaches Codex and Copilot CLI too.** That is the point of it: the
+  shipped Codex column names no model, and this is how an operator who knows
+  their account's id supplies one.
+- **The tier's reasoning effort survives**, because a model was chosen rather
+  than fallen back from.
+- **A blank or whitespace-only value decides nothing** and leaves the mapping
+  in force. It still means "pass no `--model`" on a launch that has none.
+- **It is held to the model-id check** described under
+  [the override file](#the-override-file), on both the tiered and the untiered
+  path. A value outside it is reported, without being quoted, and the step's
+  own tier applies; the launch proceeds. A dotted Claude id is rewritten to the
+  hyphenated spelling (issue #1527).
+
+It is not read at all while a LiteLLM gateway variable is set. To displace a
+concrete `--model` as well, use `model.force` below.
 
 ### Forcing one model everywhere
 
@@ -300,14 +361,15 @@ AMPLIHACK_FORCE_MODEL=claude-sonnet-5-5 amplihack recipe run default-workflow
 ```
 
 Every launch then asks for that model, whatever tier the step declared,
-including launches whose command line carries a concrete `--model` of its own.
-The tier's reasoning effort still applies, so on Codex a `strong` step keeps
-`xhigh` while running the forced model. The forced value is validated exactly
-as an override-file model id is, and `amplihack config list --show-origin`
-names its origin. Where the command line already carries a `--model`, the
-forced value replaces that value in place; where it carries none, the pair is
-inserted at the end of amplihack's own options, before any `--`. A gateway
-launch is the one place a forced model does not take effect.
+including a launch whose command line carries a concrete `--model` of its own.
+That is the difference from `AMPLIHACK_DEFAULT_MODEL`, which leaves a concrete
+id alone. The tier's reasoning effort still applies, so on Codex a `strong`
+step keeps `xhigh` while running the forced model. The value is validated
+exactly as an override-file model id is, and `amplihack config list
+--show-origin` names its origin. Where the command line carries a `--model` the
+forced value replaces it in place; where it carries none the pair is inserted
+at the end of amplihack's own options, before any `--`. A gateway launch is the
+one place a forced model does not take effect.
 
 ## Measuring what each step ran on
 
@@ -320,19 +382,19 @@ Model tiers:
   step-06-documentation: standard → copilot default model (no entry in the `copilot` column)
 ```
 
-The existing step status line and its `    Output: ` line are untouched, and
-the section follows the `Steps:` block, which is what
+The step status line and its `    Output: ` line are untouched, and the section
+follows the `Steps:` block, which is what
 `amplifier-bundle/tools/autodrive_loop.sh` reads with awk. It names at most 50
 launches one by one and then says how many more there were, and is printed only
 by `--format table`; `--format json` and `--format yaml` are the runner's own
 envelope and are unchanged.
 
-Step ids appear only when the counts agree: the number of launches recorded
-equals the number of agent steps the runner reports, and the two are then
-paired in order. No step id reaches a child process, so this is a correlation.
-A `parallel_group`, a rate-limit retry, or a recovered or resumed run makes the
-counts disagree, and then every line prints by sequence number, with one line
-saying why.
+Step ids appear only when the counts agree: the launches recorded match the
+agent steps the runner reports, and the two are paired in order. No step id
+reaches a child process, so this is a correlation, and it is the whole of what
+the pinned runner allows. A `parallel_group`, a rate-limit retry, or a
+recovered or resumed run makes the counts disagree, and then every line prints
+by sequence number, with one line saying why.
 
 ### The record file
 
@@ -346,19 +408,20 @@ The eleven fields are the whole schema, pinned by a test: `v`, the schema
 version; `seq`, the launch sequence within the run, from 1; `run_id`, from
 `AMPLIHACK_RUN_ID`; `harness`, the launch command; `column`, the mapping column
 used; `tier`, one of the three words or `null`; `requested_model` and
-`requested_effort`, what the mapping or `model.force` asked for;
+`requested_effort`, what the mapping or an override asked for;
 `effective_model` and `effective_effort`, what reached the command line, each
 `null` when it carries none; and `fallback`, one of `no_column`, `no_mapping`,
-`no_model`, `gateway`, or `null`. The file carries no command line, no
-environment, no prompt text, no working directory and no path, because run
-artefacts are pasted into issues and PRs.
+`no_model`, `gateway`, or `null`. The line above is a `strong` Codex step on
+the shipped mapping: the cell names an effort and no model, so the model falls
+back with `no_model` while the effort is passed. The file carries no command
+line, no environment, no prompt text, no working directory and no path.
 
 It is written only when `AMPLIHACK_RUN_DIR` names a directory that already
 exists, with a fixed name, mode 0600, without following a symlink, and under an
 advisory lock. `seq` is read and incremented inside that lock, in the same
-critical section as the append, so two concurrent launches can neither
-interleave lines nor claim the same number. A lock amplihack cannot take means
-the record is skipped, never that a launch waits.
+critical section as the append, so two concurrent launches neither interleave
+lines nor claim the same number. A lock amplihack cannot take skips the record
+rather than making a launch wait.
 
 ```sh
 jq -r '[.tier // "none", .effective_model // "harness default"] | @tsv' \
@@ -372,13 +435,12 @@ Tiers are assigned to the bundled recipe files reachable from
 auto-drive family, by the rule in [the table above](#the-three-tier-words). The
 other bundled recipes with agent steps keep today's behaviour: no `model:`
 field, no tier, and amplihack's existing default chain deciding as it always
-did. Tiering a recipe means reading every step and deciding what it is for, and
-a wrong tier is worse than no tier.
+did.
 
 Nothing an instance pinned at the top Codex effort is lowered: `strong` is
-`xhigh` there, which is what every step was getting by default, so the saving
-comes from the `standard` and `fast` steps. The three-word vocabulary cannot
-express "orchestration at `xhigh`, builders at `high`" as a fourth Codex tier;
+`xhigh` there, which is what every step was getting anyway, so the saving comes
+from the `standard` and `fast` steps. The three-word vocabulary cannot express
+"orchestration at `xhigh`, builders at `high`" as a fourth Codex tier;
 `[step_tiers]` is the way to get that split.
 
 ## Combined review for small diffs
@@ -391,16 +453,14 @@ refactor-review phase can run as one combined pass.
 | `review.combined_small_diff` | `false` | Whether a small diff may use one combined pass |
 | `review.combined_diff_threshold` | `200` | Changed lines at or below which a diff counts as small |
 
-With `review.combined_small_diff` left at its default the three passes run
-separately, exactly as they did before this feature. Turned on, a phase whose
+Left at its default the three passes run separately. Turned on, a phase whose
 changed-line count is at or below the threshold runs one combined review step
 on the `standard` tier instead of `step-10-pre-commit-review`,
 `step-10b-security-review` and `step-10c-philosophy-check`; a larger diff still
 runs all three. Both keys are user-only, for the reason `model.force` is: the
 step reads them from inside the worktree under review, and a repository must
-not choose whether its own security pass runs. This applies to
-`workflow-refactor-review.yaml` only; `workflow-pr-review.yaml` is left alone,
-because its passes are PR-level review rather than the review phase of a build.
+not choose whether its own security pass runs. It applies to
+`workflow-refactor-review.yaml` only, PR-level review being a different thing.
 
 ## Diagnostics
 
@@ -410,17 +470,19 @@ the values it would have accepted.
 
 ```text
 amplihack: model tier `fast` on `claude`: passing `--model claude-haiku-5-5`. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
+amplihack: model tier `strong` on `codex`: passing `-c model_reasoning_effort=xhigh`; the model stays `codex`'s own. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 amplihack: model tier `strong` has no entry in the `copilot` column, so `copilot` runs on its own default model. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
-amplihack: model tiers: step_tiers.step-99-polish: no recipe in this run declares a step with that id, so nothing is overridden and every step keeps the tier its recipe declares. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
+amplihack: model tiers: step_tiers.step-99-polish: amplihack staged no recipe declaring a step with that id, so nothing is overridden and every step keeps the tier its recipe declares. Usually the id is mistyped; a recipe amplihack could not read, one larger than the size bound, and one past the candidate cap all look the same from here. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
+amplihack: AMPLIHACK_DEFAULT_MODEL is set, so `codex` is launched with `--model gpt-6.1-sol` in place of the model its tier maps to. Unset it to restore the mapping. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
+amplihack: model tier `strong` on `codex`: passing `-c model_reasoning_effort=high`; the model stays `codex`'s own. The tier asks for `xhigh`; the column's `max_effort` lowered it. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 ```
 
-One launch gets one line about its tier, naming the launch rather than the
-step. The `[step_tiers]` lines are printed once per run by `amplihack recipe
-run`, before anything is staged. Every diagnostic here leaves the run going: a
-tier is a preference about which model runs a step, and no mistake in it may
-stop a run of a hundred agent steps. amplihack does not verify that a model in
-the mapping is available to your account, your plan or your harness install; a
-harness that does not have the model says so in its own output.
+One launch gets at most two lines about its tier, each naming a distinct fact,
+and names the launch rather than the step. The `[step_tiers]` lines are printed
+once per run by `amplihack recipe run`, before anything is staged. Every
+diagnostic here leaves the run going. amplihack does not verify that a mapped
+model is available to your account, your plan or your harness install; a
+harness that does not have it says so in its own output.
 
 ## Related
 

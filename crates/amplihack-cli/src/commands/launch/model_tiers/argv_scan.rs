@@ -4,18 +4,14 @@
 //! Resolving a tier means finding a `--model <word>` pair the recipe runner
 //! wrote and replacing or deleting it. A scanner that does not walk arity
 //! would read the value of `--output-last-message --model` as a flag and
-//! delete the following argument, silently changing where Codex writes its
-//! result. Whether a Codex option takes a value comes from the one option
-//! table in `amplihack-launcher`, the same table the prompt rewrite and the
-//! agent-step injection read.
+//! delete the following argument. Whether a Codex option takes a value comes
+//! from the one option table in `amplihack-launcher`.
 //!
-//! Arity walking is applied to Codex only. Claude Code and Copilot CLI have
-//! their own, different tables, and amplihack has none for them: walking a
-//! Claude command line with Codex's table would read `-p` (Claude's
-//! `--print`, a flag) as Codex's `--profile` and skip the `--model` that
-//! follows it, which is exactly the shape the recipe runner builds. For those
-//! harnesses `--model` is recognised wherever it appears before `--`, which
-//! is how `model_args` has always detected an explicit model.
+//! Arity walking is applied to Codex only: walking a Claude command line with
+//! Codex's table would read `-p` (Claude's `--print`, a flag) as Codex's
+//! `--profile` and skip the `--model` that follows it, which is the shape the
+//! recipe runner builds. For those harnesses `--model` is recognised wherever
+//! it appears before `--`, as `model_args` has always detected one.
 //!
 //! Pure: it reads the argv and a compiled-in table, nothing else.
 

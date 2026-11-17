@@ -2,13 +2,11 @@
 //! Codex a real reasoning effort, on the harness's command line.
 //!
 //! This is the behaviour evidence the issue's 3 November comment asks for:
-//! the real chain is exercised — the `amplihack` binary is started with the
-//! argv the recipe runner builds, and a fake harness on `PATH` records its
-//! own argv. Nothing here reimplements a command builder, because a copied
-//! implementation would have passed while the shipped one was broken.
-//!
-//! The recipe runner puts the step's `model:` value on the passthrough side
-//! itself, so what amplihack receives is, for example:
+//! the `amplihack` binary is started with the argv the recipe runner builds,
+//! and a fake harness on `PATH` records its own argv. Nothing here
+//! reimplements a command builder, because a copied implementation would have
+//! passed while the shipped one was broken. The runner puts the step's
+//! `model:` value on the passthrough side itself:
 //!
 //! ```text
 //! amplihack codex -- exec --output-last-message <path> --model strong -
@@ -16,8 +14,7 @@
 //! ```
 //!
 //! Every path the run may read or write is under one temp dir, and the
-//! environment is set on the child only: no test here touches the real
-//! `~/.claude`, `~/.codex` or `~/.amplihack`.
+//! environment is set on the child only.
 
 #![cfg(target_os = "linux")]
 use std::fs;

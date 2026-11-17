@@ -28,6 +28,7 @@ fn request<'a>(harness: &'a str, args: &'a [String], table: &'a Table) -> Reques
         argv: args,
         table,
         force: None,
+        default_model: None,
         through_gateway: false,
     }
 }
@@ -337,6 +338,7 @@ fn a_gateway_launch_deletes_the_tier_and_says_why() {
         argv: &args,
         table,
         force: None,
+        default_model: None,
         through_gateway: true,
     });
     assert_eq!(
@@ -370,6 +372,7 @@ fn a_forced_model_replaces_a_tier_and_keeps_the_tiers_effort() {
             argv: &args,
             table,
             force: Some("gpt-6.1-mini"),
+            default_model: None,
             through_gateway: false,
         });
         assert_eq!(model_of(&out), Some("gpt-6.1-mini"), "codex/{tier}");
@@ -390,6 +393,7 @@ fn a_forced_model_supplies_one_where_the_command_has_none() {
         argv: &args,
         table,
         force: Some("claude-haiku-5-5"),
+        default_model: None,
         through_gateway: false,
     });
     assert_eq!(model_of(&out), Some("claude-haiku-5-5"), "{:?}", out.argv);
@@ -412,6 +416,7 @@ fn a_forced_model_lands_before_the_end_of_options_marker() {
             argv: &args,
             table,
             force: Some("claude-haiku-5-5"),
+            default_model: None,
             through_gateway: false,
         });
         let marker = out
@@ -446,6 +451,7 @@ fn a_forced_model_does_not_make_a_second_prompt_in_print_mode() {
         argv: &args,
         table,
         force: Some("claude-haiku-5-5"),
+        default_model: None,
         through_gateway: false,
     });
     assert!(
@@ -464,6 +470,7 @@ fn a_forced_model_with_no_marker_is_appended_as_before() {
         argv: &args,
         table,
         force: Some("claude-haiku-5-5"),
+        default_model: None,
         through_gateway: false,
     });
     assert_eq!(
@@ -484,6 +491,7 @@ fn a_forced_model_outranks_an_explicit_concrete_id() {
         argv: &args,
         table,
         force: Some("claude-haiku-5-5"),
+        default_model: None,
         through_gateway: false,
     });
     assert_eq!(model_of(&out), Some("claude-haiku-5-5"));
@@ -505,6 +513,7 @@ fn a_forced_model_does_not_route_past_the_gateway() {
         argv: &args,
         table,
         force: Some("claude-haiku-5-5"),
+        default_model: None,
         through_gateway: true,
     });
     assert_eq!(
@@ -525,6 +534,7 @@ fn a_forced_model_that_does_not_validate_is_refused_and_the_tier_applies() {
         argv: &args,
         table,
         force: Some("--dangerously-skip-permissions"),
+        default_model: None,
         through_gateway: false,
     });
     assert_eq!(

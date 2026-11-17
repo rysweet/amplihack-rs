@@ -253,10 +253,8 @@ fn json_scalar_to_string(value: &JsonValue) -> String {
 // =========================================================================
 // Issue #1619: the run summary names the model and effort each step ran on.
 //
-// The section is additive. The step status line and its `    Output: ` line
-// are a machine-read contract — `amplifier-bundle/tools/autodrive_loop.sh`
-// parses them with awk to read the LOOP_HEALTH verdict (issue #1512) — and
-// nothing here reshapes them.
+// The section is additive: nothing here reshapes the step status line or its
+// `    Output: ` line, which are a machine-read contract (issue #1512).
 //
 // Attribution is a correlation, not a lookup: no step id ever reaches a child
 // process, because the recipe runner sets no step-id environment variable. So
@@ -265,20 +263,17 @@ fn json_scalar_to_string(value: &JsonValue) -> String {
 //
 // Two things break the line-up, and only one of them is a count. A retry or a
 // resumed run changes how many records there are. A parallel group does not:
-// `execute_parallel_group` collects its results into a vector indexed by
-// declaration position, so the step results stay in declaration order while
-// the records are appended in launch order. Pairing by position would then
-// attach step ids to the wrong launches with the counts agreeing, which is
-// worse than the honest line, so a declared group refuses pairing outright.
+// its results are collected by declaration position while the records are
+// appended in launch order, so pairing by position would attach step ids to
+// the wrong launches with the counts agreeing. A declared group therefore
+// refuses pairing outright.
 // =========================================================================
 
 /// Whether this step result carries a `parallel_group`.
 ///
 /// Read out of the flattened `extra` map rather than a named field: the
-/// pinned runner's `StepResult` does not report grouping today, so this is
-/// the guard holding the moment it does, and it costs one map lookup per
-/// step until then. Nothing about the section's correctness may rest on the
-/// bundled recipes happening not to group a tiered step.
+/// pinned runner's `StepResult` does not report grouping today, so this is the
+/// guard holding the moment it does.
 fn declares_a_parallel_group(step: &RecipeRunStepResult) -> bool {
     step.extra
         .get("parallel_group")
@@ -348,11 +343,9 @@ const MAX_TIER_LINES: usize = 50;
 /// What one launch ran on, in one line: the tier it asked for, the model and
 /// effort it got, and where they differ from what was asked.
 fn describe(record: &Record) -> String {
-    // Every field here was read back off disk by `record::read_all`, and a
-    // run directory is not a trust boundary amplihack owns alone. The values
-    // are validated or allowlisted on the way in, so this is defence in
-    // depth; it is also the only place in this feature where text from a file
-    // reaches a terminal, and the repo already has one answer for that.
+    // Read back off disk by `record::read_all`, and a run directory is not a
+    // trust boundary amplihack owns alone. Defence in depth: the values are
+    // validated or allowlisted on the way in.
     let safe = crate::user_config::safe::display_safe;
     let tier = record.tier.map(Tier::as_str).unwrap_or("none");
     let model = match record.effective_model.as_deref() {
@@ -399,9 +392,8 @@ fn reason_text(reason: Fallback, column: &str) -> String {
 /// `execute` records it rather than the summary reading `AMPLIHACK_RUN_DIR`
 /// back: a top-level `recipe run` hands that variable to its children without
 /// setting it on itself, so reading the environment would make the section
-/// appear only for a nested run — and there it would report the parent's
-/// launches as this run's steps. A run with no durable directory of its own
-/// gets no section, which is the honest answer.
+/// appear only for a nested run, reporting the parent's launches as this
+/// run's steps.
 static RUN_DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 
 /// Name the run directory whose tier records this process's summary reads.
@@ -412,8 +404,7 @@ pub(super) fn remember_run_dir(dir: &std::path::Path) {
 }
 
 /// Every tier record of the run being summarised, in launch order. Empty when
-/// the run had no durable directory, which is also what makes the section
-/// absent from a summary with nothing to report.
+/// the run had no durable directory.
 pub(super) fn run_tier_records() -> Vec<Record> {
     let Ok(slot) = RUN_DIR.lock() else {
         return Vec::new();

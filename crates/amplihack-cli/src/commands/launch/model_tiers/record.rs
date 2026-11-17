@@ -3,15 +3,12 @@
 //!
 //! The schema is a closed set of eleven named scalars with no argv,
 //! environment, prompt, working-directory or path field, pinned by
-//! `tests_record.rs`. This file is a run artefact that people paste into
-//! issues and pull requests, which is what stops a later "just add argv for
-//! debugging" commit from putting command-line-grade content into it
-//! (issue #2030's class of mistake).
+//! `tests_record.rs`: this file is a run artefact that people paste into
+//! issues.
 //!
 //! Writing is best effort and never blocks a launch: with no run directory
-//! nothing is written and nothing is created, and a planted symlink, a
-//! directory in the file's place or a lock amplihack cannot take all skip the
-//! record rather than stop the step.
+//! nothing is written, and a planted symlink, a directory in the file's place
+//! or a lock amplihack cannot take all skip the record rather than the step.
 
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
@@ -68,9 +65,8 @@ pub(crate) struct Record {
 
 /// Append one record to `run_dir`'s file, assigning its sequence number.
 ///
-/// Does nothing at all when `run_dir` is `None` or is not an existing
-/// directory: an existing directory is the whole precondition, and amplihack
-/// never creates a run directory for this file.
+/// Does nothing when `run_dir` is `None` or is not an existing directory;
+/// amplihack never creates a run directory for this file.
 pub(crate) fn append(run_dir: Option<&Path>, record: &Record) {
     let Some(dir) = run_dir else { return };
     if !fs::metadata(dir).is_ok_and(|meta| meta.is_dir()) {
@@ -83,17 +79,14 @@ pub(crate) fn append(run_dir: Option<&Path>, record: &Record) {
     {
         use std::os::unix::fs::OpenOptionsExt;
         // O_NOFOLLOW refuses a planted symlink rather than following it into,
-        // say, a settings file. A directory in the file's place fails here
-        // too, which is what the test asserts.
+        // say, a settings file. A directory in the file's place fails too.
         options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
     let Ok(mut file) = options.open(&path) else {
         return;
     };
-    // The open handle, not the path: re-stating by path re-checks a
-    // different object from the one about to be written, and on a platform
-    // with no `O_NOFOLLOW` above it would pass for a symlink to a regular
-    // file and append through it.
+    // The open handle, not the path: re-stating by path would check a
+    // different object from the one about to be written.
     if !file.metadata().is_ok_and(|meta| meta.is_file()) {
         return;
     }
@@ -117,7 +110,7 @@ pub(crate) fn append(run_dir: Option<&Path>, record: &Record) {
 ///
 /// Zero when the file is not valid UTF-8, and short of the truth past the
 /// `MAX_RECORD_BYTES` cut, so `seq` can repeat. The record is a report, not a
-/// control, and neither case is worth a second pass over the file to fix.
+/// control.
 fn count_lines(file: &mut fs::File) -> u64 {
     let mut text = String::new();
     if file

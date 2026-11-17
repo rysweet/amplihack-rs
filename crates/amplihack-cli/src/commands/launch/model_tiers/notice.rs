@@ -20,6 +20,9 @@ pub(crate) enum Notice {
         tier: Tier,
         model: Option<String>,
         effort: Option<Effort>,
+        /// The effort the tier asked for, when the column's declared
+        /// `max_effort` stepped it down to the one above.
+        capped_from: Option<Effort>,
     },
     /// The command line already set the reasoning effort, so the tier gave
     /// this launch its model only.
@@ -51,6 +54,13 @@ pub(crate) enum Notice {
     Forced { harness: String, model: String },
     /// `model.force` named something that could act as another argument.
     ForcedRefused { reason: String },
+    /// The operator's own `AMPLIHACK_DEFAULT_MODEL` replaced the model the
+    /// tier maps to, which is what keeps amplihack usable on an account
+    /// without the models the shipped mapping names.
+    DefaultModel { harness: String, model: String },
+    /// `AMPLIHACK_DEFAULT_MODEL` named something that could act as another
+    /// argument; the step's own tier applies.
+    DefaultModelRefused { reason: String },
     /// A tier file could not be read or parsed; the shipped mapping applies.
     TableLoadFailed { path: String, reason: String },
     /// A tier file names a word that is not one of the three tiers.
@@ -68,8 +78,10 @@ pub(crate) enum Notice {
         tier: String,
         reason: String,
     },
-    /// A tier file's cell names an effort outside the accepted list; the
-    /// effort is dropped and the model still applies.
+    /// A tier file names an effort outside the accepted list. `tier` is the
+    /// path component it was written under: one of the three tier words, or
+    /// `max_effort` for a column's ceiling. The value is dropped and the rest
+    /// of the file still applies.
     BadEffort {
         column: String,
         tier: String,
@@ -123,6 +135,7 @@ impl Notice {
                 tier,
                 model,
                 effort,
+                capped_from,
             } => {
                 let what = match (model.as_deref(), effort) {
                     (Some(model), Some(effort)) => format!(
@@ -142,8 +155,15 @@ impl Notice {
                         format!("the model and effort stay `{harness}`'s own")
                     }
                 };
+                let capped = match capped_from {
+                    Some(requested) => format!(
+                        " The tier asks for `{}`; the column's `max_effort` lowered it.",
+                        requested.as_str()
+                    ),
+                    None => String::new(),
+                };
                 format!(
-                    "amplihack: model tier `{}` on `{harness}`: {what}. {ADVICE}",
+                    "amplihack: model tier `{}` on `{harness}`: {what}.{capped} {ADVICE}",
                     tier.as_str()
                 )
             }
@@ -192,6 +212,16 @@ impl Notice {
             Notice::ForcedRefused { reason } => {
                 format!("amplihack: model.force is ignored: {reason}. The step's own tier applies.")
             }
+            Notice::DefaultModel { harness, model } => format!(
+                "amplihack: AMPLIHACK_DEFAULT_MODEL is set, so `{harness}` is launched with \
+                 `--model {}` in place of the model its tier maps to. Unset it to restore \
+                 the mapping. {ADVICE}",
+                display_safe(model)
+            ),
+            Notice::DefaultModelRefused { reason } => format!(
+                "amplihack: AMPLIHACK_DEFAULT_MODEL is ignored: the model {reason}. The \
+                 step's own tier applies."
+            ),
             Notice::TableLoadFailed { path, reason } => format!(
                 "amplihack: {path}: {reason}; the model tiers amplihack ships are used instead."
             ),
@@ -230,7 +260,7 @@ impl Notice {
                 value,
             } => format!(
                 "amplihack: model tiers: `{}.{}`: `{}` is not an accepted reasoning effort; \
-                 it is ignored and the model still applies. The accepted values are {}.",
+                 it is ignored. The accepted values are {}.",
                 display_safe(column),
                 display_safe(tier),
                 display_safe(value),

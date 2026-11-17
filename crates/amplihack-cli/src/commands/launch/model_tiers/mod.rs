@@ -23,6 +23,10 @@ pub(crate) mod table;
 #[cfg(test)]
 mod tests_codex_effort;
 #[cfg(test)]
+mod tests_default_model;
+#[cfg(test)]
+mod tests_effort_ceiling;
+#[cfg(test)]
 mod tests_load;
 #[cfg(test)]
 mod tests_record;
@@ -65,9 +69,7 @@ const RUN_ID_ENV: &str = "AMPLIHACK_RUN_ID";
 /// `is_claude_compatible_tool` excludes, so deriving it twice put a `--model`
 /// the gateway rejects on every tiered Copilot step.
 ///
-/// Prints the stderr lines the resolution produced and returns the tail to
-/// use in place of `extra_args`. A tail with no tier and no forced model
-/// comes back byte-identical.
+/// A tail with no tier and no forced model comes back byte-identical.
 pub(crate) fn resolve_passthrough(
     tool: &str,
     extra_args: &[String],
@@ -123,7 +125,22 @@ fn applied_notice(tool: &str, record: &record::Record, effort: EffortOutcome) ->
         tier,
         model: record.effective_model.clone(),
         effort: record.effective_effort,
+        capped_from: capped_from(record),
     })
+}
+
+/// The effort a column's declared `max_effort` stepped this launch down from,
+/// or `None`.
+///
+/// Derived from the record's two effort fields, and only when both are known:
+/// `Option<Effort>` orders `None` below every `Some`, and a column with no
+/// launch control for effort records one it never writes, so a naive
+/// comparison would claim a cap on an effort that never reached a harness.
+fn capped_from(record: &record::Record) -> Option<table::Effort> {
+    match (record.requested_effort, record.effective_effort) {
+        (Some(requested), Some(effective)) if requested > effective => Some(requested),
+        _ => None,
+    }
 }
 
 /// The tier's reasoning effort, on the one harness that has a launch control
@@ -131,13 +148,11 @@ fn applied_notice(tool: &str, record: &record::Record, effort: EffortOutcome) ->
 ///
 /// Codex takes it as its own `-c model_reasoning_effort=<value>` argument,
 /// which is the fix for the propagation defect of the issue's 3 November
-/// comment. Claude Code and Copilot CLI have no such control, so their tiers
-/// differ by model and a declared effort for them is recorded rather than
-/// written onto a command line.
+/// comment. Claude Code and Copilot CLI have no such control, so a declared
+/// effort for them is recorded rather than written onto a command line.
 ///
-/// An effort amplihack will not write never reaches here: the value is an
-/// [`table::Effort`], and a word outside the five is refused at the table
-/// with a `BadEffort` notice, where the operator wrote it.
+/// The value is an [`table::Effort`], so a word outside the five is refused at
+/// the table, where the operator wrote it, and never reaches here.
 fn reasoning_effort(
     tool: &str,
     args: Vec<String>,
@@ -154,9 +169,9 @@ fn reasoning_effort(
 
 /// Resolve every tier on one launch's passthrough tail.
 ///
-/// Reads the instance mapping, `model.force` and the gateway variables, calls
-/// [`resolve::resolve`], writes the measurement record and hands the stderr
-/// lines back to the caller. It decides nothing itself.
+/// Reads the instance mapping, `model.force`, `AMPLIHACK_DEFAULT_MODEL` and
+/// the gateway variables, then calls [`resolve::resolve`]. It decides nothing
+/// itself.
 fn resolve_for_launch(
     binary_name: &str,
     extra_args: &[String],
@@ -164,6 +179,7 @@ fn resolve_for_launch(
 ) -> Resolution {
     let loaded = loaded_table();
     let force = forced_model();
+    let default_model = operator_default_model();
     // One source of truth for which harnesses the gateway routes: the target
     // the caller already resolved. The environment read stays here, in the
     // module that owns every syscall.
@@ -173,6 +189,7 @@ fn resolve_for_launch(
         argv: extra_args,
         table: &loaded.table,
         force: force.as_deref(),
+        default_model: default_model.as_deref(),
         through_gateway,
     });
     // The file's own diagnostics come first: they explain why a mapping is
@@ -189,11 +206,10 @@ fn resolve_for_launch(
 /// The per-step tier overrides an instance has configured, and the
 /// diagnostics gathered while reading the file they came from.
 ///
-/// Empty when nothing is configured, which is what makes a run with no
-/// overrides byte-identical to one before this feature. The notices come back
-/// with the map: this is the recipe-run process's only entry into the tier
-/// file and it has no launch of its own to print from, so an unparsable file
-/// or a bad `[step_tiers]` value would otherwise never be mentioned.
+/// Empty when nothing is configured. The notices come back with the map: this
+/// is the recipe-run process's only entry into the tier file and it has no
+/// launch of its own to print from, so an unparsable file or a bad
+/// `[step_tiers]` value would otherwise never be mentioned.
 pub(crate) fn step_tier_overrides() -> (&'static BTreeMap<String, Tier>, &'static [Notice]) {
     let loaded = loaded_table();
     (loaded.table.step_tiers(), &loaded.notices)
@@ -237,12 +253,10 @@ fn read_tier_file(path: &Path) -> (Table, Vec<Notice>) {
         )
     };
     // The same bounded, type-checked, non-blocking read every amplihack
-    // config file gets — at most 64 KiB, regular files only, no hang on a
-    // FIFO or a device — plus the ownership and permission check
-    // `model.force` and `model.tier_map` get in the config loader, which has
-    // to follow them into this file: otherwise a group-writable home chooses
-    // the model every agent step runs on, and can retarget one named step.
-    // The check is made on the open handle, so the file judged and the file
+    // config file gets, plus the ownership and permission check `model.force`
+    // and `model.tier_map` get in the config loader: otherwise a
+    // group-writable home chooses the model every agent step runs on. The
+    // check is made on the open handle, so the file judged and the file
     // parsed are one object.
     match read_checked(path) {
         Ok(Some(text)) => match Table::parse_override(&text) {
@@ -289,6 +303,20 @@ fn forced_model() -> Option<String> {
         .as_ref()
         .and_then(Value::as_text)
         .map(str::to_string)
+}
+
+/// The operator's own `AMPLIHACK_DEFAULT_MODEL`, when they set one.
+///
+/// Read through the same function the untiered path uses, so the two cannot
+/// normalise a dotted Claude id differently. Only a value the operator set
+/// counts: `configured_default_model` answers the built-in default when the
+/// variable is unset, and taking that as a decision would flatten every tier
+/// onto one model and hide every fall-back this feature reports.
+fn operator_default_model() -> Option<String> {
+    use crate::commands::launch::command::{ModelSource, configured_default_model};
+    configured_default_model()
+        .filter(|selection| selection.source == ModelSource::DefaultModelEnv)
+        .map(|selection| selection.model)
 }
 
 /// The user-only layer of the config, read once per process. The project

@@ -124,7 +124,7 @@ steps:
     working_dir: "{{review_launch_dir}}"
     output: "crusty_evidence"
     agent: "amplihack:core:builder"
-    model: "fast"
+    model: "standard"
     prompt: |
       Judge criterion 3 for PR #{{pr_number}} from the PR's own Crusty verdict comment (#2628); no tool parses or gates it and no state file decides it. Use noninteractive execution with GH_PAGER=cat. The current head is `git -C "{{repo_path}}" rev-parse HEAD`.
       1. Read the drive's own login once with `gh api user --jq .login`.

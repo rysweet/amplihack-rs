@@ -1,26 +1,16 @@
 //! Issue #1619 (TDD): the run summary names the model and effort each step
 //! ran on.
 //!
-//! `Record` derives `Clone` so a test can build a one-element slice from one.
-//!
 //! Pure: it takes the records and the runner's ordered step results and
-//! returns the lines of the new section. The caller reads the record file.
-//!
-//! The section is additive. The existing step status line and its
-//! `    Output: ` line are a machine-read contract —
-//! `amplifier-bundle/tools/autodrive_loop.sh` parses them with awk — and
-//! nothing here may reshape them.
+//! returns the lines of the new section. The section is additive, and the
+//! existing step status line and its `    Output: ` line are a machine-read
+//! contract that nothing here may reshape.
 //!
 //! Attribution is a correlation, not a lookup: no step id ever reaches a
-//! child process, because the recipe runner sets no step-id environment
-//! variable. Step ids therefore appear only when the records and the steps
-//! that ran line up, and otherwise the section prints by launch sequence and
-//! says why.
-//!
-//! A retry or a resumed run changes the count. A parallel group does not —
-//! the runner collects a group's results by declaration position while the
-//! records are appended in launch order — so it is refused by name rather
-//! than caught by the count.
+//! child process. Step ids therefore appear only when the records and the
+//! steps that ran line up, and otherwise the section prints by launch
+//! sequence and says why. A retry or a resumed run changes the count; a
+//! parallel group does not, so it is refused by name rather than by count.
 
 use super::super::*;
 use crate::commands::launch::model_tiers::record::{Fallback, Record};

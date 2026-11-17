@@ -1,16 +1,13 @@
 //! Issue #1619 (TDD): overriding one step's tier.
 //!
-//! Staging has no output channel of its own: it hands its diagnostics back
-//! and `execute.rs` renders them, once per run. A step id nothing matches is
-//! the likeliest operator error in this feature and the one with no other
-//! symptom, so it is a notice rather than a silence.
+//! The step id never reaches the child process — the recipe runner sets no
+//! step-id environment variable — so the override is applied recipe-side, by
+//! patching a private copy. The patch is line-scoped and vocabulary-closed:
+//! only one of three literal words is ever written into a recipe file.
 //!
-//! Why the override is applied recipe-side rather than at launch: the step id
-//! never reaches the child process. The recipe runner sets no step-id
-//! environment variable, so amplihack cannot know at launch time which step a
-//! command belongs to. Patching the recipe is the honest way to change one
-//! step's tier, and the patch is line-scoped and vocabulary-closed — only one
-//! of three literal words is ever written into a recipe file.
+//! Staging has no output channel of its own; `execute.rs` renders its
+//! diagnostics. A step id nothing matches is the likeliest operator error
+//! here and the one with no other symptom, so it is a notice, not a silence.
 //!
 //! Homes and recipe directories here are tempfile directories only.
 

@@ -4,26 +4,17 @@
 //! time which step a command belongs to. Instead, before the runner starts,
 //! each recipe holding a named step is copied into a run-private directory
 //! with that one `model:` line rewritten, and `execute.rs` passes that
-//! directory to the runner as its first `-R` argument.
-//!
-//! `-R` is the delivery route because it is the only one that wins. The
-//! runner resolves a recipe from, in order, its `-R` directories, an anchored
-//! search from the recipe it is already running, then the package search
-//! directories named by `AMPLIHACK_PACKAGE_RECIPE_DIR`. amplihack forwards
-//! the bundle as a `-R` of its own, so a staged copy offered through that
-//! variable was always outranked by the recipe it was patched from, and the
-//! override had no effect at all (issue #1619, found in review).
+//! directory to the runner as its first `-R` argument. `-R` is the only route
+//! that wins: the runner resolves a recipe from its `-R` directories first,
+//! then an anchored search, then `AMPLIHACK_PACKAGE_RECIPE_DIR`, which
+//! amplihack's own bundle `-R` already outranked.
 //!
 //! The patch is line-scoped and vocabulary-closed: the only value ever
 //! written is one of three literal tier words, so no text from an override
 //! file reaches a prompt or a shell body. Step ids are identifiers, never
 //! path components, and a staged file's name comes only from the recipe
-//! amplihack found. Only agent steps are patched: `model:` is an ignored
-//! field on every other kind of step, so writing one there would change
-//! nothing and say nothing.
-//!
-//! With nothing configured nothing is staged, no `-R` is added, and the run
-//! behaves byte for byte as before.
+//! amplihack found. Only agent steps are patched. With nothing configured
+//! nothing is staged and the run behaves byte for byte as before.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -78,13 +69,11 @@ pub(crate) struct Outcome {
 
 /// Write patched copies of the recipes that declare any step in `overrides`.
 ///
-/// `Outcome::staged` is `None` when there is nothing to do, as on every run
-/// that configures no per-step tier. A step id that is not an identifier, and
-/// one no candidate recipe declares, each stage nothing and come back as a
-/// notice: neither may stop a run of a hundred agent steps, and neither may
-/// pass in silence, since a mistyped step id has no other symptom. An
-/// unreadable search directory is skipped without a line of its own, as the
-/// runner would have skipped it too, and its step ids are reported unmatched.
+/// `Outcome::staged` is `None` when there is nothing to do. A step id that is
+/// not an identifier, and one no candidate recipe declares, each stage nothing
+/// and come back as a notice: neither may stop a run, and neither may pass in
+/// silence, since a mistyped step id has no other symptom. An unreadable
+/// search directory is skipped as the runner would have skipped it.
 pub(crate) fn stage(
     run_dir: &Path,
     recipe_dirs: &[PathBuf],
@@ -110,12 +99,10 @@ pub(crate) fn stage(
         files: Vec::new(),
         top_level: None,
     };
-    // Every file name the search directories hold, computed before the loop
-    // rather than accumulated during it. A candidate that returns early —
-    // unreadable, oversized, or declaring none of the configured ids —
-    // reserves nothing, so a set built as a side effect of staging leaves
-    // exactly those names free for the recipe named on the command line to
-    // take (issue #1619, S1 in review).
+    // Computed before the loop rather than accumulated during it: a candidate
+    // that returns early reserves nothing, so a set built as a side effect of
+    // staging would leave exactly those names free for the recipe named on
+    // the command line to take (issue #1619, S1 in review).
     let search_names = search_dir_names(recipe_dirs);
     let mut written: BTreeSet<String> = BTreeSet::new();
     let mut matched: BTreeSet<String> = BTreeSet::new();
@@ -143,9 +130,8 @@ pub(crate) fn stage(
             continue;
         };
         for step in &patched.not_an_agent {
-            // The id exists, so it is not a typo and must not be reported as
-            // one; `model:` on any other kind of step is a field the runner
-            // ignores, so writing it would have been a silent no-op.
+            // The id exists, so it is not a typo; `model:` on any other kind
+            // of step is a field the runner ignores.
             out.notices.push(Notice::StepTierNotAnAgentStep {
                 recipe: name.clone(),
                 step: step.clone(),
@@ -156,11 +142,10 @@ pub(crate) fn stage(
             continue;
         }
         // R1: a staged copy answers every later lookup of its name for the
-        // whole run, so staging the recipe named on the command line under a
-        // name a search directory also holds would let a repository-local
-        // file stand in for the bundled one, bodies and all. The search
-        // directory keeps the name; the same file reached by two routes is
-        // not a collision.
+        // whole run, so staging the command line's recipe under a name a
+        // search directory also holds would let a repository-local file stand
+        // in for the bundled one, bodies and all. The same file reached by
+        // two routes is not a collision.
         if !source.from_search_dir
             && search_names
                 .get(&name)
@@ -172,21 +157,18 @@ pub(crate) fn stage(
             matched.extend(patched.matched);
             continue;
         }
-        // The patch is line-scoped, and a recipe body can hold a line that
-        // reads exactly like a step header at the step indent — a here-
-        // document, say — which the line walk cannot tell from one. Such a
-        // copy is no longer the recipe it was patched from, and the staging
-        // directory is the runner's first `-R`, so writing it would put a
-        // corrupted file in front of a sound one. Re-reading the rewritten
-        // text as YAML is what tells the two apart.
+        // A recipe body can hold a line that reads exactly like a step header
+        // at the step indent — a here-document, say — which the line walk
+        // cannot tell from one. The staging directory is the runner's first
+        // `-R`, so writing such a copy would put a corrupted file in front of
+        // a sound one. Re-reading it as YAML tells the two apart.
         if let Err(reason) = reparses(&patched.text) {
             out.notices.push(Notice::StagedRecipeDropped {
                 recipe: name.clone(),
                 reason,
             });
-            // The ids are counted as matched all the same: the recipe did
-            // name them, and the drop is the line that explains this run.
-            // Reporting them unmatched as well would say something untrue.
+            // Counted as matched all the same: the recipe did name them, and
+            // reporting them unmatched too would say something untrue.
             matched.extend(patched.matched);
             written.insert(name);
             continue;
@@ -201,10 +183,9 @@ pub(crate) fn stage(
         write_private(&target, &patched.text)?;
         written.insert(name);
         matched.extend(patched.matched);
-        // Set whichever route reached it. The common case is that the
-        // top-level recipe was itself resolved out of a search directory, so
-        // the search-dir pass is what stages it and the positional argument
-        // must still be redirected to that copy.
+        // Set whichever route reached it: the top-level recipe is usually
+        // itself resolved out of a search directory, and the positional
+        // argument must still be redirected to that copy.
         if same_file(&source.path, top_level_recipe) {
             staged.top_level = Some(target.clone());
         }
@@ -235,11 +216,9 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// The first file of each name across the search directories, in the order
 /// the runner would consult them.
 ///
-/// Bounded by [`MAX_CANDIDATES`], like the candidate list itself and for the
-/// same reason: a directory of unbounded size must not become an unbounded
-/// read. The two bounds are the same number over the same order, so a name
-/// this map does not reach is also a file staging will not look at, and the
-/// run says so through [`Notice::RecipeCandidatesCapped`].
+/// Bounded by [`MAX_CANDIDATES`] over the same order as the candidate list, so
+/// a name this map does not reach is also a file staging will not look at, and
+/// the run says so through [`Notice::RecipeCandidatesCapped`].
 fn search_dir_names(recipe_dirs: &[PathBuf]) -> BTreeMap<String, PathBuf> {
     let mut out: BTreeMap<String, PathBuf> = BTreeMap::new();
     for dir in recipe_dirs {
@@ -276,22 +255,17 @@ struct Candidate {
 /// first, then the one named on the command line, and whether the search
 /// directories held more than the cap.
 ///
-/// The search directories come first because a staged file answers every
-/// later lookup of its name for the whole run. Staging the recipe named on
-/// the command line ahead of them would let a repository-local file of a
-/// bundled name stand in for the bundled one, bodies and all. The named
-/// recipe is still staged where no search directory holds a file of that
-/// name, so a single-step override covers the recipe the operator asked for
-/// whatever the search path holds.
-///
-/// Capped at [`MAX_CANDIDATES`], so a directory of unbounded size does not
-/// become an unbounded set of copies.
+/// The search directories come first because a staged file answers every later
+/// lookup of its name for the whole run, so staging the command line's recipe
+/// ahead of them would let a repository-local file of a bundled name stand in
+/// for the bundled one. It is still staged where no search directory holds
+/// that name. Capped at [`MAX_CANDIDATES`].
 fn candidates(recipe_dirs: &[PathBuf], top_level_recipe: &Path) -> (Vec<Candidate>, bool) {
     let mut out: Vec<Candidate> = Vec::new();
     for dir in recipe_dirs {
+        // A search directory that is not there is not an error: the runner
+        // would have skipped it too.
         let Ok(entries) = fs::read_dir(dir) else {
-            // A search directory that is not there is not an error: the
-            // runner would have skipped it too.
             continue;
         };
         let mut found: Vec<PathBuf> = entries
@@ -338,8 +312,8 @@ fn read_recipe(path: &Path) -> Option<String> {
 /// being YAML.
 ///
 /// The reason names the failure and where it is, never the text that caused
-/// it: these lines land in run logs that get pasted into issues, and a recipe
-/// body holds prompts and shell.
+/// it: a recipe body holds prompts and shell, and run logs get pasted into
+/// issues.
 fn reparses(text: &str) -> Result<(), String> {
     match serde_yaml::from_str::<serde_yaml::Value>(text) {
         Ok(_) => Ok(()),
@@ -363,10 +337,9 @@ struct Patched {
     /// what was configured, so a step id no recipe declares is reported
     /// rather than passing in silence.
     matched: Vec<String>,
-    /// The named step ids this recipe declares as something other than an
-    /// agent step. Nothing is rewritten for them — `model:` is a field the
-    /// runner ignores everywhere else — but the id exists, so the caller
-    /// reports it as its own case rather than as a step id nothing declares.
+    /// Named ids this recipe declares as something other than an agent step.
+    /// Nothing is rewritten for them, but the id exists, so the caller
+    /// reports it as its own case rather than as one nothing declares.
     not_an_agent: Vec<String>,
 }
 
@@ -391,9 +364,8 @@ fn is_agent_step(step: &serde_yaml::Value) -> bool {
 /// Every step `text` declares, by id, and whether it is an agent step.
 ///
 /// `None` when the text is not a recipe amplihack can read as YAML. The step
-/// type is never inferred from the line walk: the runner infers it from
-/// fields that may sit anywhere in the step, and a recipe amplihack cannot
-/// parse is one the runner would not run either.
+/// type is never inferred from the line walk: the runner infers it from fields
+/// that may sit anywhere in the step.
 fn declared_steps(text: &str) -> Option<BTreeMap<String, bool>> {
     let document: serde_yaml::Value = serde_yaml::from_str(text).ok()?;
     let steps = document.get("steps")?.as_sequence()?;
@@ -412,16 +384,11 @@ fn declared_steps(text: &str) -> Option<BTreeMap<String, bool>> {
 ///
 /// Read line by line, the way a reader of the file would: the step's `id:`
 /// opens it, and the next `- ` at the same indentation closes it. Only the
-/// `model:` line moves; prompts and shell bodies are copied verbatim. The
-/// line walk is kept for writing, which is what it is good at; which steps
-/// it may write to comes from a parse of the original text.
+/// `model:` line moves; prompts and shell bodies are copied verbatim. Which
+/// steps it may write to comes from a parse of the original text.
 ///
-/// A step id amplihack rewrites is read out of a line of `text`, so a file
-/// that contains no wanted id as a substring declares no wanted step and
-/// neither the parse nor the line walk can change it. Saying so first keeps
-/// the 64 bundled recipes this runs over — 22,000 lines, of which one file
-/// typically matches — a substring scan rather than 64 YAML parses and
-/// 22,000 string allocations thrown away.
+/// The substring test first keeps the 64 bundled recipes this runs over, of
+/// which one file typically matches, a scan rather than 64 YAML parses.
 fn patch(text: &str, wanted: &BTreeMap<&str, Tier>) -> Option<Patched> {
     if !wanted.keys().any(|id| text.contains(id)) {
         return None;
@@ -469,11 +436,9 @@ fn patch(text: &str, wanted: &BTreeMap<&str, Tier>) -> Option<Patched> {
         let mut replaced = false;
         for line in &lines[index..end] {
             // Anchored to the step's own field indent, not to `model:`
-            // anywhere in the body: a prompt or a shell line that happens to
-            // begin `model:` is the step's content, and replacing it would
-            // both corrupt the body and leave the step with no tier. No
-            // bundled recipe has that shape today, so the invariant would
-            // otherwise live in the data rather than in the code.
+            // anywhere in the body: a prompt or shell line beginning
+            // `model:` is the step's content, and replacing it would corrupt
+            // the body and leave the step with no tier.
             if !replaced && is_step_field(line, indent, "model:") {
                 out.push(model_line.clone());
                 replaced = true;

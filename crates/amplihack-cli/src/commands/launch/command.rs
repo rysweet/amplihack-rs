@@ -2,6 +2,7 @@
 //! handling, Docker launcher args, and Claude-specific env augmentation.
 
 use super::codex_agent_step;
+use super::model_tiers::table::validate_model_id;
 use super::system_prompt_append;
 use crate::binary_finder::BinaryInfo;
 use crate::commands::uvx_help::is_uvx_deployment;
@@ -390,7 +391,7 @@ pub(super) fn model_args(binary_name: &str, extra_args: &[String]) -> ModelArgs 
             normalised_from: None,
         })
     } else {
-        configured_default_model()
+        configured_default_model().map(|selection| validated_default(selection, &mut out.stderr))
     };
     if let Some(selection) = selection {
         out.stderr
@@ -398,6 +399,33 @@ pub(super) fn model_args(binary_name: &str, extra_args: &[String]) -> ModelArgs 
         out.argv = vec!["--model".to_string(), selection.model];
     }
     out
+}
+
+/// `selection` if amplihack is willing to write its model, or [`DEFAULT_MODEL`].
+///
+/// The value becomes the argv token straight after `--model`, and both Codex
+/// and Claude carry single-token sandbox-bypass flags. Issue #1619 holds
+/// `AMPLIHACK_DEFAULT_MODEL` to [`validate_model_id`] when it replaces a
+/// step's tier; this is the same check on the same value where no tier is
+/// involved, so one path cannot write a token the other refuses. The line
+/// names the rule broken and never the refused value: it lands in run logs
+/// that get pasted into issues.
+fn validated_default(selection: ModelSelection, stderr: &mut Vec<String>) -> ModelSelection {
+    match validate_model_id(&selection.model) {
+        Ok(()) => selection,
+        Err(reason) => {
+            stderr.push(format!(
+                "amplihack: {} is ignored: the model {reason}. Launching with \
+                 amplihack's own default model instead.",
+                selection.source.label()
+            ));
+            ModelSelection {
+                model: DEFAULT_MODEL.to_string(),
+                source: ModelSource::BuiltInDefault,
+                normalised_from: None,
+            }
+        }
+    }
 }
 
 /// The model amplihack requests when the operator has not chosen one.

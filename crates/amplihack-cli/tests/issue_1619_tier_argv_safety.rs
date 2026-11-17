@@ -1,17 +1,14 @@
 //! Issue #1619 (TDD): rewriting `--model` must not disturb the rest of the
 //! command line.
 //!
-//! Resolving a tier means finding a `--model <word>` pair the recipe runner
-//! wrote and replacing or deleting it. That is argv surgery on a command line
-//! that also carries sandbox flags, permission flags, a prompt-file path and
-//! the end-of-options marker. A naive scanner can delete a preceding option's
-//! value, swallow a positional, or leave the rewrite where a later reader
-//! does not see it — and each of those changes what the harness is told to do
-//! without saying so.
+//! Resolving a tier is argv surgery on a command line that also carries
+//! sandbox flags, permission flags, a prompt-file path and the end-of-options
+//! marker. A naive scanner can delete a preceding option's value, swallow a
+//! positional, or leave the rewrite where a later reader does not see it.
 //!
-//! These tests launch the real binary with a fake harness that records its
-//! own argv, and compare the recorded argv with and without a tier. Anything
-//! that is not the `--model` pair must be byte-identical.
+//! These launch the real binary against a fake harness that records its own
+//! argv, and compare the recording with and without a tier. Anything that is
+//! not the `--model` pair must be byte-identical.
 
 #![cfg(target_os = "linux")]
 

@@ -1,24 +1,16 @@
 //! Issue #1619: what `[step_tiers]` could not act on reaches the operator.
 //!
 //! The per-step override is read in the `amplihack recipe run` process, which
-//! performs no launch of its own. Its diagnostics were gathered and dropped
-//! there, so a tier file that would not parse, a value that is not a tier and
-//! a step id no recipe declares all passed in silence — and a typo'd step id
-//! is the likeliest operator error in the feature and the one with no other
-//! symptom, because the run simply proceeds on the tiers the recipes declare.
+//! performs no launch of its own, so its diagnostics were gathered and
+//! dropped there: a tier file that would not parse, a value that is not a
+//! tier and a step id no recipe declares all passed in silence.
 //!
-//! Runs the real `amplihack` binary with stdout and stderr in one file, as
-//! `issue_1437_final_marker.rs` does, against a stub recipe runner. Every
-//! path the run reads or writes is under one temp directory.
-//!
-//! The stub also writes down its own argv, which is how the delivery route
-//! is pinned here: the staged copies reach the runner as its first `-R` and
-//! as the positional recipe argument, and the assertion is over the order
-//! those arguments appear in, not over the name of any constant. The
-//! override used to be offered through `AMPLIHACK_PACKAGE_RECIPE_DIR`, which
-//! the runner consults only after every `-R` — including the bundle
-//! amplihack forwards — so it never had any effect, and the test that was
-//! supposed to pin this asserted a constant against its own literal.
+//! Runs the real `amplihack` binary with stdout and stderr in one file,
+//! against a stub recipe runner, under one temp directory. The stub writes
+//! down its own argv, which is how the delivery route is pinned: the staged
+//! copies reach the runner as its first `-R` and as the positional recipe
+//! argument, and the assertion is over the order those arguments appear in,
+//! not over the name of any constant.
 
 #![cfg(unix)]
 
