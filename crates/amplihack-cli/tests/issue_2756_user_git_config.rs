@@ -17,14 +17,19 @@
 //!    they name.
 //!
 //! The runner is a stub shell script wired through `RECIPE_RUNNER_RS_PATH`.
-//! `apply_to` is applied to exactly that command (`execute.rs:964` and
-//! `:1115`), so the stub's environment is the environment every step would
-//! inherit, and the stub runs the real Git operations rather than asserting on
-//! a list of variable names.
+//! `RunCheckout::apply_to` is applied to exactly that command, at both of its
+//! call sites in `execute.rs`, so the stub's environment is the environment
+//! every step would inherit. The stub runs the real Git operations rather
+//! than asserting on a list of variable names.
 //!
 //! Nothing here reads or writes the developer's real `~/.gitconfig`,
-//! `~/.claude` or `~/.amplihack`, and nothing contacts github.com: the helper
-//! is a local script and the stub performs no network operation.
+//! `~/.claude` or `~/.amplihack`: `Fixture::base_environment` clears the
+//! environment and repoints `HOME`, `TMPDIR` and every tool-state variable
+//! into the temp root, and `AMPLIHACK_TEST_HOME_GUARD` makes the CLI discard
+//! any `HOME` that is not under the temp dir, so a fixture that leaked would
+//! read no user config rather than the developer's. Nothing contacts
+//! github.com either -- the helper is a local script and the stub performs no
+//! network operation.
 #![cfg(unix)]
 
 use std::{
@@ -74,7 +79,6 @@ if [ "${1:-}" = --capabilities ]; then
 fi
 out="$ISSUE_2756_OBSERVATIONS"
 mkdir -p "$out"
-printf '%s' "$(pwd -P)" > "$out/startup_cwd"
 dir=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -266,13 +270,10 @@ impl Fixture {
         c
     }
 
-    fn observed(&self, label: &str, name: &str) -> Vec<u8> {
-        fs::read(self.root.join(label).join(name))
-            .unwrap_or_else(|e| panic!("observation {label}/{name}: {e}"))
-    }
-
     fn observed_text(&self, label: &str, name: &str) -> String {
-        String::from_utf8(self.observed(label, name))
+        let bytes = fs::read(self.root.join(label).join(name))
+            .unwrap_or_else(|e| panic!("observation {label}/{name}: {e}"));
+        String::from_utf8(bytes)
             .unwrap_or_else(|e| panic!("observation {label}/{name} is not UTF-8: {e}"))
     }
 
@@ -344,23 +345,19 @@ fn a_step_resolves_the_users_global_identity_and_credential_helper() {
         redacted(&fields)
     );
 
-    assert_eq!(
-        fields.get("username").map(String::as_str),
-        Some(HELPER_USERNAME),
+    // Deliberately not `assert_eq!`: it prints the value it compared. The
+    // failure this guards against is the fixture's `helper =` reset ceasing
+    // to clear the list, which lets a host-level helper answer first -- and
+    // its answer is a real credential. Compare here, report only `redacted`.
+    assert!(
+        fields.get("username").map(String::as_str) == Some(HELPER_USERNAME),
         "the filled user name is not the helper's: {}",
         redacted(&fields)
     );
-    assert_eq!(
-        fields.get("password").map(String::as_str),
-        Some(HELPER_PASSWORD),
+    assert!(
+        fields.get("password").map(String::as_str) == Some(HELPER_PASSWORD),
         "the filled password is not the helper's: {}",
         redacted(&fields)
-    );
-
-    // Whatever the run read, it read under the temporary home.
-    assert!(
-        !f.home.join(".claude").exists() || f.home.join(".claude").starts_with(&f.root),
-        "the run wrote Claude state outside the fixture root"
     );
 }
 

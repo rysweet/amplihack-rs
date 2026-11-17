@@ -362,9 +362,14 @@ impl RunCheckout {
     /// Prepare a child command that will itself run git.
     ///
     /// `amplihack_git::scrub` removes the inherited repository selection and the
-    /// whole environment-based configuration namespace, which is what #2096
-    /// required: no caller `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_WORK_TREE` or
-    /// `GIT_CONFIG*` value can send a step's git back to the caller's checkout.
+    /// environment-based configuration namespace, which is what #2096 required:
+    /// no caller `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_WORK_TREE`, `GIT_CONFIG`,
+    /// `GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS` or indexed
+    /// `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` pair can send a step's git back
+    /// to the caller's checkout or inject configuration into it.
+    /// `amplihack_git::REPOSITORY_ENV_VARS` holds the repository half of that
+    /// list. It is deliberately not every `GIT_CONFIG*` name, which is what the
+    /// next paragraph is about.
     ///
     /// It deliberately does not set `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` or
     /// `GIT_CONFIG_NOSYSTEM`. #2290 set all three here, on the recipe-runner
