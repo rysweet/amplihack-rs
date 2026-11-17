@@ -147,7 +147,7 @@ amplihack copilot
 #### General Configuration
 
 - [User Configuration](reference/user-config.md) - Persistent defaults in `~/.amplihack/config.toml` and `.amplihack/config.toml`, and the `amplihack config` command
-- [Dangerous Command Policy](reference/dangerous-command-policy.md) - What `amplihack install`, `amplihack update` and profile setup write into each harness's own deny configuration, and the `policy.deny_commands` key that adds to it
+- [Dangerous Command Policy](reference/dangerous-command-policy.md) - The single list of dangerous commands amplihack ships, the Claude `permissions.deny` entries, Codex execpolicy rules file and Copilot CLI launch flags written from it, and the `policy.deny_commands` key that adds to it
 - [Config Write Durability](concepts/config-write-durability.md) - Why the first-launch save of `node.heap_consent` skips `fsync` while `config set` and `config unset` keep it
 - [AMPLIHACK_* Environment Variable Audit](reference/amplihack-env-vars.md) - Every `AMPLIHACK_*` name classified as user preference, internal or test-only, with its config key
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
@@ -861,7 +861,7 @@ Security guidelines, context preservation, and best practices.
 
 - [Security Recommendations](SECURITY_RECOMMENDATIONS.md) - Essential security practices
 - [XPIA Configuration Reference](reference/xpia-configuration.md) - XPIA prompt-injection scanning is off by default; opt in with `XPIA_ENABLED=true`, and the CWD, commit-on-main and `--no-verify` guards that stay active either way
-- [Dangerous Command Policy](reference/dangerous-command-policy.md) - The single list of dangerous commands amplihack ships, and the Claude `permissions.deny` entries, Codex execpolicy rules file and Copilot CLI launch flags it writes from that list
+- [Dangerous Command Policy](reference/dangerous-command-policy.md) - The single list of dangerous commands amplihack ships, the Claude `permissions.deny` entries, Codex execpolicy rules file and Copilot CLI launch flags written from it, and the `policy.deny_commands` key that adds to it
 - [Why Dangerous Commands Are Denied in the Harness](concepts/dangerous-command-policy.md) - Why the policy uses each harness's own allow/deny mechanism rather than a hook, and what a command-prefix matcher is not
 - [Add Dangerous-Command Deny Rules](howto/add-dangerous-command-deny-rules.md) - Add your own entries with `policy.deny_commands`, apply them, and check what each harness received
 - [Security Context Preservation](SECURITY_CONTEXT_PRESERVATION.md) - Maintain security through sessions
