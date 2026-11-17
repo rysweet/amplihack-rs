@@ -1044,11 +1044,11 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // Issue #1619: an instance may give one named step a tier of its own. The
     // step id never reaches the child, so the override is applied recipe-side:
     // patched copies of only the recipes that declare a named step, written
-    // into this run's own directory and put first in the runner's search
-    // order. With nothing configured nothing is staged, no variable is set and
-    // the run behaves exactly as it did before. A staging failure is reported
-    // and the run continues on the recipes as written: a tier preference must
-    // never stop a run.
+    // into this run's own directory and handed to the runner as its first
+    // `-R`. With nothing configured nothing is staged, no argument is added
+    // and the run behaves exactly as it did before. A staging failure is
+    // reported and the run continues on the recipes as written: a tier
+    // preference must never stop a run.
     let staged_recipes =
         stage_step_tier_overrides(workspace.borrow().run_dir(), search_dirs, &mapped_recipe);
     let build_command = |run_id: &str| -> Result<Command> {
@@ -1065,9 +1065,21 @@ pub(super) fn execute_recipe_via_rust_fresh(
         // still override the pinned value until the runner refuses that
         // namespace too (rysweet/amplihack-recipe-runner#146).
         let mut command = Command::new(&binary);
+        // Issue #1619: a `-R` directory is searched for a name, and the
+        // top-level recipe is passed as a path, so `-R` alone never reaches
+        // it. When staging patched that recipe, the positional argument is
+        // its staged copy instead — the only route by which a single-step
+        // override covers a step of the recipe named on the command line.
+        let staged_top_level = staged_recipes
+            .as_ref()
+            .and_then(|staged| staged.top_level.as_ref());
+        let recipe_arg = match staged_top_level {
+            Some(path) => checkout.map_path(path)?,
+            None => mapped_recipe.clone(),
+        };
         command
             .current_dir(&exec_dir)
-            .arg(&mapped_recipe)
+            .arg(&recipe_arg)
             .arg("--output-format")
             .arg("json")
             .arg("-C")
@@ -1084,6 +1096,14 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 .arg("--recovery-descriptor")
                 .arg(admission.descriptor_path());
         }
+        // Issue #1619: the staged copies go ahead of every other -R. The
+        // runner resolves a sub-recipe name from its -R list first, in the
+        // order given, and amplihack forwards the bundle below, so anything
+        // offered after it is outranked by the recipe it was patched from.
+        let mut recipe_dir_args: Vec<PathBuf> = Vec::new();
+        if let Some(staged) = &staged_recipes {
+            recipe_dir_args.push(checkout.map_path(&staged.dir)?);
+        }
         // Issue #494: forward sub-recipe search dirs as -R flags so
         // recipe-runner-rs can resolve sub-recipes the same way amplihack
         // resolves top-level recipes. One -R per non-empty entry, in order.
@@ -1091,8 +1111,27 @@ pub(super) fn execute_recipe_via_rust_fresh(
             if dir.as_os_str().is_empty() {
                 continue;
             }
-            command.arg("-R").arg(checkout.map_path(dir)?);
+            recipe_dir_args.push(checkout.map_path(dir)?);
             tracing::debug!(dir = %dir.display(), "forwarding -R to recipe-runner-rs");
+        }
+        // Issue #1619: substituting the positional argument moves the
+        // runner's anchored search — its `recipe_origin_dir` — to the staging
+        // directory, so a recipe that resolves a sibling sub-recipe by name
+        // would stop finding it. The original recipe's own directory goes
+        // back on the end of the list rather than the front: appended, it
+        // cannot shadow anything that already ranked above it, so a
+        // repository-local file still does not displace a bundled one.
+        if staged_top_level.is_some()
+            && let Some(parent) = mapped_recipe.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let parent = checkout.map_path(parent)?;
+            if !recipe_dir_args.contains(&parent) {
+                recipe_dir_args.push(parent);
+            }
+        }
+        for dir in &recipe_dir_args {
+            command.arg("-R").arg(dir);
         }
 
         if dry_run {
@@ -1191,11 +1230,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
         command.env(SESSION_DEPTH_ENV, guard.child_depth.to_string());
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
-        // Issue #1619: the runner's first recipe search directory, set on the
-        // child only and only when a per-step tier override staged something.
-        if let Some(staged) = &staged_recipes {
-            command.env(super::step_tiers::RECIPE_DIR_ENV, &staged.dir);
-        }
         // Issue #2486: this run's own TMPDIR must exist before the step starts.
         workspace.borrow_mut().prepare_attempt()?;
         // Must stay last among the TMPDIR/TMP/TEMP setters: it overrides the

@@ -80,11 +80,26 @@ pub(crate) enum Notice {
     /// A `[step_tiers]` key that is not an identifier, so amplihack will not
     /// act on it.
     BadStepId { step: String },
-    /// A `[step_tiers]` key that is a step id no recipe in this run's search
-    /// path declares. The likeliest operator error in the feature, and the
-    /// one with no other symptom: the run simply proceeds on the tier the
-    /// recipe declares.
+    /// A `[step_tiers]` key that is a step id no recipe amplihack staged
+    /// declares. The likeliest operator error in the feature, and the one
+    /// with no other symptom: the run simply proceeds on the tier the recipe
+    /// declares. Staging reaches this for more than a typo — a recipe it
+    /// could not read, one over the size bound, and one past the candidate
+    /// cap all look the same from here — so the line names the causes rather
+    /// than asserting the one it has not established.
     StepTierUnmatched { step: String },
+    /// A `[step_tiers]` key naming a step a recipe does declare, but not as
+    /// an agent step. `model:` is a field the runner ignores on every other
+    /// kind of step, so nothing is rewritten and the entry is a no-op.
+    StepTierNotAnAgentStep { recipe: String, step: String },
+    /// The recipe named on the command line declares a configured step, and
+    /// a search directory holds a different file of the same name. The
+    /// staged copy is not written: it would answer every later lookup of
+    /// that name for the whole run, bodies and all.
+    StagedRecipeShadowed { recipe: String },
+    /// The search directories held more recipes than staging will look at,
+    /// so a step declared only in one of the rest cannot be found.
+    RecipeCandidatesCapped { cap: usize },
     /// A patched copy of a recipe stopped being YAML, so it was dropped and
     /// the recipe as written ran instead. A `model:` line is the only edit
     /// made, so this should not happen and is worth reporting.
@@ -234,10 +249,31 @@ impl Notice {
                 display_safe(step)
             ),
             Notice::StepTierUnmatched { step } => format!(
-                "amplihack: model tiers: step_tiers.{}: no recipe in this run declares a step \
-                 with that id, so nothing is overridden and every step keeps the tier its \
-                 recipe declares. {ADVICE}",
+                "amplihack: model tiers: step_tiers.{}: amplihack staged no recipe declaring a \
+                 step with that id, so nothing is overridden and every step keeps the tier its \
+                 recipe declares. Usually the id is mistyped; a recipe amplihack could not \
+                 read, one larger than the size bound, and one past the candidate cap all \
+                 look the same from here. {ADVICE}",
                 display_safe(step)
+            ),
+            Notice::StepTierNotAnAgentStep { recipe, step } => format!(
+                "amplihack: model tiers: step_tiers.{}: `{}` declares that step, but not as an \
+                 agent step, and a model applies to agent steps only; nothing is overridden. \
+                 {ADVICE}",
+                display_safe(step),
+                display_safe(recipe)
+            ),
+            Notice::StagedRecipeShadowed { recipe } => format!(
+                "amplihack: model tiers: the recipe named on the command line declares a \
+                 configured step, but a search directory already holds a `{}`; staging it \
+                 would answer every later lookup of that name for the whole run, so it was \
+                 not staged and that recipe keeps the tiers it declares. {ADVICE}",
+                display_safe(recipe)
+            ),
+            Notice::RecipeCandidatesCapped { cap } => format!(
+                "amplihack: model tiers: the recipe search path holds more recipes than the \
+                 {cap} staging looks at in one run, so a step declared only in one of the \
+                 rest is reported as unmatched. {ADVICE}"
             ),
             Notice::StagedRecipeDropped { recipe, reason } => format!(
                 "amplihack: model tiers: {}: {reason}, so it was dropped and the recipe as \

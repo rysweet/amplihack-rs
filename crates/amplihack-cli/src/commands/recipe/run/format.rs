@@ -260,10 +260,30 @@ fn json_scalar_to_string(value: &JsonValue) -> String {
 //
 // Attribution is a correlation, not a lookup: no step id ever reaches a child
 // process, because the recipe runner sets no step-id environment variable. So
-// a step id is printed only when the counts agree, and otherwise the section
-// prints by launch sequence and says why. A retry, a parallel group and a
-// resumed run all make the counts disagree.
+// a step id is printed only when the records and the steps that ran line up,
+// and otherwise the section prints by launch sequence and says why.
+//
+// Two things break the line-up, and only one of them is a count. A retry or a
+// resumed run changes how many records there are. A parallel group does not:
+// `execute_parallel_group` collects its results into a vector indexed by
+// declaration position, so the step results stay in declaration order while
+// the records are appended in launch order. Pairing by position would then
+// attach step ids to the wrong launches with the counts agreeing, which is
+// worse than the honest line, so a declared group refuses pairing outright.
 // =========================================================================
+
+/// Whether this step result carries a `parallel_group`.
+///
+/// Read out of the flattened `extra` map rather than a named field: the
+/// pinned runner's `StepResult` does not report grouping today, so this is
+/// the guard holding the moment it does, and it costs one map lookup per
+/// step until then. Nothing about the section's correctness may rest on the
+/// bundled recipes happening not to group a tiered step.
+fn declares_a_parallel_group(step: &RecipeRunStepResult) -> bool {
+    step.extra
+        .get("parallel_group")
+        .is_some_and(|value| !value.is_null())
+}
 
 /// The `Model tiers:` section for one run, or no lines at all when no launch
 /// recorded a tier: an empty heading is noise in every summary that has
@@ -279,16 +299,24 @@ pub(crate) fn model_tier_lines(
         .iter()
         .filter(|step| step.status != "skipped")
         .collect();
-    let paired = ran.len() == records.len();
+    let grouped = step_results.iter().any(declares_a_parallel_group);
+    let paired = !grouped && ran.len() == records.len();
     let mut lines = vec!["Model tiers:".to_string()];
     let shown = records.len().min(MAX_TIER_LINES);
-    if !paired {
+    if grouped {
+        lines.push(
+            "  a step in this run declares a parallel_group, so the launches did not \
+             necessarily happen in the order the recipe declares them: amplihack cannot \
+             tell which launch belongs to which, so none is named here."
+                .to_string(),
+        );
+    } else if !paired {
         // Deliberately names no id, not even to say which one is missing:
         // half an attribution reads as a whole one.
         lines.push(format!(
             "  {} tiered launches against {} recipe entries that ran: amplihack cannot \
-             tell which launch belongs to which, so none is named here. A retry, a \
-             parallel group or a resumed run all do this.",
+             tell which launch belongs to which, so none is named here. A retry or a \
+             resumed run does this.",
             records.len(),
             ran.len()
         ));

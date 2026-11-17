@@ -237,12 +237,38 @@ The step id is not visible at launch time, because the runner does not tell a
 child process which step it is, so the override is applied to the recipe
 instead. When `[step_tiers]` is non-empty, `amplihack recipe run` writes
 patched copies of only the recipe files containing a named step id into a
-private directory under the run directory, and points the runner at that
-directory first through `AMPLIHACK_PACKAGE_RECIPE_DIR`, the runner's first
-search directory, which amplihack sets nowhere else. The patch is one line per
-named step: that step's own `model:` line is rewritten, or added if it had
-none, to one of the three words. With no `[step_tiers]` configured nothing is
-staged, no extra environment variable is set, and the run behaves as before.
+private directory under the run directory, and gives the runner that
+directory as its **first `-R`**, ahead of the bundle and every other search
+directory amplihack forwards. The patch is one line per named step: that
+step's own `model:` line is rewritten, or added if it had none, to one of the
+three words. With no `[step_tiers]` configured nothing is staged, no extra
+argument is added, and the run behaves as before.
+
+`-R` is the delivery route because it is the only one that wins. The runner
+resolves a recipe name from, in order, its `-R` directories; an anchored
+search from the recipe it is already running; and the package search
+directories named by `AMPLIHACK_PACKAGE_RECIPE_DIR`. amplihack forwards the
+bundle as a `-R` of its own, so a staged copy offered through that variable
+was always outranked by the recipe it had been patched from, and the override
+had no effect at all. amplihack no longer sets that variable.
+
+A `-R` directory is searched for a *name*, and the recipe named on the
+command line is passed to the runner as a path, so `-R` alone never reaches
+it. When that recipe is one of the files staging patched, the positional
+argument becomes its patched copy; the directory the original sits in is then
+appended as the **last** `-R`, because substituting the path moves the
+runner's anchored search to the staging directory and a recipe that resolves
+a sibling sub-recipe by name must keep finding it. Appending rather than
+prepending leaves the existing precedence intact, so a repository-local file
+still does not shadow a bundled one.
+
+Only agent steps are patched. `model:` is a field the runner ignores on bash,
+recipe and every other kind of step, so a `[step_tiers]` entry naming one of
+those is reported by name and changes nothing rather than writing a line that
+does nothing. The step kind is read from the recipe the same way the runner
+reads it: the declared `type:` if there is one, otherwise a `recipe:` makes a
+sub-recipe, an `agent:` makes an agent step, and a `prompt:` with no
+`command:` makes an agent step.
 
 Where a recipe file name appears both in a search directory and as the recipe
 named on the command line, the search directory's copy is the one patched, so
@@ -255,10 +281,14 @@ A step id must look like an identifier: a letter or digit, then letters,
 digits, `.`, `_` or `-`, at most 128 characters; `.` and `..` are not step ids.
 Staged file names come only from the recipe files amplihack found, never from
 the override file, and the staging directory is mode 0700 with its files 0600.
-A step id no recipe in the run declares is reported by name and changes
-nothing; a key that is not an identifier is reported and ignored; a value that
-is not a tier word is reported and dropped, leaving that step on the tier its
-recipe declares. Only one of the three tier words is ever written into a recipe
+A step id no staged recipe declares is reported by name and changes nothing,
+and the line names the causes it cannot tell apart — a mistyped id, a recipe
+amplihack could not read, one over the size bound, and one past the candidate
+cap all look the same from there. A key that is not an identifier is reported
+and ignored; a value that is not a tier word is reported and dropped, leaving
+that step on the tier its recipe declares. A recipe named on the command line
+whose file name a search directory also holds is reported and not staged,
+rather than being allowed to answer every later lookup of that name. Only one of the three tier words is ever written into a recipe
 file, so no text from an override file reaches a prompt or a shell body.
 
 ### Forcing one model everywhere

@@ -13,9 +13,14 @@
 //!
 //! Attribution is a correlation, not a lookup: no step id ever reaches a
 //! child process, because the recipe runner sets no step-id environment
-//! variable. Step ids therefore appear only when the counts agree, and
-//! otherwise the section prints by launch sequence and says why. A retry, a
-//! parallel group or a resumed run all make the counts disagree.
+//! variable. Step ids therefore appear only when the records and the steps
+//! that ran line up, and otherwise the section prints by launch sequence and
+//! says why.
+//!
+//! A retry or a resumed run changes the count. A parallel group does not —
+//! the runner collects a group's results by declaration position while the
+//! records are appended in launch order — so it is refused by name rather
+//! than caught by the count.
 
 use super::super::*;
 use crate::commands::launch::model_tiers::record::{Fallback, Record};
@@ -44,6 +49,18 @@ fn step(id: &str) -> RecipeRunStepResult {
         status: "completed".to_string(),
         ..Default::default()
     }
+}
+
+/// A step result carrying a `parallel_group`, as a runner that reported one
+/// would serialise it: an unmodelled key, so it arrives in the flattened
+/// `extra` map.
+fn grouped_step(id: &str, group: &str) -> RecipeRunStepResult {
+    let mut result = step(id);
+    result.extra.insert(
+        "parallel_group".to_string(),
+        serde_json::Value::String(group.to_string()),
+    );
+    result
 }
 
 fn joined(lines: &[String]) -> String {
@@ -167,6 +184,51 @@ fn more_launches_than_agent_steps_prints_by_sequence_and_says_why() {
         "one line explains the counts, so a reader knows why the ids are missing: \
          {text}"
     );
+}
+
+#[test]
+fn a_declared_parallel_group_refuses_pairing_even_when_the_counts_agree() {
+    // The counts are equal here, which is exactly the case the guard has to
+    // catch: a parallel group changes the order, not the number. The records
+    // are in launch order and the runner collects a group's results by
+    // declaration position, so pairing by index would attach step ids to the
+    // wrong launches and say nothing about it.
+    let records = [
+        record(1, Tier::Strong, Some("claude-opus-5[1m]")),
+        record(2, Tier::Fast, Some("claude-haiku-5-5")),
+    ];
+    let steps = [
+        grouped_step("step-a", "workers"),
+        grouped_step("step-b", "workers"),
+    ];
+    let text = joined(&model_tier_lines(&records, &steps));
+    for id in ["step-a", "step-b"] {
+        assert!(
+            !text.contains(id),
+            "a parallel group makes positional pairing a guess: {text}"
+        );
+    }
+    assert!(
+        text.contains("launch 1") && text.contains("launch 2"),
+        "lines print by launch sequence instead: {text}"
+    );
+    assert!(
+        text.contains("parallel_group"),
+        "and the reason is named, so a reader is not left wondering why the \
+         ids are missing: {text}"
+    );
+}
+
+#[test]
+fn a_run_with_no_parallel_group_still_pairs_on_equal_counts() {
+    // The guard must not cost every ordinary run its attribution.
+    let records = [
+        record(1, Tier::Strong, Some("claude-opus-5[1m]")),
+        record(2, Tier::Fast, Some("claude-haiku-5-5")),
+    ];
+    let steps = [step("step-a"), step("step-b")];
+    let text = joined(&model_tier_lines(&records, &steps));
+    assert!(text.contains("step-a") && text.contains("step-b"), "{text}");
 }
 
 #[test]
