@@ -31,7 +31,9 @@ For the default list and the exact file formats, see
   - [An entry was reported and ignored](#an-entry-was-reported-and-ignored)
   - [Nothing was written at all](#nothing-was-written-at-all)
   - [A harness got no line](#a-harness-got-no-line)
+  - [A rules file of your own is at amplihack's path](#a-rules-file-of-your-own-is-at-amplihacks-path)
   - [A profile has no entries](#a-profile-has-no-entries)
+  - [The profiles were not refreshed](#the-profiles-were-not-refreshed)
   - [A denied command still runs](#a-denied-command-still-runs)
 
 ## Add an entry
@@ -276,6 +278,52 @@ No Claude line means no Claude file took the entries. A Claude line reading
 warnings name each file that was refused. Either way, treat the harness as
 having no amplihack deny rules until the warning is gone.
 
+### A rules file of your own is at amplihack's path
+
+```text
+  ⚠️  Codex: the dangerous-command deny rules were not written (the file there does not carry amplihack's marker line); fix what that names, then run `amplihack install` again
+```
+
+Something at `$CODEX_HOME/rules/amplihack-dangerous-commands.rules` does not
+start with amplihack's marker line, so amplihack left it exactly as it found
+it. Codex is running your file and no amplihack deny rules.
+
+Look at the first line to see what is there:
+
+```console
+$ head -1 ~/.codex/rules/amplihack-dangerous-commands.rules
+# my own rules, do not touch
+```
+
+Give your file its own name and run the install again:
+
+```console
+$ mv ~/.codex/rules/amplihack-dangerous-commands.rules ~/.codex/rules/my-own.rules
+$ amplihack install
+$ head -1 ~/.codex/rules/amplihack-dangerous-commands.rules
+# amplihack: dangerous-command deny rules
+```
+
+Codex loads every `.rules` file in that directory, so `my-own.rules` keeps
+working alongside amplihack's. Check that it still parses, because one file
+that does not stops Codex from starting:
+
+```console
+$ codex execpolicy check --rules ~/.codex/rules/my-own.rules true
+{"matchedRules":[]}
+```
+
+`amplihack uninstall` leaves your file alone too, and says so in the same
+words, so the two commands agree about which file is amplihack's:
+
+```text
+  ℹ️  The Codex dangerous-command rules file was left in place (the file there does not carry amplihack's marker line).
+```
+
+A warning reading `(is too large)` instead means the file at that path is over
+64 KiB, which is larger than amplihack reads: it has not seen enough of the
+file to say whose it is. Move it aside the same way.
+
 ### A profile has no entries
 
 amplihack writes to managed profiles that already have a `settings.json`. It
@@ -291,6 +339,59 @@ seeds one:
 amplihack install
 jq -r '.permissions.deny[]' ~/.amplihack/claude-profiles/work/settings.json | head -3
 ```
+
+### The profiles were not refreshed
+
+```text
+  ⚠️  Profiles: settings.json not refreshed (the profile root is a symlink)
+```
+
+amplihack could not read the managed profile root, so no profile was written.
+That line comes from the profile phase, on stdout. The policy section further
+down names the same failure again, on stderr, and the Claude line says what
+was written rather than claiming every profile:
+
+```text
+  ℹ️  Claude Code: deny rules written where they could be; each file that was refused is named in the warnings below.
+  ⚠️  Claude Code (managed profiles): the dangerous-command deny rules were not written (the profile root is a symlink); fix what that names, then run `amplihack install` again
+```
+
+The two are some way apart in the output, so look for both. If your home
+`settings.json` was refused in the same run, the ℹ️ line is missing too: no
+Claude Code file took the entries at all.
+
+The reason names the condition:
+
+| Reason | What to do |
+|--------|------------|
+| `the profile root is a symlink` | Replace the link with a real directory, or save the directory it aimed for with `amplihack profile root <dir>` |
+| An I/O error kind, such as `permission denied` | Fix the permissions on the root directory |
+| `the profile root could not be resolved`, `HOME` set | Give amplihack a usable root: `amplihack profile root <absolute dir>`, or set `AMPLIHACK_CLAUDE_PROFILE_ROOT` to one |
+| `the profile root could not be resolved`, `HOME` unset or empty | Set `AMPLIHACK_CLAUDE_PROFILE_ROOT`. `amplihack profile root <dir>` cannot help here: it saves into `~/.amplihack` and fails with `invalid profile root: "HOME is not set"` |
+| `the profile root could not be read` | The catch-all for anything else. Look at the root as below and fix what that shows |
+
+Ask amplihack which root it is using and where that came from, fix what the
+reason names, then install again:
+
+```console
+$ amplihack profile root
+root: /home/alice/.amplihack/claude-profiles (source: default)
+
+$ ls -ld /home/alice/.amplihack/claude-profiles
+lrwxrwxrwx 1 alice alice 20 Nov 15 09:12 /home/alice/.amplihack/claude-profiles -> /srv/claude-profiles
+
+$ amplihack profile root /srv/claude-profiles
+saved profile root: /srv/claude-profiles (/home/alice/.amplihack/profile-root)
+
+$ amplihack install
+```
+
+See [Profile root](../reference/profile-command.md#profile-root) for the full
+resolution order and what each source means.
+
+No warning and no profile root at all is not a fault: a machine with no managed
+profiles has nothing to write into, and amplihack says nothing about profiles
+that do not exist.
 
 ### A denied command still runs
 

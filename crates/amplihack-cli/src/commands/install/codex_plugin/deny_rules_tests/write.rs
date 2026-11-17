@@ -157,15 +157,29 @@ fn a_refusal_reason_is_a_fixed_phrase_and_never_file_content() {
 
 /// SEC-V5: the comparison read is bounded and does not follow a symlink, so
 /// an agent-writable path cannot make the install read an unbounded file.
+///
+/// The bound is now also what decides the file's fate: a file too large to
+/// read is a file whose marker cannot be seen, and an unseen marker means
+/// the file stays (R7). The reason says it is too large, and not that it
+/// lacks the marker, so a user can tell their own hand-written rules from a
+/// file that is merely beyond the bound.
 #[test]
-fn an_oversized_existing_file_is_replaced_rather_than_read_whole() {
+fn an_oversized_existing_file_is_left_as_found_and_reported() {
     let home = Home::new();
     fs::create_dir_all(home.rules_dir()).unwrap();
-    fs::write(home.rules_file(), "x".repeat(128 * 1024)).unwrap();
+    let body = "x".repeat(128 * 1024);
+    fs::write(home.rules_file(), &body).unwrap();
     fs::set_permissions(home.rules_file(), fs::Permissions::from_mode(0o600)).unwrap();
-    assert_eq!(write_deny_rules(&home.path, &[]), DenyRulesWrite::Written);
+    let DenyRulesWrite::Refused(reason) = write_deny_rules(&home.path, &[]) else {
+        panic!("a file whose marker cannot be read is not replaced");
+    };
+    assert!(
+        reason.contains("too large"),
+        "the reason distinguishes an oversized file from an unmarked one: {reason}"
+    );
     assert_eq!(
         fs::read_to_string(home.rules_file()).unwrap(),
-        policy::codex::rules_file(&[])
+        body,
+        "the file is byte-identical to what was found"
     );
 }

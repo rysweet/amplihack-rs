@@ -9,6 +9,10 @@
 //! pub(super) enum DenyRulesRemoval { Removed, Absent, Kept(String) }
 //! pub(super) fn write_deny_rules(codex_home: &Path, instance: &[String]) -> DenyRulesWrite;
 //! pub(super) fn remove_deny_rules(codex_home: &Path) -> DenyRulesRemoval;
+//! /// Why a file at the rules path is neither replaced nor removed; one
+//! /// constant, so install and uninstall cannot drift apart (R7).
+//! pub(super) const UNMARKED_REASON: &str =
+//!     "the file there does not carry amplihack's marker line";
 //! ```
 //!
 //! The tests are grouped into submodules so each file stays inside the
@@ -19,7 +23,8 @@
 //! on the way to the file. The fixtures below are shared by all three.
 
 use super::deny_rules::{
-    DenyRulesRemoval, DenyRulesWrite, RULES_DIR, RULES_FILE, remove_deny_rules, write_deny_rules,
+    DenyRulesRemoval, DenyRulesWrite, RULES_DIR, RULES_FILE, UNMARKED_REASON, remove_deny_rules,
+    write_deny_rules,
 };
 use crate::policy;
 use std::fs;
@@ -69,6 +74,7 @@ impl ExpectWritten for DenyRulesWrite {
     }
 }
 
+mod ownership;
 mod placement;
 mod removal;
 mod write;

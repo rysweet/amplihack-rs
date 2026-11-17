@@ -6,9 +6,11 @@
 //! examples are validated when the file loads. That is where the promise
 //! that plain `git push` still runs gets checked by Codex itself.
 //!
-//! The file is amplihack's own, and its first line says so: the uninstall
-//! removes a file carrying that marker and leaves every other file in the
-//! directory alone.
+//! The file is amplihack's own, and its first line says so. Both ends turn
+//! on that line: the install replaces a file at that path only when the bytes
+//! there carry the marker, and the uninstall removes one only on the same
+//! terms, so a rules file written by hand is neither overwritten by one
+//! command nor deleted by the other.
 
 use super::Token;
 
@@ -26,8 +28,10 @@ pub(crate) fn rules_file(instance: &[String]) -> String {
     out.push_str(OWNERSHIP_MARKER);
     out.push('\n');
     out.push_str("# Written by amplihack from one policy list, and replaced on the next\n");
-    out.push_str("# install or update. Keep your own rules in another file in this\n");
-    out.push_str("# directory; amplihack never reads or replaces those.\n");
+    out.push_str("# install or update as long as this first line is still here. Without\n");
+    out.push_str("# it the file is left alone and amplihack writes no Codex rules at\n");
+    out.push_str("# all. Keep your own rules in another file in this directory;\n");
+    out.push_str("# amplihack never reads or replaces those.\n");
 
     for entry in super::DEFAULTS {
         out.push('\n');

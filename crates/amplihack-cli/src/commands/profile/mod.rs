@@ -159,6 +159,9 @@ pub(crate) use root_config::store_from_env;
 pub(crate) use rotate::autostart_on_launch;
 #[cfg(unix)]
 pub(crate) use rotate::warn_foreign_rotator;
+// `refresh_profile_settings` returns `settings_refresh::ProfileRefresh`,
+// which stays unexported: its callers reach its two fields and never name
+// the type, and re-exporting a name nothing writes is a warning here.
 pub(crate) use settings_refresh::{Refresh, refresh_profile_settings};
 use std::borrow::Cow;
 use std::ffi::OsStr;

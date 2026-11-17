@@ -119,12 +119,15 @@ impl ProfileStore {
             }
         });
         // `amplihack profile add` runs off the install path, so this is the
-        // only place a refusal met here is printed (SEC-C3).
+        // only place a refusal met here is printed (SEC-C3). The line goes
+        // through `policy::warn`, which writes it to stderr with the same
+        // `amplihack: warning: ` prefix as before and, in a test build,
+        // keeps a copy a behaviour test can read.
         if let Some(reason) = reason {
-            eprintln!(
-                "amplihack: warning: {}",
-                crate::policy::write_failure_warning(&format!("Claude Code ({label})"), &reason)
-            );
+            crate::policy::warn(&crate::policy::write_failure_warning(
+                &format!("Claude Code ({label})"),
+                &reason,
+            ));
         }
     }
 

@@ -88,11 +88,11 @@ pub(crate) fn ensure_deny(settings: &mut Value, instance: &[String]) -> DenyOutc
 // without a lock.
 //
 // This is the wrong shape and is being replaced. Its correctness rests on
-// four call-site rules nothing enforces -- clear where each write phase
-// starts, record from every writer, read after every writer, clear in tests
-// -- and rule 2 was broken at two of four sites before
-// `every_refusal_arm_in_the_install_writer_records_what_it_refused` was
-// added to guard it. The explicit channel already exists:
+// four call-site rules nothing enforces: clear the record where each write
+// phase starts, record from every writer including the arms that return
+// before the merge closure runs, read the record after every writer, and
+// clear it in any test that reads it. Rule 2 was broken at two of the four
+// sites when they were written. The explicit channel already exists:
 // `refresh_profile_settings` returns the skipped profiles with their
 // reasons, and `apply_deny_policy` returns `Option<String>` beside
 // recording, so the same fact travels two channels. Passing those into

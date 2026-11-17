@@ -50,6 +50,32 @@ fn build(name: &str, extra: &[String]) -> Vec<String> {
     argv(&cmd)
 }
 
+/// The shared environment lock, a temporary `HOME` and the guard that
+/// restores it, for the whole of a test.
+///
+/// `build_command_for_dir` reads `policy.deny_commands` from
+/// `$HOME/.amplihack/config.toml` through `user_config::policy_deny_commands`.
+/// A test that takes the lock without setting `HOME` therefore reads the
+/// developer's own file: the expected values differ from one machine to the
+/// next, and the suite touches a real framework root (#2586). Returning all
+/// three from one call makes the omission hard to repeat, and the field
+/// order is the drop order -- the environment is restored, then the
+/// directory removed, and only then is the lock released.
+#[must_use = "bind all three to a `let`: dropping the tuple here would release \
+              the lock and restore HOME before the test has built a command"]
+fn isolated_home() -> (
+    crate::test_support::EnvGuard,
+    tempfile::TempDir,
+    std::sync::MutexGuard<'static, ()>,
+) {
+    let lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = crate::test_support::tempdir_outside_framework_roots();
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let env = crate::test_support::env_paths(&[("HOME", Some(&home))]);
+    (env, tmp, lock)
+}
+
 /// Returns the value that follows each `--deny-tool` in `args`.
 fn denied(args: &[String]) -> Vec<String> {
     args.windows(2)
@@ -60,7 +86,7 @@ fn denied(args: &[String]) -> Vec<String> {
 
 #[test]
 fn copilot_launch_carries_a_deny_tool_flag_for_every_policy_prefix() {
-    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _home = isolated_home();
     let args = build("copilot", &[]);
     let expected: Vec<String> = policy::copilot::deny_args(&[])
         .windows(2)
@@ -78,7 +104,7 @@ fn copilot_launch_carries_a_deny_tool_flag_for_every_policy_prefix() {
 /// conditional on the allow-all decision.
 #[test]
 fn the_deny_flags_are_injected_even_when_allow_all_is_suppressed() {
-    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _home = isolated_home();
     let _env = EnvGuard::set([("AMPLIHACK_COPILOT_NO_ALLOW_ALL", "1")]);
     let args = build("copilot", &[]);
     assert!(
@@ -93,7 +119,7 @@ fn the_deny_flags_are_injected_even_when_allow_all_is_suppressed() {
 
 #[test]
 fn the_deny_flags_are_injected_alongside_allow_all_by_default() {
-    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _home = isolated_home();
     let _env = EnvGuard::unset(["AMPLIHACK_COPILOT_NO_ALLOW_ALL"]);
     let args = build("copilot", &[]);
     assert!(args.iter().any(|a| a == "--allow-all"), "{args:?}");
@@ -113,7 +139,7 @@ fn the_deny_flags_are_injected_alongside_allow_all_by_default() {
 /// flag, so neither the old behaviour nor its hole can return unnoticed.
 #[test]
 fn no_caller_argument_suppresses_a_policy_deny_flag() {
-    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _home = isolated_home();
     for extra in [
         vec!["--deny-tool".to_string(), "shell(pkill:*)".to_string()],
         vec!["--deny-tool=shell(pkill:*)".to_string()],
@@ -139,7 +165,7 @@ fn no_caller_argument_suppresses_a_policy_deny_flag() {
 
 #[test]
 fn the_users_own_arguments_stay_last() {
-    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _home = isolated_home();
     let extra = vec!["--banner".to_string(), "mine".to_string()];
     let args = build("copilot", &extra);
     assert_eq!(
@@ -151,7 +177,7 @@ fn the_users_own_arguments_stay_last() {
 
 #[test]
 fn no_other_harness_receives_a_deny_tool_flag() {
-    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _home = isolated_home();
     for name in ["claude", "codex", "amplifier"] {
         let args = build(name, &[]);
         assert!(
@@ -201,7 +227,7 @@ fn an_instance_addition_reaches_the_copilot_argv() {
 /// the argv surface that made `pkill -f` dangerous stays small.
 #[test]
 fn the_injected_values_are_short_command_names_only() {
-    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _home = isolated_home();
     for value in denied(&build("copilot", &[])) {
         assert!(value.starts_with("shell("), "{value}");
         // The `:*` suffix is what GitHub documents as the shell-rule prefix
@@ -219,7 +245,7 @@ fn the_injected_values_are_short_command_names_only() {
 /// `docs/reference/dangerous-command-policy.md`.
 #[test]
 fn a_callers_own_deny_tool_still_reaches_the_harness() {
-    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _home = isolated_home();
     let extra = vec!["--deny-tool".to_string(), "shell(ssh:*)".to_string()];
     let args = build("copilot", &extra);
     assert_eq!(
@@ -245,7 +271,7 @@ fn a_callers_own_deny_tool_still_reaches_the_harness() {
 /// is why the install output claims no missing mechanism for them.
 #[test]
 fn every_claude_family_harness_is_pinned_to_the_directory_the_policy_is_written_into() {
-    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _home = isolated_home();
     let tmp = crate::test_support::tempdir_outside_framework_roots();
     let config_dir = tmp.path().join("profile");
     std::fs::create_dir_all(&config_dir).unwrap();

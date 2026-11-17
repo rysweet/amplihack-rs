@@ -23,11 +23,9 @@
 //! so the post-update path can be driven from here, and `policy` items are
 //! `pub(crate)`.
 //!
-//! Two things are checked separately, because they fail for different
-//! reasons: that the function does the work (behaviour, against temp homes),
-//! and that both install entry points call it (structure, against the source
-//! of `install/mod.rs` — driving the whole installer in-process needs a
-//! framework source this test binary does not have).
+//! Both the work and the wiring are checked by running code: the writer
+//! against temp homes, and each install entry point against a temp `HOME`
+//! and `CODEX_HOME`, so a seam that is never called cannot pass.
 
 use super::super::apply_dangerous_command_policy;
 use super::super::codex_plugin::{RULES_DIR, RULES_FILE};
@@ -223,19 +221,6 @@ fn skip_install_applies_nothing() {
     assert!(!codex.join(RULES_DIR).join(RULES_FILE).exists());
 }
 
-/// Structural: both install entry points call the writer. Without this, the
-/// behaviour tests above pass while nothing ever calls the function.
-#[test]
-fn both_install_entry_points_call_the_policy_writer() {
-    const SOURCE: &str = include_str!("../mod.rs");
-    let calls = SOURCE.matches("apply_dangerous_command_policy()").count();
-    assert!(
-        calls >= 3,
-        "expected the definition and a call from each of `install` and the \
-         post-update install path; found {calls} occurrence(s)"
-    );
-}
-
 /// SEC-A3: a Codex home amplihack does not manage is never created by the
 /// policy writer, and its absence is not a warning.
 #[test]
@@ -372,28 +357,148 @@ fn clearing_an_empty_record_changes_nothing() {
     assert!(warnings.is_empty(), "{warnings:?}");
 }
 
-/// Structural: both install entry points clear the record when their write
-/// phase starts. Without this the behaviour above holds only where a test
-/// calls `clear_record` itself.
+// --- the install entry points, run rather than read (R3) -------------------
+//
+// Two tests here replace a pair that counted occurrences of
+// `apply_dangerous_command_policy()` and `clear_record()` in the text of
+// `install/mod.rs`. Those passed on a call that was commented out, on a call
+// behind a condition that never held, and on a `clear_record()` written
+// after the writers rather than before. Both routes are now driven.
+//
+// What the explicit route cannot show here is recorded plainly rather than
+// patched over with another source read: `run_install` prints the policy
+// section to stdout and returns `Result<()>`, so this test proves that route
+// calls the writer and not that it clears the record first. The clear is
+// proven behaviourally on the launch route below, and
+// `install/mod.rs` calls it from the same place in both.
+
+/// The explicit route: `amplihack install` writes the Codex rules file into
+/// the Codex home it manages.
 #[test]
-fn both_install_entry_points_clear_the_record_before_the_write_phase() {
-    const SOURCE: &str = include_str!("../mod.rs");
-    let clears = SOURCE.matches("clear_record()").count();
+fn the_explicit_install_route_writes_the_codex_rules_file() {
+    use super::super::run_install;
+    use super::helpers::{create_exe_stub, create_source_repo};
+    use crate::test_support::EnvGuard;
+
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let tmp = tempdir_outside_framework_roots();
+    let home = tmp.path().join("home");
+    let codex = home.join(".codex");
+    fs::create_dir_all(&codex).unwrap();
+    let bin = home.join("stub_bin");
+    fs::create_dir_all(&bin).unwrap();
+    create_exe_stub(&bin, "python3");
+    let hooks_stub = create_exe_stub(&bin, "amplihack-hooks");
+    create_exe_stub(&bin, "recipe-runner-rs");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    let _env = env_paths(&[
+        ("HOME", Some(&home)),
+        ("CODEX_HOME", Some(&codex)),
+        ("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", Some(&hooks_stub)),
+        ("AMPLIHACK_HOME", None),
+    ]);
+    let _flags = EnvGuard::set([
+        ("PATH", path.as_str()),
+        ("AMPLIHACK_AGENT_BINARY", "claude"),
+        ("AMPLIHACK_SKIP_MMDC", "1"),
+    ]);
+    let source = tmp.path().join("source");
+    fs::create_dir_all(&source).unwrap();
+    create_source_repo(&source);
+
+    run_install(Some(source), false, false).expect("the local install runs");
+
     assert!(
-        clears >= 2,
-        "expected a clear at the start of the write phase in each of `install` \
-         and the launch bootstrap; found {clears} occurrence(s)"
+        codex.join(RULES_DIR).join(RULES_FILE).exists(),
+        "an explicit install writes the deny rules for every harness home it \
+         manages, whether or not Codex is the selected client"
     );
-    for (site, _) in SOURCE.match_indices("apply_dangerous_command_policy()") {
-        let before = &SOURCE[..site];
-        if before.contains("fn apply_dangerous_command_policy")
-            && !before.contains("clear_record()")
-        {
-            panic!(
-                "a call to apply_dangerous_command_policy() at byte {site} has no \
-                 clear_record() before it in the file: a record left by an earlier \
-                 phase would be reported as this run's work"
-            );
-        }
-    }
+}
+
+/// The launch-bootstrap route, with Codex selected: the rules file is
+/// written there too, so a machine that never runs `amplihack install` again
+/// is still covered. And a record left by an earlier phase on this thread is
+/// cleared before the write phase, so it is not warned about as this run's
+/// work (SEC-C3).
+#[test]
+fn the_launch_bootstrap_route_writes_the_rules_file_and_clears_a_stale_record() {
+    use super::helpers::{create_exe_stub, create_source_repo};
+    use crate::test_support::EnvGuard;
+
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    let tmp = tempdir_outside_framework_roots();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let source = home.join("source");
+    create_source_repo(&source);
+    let bin = home.join("bin");
+    create_exe_stub(&bin, "amplihack-hooks");
+    create_exe_stub(&bin, "recipe-runner-rs");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    // The Codex home has to be there already. Nothing in amplihack creates a
+    // harness home it did not find (SEC-A3), so without this the writer
+    // reports `Absent` and the file never appears for either route.
+    let codex_home = home.join(".codex");
+    fs::create_dir_all(&codex_home).unwrap();
+    let _env = EnvGuard::set([
+        ("HOME", home.to_str().unwrap()),
+        ("CODEX_HOME", codex_home.to_str().unwrap()),
+        ("PATH", path.as_str()),
+        ("AMPLIHACK_AGENT_BINARY", "claude"),
+        ("AMPLIHACK_CODEX_BINARY_PATH", ""),
+        ("CODEX_BINARY_PATH", ""),
+    ]);
+    let _amplihack_home = EnvGuard::unset(["AMPLIHACK_HOME"]);
+    super::super::local_install(&source, None).expect("the fixture install runs");
+
+    // Codex arrives afterwards, which is what makes the bootstrap reconcile
+    // and reach its policy section.
+    let codex_stub = create_exe_stub(&bin, "codex");
+    let explicit = home.join("selected-codex");
+    fs::rename(codex_stub, &explicit).unwrap();
+    fs::rename(
+        bin.join("codex-code-mode-host"),
+        home.join("codex-code-mode-host"),
+    )
+    .unwrap();
+    let _selected = EnvGuard::set([("AMPLIHACK_CODEX_BINARY_PATH", explicit.to_str().unwrap())]);
+
+    // The explicit install above already wrote the file; remove it, so what
+    // is asserted below is the bootstrap's own write and not that one's.
+    let rules = codex_home.join(RULES_DIR).join(RULES_FILE);
+    assert!(rules.exists(), "the fixture install wrote it once");
+    fs::remove_file(&rules).unwrap();
+
+    // An earlier phase on this thread refused a Claude settings file and
+    // never reached a policy section to read its record. Without the clear
+    // at the start of the write phase, the bootstrap warns about it.
+    const STALE: &str = "profile from an earlier phase";
+    policy::claude::record(
+        STALE,
+        &policy::claude::DenyOutcome::Unparseable("not a JSON array".into()),
+    );
+
+    let mut notice = Vec::new();
+    crate::freshness::with_provider("codex", || {
+        super::super::ensure_framework_installed_with(&mut notice)
+            .expect("the launch bootstrap runs")
+    });
+    let notice = String::from_utf8_lossy(&notice).into_owned();
+
+    assert!(
+        rules.exists(),
+        "a Codex launch keeps its deny rules current: {notice}"
+    );
+    assert_eq!(
+        fs::read_to_string(&rules).unwrap(),
+        policy::codex::rules_file(&[]),
+        "and writes the same rendering the one policy list gives"
+    );
+    assert!(
+        !notice.contains(STALE),
+        "an outcome recorded before this run's write phase is not warned \
+         about as this run's work: {notice}"
+    );
 }

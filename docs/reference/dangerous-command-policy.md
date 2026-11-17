@@ -44,7 +44,9 @@ To add your own entries, see
   - [Accepted prefixes](#accepted-prefixes)
 - [When the writers run](#when-the-writers-run)
 - [How the files are written](#how-the-files-are-written)
+  - [The Codex rules file amplihack owns](#the-codex-rules-file-amplihack-owns)
 - [Install and update output](#install-and-update-output)
+  - [A profile root that cannot be read](#a-profile-root-that-cannot-be-read)
 - [Uninstall](#uninstall)
 - [Checking what was written](#checking-what-was-written)
 - [What the policy does not stop](#what-the-policy-does-not-stop)
@@ -245,8 +247,10 @@ becoming five. Two of the six are shown:
 ```python
 # amplihack: dangerous-command deny rules
 # Written by amplihack from one policy list, and replaced on the next
-# install or update. Keep your own rules in another file in this
-# directory; amplihack never reads or replaces those.
+# install or update as long as this first line is still here. Without
+# it the file is left alone and amplihack writes no Codex rules at
+# all. Keep your own rules in another file in this directory;
+# amplihack never reads or replaces those.
 
 # pkill
 prefix_rule(
@@ -267,14 +271,20 @@ prefix_rule(
 )
 ```
 
-The first line is the ownership marker. `amplihack uninstall` removes a file
-at that path only when it starts with that line, so a symlink or a file
-someone else wrote there is left alone.
+The first line is the ownership marker, and it governs both ends. `amplihack
+install` writes over a file at that path only when the bytes already there
+begin with that line, and `amplihack uninstall` removes one only on the same
+terms. A symlink, or a file someone else wrote at that name, is left exactly as
+it was by an install and by an uninstall alike, and the install says so rather
+than claiming Codex was configured. The cases are listed in
+[The Codex rules file amplihack owns](#the-codex-rules-file-amplihack-owns).
+The header comment says the same thing in the file itself, which is the only
+explanation a reader who finds it without this page gets.
 
-The file is amplihack's own and is rewritten whole. Any other file in
-`rules/`, including one you wrote by hand, is never read, rewritten or
-removed. If `rules/` is missing, amplihack creates it at mode 0700 inside a
-Codex home that is a real directory.
+The file, when it is amplihack's, is rewritten whole. Any other file in
+`rules/`, including one you wrote by hand, is never read for its content,
+rewritten or removed. If `rules/` is missing, amplihack creates it at mode 0700
+inside a Codex home that is a real directory.
 
 If `rules/` is there but is a symlink or is not a directory, the write is
 refused and nothing is created, chmod-ed or written through it. The link's
@@ -548,7 +558,9 @@ profile root.
 
 - **Merged, never replaced.** The Claude writer appends missing entries to the
   array that is there. Your own entries and every unrelated key survive. The
-  Codex rules file is amplihack's own and is rewritten whole.
+  Codex rules file is amplihack's own and is rewritten whole, and only when the
+  bytes already at that path carry amplihack's ownership marker; see
+  [The Codex rules file amplihack owns](#the-codex-rules-file-amplihack-owns).
 - **Idempotent by content.** A second run leaves every written file
   byte-identical. The report does not distinguish the two: a run that added
   entries and a run that found them all already there print the same line.
@@ -582,19 +594,33 @@ profile root.
     ⚠️  Codex: the dangerous-command deny rules were not written (permission denied); fix what that names, then run `amplihack install` again
     ⚠️  Codex: the dangerous-command deny rules were not written (the Codex home is a symlink); fix what that names, then run `amplihack install` again
     ⚠️  Codex: the dangerous-command deny rules were not written (the Codex rules directory is a symlink); fix what that names, then run `amplihack install` again
+    ⚠️  Codex: the dangerous-command deny rules were not written (the file there does not carry amplihack's marker line); fix what that names, then run `amplihack install` again
     ⚠️  Claude Code (home settings): the dangerous-command deny rules were not written (permissions is not a JSON object); fix what that names, then run `amplihack install` again
     ⚠️  Claude Code (profile work): the dangerous-command deny rules were not written (permissions.deny is not a JSON array); fix what that names, then run `amplihack install` again
+    ⚠️  Claude Code (managed profiles): the dangerous-command deny rules were not written (the profile root is a symlink); fix what that names, then run `amplihack install` again
   ```
+
+  The label in parentheses names one settings file: `home settings`,
+  `profile <name>` for a managed profile, or `new profile <name>` for one
+  being seeded. `managed profiles` is the exception. It stands for the
+  profile root itself, used when the run could not reach the profiles to
+  begin with and so has no name to give; see
+  [A profile root that cannot be read](#a-profile-root-that-cannot-be-read).
 
   Four paths report this way: `amplihack install` and `amplihack update`
   (whose policy section carries the line), the per-profile refresh (reported
   through the same section), and profile seeding, which writes the line to
   stderr itself as it seeds, prefixed `amplihack: warning:` rather than
   indented under a marker, because `amplihack profile add` has no policy
-  section to carry it. The launch-time repair is the fourth: it writes the
-  same home settings file but says nothing about the policy, so a file it
-  cannot write there is named by the next `amplihack install` or `amplihack
-  update`.
+  section to carry it:
+
+  ```text
+  amplihack: warning: Claude Code (new profile work): the dangerous-command deny rules were not written (permissions is not a JSON object); fix what that names, then run `amplihack install` again
+  ```
+
+  The launch-time repair is the fourth: it writes the same home settings file
+  but says nothing about the policy, so a file it cannot write there is named
+  by the next `amplihack install` or `amplihack update`.
 
   A file the merge refuses before the policy writer runs, whether for malformed
   JSON, a symlink, a hard link, or a foreign-owned or oversized
@@ -605,6 +631,55 @@ profile root.
   A deny list that is believed to be present and is not is worse than none, so
   the warning is never suppressed, and the same run does not also print a line
   claiming that harness was written.
+
+### The Codex rules file amplihack owns
+
+The marker is the first line of the generated file,
+`# amplihack: dangerous-command deny rules`. What amplihack does with whatever
+stands at `$CODEX_HOME/rules/amplihack-dangerous-commands.rules` turns on that
+line alone; the rest of the bytes are read only to compare them with what this
+run would write, which is what tells a current file from a stale one.
+
+| What is at that path | `amplihack install` | `amplihack uninstall` |
+|----------------------|---------------------|-----------------------|
+| Nothing | writes the file | nothing to remove |
+| amplihack's file, byte-identical to what this run renders | leaves it, reports the rules as in place | removes it |
+| amplihack's file, different bytes (an older list, or new instance entries) | rewrites it whole | removes it |
+| A file without the marker, or one that is not valid UTF-8 | leaves it byte-for-byte, no Codex ℹ️ line, one warning | keeps it, reports why |
+| A symlink, a non-regular file, a file over 64 KiB, or one that cannot be read | leaves it, one warning naming the reason | keeps it, reports why |
+
+The last two rows are the same decision at both ends. A rules file you wrote by
+hand is not replaced by one command and deleted by another.
+
+The table says what the marker decides, which is not everything that can stop a
+write. A file that does carry the marker still goes through the same atomic
+write as every other policy file, so it can be refused after the marker has
+been accepted: `is owned by another user` and `is not a regular file` come from
+that write, and the directory it is written into can give an I/O error kind.
+Those reasons reach the same warning line as the ones in the table.
+
+The unmarked case reports:
+
+```text
+  ⚠️  Codex: the dangerous-command deny rules were not written (the file there does not carry amplihack's marker line); fix what that names, then run `amplihack install` again
+```
+
+Move or rename your file and run `amplihack install` again: amplihack then
+writes its own, and yours stays under its new name. Keeping your own rules in a
+separate file in `rules/` avoids the collision altogether, which is what the
+header comment of the generated file asks for. Codex loads every `.rules` file
+in that directory without being pointed at it, checked against codex-cli
+0.166.0 and recorded in
+[Verified behaviour and open checks](#verified-behaviour-and-open-checks), so a
+second file costs nothing as long as it parses.
+
+A file over 64 KiB reports `(is too large)` rather than the marker phrase,
+because amplihack has not read enough of it to know whose it is. The phrases
+are kept apart so you can tell a file of your own from one too big to inspect.
+
+Nothing is read out of that file except the marker and the byte comparison.
+The marker says a file may be replaced; it never says its contents can be
+trusted.
 
 ## Install and update output
 
@@ -652,6 +727,7 @@ lines vary with what happened.
 | There is no harness home to write into | `↩️  Codex: no Codex home on this machine, so there was nothing to write; the rules are written when one appears.` |
 | Some files took the entries and some were refused | `ℹ️  Claude Code: deny rules written where they could be; each file that was refused is named in the warnings below.` |
 | Every file for that harness was refused | no ℹ️ line at all, only the warnings |
+| The managed profile root cannot be resolved, or is a symlink, or cannot be listed | two lines, in different places: `⚠️  Profiles: settings.json not refreshed (<reason>)` on stdout in the profile phase above this section, and `⚠️  Claude Code (managed profiles): …` on stderr with the warnings below it |
 
 Each refused file adds one stderr line naming it, in the form shown under
 [How the files are written](#how-the-files-are-written). Install still exits 0.
@@ -665,6 +741,72 @@ warning:`.
 No line carries a path or a count. A profile is named, because a warning that
 does not say which profile cannot be acted on.
 
+### A profile root that cannot be read
+
+The Claude line claims the entries are in the home settings file "and in every
+managed profile that has one", so a run that could not reach the profiles at
+all must not print it unqualified. Three conditions are reported rather than
+counted as success, and anything else that stops the profiles being reached is
+reported with them:
+
+- **The root cannot be resolved.** `AMPLIHACK_CLAUDE_PROFILE_ROOT` holds a
+  value that is not UTF-8 or fails the content rule for a root, which is
+  non-empty, absolute, free of control characters and without a `..`
+  component; or the saved root in `~/.amplihack/profile-root` fails that same
+  rule, is over 4096 bytes or is not UTF-8; or the variable is unset, nothing
+  is saved and `HOME` is unset too, so there is nowhere to look. The rule and
+  the resolution order are in
+  [Profile root](./profile-command.md#profile-root).
+- **The root is a symlink**, which amplihack declines to write through.
+- **The root exists and cannot be listed**, which is an I/O error.
+
+Each prints two lines, in two different places. The first is on stdout, in
+the profile phase, beside the `Profile <name>:` lines it is shaped after, and
+so above the policy section:
+
+```text
+  ⚠️  Profiles: settings.json not refreshed (the profile root is a symlink)
+```
+
+The second is the ordinary refusal warning, on stderr and inside the policy
+section, under the label `managed profiles`. The run records the root against
+the profiles exactly as it records a settings file it could not write, so the
+root appears in the warnings the ℹ️ line promises and the Claude line drops to
+its partial form:
+
+```text
+  ℹ️  Claude Code: deny rules written where they could be; each file that was refused is named in the warnings below.
+  ⚠️  Claude Code (managed profiles): the dangerous-command deny rules were not written (the profile root is a symlink); fix what that names, then run `amplihack install` again
+```
+
+The partial form needs something to have succeeded. If the home settings file
+was refused in the same run, no Claude Code file took the entries at all, so
+there is no ℹ️ line and the warnings stand alone.
+
+The reason is a short phrase for the condition, never the configured path:
+
+| Condition | Reason |
+|-----------|--------|
+| The root is a symlink | `the profile root is a symlink` |
+| The root cannot be listed | the I/O error kind, such as `permission denied` |
+| The root cannot be resolved | `the profile root could not be resolved` |
+| Anything else that stops the profiles being reached | `the profile root could not be read` |
+
+The last row is a catch-all rather than a gap. The reason is chosen from the
+condition rather than taken from an error's own text, so a failure this page
+does not anticipate still prints a fixed phrase instead of a string that might
+carry a path. The unresolvable case in particular says nothing about the value
+it was given, since that value came from the environment or from a file.
+
+The per-profile half of this refresh, and the `Profile <name>:` lines the
+`Profiles:` line sits beside, are documented under
+[Seeding](./profile-command.md#seeding).
+
+A root that simply does not exist is not a failure. There are no profiles to
+write into, nothing is claimed about any, and neither line is printed. The same
+is true of a root holding profiles that have no `settings.json`: amplihack
+writes into the profiles that have one and does not create files for the rest.
+
 ## Uninstall
 
 `amplihack uninstall` removes the Codex rules file, and only that file: the
@@ -673,6 +815,22 @@ file's bytes must begin with the whole 41-character marker
 file, or a file whose first line merely begins `# amplihack:` and then says
 something else, is left in place. It is removed whenever it is there, on the
 same unconditional terms as the rest of the Codex cleanup.
+
+`amplihack install` applies the same test before it writes, so the file
+amplihack will replace and the file amplihack will remove are the same set; see
+[The Codex rules file amplihack owns](#the-codex-rules-file-amplihack-owns).
+A file kept for that reason is reported on stdout, as information rather than a
+warning, because an uninstall that leaves your file where it is has not failed
+at anything:
+
+```text
+  ℹ️  The Codex dangerous-command rules file was left in place (the file there does not carry amplihack's marker line).
+```
+
+The phrase in parentheses is the one the install warning uses for the same
+condition, and both come from one constant, so a search for either text finds
+the other. A file kept for an I/O reason gives that reason instead: `is a
+symlink`, `is too large`, or the error kind.
 
 The check is a prefix test on those 41 characters rather than a comparison of
 the whole first line, so a first line that starts with the marker and then

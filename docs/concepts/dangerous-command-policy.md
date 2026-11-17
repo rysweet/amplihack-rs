@@ -35,6 +35,7 @@ The list itself, and the exact files, are in
 - [Why ordinary pushes still run](#why-ordinary-pushes-still-run)
 - [Why pgrep is on the list](#why-pgrep-is-on-the-list)
 - [Why a failed write is loud](#why-a-failed-write-is-loud)
+- [Why a file amplihack did not write is left alone](#why-a-file-amplihack-did-not-write-is-left-alone)
 - [What this is not](#what-this-is-not)
 - [Related](#related)
 
@@ -263,6 +264,36 @@ That is why the install output reports what the run actually wrote, harness by
 harness, names a harness it found nothing to write into, and drops the
 positive line for a harness whose files were refused. A report is readable
 only if the absence of a line means something.
+
+The same reasoning reaches past individual files. The Claude line claims the
+entries arrived in the home settings file and in every managed profile that
+has one, and a run that could not read the profile root at all is in no
+position to claim the second half. A root that is a symlink, or that cannot be
+listed, or that cannot be located because neither the environment, the saved
+root file nor `HOME` says where it is, is reported like a refused file: the
+line drops to its partial form, or disappears altogether when the home file
+was refused too. An absent root is a different thing and stays silent. There
+are no profiles there to be unprotected, so there is nothing to be wrong
+about, and the distinction between "could not" and "nothing to" is what keeps
+the warnings worth reading.
+
+## Why a file amplihack did not write is left alone
+
+One file in the Codex rules directory carries amplihack's name, and the
+question is what to do when the thing standing at that path is not amplihack's.
+Install and uninstall give the same answer: leave it, say so, write nothing and
+remove nothing. A rule that held in one direction only would be no rule at all,
+and the direction that matters is the one that destroys somebody's work.
+
+The cost is not hidden. An agent that can write into `rules/` can plant an
+unmarked file at amplihack's path and so keep the Codex deny rules from being
+written at all. Overwriting would not close that: the same agent can edit the
+Codex home directly, which is the limit described below. So the choice is
+between two failures, and silently deleting a file somebody wrote by hand is
+the worse one. What makes the other tolerable is that refusing is loud. Codex
+gets no line saying it was configured, the warning says the file standing
+there does not carry amplihack's marker line, and the remedy is one `mv`
+away.
 
 ## What this is not
 

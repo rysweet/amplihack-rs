@@ -351,3 +351,48 @@ pub(crate) fn write_failure_warning(harness: &str, reason: &str) -> String {
         one_line(reason)
     )
 }
+
+/// Writes one policy warning to stderr, prefixed `amplihack: warning: `.
+///
+/// Issue #2589 (R2): profile seeding runs off the install path and reaches no
+/// policy section, so the line it records is read by nothing and the refusal
+/// is visible only because this function prints it. A bare `eprintln!` there
+/// could not be observed by a test without a `dup2` on a descriptor shared
+/// across the test binary's threads, so the emission is made substitutable
+/// instead: the stderr write is unconditional, and a test build additionally
+/// keeps a copy of the same line where [`take_warnings`] can read it.
+///
+/// Control characters are flattened here rather than at the call sites. The
+/// reasons these lines carry come from file content and error text, and a
+/// newline or an escape sequence in one would otherwise forge a second line
+/// of install output (SEC-D2). Flattening is idempotent, so a caller whose
+/// text has already been through [`write_failure_warning`] is unaffected.
+pub(crate) fn warn(line: &str) {
+    let flattened: String = line
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    let text = format!("amplihack: warning: {flattened}");
+    // The stderr write comes first and runs in both builds, so a real run
+    // behaves identically to a test one and a panic in the buffer below
+    // could not swallow the warning (SEC-D3).
+    eprintln!("{text}");
+    #[cfg(test)]
+    WARNINGS.with_borrow_mut(|lines| lines.push(text));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The lines [`warn`] wrote on this thread, in order. Per thread, like
+    /// the Claude record, so this crate's tests stay independent of each
+    /// other without a lock.
+    static WARNINGS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes and empties this thread's warning buffer. Test-only: production
+/// code has no reader, because the lines have already gone to stderr.
+#[cfg(test)]
+pub(crate) fn take_warnings() -> Vec<String> {
+    WARNINGS.with_borrow_mut(std::mem::take)
+}

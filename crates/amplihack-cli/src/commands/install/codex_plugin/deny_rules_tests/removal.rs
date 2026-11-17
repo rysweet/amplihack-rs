@@ -29,9 +29,11 @@ fn uninstall_keeps_a_file_at_the_same_path_that_amplihack_did_not_write() {
     fs::create_dir_all(home.rules_dir()).unwrap();
     fs::write(home.rules_file(), "# someone else's rules\n").unwrap();
     let outcome = remove_deny_rules(&home.path);
-    assert!(
-        matches!(outcome, DenyRulesRemoval::Kept(_)),
-        "an unmarked file is not amplihack's: {outcome:?}"
+    assert_eq!(
+        outcome,
+        DenyRulesRemoval::Kept(UNMARKED_REASON.to_string()),
+        "an unmarked file is not amplihack's, and the reason is the one \
+         constant install uses too (R7)"
     );
     assert!(home.rules_file().exists());
 }

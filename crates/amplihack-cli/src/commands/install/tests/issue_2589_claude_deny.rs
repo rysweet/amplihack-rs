@@ -398,11 +398,13 @@ fn seeding_a_new_profile_writes_the_policy_even_from_a_pre_change_home_file() {
 // pub(crate) fn refresh_profile_settings(
 //     hooks_bin: &Path,
 //     update: &dyn Fn(&str, &mut Value),
-// ) -> Vec<(String, Refresh)>;
+// ) -> ProfileRefresh;
 // ```
 //
 // The labels are the ones `docs/reference/dangerous-command-policy.md`
-// prints: `home settings`, `profile <name>`, `new profile <name>`.
+// prints: `home settings`, `profile <name>` and `new profile <name>` for one
+// settings file each, and `managed profiles` for the profile root itself,
+// used when the run could not reach the profiles and so has none to name.
 
 use super::super::apply_dangerous_command_policy;
 use crate::policy::{HarnessWrite, ReportLine};
@@ -665,29 +667,6 @@ fn seeding_a_profile_it_cannot_write_records_the_refusal() {
     );
 }
 
-/// Structural: seeding writes its warning where a person running `amplihack
-/// profile add` will see it. Without this the record is set and nothing ever
-/// prints it on that path.
-#[test]
-fn the_seeding_path_writes_its_warning_to_stderr() {
-    const SOURCE: &str = include_str!("../../profile/store.rs");
-    let seeding = SOURCE
-        .split("fn seed_policy_into")
-        .nth(1)
-        .expect("seed_policy_into is defined in profile/store.rs");
-    // To the end of this function, not a fixed number of bytes: the check is
-    // "the seeding path reaches stderr", which a comment reworded above it
-    // must not decide. `    }` at the method's indent closes it.
-    let body = seeding
-        .split_once("\n    }\n")
-        .expect("seed_policy_into is a closed method")
-        .0;
-    assert!(
-        body.contains("eprintln!"),
-        "a refusal met while seeding must reach stderr, not only tracing:\n{body}"
-    );
-}
-
 // --- a file the merge refused before the policy writer ran (SEC-C3) ---------
 //
 // `apply_deny_policy` runs inside the closure `hook_block::update_file` is
@@ -792,34 +771,118 @@ fn a_symlinked_home_settings_file_is_reported_as_refused_not_as_absent() {
     );
 }
 
-/// Structural: every arm in `install/settings.rs` that turns a merge result
-/// into a refusal records it. `record` is called from inside the merge
-/// closure, so an arm that returns before the closure runs and does not
-/// record leaves a refused file looking like a file that does not exist.
-/// Without this check that contract is a comment, and it was already broken
-/// once at two of the four sites.
+// --- the seeding warning reaches the person who ran the command (R2) -------
+//
+// `amplihack profile add` never reaches an install policy section, so the
+// record it leaves is read by nothing and the refusal is visible only if
+// seeding prints it itself. The emission goes through `policy::warn`, which
+// writes the line to stderr and, in a test build alone, keeps a copy of the
+// same line where a test can read it. That replaces a check that read
+// `profile/store.rs` and looked for the word `eprintln!`, which held even
+// when the branch around it could not be reached.
+//
+// Expected API, in `crate::policy`:
+//
+// ```ignore
+// /// Writes `amplihack: warning: {line}` to stderr, with control characters
+// /// flattened. Under `cfg(test)` the same line is also appended to a
+// /// per-thread buffer.
+// pub(crate) fn warn(line: &str);
+//
+// /// Takes and empties this thread's warning buffer.
+// #[cfg(test)]
+// pub(crate) fn take_warnings() -> Vec<String>;
+// ```
+
+/// Empties this thread's warning buffer, so what is read below describes
+/// this test's run alone.
+fn clear_policy_warnings() {
+    let _ = policy::take_warnings();
+}
+
+/// A profile whose seeded `settings.json` cannot take the entries produces
+/// the warning line, through production code driven end to end.
 #[test]
-fn every_refusal_arm_in_the_install_writer_records_what_it_refused() {
-    const SOURCE: &str = include_str!("../settings.rs");
-    let arms = [
-        "FileMerge::Refused(reason) => {",
-        "Refresh::Skipped(reason) = result {",
-    ];
-    for arm in arms {
-        let after = SOURCE
-            .split(arm)
-            .nth(1)
-            .unwrap_or_else(|| panic!("{arm} is still a match arm in install/settings.rs"));
-        // To the end of the block, so a later unrelated `record(` cannot
-        // satisfy the check: `\n        }` at the arm's own indent closes it.
-        let body = after
-            .split_once("\n        }")
-            .unwrap_or_else(|| panic!("{arm} is a closed block"))
-            .0;
-        assert!(
-            body.contains("::record("),
-            "the arm after {arm:?} returns without recording the file it refused, so the \
-             policy section cannot tell it from a file that does not exist:\n{body}"
-        );
-    }
+fn seeding_a_profile_it_cannot_write_warns_where_the_user_will_see_it() {
+    use crate::commands::profile::{ProfileName, ProfileStore};
+
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    clear_policy_warnings();
+    let d = tempdir_outside_framework_roots();
+    let home = d.path().join("home");
+    let source = home.join(".claude");
+    fs::create_dir_all(&source).unwrap();
+    // `permissions` is a string, so it is copied into the new profile and
+    // then cannot take the deny entries.
+    fs::write(
+        source.join("settings.json"),
+        r#"{"language":"en","permissions":"bypassPermissions"}"#,
+    )
+    .unwrap();
+    let root = home.join("profiles");
+    fs::create_dir_all(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+
+    let store = ProfileStore::new(root).with_shared_assets(source);
+    let name = ProfileName::parse("fresh").unwrap();
+    store
+        .add(&name)
+        .expect("a settings file that cannot take the entries does not fail the add");
+
+    let warnings = policy::take_warnings();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "the refusal is named once, by the command the user ran: {warnings:?}"
+    );
+    assert!(
+        warnings[0].starts_with("amplihack: warning: "),
+        "the line carries the prefix the binary prints: {:?}",
+        warnings[0]
+    );
+    assert!(
+        warnings[0].contains("new profile fresh"),
+        "a warning that does not name the profile cannot be acted on: {:?}",
+        warnings[0]
+    );
+    assert!(
+        warnings[0].contains("the dangerous-command deny rules were not written"),
+        "the line says which control is missing: {:?}",
+        warnings[0]
+    );
+}
+
+/// The counterpart: a profile that takes the entries warns about nothing, so
+/// the line above is not printed on every `amplihack profile add`.
+#[test]
+fn seeding_a_profile_that_takes_the_entries_warns_about_nothing() {
+    use crate::commands::profile::{ProfileName, ProfileStore};
+
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    clear_policy_record();
+    clear_policy_warnings();
+    let d = tempdir_outside_framework_roots();
+    let home = d.path().join("home");
+    let source = home.join(".claude");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("settings.json"), r#"{"language":"en"}"#).unwrap();
+    let root = home.join("profiles");
+    fs::create_dir_all(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+
+    let store = ProfileStore::new(root).with_shared_assets(source);
+    let name = ProfileName::parse("fresh").unwrap();
+    let dir = store.add(&name).expect("an ordinary profile seeds");
+
+    assert!(
+        deny_entries(&read_json(&dir.join("settings.json"))).contains(&"Bash(pkill:*)".to_string()),
+        "the seeded profile took the entries"
+    );
+    assert!(
+        policy::take_warnings().is_empty(),
+        "an ordinary `amplihack profile add` prints no policy warning"
+    );
 }

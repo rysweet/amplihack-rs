@@ -304,6 +304,20 @@ pub(super) fn register_hooks(settings: &mut Value, hooks_bin: &Path, limit_resum
 /// Unit tests set this to let `refresh_profile_hooks` run.
 pub(super) const PROFILE_REFRESH_TEST_OPT_IN: &str = "AMPLIHACK_TEST_PROFILE_REFRESH";
 
+/// Issue #2589 (R6): how the managed profile root itself is named in a
+/// policy warning, when the run could not reach the profiles and so has no
+/// profile to name.
+///
+/// A literal with no interpolation, which is what keeps it apart from the
+/// per-profile labels. The record is keyed by label and a later entry
+/// replaces an earlier one, so a label that collided with a profile's would
+/// silently drop one of the two outcomes. `ProfileName::parse` admits only
+/// ASCII alphanumerics and `. _ -`, so no profile can be called
+/// `managed profiles` and no per-profile label can equal this one. That
+/// argument is recorded here because relaxing the name charset later would
+/// break it with no signal at this site.
+pub(super) const PROFILE_ROOT_LABEL: &str = "managed profiles";
+
 /// Issue #1661: gives every profile's existing `settings.json` the same hook
 /// registrations as `~/.claude/settings.json`. Never fails the install: a
 /// profile that cannot be refreshed is reported and skipped. Issue #1699: a
@@ -320,13 +334,14 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
         return;
     }
     let limit_resume = claude_too_old_for_limit_resume().is_none();
-    let results = refresh_profile_settings(hooks_bin, &|name, settings| {
+    let refresh = refresh_profile_settings(hooks_bin, &|name, settings| {
         register_hooks(settings, hooks_bin, limit_resume);
         // Issue #2589: every managed profile gets the same deny entries as
         // the user's own settings file. The profile is named, because a
         // warning that does not say which profile cannot be acted on.
         apply_deny_policy(settings, &format!("profile {name}"));
     });
+    let results = refresh.results;
     let updated = results
         .iter()
         .filter(|(_, r)| *r == Refresh::Updated)
@@ -350,6 +365,19 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
                 &crate::policy::claude::DenyOutcome::Unparseable(reason.clone()),
             );
         }
+    }
+    // Issue #2589 (R6): the root itself could not be read, so no profile was
+    // visited and none can be named. Without this the pass looks exactly
+    // like a root that holds no profiles, and the policy section goes on to
+    // claim the entries were written "in every managed profile that has
+    // one" after a run that read none of them (SEC-C3). The plural names
+    // the root, beside the `Profile <name>:` lines it is shaped after.
+    if let Some(reason) = refresh.root_failure {
+        println!("  ⚠️  Profiles: settings.json not refreshed ({reason})");
+        crate::policy::claude::record(
+            PROFILE_ROOT_LABEL,
+            &crate::policy::claude::DenyOutcome::Unparseable(reason),
+        );
     }
 }
 
