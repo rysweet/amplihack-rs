@@ -502,22 +502,22 @@ mod issue_1619_tier_propagation;
 // `issue_1619_step_tier_diagnostics` pins that what `[step_tiers]` could not
 // act on reaches the operator: the recipe-run process performs no launch of
 // its own, so a line it does not print is a line nobody sees.
+// `issue_1619_real_runner_step_tier` runs fixture recipes through the pinned
+// runner: a `[step_tiers]` override, and a declared tier on Claude, Codex
+// and Copilot.
 #[path = "issue_1619_real_runner_step_tier.rs"]
 mod issue_1619_real_runner_step_tier;
 #[path = "issue_1619_step_tier_diagnostics.rs"]
 mod issue_1619_step_tier_diagnostics;
-// `issue_1619_operator_default_model` pins Ryan's condition: an operator's
-// own AMPLIHACK_DEFAULT_MODEL still chooses the model with the tier table in
-// place, which is the only lever on a host with no Opus and no Sonnet.
-// `issue_1619_effort_ceiling` pins that a declared per-column ceiling steps
-// the strong tier down rather than failing. `issue_1619_recipe_step_tiers`
-// pins the tier each bundled step declares.
+// `issue_1619_operator_default_model` pins the condition in the #1619 issue
+// comment of 16 November: an operator's own AMPLIHACK_DEFAULT_MODEL still
+// chooses the Claude column's model with the tier table in place, and never
+// reaches a Codex or Copilot step. `issue_1619_effort_ceiling` pins that a
+// declared per-column ceiling steps a raised effort down rather than failing.
 #[path = "issue_1619_effort_ceiling.rs"]
 mod issue_1619_effort_ceiling;
 #[path = "issue_1619_operator_default_model.rs"]
 mod issue_1619_operator_default_model;
-#[path = "issue_1619_recipe_step_tiers.rs"]
-mod issue_1619_recipe_step_tiers;
 
 // Issue #1619: a step whose shell body was extracted into
 // amplifier-bundle/tools/ for the brick budget still has to be readable by

@@ -559,13 +559,11 @@ mod issue_2712_recipe_test_work_root;
 #[path = "issue_1966_consensus_criticality.rs"]
 mod issue_1966_consensus_criticality;
 
-// Issue #1619 (TDD): the bundled recipes declare a model tier per agent step.
-// Pure structural assertions on the shipped YAML: every agent step of the
-// tiered set carries one of the three tier words, no bundled recipe names a
-// concrete model, the untiered recipes are untouched, the brick budget still
-// holds, and the small-diff combined review is wired and off by default.
-#[path = "issue_1619_recipe_tiers_test.rs"]
-mod issue_1619_recipe_tiers;
+// Issue #1619 (TDD): the small-diff combined review. Runs the review-mode
+// step's script against a temporary git repository with the settings in a
+// temporary home, and checks the answer it prints in each case.
+#[path = "issue_1619_review_mode_test.rs"]
+mod issue_1619_review_mode;
 
 // Issue #1619: a step whose shell body was extracted into
 // amplifier-bundle/tools/ for the brick budget still has to be readable by
