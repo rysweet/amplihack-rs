@@ -718,12 +718,9 @@ documentation steers people towards. Checked against codex-cli 0.166.0: both
 push forms above return `{"matchedRules":[]}`, while `git push --force`,
 `git push -f origin main` and a bare `git push --force-with-lease` are
 `forbidden`. It cannot be closed in the rules file, because the set of
-attached values and flag groupings is open-ended.
-
-"Codex only" means the escape exists in the Codex rendering and not in the
-other two: Codex compares whole tokens, so `-at` is not `-a`, while Claude and
-Copilot match the prefix as text and `-at` begins with `-a`. Every grouped
-form is denied by the guard regardless.
+attached values and flag groupings is open-ended. Only the two `git push` rows
+are left open by it: the grouped tmux flags are denied by the tmux guard
+regardless of how they are spelled.
 
 The path-invocation row deserves a note, because `/` and `.` are accepted
 characters in a policy entry and a reader may expect a prefix to follow the

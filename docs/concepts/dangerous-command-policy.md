@@ -213,15 +213,17 @@ read the list before acting, rather than recommending the command that is
 denied.
 
 The inconvenience is small but it is not hypothetical, and amplihack's own
-documentation was part of it. Five places across four pages told the reader
+documentation was part of it. Seven places across five pages told the reader
 to run `pgrep` or `pkill`: the argv verification procedure in
 [Check Agent argv for Prompt Text](../howto/check-agent-argv-for-prompt-text.md),
 two checks and a cleanup step in
 [Keep Tests From Prompting for Git](../howto/keep-tests-from-prompting-for-git.md),
 a cleanup step in
 [Power-Steering Worktree Troubleshooting](../howto/power-steering-worktree-troubleshooting.md),
+a force-kill step in
+[Stop Hook Exit Hang](../troubleshooting/stop-hook-exit-hang.md),
 and a profiling line in [Developing amplihack](../DEVELOPING_AMPLIHACK.md).
-All five were rewritten to `ps -ef` with the policy, as were the listings in
+All seven were rewritten to read the process list first, as were the listings in
 [Wait Without Leaving Orphan Processes](../howto/wait-without-orphan-processes.md)
 and [Claude Profile Rotation](../howto/claude-profile-rotation.md), because
 shipping a deny rule against a command your own instructions tell people to
