@@ -1,7 +1,7 @@
 ---
 title: Auto Drive To Merge Reference
 description: responsibilities, authorization, recovery, completion outcomes, and target compatibility for auto-drive-to-merge.
-last_updated: 2026-11-13
+last_updated: 2026-11-17
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -197,7 +197,10 @@ PR-authored instructions cannot become workflow authority.
 Each loop allocates a private review generation from the PR worktree
 (`amplihack internal review-allocate`) and releases it on exit (issue #2096).
 A generation is a private repository and a checkout detached at the recorded
-PR-head SHA, plus a separate trusted launch directory. Judging agents start in
+PR-head SHA, plus a separate trusted launch directory. Its allocation and
+storage directories are created `0700` under any umask. The allocation
+directory sits in the drive's state directory, so the trust scan of that
+directory does not set it aside (issue #2778). Judging agents start in
 the launch directory and read the checkout by explicit path and SHA, so the
 PR's `AGENTS.md`, `CLAUDE.md` and `.claude/` files are review data, never
 instructions. `autodrive_worktree_guard.sh` accepts a generation only when its

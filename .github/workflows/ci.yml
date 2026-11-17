@@ -745,6 +745,11 @@ jobs:
       - name: Outside-in — agent binary resolution and hand-off (issues #1481, #1525)
         shell: bash
         run: AMPLIHACK_1481_QA_REQUIRE_ALL=1 AMPLIHACK_1481_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
+      # Issue #2778: the crusty loop's step-02 sequence under umask 0002, which
+      # CI's own umask (0022) never exercises, against the binary installed above.
+      - name: "Outside-in - Crusty loop under umask 0002 (issue #2778)"
+        shell: bash
+        run: AMPLIHACK_2778_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2778-umask-crusty-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing

@@ -20,9 +20,11 @@ use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-/// Records its pid, its environment and its child's pid, then waits.
+/// Records its umask, its pid, its environment and its child's pid, then
+/// waits.
 const STUB_RUNNER: &str = r#"#!/bin/sh
 case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
+umask > "$RECORD_DIR/umask.tmp" && mv "$RECORD_DIR/umask.tmp" "$RECORD_DIR/umask.txt"
 env > "$RECORD_DIR/env.tmp" && mv "$RECORD_DIR/env.tmp" "$RECORD_DIR/env.txt"
 echo $$ > "$RECORD_DIR/runner.tmp" && mv "$RECORD_DIR/runner.tmp" "$RECORD_DIR/runner.pid"
 sleep 300 &
@@ -152,15 +154,20 @@ impl Fx {
         fits
     }
 
-    fn tmux(&self, args: &[&str]) -> Output {
-        Command::new("tmux")
-            .args(args)
+    /// A tmux command against this fixture's private server only: no `TMUX`
+    /// from the caller, and the fixture's own `TMUX_TMPDIR`.
+    fn tmux_command(&self, args: &[&str]) -> Command {
+        let mut c = Command::new("tmux");
+        c.args(args)
             .env_clear()
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .env("TMUX_TMPDIR", &self.tmux_dir)
-            .stdin(Stdio::null())
-            .output()
-            .unwrap()
+            .stdin(Stdio::null());
+        c
+    }
+
+    fn tmux(&self, args: &[&str]) -> Output {
+        self.tmux_command(args).output().unwrap()
     }
 
     pub(crate) fn pid(&self, name: &str) -> i32 {
@@ -784,6 +791,116 @@ fn a_pane_start_up_error_is_reported_by_the_launch() {
     assert!(err.contains("failed to start recipe run in"), "{err}");
     assert!(fx.leftovers(".spec.json").is_empty());
     assert!(fx.leftovers(".context.json").is_empty());
+}
+
+// --- issue #2778: a detached run takes the launching process's umask ------------
+
+/// `c`, run with `mask` as its umask. Only the child's umask changes: this
+/// test process, and every other test in it, keeps its own.
+fn under_umask(c: &mut Command, mask: libc::mode_t) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs in the forked child before exec. It calls only
+    // umask(2), which is async-signal-safe, cannot fail, takes no lock and
+    // allocates nothing; it changes the child's umask and nothing else.
+    unsafe {
+        c.pre_exec(move || {
+            libc::umask(mask);
+            Ok(())
+        })
+    }
+}
+
+/// The octal `umask` line a shell wrote to `path` (`0022`), as a mode.
+fn recorded_umask(path: &std::path::Path) -> libc::mode_t {
+    let line = fs::read_to_string(path).unwrap();
+    libc::mode_t::from_str_radix(line.trim(), 8)
+        .unwrap_or_else(|e| panic!("{}: {line:?} is not an octal umask: {e}", path.display()))
+}
+
+/// Issue #2778: `recipe run --detach` starts its run inside the shared tmux
+/// server, so the run used to get the umask the server was started under,
+/// not the launching shell's. A launcher under 022 talking to a server started
+/// under 0002 got a run under 0002, its review folders came out
+/// group-writable, and the drive's trust scan set them aside. The run must
+/// take the launching process's umask.
+#[test]
+fn a_detached_run_takes_the_launching_umask_not_the_tmux_servers() {
+    if !tmux_available() {
+        return;
+    }
+    let fx = Fx::new();
+    if !fx.tmux_socket_usable() {
+        return;
+    }
+    // The private server, started under 0002 as a shared server is on a host
+    // whose login shells use 0002.
+    let server = under_umask(
+        &mut fx.tmux_command(&["new-session", "-d", "-s", "host"]),
+        0o002,
+    )
+    .output()
+    .unwrap();
+    assert!(server.status.success(), "{}", text(&server.stderr));
+
+    // Precondition: a pane of that server runs under 0002. Without this check
+    // the assertion below could pass on a tmux that sets a pane's umask
+    // itself, and prove nothing.
+    let pane_umask = fx.records.join("server-umask.txt");
+    let pane = fx.tmux(&[
+        "new-window",
+        "-d",
+        "-t",
+        "host:",
+        "--",
+        "sh",
+        "-c",
+        r#"umask > "$1.tmp" && mv "$1.tmp" "$1""#,
+        "sh",
+        pane_umask.to_str().unwrap(),
+    ]);
+    assert!(pane.status.success(), "{}", text(&pane.stderr));
+    wait_for(
+        || pane_umask.is_file(),
+        "a pane of the server to record its umask",
+    );
+    assert_eq!(
+        format!("{:04o}", recorded_umask(&pane_umask)),
+        "0002",
+        "the private tmux server must run its panes under 0002 for this test to mean anything"
+    );
+
+    let mut args = fx.recipe_run_args();
+    args.push("--detach".into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = output_within(
+        "amplihack to exit",
+        under_umask(&mut fx.cmd(&args, &[]), 0o022),
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    let session = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("session: "))
+        .unwrap_or_else(|| panic!("no session line: {stdout}"))
+        .to_string();
+
+    let runner = fx.pid("runner.pid");
+    let child = fx.pid("child.pid");
+    let run_umask = fx.records.join("umask.txt");
+    wait_for(
+        || run_umask.is_file(),
+        "the detached run to record its umask",
+    );
+    let got = recorded_umask(&run_umask);
+    assert_eq!(
+        format!("{got:04o}"),
+        "0022",
+        "the detached run's umask: the launching process had 0022 and the tmux server 0002"
+    );
+
+    let stop = fx.run(&["recipe", "stop", &session], &[]);
+    assert!(stop.status.success(), "{}", text(&stop.stderr));
+    assert_gone(&[runner, child]);
 }
 
 // --- issue #2175: stopping a run by its run id through its record ---------------
