@@ -415,7 +415,9 @@ log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261020-10
   file-creation mask (umask), not the tmux server's, through the same file,
   so the files it creates have the modes a foreground run would give them: a
   run launched from a shell with umask `022` keeps `022` even when the tmux
-  server was started under `002`.
+  server was started under `002`. A launch file that carries no umask, as an
+  amplihack from before #2778 writes it, leaves the pane's own umask in
+  place.
 - **Context** — `-c`, `--context-file` and `--context-from-file` are read
   when you launch, not later, and reach the run in a 0600
   `<session>.context.json` in the log directory, removed when the run ends.
