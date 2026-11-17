@@ -534,9 +534,10 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     // Gated on the selected client for the same reason as the reconcile
     // above: an explicit `claude` or `copilot` launch leaves a Codex home
     // byte-identical (issue #1538), and the rules file lives in that home.
-    // The Claude entries need no gate here: `repair_settings_hooks` writes
-    // the user's own settings file, which `ensure_permissions` already
-    // covers.
+    // The Claude entries are kept current by `refresh_deny_entries` below,
+    // on every launch: `repair_settings_hooks` cannot carry them, because it
+    // returns when amplihack's hooks block is clean and so never reaches
+    // `ensure_permissions`.
     if crate::freshness::codex_selected() {
         // The policy section below reads the thread-local record the Claude
         // writers leave. Nothing in this bootstrap has written a Claude
@@ -548,7 +549,11 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
             let _ = writeln!(notice, "amplihack: warning: {warning}");
         }
     }
-    launch_repair::repair_settings_hooks(notice, &staging_dir, &hooks_bin)
+    launch_repair::repair_settings_hooks(notice, &staging_dir, &hooks_bin)?;
+    // Issue #2589: after the hook repair, so a launch that did rewrite the
+    // file has already written the entries and this pass adds nothing.
+    launch_repair::refresh_deny_entries(notice);
+    Ok(())
 }
 
 /// Issue #1526: an implicit re-stage does not write `settings_path`, so an

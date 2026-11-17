@@ -290,7 +290,7 @@ re-stage that runs on every launch deliberately does not: an explicit
 `amplihack claude` or `amplihack copilot` must leave a Codex home
 byte-identical, which issue #1538 pins. The Claude entries have no such
 restriction, because the file they go in is the one the launch repair already
-owns.
+writes, and they are refreshed on every launch.
 
 Check a rule yourself with Codex's own validator, which prints JSON:
 
@@ -488,16 +488,21 @@ confirmation that the whole value reverted to unset.
 | `amplihack install` | yes | yes | yes | states the per-launch mechanism |
 | `amplihack update` | yes | yes | yes | states the per-launch mechanism |
 | `amplihack profile add` / seeding | no | the new profile | no | no |
-| `amplihack claude`, `amplihack copilot` | only if launch repair rewrites it | no | no | the deny flags |
-| `amplihack codex` | only if launch repair rewrites it | no | yes | n/a |
+| `amplihack claude`, `amplihack copilot` | yes, if the file exists | no | no | the deny flags |
+| `amplihack codex` | yes, if the file exists | no | yes | n/a |
 
-The entries are written by `amplihack install`, `amplihack update` and
-`amplihack profile add`. A launch writes them only if it already had to
-repair the hooks block: launch repair returns early when the hooks block is
-current, and drift is computed over that block alone, so a launch whose
-hooks are up to date never reaches the settings writer. Empty
-`permissions.deny` by hand and no launch restores it; run `amplihack
-install` or `amplihack update`.
+Every launch refreshes the entries in the home settings file, so a machine
+that never runs `amplihack install` again still picks up a
+`policy.deny_commands` addition. This is a pass of its own, beside the hooks
+repair rather than part of it: launch repair returns early when the hooks
+block is current, and drift is computed over that block alone, so a launch
+whose hooks are up to date never reaches the settings writer. Empty
+`permissions.deny` by hand and the next launch fills it again.
+
+The refresh never creates the settings file. A machine with no Claude
+settings file has nothing to deny into, and `amplihack install` is what
+creates one. A `permissions` value the entries cannot merge into is reported
+on stderr and never replaced (SEC-C2), the same as on an install.
 
 A launch repairs the home settings file, not the launched profile's. The
 `--profile` flag sets `CLAUDE_CONFIG_DIR` for the child process only, and

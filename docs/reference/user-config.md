@@ -534,8 +534,11 @@ policy.deny_commands` removes the key.
   shipped defaults are command names and reveal nothing; what you add is
   yours to judge. This is the same rule that keeps prompt text out of argv.
 
-The defaults apply whether or not this key is set. Run `amplihack update`
-after changing it; Copilot picks a change up on the next launch without one.
+The defaults apply whether or not this key is set. Claude Code and Copilot
+CLI pick a change up on the next launch; a Codex rules file is refreshed on
+the next `amplihack codex`. Run `amplihack update` after changing it to
+write every harness at once, and to reach the managed profiles, which only
+an install refreshes.
 
 ## The config command
 
