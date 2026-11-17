@@ -548,7 +548,7 @@ Isolation cannot be switched off.
 | `AMPLIHACK_RUN_CHECKOUT` | Set for steps. An inherited value is ignored and grants no ownership. |
 | `AMPLIHACK_CLEANUP_ON_EXIT=0` | Skips the cleanup sweep only. Release still runs. |
 | Caller `GIT_TRACE2_*` | Cleared from the runner's environment, so they reach neither the runner nor the Git processes a run starts. amplihack sets none of them and reads none of them. |
-| The user's `~/.gitconfig` and `/etc/gitconfig` | Read by the runner and by every step, hook and agent, as by any other Git command that user runs. A run never writes to either file, and amplihack's own preparation, release and review-generation commands do not read them. A `user.name` there does not attribute an amplihack-owned workflow commit; see [Configure workflow commit identity](../howto/configure-workflow-commit-identity.md). |
+| The user's `~/.gitconfig` and `/etc/gitconfig` | Read by the runner and by every step, hook and agent, as by any other Git command that user runs. amplihack itself writes neither file, and its own preparation, release and review-generation commands do not read them. Nothing stops a step from writing one: a `git config --global` in a step now edits the user's real `~/.gitconfig`, where between #2290 and #2756 it was redirected to `/dev/null`. That is not a new privilege, since a step runs as the user and could already append to the file directly, but it is a change of behaviour; no shipped recipe does it. A `user.name` there does not attribute an amplihack-owned workflow commit; see [Configure workflow commit identity](../howto/configure-workflow-commit-identity.md). |
 
 ## Rust components
 
