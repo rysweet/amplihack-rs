@@ -103,7 +103,7 @@ pub(crate) fn stage(
         if written.contains(&name) {
             continue;
         }
-        let Ok(Some(text)) = read_recipe(&source) else {
+        let Some(text) = read_recipe(&source) else {
             continue;
         };
         let Some(patched) = patch(&text, &wanted) else {
@@ -191,16 +191,15 @@ fn candidates(recipe_dirs: &[PathBuf], top_level_recipe: &Path) -> Vec<PathBuf> 
 }
 
 /// One recipe's text, under the same bound every other amplihack file read
-/// has. `Ok(None)` for anything staging should pass over in silence, as the
-/// runner would.
-fn read_recipe(path: &Path) -> Result<Option<String>, ()> {
-    let Ok(meta) = fs::metadata(path) else {
-        return Ok(None);
-    };
+/// has. `None` for anything staging should pass over in silence, as the
+/// runner would: a path that is not a readable regular file, and one over
+/// [`MAX_RECIPE_BYTES`].
+fn read_recipe(path: &Path) -> Option<String> {
+    let meta = fs::metadata(path).ok()?;
     if !meta.is_file() || meta.len() > MAX_RECIPE_BYTES {
-        return Ok(None);
+        return None;
     }
-    fs::read_to_string(path).map(Some).map_err(|_| ())
+    fs::read_to_string(path).ok()
 }
 
 /// `Ok(())` when the patched text is still YAML, or the place it stopped

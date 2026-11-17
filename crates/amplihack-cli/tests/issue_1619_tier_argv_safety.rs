@@ -15,104 +15,11 @@
 
 #![cfg(target_os = "linux")]
 
-use crate::support::amplihack_bin::amplihack_bin;
-use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
-
-/// A fake harness: answers `--version` plausibly for whichever name it was
-/// invoked under, writes every argument it was given one per line to
-/// `$ARGV_LOG`, then exits 0.
-///
-/// The Claude version must be at least 2.1.319 or amplihack refuses the
-/// launch rather than deliver its contract without
-/// `--append-system-prompt-file` (issue #2030).
-const FAKE_HARNESS: &str = r#"#!/bin/sh
-case "$1" in
-  --version)
-    case "${0##*/}" in
-      claude|rusty|rustyclawd|amplifier) echo '2.1.319 (Claude Code)' ;;
-      codex*) echo 'codex-cli 0.166.0' ;;
-      *) echo '0.0.400' ;;
-    esac
-    exit 0 ;;
-esac
-: > "$ARGV_LOG"
-for a in "$@"; do printf '%s\n' "$a" >> "$ARGV_LOG"; done
-exit 0
-"#;
-
-struct Fixture {
-    _tmp: tempfile::TempDir,
-    home: PathBuf,
-    amplihack_home: PathBuf,
-    work: PathBuf,
-    tools: PathBuf,
-    argv_log: PathBuf,
-}
-
-impl Fixture {
-    fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        let home = root.join("home");
-        let amplihack_home = root.join("amplihack-home");
-        let work = root.join("work");
-        let tools = root.join("tools");
-        for d in [&home, &amplihack_home, &work, &tools] {
-            fs::create_dir_all(d).unwrap();
-        }
-        // `codex-code-mode-host` must sit beside `codex`: amplihack's health
-        // check refuses a codex install whose helper is missing.
-        for name in ["claude", "codex", "codex-code-mode-host", "copilot"] {
-            crate::support::exec_stub::write_executable(&tools.join(name), FAKE_HARNESS, 0o755);
-        }
-        Self {
-            _tmp: tmp,
-            home,
-            amplihack_home,
-            work,
-            tools,
-            argv_log: root.join("argv.log"),
-        }
-    }
-
-    fn argv(&self, harness: &str, passthrough: &[&str]) -> Vec<String> {
-        let _ = fs::remove_file(&self.argv_log);
-        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
-        c.arg(harness).arg("--").args(passthrough);
-        let output = self.env(&mut c, harness).output().expect("run amplihack");
-        let text = fs::read_to_string(&self.argv_log).unwrap_or_else(|e| {
-            panic!(
-                "the fake {harness} recorded no argv: {e}. stderr:\n{}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-        });
-        text.lines().map(str::to_string).collect()
-    }
-
-    fn env<'c>(&self, c: &'c mut Command, harness: &str) -> &'c mut Command {
-        c.current_dir(&self.work)
-            .env(
-                "PATH",
-                format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
-            )
-            .env("HOME", &self.home)
-            .env("AMPLIHACK_HOME", &self.amplihack_home)
-            .env("ARGV_LOG", &self.argv_log)
-            .env(
-                format!("AMPLIHACK_{}_BINARY_PATH", harness.to_uppercase()),
-                self.tools.join(harness),
-            )
-            .env("AMPLIHACK_NONINTERACTIVE", "1")
-            .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
-            .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
-            .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
-            .env("AMPLIHACK_SKIP_REFLECTION", "1")
-            .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
-            .env("AMPLIHACK_GOVERNOR", "off")
-    }
-}
+/// The fake harness and the isolated stage are
+/// `support::tier_harness`'s: `issue_1619_tier_propagation` asks different
+/// questions of the same recording, so the stage set is built once there
+/// rather than copied into each.
+use crate::support::tier_harness::Fixture;
 
 /// Everything on the command line except the `--model` pair, so two argvs
 /// can be compared without the part that is meant to differ.
@@ -289,9 +196,10 @@ fn a_trailing_model_with_no_value_is_still_refused_by_name() {
     // clear refusal into a silent rewrite, and must not launch a command the
     // check would have stopped.
     let f = Fixture::new();
-    let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
-    c.arg("codex").arg("--").args(["exec", "-", "--model"]);
-    let output = f.env(&mut c, "codex").output().expect("run amplihack");
+    let output = f
+        .launch("codex", &["exec", "-", "--model"])
+        .output()
+        .expect("run amplihack");
     assert!(
         !output.status.success(),
         "a dangling --model is refused, not launched"
@@ -413,8 +321,6 @@ fn no_argument_after_model_ever_begins_with_a_dash() {
 #[test]
 fn an_override_file_cannot_smuggle_an_argument_into_the_model_position() {
     let f = Fixture::new();
-    let dir = f.home.join(".amplihack");
-    fs::create_dir_all(&dir).unwrap();
     for bad in [
         "--dangerously-skip-permissions",
         "-s",
@@ -424,11 +330,9 @@ fn an_override_file_cannot_smuggle_an_argument_into_the_model_position() {
         "a/b",
         "a\"b",
     ] {
-        fs::write(
-            dir.join("model-tiers.toml"),
-            format!("version = 1\n\n[claude.fast]\nmodel = \"{bad}\"\n"),
-        )
-        .unwrap();
+        f.write_override(&format!(
+            "version = 1\n\n[claude.fast]\nmodel = \"{bad}\"\n"
+        ));
         let argv = f.argv("claude", &["--model", "fast", "-p"]);
         // Checked at the model position specifically: amplihack adds
         // `--dangerously-skip-permissions` of its own elsewhere in this argv,

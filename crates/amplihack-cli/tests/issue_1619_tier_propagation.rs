@@ -20,169 +20,13 @@
 //! `~/.claude`, `~/.codex` or `~/.amplihack`.
 
 #![cfg(target_os = "linux")]
-
-use crate::support::amplihack_bin::amplihack_bin;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
 
-/// A fake harness: answers `--version` plausibly for whichever name it was
-/// invoked under, writes every argument it was given one per line to
-/// `$ARGV_LOG`, then exits 0.
-///
-/// The Claude version must be at least 2.1.319 or amplihack refuses the
-/// launch rather than deliver its contract without
-/// `--append-system-prompt-file` (issue #2030).
-const FAKE_HARNESS: &str = r#"#!/bin/sh
-case "$1" in
-  --version)
-    case "${0##*/}" in
-      claude|rusty|rustyclawd|amplifier) echo '2.1.319 (Claude Code)' ;;
-      codex*) echo 'codex-cli 0.166.0' ;;
-      *) echo '0.0.400' ;;
-    esac
-    exit 0 ;;
-esac
-: > "$ARGV_LOG"
-for a in "$@"; do printf '%s\n' "$a" >> "$ARGV_LOG"; done
-exit 0
-"#;
-
-struct Fixture {
-    _tmp: tempfile::TempDir,
-    home: PathBuf,
-    amplihack_home: PathBuf,
-    work: PathBuf,
-    tools: PathBuf,
-    argv_log: PathBuf,
-    run_dir: PathBuf,
-}
-
-impl Fixture {
-    fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        let home = root.join("home");
-        let amplihack_home = root.join("amplihack-home");
-        let work = root.join("work");
-        let tools = root.join("tools");
-        let run_dir = root.join("run");
-        for d in [&home, &amplihack_home, &work, &tools, &run_dir] {
-            fs::create_dir_all(d).unwrap();
-        }
-        // `codex-code-mode-host` must sit beside `codex`: amplihack's health
-        // check refuses a codex install whose helper is missing.
-        for name in ["claude", "codex", "codex-code-mode-host", "copilot"] {
-            crate::support::exec_stub::write_executable(&tools.join(name), FAKE_HARNESS, 0o755);
-        }
-        Self {
-            _tmp: tmp,
-            home,
-            amplihack_home,
-            work,
-            tools,
-            argv_log: root.join("argv.log"),
-            run_dir,
-        }
-    }
-
-    /// Write `~/.amplihack/model-tiers.toml` in this fixture's HOME.
-    fn write_override(&self, toml: &str) {
-        let dir = self.home.join(".amplihack");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("model-tiers.toml"), toml).unwrap();
-    }
-
-    /// Write `~/.amplihack/config.toml` in this fixture's HOME.
-    fn write_user_config(&self, toml: &str) {
-        let dir = self.home.join(".amplihack");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("config.toml"), toml).unwrap();
-    }
-
-    /// `amplihack <harness> -- <passthrough>`, isolated.
-    fn launch(&self, harness: &str, passthrough: &[&str]) -> Command {
-        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
-        c.arg(harness).arg("--");
-        c.args(passthrough);
-        c.current_dir(&self.work)
-            .env(
-                "PATH",
-                format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
-            )
-            .env("HOME", &self.home)
-            .env("AMPLIHACK_HOME", &self.amplihack_home)
-            .env("ARGV_LOG", &self.argv_log)
-            .env(
-                format!("AMPLIHACK_{}_BINARY_PATH", harness.to_uppercase()),
-                self.tools.join(harness),
-            )
-            .env("AMPLIHACK_NONINTERACTIVE", "1")
-            .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
-            .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
-            .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
-            .env("AMPLIHACK_SKIP_REFLECTION", "1")
-            .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
-            .env("AMPLIHACK_GOVERNOR", "off");
-        c
-    }
-
-    fn run(&self, harness: &str, passthrough: &[&str]) -> Launch {
-        let _ = fs::remove_file(&self.argv_log);
-        let output = self
-            .launch(harness, passthrough)
-            .output()
-            .expect("run amplihack");
-        Launch {
-            argv: read_argv(&self.argv_log),
-            output,
-        }
-    }
-}
-
-fn read_argv(path: &Path) -> Vec<String> {
-    let text = fs::read_to_string(path).unwrap_or_else(|e| {
-        panic!(
-            "the fake harness recorded no argv at {}: {e}. amplihack did not launch it.",
-            path.display()
-        )
-    });
-    text.lines().map(str::to_string).collect()
-}
-
-struct Launch {
-    argv: Vec<String>,
-    output: Output,
-}
-
-impl Launch {
-    /// The value of the last `--model` on the recorded command line, or
-    /// `None` when it carries none.
-    fn model(&self) -> Option<&str> {
-        let mut found = None;
-        let mut iter = self.argv.iter();
-        while let Some(arg) = iter.next() {
-            if arg == "--model" {
-                found = iter.next().map(String::as_str);
-            } else if let Some(value) = arg.strip_prefix("--model=") {
-                found = Some(value);
-            }
-        }
-        found
-    }
-
-    /// The value of `-c model_reasoning_effort=…`, or `None`.
-    fn effort(&self) -> Option<&str> {
-        self.argv
-            .iter()
-            .filter_map(|a| a.strip_prefix("model_reasoning_effort="))
-            .next_back()
-    }
-
-    fn stderr(&self) -> String {
-        String::from_utf8_lossy(&self.output.stderr).into_owned()
-    }
-}
+/// The fake harness, the isolated stage and the argv reader are
+/// `support::tier_harness`'s: `issue_1619_tier_argv_safety` asks a different
+/// question of the same recording, so the stage set is built once there
+/// rather than copied into each.
+use crate::support::tier_harness::{FAKE_HARNESS, Fixture};
 
 /// The argv a Codex agent step arrives with, as the recipe runner builds it.
 fn codex_step(model: &str) -> Vec<String> {
@@ -427,18 +271,10 @@ fn a_claude_tier_with_no_mapping_falls_back_to_amplihacks_own_default() {
 fn the_fall_back_honours_amplihack_default_model() {
     let f = Fixture::new();
     f.write_override("version = 1\n\n[claude.strong]\n");
-    let launch = {
-        let _ = fs::remove_file(&f.argv_log);
-        let output = f
-            .launch("claude", &["--model", "strong", "-p"])
-            .env("AMPLIHACK_DEFAULT_MODEL", "claude-sonnet-5-5")
-            .output()
-            .expect("run amplihack");
-        Launch {
-            argv: read_argv(&f.argv_log),
-            output,
-        }
-    };
+    let launch = f.finish(
+        f.launch("claude", &["--model", "strong", "-p"])
+            .env("AMPLIHACK_DEFAULT_MODEL", "claude-sonnet-5-5"),
+    );
     assert_eq!(
         launch.model(),
         Some("claude-sonnet-5-5"),
@@ -561,18 +397,10 @@ fn a_global_force_wins_over_every_tier_and_keeps_the_tiers_effort() {
 #[test]
 fn the_force_environment_variable_works_without_a_config_file() {
     let f = Fixture::new();
-    let launch = {
-        let _ = fs::remove_file(&f.argv_log);
-        let output = f
-            .launch("claude", &["--model", "fast", "-p"])
-            .env("AMPLIHACK_FORCE_MODEL", "claude-sonnet-5-5")
-            .output()
-            .expect("run amplihack");
-        Launch {
-            argv: read_argv(&f.argv_log),
-            output,
-        }
-    };
+    let launch = f.finish(
+        f.launch("claude", &["--model", "fast", "-p"])
+            .env("AMPLIHACK_FORCE_MODEL", "claude-sonnet-5-5"),
+    );
     assert_eq!(
         launch.model(),
         Some("claude-sonnet-5-5"),
@@ -620,21 +448,13 @@ fn a_gateway_launch_uses_the_gateway_model_and_not_the_tier() {
         FAKE_HARNESS.replace("2.1.319", "2.1.247"),
         0o755,
     );
-    let launch = {
-        let _ = fs::remove_file(&f.argv_log);
-        let output = f
-            .launch("claude", &["--model", "strong", "-p"])
+    let launch = f.finish(
+        f.launch("claude", &["--model", "strong", "-p"])
             .env("AMPLIHACK_LITELLM_MODEL", "gateway-routed-model")
             .env("AMPLIHACK_LITELLM_ENDPOINT", "http://127.0.0.1:1")
             .env("AMPLIHACK_LITELLM_API_KEY", "test-key")
-            .env("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", "1")
-            .output()
-            .expect("run amplihack");
-        Launch {
-            argv: read_argv(&f.argv_log),
-            output,
-        }
-    };
+            .env("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", "1"),
+    );
     assert_eq!(
         launch.model(),
         Some("gateway-routed-model"),
@@ -661,22 +481,14 @@ fn a_gateway_launch_of_copilot_is_not_refused_by_its_own_tier() {
         0o755,
     );
     f.write_override("version = 1\n\n[copilot.strong]\nmodel = \"gpt-5-codex\"\n");
-    let launch = {
-        let _ = fs::remove_file(&f.argv_log);
-        let output = f
-            .launch("copilot", &["--model", "strong", "-p", "go"])
+    let launch = f.finish(
+        f.launch("copilot", &["--model", "strong", "-p", "go"])
             .env("AMPLIHACK_RUN_DIR", &f.run_dir)
             .env("AMPLIHACK_RUN_ID", "20261116-000000-test")
             .env("AMPLIHACK_LITELLM_MODEL", "gateway-routed-model")
             .env("AMPLIHACK_LITELLM_ENDPOINT", "http://127.0.0.1:1")
-            .env("AMPLIHACK_LITELLM_API_KEY", "test-key")
-            .output()
-            .expect("run amplihack");
-        Launch {
-            argv: read_argv(&f.argv_log),
-            output,
-        }
-    };
+            .env("AMPLIHACK_LITELLM_API_KEY", "test-key"),
+    );
     assert!(
         launch.output.status.success(),
         "a tiered copilot step under the gateway must launch; stderr:\n{}",
@@ -748,7 +560,6 @@ fn a_group_writable_tier_file_is_ignored_and_the_shipped_mapping_applies() {
 #[test]
 fn every_launch_appends_one_record_with_the_documented_fields() {
     let f = Fixture::new();
-    let _ = fs::remove_file(&f.argv_log);
     let output = f
         .launch("claude", &["--model", "standard", "-p"])
         .env("AMPLIHACK_RUN_DIR", &f.run_dir)
@@ -811,7 +622,6 @@ fn every_launch_appends_one_record_with_the_documented_fields() {
 #[test]
 fn a_falling_back_record_names_the_reason() {
     let f = Fixture::new();
-    let _ = fs::remove_file(&f.argv_log);
     let output = f
         .launch("copilot", &["--model", "strong", "-p", "go"])
         .env("AMPLIHACK_RUN_DIR", &f.run_dir)
@@ -836,7 +646,6 @@ fn nothing_is_written_when_there_is_no_run_directory() {
     let f = Fixture::new();
     // AMPLIHACK_RUN_DIR set to the empty string is how amplihack marks a
     // launch outside a run scope, and empty means unset to every consumer.
-    let _ = fs::remove_file(&f.argv_log);
     let output = f
         .launch("claude", &["--model", "fast", "-p"])
         .env("AMPLIHACK_RUN_DIR", "")
@@ -855,7 +664,6 @@ fn a_record_is_never_written_through_a_symlink() {
     let decoy = f.home.join("decoy.json");
     fs::write(&decoy, "untouched\n").unwrap();
     std::os::unix::fs::symlink(&decoy, f.run_dir.join("model-tiers.jsonl")).unwrap();
-    let _ = fs::remove_file(&f.argv_log);
     let output = f
         .launch("claude", &["--model", "fast", "-p"])
         .env("AMPLIHACK_RUN_DIR", &f.run_dir)

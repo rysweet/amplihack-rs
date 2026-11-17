@@ -153,34 +153,42 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
             out.notices.push(notice);
         }
         out.record = Some(Record {
-            v: 1,
-            seq: 0,
-            run_id: None,
-            harness: request.harness.to_string(),
-            column,
             tier: Some(seen.tier),
             requested_model: seen.requested,
             effective_model: seen.decision.model(),
             requested_effort: seen.requested_effort,
             effective_effort: effort,
             fallback: seen.decision.fallback(),
+            ..blank_record(request.harness, column)
         });
     } else if let Some(model) = force {
+        // No tier was asked for, so every tier field stays empty and the one
+        // thing this launch has to report is the model it was forced onto.
         out.record = Some(Record {
-            v: 1,
-            seq: 0,
-            run_id: None,
-            harness: request.harness.to_string(),
-            column,
-            tier: None,
-            requested_model: None,
             effective_model: Some(model.to_string()),
-            requested_effort: None,
-            effective_effort: None,
-            fallback: None,
+            ..blank_record(request.harness, column)
         });
     }
     out
+}
+
+/// A record of this launch with nothing decided yet: the schema version, the
+/// sequence number `record::append` assigns under the lock, the run id the
+/// caller fills in, and the two names that are the same whatever was decided.
+fn blank_record(harness: &str, column: String) -> Record {
+    Record {
+        v: 1,
+        seq: 0,
+        run_id: None,
+        harness: harness.to_string(),
+        column,
+        tier: None,
+        requested_model: None,
+        effective_model: None,
+        requested_effort: None,
+        effective_effort: None,
+        fallback: None,
+    }
 }
 
 /// The last tier the command line asked for, and what became of it.

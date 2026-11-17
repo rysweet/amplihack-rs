@@ -29,6 +29,9 @@ pub mod socket_dir;
 pub mod step_recovery;
 pub mod step_recovery_check;
 pub mod test_path;
+/// Issue #1619 — the fake harness and temp-dir layout the model-tier
+/// propagation and argv-safety tests share.
+pub mod tier_harness;
 pub mod unix_process;
 /// The fake clocks shared with the lib tests and the utils and hooks tests
 /// (issue #2019).
