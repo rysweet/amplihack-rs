@@ -453,6 +453,13 @@ directory keeps other users out of the checkouts. A checkout that
 directory around it: its storage directory is still `0700`, but the checkout
 is protected only by the mode of the folder the caller chose.
 
+Folders that already exist are not changed, and no migration runs. A
+`review-<random>/` directory left at `0775` by a drive that stopped before
+this change is moved into an `untrusted-<time>` folder, with
+`WARNING: state-dir-untrusted-entries-set-aside`, by the next drive that uses
+the same state dir. It is not repaired. That drive's own allocation is made
+by `review-allocate` before the scan runs, at `0700`, so it stays in place.
+
 When `review-next` finds that the PR head has moved, it provisions the next
 generation, records it in the current generation's `children` and writes the
 manifest. It then retires the generation it replaced:
