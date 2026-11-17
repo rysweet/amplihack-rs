@@ -108,7 +108,7 @@ of that resolution reads `git config --local` only. See
 [Configure workflow commit identity](../howto/configure-workflow-commit-identity.md).
 
 The runner's environment still has the repository-selecting variables and the
-whole environment-based configuration namespace removed: every name in
+inline configuration variables removed: every name in
 `amplihack_git::REPOSITORY_ENV_VARS`, which is `GIT_DIR`, `GIT_WORK_TREE`,
 `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`,
 `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`,
@@ -117,8 +117,22 @@ whole environment-based configuration namespace removed: every name in
 `GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS`, every `GIT_CONFIG_KEY_<n>` and
 `GIT_CONFIG_VALUE_<n>`, `GIT_EXEC_PATH` and `GIT_TEMPLATE_DIR`. No inherited
 variable can therefore send a step's Git commands back to the caller's
-checkout or inject configuration into them. Hooks that steps trigger, such as
-pre-commit and pre-push, run normally inside the execution checkout.
+checkout.
+
+The configuration half is narrower, and the run does not hold it.
+`GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are outside both lists and are not
+removed, so an inherited value of either names the file a step's Git reads in
+place of `~/.gitconfig` or `/etc/gitconfig`, and Git runs the `!command` forms
+of `alias.*` and `credential.helper`, and a `core.hooksPath` hook, that it
+finds there; an inherited `GIT_CONFIG_NOSYSTEM` likewise still suppresses
+`/etc/gitconfig`. The environment is not a boundary a run holds in any case:
+`GIT_SSH_COMMAND`, `GIT_ASKPASS`, `HOME` and `PATH` are inherited too, and each
+of those also names something a step's Git will execute. What the removals
+above protect is the checkout rather than the configuration; a `core.worktree`
+reached through a file named that way does not move a step out of its private
+checkout, because `GIT_DIR` is gone and discovery starts from the execution
+directory. Hooks that steps trigger, such
+as pre-commit and pre-push, run normally inside the execution checkout.
 
 The private repository is a `git clone --bare --no-local --no-hardlinks` of the
 caller. It has no alternates pointing at the caller's object store, and the
@@ -547,6 +561,7 @@ Isolation cannot be switched off.
 | `RECIPE_RUNNER_RS_PATH` | Runner binary. It starts in the private checkout like any step. |
 | `AMPLIHACK_RUN_CHECKOUT` | Set for steps. An inherited value is ignored and grants no ownership. |
 | `AMPLIHACK_CLEANUP_ON_EXIT=0` | Skips the cleanup sweep only. Release still runs. |
+| Caller `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM` | Inherited by the runner and by steps. Before #2756 the run pinned all three, which is what broke the user's credential helper. They are now left alone, so a caller that sets one chooses the configuration a step's Git reads; see [paths and Git configuration](#paths-and-git-configuration). They do not move a step out of its private checkout. |
 | Caller `GIT_TRACE2_*` | Cleared from the runner's environment, so they reach neither the runner nor the Git processes a run starts. amplihack sets none of them and reads none of them. |
 | The user's `~/.gitconfig` and `/etc/gitconfig` | Read by the runner and by every step, hook and agent, as by any other Git command that user runs. amplihack itself writes neither file, and its own preparation, release and review-generation commands do not read them. Nothing stops a step from writing one: a `git config --global` in a step now edits the user's real `~/.gitconfig`, where between #2290 and #2756 it was redirected to `/dev/null`. That is not a new privilege, since a step runs as the user and could already append to the file directly, but it is a change of behaviour; no shipped recipe does it. A `user.name` there does not attribute an amplihack-owned workflow commit; see [Configure workflow commit identity](../howto/configure-workflow-commit-identity.md). |
 

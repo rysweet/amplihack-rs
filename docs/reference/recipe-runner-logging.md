@@ -336,13 +336,14 @@ Full command lines can carry secrets the same way, so the whole namespace is
 cleared rather than filtered.
 
 The clearing is of the environment only. A run reads the user's own global and
-system Git configuration, so a `trace2.eventTarget` or `trace2.perfTarget` set
-in `~/.gitconfig` does take effect inside a run and writes to the target it
-names. That is the user's own setting rather than an inherited one, and the
-boundary this section is about survives it: redaction has no configuration
-equivalent, so `GIT_TRACE2_REDACT` being cleared leaves Git's default
-redaction of `Authorization:` headers in force whichever way the target was
-chosen. See
+system Git configuration, so a `trace2.normalTarget`, `trace2.eventTarget` or
+`trace2.perfTarget` set in `~/.gitconfig` does take effect inside a run and
+writes to the target it names, and `trace2.configParams` and `trace2.envVars`
+widen what is written there. That is the user's own setting rather than an
+inherited one, and the boundary this section is about survives it: redaction
+has no configuration equivalent, so `GIT_TRACE2_REDACT` being cleared leaves
+Git's default redaction of `Authorization:` headers in force whichever way the
+target was chosen. See
 [paths and Git configuration](recipe-checkout-isolation.md#paths-and-git-configuration).
 
 To trace Git inside a run, set the variable where the Git command actually
