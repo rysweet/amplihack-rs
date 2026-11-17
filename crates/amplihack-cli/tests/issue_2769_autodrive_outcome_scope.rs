@@ -1,7 +1,7 @@
 //! #2769: the #2663 outcome rule belongs to the drive's top-level
 //! invocations, not to its nested `autodrive-*` sub-recipes.
 //!
-//! Since #2637 (first released in 1.2.163) `apply_autodrive_outcome` is
+//! Since #2637 (first released in 1.2.165) `apply_autodrive_outcome` is
 //! applied to every invocation `trusted::applies` accepts, which includes
 //! every `autodrive-*` round recipe. A round never merges, so `report()`
 //! reads its `stop_reason` as `unreadable` and the round is reported failed
