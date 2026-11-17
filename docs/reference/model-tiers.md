@@ -78,7 +78,7 @@ Highest first:
 | 0 | The runner's `AMPLIHACK_RATELIMIT_FALLBACK_AUTO_MODEL` final attempt | Rewrites the step's model to the literal `auto` before amplihack runs |
 | 1 | `model.force` / `AMPLIHACK_FORCE_MODEL` | Replaces a tier word or a concrete id, and supplies a model where the command has none |
 | 2 | An explicit concrete `--model <id>` on the launched command | Forwarded verbatim, unless a model is forced |
-| 3 | A per-step tier override (`[step_tiers]`) | Changes which tier the named step declares |
+| 3 | A per-step tier override (`[step_tiers]`) | Rewrites the tier the named step declares, before the run starts |
 | 4 | Override-file entries | Replace the matching cells of the shipped mapping |
 | 5 | The shipped mapping | The table above |
 | 6 | The harness default | What a launch carrying no tier gets |
@@ -87,6 +87,13 @@ Rank 0 is not amplihack's. With that variable set, which it is not unless you
 set it, the runner substitutes `auto` on its last rate-limit attempt; `auto` is
 not a tier word, so it is forwarded as a concrete id and the tier's Codex
 effort goes with it.
+
+Rank 3 acts at a different moment from the ranks above it, rather than
+competing with them over one command line. A `[step_tiers]` entry is applied to
+a staged copy of the recipe before the run starts, so the `--model <tier-word>`
+pair the runner later writes already carries the overridden word. It sits below
+ranks 1 and 2 because a forced model, or an explicit concrete `--model`, still
+replaces whatever the overridden tier resolves to.
 
 A LiteLLM gateway launch ignores tiers. One goes through the gateway when the
 tool is one the gateway routes (Claude Code, RustyClawd or Copilot CLI) and
@@ -204,6 +211,15 @@ requirement printed. It is user-only, like every path-valued key in amplihack.
 A project file cannot name it: a cloned repository must not choose the file
 that drives amplihack's rewriting of recipe YAML, whose steps run shell
 commands.
+
+The search order leaves the environment the selection route `model.tier_map`
+was denied: `$AMPLIHACK_HOME` is read from the environment, so whatever sets it
+chooses `$AMPLIHACK_HOME/model-tiers.toml` and therefore the `[step_tiers]`
+table that patches recipe files. That is accepted rather than closed, because
+`$AMPLIHACK_HOME` already selects the `config.toml` holding `model.force`, and
+anything able to set it can set `AMPLIHACK_FORCE_MODEL` or edit the recipe
+itself; the chosen file is still held to the ownership and permission rules
+above.
 
 ### Overriding one step's tier
 
