@@ -41,6 +41,14 @@ const EXPECTED_DEFAULT_PREFIXES: &[&str] = &[
     "git push -d",
 ];
 
+/// Whether `prefix` denies `command`. Every rendering matches on leading
+/// whole words, so a command is denied when it is the prefix itself or the
+/// prefix followed by a space. The match tests below share this one
+/// definition rather than spelling it out apiece.
+fn denies(prefix: &Prefix, command: &str) -> bool {
+    command == prefix.as_str() || command.starts_with(&format!("{} ", prefix.as_str()))
+}
+
 fn strings(prefixes: &[Prefix]) -> Vec<String> {
     prefixes.iter().map(|p| p.as_str().to_string()).collect()
 }
@@ -143,10 +151,8 @@ const ORDINARY_COMMANDS: &[&str] = &[
 fn no_default_prefix_matches_an_ordinary_command() {
     for prefix in default_prefixes() {
         for command in ORDINARY_COMMANDS {
-            let matched = *command == prefix.as_str()
-                || command.starts_with(&format!("{} ", prefix.as_str()));
             assert!(
-                !matched,
+                !denies(&prefix, command),
                 "prefix {:?} would deny the ordinary command {command:?}",
                 prefix.as_str()
             );
@@ -154,16 +160,23 @@ fn no_default_prefix_matches_an_ordinary_command() {
     }
 }
 
+/// A `not_match` example is a promise that the command still runs, and the
+/// promise is about the shipped list as a whole rather than the one rule the
+/// example is written under. Codex validates `not_match` per rule when the
+/// file loads, so an example its own entry spares and another entry's prefix
+/// denies would load cleanly and still break the command; the Claude and
+/// Copilot renderings have no cross-entry check at all. Hence every example
+/// is held against every default prefix here.
 #[test]
-fn every_not_match_example_escapes_every_prefix_of_its_own_entry() {
+fn every_not_match_example_escapes_every_prefix_in_the_whole_list() {
+    let all = default_prefixes();
     for entry in DEFAULTS {
         for example in entry.not_match_examples {
-            for prefix in entry.prefixes() {
-                let matched = *example == prefix.as_str()
-                    || example.starts_with(&format!("{} ", prefix.as_str()));
+            for prefix in &all {
                 assert!(
-                    !matched,
-                    "entry {}: not_match example {example:?} is matched by prefix {:?}",
+                    !denies(prefix, example),
+                    "entry {}: not_match example {example:?} promises the command runs, but \
+                     prefix {:?} denies it",
                     entry.id,
                     prefix.as_str()
                 );
@@ -181,9 +194,10 @@ fn every_match_example_is_matched_by_a_prefix_of_its_own_entry() {
             entry.id
         );
         for example in entry.match_examples {
-            let matched = entry.prefixes().iter().any(|prefix| {
-                *example == prefix.as_str() || example.starts_with(&format!("{} ", prefix.as_str()))
-            });
+            let matched = entry
+                .prefixes()
+                .iter()
+                .any(|prefix| denies(prefix, example));
             assert!(
                 matched,
                 "entry {}: match example {example:?} is matched by no prefix of the entry",

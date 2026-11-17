@@ -59,6 +59,16 @@ each is syntax in at least one harness's rule format.
 Your entries are added to the defaults. They never remove one; there is no
 removal mechanism for the shipped entries.
 
+An entry is checked for syntax only. Nothing checks it against the ordinary
+forms the shipped entries deliberately spare, so a short entry can deny more
+than you meant: `git push` denies every push, including the plain, `-u` and
+`HEAD:` forms the shipped push entry keeps working, and a bare `tmux` denies
+the targeted single-session kill, `tmux kill-session -t <name>`, that the
+shipped advice tells the agent to use instead. Give the entry enough leading
+words to name only what you want denied, and check it with the commands under
+[Check what each harness got](#check-what-each-harness-got) before you rely
+on it.
+
 The key is user-only. Putting it in a project `.amplihack/config.toml` has no
 effect, and amplihack reports it, so a repository you clone cannot change what
 your agents may run.
