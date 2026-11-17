@@ -117,7 +117,7 @@ keeps it whatever you set. If that is not what you want, use `model.force`.
 Rank 4 acts at a different moment, rather than competing over one command line:
 a `[step_tiers]` entry is applied to a staged copy of the recipe before the run
 starts, so the `--model <tier-word>` pair the runner later writes already
-carries the overridden word. It sits below ranks 1 and 2 because each of those
+carries the overridden word. It sits below ranks 1 to 3 because each of those
 still replaces whatever the overridden tier resolves to.
 
 A LiteLLM gateway launch ignores tiers. One goes through the gateway when the
