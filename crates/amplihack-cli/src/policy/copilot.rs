@@ -10,9 +10,8 @@
 //! The rendered values become process arguments visible to every user on the
 //! machine, so they carry short command names and never task text.
 
-/// The `--deny-tool` arguments for `instance`, skipping any prefix the caller
-/// has already denied in `user_args`, in either the separate or the joined
-/// spelling.
+/// The `--deny-tool` arguments for `instance`, one flag and value pair per
+/// prefix, unconditionally.
 ///
 /// The rendered value carries the `:*` suffix (`shell(git push --force:*)`),
 /// which is what GitHub documents as the shell-rule prefix form: `shell(git:*)`
@@ -20,27 +19,23 @@
 /// documented as matching that text literally and so would spare every
 /// invocation that has arguments -- that is, everything worth denying.
 ///
-/// One consequence: a caller who already passed `--deny-tool=shell(pkill)`
-/// is no longer seen by [`already_denied`], so `shell(pkill:*)` is added
-/// beside it. Both deny, so the duplicate is harmless.
-pub(crate) fn deny_args(instance: &[String], user_args: &[String]) -> Vec<String> {
+/// This reads nothing from the caller's own arguments. An earlier version
+/// skipped a prefix the caller appeared to have denied already, by scanning
+/// argv for an adjacent `--deny-tool <value>` pair. That scan matched any
+/// adjacent pair, so `--model --deny-tool "shell(pkill:*)"` -- where Copilot
+/// consumes `--deny-tool` as the value of `--model` -- suppressed amplihack's
+/// own injection and left the command undenied. Silently dropping a deny rule
+/// is the worst failure direction available here, and the deduplication it
+/// bought was never needed: a caller who passes the same `--deny-tool` sees it
+/// twice in argv, which denies the same command twice. Whether Copilot accepts
+/// a repeated `--deny-tool` is recorded as an open check in
+/// `docs/reference/dangerous-command-policy.md`; a flag it rejected would fail
+/// loudly at launch, which the suppressed deny did not.
+pub(crate) fn deny_args(instance: &[String]) -> Vec<String> {
     let mut args = Vec::new();
     for prefix in super::effective_prefixes(instance) {
-        let value = format!("shell({}:*)", prefix.as_str());
-        if already_denied(user_args, &value) {
-            continue;
-        }
         args.push("--deny-tool".to_string());
-        args.push(value);
+        args.push(format!("shell({}:*)", prefix.as_str()));
     }
     args
-}
-
-/// Whether `user_args` already denies `value`.
-fn already_denied(user_args: &[String], value: &str) -> bool {
-    let joined = format!("--deny-tool={value}");
-    user_args
-        .windows(2)
-        .any(|pair| pair[0] == "--deny-tool" && pair[1] == value)
-        || user_args.contains(&joined)
 }

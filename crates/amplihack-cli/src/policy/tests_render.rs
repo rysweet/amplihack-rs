@@ -11,7 +11,7 @@
 //! policy::claude::DenyOutcome { Written, AlreadyCurrent, Unparseable(String) }
 //! policy::codex::OWNERSHIP_MARKER: &str;
 //! policy::codex::rules_file(instance: &[String]) -> String;
-//! policy::copilot::deny_args(instance: &[String], user_args: &[String]) -> Vec<String>;
+//! policy::copilot::deny_args(instance: &[String]) -> Vec<String>;
 //! ```
 
 use super::claude::{self, DenyOutcome};
@@ -260,7 +260,7 @@ fn no_rendered_codex_line_carries_a_quote_or_backslash_inside_a_pattern_token() 
 
 #[test]
 fn copilot_renders_one_deny_tool_flag_pair_per_prefix() {
-    let args = copilot::deny_args(&[], &[]);
+    let args = copilot::deny_args(&[]);
     assert_eq!(
         args.len(),
         super::default_prefixes().len() * 2,
@@ -281,29 +281,30 @@ fn copilot_renders_one_deny_tool_flag_pair_per_prefix() {
 
 #[test]
 fn copilot_args_include_instance_additions() {
-    let args = copilot::deny_args(&["shutdown".to_string()], &[]);
+    let args = copilot::deny_args(&["shutdown".to_string()]);
     assert_eq!(
         &args[args.len() - 2..],
         ["--deny-tool", "shell(shutdown:*)"]
     );
 }
 
+/// The rendering is a function of the policy list alone. It once took the
+/// caller's argv and skipped a prefix that already appeared after a
+/// `--deny-tool`, which an adjacent pair anywhere in argv was enough to
+/// trigger. That is why the parameter is gone rather than the scan narrowed:
+/// a renderer that cannot read argv cannot be talked out of a rule by it.
 #[test]
-fn copilot_adds_no_duplicate_when_the_caller_already_denied_the_same_prefix() {
-    for user in [
-        vec!["--deny-tool".to_string(), "shell(pkill:*)".to_string()],
-        vec!["--deny-tool=shell(pkill:*)".to_string()],
-    ] {
-        let args = copilot::deny_args(&[], &user);
-        assert!(
-            !args.iter().any(|a| a == "shell(pkill:*)"),
-            "already denied by the caller: {user:?} -> {args:?}"
-        );
-        assert!(
-            args.iter().any(|a| a == "shell(killall:*)"),
-            "the rest still render: {args:?}"
-        );
-    }
+fn copilot_args_do_not_depend_on_the_callers_own_arguments() {
+    let expected = copilot::deny_args(&[]);
+    assert_eq!(
+        expected.len(),
+        super::default_prefixes().len() * 2,
+        "every prefix renders: {expected:?}"
+    );
+    assert!(
+        expected.iter().any(|a| a == "shell(pkill:*)"),
+        "{expected:?}"
+    );
 }
 
 /// Byte-identical output is load-bearing: both file writers compare the
@@ -313,14 +314,14 @@ fn copilot_adds_no_duplicate_when_the_caller_already_denied_the_same_prefix() {
 /// `effective_prefixes` for a `HashSet` is enough.
 #[test]
 fn copilot_args_are_stable_across_calls() {
-    assert_eq!(copilot::deny_args(&[], &[]), copilot::deny_args(&[], &[]));
+    assert_eq!(copilot::deny_args(&[]), copilot::deny_args(&[]));
 }
 
 /// The rendered flags become process arguments visible to every user on the
 /// host, so they carry command names only and never task text.
 #[test]
 fn copilot_args_carry_short_command_names_only() {
-    for arg in copilot::deny_args(&[], &[]) {
+    for arg in copilot::deny_args(&[]) {
         assert!(
             arg.len() <= 64,
             "a deny flag value must stay a short command name: {arg:?}"

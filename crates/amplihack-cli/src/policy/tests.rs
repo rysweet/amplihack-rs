@@ -295,7 +295,7 @@ fn an_invalid_instance_entry_is_rejected_with_one_reason_and_reaches_no_renderin
     for rendering in [
         claude::deny_entries(&instance).join("\n"),
         codex::rules_file(&instance),
-        copilot::deny_args(&instance, &[]).join(" "),
+        copilot::deny_args(&instance).join(" "),
     ] {
         assert!(!rendering.contains("rm -rf"), "{rendering}");
         assert!(!rendering.contains("--allow-all"), "{rendering}");
@@ -347,7 +347,7 @@ fn neither_the_module_source_nor_its_output_carries_a_host_name_or_a_user_path()
         "{}\n{}\n{}",
         claude::deny_entries(&[]).join("\n"),
         codex::rules_file(&[]),
-        copilot::deny_args(&[], &[]).join(" ")
+        copilot::deny_args(&[]).join(" ")
     );
     for (name, source) in SOURCES {
         for needle in FORBIDDEN {

@@ -29,7 +29,7 @@ can override the defaults.
 | `--model <value>` | tool is Claude-compatible AND user did not pass `--model`, unless `AMPLIHACK_DEFAULT_MODEL` is set to an empty value outside the LiteLLM gateway path. Unset, the value is `claude-opus-5[1m]`; see [--model](#-model) | `claude`, `rusty`, `rustyclawd`, `amplifier` | pass `--model`, or set `AMPLIHACK_DEFAULT_MODEL=` (empty) to pass none |
 | `--resume` | only when `amplihack launch --resume` | `launch` only (not `claude`) | pass `--resume` to the `launch` subcommand |
 | `--continue` | only when `amplihack launch --continue` | `launch` only (not `claude`) | pass `--continue` to the `launch` subcommand |
-| `--deny-tool shell(<prefix>:*)` | always, once per entry in the [dangerous-command policy](./dangerous-command-policy.md) that the caller has not already denied | `copilot` | none for a shipped prefix. Passing the same `--deny-tool` yourself stops the duplicate, not the deny, and `policy.deny_commands` only adds; `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` leaves these flags in place. See [--deny-tool](#-deny-tool) |
+| `--deny-tool shell(<prefix>:*)` | always, once per entry in the [dangerous-command policy](./dangerous-command-policy.md); nothing in your own arguments suppresses one | `copilot` | none for a shipped prefix. `policy.deny_commands` only adds, and `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` leaves these flags in place. See [--deny-tool](#-deny-tool) |
 | `--sandbox danger-full-access` | argv after `--` contains an `exec`/`e` subcommand AND the caller chose no sandbox | `codex` | pass your own sandbox (`--sandbox`, `--sandbox=`, `-s`, `-s<mode>`, `-s=<mode>`, `-c sandbox_mode=…`); see [Codex agent-step flags](#codex-agent-step-flags) |
 | `--dangerously-bypass-hook-trust` | argv after `--` contains an `exec`/`e` subcommand AND the flag is not already present | `codex` | none; it is added once on every Codex `exec` launch |
 
@@ -454,12 +454,16 @@ amplihack passes both and does not enforce a precedence between them.
 
 - Copilot CLI has no user-level file for command deny rules, only per-session
   flags, so the policy is applied here rather than at install.
-- A `--deny-tool` already present in the caller's own arguments for the same
-  prefix is not repeated. Both spellings count: `--deny-tool shell(pkill:*)` as
-  two arguments, and the joined `--deny-tool=shell(pkill:*)`. The comparison is
-  on the exact `shell(<prefix>:*)` text, so `shell(pkill -f:*)` is a
-  different value and both are passed, and so is a bare `shell(pkill)`
-  without the suffix.
+- The flags are a function of the policy list alone. Nothing you pass is read
+  when they are built, so no argument of yours can suppress one. If you deny
+  the same prefix yourself, Copilot receives `--deny-tool` twice for it, in
+  whichever spellings were used; both deny the same command. Whether Copilot
+  accepts the repetition is recorded as an open check in
+  [Verified behaviour and open checks](./dangerous-command-policy.md#verified-behaviour-and-open-checks).
+  An earlier version did skip a prefix that already followed a `--deny-tool`
+  in your arguments; it was removed because the scan matched any adjacent
+  pair, including one where Copilot reads `--deny-tool` as another flag's
+  value, and so could drop a policy rule silently.
 - Entries from `policy.deny_commands` in `~/.amplihack/config.toml` follow the
   shipped defaults, in the order written. A change applies to the next launch;
   no install or update is needed.
@@ -514,8 +518,8 @@ assembles the final command line. The assembly order is:
 4. `--resume` (if requested — `launch` subcommand only)
 5. `--continue` (if requested — `launch` subcommand only)
 6. `--allow-all`, then `--deny-tool shell(<prefix>:*)` once per
-   dangerous-command policy entry the caller has not already denied.
-   `copilot` only; see [--deny-tool](#-deny-tool)
+   dangerous-command policy entry, unconditionally. `copilot` only; see
+   [--deny-tool](#-deny-tool)
 7. All `extra_args` in the order they were passed on the command line. For
    `codex`, `codex_agent_step_args()` first inserts the
    [Codex agent-step flags](#codex-agent-step-flags) after an `exec`/`e`

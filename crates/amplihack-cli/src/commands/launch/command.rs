@@ -185,7 +185,7 @@ pub(super) fn build_command_for_dir(
     // Injected before the user's own arguments, as every other injection is.
     if binary.name == "copilot" {
         let instance = crate::user_config::policy_deny_commands();
-        cmd.args(crate::policy::copilot::deny_args(&instance, extra_args));
+        cmd.args(crate::policy::copilot::deny_args(&instance));
     }
 
     // Issue #621: Subprocess-safe defense-in-depth — granular allow-all flags.

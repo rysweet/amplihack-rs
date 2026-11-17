@@ -62,7 +62,7 @@ fn denied(args: &[String]) -> Vec<String> {
 fn copilot_launch_carries_a_deny_tool_flag_for_every_policy_prefix() {
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let args = build("copilot", &[]);
-    let expected: Vec<String> = policy::copilot::deny_args(&[], &[])
+    let expected: Vec<String> = policy::copilot::deny_args(&[])
         .windows(2)
         .filter(|w| w[0] == "--deny-tool")
         .map(|w| w[1].clone())
@@ -100,34 +100,40 @@ fn the_deny_flags_are_injected_alongside_allow_all_by_default() {
     assert!(!denied(&args).is_empty(), "{args:?}");
 }
 
+/// The injection is unconditional: nothing a caller puts in its own arguments
+/// suppresses a policy prefix.
+///
+/// The earlier behaviour skipped a prefix that already followed a
+/// `--deny-tool` in argv, in either spelling. The scan matched any adjacent
+/// pair, so `--model --deny-tool "shell(pkill:*)"` -- where Copilot takes
+/// `--deny-tool` as the value of `--model` and never sees a deny rule at all
+/// -- stopped amplihack injecting its own. The cases below are the two
+/// spellings that used to suppress it and the pair that abused them; all four
+/// must now carry the policy flag regardless.
 #[test]
-fn a_users_own_deny_tool_for_the_same_prefix_is_not_duplicated() {
+fn no_caller_argument_suppresses_a_policy_deny_flag() {
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    let extra = vec!["--deny-tool".to_string(), "shell(pkill:*)".to_string()];
-    let args = build("copilot", &extra);
-    assert_eq!(
-        denied(&args)
-            .iter()
-            .filter(|v| *v == "shell(pkill:*)")
-            .count(),
-        1,
-        "{args:?}"
-    );
-    assert!(
-        denied(&args).contains(&"shell(killall:*)".to_string()),
-        "the rest still render: {args:?}"
-    );
-}
-
-#[test]
-fn the_joined_deny_tool_spelling_also_suppresses_the_duplicate() {
-    let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    let extra = vec!["--deny-tool=shell(pkill:*)".to_string()];
-    let args = build("copilot", &extra);
-    assert!(
-        !denied(&args).contains(&"shell(pkill:*)".to_string()),
-        "{args:?}"
-    );
+    for extra in [
+        vec!["--deny-tool".to_string(), "shell(pkill:*)".to_string()],
+        vec!["--deny-tool=shell(pkill:*)".to_string()],
+        vec!["--deny-tool=shell(pkill)".to_string()],
+        vec![
+            "--model".to_string(),
+            "--deny-tool".to_string(),
+            "shell(pkill:*)".to_string(),
+        ],
+    ] {
+        let args = build("copilot", &extra);
+        let injected: Vec<String> = args[..args.len() - extra.len()].to_vec();
+        assert!(
+            denied(&injected).contains(&"shell(pkill:*)".to_string()),
+            "amplihack injects the policy flag whatever the caller passed: {extra:?} -> {args:?}"
+        );
+        assert!(
+            denied(&injected).contains(&"shell(killall:*)".to_string()),
+            "and the rest of the list with it: {args:?}"
+        );
+    }
 }
 
 #[test]
@@ -205,18 +211,28 @@ fn the_injected_values_are_short_command_names_only() {
     }
 }
 
-/// The documented side effect of the `:*` suffix: a caller who denied the
-/// bare stem is not recognised, and the suffixed form is added beside it.
-/// Both deny, so the duplicate is harmless; this pins that it is a duplicate
-/// and not a gap.
+/// A caller's own `--deny-tool` reaches Copilot too; it is neither consumed
+/// nor rewritten. Combined with the test above, a caller who denies the same
+/// prefix sees the flag twice. Whether Copilot accepts a repeated
+/// `--deny-tool` is an open check in
+/// `docs/reference/dangerous-command-policy.md`.
 #[test]
-fn a_users_bare_stem_deny_tool_does_not_suppress_the_suffixed_form() {
+fn a_callers_own_deny_tool_still_reaches_the_harness() {
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    let extra = vec!["--deny-tool=shell(pkill)".to_string()];
+    let extra = vec!["--deny-tool".to_string(), "shell(ssh:*)".to_string()];
     let args = build("copilot", &extra);
-    assert!(
-        denied(&args).contains(&"shell(pkill:*)".to_string()),
-        "the policy still renders its own form: {args:?}"
+    assert_eq!(
+        &args[args.len() - 2..],
+        ["--deny-tool", "shell(ssh:*)"],
+        "the caller's own arguments stay last and intact: {args:?}"
+    );
+    assert_eq!(
+        denied(&args)
+            .iter()
+            .filter(|v| *v == "shell(pkill:*)")
+            .count(),
+        1,
+        "and amplihack still adds each of its own exactly once: {args:?}"
     );
 }
 

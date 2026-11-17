@@ -365,9 +365,18 @@ would spare every invocation that carries arguments. Whether a bare stem
 nevertheless matches invocations with arguments is
 [not settled upstream](#verified-behaviour-and-open-checks); the suffixed
 form is the one both GitHub pages agree on, so it is what amplihack sends.
-One consequence: if you already pass `--deny-tool=shell(pkill)` yourself,
-amplihack does not recognise it as the same rule and adds `shell(pkill:*)`
-beside it. Both deny, so the duplicate is harmless.
+
+The flags are built from the policy list alone; your own arguments are not
+read. So if you pass `--deny-tool=shell(pkill)`, or the identical
+`--deny-tool shell(pkill:*)`, amplihack adds its own beside it and Copilot
+receives the flag twice. Both deny the same command. Whether Copilot accepts
+a repeated `--deny-tool` is listed as an open check below. amplihack prefers
+the repetition to the alternative: the earlier version skipped a prefix that
+already followed a `--deny-tool` anywhere in your arguments, which an
+adjacent pair such as `--model --deny-tool shell(pkill:*)` satisfied while
+Copilot read `--deny-tool` as the model name, so the rule was dropped from
+both sides at once. A duplicate flag fails at launch if it is wrong; a
+dropped rule says nothing.
 
 These are not the only flags amplihack injects into a `copilot` launch:
 `--allow-all` is injected as well, unless the caller passed an allow-all flag
@@ -383,11 +392,10 @@ between them, and no test here asserts one. Treat the Copilot rendering as
 flags handed to a harness that documents a deny-over-allow order, not as a
 stop amplihack performs.
 
-- A `--deny-tool` you pass yourself for the same prefix is not repeated. Both
-  spellings count: `--deny-tool shell(pkill:*)` as two arguments, and the
-  joined `--deny-tool=shell(pkill:*)`. The comparison is on the exact
-  `shell(<prefix>:*)` text, so `shell(pkill :*)`, `shell(pkill -f:*)` and a
-  bare `shell(pkill)` are each a different value and both are passed.
+- The flags are built from the policy list and nothing else. Your own
+  arguments are not read, so none of them suppresses a policy flag, and a
+  `--deny-tool` you pass for a prefix amplihack also denies reaches Copilot
+  beside amplihack's own.
 - Because this runs at launch, a `copilot` you start by hand, outside
   `amplihack`, has no deny rules.
 - The denied command names are visible in the process table, since they are
@@ -789,6 +797,7 @@ implementation must settle before the sentence that depends on it is final.
 | Copilot CLI matches a bare `shell(<prefix>)` against invocations with arguments | **not settled**: GitHub's CLI reference implies yes, its `permissions-config.json` reference documents literal matching, and [github/copilot-cli#1736](https://github.com/github/copilot-cli/issues/1736) reports the narrower behaviour. amplihack does not rely on it |
 | Copilot CLI resolves `--deny-tool` over a saved project approval | open |
 | Copilot CLI accepts a multi-token prefix in `shell(...)` | open |
+| Copilot CLI accepts the same `--deny-tool` value twice in one command line | open. It can happen whenever you deny a prefix amplihack already denies, since the injection reads none of your arguments. If Copilot rejects the repetition it does so at launch, which is the failure direction amplihack chose over silently dropping a rule |
 
 The bypass-mode row carries more weight than the others. amplihack writes
 `defaultMode: bypassPermissions` into the same file it writes the deny entries
