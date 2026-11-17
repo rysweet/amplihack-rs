@@ -226,6 +226,9 @@ jobs:
       - name: Auto-drive — an agent/API failure is not a policy refusal (issue #1437)
         shell: bash
         run: bash tests/issue_1437_autodrive_loop.sh
+      - name: Test stubs — only a blob mode reads stdin (issue #2582)
+        shell: bash
+        run: bash tests/issue_2582_stub_stdin_contract.sh
       - name: Recipes — every committing recipe prepares its identity (issue #1394)
         shell: bash
         run: bash tests/recipe_commit_identity_static_test.sh

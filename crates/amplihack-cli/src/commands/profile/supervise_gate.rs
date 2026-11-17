@@ -118,7 +118,15 @@ mod unix {
             home.as_deref().map(Path::new),
         );
         // A profile step's takeover check needs auto-switch: `rerun::run`.
-        let waiter = Waiter::new(wait, watch, parsed.prompt, Box::new(|| false));
+        // The rotator never changes an inherited profile's login, so no
+        // login-change wait applies to it either (issue #2731).
+        let waiter = Waiter::new(
+            wait,
+            watch,
+            parsed.prompt,
+            Box::new(|| false),
+            Box::new(|| false),
+        );
         auto_switch::rerun::supervise(&store, name, waiter)
     }
 }

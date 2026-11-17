@@ -38,6 +38,14 @@ mod issue_2556_autodrive_evidence;
 #[path = "issue_2575_agentic_merge_ready.rs"]
 mod issue_2575_agentic_merge_ready;
 mod issue_2575_finalize_recovery_runner;
+#[path = "issue_2582_context_off_argv.rs"]
+mod issue_2582_context_off_argv;
+#[path = "issue_2582_degraded_runner_no_set.rs"]
+mod issue_2582_degraded_runner_no_set;
+#[path = "issue_2582_nested_context_off_argv.rs"]
+mod issue_2582_nested_context_off_argv;
+#[path = "issue_2582_real_runner_argv.rs"]
+mod issue_2582_real_runner_argv;
 #[path = "issue_2585_launch_notices_stderr.rs"]
 mod issue_2585_launch_notices_stderr;
 
@@ -392,6 +400,8 @@ mod issue_2539_step_recovery_stop;
 mod issue_2539_step_recovery_validation;
 #[path = "issue_2658_routing_replay.rs"]
 mod issue_2658_routing_replay;
+#[path = "issue_2731_login_change_wait.rs"]
+mod issue_2731_login_change_wait;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

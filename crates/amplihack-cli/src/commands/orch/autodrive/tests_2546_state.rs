@@ -87,6 +87,14 @@ fn under_umask_2546(
     command
         .env_remove("AMPLIHACK_BIN")
         .env("GIT_CONFIG_NOSYSTEM", "1");
+    // PATH is pinned the same way, and for the same reason: the child
+    // inherits whatever the parent holds at the moment it is spawned, and
+    // sibling tests in this binary set the process-global PATH to a single
+    // private directory while they run. A child spawned in that window finds
+    // neither `bash` nor `git` and fails with "cannot stamp trusted review
+    // directory", which says nothing about what it was testing. An explicit
+    // PATH in `env` still wins: it is applied after this.
+    command.env("PATH", crate::test_support::host_path());
     for (key, value) in env {
         match value {
             Some(value) => command.env(key, value),

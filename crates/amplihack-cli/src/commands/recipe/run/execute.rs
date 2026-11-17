@@ -219,9 +219,10 @@ impl Drop for SpawnGuard {
 /// string longer than `MAX_ARG_STRLEN` (PAGE_SIZE * 32 = 131072 on Linux)
 /// with `E2BIG`. We cap conservatively below that so a pathologically large
 /// value cannot make the spawn fail. Over-limit values are still delivered
-/// to the runner via `--set` for `{{placeholder}}`
-/// substitution; only the env mirror is skipped (issue #784, regression
-/// guard for the E2BIG path).
+/// to the runner for `{{placeholder}}` substitution — since issue #2582 in
+/// the context file, and only on the `--set` path for a runner older than
+/// the pin; only the env mirror is skipped (issue #784, regression guard
+/// for the E2BIG path).
 const CONTEXT_ENV_VALUE_MAX_BYTES: usize = 96 * 1024;
 
 /// Per-entry byte overhead charged to every environment variable when
@@ -296,9 +297,37 @@ const RESERVED_ENV_DENYLIST: &[&str] = &[
     "IFS",
     // interpreter option injection
     "PYTHONPATH",
+    "PYTHONSTARTUP",
     "NODE_OPTIONS",
     "PERL5OPT",
     "RUBYOPT",
+];
+
+/// Names whose VALUE is executed, or which select the executable that will
+/// be. Context cannot set these on either transport — see
+/// [`is_reserved_context_key`], which refuses them outright rather than
+/// merely skipping the env mirror.
+///
+/// The Git/SSH entries are the command-running subset of
+/// `install::clone::GIT_SCRUBBED_ENV`, plus the two named in
+/// `amplihack-hooks`' tmux guard ("`GIT_EXTERNAL_DIFF=…`, `GIT_SSH_COMMAND=…`
+/// and the like run their value"). Both places already classify these as
+/// code execution; this is the same list applied to recipe context, which is
+/// untrusted in exactly the same way.
+const EXECUTABLE_SELECTOR_ENV: &[&str] = &[
+    // The recipe runner this run and every nested `amplihack` execs, and
+    // (issue #2582) the switch deciding whether context lands on argv.
+    "RECIPE_RUNNER_RS_PATH",
+    // Git and SSH names whose value is run as a command.
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_EDITOR",
+    "GIT_PAGER",
 ];
 
 /// `true` when `name` is a valid POSIX environment-variable identifier,
@@ -332,13 +361,34 @@ fn env_entry_bytes(name: &str, value: &str) -> usize {
     name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES
 }
 
-/// Context cannot select an amplihack profile or restore Git routing and
-/// executable configuration that the command policy removed before launch.
-fn is_reserved_context_key(key: &str) -> bool {
+/// Context cannot select an amplihack profile, restore Git routing and
+/// executable configuration that the command policy removed before launch,
+/// or name a program that this run (or anything it spawns) will execute.
+///
+/// Issue #2582: `pub(super)` so `context_transport::refuse_reserved_keys`
+/// applies the same predicate before it writes a context file, rather than
+/// carrying a second copy of the rule that could drift from this one.
+///
+/// [`EXECUTABLE_SELECTOR_ENV`] names are reserved here rather than only in
+/// [`RESERVED_ENV_DENYLIST`] because they are *executable selectors*, not
+/// merely dangerous env names: their value is run, or chooses what is run.
+/// Context is untrusted input — issue bodies and third-party recipes flow
+/// into it — so these must be refused by the same rule BOTH transports
+/// consult, not dropped by the env filter alone. Dropping is wrong here: the
+/// `--set` path would still hand the pair to the runner for `{{placeholder}}`
+/// substitution even after the env mirror skipped it.
+///
+/// `*_BINARY_PATH` is a suffix rule, not a list, because
+/// `amplihack_utils::launch_target` resolves `{TOOL}_BINARY_PATH` for ANY
+/// tool name as an explicit, user-supplied override at the highest
+/// precedence. Enumerating today's tools would leave the next one open.
+pub(super) fn is_reserved_context_key(key: &str) -> bool {
     let name = key.to_ascii_uppercase();
     name.starts_with("AMPLIHACK_")
         || amplihack_git::REPOSITORY_ENV_VARS.contains(&name.as_str())
         || name.starts_with("GIT_CONFIG")
+        || name.ends_with("_BINARY_PATH")
+        || EXECUTABLE_SELECTOR_ENV.contains(&name.as_str())
         || matches!(name.as_str(), "GIT_EXEC_PATH" | "GIT_TEMPLATE_DIR")
 }
 
@@ -509,7 +559,9 @@ pub(super) fn resolve_context_env_budget() -> usize {
 /// 5. Drop values containing a NUL byte (rejected by the OS for env vars;
 ///    would otherwise panic at spawn time).
 /// 6. Drop values larger than [`CONTEXT_ENV_VALUE_MAX_BYTES`] (would risk
-///    `E2BIG`); they are delivered to the runner as `--set` arguments.
+///    `E2BIG`); they still reach the runner through the chosen context
+///    transport — the context file since issue #2582, or `--set` arguments
+///    for a runner older than the pin.
 ///
 /// Aggregate budget (issue #1023): the total bytes of the exported mirror must
 /// stay within `budget` so the environment inherited by every bash step cannot
@@ -732,23 +784,28 @@ pub(super) fn execute_recipe_via_rust_fresh(
         .canonicalize()
         .context("resolve recipe runner before changing its launch directory")?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
-    if let Err(error) = crate::runner_validation::probe(&binary, &agent_binary.binary) {
-        let correlation = RecipeRunCorrelation::new(
-            recipe_name.clone(),
-            working_dir,
-            &BTreeMap::new(),
-            binary.as_path(),
-        );
-        correlation.emit_early();
-        eprintln!("amplihack: runner capability check failed: {error}");
-        return Err(fail_with_final_record(
-            &correlation,
-            RecipeRunFinalStatus::SpawnFailure,
-            None,
-            None,
-            error,
-        ));
-    }
+    // Issue #2582: the report is kept, so the context transport can check
+    // for `context_file_v1` without a second probe.
+    let runner_report = match crate::runner_validation::probe(&binary, &agent_binary.binary) {
+        Ok(report) => report,
+        Err(error) => {
+            let correlation = RecipeRunCorrelation::new(
+                recipe_name.clone(),
+                working_dir,
+                &BTreeMap::new(),
+                binary.as_path(),
+            );
+            correlation.emit_early();
+            eprintln!("amplihack: runner capability check failed: {error}");
+            return Err(fail_with_final_record(
+                &correlation,
+                RecipeRunFinalStatus::SpawnFailure,
+                None,
+                None,
+                error,
+            ));
+        }
+    };
 
     // Issue #1481: the caller resolved the agent binary once, from
     // `working_dir`, while this process could still see the session markers of
@@ -920,6 +977,44 @@ pub(super) fn execute_recipe_via_rust_fresh(
     };
     let context = &mapped_context;
 
+    // Issue #2582: when the runner reports `context_file_v1`, the context
+    // goes to it in a 0600 file under the run's private runtime folder and
+    // argv holds only `--context-file <path>`; otherwise the `--set` path
+    // runs, which only a runner older than the pin supplied through
+    // `RECIPE_RUNNER_RS_PATH` takes. Written once and reused by every retry.
+    //
+    // It is chosen here, after `map_context`, so the file holds the same
+    // values the runner would have been given as `--set` pairs: the mapped
+    // paths, not the caller's. It is also after the auto-drive authorization
+    // keys are written, so the file carries what that step produced.
+    //
+    // A failed write (or a reserved key, normally refused earlier at intake)
+    // ends the run as a failure and never falls back to `--set`. The checkout
+    // is released first, as on every other preparation error here.
+    // Owned before the match: a `workspace.borrow()` temporary in the
+    // scrutinee would still be live in the error arm, where the workspace is
+    // moved into `fail_before_execution`.
+    let context_runtime_dir = workspace.borrow().runtime_dir().to_path_buf();
+    let transport = match super::context_transport::ContextTransport::choose(
+        &runner_report,
+        &context_runtime_dir,
+        context,
+    ) {
+        Ok(transport) => transport,
+        Err(mut error) => {
+            if let Err(release) = checkout.remove() {
+                error = error.context(format!("execution release also failed: {release:#}"));
+            }
+            return fail_before_execution(
+                workspace.into_inner(),
+                admission.as_ref(),
+                error,
+                dry_run,
+            );
+        }
+    };
+    transport.record();
+
     // Issue #1267: a `std::process::Command` is consumed by `spawn`, and every
     // attempt needs its own correlation run id, so command construction is a
     // closure invoked once per attempt rather than hoisted state. The runtime
@@ -1004,16 +1099,20 @@ pub(super) fn execute_recipe_via_rust_fresh(
             command.arg("--dry-run");
         }
 
-        // Issue #1570: context goes to the runner as `--set` arguments; their
-        // size comes out of the env-mirror budget below so argv + envp stay
-        // under ARG_MAX together.
-        let context_argv_bytes = pass_context(&mut command, context)?;
+        // Issue #1570 / #2582: context goes to the runner as `--context-file
+        // <path>` or, for a runner older than the pin, as `--set` arguments.
+        // Whichever it is, the argv bytes it actually costs come out of the
+        // env-mirror budget below, so argv + envp stay under ARG_MAX
+        // together. The file transport costs the flag and the path, which is
+        // why `apply` returns a real count rather than zero.
+        let context_argv_bytes = transport.apply(&mut command, context)?;
         let argv_room = current_arg_max().saturating_sub(inherited_env_bytes());
         if context_argv_bytes > argv_room.saturating_sub(ENV_BUDGET_RESERVATION_BYTES) {
             anyhow::bail!(
-                "recipe context totals {context_argv_bytes} bytes of --set arguments, more than \
+                "recipe context totals {context_argv_bytes} bytes of {} arguments, more than \
                  the {argv_room} bytes of ARG_MAX left after the inherited environment. Pass \
-                 large values as file paths in the context instead"
+                 large values as file paths in the context instead",
+                transport.name()
             );
         }
 
@@ -1339,6 +1438,18 @@ pub(super) fn execute_recipe_via_rust_fresh(
                             .context("cannot finish recovery admission"),
                         _ => Ok(()),
                     }
+                }),
+            ),
+            // Issue #2582: the context file goes after the last runner child
+            // has been reaped and before the run folder it lives in, so no
+            // value outlives the run and the run report never finds the
+            // folder half-removed. Dropping the transport removes the file
+            // and then its folder.
+            (
+                "recipe context file",
+                Box::new(move |_| {
+                    drop(transport);
+                    Ok(())
                 }),
             ),
             (
@@ -1952,9 +2063,16 @@ fn parse_recipe_output_with_stderr_drops(
 pub(super) const MAX_ARG_STRLEN_BYTES: usize = 131_072;
 
 /// Pass context key-value pairs to the command as `--set KEY=VALUE`
-/// arguments, the only context input `recipe-runner-rs` accepts (it has no
-/// `--context-file` option; the fallback that used one failed every run
-/// whose context totalled over 128 KiB, issue #1570).
+/// arguments, which puts every value on the runner's argv.
+///
+/// Issue #2582: this runs only for a runner that does not report
+/// `context_file_v1`. The pinned runner reports it, so in a normal run
+/// `context_transport` passes `--context-file <path>` instead and no value is
+/// on argv at all. This path is reached only by a runner older than the pin
+/// supplied through `RECIPE_RUNNER_RS_PATH`; `ContextTransport::record`
+/// prints a line to stderr when it is taken, unconditionally, so that case is
+/// visible to an operator who set no `RUST_LOG` and would otherwise find it
+/// only in `/proc`.
 ///
 /// Returns the argv bytes the pairs occupy, so the caller can take them out
 /// of the env-mirror budget. A pair longer than one argv string allows is
@@ -1963,23 +2081,22 @@ pub(super) fn pass_context(
     command: &mut Command,
     context: &BTreeMap<String, String>,
 ) -> Result<usize> {
-    if let Some(key) = context.keys().find(|k| is_reserved_context_key(k)) {
-        anyhow::bail!(
-            "recipe context key {} is reserved: the AMPLIHACK_ namespace and Git execution configuration cannot be set from recipe context",
-            crate::commands::profile::escape_for_error(key)
-        );
-    }
+    super::context_transport::refuse_reserved_keys(context)?;
     if let Some((key, value)) = context
         .iter()
         .find(|(k, v)| k.len() + 1 + v.len() + 1 > MAX_ARG_STRLEN_BYTES)
     {
         anyhow::bail!(
-            "recipe context value for key {} is {} bytes; recipe-runner-rs takes context only \
-             as --set arguments, and one argument cannot exceed {} bytes. Pass a file path \
-             in the context instead and read the file in the step",
+            "recipe context value for key {} is {} bytes; the runner supplied through \
+             RECIPE_RUNNER_RS_PATH does not report {}, so this run passes context as --set \
+             arguments, and one argument cannot exceed {} bytes. Use a runner that reports \
+             {}, which takes the context as a file and has no per-value limit; failing that, \
+             pass a file path in the context instead and read the file in the step",
             crate::commands::profile::escape_for_error(key),
             value.len(),
-            MAX_ARG_STRLEN_BYTES
+            super::context_transport::CONTEXT_FILE_CAPABILITY,
+            MAX_ARG_STRLEN_BYTES,
+            super::context_transport::CONTEXT_FILE_CAPABILITY
         );
     }
     let mut argv_bytes = 0;

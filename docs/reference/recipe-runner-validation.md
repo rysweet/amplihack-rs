@@ -42,7 +42,25 @@ Property order and compatible additional fields are accepted. Duplicate property
 names, trailing data, invalid UTF-8, malformed JSON, wrong types, failed probes
 and unsupported schemas fail validation. Probes have bounded duration and output.
 Unsupported Codex platforms advertise an empty array rather than claiming support.
+
 Python and Node are optional; semantic parsing uses existing native JSON support.
+
+Optional capabilities change behaviour without being required:
+
+| Capability | Effect when present |
+| --- | --- |
+| `context_file_v1` | `amplihack recipe run` passes the recipe context as `--context-file <path>` instead of `--set` pairs. Exact membership only. See [Recipe Context Transport Reference](recipe-context-transport.md). |
+| `agent_prompt_file_v1` | The runner hands an agent step's brief to the agent wrapper by file and stdin instead of in the wrapper's argv. See [Agent Prompt Channels Reference](agent-prompt-channels.md). |
+
+Both are absent from a runner older than v0.7.0 and present in the pinned
+revision. amplihack reads the report it already takes before every run and
+makes no second probe. A report that fails the validation above ends the run
+before a transport is chosen; a report that validates but omits an optional
+capability selects the older behaviour for that capability alone. For the
+context transport, a run that falls back to `--set` because the report omits
+`context_file_v1` prints a line to stderr saying so, with no `RUST_LOG`
+needed (see
+[Seeing which transport a run used](recipe-context-transport.md#seeing-which-transport-a-run-used)).
 
 ### Recovery capability enforcement
 

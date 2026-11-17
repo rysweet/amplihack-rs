@@ -654,7 +654,7 @@ inputs as arguments:
   the same `usage_limit_failure` check as `autodrive_loop.sh` on the
   evaluator's exit code and output: a non-zero exit with the runner's
   `usage_limit` failure-class marker gives `USAGE_LIMIT`, never `STUCK`. See
-  [Usage limits are not STUCK](auto-drive-to-merge.md#usage-limits-are-not-stuck).
+  [Usage limits are not STUCK](auto-drive-to-merge.md#usage-limits-are-not-stuck-or-hand-off).
 
 **Return codes:**
 
