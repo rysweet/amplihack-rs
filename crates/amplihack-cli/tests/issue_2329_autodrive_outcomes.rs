@@ -385,17 +385,24 @@ mod runner {
     /// #2663 M1: a top-level drive succeeds only when it merged (`stop_reason`
     /// `completed`); these stub runs merge nothing, so a drive ends without
     /// success. #2769: every other invocation the trusted path accepts, which
-    /// is every `autodrive-*` sub-recipe, is judged by its own steps, so here
-    /// it follows the child runner's exit code.
+    /// is every `autodrive-*` sub-recipe, is judged by its own steps, and
+    /// these stubs' steps all pass, so the run succeeds.
     fn assert_child_ran(invocation: &str, output: &Output) {
         let result: Json = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|e| panic!("structured runner result ({e}): {}", details(output)));
-        let exit_code = result["log_pointer"]["exit_code"].clone();
-        assert_eq!(exit_code, json!(0), "{}", details(output));
-        let expected = if matches!(invocation, "auto-drive-to-merge" | "auto-drive-light") {
-            result["autodrive_outcome"]["stop_reason"] == json!("completed")
-        } else {
-            exit_code == json!(0)
+        assert_eq!(
+            result["log_pointer"]["exit_code"],
+            json!(0),
+            "{}",
+            details(output)
+        );
+        let expected = match invocation {
+            // A drive is judged by its merge, and these stub runs merge nothing.
+            "auto-drive-to-merge" | "auto-drive-light" => {
+                result["autodrive_outcome"]["stop_reason"] == json!("completed")
+            }
+            // A sub-recipe is judged by its own steps, which all passed above.
+            _ => true,
         };
         assert_eq!(
             output.status.success(),

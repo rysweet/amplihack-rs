@@ -84,9 +84,8 @@ pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
 /// which are `Err`. It runs before the failure class is attached, so a raised
 /// run carries none.
 ///
-/// #2769: the caller applies this only to a top-level drive. Both directions
-/// stay exactly as #2663 wrote them, and this function is unchanged; only the
-/// set of invocations it judges is narrowed, at the one call site.
+/// #2769: the caller applies this only to a top-level drive; both directions
+/// stay exactly as #2663 wrote them.
 ///
 /// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
 pub(crate) fn apply_autodrive_outcome(
@@ -1379,11 +1378,10 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 );
                 // #2769: the #2663 rule, that a run succeeds only if it
                 // merged, is the top-level drive's. A nested `autodrive-*`
-                // sub-recipe merges nothing, so judging it by the merge
-                // reported every CLEAN Crusty round failed. Its verdict stays
-                // its own steps'. The inserts below are unconditional: the
-                // outcome remains data for the loop script and the completion
-                // helpers whatever the invocation.
+                // sub-recipe merges nothing, so its verdict stays its own
+                // steps'. The inserts below stay unconditional: the outcome
+                // remains data for the loop script and the completion helpers
+                // whatever the invocation.
                 if trusted::is_top_level_drive(&invocation_name) {
                     apply_autodrive_outcome(&mut run_result, &outcome);
                 }

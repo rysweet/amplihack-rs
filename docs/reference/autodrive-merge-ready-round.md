@@ -842,9 +842,9 @@ exits on its own steps. The change is inert for the caller, which reads the
 result from `finalize-merge.json` keyed by `run_id` and never from the child's
 exit status (see
 [The merge result in the state folder](#the-merge-result-in-the-state-folder)).
-Step recovery's exit `81` is unchanged, for a reason worth stating precisely,
-because the obvious reading of it is wrong. `failed_run_exit_code` returns
-`81` only when a step both did not complete and carries `81` as its own
+Step recovery's exit `81` is unchanged, and not for the reason the path
+suggests. `failed_run_exit_code` returns `81` only when a step both did not
+complete and carries `81` as its own
 termination code; otherwise a failed run exits `1`. Recording a hand-off does
 not by itself fail the step that recorded it, so the outcome rule never
 produced `81` on this path: it turned a finalisation that had completed its
