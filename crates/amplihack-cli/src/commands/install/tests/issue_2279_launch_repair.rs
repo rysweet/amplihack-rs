@@ -220,7 +220,7 @@ fn a_relative_claude_config_dir_is_ignored() {
 }
 
 #[test]
-fn an_unparseable_file_gets_one_warning_and_no_write() {
+fn an_unparseable_file_is_reported_by_each_pass_and_never_written() {
     let f = fixture();
     let path = f.home_settings();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -238,6 +238,14 @@ fn an_unparseable_file_gets_one_warning_and_no_write() {
     let notice = String::from_utf8_lossy(&notice);
     assert!(!notice.contains("sk-test-do-not-print"), "{notice}");
     assert!(backups(path.parent().unwrap()).is_empty());
+    // Issue #2589: a launch makes two passes over this file, the hooks
+    // repair and the deny refresh, and neither may meet a file it cannot
+    // read in silence (SEC-C3). One warning each, so two.
+    assert_eq!(
+        notice.matches("amplihack: warning:").count(),
+        2,
+        "one warning per pass: {notice}"
+    );
 }
 
 // --- issue #2589: the deny entries are refreshed on every launch -----------
@@ -383,4 +391,37 @@ fn an_unmergeable_permissions_value_is_reported_and_never_replaced() {
         "{notice}"
     );
     assert!(!notice.contains("SENTINEL_SECRET_VALUE"), "{notice}");
+}
+
+#[test]
+fn a_drifting_launch_converges_in_one_pass_and_the_next_changes_nothing() {
+    // The deny refresh runs after the hook repair precisely so that a launch
+    // which did rewrite the file has already written the entries. This pins
+    // the consequence: one launch leaves the file current for both passes,
+    // and a second launch does not touch it.
+    let f = fixture();
+    let path = f.home_settings();
+    f.write(&path, &json!({"hooks": {}}));
+
+    f.launch();
+
+    let after = f.read(&path);
+    assert!(hook_block::drift(&after, &f.target()).is_clean());
+    let entries = deny_entries(&after);
+    for expected in crate::policy::claude::deny_entries(&[]) {
+        assert!(
+            entries.contains(&expected),
+            "{expected} missing: {entries:?}"
+        );
+    }
+
+    let bytes = fs::read(&path).unwrap();
+    let ino = std::os::unix::fs::MetadataExt::ino(&fs::metadata(&path).unwrap());
+    f.launch();
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(
+        std::os::unix::fs::MetadataExt::ino(&fs::metadata(&path).unwrap()),
+        ino,
+        "the second launch writes nothing"
+    );
 }

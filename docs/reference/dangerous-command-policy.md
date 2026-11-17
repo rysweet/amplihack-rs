@@ -488,16 +488,29 @@ confirmation that the whole value reverted to unset.
 | `amplihack install` | yes | yes | yes | states the per-launch mechanism |
 | `amplihack update` | yes | yes | yes | states the per-launch mechanism |
 | `amplihack profile add` / seeding | no | the new profile | no | no |
-| `amplihack claude`, `amplihack copilot` | yes, if the file exists | no | no | the deny flags |
-| `amplihack codex` | yes, if the file exists | no | yes | n/a |
+| `amplihack claude`, `amplihack copilot` | yes, if interactive and the file exists | no | no | the deny flags |
+| `amplihack codex` | yes, if interactive and the file exists | no | yes | n/a |
 
-Every launch refreshes the entries in the home settings file, so a machine
-that never runs `amplihack install` again still picks up a
+An interactive launch refreshes the entries in the home settings file, so a
+machine that never runs `amplihack install` again still picks up a
 `policy.deny_commands` addition. This is a pass of its own, beside the hooks
 repair rather than part of it: launch repair returns early when the hooks
 block is current, and drift is computed over that block alone, so a launch
 whose hooks are up to date never reaches the settings writer. Empty
-`permissions.deny` by hand and the next launch fills it again.
+`permissions.deny` by hand and the next interactive launch fills it again.
+
+Two gates stop a launch before either pass, and both predate this policy:
+
+- A non-interactive launch does no bootstrap at all. `is_noninteractive()` is
+  true whenever stdin is not a TTY, so a launch from CI, through a pipe, or
+  with `AMPLIHACK_NONINTERACTIVE=1` set refreshes nothing. The environment is
+  assumed pre-provisioned.
+- A binary older than the install stamp writes nothing (issue #1526), so an
+  older `amplihack` left on `PATH` after an update refreshes nothing either.
+
+Neither is a way to switch the policy off: both leave whatever the last
+install wrote in place. But neither is a substitute for `amplihack install`
+on a machine that only ever launches non-interactively.
 
 The refresh never creates the settings file. A machine with no Claude
 settings file has nothing to deny into, and `amplihack install` is what
