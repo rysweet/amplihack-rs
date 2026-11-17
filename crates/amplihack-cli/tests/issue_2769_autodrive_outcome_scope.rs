@@ -408,9 +408,10 @@ fn a_top_level_drive_that_did_not_merge_is_still_unsuccessful() {
 
 /// #2769: the narrowing only ever leaves a sub-recipe's verdict to its own
 /// steps. It never raises one. A nested round whose own step fails still
-/// exits non-zero, and the drive stops at it, because
-/// `autodrive-completion dispatch` does not accept `complete` from a round
-/// whose child execution failed.
+/// exits non-zero, and the drive stops at it: the stand-in's round step
+/// propagates the child's exit status, which is the place the real loop
+/// hands that status to `autodrive-completion dispatch`. The dispatcher
+/// itself is not exercised here.
 #[test]
 fn a_nested_round_whose_own_step_fails_is_still_failed_and_stops_the_drive() {
     let f = Fixture::with_round(TOP_LEVEL_WITH_ROUND, CRUSTY_ROUND_FAILING);

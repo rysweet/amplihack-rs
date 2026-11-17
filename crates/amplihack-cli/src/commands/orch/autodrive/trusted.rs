@@ -7,8 +7,16 @@ use std::{
     process::Command,
 };
 
+/// Every invocation the auto-drive launch path applies to: the two entry
+/// points and every `autodrive-*` sub-recipe.
+///
+/// Written in terms of [`is_top_level_drive`] so that the narrower predicate
+/// is a subset of this one by construction (#2769). A name judged by the
+/// #2663 outcome rule but not accepted here would be judged with no captured
+/// authorisation, no pinned bundle and no stamped recipe; composing the two
+/// makes that unrepresentable instead of leaving it to a test.
 pub fn applies(name: &str) -> bool {
-    name == "auto-drive-to-merge" || name == "auto-drive-light" || name.starts_with("autodrive-")
+    is_top_level_drive(name) || name.starts_with("autodrive-")
 }
 
 /// The drive's two top-level entry points, named exactly.
@@ -16,7 +24,8 @@ pub fn applies(name: &str) -> bool {
 /// #2769: deliberately narrower than [`applies`], and not a substitute for
 /// it. `applies` decides which invocations capture merge authorisation, get a
 /// launch bundle and have their recipes and prompts stamped, and it accepts
-/// every `autodrive-*` sub-recipe. This decides one thing only: which
+/// every `autodrive-*` sub-recipe on top of these two. This decides one
+/// thing only: which
 /// invocations the #2663 outcome rule judges, that a run succeeds only if it
 /// merged. A nested round merges nothing, so judging it by the merge reported
 /// every CLEAN round failed. A sub-recipe's success is its own steps'.
@@ -362,57 +371,28 @@ fn bundle_digest(root: &Path) -> Result<String> {
     ))
 }
 
-/// #2769: `applies` and `is_top_level_drive` hold the same two literals, and
-/// nothing in the type system keeps them in step. These tests are the link:
-/// the narrower predicate must stay a subset of the wider one, must never
-/// judge a sub-recipe, and must match an entry-point name byte for byte.
+/// #2769: `applies` is written in terms of `is_top_level_drive`, so the
+/// subset relation is a compile-time consequence and needs no test. What a
+/// test still has to pin is which names the narrower predicate accepts, and
+/// that it accepts them byte for byte.
 #[cfg(test)]
 mod invocation_name_tests {
-    use super::{applies, is_top_level_drive};
+    use super::is_top_level_drive;
 
-    const ENTRY_POINTS: [&str; 2] = ["auto-drive-to-merge", "auto-drive-light"];
-
-    /// A name judged by the #2663 outcome rule but not accepted by `applies`
-    /// would be judged with no captured authorisation, no pinned bundle and
-    /// no stamped recipe. `is_top_level_drive` must never widen past
-    /// `applies`.
+    /// The two entry points, and nothing else, are judged by the #2663
+    /// outcome rule that a run succeeds only if it merged.
     #[test]
-    fn every_top_level_drive_is_an_auto_drive_invocation() {
-        for name in ENTRY_POINTS {
+    fn only_the_two_entry_points_are_top_level_drives() {
+        for name in ["auto-drive-to-merge", "auto-drive-light"] {
             assert!(is_top_level_drive(name), "{name} must be a top-level drive");
-            assert!(
-                applies(name),
-                "{name} is judged by the outcome rule, so it must also capture \
-                 authorisation and launch from a pinned bundle"
-            );
-        }
-    }
-
-    /// The #2769 defect in one assertion: a sub-recipe merges nothing, so it
-    /// is never judged by whether it merged.
-    #[test]
-    fn no_autodrive_sub_recipe_is_a_top_level_drive() {
-        for name in [
-            "autodrive-build",
-            "autodrive-crusty-loop",
-            "autodrive-crusty-round",
-            "autodrive-finalize",
-            "autodrive-handoff",
-            "autodrive-merge-evidence",
-            "autodrive-merge-loop",
-            "autodrive-merge-round",
-        ] {
-            assert!(applies(name), "{name} is an auto-drive invocation");
-            assert!(
-                !is_top_level_drive(name),
-                "{name} merges nothing, so the outcome rule must not judge it"
-            );
         }
     }
 
     /// Exact byte equality: no prefix, trim or case-folding match, so a
     /// recipe cannot claim the outcome rule by naming itself close to an
-    /// entry point.
+    /// entry point. The `autodrive-*` names are the #2769 defect in one
+    /// assertion: a sub-recipe merges nothing, so it is never judged by
+    /// whether it merged.
     #[test]
     fn a_name_that_is_not_byte_equal_is_not_a_top_level_drive() {
         for name in [
@@ -424,6 +404,9 @@ mod invocation_name_tests {
             "auto-drive-to-merge-x",
             "auto-drive-lightly",
             "autodrive-auto-drive-to-merge",
+            "autodrive-crusty-round",
+            "autodrive-merge-round",
+            "autodrive-finalize",
             "",
         ] {
             assert!(

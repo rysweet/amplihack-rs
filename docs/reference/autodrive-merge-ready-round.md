@@ -840,10 +840,14 @@ Under the old rule the recovery child's exit status tracked the PR's merge
 state rather than its own work: a finalisation that returned `base-behind`,
 `checks-pending` or `not-authorised` exited non-zero with `stop_reason`
 `not_merged`, or `unreadable` where it wrote no merge result at all, having
-done exactly what was asked of it. It now exits on its own steps. The change
-is inert for the caller, which reads the result from `finalize-merge.json`
-keyed by `run_id` and never from the child's exit status (see
+done exactly what was asked of it. It now exits on its own steps. The merge
+result the caller acts on is unaffected, because it is read from
+`finalize-merge.json` keyed by `run_id` and never from the child's exit
+status (see
 [The merge result in the state folder](#the-merge-result-in-the-state-folder)).
+The exit status itself is not inert. The caller is `step-recovery run`, which
+keys on it, so the change decides whether the recovery agent is consulted,
+and it does so in both directions.
 Step recovery's exit `81` is unchanged, and not for the reason the path
 suggests. `failed_run_exit_code` returns `81` only when a step both did not
 complete and carries `81` as its own
@@ -857,8 +861,8 @@ since `recovery_stop` in `tools/autodrive_escalate.sh` escalates on
 `step-recovery report`'s own exit `81` and never consults `ROUND_RC`.
 Narrowing the rule cannot suppress a hand-off exit. What does change is
 that such a finalisation now exits `0` instead of the `1` the #2663 rule
-gave it, which is the behaviour of every release up to 1.2.164. The result
-is read from the state folder rather than from the exit status.
+gave it. The result is read from the state folder rather than from the exit
+status.
 
 The rule's other half goes with it, which is a behaviour change in its own
 right. A finalisation child that merged and then failed at `state-outcome` or
@@ -867,7 +871,13 @@ right. A finalisation child that merged and then failed at `state-outcome` or
 #2663 belong to the top-level drive, so a sub-recipe keeps neither. The merge
 is untouched either way: the `merge` step writes `finalize-merge.json` before
 any step that could fail after it, and the drive's own report reads the merge
-from that record rather than from a child's status.
+from that record rather than from a child's status. What this direction does
+reach is step recovery: a non-zero child now consults the recovery agent
+after a merge has already happened, which can re-run `autodrive-finalize`
+against an already-merged PR (#2773). That run issues no second merge
+request, because `tools/autodrive_merge.sh` reports `merged` when the PR
+already reads MERGED at the expected head. Both directions are the behaviour
+of every release up to 1.2.164, restored rather than introduced.
 
 ```bash
 # A Crusty round, as tools/autodrive_loop.sh starts it: its own process.

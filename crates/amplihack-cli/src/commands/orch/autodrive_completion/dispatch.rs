@@ -56,7 +56,9 @@ pub fn run(args: Dispatch) -> Result<i32> {
             // end-to-end direction that matters here, with this dispatcher
             // stood in for by the fixture's own exit-status propagation: a
             // drive over a round whose own step fails stops at that round.
-            // The check below is not itself exercised by a test.
+            // The check below is not itself exercised by a test, and the
+            // recipe's step fatality is not enforced anywhere: #2775
+            // tracks both.
             ensure!(
                 args.child_exit_code == 0,
                 "unsuccessful child cannot complete the objective"
