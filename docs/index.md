@@ -343,7 +343,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
 - [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - Planned responsibilities, invocation-wide authorization, gate retirement, and target compatibility matrix
 - [Auto-drive Evidence and Outcomes](reference/auto-drive-evidence.md) - The 13 criteria, auto-drive's crusty convergence substitution, the PR write-up and reported outcomes
-- [Merge-ready Round, Merge and Hand-off](reference/autodrive-merge-ready-round.md) - The agentic merge-ready write-up, the one-word outcome, GitHub-only merge conditions, the hand-off recipe and the run report (#2575)
+- [Merge-ready Round, Merge and Hand-off](reference/autodrive-merge-ready-round.md) - The agentic merge-ready write-up, the one-word outcome, GitHub-only merge conditions, the hand-off recipe, the run report, and which invocations the "success means merged" rule judges (#2575, #2769)
 - [Auto-drive State Permissions](reference/auto-drive-state-permissions.md) - State folders 0700 and files 0600 under any umask; when the evidence check repairs an entry this user owns (slug folders directly under the auto-drive state root), when it refuses, and the `INFO`/`WARNING` repair log line (#2546)
 - [Auto-drive QA Selection](reference/auto-drive-qa.md) - QA selection requirements for the planned evidence workflow
 - [Verify a PR Without Merging](howto/verify-pr-with-auto-drive.md) - Planned guide; current no_merge=true does not protect final merging

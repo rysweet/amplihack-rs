@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Crusty Completion Contract
 description: Completion-first dispatch, decision integrity, and follow-up finalization for Crusty reviews.
-last_updated: 2026-11-12
+last_updated: 2026-11-17
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -181,6 +181,15 @@ validation. Missing or unreadable required records, invalid decisions or
 evidence-integrity failures stop visibly before evaluation. Terminal
 refusals, orphaning, usage-limit and review-directory failures retain their
 own stop classifications and cannot use this recovery path.
+
+The child execution status dispatch reads is the round process's own exit
+status, passed by `tools/autodrive_loop.sh` as `--child-exit-code`. A round
+recipe is judged by its own steps, not by whether the PR merged: the auto-drive
+outcome rule applies only to the top-level `auto-drive-to-merge` and
+`auto-drive-light` invocations (#2769). See
+[Which invocations the rule judges](autodrive-merge-ready-round.md#which-invocations-the-rule-judges).
+A CLEAN round whose steps all succeeded therefore exits `0` and can satisfy
+this condition; it still has to pass every other check above.
 
 Private directories and files normally use modes `0700` and `0600`.
 Hashes check integrity against trusted state; they do not authenticate the

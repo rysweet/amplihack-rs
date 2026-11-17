@@ -54,12 +54,20 @@ const MAX_SESSIONS_ENV: &str = "AMPLIHACK_MAX_SESSIONS";
 /// "the tool declined, and will decline again".
 pub const EXIT_ORCHESTRATION_UNAVAILABLE: i32 = 79;
 
-/// #2663 M1: a merge run succeeds only when it merged. `outcome` is the
+/// #2663 M1: a top-level drive succeeds only when it merged. `outcome` is the
 /// `autodrive_outcome` built by `report()`; success is an allow-list of the
 /// single `stop_reason` value `completed` (merged in this run, already merged
 /// at entry, or, since #2575 B4, a verify-only run that reached `DONE` or
 /// `WAITING`). A missing, non-string or any other value is a failure.
+///
+/// #2769: "a run" here means a top-level drive, `auto-drive-to-merge` or
+/// `auto-drive-light`, as [`trusted::is_top_level_drive`] names them. A nested
+/// `autodrive-*` sub-recipe merges nothing and is judged by its own steps; the
+/// caller applies this only where it belongs.
+///
 /// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
+///
+/// [`trusted::is_top_level_drive`]: crate::commands::orch::autodrive::trusted::is_top_level_drive
 pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
     outcome
         .get("stop_reason")
@@ -67,13 +75,19 @@ pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
         == Some("completed")
 }
 
-/// #2663: the run's final status follows the merge, in both directions. A run
-/// that did not merge is not a success; a run whose merge `report()` read as
-/// `completed` is a success even when a later step failed. Applied only to an
-/// `Ok` run result, after `run_with_transient_retry` has returned, so it never
-/// starts a whole-run re-attempt (#1267) and never touches exit 79 or another
-/// terminal block, which are `Err`. It runs before the failure class is
-/// attached, so a raised run carries none.
+/// #2663: a top-level drive's final status follows the merge, in both
+/// directions. A drive that did not merge is not a success; a drive whose
+/// merge `report()` read as `completed` is a success even when a later step
+/// failed. Applied only to an `Ok` run result, after
+/// `run_with_transient_retry` has returned, so it never starts a whole-run
+/// re-attempt (#1267) and never touches exit 79 or another terminal block,
+/// which are `Err`. It runs before the failure class is attached, so a raised
+/// run carries none.
+///
+/// #2769: the caller applies this only to a top-level drive; both directions
+/// stay exactly as #2663 wrote them, and a nested `autodrive-*` sub-recipe
+/// gets neither of them.
+///
 /// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
 pub(crate) fn apply_autodrive_outcome(
     run_result: &mut RecipeRunResult,
@@ -1420,7 +1434,28 @@ pub(super) fn execute_recipe_via_rust_fresh(
                     &run_result.context,
                     context.get("pr_number").map(String::as_str),
                 );
-                apply_autodrive_outcome(&mut run_result, &outcome);
+                // #2769: the #2663 rule, that a run succeeds only if it
+                // merged, is the top-level drive's. A nested `autodrive-*`
+                // sub-recipe merges nothing, so its verdict stays its own
+                // steps'. Both halves of the rule go with it, not just the
+                // one the defect showed: a sub-recipe that did not merge is
+                // no longer failed, and a sub-recipe that merged and then
+                // failed at a later step is no longer raised to success. The
+                // second half is observable in one place, the separate
+                // `amplihack recipe run autodrive-finalize` process that
+                // `step-03r-finalize-recovery` starts in
+                // `autodrive-merge-loop.yaml`; a `type: recipe` step runs in
+                // process and never re-enters this function, so it carried
+                // neither half before. That caller reads the merge from
+                // `finalize-merge.json`, keyed by run id, rather than from
+                // the child's exit status, and the `merge` step writes that
+                // record before any step that could fail after it.
+                // The inserts below stay unconditional: the outcome remains
+                // data for the loop script and the completion helpers
+                // whatever the invocation.
+                if trusted::is_top_level_drive(&invocation_name) {
+                    apply_autodrive_outcome(&mut run_result, &outcome);
+                }
                 run_result
                     .extra
                     .insert("autodrive_outcome".into(), outcome.clone());
