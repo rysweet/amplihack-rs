@@ -89,7 +89,9 @@ done
 cd "$dir"
 printf '%s' "$(pwd -P)" > "$out/cwd"
 printf '%s' "${AMPLIHACK_RUN_CHECKOUT:-}" > "$out/run_checkout"
-git rev-parse --absolute-git-dir > "$out/git_dir" 2>/dev/null || : > "$out/git_dir"
+status=0
+git rev-parse --absolute-git-dir > "$out/git_dir" 2> "$out/git_dir.err" || status=$?
+printf '%s' "$status" > "$out/git_dir.status"
 
 status=0
 git config --get user.name > "$out/user_name" 2> "$out/user_name.err" || status=$?
@@ -206,6 +208,9 @@ impl Fixture {
         // credential prompt.
         crate::isolated_amplihack::no_git_prompt(c);
         crate::isolated_amplihack::reapply_proc_root(c);
+        // Keeps a debug build's `--version` capability probe from giving up
+        // after its default wait on a loaded host.
+        c.env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit");
     }
 
     /// The fixture's own Git keeps the isolated configuration: it must not
@@ -391,7 +396,21 @@ fn inherited_git_dir_and_index_file_still_cannot_reroute_a_run() {
         "the run was rerouted into the inherited repository: {}",
         cwd.display()
     );
+    // The negative assertion below is satisfied by an empty path, so the
+    // observation has to be shown good first: a `rev-parse` that failed for
+    // an unrelated reason must not read as a pass.
+    assert_eq!(
+        f.observed_text("routing", "git_dir.status"),
+        "0",
+        "a step's `git rev-parse --absolute-git-dir` failed (stderr {})",
+        f.observed_text("routing", "git_dir.err").trim()
+    );
     let git_dir = PathBuf::from(f.observed_text("routing", "git_dir"));
+    assert!(
+        !git_dir.as_os_str().is_empty(),
+        "a step's git resolved no git directory (stderr {})",
+        f.observed_text("routing", "git_dir.err").trim()
+    );
     assert!(
         !git_dir.starts_with(&f.other),
         "a step's git resolved the inherited GIT_DIR: {}",
