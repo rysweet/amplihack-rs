@@ -161,5 +161,16 @@ fn a_refused_hooks_path_writes_no_hooks_and_seeding_still_succeeds() {
         .add(&n("work"))
         .expect("seeding never fails on the hook step");
     let s = read(&profile.join("settings.json"));
-    assert_eq!(s, json!({"hooks": {}, "language": "en"}));
+    assert_eq!(s["hooks"], json!({}), "no hooks block was written: {s}");
+    assert_eq!(s["language"], json!("en"));
+    // Issue #2589: the dangerous-command deny entries are seeded on their own
+    // path, so a refused hooks binary does not withhold them.
+    assert_eq!(
+        s["permissions"]["deny"],
+        json!(crate::policy::claude::deny_entries(&[])),
+        "{s}"
+    );
+    let mut keys: Vec<&str> = s.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["hooks", "language", "permissions"], "{s}");
 }

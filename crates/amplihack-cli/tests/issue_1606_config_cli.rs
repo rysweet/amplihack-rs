@@ -329,6 +329,9 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "recipe.log_dir = (unset)",
             "recipe.usage_limit_wait = true",
             "recipe.usage_limit_max_wait_secs = 21600",
+            // Issue #2589: unset by default; the shipped dangerous-command
+            // entries live in code, not in this file.
+            "policy.deny_commands = (unset)",
             "orchestrator.max_depth = 3",
             // Issue #1619: per-step model tiers and the small-diff combined
             // review.

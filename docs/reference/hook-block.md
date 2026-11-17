@@ -123,12 +123,22 @@ is left absent. Any missing or differing event counts, so a file
 that lost only `StopFailure`, or holds a stale `StopFailure` entry, is repaired
 as well as a file that lost every hook.
 
+Issue #2589 added a second pass beside this one, which refreshes the
+dangerous-command deny entries in the same file. It is not part of the drift
+check: a file whose hooks block is clean is left by the repair and still
+reaches that pass, so a launch can change `permissions.deny` without the hooks
+block having drifted. See
+[the dangerous-command policy](dangerous-command-policy.md). The rest of this
+section describes the hooks repair alone.
+
 A binary older than the install stamp never writes, because it would write an
 older block. If reading the install stamp fails, the binary is treated as
 older. In that case `amplihack doctor` reports the drift and
 `amplihack install` repairs it.
 
-An unreadable or refused file produces one warning line and no write. The
+An unreadable or refused file produces one warning line from this repair and
+no write. Since #2589 the deny pass beside it reports the same file on its own
+line, so a launch that meets one prints two warnings, one per pass. The
 wording below is an example; only the path and the reason in brackets are
 fixed:
 
@@ -225,7 +235,11 @@ is written from the bytes already read, opened with
 backup over a settings file.
 
 Profile refresh, profile seeding and the rotator cycle call `merge_file` and
-make no backup.
+make no backup. The #2589 deny pass calls `update_file` and makes none
+either, so a launch that adds only the deny entries changes
+`~/.claude/settings.json` and leaves the backup directory empty. It adds
+entries and never removes or rewrites one, so there is nothing a backup would
+restore.
 
 Profile refresh runs only inside `amplihack install`, which is the explicit
 installer; it does not consult the install stamp. Profile seeding is implicit

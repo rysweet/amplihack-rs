@@ -111,3 +111,71 @@ pub(super) fn repair_settings_hooks<W: std::io::Write>(
     println!("✅ Auto-repaired hook registrations in settings.json");
     Ok(())
 }
+
+/// Issue #2589: keeps Claude Code's `permissions.deny` entries current on a
+/// launch, the way the Codex rules file is kept current beside it.
+///
+/// [`repair_settings_hooks`] cannot carry this. It returns at
+/// [`FileDrift::Clean`], and drift is computed over amplihack's hooks block
+/// alone, so a file whose hooks are current never reaches the settings
+/// writer and never reaches `ensure_permissions`. Without this pass, a user
+/// who adds a `policy.deny_commands` entry and then only ever launches would
+/// not see it in Claude Code until the next explicit install or update.
+///
+/// Runs after the hook repair, so a launch that did rewrite the file has
+/// already written the entries and this pass finds nothing to add.
+///
+/// Never creates the file: a machine with no Claude settings file has
+/// nothing to deny into, and `amplihack install` is what creates one. Never
+/// fatal, for the same reason the install's policy section is not: the rest
+/// of the launch is still worth having. A refusal is loud and unsuppressed,
+/// since a security control that is not installed must not be silent
+/// (SEC-C3).
+///
+/// Writes nothing to the install's thread-local record: it calls
+/// [`crate::policy::claude::ensure_deny`] rather than `apply_deny_policy`,
+/// because this phase reports on `notice` and has no policy section to read
+/// the record (SEC-C3).
+pub(super) fn refresh_deny_entries<W: std::io::Write>(notice: &mut W) {
+    use super::hook_block::{FileMerge, update_file};
+    let Ok((settings_path, _)) = launch_settings_target() else {
+        return;
+    };
+    let shown = paths::sanitize_path(&settings_path);
+    let instance = crate::user_config::policy_deny_commands();
+    let refusal = std::cell::RefCell::new(None);
+    let merge = update_file(&settings_path, &|settings| {
+        if let crate::policy::claude::DenyOutcome::Unparseable(reason) =
+            crate::policy::claude::ensure_deny(settings, &instance)
+        {
+            refusal.replace(Some(reason));
+        }
+    });
+    // A `permissions` value the entries cannot merge into is reported, never
+    // replaced (SEC-C2), so the merge itself reports no change.
+    if let Some(reason) = refusal.take() {
+        let _ = writeln!(
+            notice,
+            "amplihack: warning: the dangerous-command deny entries were not written to {shown} \
+             ({reason}); the existing permissions value was left as it is. Fix the file, then \
+             run `amplihack install`."
+        );
+        return;
+    }
+    match merge {
+        FileMerge::Written => {
+            println!("✅ Refreshed the dangerous-command deny entries in settings.json");
+        }
+        FileMerge::AlreadyCurrent => {}
+        FileMerge::Absent => {
+            tracing::debug!("no Claude settings file to write the dangerous-command entries into");
+        }
+        FileMerge::Unparseable(reason) | FileMerge::Refused(reason) => {
+            let _ = writeln!(
+                notice,
+                "amplihack: warning: the dangerous-command deny entries were not written to \
+                 {shown} ({reason}). Fix the file, then run `amplihack install`."
+            );
+        }
+    }
+}

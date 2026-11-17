@@ -16,7 +16,7 @@ use anyhow::Result;
 /// * When `skip_install` is `true`, log and return `Ok(())` without invoking
 ///   the installer.
 /// * Otherwise, invoke `installer()` and propagate its result via `?`.
-pub(super) fn run_post_update_install<F>(skip_install: bool, installer: F) -> Result<()>
+pub(crate) fn run_post_update_install<F>(skip_install: bool, installer: F) -> Result<()>
 where
     F: FnOnce() -> Result<()>,
 {

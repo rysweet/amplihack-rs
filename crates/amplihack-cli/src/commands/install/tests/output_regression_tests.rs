@@ -105,3 +105,48 @@ fn a_genuinely_required_asset_is_still_fatal_in_the_rendered_entry_form() {
         "a required asset must remain fatal:\n{output}"
     );
 }
+
+// --- issue #2589: the dangerous-command policy lines ------------------------
+
+/// D11: the install and update lines are plain sentences that name the
+/// mechanism, carry no host name or path beyond the harness home, and pass
+/// the existing noise contract. Every combination of outcomes is checked,
+/// because the lines now vary with what the run actually wrote.
+#[test]
+fn the_dangerous_command_policy_lines_are_accepted_by_the_output_contract() {
+    use crate::policy::HarnessWrite::{AllRefused, NothingToWriteInto, Partial, Written};
+    for claude in [Written, NothingToWriteInto, Partial, AllRefused] {
+        for codex in [Written, NothingToWriteInto, Partial, AllRefused] {
+            let mut output = String::from("🚀 Starting amplihack installation...\n");
+            for line in crate::policy::install_report_lines(claude, codex) {
+                output.push_str(&format!("  {}  {}\n", line.marker, line.text));
+            }
+            output.push_str("✅ Amplihack installation completed successfully!\n");
+
+            settings::assert_no_noisy_install_update_regressions(&output)
+                .expect("the policy report must not read as a regression");
+
+            for noisy in NOISY_REGRESSIONS {
+                assert!(
+                    !output.contains(noisy),
+                    "the policy report must not carry {noisy:?}"
+                );
+            }
+        }
+    }
+}
+
+/// SEC-C3: a failed policy write is a warning, and a warning is not silence.
+#[test]
+fn a_policy_write_warning_is_accepted_by_the_output_contract() {
+    for harness in [
+        "Codex",
+        "Claude Code (home settings)",
+        "Claude Code (profile work)",
+    ] {
+        let warning = crate::policy::write_failure_warning(harness, "is a symlink");
+        let output = format!("install output\n  ⚠️  {warning}\n");
+        settings::assert_no_noisy_install_update_regressions(&output)
+            .expect("a genuine policy warning is not a known noisy regression");
+    }
+}

@@ -283,6 +283,10 @@ nav:
       - doctor Command: reference/doctor-command.md
       - User Configuration: reference/user-config.md
       - Model Tiers: reference/model-tiers.md
+      - Dangerous Command Policy:
+          - Reference: reference/dangerous-command-policy.md
+          - Explanation: concepts/dangerous-command-policy.md
+          - How-To: howto/add-dangerous-command-deny-rules.md
       - AMPLIHACK_* Environment Variable Audit: reference/amplihack-env-vars.md
       - Rust Runner Execution: reference/rust-runner-execution.md
       - Transient Failure Retry: reference/transient-failure-retry.md

@@ -46,7 +46,16 @@ pub(crate) enum ValueKind {
     Choice(&'static [&'static str]),
     /// A tmux session-name pattern: see [`validate_session_pattern`].
     SessionPattern,
+    /// A TOML array of command prefixes, each validated as a
+    /// [`crate::policy::Prefix`], at most [`MAX_DENY_COMMANDS`] of them
+    /// (issue #2589). Set by editing the user file: `config set` writes
+    /// scalars only.
+    CommandList,
 }
+
+/// Most dangerous-command entries one file may add (issue #2589). The
+/// shipped defaults are in code and are not counted against it.
+pub(crate) const MAX_DENY_COMMANDS: usize = 64;
 
 /// The values of `recipe.detach`.
 pub(crate) const DETACH_MODES: &[&str] = &["tmux", "none"];
@@ -70,6 +79,8 @@ pub(crate) enum Value {
     Bool(bool),
     Int(u64),
     Text(String),
+    /// A list of command prefixes (issue #2589).
+    List(Vec<String>),
 }
 
 impl Value {
@@ -79,6 +90,9 @@ impl Value {
             Value::Bool(value) => value.to_string(),
             Value::Int(value) => value.to_string(),
             Value::Text(value) => value.clone(),
+            // `config get` prints one value; the entries read best on one
+            // line, which is also how `config list` shows them.
+            Value::List(values) => values.join(", "),
         }
     }
 
@@ -102,6 +116,13 @@ impl Value {
             _ => None,
         }
     }
+
+    pub(crate) fn as_list(&self) -> Option<&[String]> {
+        match self {
+            Value::List(values) => Some(values),
+            _ => None,
+        }
+    }
 }
 
 /// TOML syntax: strings quoted and escaped, bools and integers bare.
@@ -110,6 +131,16 @@ impl fmt::Display for Value {
         match self {
             Value::Bool(value) => write!(f, "{value}"),
             Value::Int(value) => write!(f, "{value}"),
+            Value::List(values) => {
+                f.write_str("[")?;
+                for (index, value) in values.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{}", Value::Text(value.clone()))?;
+                }
+                f.write_str("]")
+            }
             Value::Text(value) => {
                 f.write_str("\"")?;
                 for c in value.chars() {
@@ -259,6 +290,18 @@ pub(crate) static KEYS: &[KeyDef] = &[
         env: Some("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS"),
         default: Some("21600"),
         lower_only: true,
+    },
+    KeyDef {
+        // Issue #2589: the dangerous-command entries this installation adds
+        // to the shipped list. User-only, because a cloned repository must
+        // not change what any harness denies, and with no variable, because
+        // a deny list one exported variable can empty is not one.
+        name: "policy.deny_commands",
+        scope: Scope::UserOnly,
+        kind: ValueKind::CommandList,
+        env: None,
+        default: None,
+        lower_only: false,
     },
     KeyDef {
         name: "orchestrator.max_depth",
@@ -428,6 +471,12 @@ pub(crate) fn parse_raw(kind: ValueKind, raw: &str) -> Result<Value, String> {
             "false" => Ok(Value::Bool(false)),
             _ => Err(kind_requirement(kind)),
         },
+        // A list is never typed on the command line or read from a
+        // variable, so the reason says where it is set instead of
+        // describing a value the caller cannot supply here.
+        ValueKind::CommandList => Err("is a list and is set by editing the user file \
+             ~/.amplihack/config.toml, not from the command line"
+            .to_string()),
         ValueKind::Int { min, max } => {
             if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(kind_requirement(kind));
@@ -451,6 +500,16 @@ pub(crate) fn from_toml(kind: ValueKind, item: &toml_edit::Value) -> Result<Valu
             | ValueKind::SessionPattern,
             toml_edit::Value::String(s),
         ) => parse_raw(kind, s.value()),
+        (ValueKind::CommandList, toml_edit::Value::Array(array)) => {
+            let mut entries = Vec::with_capacity(array.len());
+            for item in array.iter() {
+                let Some(text) = item.as_str() else {
+                    return Err(kind_requirement(kind));
+                };
+                entries.push(text.to_string());
+            }
+            parse_command_list(&entries)
+        }
         (ValueKind::Bool, toml_edit::Value::Boolean(b)) => Ok(Value::Bool(*b.value())),
         (ValueKind::Int { .. }, toml_edit::Value::Integer(i)) => {
             let value = *i.value();
@@ -479,6 +538,13 @@ pub(crate) fn kind_requirement(kind: ValueKind) -> String {
              {MAX_PATH_BYTES} bytes"
         ),
         ValueKind::Bool => "must be true or false".to_string(),
+        ValueKind::CommandList => format!(
+            "must be a TOML array of at most {MAX_DENY_COMMANDS} command prefixes, each 1 to \
+             {} bytes of ASCII letters, digits and the characters . _ - / @ = +, holding at \
+             most {} words separated by exactly one space",
+            crate::policy::prefix::MAX_BYTES,
+            crate::policy::prefix::MAX_TOKENS
+        ),
         ValueKind::Choice(words) => format!("must be one of {}", words.join(", ")),
         ValueKind::SessionPattern => format!(
             "must be 1 to {MAX_SESSION_PATTERN_CHARS} characters of letters, digits, '-' and \
@@ -490,6 +556,23 @@ pub(crate) fn kind_requirement(kind: ValueKind) -> String {
         }
         ValueKind::Int { min, max } => format!("must be an integer from {min} to {max}"),
     }
+}
+
+/// Validate the entries of a `policy.deny_commands` value (issue #2589).
+///
+/// One bad entry rejects the whole value: an entry silently dropped from a
+/// deny list is worse than a value refused with a reason, because the list
+/// that remains would still be believed. The reason never quotes the entry,
+/// which is attacker-chosen; the caller escapes it when it shows it.
+pub(crate) fn parse_command_list(entries: &[String]) -> Result<Value, String> {
+    let requirement = || kind_requirement(ValueKind::CommandList);
+    if entries.len() > MAX_DENY_COMMANDS {
+        return Err(requirement());
+    }
+    for entry in entries {
+        crate::policy::Prefix::try_from(entry.as_str()).map_err(|_| requirement())?;
+    }
+    Ok(Value::List(entries.to_vec()))
 }
 
 /// The syntactic checks every path value passes: absolute, no `..`

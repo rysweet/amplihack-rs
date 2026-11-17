@@ -402,11 +402,15 @@ test starts uses a URL of the form
 `script` process left behind shows up here; afterwards this prints nothing:
 
 ```bash
-pgrep -fa '127\.0\.0\.1:[0-9]+/issue-1764-[0-9]+\.git'
+ps -eo pid=,args= | grep -E '127\.0\.0\.1:[0-9]+/issue-[1]764-[0-9]+\.git'
 ```
 
 Do not search for `issue-1764` alone. It also matches unrelated processes,
-such as agent sessions whose arguments mention the issue.
+such as agent sessions whose arguments mention the issue. The `[1]` in the
+pattern keeps `grep` from matching its own command line in `ps`'s output; a
+command-line search that matches the process running the search is the failure
+the [dangerous-command policy](../reference/dangerous-command-policy.md)
+exists to prevent.
 
 ## Run a long command by hand or from an agent
 
@@ -424,12 +428,13 @@ run, send `SIGTERM` to its `timeout` process, which ends the command and the
 processes in its group:
 
 ```bash
-pgrep -fa '^timeout --kill-after=60 5400 cargo test'
+ps -eo pid=,args= | grep -E ' timeout --kill-after=60 5400 cargo [t]est'
 kill -TERM <pid of the run's timeout>
 ```
 
-If `pgrep` lists more than one run, check which is yours with
-`ps -o pid,lstart,args -p <pid>` before you send the signal.
+If more than one run is listed, check which is yours with
+`ps -o pid,lstart,args -p <pid>` before you send the signal. Read the listing
+and name a PID; do not pipe the search straight into a kill.
 
 If you need to stay in the terminal's session, keep `timeout` in the
 foreground instead. Ctrl-C stops this form as usual:
@@ -558,9 +563,20 @@ run() {   # Arguments: extra variables for git, such as GIT_TERMINAL_PROMPT=0.
 # The control: git prompts for a username and is stopped (state T).
 run & sleep 2
 ps -eo pid,stat,cmd | awk '$2 ~ /T/'
-# Kill only `script`; closing the pseudo-terminal hangs up the stopped group.
-pkill -f '^script -qec timeout 6 git'
+```
 
+The listing names three stopped processes: `script`, the `sh` it started and
+`git`. End only `script` — closing the pseudo-terminal hangs up the whole
+stopped group. Read its PID out of the listing, confirm the command line is
+the `script -qec timeout 6 git …` you just started, and name that PID:
+
+```bash
+kill <pid of script>
+```
+
+Then continue:
+
+```bash
 # With the setting, git fails at once with `terminal prompts disabled`, rc=128.
 run GIT_TERMINAL_PROMPT=0
 

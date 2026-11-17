@@ -3663,6 +3663,19 @@ Rules:
   (never a symlink), is rewritten atomically with mode `0600` only when it
   changes, and is never created. A file that cannot be read, parsed or
   written is reported and skipped; the install still succeeds.
+- The same pass writes the dangerous-command deny entries into each profile's
+  `settings.json` (issue #2589), so one refusal costs the profile both the
+  hooks and the deny rules. A profile that is skipped is reported on stdout as
+  `Profile <name>: settings.json not refreshed (<reason>)`, one line per
+  profile. A failure of the root itself is reported once for all of them, as
+  `Profiles: settings.json not refreshed (<reason>)`: the plural names the
+  root rather than any profile, because no profile was reached. It covers a
+  root that cannot be resolved, one that is a symlink and one that cannot be
+  listed. The policy section printed later in the same install names that
+  failure again on stderr, under the label `managed profiles`, and drops its
+  Claude Code line to the partial form. See
+  [A profile root that cannot be read](./dangerous-command-policy.md#a-profile-root-that-cannot-be-read).
+  A root that does not exist is not a failure and is not reported.
 - Before it opens any profile's `settings.json`, the refresh checks the hooks
   path it is about to write (issue #1699). It refuses the whole refresh when
   the `amplihack-hooks` binary does not exist or is not a regular file (a

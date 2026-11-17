@@ -241,6 +241,24 @@ pub(crate) fn clear_outer_run_env() -> EnvGuard {
     EnvGuard::unset(OUTER_RUN_IDENTITY_VARS)
 }
 
+/// Set or clear several path-valued variables until the guard drops: `Some`
+/// sets, `None` removes. The caller must hold `env_lock()`, as for any
+/// [`EnvGuard`].
+///
+/// This is the shape a fixture wants when it points `HOME`, `CODEX_HOME` or a
+/// profile root at a temp directory, which [`EnvGuard::set`] cannot take
+/// because its values are `&str`.
+pub(crate) fn env_paths(vars: &[(&str, Option<&Path>)]) -> EnvGuard {
+    let mut guard = EnvGuard::capture(&[]);
+    for (key, value) in vars {
+        match value {
+            Some(path) => guard.assign(key, path),
+            None => guard.clear(key),
+        }
+    }
+    guard
+}
+
 /// Runs `f` under the shared env lock with each variable set (or removed when
 /// `None`). The previous values are restored on return and on panic.
 pub(crate) fn with_env<T>(vars: &[(&str, Option<&OsStr>)], f: impl FnOnce() -> T) -> T {
