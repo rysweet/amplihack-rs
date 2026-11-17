@@ -1415,7 +1415,7 @@ mod context_transport_2582 {
     /// text is what is asserted.
     #[test]
     fn refusal_message_is_pinned_and_shared_by_both_entry_points() {
-        const EXPECTED: &str = "recipe context key \"AMPLIHACK_X\" is reserved: the AMPLIHACK_ namespace, Git execution configuration and the RECIPE_RUNNER_RS_PATH runner selector cannot be set from recipe context";
+        const EXPECTED: &str = "recipe context key \"AMPLIHACK_X\" is reserved: the AMPLIHACK_ namespace, Git execution configuration and any name that selects or runs a program cannot be set from recipe context";
 
         let context = BTreeMap::from([("AMPLIHACK_X".to_string(), "v".to_string())]);
         let moved = refuse_reserved_keys(&context).unwrap_err().to_string();

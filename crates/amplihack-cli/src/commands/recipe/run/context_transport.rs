@@ -77,7 +77,9 @@ pub(super) fn supports_context_file(report: &serde_json::Value) -> bool {
 
 /// Refuses a reserved context key (issue #1567): the `AMPLIHACK_` namespace,
 /// the Git routing and executable configuration the command policy removes
-/// before launch, and the recipe-runner selector `RECIPE_RUNNER_RS_PATH`.
+/// before launch, and any name whose value is run or selects what runs
+/// (the recipe-runner selector, `GIT_SSH_COMMAND` and friends,
+/// `{TOOL}_BINARY_PATH`).
 ///
 /// The rule itself is [`is_reserved_context_key`], so this and
 /// [`super::execute::pass_context`] cannot drift apart. Both call it: this one
@@ -89,7 +91,7 @@ pub(super) fn supports_context_file(report: &serde_json::Value) -> bool {
 pub(super) fn refuse_reserved_keys(context: &BTreeMap<String, String>) -> Result<()> {
     if let Some(key) = context.keys().find(|k| is_reserved_context_key(k)) {
         anyhow::bail!(
-            "recipe context key {} is reserved: the AMPLIHACK_ namespace, Git execution configuration and the RECIPE_RUNNER_RS_PATH runner selector cannot be set from recipe context",
+            "recipe context key {} is reserved: the AMPLIHACK_ namespace, Git execution configuration and any name that selects or runs a program cannot be set from recipe context",
             crate::commands::profile::escape_for_error(key)
         );
     }
