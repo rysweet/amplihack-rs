@@ -1,7 +1,7 @@
 ---
 title: "Why a Recipe Run Does Not Trace Git Commands"
 description: "Why recipe runs no longer attach a ptrace observer or journal the Git commands they make, what the private clone does instead, and what a tamper-resistant record would require."
-last_updated: 2026-11-16
+last_updated: 2026-11-17
 review_schedule: quarterly
 owner: rysweet
 doc_type: explanation
@@ -143,10 +143,18 @@ step of another recipe run.
 The private clone, which was the actual subject of #2096, is unchanged. So is
 everything that keeps a caller's state out of it:
 
-- `amplihack_git::scrub` on every command the run prepares, together with
-  `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_GLOBAL`, so that
-  an inherited `GIT_DIR`, `GIT_INDEX_FILE` or `GIT_WORK_TREE`, and any system
-  or global configuration, cannot redirect the run.
+- `amplihack_git::scrub` on every command the run prepares, so that an
+  inherited repository selection cannot redirect the run and an inherited
+  environment-based setting cannot inject configuration into it. It removes
+  every name in `amplihack_git::REPOSITORY_ENV_VARS`, among them `GIT_DIR`,
+  `GIT_INDEX_FILE`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and the
+  object-directory overrides, together with `GIT_CONFIG`, `GIT_CONFIG_COUNT`,
+  `GIT_CONFIG_PARAMETERS`, every `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`
+  pair, `GIT_EXEC_PATH` and `GIT_TEMPLATE_DIR`. The runner command sets none
+  of `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_GLOBAL`:
+  steps read the user's own global and system configuration, including a
+  credential helper, as they did before #2290. See
+  [paths and Git configuration](../reference/recipe-checkout-isolation.md#paths-and-git-configuration).
 - Parent-directory checking on both mapping paths, so a context value cannot
   point outside the tree it is mapped into.
 - The error raised when a context value embeds the caller's checkout path

@@ -525,3 +525,8 @@ mod issue_2738_private_clone;
 mod issue_2738_run_status;
 #[path = "issue_2738_support.rs"]
 mod issue_2738_support;
+
+// Issue #2756: a step reads the user's own global and system Git
+// configuration again, while #2096's repository-routing protection stays.
+#[path = "issue_2756_user_git_config.rs"]
+mod issue_2756_user_git_config;
