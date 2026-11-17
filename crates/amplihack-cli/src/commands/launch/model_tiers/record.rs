@@ -97,8 +97,8 @@ pub(crate) fn append(run_dir: Option<&Path>, record: &Record) {
     if !file.metadata().is_ok_and(|meta| meta.is_file()) {
         return;
     }
-    // Advisory, and skipping beats blocking: the record is a report, never a
-    // gate on the launch.
+    // Advisory, and skipping beats blocking: the record is a report, and it
+    // must never hold up the launch it describes.
     use fs2::FileExt;
     if FileExt::try_lock_exclusive(&file).is_err() {
         return;

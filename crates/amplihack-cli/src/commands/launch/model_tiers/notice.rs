@@ -85,6 +85,10 @@ pub(crate) enum Notice {
     /// one with no other symptom: the run simply proceeds on the tier the
     /// recipe declares.
     StepTierUnmatched { step: String },
+    /// A patched copy of a recipe stopped being YAML, so it was dropped and
+    /// the recipe as written ran instead. A `model:` line is the only edit
+    /// made, so this should not happen and is worth reporting.
+    StagedRecipeDropped { recipe: String, reason: String },
     /// A tier file's top-level key is not a table.
     NotATable { key: String },
 }
@@ -234,6 +238,12 @@ impl Notice {
                  with that id, so nothing is overridden and every step keeps the tier its \
                  recipe declares. {ADVICE}",
                 display_safe(step)
+            ),
+            Notice::StagedRecipeDropped { recipe, reason } => format!(
+                "amplihack: model tiers: {}: {reason}, so it was dropped and the recipe as \
+                 written runs instead. A `model:` line is the only edit made, so please \
+                 report this. {ADVICE}",
+                display_safe(recipe)
             ),
             Notice::NotATable { key } => format!(
                 "amplihack: model tiers: `{}` is not a table of tiers; it is ignored.",

@@ -233,7 +233,8 @@ fn an_unreadable_or_corrupt_file_does_not_panic_a_reader() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join(RECORD_FILE), "not json\n{\"v\":1}\n").unwrap();
     let records = read_all(dir.path());
-    // A half-written line is skipped; the summary is a report, never a gate.
+    // A half-written line is skipped; the summary is a report, and it never
+    // holds up a run.
     assert!(records.len() <= 1);
 }
 

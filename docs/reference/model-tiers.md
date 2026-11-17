@@ -198,8 +198,10 @@ and the shipped mapping applies. The check is made on the open file rather than
 on its path, so it cannot be made to describe a different object from the one
 read. Correct a rejected file with `chmod 600 ~/.amplihack/model-tiers.toml`.
 It is read once per process through the reader every other amplihack config
-file uses: at most 64 KiB, regular files only, opened without following a
-symlink and non-blocking, so a FIFO cannot stall the launch. A missing,
+file uses: at most 64 KiB, regular files only, opened non-blocking so a FIFO
+cannot stall the launch. A symlink is followed and the file it points at is
+the one judged, because a tier file kept in a dotfiles directory and linked
+into place is an ordinary arrangement. A missing,
 malformed, over-size, unreadable or wrongly versioned file gives one stderr
 line naming the file and the reason, after which the shipped mapping applies
 and the run proceeds; the path is printed home-relative, because these lines

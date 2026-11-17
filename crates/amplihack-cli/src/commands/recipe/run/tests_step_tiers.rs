@@ -14,7 +14,9 @@
 //!
 //! Homes and recipe directories here are tempfile directories only.
 
-use super::step_tiers::{Outcome, RECIPE_DIR_ENV, Staged, stage, validate_step_id};
+use super::step_tiers::{
+    MAX_CANDIDATES, MAX_RECIPE_BYTES, Outcome, RECIPE_DIR_ENV, Staged, stage, validate_step_id,
+};
 use crate::commands::launch::model_tiers::notice::Notice;
 use crate::commands::launch::model_tiers::table::Tier;
 use std::collections::BTreeMap;
@@ -490,5 +492,243 @@ fn the_top_level_recipe_is_staged_even_when_it_is_outside_the_search_directories
     assert_eq!(
         model_of(&text, "step-08-implement").as_deref(),
         Some("fast")
+    );
+}
+
+// -------------------------------------------------------------------------
+// R1: a recipe run by path never displaces a bundled recipe of the same name
+// -------------------------------------------------------------------------
+
+/// A recipe with the same file name and the same step ids as `RECIPE`, but a
+/// body a test can tell apart. It stands for a copy sitting in the repository
+/// under review.
+const SHADOW_RECIPE: &str = r#"name: "sample"
+steps:
+  - id: "step-08-implement"
+    agent: "amplihack:builder"
+    model: "strong"
+    prompt: |
+      SHADOW-BODY
+  - id: "run-the-build"
+    type: "bash"
+    command: |
+      echo SHADOW-BODY
+"#;
+
+#[test]
+fn a_search_directory_recipe_wins_over_a_same_named_recipe_run_by_path() {
+    // The staging directory goes first in the runner's search order, so
+    // whatever is staged under a given name answers every later lookup of
+    // that name. Staging the file named on the command line first therefore
+    // lets a repository-local `sample.yaml` stand in for the bundled one for
+    // the whole run, bodies and all. The search directories decide the name,
+    // and the command-line recipe is staged only where they hold no file of
+    // that name.
+    let f = Fixture::new();
+    let repo = f.run_dir.parent().unwrap().join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    let local = repo.join("sample.yaml");
+    fs::write(&local, SHADOW_RECIPE).unwrap();
+
+    let mut map: BTreeMap<String, Tier> = BTreeMap::new();
+    map.insert("step-08-implement".to_string(), Tier::Fast);
+    let staged = stage(&f.run_dir, std::slice::from_ref(&f.recipes), &local, &map)
+        .expect("stage")
+        .staged
+        .expect("the search directory holds a sample.yaml to patch");
+
+    let text = staged_text(&staged, "sample.yaml");
+    assert!(
+        !text.contains("SHADOW-BODY"),
+        "a recipe run by path must not be staged ahead of a search-directory \
+         recipe of the same name, or its body answers every lookup of that \
+         name for the rest of the run:\n{text}"
+    );
+    assert!(
+        text.contains("Build it."),
+        "the search directory's own recipe is the one patched:\n{text}"
+    );
+    assert_eq!(
+        model_of(&text, "step-08-implement").as_deref(),
+        Some("fast"),
+        "and it still carries the override"
+    );
+}
+
+#[test]
+fn one_file_per_name_is_staged_when_both_sources_hold_it() {
+    let f = Fixture::new();
+    let repo = f.run_dir.parent().unwrap().join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    let local = repo.join("sample.yaml");
+    fs::write(&local, SHADOW_RECIPE).unwrap();
+
+    let mut map: BTreeMap<String, Tier> = BTreeMap::new();
+    map.insert("step-08-implement".to_string(), Tier::Fast);
+    let staged = stage(&f.run_dir, std::slice::from_ref(&f.recipes), &local, &map)
+        .expect("stage")
+        .staged
+        .expect("one file is staged");
+    assert_eq!(
+        staged.files.len(),
+        1,
+        "a name resolves to one staged file: {:?}",
+        staged.files
+    );
+}
+
+// -------------------------------------------------------------------------
+// R2: a patched copy that no longer parses is dropped, and says so
+// -------------------------------------------------------------------------
+
+/// A recipe whose shell body contains a line that reads exactly like a step
+/// header at the step indent. The line walk cannot tell it from one, so the
+/// patch lands inside the here-document and the file stops being YAML.
+const DECOY_RECIPE: &str = r#"name: "decoy"
+steps:
+  - id: "run-the-build"
+    type: "bash"
+    command: |
+      cat <<EOF
+  - id: "step-20-final-cleanup"
+      EOF
+      echo done
+"#;
+
+#[test]
+fn a_patched_copy_that_no_longer_parses_is_not_written() {
+    let f = Fixture::new();
+    fs::write(f.recipes.join("decoy.yaml"), DECOY_RECIPE).unwrap();
+    fs::remove_file(f.recipes.join("sample.yaml")).unwrap();
+
+    let outcome = f
+        .stage(&[("step-20-final-cleanup", Tier::Fast)])
+        .expect("stage");
+
+    let staged_names: Vec<String> = outcome
+        .staged
+        .iter()
+        .flat_map(|s| s.files.iter())
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    assert!(
+        !staged_names.contains(&"decoy.yaml".to_string()),
+        "a copy that no longer parses must be dropped rather than put first \
+         in the runner's search order: {staged_names:?}"
+    );
+}
+
+#[test]
+fn a_dropped_copy_is_reported_by_recipe_name() {
+    let f = Fixture::new();
+    fs::write(f.recipes.join("decoy.yaml"), DECOY_RECIPE).unwrap();
+    fs::remove_file(f.recipes.join("sample.yaml")).unwrap();
+
+    let outcome = f
+        .stage(&[("step-20-final-cleanup", Tier::Fast)])
+        .expect("stage");
+
+    assert!(
+        outcome.notices.iter().any(|n| matches!(
+            n,
+            Notice::StagedRecipeDropped { recipe, .. } if recipe == "decoy.yaml"
+        )),
+        "dropping a copy is the one symptom the operator gets, so it is a \
+         notice rather than a silence: {:?}",
+        outcome.notices
+    );
+}
+
+#[test]
+fn a_dropped_copy_does_not_stop_the_run_or_the_other_recipes() {
+    // One unpatchable recipe must not cost the override its effect on the
+    // recipes that do patch cleanly.
+    let f = Fixture::new();
+    fs::write(f.recipes.join("decoy.yaml"), DECOY_RECIPE).unwrap();
+
+    let outcome = f
+        .stage(&[
+            ("step-20-final-cleanup", Tier::Fast),
+            ("step-08-implement", Tier::Fast),
+        ])
+        .expect("staging never fails because one copy was dropped");
+    let staged = outcome.staged.expect("sample.yaml still stages");
+    let text = staged_text(&staged, "sample.yaml");
+    assert_eq!(
+        model_of(&text, "step-08-implement").as_deref(),
+        Some("fast")
+    );
+}
+
+#[test]
+fn the_reason_a_copy_was_dropped_carries_no_recipe_contents() {
+    // These lines land in run logs that get pasted into issues, and a recipe
+    // body holds prompts and shell. The reason names the failure, not the
+    // text that caused it.
+    let f = Fixture::new();
+    fs::write(f.recipes.join("decoy.yaml"), DECOY_RECIPE).unwrap();
+    fs::remove_file(f.recipes.join("sample.yaml")).unwrap();
+
+    let outcome = f
+        .stage(&[("step-20-final-cleanup", Tier::Fast)])
+        .expect("stage");
+    for notice in &outcome.notices {
+        if let Notice::StagedRecipeDropped { reason, .. } = notice {
+            assert!(
+                !reason.contains("EOF") && !reason.contains("echo done"),
+                "the reason quotes no recipe contents: {reason}"
+            );
+        }
+    }
+}
+
+// -------------------------------------------------------------------------
+// The reads staging makes are bounded, like every other amplihack file read
+// -------------------------------------------------------------------------
+
+#[test]
+fn a_recipe_larger_than_the_bound_is_skipped_rather_than_loaded() {
+    let f = Fixture::new();
+    let mut huge = String::from("name: \"huge\"\nsteps:\n  - id: \"step-08-implement\"\n");
+    huge.push_str("    prompt: |\n");
+    for _ in 0..4000 {
+        huge.push_str("      padding padding padding padding padding padding\n");
+    }
+    assert!(
+        huge.len() as u64 > MAX_RECIPE_BYTES,
+        "the fixture is oversized"
+    );
+    fs::write(f.recipes.join("huge.yaml"), &huge).unwrap();
+
+    let outcome = f
+        .stage(&[("step-08-implement", Tier::Fast)])
+        .expect("stage");
+    let staged_names: Vec<String> = outcome
+        .staged
+        .iter()
+        .flat_map(|s| s.files.iter())
+        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    assert!(
+        !staged_names.contains(&"huge.yaml".to_string()),
+        "staging reads recipes under the same bound as every other amplihack \
+         file read: {staged_names:?}"
+    );
+}
+
+#[test]
+fn the_number_of_candidate_recipes_is_capped() {
+    let f = Fixture::new();
+    for index in 0..(MAX_CANDIDATES + 10) {
+        fs::write(f.recipes.join(format!("filler-{index:04}.yaml")), RECIPE).unwrap();
+    }
+    let outcome = f
+        .stage(&[("step-08-implement", Tier::Fast)])
+        .expect("stage");
+    let count = outcome.staged.map(|s| s.files.len()).unwrap_or_default();
+    assert!(
+        count <= MAX_CANDIDATES,
+        "a search directory of unbounded size must not become an unbounded \
+         copy: staged {count}, cap {MAX_CANDIDATES}"
     );
 }

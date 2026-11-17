@@ -394,7 +394,7 @@ fn an_override_effort_outside_the_allowlist_is_dropped_and_the_model_kept() {
 }
 
 // -------------------------------------------------------------------------
-// Model-id validation — the one gate every model string crosses
+// Model-id validation — the one check every model string crosses
 // -------------------------------------------------------------------------
 
 #[test]

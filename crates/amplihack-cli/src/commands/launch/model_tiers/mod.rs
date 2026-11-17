@@ -23,6 +23,8 @@ pub(crate) mod table;
 #[cfg(test)]
 mod tests_codex_effort;
 #[cfg(test)]
+mod tests_load;
+#[cfg(test)]
 mod tests_record;
 #[cfg(test)]
 mod tests_resolve;
@@ -37,7 +39,7 @@ use notice::Notice;
 use resolve::{Request, Resolution};
 use table::{Table, Tier};
 
-use crate::user_config::safe::{display_path, read_bounded};
+use crate::user_config::safe::{display_path, read_checked};
 use crate::user_config::{self, Value};
 
 /// The file name an instance's mapping has, wherever it lives.
@@ -234,17 +236,15 @@ fn read_tier_file(path: &Path) -> (Table, Vec<Notice>) {
             }],
         )
     };
-    // The same ownership and permission check `model.force` and
-    // `model.tier_map` get in the config loader, which has to follow them into
-    // this file: otherwise a group-writable home chooses the model every agent
-    // step runs on, and can retarget one named step.
-    if let Some(reason) = user_config::safe::insecure_reason(path) {
-        return failed(reason.to_string());
-    }
     // The same bounded, type-checked, non-blocking read every amplihack
-    // config file gets: at most 64 KiB, regular files only, no hang on a
-    // FIFO or a device.
-    match read_bounded(path) {
+    // config file gets — at most 64 KiB, regular files only, no hang on a
+    // FIFO or a device — plus the ownership and permission check
+    // `model.force` and `model.tier_map` get in the config loader, which has
+    // to follow them into this file: otherwise a group-writable home chooses
+    // the model every agent step runs on, and can retarget one named step.
+    // The check is made on the open handle, so the file judged and the file
+    // parsed are one object.
+    match read_checked(path) {
         Ok(Some(text)) => match Table::parse_override(&text) {
             Ok((table, notices)) => (table, notices),
             Err(reason) => failed(reason),

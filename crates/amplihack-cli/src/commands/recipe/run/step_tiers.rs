@@ -33,6 +33,14 @@ const STAGING_DIR: &str = "recipe-overrides";
 /// Longest accepted step id, in bytes.
 const MAX_STEP_ID_BYTES: usize = 128;
 
+/// Largest recipe staging will read. The largest bundled recipe is about
+/// 54 KiB, so this leaves room to grow while keeping a search directory full
+/// of large files from becoming an unbounded read.
+pub(crate) const MAX_RECIPE_BYTES: u64 = 128 * 1024;
+
+/// Most recipes staging will look at in one run. The bundle holds about 60.
+pub(crate) const MAX_CANDIDATES: usize = 512;
+
 /// The patched copies of one run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Staged {
@@ -95,12 +103,31 @@ pub(crate) fn stage(
         if written.contains(&name) {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&source) else {
+        let Ok(Some(text)) = read_recipe(&source) else {
             continue;
         };
         let Some(patched) = patch(&text, &wanted) else {
             continue;
         };
+        // The patch is line-scoped, and a recipe body can hold a line that
+        // reads exactly like a step header at the step indent — a here-
+        // document, say — which the line walk cannot tell from one. Such a
+        // copy is no longer the recipe it was patched from, and the staging
+        // directory goes first in the runner's search order, so writing it
+        // would put a corrupted file in front of a sound one. Re-reading the
+        // rewritten text as YAML is what tells the two apart.
+        if let Err(reason) = reparses(&patched.text) {
+            out.notices.push(Notice::StagedRecipeDropped {
+                recipe: name.clone(),
+                reason,
+            });
+            // The ids are counted as matched all the same: the recipe did
+            // name them, and the drop is the line that explains this run.
+            // Reporting them unmatched as well would say something untrue.
+            matched.extend(patched.matched);
+            written.insert(name);
+            continue;
+        }
         let target = staged.dir.join(&name);
         if target.parent() != Some(staged.dir.as_path()) {
             continue;
@@ -124,14 +151,21 @@ pub(crate) fn stage(
     Ok(out)
 }
 
-/// Every recipe file worth looking at: those in the search directories, and
-/// the one named on the command line.
+/// Every recipe file worth looking at: those in the search directories
+/// first, then the one named on the command line.
 ///
-/// The named recipe is included even when it is outside every search
-/// directory, so a single-step override always covers at least the recipe the
-/// operator asked for.
+/// The search directories come first because a staged file answers every
+/// later lookup of its name for the whole run. Staging the recipe named on
+/// the command line ahead of them would let a repository-local file of a
+/// bundled name stand in for the bundled one, bodies and all. The named
+/// recipe is still staged where no search directory holds a file of that
+/// name, so a single-step override covers the recipe the operator asked for
+/// whatever the search path holds.
+///
+/// Capped at [`MAX_CANDIDATES`], so a directory of unbounded size does not
+/// become an unbounded set of copies.
 fn candidates(recipe_dirs: &[PathBuf], top_level_recipe: &Path) -> Vec<PathBuf> {
-    let mut out = vec![top_level_recipe.to_path_buf()];
+    let mut out: Vec<PathBuf> = Vec::new();
     for dir in recipe_dirs {
         let Ok(entries) = fs::read_dir(dir) else {
             // A search directory that is not there is not an error: the
@@ -151,7 +185,42 @@ fn candidates(recipe_dirs: &[PathBuf], top_level_recipe: &Path) -> Vec<PathBuf> 
         found.sort();
         out.extend(found);
     }
+    out.truncate(MAX_CANDIDATES.saturating_sub(1));
+    out.push(top_level_recipe.to_path_buf());
     out
+}
+
+/// One recipe's text, under the same bound every other amplihack file read
+/// has. `Ok(None)` for anything staging should pass over in silence, as the
+/// runner would.
+fn read_recipe(path: &Path) -> Result<Option<String>, ()> {
+    let Ok(meta) = fs::metadata(path) else {
+        return Ok(None);
+    };
+    if !meta.is_file() || meta.len() > MAX_RECIPE_BYTES {
+        return Ok(None);
+    }
+    fs::read_to_string(path).map(Some).map_err(|_| ())
+}
+
+/// `Ok(())` when the patched text is still YAML, or the place it stopped
+/// being YAML.
+///
+/// The reason names the failure and where it is, never the text that caused
+/// it: these lines land in run logs that get pasted into issues, and a recipe
+/// body holds prompts and shell.
+fn reparses(text: &str) -> Result<(), String> {
+    match serde_yaml::from_str::<serde_yaml::Value>(text) {
+        Ok(_) => Ok(()),
+        Err(error) => Err(match error.location() {
+            Some(at) => format!(
+                "the rewritten copy no longer parses as YAML (line {}, column {})",
+                at.line(),
+                at.column()
+            ),
+            None => "the rewritten copy no longer parses as YAML".to_string(),
+        }),
+    }
 }
 
 /// One patched recipe, and which of the named steps it actually declared.
