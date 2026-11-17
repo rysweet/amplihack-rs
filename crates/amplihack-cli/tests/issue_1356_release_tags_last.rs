@@ -1,8 +1,8 @@
 //! Issue #1356 — a release must not publish its version tag before the
 //! artifacts exist.
 //!
-//! `release.yml` sets `cancel-in-progress: true`, so a push to `main` cancels
-//! whatever release is currently running. While the `version-bump` job pushed
+//! `release.yml` once set `cancel-in-progress: true`, so a push to `main`
+//! cancelled whatever release was running. While the `version-bump` job pushed
 //! the tag before `build` started, a cancelled run left a public tag with
 //! nothing behind it. The next run reads `git tag --list` as its source of
 //! truth, sees the stranded tag, and bumps past it — so the version is burned
@@ -13,9 +13,16 @@
 //! v0.18.13) and left `amplihack update` reporting "already at the latest
 //! version" against a `main` it would never fetch.
 //!
-//! The rule this guard encodes: a cancelled run must leave nothing behind.
-//! Reserving a version number in a job output costs nothing if the run dies;
-//! publishing it does.
+//! The group now carries `cancel-in-progress: false`, so cancellation is no
+//! longer the way a run dies mid-flight — but it is not the only way. A run
+//! can still fail, time out, or be cancelled by hand, and the fix is the same
+//! for all of them. The rule this guard encodes does not depend on the
+//! concurrency setting: nothing may be written to `main` or to the tag
+//! namespace before the `release` job, so a run that never reaches that job
+//! leaves nothing behind. Reserving a version number in a job output costs
+//! nothing if the run dies; publishing it does.
+//!
+//! See `docs/reference/ci-pipeline.md`, "What this guarantees".
 
 use std::path::{Path, PathBuf};
 
@@ -99,10 +106,10 @@ fn no_job_pushes_a_version_tag_before_the_artifacts_exist() {
     assert!(
         findings.is_empty(),
         "a version tag is pushed before the artifacts exist:\n{}\n\n\
-         release.yml sets cancel-in-progress, so a superseded run would leave \
-         this tag public with no release behind it, and the next run bumps past \
-         it. Only the '{publisher}' job — which has the built artifacts — may \
-         create the tag (issue #1356).",
+         a run that dies before publishing — failed, timed out, cancelled by \
+         hand — would leave this tag public with no release behind it, and the \
+         next run bumps past it. Only the '{publisher}' job — which has the \
+         built artifacts — may create the tag (issue #1356).",
         findings.join("\n")
     );
 }

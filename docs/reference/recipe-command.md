@@ -395,6 +395,16 @@ log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261020-10
 - **Log** — `<session>.log` in [`recipe.log_dir`](./user-config.md#recipelog_dir),
   default `~/.amplihack/recipe-logs`. The directory is created 0700 and the log
   0600. It receives everything the run prints, which the tmux pane shows too.
+  The copy that reaches the log is written a **whole line at a time**: a read
+  that stops mid-line is held until the rest of that line arrives, and any
+  remainder is flushed with a closing newline when the run's output ends.
+  What the pane shows is unaffected, since the run's own output is streamed
+  byte for byte. The holding matters because the run is not the only writer:
+  a step that is waiting out a usage limit appends its own
+  [wait lines](./profile-command.md#the-wait-in-the-recipe-log) to this file,
+  and without it one of those could land inside a half-written `working (Ns
+  elapsed)` heartbeat. The absolute path is exported to every step as
+  `AMPLIHACK_RECIPE_LOG`, which amplihack sets for its own children only.
 - **Environment** — the run gets your shell's environment, not the tmux
   server's. The agent CLI is resolved in your shell, as a foreground run would
   resolve it, and handed over tagged; every agent session marker the tmux

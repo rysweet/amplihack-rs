@@ -190,7 +190,11 @@ fn run_during_wait(f: &Fixture, c: &mut Command, then: impl FnOnce() + Send + 's
         wait_until("the second after the wait's start", || real_now() > start);
         then();
     });
-    let start_line = format!("{WAIT_PREFIX}start reason=usage_limit");
+    // Any wait's start line, whatever its reason: a login-change wait's
+    // reads `reason=spend_limit` (#2731), and a matcher pinned to
+    // `usage_limit` would never fire and the test would fail at the shared
+    // ten-minute ceiling rather than on an assertion.
+    let start_line = format!("{WAIT_PREFIX}start ");
     let mut started_tx = Some(started_tx);
     let out = f.run_watching(c, |line| {
         if line.starts_with(&start_line)
@@ -644,15 +648,24 @@ fn the_exit_code_passes_through_unchanged() {
     assert_eq!(out.status.code(), Some(7), "{}", describe(&out));
 }
 
+/// Issue #2731 split this test in two. AC15's rule is now one wait per
+/// *login*, not one per step, so what the retry runs on decides whether a
+/// second wait starts. Here the rotator's cycle keeps X live, so the retry
+/// runs on the login the step already waited on and AC15 holds unchanged.
 #[test]
-fn ac15_a_retry_that_hits_the_limit_again_gets_no_second_wait() {
+fn ac15_a_retry_on_the_same_login_gets_no_second_wait() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     c.env("LIMIT_CALLS", "5");
     real_clock(&mut c);
-    let out = run_with_rotator_cycle_during_wait(&f, &mut c);
+    let profiles = f.profiles.clone();
+    let out = run_during_wait(&f, &mut c, move || {
+        // A fresh cycle with capacity, but X is still live: the wait ends
+        // and the retry runs on the login that already had its wait.
+        write_cycle(&profiles, "X", real_now());
+    });
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "one wait, one retry, then give up");
     let ev = events(&out);
@@ -665,6 +678,38 @@ fn ac15_a_retry_that_hits_the_limit_again_gets_no_second_wait() {
     assert!(
         text(&out.stderr).contains("You've hit your weekly limit"),
         "the runner's classifier must still see the limit"
+    );
+}
+
+/// The other half: the rotator made Y live, so the retry runs on a login
+/// this step has not waited on and a second wait starts, keyed to it. That
+/// second wait is bounded by what the first left of `max_wait_secs`, and
+/// when nothing lifts Y's limit either the step ends as it always did.
+#[test]
+fn ac15_a_retry_on_a_login_this_step_has_not_waited_on_waits_again() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "5").env(MAX_WAIT_ENV, "120");
+    real_clock(&mut c);
+    let out = run_with_rotator_cycle_during_wait(&f, &mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "X, then the retry on Y");
+    let ev = events(&out);
+    assert_eq!(
+        ev.iter().filter(|l| l.starts_with("start ")).count(),
+        2,
+        "the login the step moved to gets a wait of its own: {ev:?}"
+    );
+    assert!(!ev.iter().any(|l| l.contains("already_waited")), "{ev:?}");
+    assert_eq!(
+        ev[ev.len() - 2..],
+        [
+            "end reason=capacity expired".to_string(),
+            FAILED_EXPIRED.to_string()
+        ],
+        "{ev:?}"
     );
 }
 
@@ -730,20 +775,29 @@ fn ac3_one_stored_login_with_no_reset_skips() {
     assert_skipped(&f, &out, "no_reset");
 }
 
+/// A spend limit never starts a **capacity** wait: it can apply to a whole
+/// organisation, so another login of the same one would not lift it. Issue
+/// #2731 gave the no-reset case a login-change wait instead, covered in
+/// `issue_2731_login_change_wait`; here the weekly-reset case and the
+/// no-rotator case keep their skips.
 #[test]
-fn ac3_a_spend_limit_skips_whatever_it_states_with_a_second_login() {
-    for (message, reason) in [
-        (SPEND_WEEKLY_TEXT, "reset_too_far"),
-        (SPEND_TEXT, "spend_limit"),
-    ] {
-        let f = with_profiles();
-        x_is_live(&f);
-        let _rotator = rotator_running(&f);
-        let mut c = home_step(&f);
-        c.env("LIMIT_MESSAGE", message);
-        let out = f.run(&mut c);
-        assert_skipped(&f, &out, reason);
-    }
+fn ac3_a_spend_limit_never_starts_a_capacity_wait() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_MESSAGE", SPEND_WEEKLY_TEXT);
+    let out = f.run(&mut c);
+    assert_skipped(&f, &out, "reset_too_far");
+
+    // No rotator: nothing could move another login in, so the no-reset
+    // spend limit still ends the step at once.
+    let g = with_profiles();
+    x_is_live(&g);
+    let mut c = home_step(&g);
+    c.env("LIMIT_MESSAGE", SPEND_TEXT);
+    let out = g.run(&mut c);
+    assert_skipped(&g, &out, "spend_limit");
 }
 
 #[test]
@@ -912,14 +966,73 @@ fn issue_2694_a_home_step_sleeps_to_its_reset_though_another_login_has_room() {
     assert_room_still_shown(&f, TEST_NOW + 60);
 }
 
+/// Requirement 14 / D8: the profiled half, with a rotator running.
+///
+/// Issue #2731 promotes a no-reset spend limit to a login-change wait only
+/// on a `$HOME/.claude` step, and two separate things refuse the promotion
+/// here, either of which would be enough on its own. `rerun` filters the
+/// spend harness through `Waiter::is_home`, which is false for a step with
+/// `CLAUDE_CONFIG_DIR` set; and `supervise_gate` builds an inherited
+/// profile's `Waiter` with `home_rotator` hardcoded to `|| false`, so
+/// `upgrade_spend` is told no rotator is running however the host is really
+/// set up. A real rotator does run in this test and changes nothing, which
+/// is the property worth asserting: the rotator swaps logins into
+/// `~/.claude` and nowhere else, so a step pinned to profile X would not see
+/// the new login even if one arrived, and another login of the same
+/// organisation would not lift the limit anyway.
+///
+/// Because either refusal is sufficient, removing one of them alone leaves
+/// this test passing. It fails when both go, which is what makes it a check
+/// on the pair rather than on `is_home` by itself.
+///
+/// The sibling below is the `$HOME/.claude` step with no rotator, where
+/// `upgrade_spend` does ask a live rotator question and gets `false`. The
+/// case where a promotion is actually allowed — a home step with a rotator
+/// — is the login-change wait itself, in
+/// `issue_2731_login_change_wait.rs`.
+#[test]
+fn issue_2731_an_inherited_profile_spend_limit_skips_though_a_rotator_runs() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    readings_with_room(&f.profiles, TEST_NOW + 60);
+    let mut c = nested_x(&f);
+    // X, then the auto-switch rerun on Y, both hit the spend limit.
+    c.env("LIMIT_MESSAGE", SPEND_TEXT).env("LIMIT_CALLS", "2");
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "X, then Y, and no retry after them");
+    assert_eq!(
+        events(&out),
+        ["skipped reason=spend_limit"],
+        "a profiled step gets no login-change wait, rotator or not: {}",
+        describe(&out)
+    );
+}
+
 /// A spend limit is unchanged by #2694: another login of the same
 /// organisation would not lift it, so one with room starts no wait and
 /// gives no login-capacity exit. The step is passed up as it was.
+///
+/// Stated here on a `$HOME/.claude` step with no rotator running, which is
+/// the case where nothing at all can replace the exhausted credit: only the
+/// rotator moves a login into `~/.claude`, so with none there is nowhere for
+/// the step to go and nothing to wait for, and the room another login has
+/// changes none of that.
+///
+/// The two cases this one does not cover are next to it. With a rotator
+/// running the same message starts a login-change wait rather than ending
+/// the step:
+/// `issue_2731_a_shared_home_spend_limit_waits_for_the_swap_instead` in
+/// `issue_2731_login_change_wait.rs`, which asserts the same readings end
+/// nothing. On a step with an inherited profile the skip stands even with a
+/// rotator running:
+/// `issue_2731_an_inherited_profile_spend_limit_skips_though_a_rotator_runs`
+/// above.
 #[test]
 fn issue_2694_a_spend_limit_still_skips_with_room_on_another_login() {
     let f = with_profiles();
     x_is_live(&f);
-    let _rotator = rotator_running(&f);
     readings_with_room(&f.profiles, TEST_NOW + 60);
     let mut c = home_step(&f);
     c.env(TOGGLE_ENV, "1").env("LIMIT_MESSAGE", SPEND_TEXT);

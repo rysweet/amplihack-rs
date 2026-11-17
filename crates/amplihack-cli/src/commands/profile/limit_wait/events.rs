@@ -1,6 +1,10 @@
 //! The wait's log lines (issue #1618): `amplihack.recipe.usage_limit_wait`
 //! followed by the event. Built only from static text, integers and parsed
-//! instants. Tested in `tests_log.rs`.
+//! instants, with one exception: the recipe-log `start` line carries the
+//! login being waited on, which [`recipe_line`] re-validates against the
+//! rotator's own name form before it can reach a file (issue #2731).
+//!
+//! Tested in `tests_log.rs` and `tests_log_recipe.rs`.
 
 use super::plan::{Bound, NoWait};
 use super::wait::End;
@@ -9,6 +13,44 @@ use chrono::TimeZone;
 use std::fmt::Display;
 
 const PREFIX: &str = "amplihack.recipe.usage_limit_wait";
+/// The `account=` value when no login name can be used.
+const UNKNOWN: &str = "unknown";
+
+/// Which kind of wait a `start` line describes. A reset wait's line is
+/// unchanged; the other two name themselves in the same place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Shape {
+    Reset,
+    /// Any login with capacity (issue #1801).
+    Capacity,
+    /// The login in `$HOME/.claude` changing (issue #2731).
+    LoginChange,
+}
+
+impl Shape {
+    fn token(self) -> &'static str {
+        match self {
+            Shape::Reset => "",
+            Shape::Capacity => " wait=capacity",
+            Shape::LoginChange => " wait=login_change",
+        }
+    }
+
+    /// The limit that started the wait, for the `start` line's `reason=`.
+    ///
+    /// `reason` names the limit and `wait` names what the step is waiting
+    /// for; the two answer different questions and both are written. A
+    /// login-change wait is started by an organisation spend limit and by
+    /// nothing else (`plan::upgrade_spend`), so a reader grepping the recipe
+    /// log for `spend_limit` finds the wait as well as the step's closing
+    /// line (issue #2731).
+    fn reason(self) -> &'static str {
+        match self {
+            Shape::Reset | Shape::Capacity => "usage_limit",
+            Shape::LoginChange => "spend_limit",
+        }
+    }
+}
 
 /// One log line's content.
 pub(super) enum Event {
@@ -18,8 +60,8 @@ pub(super) enum Event {
         reset: Option<i64>,
         until: i64,
         bound: Bound,
-        /// A capacity wait (issue #1801); a reset wait's line is unchanged.
-        capacity: bool,
+        /// Which kind of wait this is; a reset wait's line is unchanged.
+        shape: Shape,
     },
     Progress {
         remaining: u64,
@@ -39,6 +81,9 @@ pub(super) enum Event {
 #[derive(Clone, Copy)]
 pub(super) enum FailReason {
     CapacityExpired,
+    /// A login-change wait reached its deadline: no reset lifts an
+    /// organisation spend limit, and no login arrived that might (#2731).
+    SpendLimit,
     StepTimeout,
     AlreadyWaited,
 }
@@ -47,6 +92,7 @@ impl FailReason {
     fn as_str(self) -> &'static str {
         match self {
             FailReason::CapacityExpired => "capacity_expired",
+            FailReason::SpendLimit => "spend_limit",
             FailReason::StepTimeout => "step_timeout",
             FailReason::AlreadyWaited => "already_waited",
         }
@@ -64,29 +110,94 @@ pub(super) enum Skip {
     Cannot(NoWait),
 }
 
+/// `t` in zone `tz`, as every line writes an instant.
+fn fmt_time<Z: TimeZone>(t: i64, tz: &Z) -> String
+where
+    Z::Offset: Display,
+{
+    match tz.timestamp_opt(t, 0).single() {
+        Some(d) => d.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
+        None => format!("@{t}"),
+    }
+}
+
+/// A `start` line's body, with `who` naming the harness or the account.
+fn start_body<Z: TimeZone>(
+    shape: Shape,
+    who: &str,
+    reset: Option<i64>,
+    until: i64,
+    bound: Bound,
+    tz: &Z,
+) -> String
+where
+    Z::Offset: Display,
+{
+    format!(
+        "start reason={}{} {} reset={} until={} bound={}",
+        shape.reason(),
+        shape.token(),
+        who,
+        reset.map_or_else(|| "none".to_string(), |r| fmt_time(r, tz)),
+        fmt_time(until, tz),
+        bound.as_str()
+    )
+}
+
+/// The line a wait appends to the run's recipe log, or `None` for an event
+/// that does not belong there (issue #2731). Only a wait's `start` and `end`
+/// do: the recipe log says that the step is waiting, on which login, until
+/// when and how the wait ended, and the step's stderr keeps the rest.
+///
+/// The `end` line is the stderr one. The `start` line is the stderr one with
+/// `harness=` dropped and `account=` put in its place, so one `grep` over
+/// both sinks reads as one stream. `account` is re-validated here, at the
+/// one point where a login name can reach a file: a name outside the
+/// rotator's own form is written as `unknown` whole rather than trimmed to
+/// fit, so two logins can never collapse onto one identity in the log.
+pub(super) fn recipe_line<Z: TimeZone>(e: &Event, account: Option<&str>, tz: &Z) -> Option<String>
+where
+    Z::Offset: Display,
+{
+    match e {
+        Event::Start {
+            reset,
+            until,
+            bound,
+            shape,
+            ..
+        } => {
+            let name = account.filter(|n| amplihack_utils::rotator_status::valid_live_name(n));
+            let who = format!("account={}", name.unwrap_or(UNKNOWN));
+            Some(format!(
+                "{PREFIX} {}",
+                start_body(*shape, &who, *reset, *until, *bound, tz)
+            ))
+        }
+        Event::End(_) => Some(line(e, tz)),
+        _ => None,
+    }
+}
+
 /// The log line for `e`, times in zone `tz`.
 pub(super) fn line<Z: TimeZone>(e: &Event, tz: &Z) -> String
 where
     Z::Offset: Display,
 {
-    let time = |t: i64| match tz.timestamp_opt(t, 0).single() {
-        Some(d) => d.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
-        None => format!("@{t}"),
-    };
     let rest = match e {
         Event::Start {
             harness,
             reset,
             until,
             bound,
-            capacity,
-        } => format!(
-            "start reason=usage_limit{} harness={} reset={} until={} bound={}",
-            if *capacity { " wait=capacity" } else { "" },
-            harness.as_str(),
-            reset.map_or_else(|| "none".to_string(), time),
-            time(*until),
-            bound.as_str()
+            shape,
+        } => start_body(
+            *shape,
+            &format!("harness={}", harness.as_str()),
+            *reset,
+            *until,
+            *bound,
+            tz,
         ),
         Event::Progress { remaining } => format!("progress remaining={remaining}s"),
         Event::End(end) => format!("end reason={}", end.as_str()),

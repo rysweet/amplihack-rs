@@ -136,7 +136,7 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     let spec = Spec {
         args,
         cwd,
-        env: child_env(request.agent_binary),
+        env: child_env(request.agent_binary, &log),
         log: log.clone(),
         context_file: secrets.context.clone(),
     };
@@ -337,6 +337,21 @@ pub(crate) const PANE_ENV_REMOVED: [&str; 8] = [
     crate::run_guidance::GUIDANCE_DIRS_ENV,
 ];
 
+/// Where a detached run's steps append their usage-limit wait lines (issue
+/// #2731). One marker, named in one place, so the writer and the exporter
+/// cannot drift.
+pub(crate) const RECIPE_LOG_ENV: &str = crate::commands::profile::limit_wait::RECIPE_LOG_ENV;
+
+/// Points `env` at this run's log. Set, never defaulted: a detached run
+/// started from inside another one must append to its own log, so an
+/// inherited value is replaced rather than kept.
+fn with_recipe_log(env: &mut BTreeMap<String, String>, log: &Path) {
+    env.insert(
+        RECIPE_LOG_ENV.to_string(),
+        log.to_string_lossy().into_owned(),
+    );
+}
+
 /// Whether the pane may inherit `name`.
 pub(crate) fn keeps_in_pane(name: &str) -> bool {
     !PANE_ENV_REMOVED.contains(&name)
@@ -346,7 +361,7 @@ pub(crate) fn keeps_in_pane(name: &str) -> bool {
 /// and the resolved agent binary set with the tag `recipe run` would export.
 /// The capacity governor's parent and recipe markers are removed too (issue
 /// #1811): a detached run is independent work and asks for a slot of its own.
-fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
+fn child_env(agent_binary: &Resolution, log: &Path) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
         .filter(|(k, _)| {
@@ -356,6 +371,7 @@ fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
         })
         .collect();
     env.insert(BINARY_ENV.to_string(), agent_binary.binary.clone());
+    with_recipe_log(&mut env, log);
     match export_tag(&agent_binary.binary, agent_binary.source) {
         Some(tag) => env.insert(SOURCE_ENV.to_string(), tag),
         None => env.remove(SOURCE_ENV),
@@ -495,16 +511,8 @@ pub(crate) fn run_detached_child(spec_path: &Path, log_path: &Path) -> Result<i3
     let _ = log.sync_all();
 
     let copier = std::thread::spawn(move || {
-        let mut buf = [0u8; 8192];
         let mut stdout = std::io::stdout();
-        while let Ok(n) = reader.read(&mut buf) {
-            if n == 0 {
-                break;
-            }
-            let _ = stdout.write_all(&buf[..n]);
-            let _ = stdout.flush();
-            let _ = log.write_all(&buf[..n]);
-        }
+        copy_output(&mut reader, &mut stdout, &mut log);
     });
     let status = child.wait().context("failed to wait for recipe run");
     let _ = fs::remove_file(&spec.context_file);
@@ -519,6 +527,63 @@ pub(crate) fn run_detached_child(spec_path: &Path, log_path: &Path) -> Result<i3
     Ok(status
         .code()
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+}
+
+/// The most unterminated output the copier holds back before giving up on
+/// the line boundary and writing what it has. The runner's line discipline
+/// is not this code's to assume, and losing the log is worse than losing a
+/// boundary, so the hold is bounded and the bytes are written, never
+/// dropped.
+const MAX_HELD: usize = 1 << 20;
+
+/// Copies the run's output from `reader` to `stdout` and to `log` until the
+/// pipe closes.
+///
+/// Stdout is byte for byte and flushed on every read, so interactive output
+/// is unchanged. The recipe log is different: it is a shared sink, because a
+/// step waiting out a usage limit appends its own `start` and `end` lines to
+/// the same file (issue #2731). A write that leaves the log in the middle of
+/// a line puts the next writer's line inside a runner line, which reads as
+/// nonsense and is invisible to a line-oriented `grep`, so the wait stays
+/// hidden in exactly the case it was added for. Each write to the log
+/// therefore carries whole lines only, with any unterminated tail held until
+/// the newline arrives, or until the pipe closes and the tail is written with
+/// one.
+///
+/// The single exception is [`MAX_HELD`]: a tail that reaches it is written
+/// as it stands, still unterminated. Holding it for ever would cost the log
+/// and the memory both, and no newline is invented for it: one here would
+/// split a single runner line into two lines the run never ended, and leave
+/// a blank line behind whenever the run's own newline is the very next byte.
+/// A line over a mebibyte long can therefore still be interleaved with;
+/// nothing shorter can.
+fn copy_output(reader: &mut impl Read, stdout: &mut impl Write, log: &mut impl Write) {
+    let mut buf = [0u8; 8192];
+    let mut held: Vec<u8> = Vec::new();
+    while let Ok(n) = reader.read(&mut buf) {
+        if n == 0 {
+            break;
+        }
+        let _ = stdout.write_all(&buf[..n]);
+        let _ = stdout.flush();
+        held.extend_from_slice(&buf[..n]);
+        match held.iter().rposition(|b| *b == b'\n') {
+            Some(last) => {
+                let _ = log.write_all(&held[..=last]);
+                held.drain(..=last);
+            }
+            // Output that never ends a line must not be held for ever.
+            None if held.len() >= MAX_HELD => {
+                let _ = log.write_all(&held);
+                held.clear();
+            }
+            None => {}
+        }
+    }
+    if !held.is_empty() {
+        held.push(b'\n');
+        let _ = log.write_all(&held);
+    }
 }
 
 /// Start the real `recipe run` with the spec's argv, directory and
@@ -818,5 +883,242 @@ mod tests {
         ] {
             assert!(keeps_in_pane(kept), "{kept} must reach the pane");
         }
+    }
+
+    /// Issue #2731: a detached run tells its steps where its log is, so a
+    /// step that waits out a usage limit can say so where the run is being
+    /// watched. The value is set, never defaulted: a detached run started
+    /// from inside another one must append to its own log, not the
+    /// enclosing run's.
+    #[test]
+    fn the_recipe_log_marker_is_set_for_the_pane_and_overrides_any_inherited_one() {
+        let mut env: BTreeMap<String, String> = BTreeMap::new();
+        env.insert("PATH".into(), "/usr/bin".into());
+        env.insert(
+            RECIPE_LOG_ENV.into(),
+            "/tmp/an-enclosing-run.log".to_string(),
+        );
+        with_recipe_log(&mut env, Path::new("/logs/amp-run.log"));
+        assert_eq!(env[RECIPE_LOG_ENV], "/logs/amp-run.log");
+        assert_eq!(env["PATH"], "/usr/bin", "nothing else is touched");
+    }
+
+    #[test]
+    fn the_recipe_log_marker_reaches_the_pane() {
+        assert!(
+            keeps_in_pane(RECIPE_LOG_ENV),
+            "a pane that strips it would write no wait lines at all"
+        );
+        assert_eq!(
+            RECIPE_LOG_ENV,
+            crate::commands::profile::limit_wait::RECIPE_LOG_ENV,
+            "both sides must name the same marker"
+        );
+    }
+
+    // --- the recipe log carries whole lines (issue #2731) -----------------
+    //
+    // Two writers share a detached run's log: this copier, with the runner's
+    // own output, and each waiting step, with its `start` and `end` lines.
+    // The copier used to write each pipe read straight through, so a read
+    // that ended mid-line left the log mid-line, and the step's append then
+    // landed inside a runner line:
+    //
+    //   amplihack.recipe.step_1 working (30s eamplihack.recipe.usage_limit_wait
+    //   start reason=spend_limit account=work ...lapsed)
+    //
+    // which is unreadable by eye and invisible to a line-oriented grep, so
+    // the wait stayed hidden in exactly the case it was added for. The
+    // copier therefore holds an unterminated tail and writes only up to the
+    // last newline of each read.
+
+    /// A reader that hands out `chunks` one `read` at a time, running
+    /// `between` before each one. The hook is how a test puts another
+    /// writer's append between two of the copier's writes without any
+    /// timing.
+    struct Chunks<'a> {
+        chunks: Vec<Vec<u8>>,
+        between: Box<dyn FnMut(usize) + 'a>,
+        taken: usize,
+    }
+
+    impl Chunks<'_> {
+        fn new<const N: usize>(chunks: [&str; N]) -> Self {
+            Self {
+                chunks: chunks.iter().map(|c| c.as_bytes().to_vec()).collect(),
+                between: Box::new(|_| {}),
+                taken: 0,
+            }
+        }
+    }
+
+    impl Read for Chunks<'_> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            (self.between)(self.taken);
+            let Some(chunk) = self.chunks.get_mut(self.taken) else {
+                return Ok(0);
+            };
+            let n = chunk.len().min(buf.len());
+            buf[..n].copy_from_slice(&chunk[..n]);
+            chunk.drain(..n);
+            // A chunk larger than the copier's own buffer arrives over
+            // several reads, as a pipe's would.
+            if chunk.is_empty() {
+                self.taken += 1;
+            }
+            Ok(n)
+        }
+    }
+
+    /// A sink that keeps each `write_all` separately, so a test can ask
+    /// what the log looked like between two of them and not only at the end.
+    #[derive(Default)]
+    struct Writes(Vec<Vec<u8>>);
+
+    impl Writes {
+        fn joined(&self) -> String {
+            String::from_utf8(self.0.concat()).unwrap()
+        }
+    }
+
+    impl Write for Writes {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.push(buf.to_vec());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_log_is_never_left_in_the_middle_of_a_line() {
+        let mut reader = Chunks::new([
+            "amplihack.recipe.step_1 working (30s e",
+            "lapsed)\namplihack.recipe.step_1 wo",
+            "rking (60s elapsed)\n",
+        ]);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        for write in &log.0 {
+            assert_eq!(
+                write.last(),
+                Some(&b'\n'),
+                "a write that does not end a line leaves the log open for \
+                 the next writer to land inside: {:?}",
+                String::from_utf8_lossy(write)
+            );
+        }
+        assert_eq!(
+            log.joined(),
+            "amplihack.recipe.step_1 working (30s elapsed)\n\
+             amplihack.recipe.step_1 working (60s elapsed)\n",
+            "every byte still reaches the log, and in order"
+        );
+    }
+
+    #[test]
+    fn a_waiting_steps_line_cannot_land_inside_a_runner_line() {
+        // The step appends after the copier's first read, while the runner's
+        // heartbeat is half written.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.log");
+        fs::write(&path, "").unwrap();
+        let wait_line = "amplihack.recipe.usage_limit_wait start reason=spend_limit \
+                         wait=login_change account=work reset=none \
+                         until=2026-10-18 14:00:00 -07:00 bound=max_wait";
+        let appender = path.clone();
+        let line = wait_line.to_string();
+        let mut reader = Chunks::new([
+            "amplihack.recipe.step_1 working (30s e",
+            "lapsed)\n",
+            "amplihack.recipe.step_1 working (60s elapsed)\n",
+        ]);
+        reader.between = Box::new(move |taken| {
+            if taken == 1 {
+                let mut f = OpenOptions::new().append(true).open(&appender).unwrap();
+                f.write_all(format!("{line}\n").as_bytes()).unwrap();
+            }
+        });
+        let mut log = OpenOptions::new().append(true).open(&path).unwrap();
+        let mut out = Writes::default();
+        copy_output(&mut reader, &mut out, &mut log);
+        drop(log);
+
+        let body = fs::read_to_string(&path).unwrap();
+        assert!(
+            body.lines().any(|l| l == wait_line),
+            "the wait's line must stand whole on a line of its own: {body:?}"
+        );
+        for l in body.lines() {
+            assert!(
+                !(l.contains("working (") && l.contains("usage_limit_wait")),
+                "a wait line landed inside a runner line: {l:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stdout_stays_byte_for_byte() {
+        // Interactive output must not be held back a line at a time; only
+        // the write to the log moves.
+        let chunks = ["a prompt with no newline yet", " and the rest\n", "partial"];
+        let mut reader = Chunks::new(chunks);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        assert_eq!(out.joined(), chunks.concat());
+        assert_eq!(
+            out.0.len(),
+            chunks.len(),
+            "one write out per read in, so nothing waits for a newline"
+        );
+    }
+
+    #[test]
+    fn an_unterminated_tail_is_written_whole_when_the_pipe_closes() {
+        // The run's last line may have no newline. Dropping it would lose
+        // the runner's final message; writing it without one would leave the
+        // log open for whatever writes next.
+        let mut reader = Chunks::new(["done\nno newline at the end"]);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        assert_eq!(log.joined(), "done\nno newline at the end\n");
+        assert_eq!(log.0.last().unwrap().last(), Some(&b'\n'));
+    }
+
+    #[test]
+    fn a_pipe_that_closes_on_a_line_boundary_adds_nothing() {
+        let mut reader = Chunks::new(["done\n"]);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        assert_eq!(log.joined(), "done\n", "no empty line at the end");
+    }
+
+    #[test]
+    fn output_that_never_ends_a_line_is_flushed_rather_than_held_for_ever() {
+        // The held tail comes from the pinned external runner, so its line
+        // discipline is not this code's to assume. Past `MAX_HELD` the hold
+        // is given up and the bytes are written: the log is worth more than
+        // the line boundary, and dropping them is never the answer.
+        // Two mebibytes, so the input is past `MAX_HELD` whatever rounding
+        // the reads happen to fall on.
+        let long = "x".repeat(2 << 20);
+        let mut reader = Chunks::new([long.as_str(), "\n"]);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        assert_eq!(
+            log.joined(),
+            format!("{long}\n"),
+            "held bytes are flushed, never discarded"
+        );
+    }
+
+    #[test]
+    fn an_empty_run_writes_nothing() {
+        let mut reader = Chunks::new([]);
+        let (mut out, mut log) = (Writes::default(), Writes::default());
+        copy_output(&mut reader, &mut out, &mut log);
+        assert!(log.0.is_empty() && out.0.is_empty());
     }
 }

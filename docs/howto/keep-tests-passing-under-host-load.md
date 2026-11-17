@@ -329,8 +329,11 @@ state, and the wait would run to the reset.
 `run_watching`:
 
 1. It reads the child's stderr line by line.
-2. On the line `WAIT_PREFIX + "start reason=usage_limit"` it records the
-   current second and signals a writer thread.
+2. On the line `WAIT_PREFIX + "start "` it records the current second and
+   signals a writer thread. The match is on `start ` and not on a `reason=`,
+   because a login-change wait's start line reads `reason=spend_limit`: a
+   matcher pinned to one reason would simply never fire, and the test would
+   fail at the shared ten-minute ceiling rather than on an assertion.
 3. The writer waits for the signal under `CEILING` and panics with
    `the wait never started` if it does not come.
 4. The writer waits until the clock has moved past the recorded second, then
