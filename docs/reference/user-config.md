@@ -451,8 +451,9 @@ Where the [model tier](./model-tiers.md) mapping is read from.
 `model.tier_map` names the mapping file. Unset, amplihack reads
 `$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`.
 Exactly one file is read, and its entries merge cell by cell over the mapping
-that ships with amplihack. Per-step tier overrides live in the same file, in
-its `[step_tiers]` table.
+that ships with amplihack. A cell the file names replaces the shipped cell
+whole, so a `[codex.<tier>]` cell that names a `model` restates its `effort`.
+Per-step tier overrides live in the same file, in its `[step_tiers]` table.
 
 The file is read once per process through the same reader every other
 amplihack config file uses: at most 64 KiB, regular files only, opened
@@ -764,16 +765,17 @@ have just cloned, so it is trusted less.
 
 - **The user file must be owned by you and not writable by group or others.**
   If it is not, its user-only keys (`agent.binary`, `paths.home`, `node.*`,
-  `recipe.log_dir`, `model.*`, `governor.*`, `sessions.*`) are ignored and
-  reported. Its other keys still apply.
+  `recipe.log_dir`, `model.*`, `review.*`, `governor.*`, `sessions.*`) are
+  ignored and reported. Its other keys still apply.
 - **The project file never names a path, a command, an executable or the
   agent CLI.** `agent.binary` and every path-valued key are user-only.
-- **The project file cannot choose a model or the tier mapping.** `model.force`,
-  `model.tier_map` is user-only. A forced model becomes
-  the argument right after `--model`, and the two path keys name files that drive
-  amplihack's rewriting of recipe YAML, whose steps run shell commands. The
-  `review.*` keys choose how many review passes run, name nothing and no path, and
-  are the only keys of this feature a project file may set.
+- **The project file cannot choose a model, the tier mapping or the review
+  passes.** `model.force`, `model.tier_map` and both `review.*` keys are
+  user-only. A forced model becomes the argument right after `--model`;
+  `model.tier_map` names the file that drives amplihack's rewriting of recipe
+  YAML, whose steps run shell commands; and the review step reads the `review.*`
+  keys from inside the worktree under review, so a project value would let a
+  repository decide whether its own security pass runs.
 - **The project file cannot change the capacity governor.** Every
   `governor.*` key is user-only.
 - **`config set --project` and `config edit --project` refuse a project

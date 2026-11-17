@@ -1239,6 +1239,10 @@ Sets the `--model` amplihack passes to Claude-compatible tools: `claude`,
 `rusty`, `rustyclawd` and `amplifier`. `amplihack copilot` and `amplihack codex`
 ignore it.
 
+A set, non-blank value also replaces the model a recipe step's tier maps to on
+the `claude` column; see rank 3 in
+[Model Tiers: Precedence](./model-tiers.md#precedence).
+
 | `AMPLIHACK_DEFAULT_MODEL` | What amplihack adds |
 |---|---|
 | unset, or not valid UTF-8 | `--model claude-opus-5[1m]` |

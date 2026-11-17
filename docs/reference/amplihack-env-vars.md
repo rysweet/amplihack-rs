@@ -72,7 +72,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_COPILOT_NO_ALLOW_ALL` | user preference |  | Stops `amplihack copilot` from passing `--allow-all-*`. |
 | `AMPLIHACK_DATABASE_PASSWORD` | internal |  | Example secret the Docker launcher must not forward; named in its test. |
 | `AMPLIHACK_DEBUG` | internal |  | Not read: example name in `amplihack-state` `EnvVar` docs. |
-| `AMPLIHACK_DEFAULT_MODEL` | user preference |  | Default model for launched agents. Set to a non-blank value it also replaces the model a [model tier](./model-tiers.md) maps to, on every harness column, below `AMPLIHACK_FORCE_MODEL` and below a concrete `--model` the command line carries. |
+| `AMPLIHACK_DEFAULT_MODEL` | user preference |  | Default model for Claude-compatible launches. Set to a non-blank value it also replaces the model a [model tier](./model-tiers.md) maps to on the `claude` column, below `AMPLIHACK_FORCE_MODEL` and below a concrete `--model` the command line carries. Codex and Copilot CLI do not read it; give them a model with a `[codex.<tier>] model` or `[copilot.<tier>] model` cell. |
 | `AMPLIHACK_DELEGATE` | user preference |  | Delegate command for multitask workstreams. |
 | `AMPLIHACK_DELIVERY_WORKER` | test-only |  | Re-exec switch for the freshness delivery test worker. |
 | `AMPLIHACK_DEPTH` | internal |  | Launch nesting depth exported to children. |
@@ -307,4 +307,4 @@ environment is not changed.
 
 - [User Configuration](./user-config.md) — The config files, their keys and the `amplihack config` command
 - [Environment Variables](./environment-variables.md) — Detailed behaviour of the variables amplihack sets and reads
-- [Model Tiers](./model-tiers.md) — `AMPLIHACK_FORCE_MODEL`, where `AMPLIHACK_DEFAULT_MODEL` and `AMPLIHACK_LITELLM_MODEL` sit relative to a step's tier, and the `model-tiers.jsonl` record written under `AMPLIHACK_RUN_DIR`
+- [Model Tiers](./model-tiers.md): `AMPLIHACK_FORCE_MODEL`, where `AMPLIHACK_DEFAULT_MODEL` and `AMPLIHACK_LITELLM_MODEL` sit relative to a step's tier, and the `model-tiers.jsonl` record written under `AMPLIHACK_RUN_DIR`
