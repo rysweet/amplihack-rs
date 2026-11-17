@@ -108,10 +108,11 @@ fn current_umask() -> libc::mode_t {
     // SAFETY: umask(2) cannot fail and touches no memory. The mask is
     // process-wide, but `launch` calls this before it starts any thread, and
     // the value set for that moment is only ever stricter than the old one.
-    let old = unsafe { libc::umask(0o077) };
-    // SAFETY: as above; this restores the value read by the first call.
-    unsafe { libc::umask(old) };
-    old
+    unsafe {
+        let old = libc::umask(0o077);
+        libc::umask(old);
+        old
+    }
 }
 
 /// Start the run in a new tmux session and print where it is.

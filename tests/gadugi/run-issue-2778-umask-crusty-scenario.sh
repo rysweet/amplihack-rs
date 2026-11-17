@@ -77,7 +77,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/issue-2778-qa.XXXXXX")" || {
   echo "FAIL: cannot create a temporary directory"; echo "SCENARIO_FAILED"; exit 1
 }
 WORK="$(cd "$WORK" && pwd -P)" || { echo "FAIL: cannot resolve the temporary directory"; echo "SCENARIO_FAILED"; exit 1; }
-BIN=""
+trap 'chmod -R -- u+rwx "$WORK" 2>/dev/null; rm -rf -- "$WORK"' EXIT
 SYS_PATH="$(dirname -- "$(command -v git)"):$(dirname -- "$(command -v jq)"):/usr/bin:/bin"
 
 # scenario_env <command...>: runs the command with only the variables below.
@@ -115,18 +115,6 @@ scenario_env() {
     AMPLIHACK_AGENT_BINARY=claude \
     "$@"
 }
-
-# shellcheck disable=SC2329 # run by the EXIT trap below
-cleanup() {
-  if [ -n "${WORK:-}" ] && [ -f "$WORK/review-dir" ] && [ -n "${BIN:-}" ]; then
-    scenario_env "$BIN" internal review-release "$(cat "$WORK/review-dir")" >/dev/null 2>&1 || true
-  fi
-  if [ -n "${WORK:-}" ] && [ -d "$WORK" ]; then
-    chmod -R -- u+rwx "$WORK" 2>/dev/null
-    rm -rf -- "$WORK"
-  fi
-}
-trap cleanup EXIT
 
 # --- the binary under test --------------------------------------------------
 BIN="${AMPLIHACK_2778_QA_BIN:-}"
@@ -308,7 +296,6 @@ mode_of() { stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1" 2>/dev/null; }
   umask 0002
   cd -- "$MAIN" || exit 11
   REVIEW_DIR="$(scenario_env "$BIN" internal review-allocate "$PR" "$STATE")" || exit 10
-  printf '%s' "$REVIEW_DIR" > "$WORK/review-dir"
   ALLOC="$(dirname -- "$REVIEW_DIR")"
   printf '%s' "$ALLOC" > "$WORK/alloc-dir"
   mode_of "$ALLOC" > "$WORK/alloc-mode"
@@ -333,8 +320,7 @@ DIAG="rc=$LOOP_RC loop.err: $(tail -n 8 "$WORK/loop.err" 2>/dev/null | tr '\n' '
 # 1. review-allocate made the review-* folder in the state folder owner-only.
 ALLOC="$(cat "$WORK/alloc-dir" 2>/dev/null)"
 MODE="$(cat "$WORK/alloc-mode" 2>/dev/null)"
-if [ -n "$ALLOC" ] && [ "$(dirname -- "$ALLOC")" = "$STATE" ] && case "${ALLOC##*/}" in review-*) true ;; *) false ;; esac \
-   && [ "$MODE" = 700 ]; then
+if [ -n "$ALLOC" ] && [ "$(dirname -- "$ALLOC")" = "$STATE" ] && [[ "${ALLOC##*/}" == review-* ]] && [ "$MODE" = 700 ]; then
   pass allocated_review_folder_is_0700 "review-allocate under umask 0002 made ${ALLOC#"$WORK"/} with mode 700"
 else
   fl allocated_review_folder_is_0700 "folder '${ALLOC#"$WORK"/}' mode '${MODE:-unknown}', want a review-* folder directly in state with mode 700; $DIAG"
