@@ -2601,8 +2601,8 @@ time amplihack claude --help
 # Monitor memory
 ps aux | grep -E "(amplihack|claude|python)"
 
-# Or use htop
-htop -p $(pgrep -f amplihack)
+# Or watch one process in htop, using a PID from the listing above
+htop -p <pid>
 ```
 
 **Solutions**:

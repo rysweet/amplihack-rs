@@ -43,6 +43,8 @@ mod tests_issue_2361;
 #[cfg(all(test, unix))]
 mod tests_issue_2535_guidance;
 #[cfg(test)]
+mod tests_issue_2589_copilot_deny;
+#[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
 mod tests_model;
