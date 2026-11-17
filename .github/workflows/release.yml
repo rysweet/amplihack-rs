@@ -42,7 +42,10 @@ env:
 #
 # Queueing cannot resurrect an old commit either. A queued run that finally
 # starts finds that `main` has moved past the commit CI tested and publishes
-# nothing (the tip comparison in `version-bump`). The two are complementary:
+# nothing (the tip comparison in `version-bump`) -- unless that commit already
+# carries a tag of its own, in which case it republishes exactly the version it
+# already holds, never a newer number, and claims no `latest`. The two are
+# complementary:
 # the comparison stops an older commit from being published, and queueing
 # stops a newer commit's release from being interrupted by an older run.
 #
@@ -99,9 +102,16 @@ jobs:
     #                             message is empty and `contains` is
     #                             permissive.
     #
-    # The workflow's own `v*` tag push is kept out by `head_branch == 'main'`,
-    # and independently by the already-released short-circuit below: the tag
-    # push's head_sha is the stamp commit, which already carries its tag.
+    # The workflow's own `v*` tag push is kept out by `head_branch == 'main'`
+    # -- a tag push reports the tag name there, not a branch -- and upstream of
+    # that by GITHUB_TOKEN pushes creating no workflow run at all.
+    #
+    # The already-released short-circuit is NOT a second defence and must not
+    # be described as one. It used to be, while it sat behind the tip
+    # comparison: the stamp commit is never main's tip, so the comparison
+    # stopped first. It now runs before the comparison, so on that path it
+    # would *admit* the stamp commit, which carries its own tag. The clause
+    # above is the only thing closing this.
     if: >-
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
       || (github.event.workflow_run.conclusion == 'success'
@@ -112,6 +122,10 @@ jobs:
     outputs:
       version: ${{ steps.bump.outputs.version }}
       sha: ${{ steps.bump.outputs.sha }}
+      # "true" only when the released commit is still main's tip. A re-run
+      # repairing an older release (the already-released short-circuit in
+      # `bump`) must not move the `latest` pointer backwards onto it.
+      make_latest: ${{ steps.bump.outputs.make_latest }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -252,30 +266,17 @@ jobs:
 
           HEAD_SHA=$(git rev-parse HEAD)
 
-          # A release must not publish a commit that `main` has moved past.
-          #
-          # Re-running CI on an older commit produces a completion that passes
-          # every admission clause above: successful, on main, from a push, in
-          # this repository. The release that followed would stamp that older
-          # tree with a *higher* version number and mark it `latest`
-          # (make_latest below), and every host running `amplihack update` --
-          # and every documented curl-and-untar install line -- would then
-          # fetch code older than the code it already has. A rising version
-          # number does not imply a later commit; this comparison is the only
-          # thing in the workflow binding the two together.
-          #
-          # The comparison runs on both entry paths. A dispatch is admitted
-          # only from refs/heads/main, but a re-run reuses the original run's
-          # GITHUB_SHA and GITHUB_REF, so a run created at the tip can start
-          # days after main has moved past it. Tip-ness at creation time is
-          # not tip-ness at start time, on either path.
+          # Read the current tip of `main`. Two decisions below need it: the
+          # already-released short-circuit, which must know whether a repair
+          # re-run may still claim the `latest` pointer, and the supersession
+          # comparison, which decides whether to publish at all.
           #
           # The tip comes from the remote-tracking ref of the full fetch above
           # when it is present, and otherwise from a single `git ls-remote`.
           # Both reads name the ref exactly: a bare `origin/main` resolves
           # through refs/tags/ first, and ls-remote matches a pattern against
           # the tail of every ref, so either shorthand can answer with a
-          # well-formed SHA from the wrong ref and defeat the guard below.
+          # well-formed SHA from the wrong ref and defeat the comparison below.
           # There is no retry, no sleep, no polling and no second fetch. The
           # remote name and the branch are literals: nothing from the
           # triggering event reaches this shell, and on the fork pull-request
@@ -298,14 +299,28 @@ jobs:
             echo "::error::could not read the current tip of origin/main; not publishing a release for ${HEAD_SHA}"
             exit 1
           fi
-          if [ "${MAIN_TIP}" != "${HEAD_SHA}" ]; then
-            echo "CI tested ${HEAD_SHA} but origin/main is now ${MAIN_TIP}"
-            echo "no release published for a commit that main has moved past"
-            {
-              echo "No release published: main has moved past ${HEAD_SHA}"
-              echo "origin/main is now ${MAIN_TIP}"
-            } >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
+          # Who may claim the `latest` pointer. Both exits below emit this;
+          # the normal path has already passed the comparison, so it is "true"
+          # there by construction.
+          #
+          # The off-tip value is `legacy`, not `false`. `false` is an
+          # assertion -- the action sends it on the *update* path too, so
+          # re-running a release that already published would ask GitHub to
+          # un-designate a release that is currently `latest`, and the pointer
+          # moves backwards to the previous one. That is the exact harm the
+          # tip comparison exists to prevent, arrived at from the other side.
+          # `legacy` asserts nothing: GitHub re-elects by creation date and
+          # highest semantic version. A repair cannot drag `latest` onto an
+          # older tree, because the short-circuit mints no number and only the
+          # comparison can mint one; and a repair that genuinely is the newest
+          # release is elected correctly instead of being stranded below an
+          # older one. Accepted values are exactly true/false/legacy; anything
+          # else is dropped by the action and the API then defaults to true,
+          # so this must never become a free-form string.
+          if [ "${MAIN_TIP}" = "${HEAD_SHA}" ]; then
+            MAKE_LATEST=true
+          else
+            MAKE_LATEST=legacy
           fi
 
           # Check if this exact commit has already been released. Two shapes
@@ -315,6 +330,19 @@ jobs:
           #   - a series tag on a stamp commit (#1526): first parent HEAD,
           #     subject `chore(release): stamp vX`. The subject check keeps an
           #     old-style tag on HEAD's child commit from matching.
+          #
+          # This precedes the supersession comparison below, and must stay
+          # there. It is the repair path for the one failure #1356 cannot
+          # prevent: `Push tag` succeeds, `Create GitHub Release` then fails,
+          # and a public tag exists with no release behind it. The designed
+          # repair is a re-run, which takes this branch and attaches the assets
+          # to the existing tag. A re-run reuses the original run's GITHUB_SHA,
+          # so by the time a human notices and re-runs, main has moved; behind
+          # the comparison this branch would be unreachable and the stranded
+          # tag unrepairable by any path, since a dispatch carries the current
+          # tip instead. Ordering it first cannot invert version ordering: it
+          # re-emits the version the commit already holds and mints nothing,
+          # and MAKE_LATEST above keeps it from moving `latest` backwards.
           EXISTING=$(git tag --points-at HEAD | grep -E "^v${MAJOR}\.${MINOR}\." || true)
           if [ -z "${EXISTING}" ]; then
             SERIES_TAGS=$(git tag --list "v${MAJOR}.${MINOR}.*")
@@ -334,6 +362,38 @@ jobs:
             echo "Commit already tagged: ${EXISTING} — skipping"
             echo "version=${EXISTING#v}" >> "$GITHUB_OUTPUT"
             echo "sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+            echo "make_latest=${MAKE_LATEST}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A release must not publish a commit that `main` has moved past.
+          #
+          # Re-running CI on an older commit produces a completion that passes
+          # every admission clause above: successful, on main, from a push, in
+          # this repository. The release that followed would stamp that older
+          # tree with a *higher* version number and mark it `latest`
+          # (make_latest in the `release` job), and every host running
+          # `amplihack update` -- and every documented curl-and-untar install
+          # line -- would then fetch code older than the code it already has. A
+          # rising version number does not imply a later commit; this
+          # comparison is the only thing in the workflow binding the two
+          # together.
+          #
+          # The comparison runs on both entry paths. A dispatch is admitted
+          # only from refs/heads/main, but a re-run reuses the original run's
+          # GITHUB_SHA and GITHUB_REF, so a run created at the tip can start
+          # days after main has moved past it. Tip-ness at creation time is
+          # not tip-ness at start time, on either path.
+          #
+          # Only a commit with no release of its own reaches here; the
+          # short-circuit above has already handled the one that has one.
+          if [ "${MAIN_TIP}" != "${HEAD_SHA}" ]; then
+            echo "CI tested ${HEAD_SHA} but origin/main is now ${MAIN_TIP}"
+            echo "no release published for a commit that main has moved past"
+            {
+              echo "No release published: main has moved past ${HEAD_SHA}"
+              echo "origin/main is now ${MAIN_TIP}"
+            } >> "${GITHUB_STEP_SUMMARY}"
             exit 0
           fi
 
@@ -365,14 +425,18 @@ jobs:
 
           echo "version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "make_latest=${MAKE_LATEST}" >> "$GITHUB_OUTPUT"
 
   # ── Build release binaries ────────────────────────────────────────────
   build:
     name: Build ${{ matrix.target }}
     needs: version-bump
-    # There is nothing to build when `version-bump` reserved no version: on the
-    # workflow_run path it stops before writing one when the commit CI tested
-    # is no longer the tip of main. This single condition settles three jobs.
+    # There is nothing to build when `version-bump` reserved no version: it
+    # stops before writing one when the commit CI tested is no longer the tip
+    # of main. That happens on both entry paths, not only workflow_run -- a
+    # re-run reuses the original run's SHA whichever event created it -- so do
+    # not re-scope this to one of them. This single condition settles three
+    # jobs.
     # `release` needs `build`, and GitHub skips a job whose dependency skipped,
     # so it needs no clause of its own; `sccache-prune` runs under `always()`
     # and skips on its existing `needs.build.result != 'skipped'` test. Do not
@@ -688,7 +752,10 @@ jobs:
           name: "amplihack-rs v${{ needs.version-bump.outputs.version }}"
           files: release-assets/*
           generate_release_notes: true
-          make_latest: "true"
+          # Not a literal: a re-run repairing an older release must not move
+          # `latest` backwards onto a commit main has moved past. See the
+          # already-released short-circuit in `version-bump`.
+          make_latest: ${{ needs.version-bump.outputs.make_latest }}
           body: |
             ## Install
 
