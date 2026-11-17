@@ -19,6 +19,10 @@
 //! did not merge is still reported unsuccessful, and its process exit status
 //! says so, because the exit status is what the loop script acts on.
 //!
+//! Test 3 holds the narrowing itself in place: it only ever leaves a
+//! sub-recipe's verdict to its own steps, and never raises one. The same
+//! drive over a round whose own step fails still stops at it.
+//!
 //! What is real: the CLI, the pinned recipe runner, authorisation capture and
 //! the launch-bundle copy, the state-folder binding, `report()` and the
 //! nested process boundary. What is a stand-in: `gh` and the agent binary
@@ -88,6 +92,31 @@ steps:
   - id: address-concerns
     type: bash
     command: "true"
+"##;
+
+/// The same round with its own work failing. It merges nothing either, so
+/// only its own steps can decide it: the narrowed rule must leave this round
+/// failed, not raise it.
+const CRUSTY_ROUND_FAILING: &str = r##"name: autodrive-crusty-round
+description: "#2769 stand-in: one round whose own fix step fails"
+version: 1.0.0
+context:
+  pr_number: ""
+  no_merge: "true"
+  autodrive_dry_run: "false"
+  autodrive_authorization: ""
+  autodrive_round_label: "round-1"
+  crusty_verdict: ""
+recursion:
+  max_total_steps: 10
+steps:
+  - id: review
+    type: bash
+    output: crusty_verdict
+    command: echo CONCERNS
+  - id: address-concerns
+    type: bash
+    command: "exit 1"
 "##;
 
 /// The calling drive. Its first step starts the round as its own process, the
@@ -186,6 +215,12 @@ impl Fixture {
     /// `recipes/<invocation name>.yaml`, never from the path on the command
     /// line (`execute.rs`, `pinned_recipe`).
     fn new(top_level: &str) -> Self {
+        Self::with_round(top_level, CRUSTY_ROUND)
+    }
+
+    /// The same fixture with the nested round chosen by the caller, so one
+    /// drive can be run over a round that succeeds and a round that fails.
+    fn with_round(top_level: &str, round: &str) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         let home = root.join("home");
@@ -197,7 +232,7 @@ impl Fixture {
         let recipes = bundle.join("recipes");
         for (name, body) in [
             ("auto-drive-to-merge.yaml", top_level),
-            ("autodrive-crusty-round.yaml", CRUSTY_ROUND),
+            ("autodrive-crusty-round.yaml", round),
         ] {
             fs::write(recipes.join(name), body).unwrap();
             fs::set_permissions(recipes.join(name), fs::Permissions::from_mode(0o644)).unwrap();
@@ -367,6 +402,35 @@ fn a_top_level_drive_that_did_not_merge_is_still_unsuccessful() {
         Some(0),
         "a drive that did not merge must exit non-zero, because the exit \
          status is what its caller acts on: {}",
+        show(&f, &o)
+    );
+}
+
+/// #2769: the narrowing only ever leaves a sub-recipe's verdict to its own
+/// steps. It never raises one. A nested round whose own step fails still
+/// exits non-zero, and the drive stops at it, because
+/// `autodrive-completion dispatch` does not accept `complete` from a round
+/// whose child execution failed.
+#[test]
+fn a_nested_round_whose_own_step_fails_is_still_failed_and_stops_the_drive() {
+    let f = Fixture::with_round(TOP_LEVEL_WITH_ROUND, CRUSTY_ROUND_FAILING);
+    let o = f.run("true");
+
+    assert_ne!(
+        f.log("round-rc").trim(),
+        "0",
+        "a round whose own step failed must still exit non-zero: {}",
+        show(&f, &o)
+    );
+    assert!(
+        !f.log.join("merge-reached").is_file(),
+        "the drive must not go on past a failed round: {}",
+        show(&f, &o)
+    );
+    assert_ne!(
+        o.status.code(),
+        Some(0),
+        "the drive carries the failed round's status: {}",
         show(&f, &o)
     );
 }

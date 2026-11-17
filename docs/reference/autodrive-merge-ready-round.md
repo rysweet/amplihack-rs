@@ -833,14 +833,16 @@ steps.
 
 `autodrive-finalize` is the one nested invocation whose exit status a caller
 observes directly: `step-03r-finalize-recovery` runs it as a separate
-`amplihack recipe run autodrive-finalize` process. Under the old rule that
-child's exit status tracked the PR's merge state rather than its own work: a
-finalisation that returned `base-behind`, `checks-pending` or `not-authorised`
-exited non-zero with `stop_reason` `not_merged`, or `unreadable` where it
-wrote no merge result at all, having done exactly what was asked of it. It now
-exits on its own steps. The change is inert for the caller, which reads the
-result from `finalize-merge.json` keyed by `run_id` and never from the child's
-exit status (see
+`amplihack recipe run autodrive-finalize` process. The in-process
+`step-03-finalize` step never carried the rule in either direction, because a
+`type: recipe` step does not re-enter the run entry point that applies it.
+Under the old rule the recovery child's exit status tracked the PR's merge
+state rather than its own work: a finalisation that returned `base-behind`,
+`checks-pending` or `not-authorised` exited non-zero with `stop_reason`
+`not_merged`, or `unreadable` where it wrote no merge result at all, having
+done exactly what was asked of it. It now exits on its own steps. The change
+is inert for the caller, which reads the result from `finalize-merge.json`
+keyed by `run_id` and never from the child's exit status (see
 [The merge result in the state folder](#the-merge-result-in-the-state-folder)).
 Step recovery's exit `81` is unchanged, and not for the reason the path
 suggests. `failed_run_exit_code` returns `81` only when a step both did not
@@ -857,6 +859,15 @@ Narrowing the rule cannot suppress a hand-off exit. What does change
 is that such a finalisation now exits `0` rather than `1`, which is the
 1.2.162 behaviour and is what the state folder, not the exit status, is read
 for.
+
+The rule's other half goes with it, which is a behaviour change in its own
+right. A finalisation child that merged and then failed at `state-outcome` or
+`handoff`, neither of which carries `continue_on_error`, was raised to exit
+`0` by the old rule and now exits non-zero on the step that failed. Both halves of
+#2663 belong to the top-level drive, so a sub-recipe keeps neither. The merge
+is untouched either way: the `merge` step writes `finalize-merge.json` before
+any step that could fail after it, and the drive's own report reads the merge
+from that record rather than from a child's status.
 
 ```bash
 # A Crusty round, as tools/autodrive_loop.sh starts it: its own process.

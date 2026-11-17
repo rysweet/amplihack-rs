@@ -85,7 +85,8 @@ pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
 /// run carries none.
 ///
 /// #2769: the caller applies this only to a top-level drive; both directions
-/// stay exactly as #2663 wrote them.
+/// stay exactly as #2663 wrote them, and a nested `autodrive-*` sub-recipe
+/// gets neither of them.
 ///
 /// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
 pub(crate) fn apply_autodrive_outcome(
@@ -1379,8 +1380,21 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 // #2769: the #2663 rule, that a run succeeds only if it
                 // merged, is the top-level drive's. A nested `autodrive-*`
                 // sub-recipe merges nothing, so its verdict stays its own
-                // steps'. The inserts below stay unconditional: the outcome
-                // remains data for the loop script and the completion helpers
+                // steps'. Both halves of the rule go with it, not just the
+                // one the defect showed: a sub-recipe that did not merge is
+                // no longer failed, and a sub-recipe that merged and then
+                // failed at a later step is no longer raised to success. The
+                // second half is observable in one place, the separate
+                // `amplihack recipe run autodrive-finalize` process that
+                // `step-03r-finalize-recovery` starts in
+                // `autodrive-merge-loop.yaml`; a `type: recipe` step runs in
+                // process and never re-enters this function, so it carried
+                // neither half before. That caller reads the merge from
+                // `finalize-merge.json`, keyed by run id, rather than from
+                // the child's exit status, and the `merge` step writes that
+                // record before any step that could fail after it.
+                // The inserts below stay unconditional: the outcome remains
+                // data for the loop script and the completion helpers
                 // whatever the invocation.
                 if trusted::is_top_level_drive(&invocation_name) {
                     apply_autodrive_outcome(&mut run_result, &outcome);
