@@ -11,6 +11,32 @@ pub fn applies(name: &str) -> bool {
     name == "auto-drive-to-merge" || name == "auto-drive-light" || name.starts_with("autodrive-")
 }
 
+/// The drive's two top-level entry points, named exactly.
+///
+/// #2769: deliberately narrower than [`applies`], and not a substitute for
+/// it. `applies` decides which invocations capture merge authorisation, get a
+/// launch bundle and have their recipes and prompts stamped; it accepts every
+/// `autodrive-*` sub-recipe and must keep doing so. This predicate decides
+/// only one thing: which invocations the #2663 outcome rule judges, that a run
+/// succeeds only if it merged. A nested round merges nothing, so judging it by
+/// the merge reported every CLEAN round failed and no drive on 1.2.163 or
+/// later could complete. A sub-recipe's success is its own steps' success.
+///
+/// The two predicates sit together so a later edit to `applies` is read beside
+/// this one. The flag is not carried on `InvocationAuthorization` instead:
+/// that record is serialised into `invocation.json`, embedded verbatim in
+/// every stamped prompt and covered by the launch-bundle digest, so a new
+/// field there is a far wider change than a free function.
+///
+/// Exact byte equality, on purpose. `invocation_name` comes from the recipe's
+/// own `name:` field, so it is a bundle-controlled routing label rather than
+/// an authenticated identity; any prefix, trim or case-folding match would
+/// widen which recipes can claim the rule. Total and panic-free: it runs in a
+/// run holding a live merge authorisation and a bound state directory.
+pub fn is_top_level_drive(name: &str) -> bool {
+    name == "auto-drive-to-merge" || name == "auto-drive-light"
+}
+
 /// Assets a launch bundle must hold before any loop runs. The finalize and
 /// round tools are here so a bundle without them fails at launch, not after
 /// the crusty and merge-ready loops (the finalize `merge` step sources

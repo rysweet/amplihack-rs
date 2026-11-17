@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Merge-ready Round, Merge and Hand-off
-description: how the merge-ready agent writes up the 13 criteria in the PR, how it reads the Crusty verdict from the PR, how the loop reads its outcome and waits for pending checks, the GitHub-only merge conditions, the base sync, the hand-off recipe, the run report, and how the round and loop steps run on private review checkouts with step recovery (#2575, #2628, #2663, #2096, #2539).
-last_updated: 2026-11-14
+description: how the merge-ready agent writes up the 13 criteria in the PR, how it reads the Crusty verdict from the PR, how the loop reads its outcome and waits for pending checks, the GitHub-only merge conditions, the base sync, the hand-off recipe, the run report, and how the round and loop steps run on private review checkouts with step recovery, and which invocations the outcome rule judges (#2575, #2628, #2663, #2096, #2539, #2769).
+last_updated: 2026-11-17
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -741,10 +741,17 @@ When a [base sync](#base-sync) ran, `merge` is the second finalisation's
 
 ### Success means merged
 
-The run succeeds only when `stop_reason` is `completed`: the PR merged in
-this run, was already merged at entry, or the run was verify-only and
-reached `DONE` or `WAITING` (merge result `not-authorised`). The runner decides this with the
-pure function `autodrive_run_succeeded` in
+The rule in this section judges the drive's top-level invocation: a recipe run
+named exactly `auto-drive-to-merge` or `auto-drive-light`. The nested
+`autodrive-*` sub-recipes a drive runs, such as `autodrive-crusty-round` and
+`autodrive-merge-round`, are not judged by it. Their success is the success of
+their own steps. See
+[Which invocations the rule judges](#which-invocations-the-rule-judges).
+
+A top-level drive succeeds only when `stop_reason` is `completed`: the PR
+merged in this run, was already merged at entry, or the run was verify-only
+and reached `DONE` or `WAITING` (merge result `not-authorised`). The runner
+decides this with the pure function `autodrive_run_succeeded` in
 `crates/amplihack-cli/src/commands/recipe/run/execute.rs`, an allow-list of
 the single value `completed`. A missing key, an empty value or any other
 value is a failure.
@@ -756,21 +763,22 @@ branch now reads `BEHIND`. No later base or readiness comparison is made
 after the merge. A PR that GitHub does not read merged is never `merged`,
 whatever `gh` printed or exited.
 
-| `stop_reason` | Run result |
+| `stop_reason` | Top-level drive result |
 | --- | --- |
 | `completed` | ✓ Success |
 | `not_merged`, `waiting_for_checks`, `handoff`, `unreadable`, `budget_exhausted`, anything else | not successful |
 
 After `report()` adds `autodrive_outcome`, the runner sets `success` to
 `autodrive_run_succeeded(autodrive_outcome)` in both directions
-(`apply_autodrive_outcome` in `execute.rs`):
+(`apply_autodrive_outcome` in `execute.rs`), and only when the invocation is a
+top-level drive:
 
-- A run the runner reported as a success, but which did not merge, becomes a
-  failure.
-- A run that merged, and then failed at a later step (the state-outcome
-  agent, the hand-off, the base-sync steps or the report agent), becomes a
-  success. It carries no failure class, and admission records it as a
-  success. Only a `merged` record with the expected PR, a valid
+- A top-level drive the runner reported as a success, but which did not merge,
+  becomes a failure.
+- A top-level drive that merged, and then failed at a later step (the
+  state-outcome agent, the hand-off, the base-sync steps or the report agent),
+  becomes a success. It carries no failure class, and admission records it as
+  a success. Only a `merged` record with the expected PR, a valid
   `expected_head` and the runner-assigned state directory raises the status;
   exit `79` and other terminal refusals end the run with an error and are
   never raised.
@@ -783,6 +791,102 @@ A verify-only run (`no_merge=true` or `autodrive_dry_run=true`) that reaches
 finalisation did what it was asked: it ends `completed` and is ✓ Success, as
 [Verify a PR without merging](../howto/verify-pr-with-auto-drive.md) states.
 A merge run that ends `not-authorised` stays `not_merged`.
+
+#### Which invocations the rule judges
+
+Two predicates in
+`crates/amplihack-cli/src/commands/orch/autodrive/trusted.rs` name auto-drive
+invocations, and they are deliberately different widths (#2769).
+
+| Predicate | True for | Decides |
+| --- | --- | --- |
+| `trusted::applies(name)` | `auto-drive-to-merge`, `auto-drive-light`, and any name beginning `autodrive-` | Whether the run captures a merge authorisation, launches from a private bundle copy, stamps its recipes and steps, and infers auto-drive context |
+| `trusted::is_top_level_drive(name)` | `auto-drive-to-merge` and `auto-drive-light`, by exact match | Whether the outcome rule above sets the run's `success` flag |
+
+`is_top_level_drive` compares the invocation name with two literals. It has no
+prefix rule, no case folding and no configuration, so a sub-recipe cannot
+claim or disclaim the outcome rule by renaming itself into or out of a prefix.
+The predicate reads the name, not the depth, despite what its own name
+suggests: a run named `auto-drive-to-merge` is judged by the rule wherever it
+is invoked from. Nothing invokes one that way today. `auto-drive-light`
+escalates through an in-process `type: recipe` step, which never re-enters the
+run entry point that applies the rule.
+
+`applies` keeps its own width: authorisation capture, bundle selection and
+stamping are unchanged, and every `autodrive-*` sub-recipe still runs under a
+captured authorisation.
+
+A nested round keeps all of its outcome data. Every invocation `applies`
+accepts is written the same five keys, in the same places:
+
+| Key | Result `extra` | Context |
+| --- | --- | --- |
+| `autodrive_outcome` | ✓ | |
+| `autodrive_summary` (the same object) | | ✓ |
+| `autodrive_authorization` | ✓ | ✓ |
+| `no_merge` | | ✓ |
+| `autodrive_dry_run` | | ✓ |
+
+`tools/autodrive_loop.sh` and the completion helpers read them there. Only the
+`success` flag, and with it the process exit status, is left to the run's own
+steps.
+
+`autodrive-finalize` is the one nested invocation whose exit status a caller
+observes directly: `step-03r-finalize-recovery` runs it as a separate
+`amplihack recipe run autodrive-finalize` process. Under the old rule that
+child's exit status tracked the PR's merge state rather than its own work: a
+finalisation that returned `base-behind`, `checks-pending` or `not-authorised`
+exited non-zero with `stop_reason` `not_merged`, or `unreadable` where it
+wrote no merge result at all, having done exactly what was asked of it. It now
+exits on its own steps. The change is inert for the caller, which reads the
+result from `finalize-merge.json` keyed by `run_id` and never from the child's
+exit status (see
+[The merge result in the state folder](#the-merge-result-in-the-state-folder)).
+Step recovery's exit `81` is unchanged, for a reason worth stating precisely,
+because the obvious reading of it is wrong. `failed_run_exit_code` returns
+`81` only when a step both did not complete and carries `81` as its own
+termination code; otherwise a failed run exits `1`. Recording a hand-off does
+not by itself fail the step that recorded it, so the outcome rule never
+produced `81` on this path: it turned a finalisation that had completed its
+steps into a plain exit `1`. Narrowing the rule therefore cannot suppress a
+hand-off exit, because `81` was never the code it produced. What does change
+is that such a finalisation now exits `0` rather than `1`, which is the
+1.2.162 behaviour and is what the state folder, not the exit status, is read
+for.
+
+```bash
+# A Crusty round, as tools/autodrive_loop.sh starts it: its own process.
+amplihack recipe run "$ROUND_RECIPE_PATH" \
+  --working-dir "$REVIEW_LAUNCH" \
+  -c "autodrive_round_record=${RECORD}" \
+  -c "autodrive_round_label=${ROUND_LABEL}"
+echo $?
+# 0 when the round's own steps succeeded, whatever the PR's merge state.
+```
+
+```bash
+# The drive itself.
+amplihack recipe run auto-drive-to-merge -c pr_number=402
+echo $?
+# 0 only when stop_reason is completed; non-zero when the drive did not merge.
+```
+
+A round's exit status is what the loop acts on. `autodrive_loop.sh` records it
+as `ROUND_RC`, passes it to `autodrive-completion-dispatch` as
+`--child-exit-code` and to the loop-health evaluator as
+`loop_child_exit_code`, and dispatch does not accept `complete` from a round
+whose child execution failed (see
+[Dispatch validation](autodrive-crusty-completion.md#dispatch-validation)).
+Up to 1.2.164 a CLEAN round exited `0` and the loop went on. #2637 added
+`autodrive_run_succeeded` and `apply_autodrive_outcome`, which first shipped
+in 1.2.165, and applied the outcome rule to every name `applies` accepts. From
+1.2.165 until #2769, therefore, a round was judged by whether it had merged,
+which a round never does: a CLEAN round exited non-zero with `stop_reason
+unreadable`, dispatch would not accept `complete`, and the drive ended with no
+evaluator fallback. A CLEAN round exits `0` again, and the loop proceeds to
+merge-ready and merge. #2663 is the rationale the code comment cites for
+applying the rule in both directions, not the change that introduced it; trace
+the regression to #2637.
 
 ### Report step message
 
@@ -978,6 +1082,12 @@ leave the drive `STUCK` (#2656). The tests
   `--match-head-commit`.
 - Merge permission comes only from the captured invocation. Recipe context
   can narrow it, never grant it.
+- Narrowing the outcome rule to the top-level drive moves no authorisation
+  boundary. `allows_merge()` is `!no_merge && !dry_run` and does not read the
+  run's `success` flag, and `trusted::applies` still decides authorisation
+  capture for every `autodrive-*` sub-recipe. A round that exits `0` still
+  needs matching run, round and record identities, valid evidence and a
+  `CLEAN` or `MINOR_ONLY` verdict before dispatch accepts `complete`.
 - Loop results are read from the driver's result file, not from text an
   agent printed.
 - Judging agents start in `{{review_launch_dir}}`, never in the PR worktree,
@@ -1048,7 +1158,7 @@ reported merges when the agents judge it ready and GitHub accepts the merge.
 | Bare `STUCK` endings of the merge-ready loop | [Hand-off](#hand-off) |
 | Criterion 3 from `crusty-records.tsv` and the `crusty-evidence` subcommand of `autodrive_round_evidence.sh` | The PR's own [Crusty verdict comment](#crusty-verdict-at-the-head) and the read-only `crusty-covers` range check |
 | `checks-not-green` and a hand-off for a pending check | `checks-pending` and the next wake |
-| ✓ Success for a run that did not merge | [Success means merged](#success-means-merged) |
+| ✓ Success for a top-level drive that did not merge | [Success means merged](#success-means-merged) |
 
 `Binding`, `validate_binding` and `MAX_RECORD_BYTES` remain, in
 `orch/autodrive/identity.rs`, because authorisation and the already-merged

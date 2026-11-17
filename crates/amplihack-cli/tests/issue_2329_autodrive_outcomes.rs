@@ -379,20 +379,30 @@ mod runner {
         )
     }
 
-    /// The child runner ran and exited 0. #2663 M1: the run itself succeeds
-    /// only when it merged (`stop_reason` `completed`); these stub runs merge
-    /// nothing, so they end without success, and nothing else failed.
-    fn assert_child_ran(output: &Output) {
+    /// The child runner ran and exited 0, and the run's own verdict is the one
+    /// its invocation name earns.
+    ///
+    /// #2663 M1: a top-level drive succeeds only when it merged (`stop_reason`
+    /// `completed`); these stub runs merge nothing, so a drive ends without
+    /// success. #2769: every other invocation the trusted path accepts, which
+    /// is every `autodrive-*` sub-recipe, is judged by its own steps, so here
+    /// it follows the child runner's exit code.
+    fn assert_child_ran(invocation: &str, output: &Output) {
         let result: Json = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|e| panic!("structured runner result ({e}): {}", details(output)));
+        let exit_code = result["log_pointer"]["exit_code"].clone();
+        assert_eq!(exit_code, json!(0), "{}", details(output));
+        let expected = if matches!(invocation, "auto-drive-to-merge" | "auto-drive-light") {
+            result["autodrive_outcome"]["stop_reason"] == json!("completed")
+        } else {
+            exit_code == json!(0)
+        };
         assert_eq!(
-            result["log_pointer"]["exit_code"],
-            json!(0),
-            "{}",
+            output.status.success(),
+            expected,
+            "{invocation}: {}",
             details(output)
         );
-        let completed = result["autodrive_outcome"]["stop_reason"] == json!("completed");
-        assert_eq!(output.status.success(), completed, "{}", details(output));
     }
 
     #[test]
@@ -423,7 +433,7 @@ mod runner {
             let fixture = Fixture::new();
             let output = fixture.run_with_defaults(name, &args, false,
                 "{no_merge: 'false', autodrive_dry_run: 'true', pr_number: '999', task_description: 'untrusted-default'}");
-            assert_child_ran(&output);
+            assert_child_ran(name, &output);
             let result: Json = serde_json::from_slice(&output.stdout).unwrap();
             let inputs = fs::read_to_string(fixture.root.join("context-inputs")).unwrap();
             let inputs: Vec<_> = inputs.lines().collect();
@@ -479,7 +489,7 @@ mod runner {
     fn child_context_and_child_result_cannot_replace_invocation_authorization() {
         let fixture = Fixture::new();
         let output = fixture.run("auto-drive-to-merge", &["-c", "no_merge=true"], false);
-        assert_child_ran(&output);
+        assert_child_ran("auto-drive-to-merge", &output);
         let result: Json =
             serde_json::from_slice(&output.stdout).expect("structured runner result");
         let auth = &result["autodrive_authorization"];
@@ -594,7 +604,7 @@ mod runner {
             &["-c", "no_merge=true", "-c", &arg],
             false,
         );
-        assert_child_ran(&output);
+        assert_child_ran("auto-drive-to-merge", &output);
         let inputs = recorded_inputs(&fixture);
         assert_eq!(inputs[3], state.to_string_lossy(), "{}", details(&output));
         let result: Json = serde_json::from_slice(&output.stdout).unwrap();
@@ -617,7 +627,7 @@ mod runner {
         for _ in 0..2 {
             let fixture = Fixture::new();
             let output = fixture.run("auto-drive-to-merge", &["-c", "no_merge=true"], false);
-            assert_child_ran(&output);
+            assert_child_ran("auto-drive-to-merge", &output);
             let assigned = PathBuf::from(&recorded_inputs(&fixture)[3]);
             assert!(assigned.is_absolute(), "{}", assigned.display());
             let result: Json = serde_json::from_slice(&output.stdout).unwrap();
@@ -672,7 +682,7 @@ mod runner {
                 false,
                 "{no_merge: 'false', autodrive_dry_run: 'false', autodrive_state_dir: '/stored/state'}",
             );
-            assert_child_ran(&output);
+            assert_child_ran("auto-drive-light", &output);
             let result: Json = serde_json::from_slice(&output.stdout).unwrap();
             let auth = &result["autodrive_authorization"];
             assert_eq!(auth["no_merge"], true, "fresh={fresh}: {auth}");
