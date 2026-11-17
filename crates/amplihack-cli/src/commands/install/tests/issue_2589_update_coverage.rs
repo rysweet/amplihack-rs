@@ -32,45 +32,11 @@
 use super::super::apply_dangerous_command_policy;
 use super::super::codex_plugin::{RULES_DIR, RULES_FILE};
 use crate::policy;
-use crate::test_support::{env_lock, tempdir_outside_framework_roots};
+use crate::test_support::{env_lock, env_paths, tempdir_outside_framework_roots};
 use crate::update::post_install::run_post_update_install;
-use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
-use std::path::{Path, PathBuf};
-
-struct Env(Vec<(&'static str, Option<OsString>)>);
-
-impl Env {
-    fn set(vars: &[(&'static str, Option<&Path>)]) -> Self {
-        let mut previous = Vec::new();
-        for (key, value) in vars {
-            previous.push((*key, std::env::var_os(key)));
-            // SAFETY: edition 2024 requires unsafe; callers hold env_lock().
-            unsafe {
-                match value {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-        Self(previous)
-    }
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        for (key, value) in self.0.drain(..) {
-            // SAFETY: as in `set`.
-            unsafe {
-                match value {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-    }
-}
+use std::path::PathBuf;
 
 /// Empties the Claude policy record left by any earlier call on this thread,
 /// so a report read here describes this test's writes alone.
@@ -91,7 +57,7 @@ fn applying_the_policy_writes_the_codex_rules_file() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
     let report = apply_dangerous_command_policy();
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
@@ -103,7 +69,7 @@ fn applying_the_policy_twice_changes_nothing() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
     apply_dangerous_command_policy();
     let path = codex.join(RULES_DIR).join(RULES_FILE);
@@ -120,7 +86,7 @@ fn the_report_describes_what_this_run_wrote() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
     let report = apply_dangerous_command_policy();
     let expected = policy::install_report_lines(
@@ -153,7 +119,7 @@ fn an_absent_codex_home_is_named_rather_than_claimed_as_written() {
     let home = tmp.path().join("home");
     fs::create_dir_all(&home).unwrap();
     fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let report = apply_dangerous_command_policy();
     let codex_line = report
@@ -182,7 +148,7 @@ fn a_refused_codex_write_is_not_reported_as_a_written_one() {
     let outside = tmp.path().join("outside.rules");
     fs::write(&outside, "untouched\n").unwrap();
     symlink(&outside, rules.join(RULES_FILE)).unwrap();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
     let report = apply_dangerous_command_policy();
     assert!(
@@ -208,7 +174,7 @@ fn a_refused_codex_write_warns_and_does_not_fail_the_install() {
     let outside = tmp.path().join("outside.rules");
     fs::write(&outside, "untouched\n").unwrap();
     symlink(&outside, rules.join(RULES_FILE)).unwrap();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
     let report = apply_dangerous_command_policy();
     assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
@@ -232,7 +198,7 @@ fn the_post_update_install_path_applies_the_policy() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
     run_post_update_install(false, || {
         apply_dangerous_command_policy();
@@ -247,7 +213,7 @@ fn skip_install_applies_nothing() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
     run_post_update_install(true, || {
         apply_dangerous_command_policy();
@@ -279,7 +245,7 @@ fn an_absent_codex_home_is_neither_created_nor_warned_about() {
     let home = tmp.path().join("home");
     fs::create_dir_all(&home).unwrap();
     fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let report = apply_dangerous_command_policy();
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
@@ -298,7 +264,7 @@ fn a_symlinked_rules_directory_warns_without_failing_the_install() {
     fs::create_dir_all(&outside).unwrap();
     fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).unwrap();
     symlink(&outside, codex.join(RULES_DIR)).unwrap();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
     let report = apply_dangerous_command_policy();
     assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
@@ -343,7 +309,7 @@ fn an_outcome_recorded_before_the_write_phase_is_not_reported_as_this_runs_work(
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
     // An earlier phase on this thread wrote a Claude settings file and
     // never reached a policy section to read its record.
@@ -377,7 +343,7 @@ fn a_refusal_recorded_before_the_write_phase_is_not_warned_about_again() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_policy_record();
     let (_tmp, home, codex) = temp_homes();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", Some(&codex))]);
 
     policy::claude::record(
         "home settings",

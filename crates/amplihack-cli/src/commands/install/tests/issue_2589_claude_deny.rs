@@ -19,46 +19,11 @@ use super::super::settings::{
 };
 use crate::commands::profile::ROOT_ENV;
 use crate::policy;
-use crate::test_support::{env_lock, tempdir_outside_framework_roots};
+use crate::test_support::{env_lock, env_paths, tempdir_outside_framework_roots};
 use serde_json::Value;
-use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-
-/// Sets environment variables and restores them on drop.
-struct Env(Vec<(&'static str, Option<OsString>)>);
-
-impl Env {
-    fn set(vars: &[(&'static str, Option<&Path>)]) -> Self {
-        let mut previous = Vec::new();
-        for (key, value) in vars {
-            previous.push((*key, std::env::var_os(key)));
-            // SAFETY: edition 2024 requires unsafe; callers hold env_lock().
-            unsafe {
-                match value {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-        Self(previous)
-    }
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        for (key, value) in self.0.drain(..) {
-            // SAFETY: as in `set`.
-            unsafe {
-                match value {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-    }
-}
 
 fn hooks_file(path: &Path) -> PathBuf {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -136,7 +101,7 @@ fn install_writes_every_default_deny_entry_once_into_the_home_settings_file() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let settings = install_home_settings(&home);
     let deny = deny_entries(&read_json(&settings));
@@ -154,7 +119,7 @@ fn install_keeps_a_users_own_deny_entry_and_unrelated_settings_keys() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let claude = home.join(".claude");
     fs::create_dir_all(&claude).unwrap();
@@ -181,7 +146,7 @@ fn a_second_install_leaves_the_home_settings_file_byte_identical() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let settings = install_home_settings(&home);
     let before = fingerprint(&settings);
@@ -201,7 +166,7 @@ fn an_instance_addition_appears_in_the_home_file_alongside_the_defaults() {
     let home = d.path().join("home");
     fs::create_dir_all(&home).unwrap();
     instance_config(&home, &["shutdown"]);
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let settings = install_home_settings(&home);
     let deny = deny_entries(&read_json(&settings));
@@ -219,7 +184,7 @@ fn no_written_entry_denies_an_ordinary_push() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let deny = deny_entries(&read_json(&install_home_settings(&home)));
     for entry in &deny {
@@ -251,7 +216,7 @@ fn profile_refresh_writes_the_policy_into_each_profile_settings_json() {
     let root = home.join("profiles");
     let settings = profile_settings(&root, r#"{"language":"en","hooks":{}}"#);
     let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
-    let _env = Env::set(&[
+    let _env = env_paths(&[
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
@@ -282,7 +247,7 @@ fn a_profiles_own_deny_entries_survive_the_refresh() {
         r#"{"permissions":{"deny":["Bash(curl:*)"],"defaultMode":"acceptEdits"},"hooks":{}}"#,
     );
     let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
-    let _env = Env::set(&[
+    let _env = env_paths(&[
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
@@ -308,7 +273,7 @@ fn a_second_profile_refresh_leaves_the_file_byte_identical() {
     let root = home.join("profiles");
     let settings = profile_settings(&root, r#"{"language":"en","hooks":{}}"#);
     let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
-    let _env = Env::set(&[
+    let _env = env_paths(&[
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
@@ -333,7 +298,7 @@ fn a_profile_with_a_malformed_permissions_value_is_left_as_found() {
     let body = r#"{"permissions":"bypassPermissions","hooks":{}}"#;
     let settings = profile_settings(&root, body);
     let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
-    let _env = Env::set(&[
+    let _env = env_paths(&[
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
@@ -358,7 +323,7 @@ fn a_profile_without_a_settings_file_does_not_gain_one() {
     fs::create_dir_all(root.join("bare")).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
-    let _env = Env::set(&[
+    let _env = env_paths(&[
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
@@ -392,7 +357,7 @@ fn seeding_a_new_profile_writes_the_policy_even_from_a_pre_change_home_file() {
     let root = home.join("profiles");
     fs::create_dir_all(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let store = ProfileStore::new(root.clone()).with_shared_assets(source);
     let name = ProfileName::parse("fresh").unwrap();
@@ -470,7 +435,7 @@ fn a_home_file_whose_deny_is_not_an_array_is_left_as_found_and_warns() {
         r#"{"language":"en","permissions":{"deny":"Bash(curl:*)"}}"#,
     )
     .unwrap();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let settings = install_home_settings(&home);
     let value = read_json(&settings);
@@ -512,7 +477,7 @@ fn a_home_file_whose_permissions_is_not_an_object_is_left_as_found_and_warns() {
         r#"{"language":"en","permissions":"bypassPermissions"}"#,
     )
     .unwrap();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let settings = install_home_settings(&home);
     let value = read_json(&settings);
@@ -552,7 +517,7 @@ fn a_claude_warning_never_quotes_a_value_read_out_of_the_file() {
         r#"{"permissions":{"deny":"SECRET-VALUE-9f2a"}}"#,
     )
     .unwrap();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     install_home_settings(&home);
     let report = apply_dangerous_command_policy();
@@ -575,7 +540,7 @@ fn a_run_that_wrote_the_home_file_reports_claude_as_written_without_a_warning() 
     clear_policy_record();
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     install_home_settings(&home);
     let report = apply_dangerous_command_policy();
@@ -602,7 +567,7 @@ fn a_refused_profile_is_named_in_the_install_warning() {
     let root = home.join("profiles");
     profile_settings(&root, r#"{"permissions":"bypassPermissions","hooks":{}}"#);
     let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
-    let _env = Env::set(&[
+    let _env = env_paths(&[
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
@@ -632,7 +597,7 @@ fn one_refused_profile_beside_a_written_home_file_reports_a_partial_write() {
     let root = home.join("profiles");
     profile_settings(&root, r#"{"permissions":"bypassPermissions","hooks":{}}"#);
     let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
-    let _env = Env::set(&[
+    let _env = env_paths(&[
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
@@ -678,7 +643,7 @@ fn seeding_a_profile_it_cannot_write_records_the_refusal() {
     let root = home.join("profiles");
     fs::create_dir_all(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let store = ProfileStore::new(root.clone()).with_shared_assets(source);
     let name = ProfileName::parse("fresh").unwrap();
@@ -747,7 +712,7 @@ fn a_profile_the_merge_refused_before_the_writer_ran_is_still_reported() {
     // closure that would have applied the policy.
     profile_settings(&root, "{ not json");
     let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
-    let _env = Env::set(&[
+    let _env = env_paths(&[
         (ROOT_ENV, Some(&root)),
         (PROFILE_REFRESH_TEST_OPT_IN, Some(Path::new("1"))),
         ("HOME", Some(&home)),
@@ -796,7 +761,7 @@ fn a_symlinked_home_settings_file_is_reported_as_refused_not_as_absent() {
     let elsewhere = d.path().join("elsewhere.json");
     fs::write(&elsewhere, "{}\n").unwrap();
     std::os::unix::fs::symlink(&elsewhere, claude.join("settings.json")).unwrap();
-    let _env = Env::set(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     install_home_settings(&home);
     let report = apply_dangerous_command_policy();

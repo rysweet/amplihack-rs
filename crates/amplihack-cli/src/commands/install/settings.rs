@@ -759,10 +759,13 @@ mod tests {
     /// `user_config::policy_deny_commands()`. Without this the three tests
     /// below read the developer's real config and race every other
     /// HOME-mutating test in the binary.
+    ///
+    /// The fields drop in declaration order, so `HOME` is restored before the
+    /// temp directory goes and the lock is released last.
     struct TempHome {
+        _home: crate::test_support::HomeGuard,
         _dir: tempfile::TempDir,
         _lock: std::sync::MutexGuard<'static, ()>,
-        previous: Option<std::ffi::OsString>,
     }
 
     impl TempHome {
@@ -771,25 +774,10 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
             let dir = crate::test_support::tempdir_outside_framework_roots();
-            let previous = std::env::var_os("HOME");
-            // SAFETY: edition 2024 requires unsafe; the env lock is held.
-            unsafe { std::env::set_var("HOME", dir.path()) };
             Self {
+                _home: crate::test_support::HomeGuard::set(dir.path()),
                 _dir: dir,
                 _lock: lock,
-                previous,
-            }
-        }
-    }
-
-    impl Drop for TempHome {
-        fn drop(&mut self) {
-            // SAFETY: as in `set`.
-            unsafe {
-                match self.previous.take() {
-                    Some(value) => std::env::set_var("HOME", value),
-                    None => std::env::remove_var("HOME"),
-                }
             }
         }
     }

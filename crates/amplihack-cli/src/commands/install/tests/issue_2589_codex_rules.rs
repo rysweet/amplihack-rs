@@ -16,44 +16,10 @@ use super::super::codex_plugin::{
     uninstall_deny_rules,
 };
 use crate::policy;
-use crate::test_support::{env_lock, tempdir_outside_framework_roots};
-use std::ffi::OsString;
+use crate::test_support::{env_lock, env_paths, tempdir_outside_framework_roots};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-
-struct Env(Vec<(&'static str, Option<OsString>)>);
-
-impl Env {
-    fn set(vars: &[(&'static str, Option<&Path>)]) -> Self {
-        let mut previous = Vec::new();
-        for (key, value) in vars {
-            previous.push((*key, std::env::var_os(key)));
-            // SAFETY: edition 2024 requires unsafe; callers hold env_lock().
-            unsafe {
-                match value {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-        Self(previous)
-    }
-}
-
-impl Drop for Env {
-    fn drop(&mut self) {
-        for (key, value) in self.0.drain(..) {
-            // SAFETY: as in `set`.
-            unsafe {
-                match value {
-                    Some(v) => std::env::set_var(key, v),
-                    None => std::env::remove_var(key),
-                }
-            }
-        }
-    }
-}
 
 /// A temp HOME with a temp Codex home inside it, both exported.
 struct Fx {
@@ -79,8 +45,8 @@ impl Fx {
         self.codex.join(RULES_DIR).join(RULES_FILE)
     }
 
-    fn env(&self) -> Env {
-        Env::set(&[
+    fn env(&self) -> crate::test_support::EnvGuard {
+        env_paths(&[
             ("HOME", Some(&self.home)),
             ("CODEX_HOME", Some(&self.codex)),
         ])
@@ -236,7 +202,7 @@ fn a_project_layer_entry_reaches_no_rendering() {
 fn with_no_codex_home_variable_the_file_goes_under_the_temp_home() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let fx = Fx::new();
-    let _env = Env::set(&[("HOME", Some(&fx.home)), ("CODEX_HOME", None)]);
+    let _env = env_paths(&[("HOME", Some(&fx.home)), ("CODEX_HOME", None)]);
 
     install_deny_rules();
     assert!(

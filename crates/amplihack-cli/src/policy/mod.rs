@@ -219,11 +219,11 @@ pub(crate) fn instance_prefixes(instance: &[String]) -> (Vec<Prefix>, Vec<String
 
 /// The installation's additions that are not already defaults.
 ///
-/// The rejection reasons are dropped here and in [`effective_prefixes`], the
-/// other production caller. Unreachable today -- `parse_command_list` has
-/// already rejected anything this would reject -- but it means this layer
-/// drops one bad entry while the config layer rejects the whole value.
-/// Tracked as issue #2752.
+/// This is the one place the rejection reasons are dropped, so
+/// [`effective_prefixes`] inherits the behaviour rather than repeating it.
+/// Unreachable today -- `parse_command_list` has already rejected anything
+/// this would reject -- but it means this layer drops one bad entry while the
+/// config layer rejects the whole value. Tracked as issue #2752.
 pub(crate) fn instance_only_prefixes(instance: &[String]) -> Vec<Prefix> {
     let defaults = default_prefixes();
     instance_prefixes(instance)
@@ -238,11 +238,7 @@ pub(crate) fn instance_only_prefixes(instance: &[String]) -> Vec<Prefix> {
 /// first and only what is not already among them is appended.
 pub(crate) fn effective_prefixes(instance: &[String]) -> Vec<Prefix> {
     let mut prefixes = default_prefixes();
-    for prefix in instance_prefixes(instance).0 {
-        if !prefixes.contains(&prefix) {
-            prefixes.push(prefix);
-        }
-    }
+    prefixes.extend(instance_only_prefixes(instance));
     prefixes
 }
 
