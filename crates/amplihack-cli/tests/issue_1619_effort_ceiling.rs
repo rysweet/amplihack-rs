@@ -1,15 +1,15 @@
-//! Issue #1619, B3(c) (TDD): the shipped `strong` effort steps down rather
-//! than failing on an account whose model does not accept `xhigh`.
+//! Issue #1619, B3(c) (TDD): a reasoning effort an instance raised steps down
+//! rather than failing on an account whose model does not accept it.
 //!
 //! The review asked that the Codex `strong` tier fall back rather than fail
-//! there. Amplihack cannot learn what a model accepts without making a live
-//! call, and the brief excludes probing, retries and timers, so the ceiling
-//! is a declaration about the operator's own account: an optional
-//! `max_effort` inside a column, applied before the effort is written.
-//!
-//! The shipped `codex.strong = "xhigh"` is unchanged. The issue's 3 November
-//! comment requires `xhigh` for orchestration and formal steps; an account
-//! that cannot run it says so in its own file.
+//! on a model that does not accept `xhigh`. Two things provide that. The
+//! shipped `codex.strong` is `high`, so with no tier file nothing asks for
+//! `xhigh`. And an instance that raises `strong` to `xhigh` in its own cell,
+//! for the orchestration and formal steps the issue's 3 November comment
+//! names, can declare an optional `max_effort` inside the column, applied
+//! before the effort is written. Amplihack cannot learn what a model accepts
+//! without a live call, and the brief excludes probing, retries and timers,
+//! so the ceiling is a declaration about the operator's own account.
 //!
 //! These start the real `amplihack` binary against an argv-recording fake
 //! harness, so the assertion is over what Codex is actually told.
@@ -18,16 +18,22 @@
 
 use crate::support::tier_harness::Fixture;
 
+/// The instance cell that raises Codex `strong` to `xhigh`. The shipped cell
+/// is `high`, so a ceiling below `xhigh` has nothing to lower without it.
+const RAISED_STRONG: &str = "[codex.strong]\neffort = \"xhigh\"\n";
+
 #[test]
 fn a_declared_ceiling_steps_the_strong_tier_down_on_codex() {
     let f = Fixture::new();
-    f.write_override("version = 1\n[codex]\nmax_effort = \"high\"\n");
+    f.write_override(&format!(
+        "version = 1\n[codex]\nmax_effort = \"high\"\n{RAISED_STRONG}"
+    ));
     let launch = f.run("codex", &["exec", "--model", "strong", "-"]);
     assert_eq!(
         launch.effort(),
         Some("high"),
-        "the shipped `strong` asks for xhigh and this account declares high as its \
-         ceiling. argv: {:?}",
+        "the instance's `strong` asks for xhigh and this account declares high as \
+         its ceiling. argv: {:?}",
         launch.argv
     );
 }
@@ -35,7 +41,9 @@ fn a_declared_ceiling_steps_the_strong_tier_down_on_codex() {
 #[test]
 fn a_capped_step_runs_rather_than_failing() {
     let f = Fixture::new();
-    f.write_override("version = 1\n[codex]\nmax_effort = \"low\"\n");
+    f.write_override(&format!(
+        "version = 1\n[codex]\nmax_effort = \"low\"\n{RAISED_STRONG}"
+    ));
     let launch = f.run("codex", &["exec", "--model", "strong", "-"]);
     assert!(
         launch.output.status.success(),
@@ -52,7 +60,9 @@ fn a_capped_step_runs_rather_than_failing() {
 #[test]
 fn a_ceiling_never_raises_an_effort() {
     let f = Fixture::new();
-    f.write_override("version = 1\n[codex]\nmax_effort = \"xhigh\"\n");
+    f.write_override(&format!(
+        "version = 1\n[codex]\nmax_effort = \"xhigh\"\n{RAISED_STRONG}"
+    ));
     for (tier, expected) in [("fast", "low"), ("standard", "high"), ("strong", "xhigh")] {
         let launch = f.run("codex", &["exec", "--model", tier, "-"]);
         assert_eq!(
@@ -67,7 +77,7 @@ fn a_ceiling_never_raises_an_effort() {
 #[test]
 fn no_ceiling_leaves_the_shipped_efforts_alone() {
     let f = Fixture::new();
-    for (tier, expected) in [("fast", "low"), ("standard", "high"), ("strong", "xhigh")] {
+    for (tier, expected) in [("fast", "low"), ("standard", "high"), ("strong", "high")] {
         let launch = f.run("codex", &["exec", "--model", tier, "-"]);
         assert_eq!(
             launch.effort(),
@@ -81,7 +91,9 @@ fn no_ceiling_leaves_the_shipped_efforts_alone() {
 #[test]
 fn a_max_effort_that_is_not_an_effort_is_reported_and_changes_nothing() {
     let f = Fixture::new();
-    f.write_override("version = 1\n[codex]\nmax_effort = \"enormous\"\n");
+    f.write_override(&format!(
+        "version = 1\n[codex]\nmax_effort = \"enormous\"\n{RAISED_STRONG}"
+    ));
     let launch = f.run("codex", &["exec", "--model", "strong", "-"]);
     assert_eq!(
         launch.effort(),
@@ -94,6 +106,26 @@ fn a_max_effort_that_is_not_an_effort_is_reported_and_changes_nothing() {
         !launch.stderr().is_empty(),
         "and the operator is told where they wrote it"
     );
+}
+
+#[test]
+fn with_no_tier_file_no_codex_step_asks_for_xhigh() {
+    let f = Fixture::new();
+    for tier in ["fast", "standard", "strong"] {
+        let launch = f.run("codex", &["exec", "--model", tier, "-"]);
+        assert_ne!(
+            launch.effort(),
+            Some("xhigh"),
+            "`{tier}`: a Codex model that does not accept xhigh must still run every step of \
+             an instance with no tier file. argv: {:?}",
+            launch.argv
+        );
+        assert!(
+            launch.output.status.success(),
+            "stderr:\n{}",
+            launch.stderr()
+        );
+    }
 }
 
 #[test]

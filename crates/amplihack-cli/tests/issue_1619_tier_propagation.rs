@@ -112,9 +112,11 @@ fn tier_words_are_matched_case_insensitively() {
 // -------------------------------------------------------------------------
 
 #[test]
-fn codex_tiers_differ_by_reasoning_effort_and_name_no_model() {
+fn codex_tiers_carry_a_reasoning_effort_and_name_no_model() {
+    // `strong` ships at `high`: with no tier file, a Codex model that does not
+    // accept `xhigh` must still run the step. An instance raises it in its own cell.
     let f = Fixture::new();
-    for (tier, effort) in [("strong", "xhigh"), ("standard", "high"), ("fast", "low")] {
+    for (tier, effort) in [("strong", "high"), ("standard", "high"), ("fast", "low")] {
         let args: Vec<String> = codex_step(tier);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         let launch = f.run("codex", &refs);

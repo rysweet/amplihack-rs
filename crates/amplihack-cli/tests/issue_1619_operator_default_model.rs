@@ -1,12 +1,15 @@
-//! Issue #1619, B2 (TDD): an operator's `AMPLIHACK_DEFAULT_MODEL` still
-//! chooses the model, with the tier table in place.
+//! Issue #1619, B2 and B-new-1 (TDD): an operator's `AMPLIHACK_DEFAULT_MODEL`
+//! still chooses the Claude column's model with the tier table in place, and
+//! never reaches a Codex or Copilot step.
 //!
-//! The condition Ryan set on 16 November is that amplihack runs in other
+//! The #1619 issue comment of 16 November says amplihack runs in other
 //! contexts and harnesses, and that Opus and Sonnet will not exist in some of
-//! them. Before this feature `AMPLIHACK_DEFAULT_MODEL` chose every launch's
-//! model, and it is the only setting an operator on such a host has. A tier
-//! table that outranked it would ask every tiered step for a Claude id the
-//! account does not have, and the operator would have no way to say so.
+//! them. Before this feature `AMPLIHACK_DEFAULT_MODEL` chose the model of
+//! every Claude-compatible launch and was never read for Codex or Copilot. So
+//! the tier table must not outrank it on the Claude column, and must not carry
+//! it to the others: a Claude id on a Codex command line fails the step. A
+//! Codex user who knows their account's model names it in a `[codex.<tier>]`
+//! cell of their own tier file.
 //!
 //! These run the real `amplihack` binary against an argv-recording fake
 //! harness: the question is what the harness is actually told, not what any
@@ -21,8 +24,11 @@ use crate::support::tier_harness::Fixture;
 /// have come from the operator's own variable.
 const HOUSE_MODEL: &str = "house-model-7";
 
+/// A Claude id an operator exports for their Claude launches.
+const CLAUDE_ID: &str = "claude-sonnet-5-5";
+
 // -------------------------------------------------------------------------
-// It replaces a tier word, on a Claude-compatible harness and on Codex
+// It replaces a tier word on a Claude-compatible harness
 // -------------------------------------------------------------------------
 
 #[test]
@@ -55,16 +61,52 @@ fn an_operator_default_covers_every_tier() {
     }
 }
 
-/// The shipped Codex column names no model at all, because Opus and Sonnet do
-/// not exist there and guessing at the account would be worse. An operator
-/// who does know their account's id must be able to supply it, and the tier's
-/// own reasoning effort must still reach the harness, because a model was
-/// chosen rather than fallen back from.
+// -------------------------------------------------------------------------
+// B-new-1: it never reaches a Codex or Copilot step
+// -------------------------------------------------------------------------
+
+/// The shipped Codex column names no model, because Opus and Sonnet do not
+/// exist there. A Claude id the operator exported for their Claude launches
+/// must not fill that gap: Codex would be asked for a model it does not have.
 #[test]
-fn an_operator_default_reaches_a_harness_with_no_opus_and_no_sonnet() {
+fn a_claude_operator_default_never_reaches_a_codex_step() {
     let f = Fixture::new();
     let mut command = f.launch("codex", &["exec", "--model", "strong", "-"]);
-    command.env("AMPLIHACK_DEFAULT_MODEL", "gpt-6.1-sol");
+    command.env("AMPLIHACK_DEFAULT_MODEL", CLAUDE_ID);
+    let launch = f.finish(&mut command);
+    assert!(
+        !launch.argv.iter().any(|a| a.contains(CLAUDE_ID)),
+        "no Claude id on a Codex command line. argv: {:?}",
+        launch.argv
+    );
+    assert_eq!(
+        launch.model(),
+        None,
+        "the shipped codex cell names no model, so Codex runs its own. argv: {:?}",
+        launch.argv
+    );
+    assert_eq!(
+        launch.effort(),
+        Some("high"),
+        "the shipped codex `strong` effort still reaches Codex. argv: {:?}",
+        launch.argv
+    );
+    assert!(
+        !launch.stderr().contains("AMPLIHACK_DEFAULT_MODEL"),
+        "the variable is not read for Codex, so no line is printed about it. \
+         stderr:\n{}",
+        launch.stderr()
+    );
+}
+
+/// What a Codex user does instead: name the account's model in an instance
+/// cell. The Claude id set alongside it changes nothing.
+#[test]
+fn an_instance_cell_names_the_codex_model_whatever_the_operator_default() {
+    let f = Fixture::new();
+    f.write_override("version = 1\n\n[codex.strong]\nmodel = \"gpt-6.1-sol\"\neffort = \"high\"\n");
+    let mut command = f.launch("codex", &["exec", "--model", "strong", "-"]);
+    command.env("AMPLIHACK_DEFAULT_MODEL", CLAUDE_ID);
     let launch = f.finish(&mut command);
     assert_eq!(
         launch.model(),
@@ -72,12 +114,36 @@ fn an_operator_default_reaches_a_harness_with_no_opus_and_no_sonnet() {
         "argv: {:?}",
         launch.argv
     );
-    assert_eq!(
-        launch.effort(),
-        Some("xhigh"),
-        "the tier's Codex reasoning effort survives the substitution, as it does \
-         under `model.force`. argv: {:?}",
+    assert_eq!(launch.effort(), Some("high"), "argv: {:?}", launch.argv);
+    assert!(
+        !launch.argv.iter().any(|a| a.contains(CLAUDE_ID)),
+        "argv: {:?}",
         launch.argv
+    );
+}
+
+#[test]
+fn a_claude_operator_default_never_reaches_a_copilot_step() {
+    let f = Fixture::new();
+    let mut command = f.launch("copilot", &["--model", "strong", "-p", "go"]);
+    command.env("AMPLIHACK_DEFAULT_MODEL", CLAUDE_ID);
+    let launch = f.finish(&mut command);
+    assert!(
+        !launch.argv.iter().any(|a| a.contains(CLAUDE_ID)),
+        "no Claude id on a Copilot command line. argv: {:?}",
+        launch.argv
+    );
+    assert_eq!(
+        launch.model(),
+        None,
+        "the shipped copilot column is empty, so Copilot runs its own model. \
+         argv: {:?}",
+        launch.argv
+    );
+    assert!(
+        !launch.stderr().contains("AMPLIHACK_DEFAULT_MODEL"),
+        "stderr:\n{}",
+        launch.stderr()
     );
 }
 
