@@ -359,12 +359,35 @@ impl RunCheckout {
         }
     }
 
+    /// Prepare a child command that will itself run git.
+    ///
+    /// `amplihack_git::scrub` removes the inherited repository selection and the
+    /// whole environment-based configuration namespace, which is what #2096
+    /// required: no caller `GIT_DIR`, `GIT_INDEX_FILE`, `GIT_WORK_TREE` or
+    /// `GIT_CONFIG*` value can send a step's git back to the caller's checkout.
+    ///
+    /// It deliberately does not set `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM` or
+    /// `GIT_CONFIG_NOSYSTEM`. #2290 set all three here, on the recipe-runner
+    /// command, so every step lost the user's own configuration, including a
+    /// URL-scoped `credential.https://github.com.helper`; pushes and fetches over
+    /// https then failed with `could not read Username` (#2756). amplihack's own
+    /// git keeps its isolated configuration where it belongs: `preparation_command`
+    /// here and `run_isolation::review_generation::command`. The user's steps do
+    /// not get it.
+    ///
+    /// Nor does this set `GIT_TERMINAL_PROMPT`. A step with no helper that can
+    /// answer therefore reaches git's terminal prompt rather than a fast failure,
+    /// which in a detached run is a stall. That is the pre-#2290 behaviour and is
+    /// left as-is; `docs/reference/recipe-checkout-isolation.md` records it under
+    /// Limits.
+    ///
+    /// Ordering invariant: `scrub` enumerates `GIT_CONFIG_KEY_n` from the parent
+    /// environment through `std::env::vars_os()`, so it cannot see variables an
+    /// earlier builder stage set on this `Command`. Apply this last, and do not
+    /// set git environment on the command afterwards. Both call sites in
+    /// `execute.rs` already do, immediately before returning the command.
     pub(crate) fn apply_to(&self, command: &mut Command) {
         amplihack_git::scrub(command);
-        command
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_SYSTEM", "/dev/null")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null");
         for var in CALLER_TRACE_VARS {
             command.env_remove(var);
         }

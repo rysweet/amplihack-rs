@@ -2,7 +2,7 @@
 title: Recipe Runner Logging Reference
 description: Progress output, correlation, and the JSON and JSONL a recipe run emits.
 doc_type: reference
-last_updated: 2026-11-16
+last_updated: 2026-11-17
 ---
 
 # Recipe Runner Logging Reference
@@ -334,6 +334,16 @@ both a `GIT_TRACE2*` target and `GIT_TRACE2_REDACT=0` would otherwise write
 the auth headers of the run's Git traffic to a target chosen outside the run.
 Full command lines can carry secrets the same way, so the whole namespace is
 cleared rather than filtered.
+
+The clearing is of the environment only. A run reads the user's own global and
+system Git configuration, so a `trace2.eventTarget` or `trace2.perfTarget` set
+in `~/.gitconfig` does take effect inside a run and writes to the target it
+names. That is the user's own setting rather than an inherited one, and the
+boundary this section is about survives it: redaction has no configuration
+equivalent, so `GIT_TRACE2_REDACT` being cleared leaves Git's default
+redaction of `Authorization:` headers in force whichever way the target was
+chosen. See
+[paths and Git configuration](recipe-checkout-isolation.md#paths-and-git-configuration).
 
 To trace Git inside a run, set the variable where the Git command actually
 runs — in the recipe step itself — so the target is one you chose for that

@@ -2,7 +2,7 @@
 title: Recipe Run and Auto-Drive Checkout Isolation
 description: Where recipe runs and auto-drive reviews execute, what they copy from the caller, and how they release what they own.
 doc_type: reference
-last_updated: 2026-11-16
+last_updated: 2026-11-17
 ---
 
 # Recipe run and auto-drive checkout isolation
@@ -90,8 +90,35 @@ Every Git call made during preparation and release uses a fixed argument list
 and an environment with `GIT_DIR`, `GIT_COMMON_DIR`, `GIT_WORK_TREE`,
 `GIT_INDEX_FILE`, object-directory overrides and `GIT_CONFIG_*` removed. Global
 and system configuration, hooks, templates and clean/smudge filters are
-disabled for those calls. Hooks that steps trigger, such as pre-commit and
-pre-push, run normally inside the execution checkout.
+disabled for those calls. The Git calls that provision, validate, retire and
+release a review generation are built the same way.
+
+That blanking covers amplihack's own commands only. The recipe runner, and
+every step, hook and agent below it, read the user's own global and system Git
+configuration, so a credential helper, `safe.directory` entry, alias or filter
+kept in `~/.gitconfig` or `/etc/gitconfig` applies inside a run as it does
+outside one.
+
+A `user.name` and `user.email` in those files are read inside a run too, and
+reach a `git commit` a step makes on its own account. They do not decide the
+author of an amplihack-owned workflow commit: the commit-producing recipes
+resolve an explicit identity before calling `git commit` and export
+`GIT_AUTHOR_*` and `GIT_COMMITTER_*` for that step, and the repo-local branch
+of that resolution reads `git config --local` only. See
+[Configure workflow commit identity](../howto/configure-workflow-commit-identity.md).
+
+The runner's environment still has the repository-selecting variables and the
+whole environment-based configuration namespace removed: every name in
+`amplihack_git::REPOSITORY_ENV_VARS`, which is `GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`,
+`GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`,
+`GIT_QUARANTINE_PATH`, `GIT_PREFIX`, `GIT_INDEX_VERSION` and
+`GIT_DISCOVERY_ACROSS_FILESYSTEM`, together with `GIT_CONFIG`,
+`GIT_CONFIG_COUNT`, `GIT_CONFIG_PARAMETERS`, every `GIT_CONFIG_KEY_<n>` and
+`GIT_CONFIG_VALUE_<n>`, `GIT_EXEC_PATH` and `GIT_TEMPLATE_DIR`. No inherited
+variable can therefore send a step's Git commands back to the caller's
+checkout or inject configuration into them. Hooks that steps trigger, such as
+pre-commit and pre-push, run normally inside the execution checkout.
 
 The private repository is a `git clone --bare --no-local --no-hardlinks` of the
 caller. It has no alternates pointing at the caller's object store, and the
@@ -521,6 +548,7 @@ Isolation cannot be switched off.
 | `AMPLIHACK_RUN_CHECKOUT` | Set for steps. An inherited value is ignored and grants no ownership. |
 | `AMPLIHACK_CLEANUP_ON_EXIT=0` | Skips the cleanup sweep only. Release still runs. |
 | Caller `GIT_TRACE2_*` | Cleared from the runner's environment, so they reach neither the runner nor the Git processes a run starts. amplihack sets none of them and reads none of them. |
+| The user's `~/.gitconfig` and `/etc/gitconfig` | Read by the runner and by every step, hook and agent, as by any other Git command that user runs. A run never writes to either file, and amplihack's own preparation, release and review-generation commands do not read them. A `user.name` there does not attribute an amplihack-owned workflow commit; see [Configure workflow commit identity](../howto/configure-workflow-commit-identity.md). |
 
 ## Rust components
 
@@ -593,6 +621,7 @@ isolation test cannot pass on empty data.
 | --- | --- |
 | `crates/amplihack-cli/tests/issue_2096_checkout_units.rs` | Snapshot layers, byte paths, symlinks, special files, batch blob query. |
 | `crates/amplihack-cli/tests/issue_2096_execution_isolation.rs` | Caller `HEAD` and index unchanged; dry run makes no checkout and no run folder; resumed run gets a fresh `exec dir`; unborn caller finishes admission as `Failure`. |
+| `crates/amplihack-cli/tests/issue_2756_user_git_config.rs` | A run whose temporary `HOME` holds a `.gitconfig` with a sentinel `user.name` and a URL-scoped credential helper. The runner is the stub of `issue_2738_support`, so what the test pins is the environment the CLI hands the runner command and what Git does in it: the sentinel `user.name` is the one reported, the helper script is called, and `git credential fill` returns its user name and password with its marker file written. That the steps below the runner see the same configuration follows from the runner passing its own environment down, which this test does not itself exercise. The same run started with `GIT_DIR` and `GIT_INDEX_FILE` pointing at a second repository works in its private checkout and leaves that repository's `HEAD`, index and working tree byte-identical. |
 | `crates/amplihack-cli/tests/issue_2096_private_base_ref.rs` | Base resolution inside a private checkout made by `RunCheckout::prepare`, whose caller has an origin: the `resolve_base_ref` bodies taken from `workflow-worktree.yaml`, `consensus-issue-worktree.yaml` and `workflow-terminal-state.yaml`, and `workflow_delivery_inputs.sh worktree main false "" ""`, all without a prior fetch; `git fetch origin` in the private repository moves `origin/main`; a caller without an origin gets no refspec; a foreign `origin/HEAD` target is refused while preparation still succeeds; a plain caller `origin/HEAD` is not copied. |
 | `crates/amplihack-cli/tests/issue_2738_no_ptrace.rs` (Linux) | A real run's runner and every process in its tree report `TracerPid: 0` in `/proc/<pid>/status` while the run is in flight, and a run whose release succeeds reports the runner's own exit status. |
 | `crates/amplihack-cli/tests/issue_2738_git_outside_repo.rs` | A `git clone` and a `git ls-remote` against a tempfile bare repository, run outside any repository while a run is in flight, both succeed and leave the run's outcome unchanged. |
@@ -607,15 +636,17 @@ isolation test cannot pass on empty data.
 
 Every file under `crates/amplihack-cli/tests/` is a module of one test
 binary. The crate sets `autotests = false`, so a test file is compiled only
-when a `#[path = "..."] mod ...;` line names it: the four `issue_2738_*.rs`
-files are wired into `crates/amplihack-cli/tests/main.rs`, and the
-`issue_2096_*` files into `tests/issue_2096_execution_isolation.rs`. A file
-left out of both is silently never built. Select them by module path within
-the one `cli_integration` target:
+when a `#[path = "..."] mod ...;` line names it: the `issue_2738_*.rs` files
+and `issue_2756_user_git_config.rs` are wired into
+`crates/amplihack-cli/tests/main.rs`, and the `issue_2096_*` files into
+`tests/issue_2096_execution_isolation.rs`. A file left out of both is silently
+never built. Select them by module path within the one `cli_integration`
+target:
 
 ```bash
 cargo test -p amplihack-cli --test cli_integration issue_2096_execution_isolation::
 cargo test -p amplihack-cli --test cli_integration issue_2738_
+cargo test -p amplihack-cli --test cli_integration issue_2756_user_git_config::
 cargo test -p amplihack-git --test issue_2096_git_policy
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 bash tests/issue_1437_autodrive_loop.sh
@@ -680,6 +711,14 @@ The double cannot detect faults in real review isolation. The
 
 - A private repository isolates Git state. It is not an OS sandbox: a step
   can still write any path its user can write.
+- The runner's command sets no `GIT_TERMINAL_PROMPT`, so Git inside a run
+  behaves as it does in the user's shell when no helper supplies a credential:
+  it opens the terminal and asks. A detached run has nobody to answer, so an
+  https push or fetch from a step can stop there instead of failing, which is
+  the symptom described under
+  [a shell step hangs waiting for input](../howto/troubleshoot-recipe-execution.md#shell-step-hangs-waiting-for-input).
+  Configure a credential helper that can answer without a terminal. Setting
+  the variable for the run is deferred.
 - No record is kept of the Git commands a run makes. A run is isolated by the
   clone it works in, not by an account of what it did, so there is nothing to
   read afterwards to find out which commands ran.
