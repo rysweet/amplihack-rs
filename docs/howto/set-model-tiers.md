@@ -26,9 +26,9 @@ chmod 600 ~/.amplihack/model-tiers.toml
 The file is merged cell by cell over the shipped mapping, so this changes
 `standard` on Claude-compatible tools and leaves every other cell alone. The
 `version = 1` line is required: without it the whole file is ignored with one
-stderr line, which is why every block below repeats it. A file owned by
-another user, or writable by group or others, is ignored with one stderr line,
-which is what the `chmod` above avoids.
+stderr line, which is why every block below repeats it. A file owned by another
+user, or writable by group or others, is also ignored, which is what the
+`chmod` above avoids.
 
 ## 2. Fill in a harness column
 
@@ -128,6 +128,8 @@ jq -r '[.tier // "none", .effective_model // "harness default"] | @tsv' \
 | A removed `[claude.*]` model still launches with `--model` | The tier falls back to amplihack's own default chain on Claude-compatible tools | Set `AMPLIHACK_DEFAULT_MODEL` empty, or to the id you want |
 | The summary says `launch 1` instead of a step id | The launch count does not match the agent-step count: a parallel group, a rate-limit retry or a resumed run | Read `model-tiers.jsonl`, which carries the same data per launch |
 | `model.tier_map` in a project file is ignored | Path-valued keys are user-only, so a cloned repository cannot name the file that rewrites recipe YAML | Set it in your user config |
+| A line says a patched recipe copy was dropped | The rewritten file no longer parsed as YAML, so the original ran instead | Report it: a `model:` line is the only edit made, and it should always parse |
+| `review.combined_small_diff` in a project file is ignored | Both `review.*` keys are user-only, so a repository cannot decide whether its own security pass runs | Set it in your user config |
 
 ## Related
 
