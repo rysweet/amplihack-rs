@@ -167,6 +167,12 @@ fn no_default_prefix_matches_an_ordinary_command() {
 /// denies would load cleanly and still break the command; the Claude and
 /// Copilot renderings have no cross-entry check at all. Hence every example
 /// is held against every default prefix here.
+///
+/// The per-rule half of that is an assumption about Codex, not about this
+/// crate, so it is checked against the binary rather than asserted:
+/// `install::tests::issue_2589_codex_rules::codex_loads_the_rules_file_amplihack_writes_and_decides_as_the_examples_promise`
+/// adds `kill` as an instance entry, which denies a `not_match` example of
+/// two other rules, and requires the file to load regardless.
 #[test]
 fn every_not_match_example_escapes_every_prefix_in_the_whole_list() {
     let all = default_prefixes();
