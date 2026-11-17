@@ -106,7 +106,7 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
 
     let mut out = Resolution {
         argv: Vec::new(),
-        notices: force_notice.into_iter().chain(default_notice).collect(),
+        notices: force_notice.into_iter().collect(),
         record: None,
         effort: None,
     };
@@ -137,17 +137,19 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
         });
     }
 
-    // Said once, and only when a tier word was actually displaced: with no
-    // tier on the command line the variable decides nothing here, and the
-    // untiered path in `model_args` prints its own line.
-    if let Some(model) = default_model
-        && force.is_none()
-        && seen.is_some()
-    {
-        out.notices.push(Notice::DefaultModel {
-            harness: request.harness.to_string(),
-            model: model.to_string(),
-        });
+    // Said once, and only where the variable actually decided something here:
+    // with no tier on the command line it displaced nothing, and the untiered
+    // path in `model_args` prints its own line about the same value, refusal
+    // included. A forced model outranks it, so there is nothing to report.
+    if force.is_none() && seen.is_some() {
+        match (default_model, default_notice) {
+            (Some(model), _) => out.notices.push(Notice::DefaultModel {
+                harness: request.harness.to_string(),
+                model: model.to_string(),
+            }),
+            (None, Some(notice)) => out.notices.push(notice),
+            (None, None) => {}
+        }
     }
 
     out.argv = rewrite(request.argv, &actions);
