@@ -62,7 +62,7 @@ The `bash -c` running that loop has `scripts/check` in its own command line, so
 builds hung for between 26 and 81 minutes on that one line.
 
 Taking prompt text out of argv removes one side of the first problem, and is
-worth doing for its own reasons. It does not help the second at all, and it
+useful for its own reasons. It does not help the second at all, and it
 does not stop a pattern from matching another user's processes on a shared
 host. The common cause is selecting a process by matching text rather than by
 the identity of something the run started.
@@ -112,15 +112,17 @@ chosen as the mechanism for this list, for three reasons:
 What the harness mechanism does **not** buy is reach past the head of the
 command. On codex-cli 0.166.0, measured against the shipped file, Codex
 applies a rule to `pkill -f x` but not to `/usr/bin/pkill -f x` or to
-`bash -lc "pkill -f x"`. Whether Claude Code matches a denied prefix inside
-`&&`, `;`, `|` or `$(...)`, and whether its deny list applies at all under the
-`defaultMode: bypassPermissions` that amplihack launches in, are third-party
-behaviours this page does not get to assume; both were reported from live
-testing in issue #2674 and were not re-checked here. Every claim, with the
-version it was checked against, is in
-[Verified behaviour and open checks](../reference/dangerous-command-policy.md#verified-behaviour-and-open-checks).
-If the `bypassPermissions` behaviour turns out otherwise, the Claude rendering
-is worth little and the argument above survives on Codex alone.
+`bash -lc "pkill -f x"`. On the Claude side, a live session with
+`defaultMode: bypassPermissions` set (the mode amplihack launches in) and
+`Bash(pgrep:*)` denied refused both `pgrep --version` and
+`true && pgrep --version`, which is what the whole Claude rendering rests on.
+The other chain separators (`;`, `|`, `$(...)`) rest on the live testing
+reported in issue #2674. These are third-party behaviours that can change
+between releases, so each claim is recorded with what it was checked against in
+[Verified behaviour and open checks](../reference/dangerous-command-policy.md#verified-behaviour-and-open-checks)
+rather than assumed here. Were a later Claude Code to stop consulting
+`permissions.deny` in that mode, the Claude rendering would cover nothing and
+the argument above would survive on Codex alone.
 
 Where a harness has no mechanism, amplihack says so rather than substituting
 one. Copilot CLI has no user-level file for command deny rules, only
@@ -268,7 +270,7 @@ one would be the more expensive error.
 An agent that means to run `pkill` can run `sh -c 'pkill -f x'`, `env pkill`,
 a shell alias, or the same binary named by a path: `/usr/bin/pkill`, `./pkill`
 or `busybox pkill`. None of the three harnesses will match any of them. Path
-invocation is worth naming on its own because `/` and `.` are accepted
+invocation is named on its own because `/` and `.` are accepted
 characters in a policy entry, so a reader may reasonably expect a prefix to
 cover the paths that reach the same binary. It does not: a prefix is compared
 against the text or tokens the agent actually typed, and `/usr/bin/pkill` does

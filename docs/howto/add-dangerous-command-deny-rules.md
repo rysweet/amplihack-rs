@@ -145,9 +145,16 @@ entries are safe from amplihack and amplihack's old entries stay until you
 delete them:
 
 ```sh
-jq '.permissions.deny -= ["Bash(docker rm -f:*)"]' ~/.claude/settings.json > /tmp/s.json \
-  && mv /tmp/s.json ~/.claude/settings.json
+tmp=$(mktemp ~/.claude/settings.json.XXXXXX)
+jq '.permissions.deny -= ["Bash(docker rm -f:*)"]' ~/.claude/settings.json > "$tmp" \
+  && mv "$tmp" ~/.claude/settings.json
 ```
+
+The temporary file goes beside the settings file rather than in `/tmp` on
+purpose. amplihack writes `settings.json` at mode 0600, and `mv` carries the
+replacement's mode across, so a file created in `/tmp` at the umask default
+would quietly widen it. `mktemp` creates at 0600, and keeping it in the same
+directory makes the `mv` a rename rather than a copy.
 
 ## Troubleshooting
 
@@ -210,16 +217,19 @@ $ readlink ~/.codex/rules     # empty once rules/ is a real directory
 $ ls -l ~/.codex/rules/amplihack-dangerous-commands.rules
 ```
 
-The second form means the settings file holds a `permissions` value amplihack
-will not merge into, so that file has no amplihack deny entries. Open it and
+A Claude Code line reading `(permissions is not a JSON object)` or
+`(permissions.deny is not a JSON array)` means the settings file holds a
+`permissions` value amplihack will not merge into, so that file has no
+amplihack deny entries. Open it and
 make `permissions` an object whose `deny` is an array of strings:
 
 ```console
 $ jq '.permissions' ~/.claude/settings.json
 "bypassPermissions"
 
-$ jq '.permissions = {"defaultMode": "bypassPermissions", "deny": []}' ~/.claude/settings.json > /tmp/s.json \
-  && mv /tmp/s.json ~/.claude/settings.json
+$ tmp=$(mktemp ~/.claude/settings.json.XXXXXX)
+$ jq '.permissions = {"defaultMode": "bypassPermissions", "deny": []}' ~/.claude/settings.json > "$tmp" \
+    && mv "$tmp" ~/.claude/settings.json
 ```
 
 The same warning appears from `amplihack profile add` when the profile being

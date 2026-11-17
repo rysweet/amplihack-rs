@@ -80,15 +80,15 @@ below, and entries when reading the code.
 Two kinds of command are deliberately **not** denied.
 
 Ordinary pushes run. `git push`, `git push -u origin <branch>` and
-`git push origin HEAD:<branch>` share no prefix with entries 6 to 10, and the
+`git push origin HEAD:<branch>` share no prefix with prefixes 6 to 10, and the
 Codex rules file carries them as `not_match` examples, which Codex checks when
-it loads the file. The five push forms are five separate entries rather than
-one, because every harness matches a command prefix and none of them can
-express "`git push` unless a flag follows".
+it loads the file. The forced and deleting forms are named one flag at a time
+because every harness matches a command prefix and none of them can express
+"`git push` unless a flag follows".
 
 Targeted tmux kills run. `tmux kill-session -t <name>` ends one named session
 and is how [`amplihack recipe`](./recipe-command.md) runs and the
-[profile rotator](../howto/claude-profile-rotation.md) are stopped. Entry 5
+[profile rotator](../howto/claude-profile-rotation.md) are stopped. Prefix 5
 denies only `-a`, which matches the `tmux_guard` hook's own line. Any
 socket-scoped invocation (`tmux -S <socket> kill-server`, `tmux -L <name>
 kill-server`) is outside the prefix as well, because tests and sandboxes need
@@ -115,9 +115,9 @@ The pattern-kill entries (`pkill`, `killall`, `pgrep`) share this text:
 
 The text does not recommend `pgrep`, because `pgrep` is denied too. See
 [What the policy does not stop](#what-the-policy-does-not-stop) for the cost of
-that. Why a command-line pattern is the wrong thing to wait on at all — on a
+that. Why a command-line pattern is the wrong thing to wait on at all (on a
 shared machine it matches other runs, and `pgrep -f` matches the waiting shell
-itself — belongs to the agent guidance rather than to a one-line justification;
+itself) belongs to the agent guidance rather than to a one-line justification;
 see
 [Wait Without Leaving Orphan Processes](../howto/wait-without-orphan-processes.md).
 
@@ -136,7 +136,7 @@ guard is structural: it tokenises the command, sees through `env`, `command`,
 the invocation is socket-scoped. A command prefix can do none of that. See
 [Hook Specifications](./hook-specifications.md#tmux-server-guard) for the full rules.
 
-Entries 4 and 5 are therefore a second layer, not the primary one. They are
+Prefixes 4 and 5 are therefore a second layer, not the primary one. They are
 kept for two reasons:
 
 - The hook fails open. If the harness times out the hook, Claude Code and
@@ -216,12 +216,14 @@ Two properties of Claude's own matcher decide how much this covers: whether a
 deny entry still applies under `defaultMode: bypassPermissions`, which is what
 amplihack writes into the same file, and whether a denied command is matched
 when it appears inside a `&&`, `;`, `|` or `$(...)` chain rather than at the
-head. Both were reported from live testing in
-[#2674](https://github.com/rysweet/amplihack-rs/issues/2674) and are recorded,
-with that provenance, in
-[Verified behaviour and open checks](#verified-behaviour-and-open-checks). The
-value of the Claude rendering depends on them, so they are stated as a report
-rather than as something this page establishes.
+head. The first was checked in a live session while this feature was built,
+and the second was checked there for `&&` only; the remaining three separators
+rest on the live testing reported in
+[#2674](https://github.com/rysweet/amplihack-rs/issues/2674). Each claim, with
+what it was checked against, is in
+[Verified behaviour and open checks](#verified-behaviour-and-open-checks).
+These are third-party behaviours that can change between releases, so they are
+recorded with their provenance rather than assumed.
 
 The same entries are written to each managed profile's `settings.json`, under
 `~/.amplihack/claude-profiles/<name>/settings.json`. A profile directory with
@@ -232,7 +234,7 @@ still covered.
 
 ### Codex
 
-The Codex home — `$CODEX_HOME` if set and non-empty, otherwise `~/.codex` —
+The Codex home (`$CODEX_HOME` if set and non-empty, otherwise `~/.codex`)
 gets one file, `$CODEX_HOME/rules/amplihack-dangerous-commands.rules`. It holds
 six rules, one per policy entry: Codex compares whole tokens, so the five push
 forms stay one rule whose last position lists them as alternatives rather than
@@ -463,8 +465,8 @@ rejected character:
 warning: /home/alice/.amplihack/config.toml: policy.deny_commands: must be a TOML array of at most 64 command prefixes, each 1 to 8 words of ASCII letters, digits and the characters . _ - / @ = +
 ```
 
-The line is the config diagnostic form — `<path>: <key>: <reason>` behind
-`warning: ` — and it names no index. Nothing tells you which entry failed, so
+The line is the config diagnostic form, `<path>: <key>: <reason>` behind
+`warning: `, and it names no index. Nothing tells you which entry failed, so
 check the value against the table above entry by entry. `amplihack config get
 policy.deny_commands` printing an empty line after such a warning is the
 confirmation that the whole value reverted to unset.
@@ -505,10 +507,14 @@ creates `~/.claude/settings.json` if it is absent, so a bare `$HOME` comes
 out of `amplihack install` with the entries in place.
 
 The table above describes the default global hook scope. An install that
-chose repo-local scope writes `<repo>/.claude/settings.json` instead — which
-is outside `$HOME` — and does not refresh the managed profiles at all, even
-though the line it prints still mentions them. Everything else is confined to
-`$HOME`, the Codex home and the managed profile root.
+chose repo-local scope writes `<repo>/.claude/settings.json` instead, which is
+outside `$HOME`, and does not refresh the managed profiles at all, even though
+the line it prints still mentions them. The output does not change with the
+scope either. The writer is handed the same label whichever scope was chosen,
+so the Claude line still reads "the home settings file" and a refusal there is
+still labelled `Claude Code (home settings)`, while the file behind both is the
+repo's. Everything else is confined to `$HOME`, the Codex home and the managed
+profile root.
 
 ## How the files are written
 
@@ -527,9 +533,9 @@ though the line it prints still mentions them. Everything else is confined to
   directory amplihack creates is mode 0700. A symlinked, non-regular or
   foreign-owned target is left alone and reported.
 - **The Codex home is checked before anything is created.** It is examined
-  without following a link. A symlink there refuses the write — `the Codex
-  home is a symlink` — and a path that exists and is not a directory is
-  refused the same way, `the Codex home is not a directory`. Neither case
+  without following a link. A symlink there refuses the write, reported as
+  `the Codex home is a symlink`, and a path that exists and is not a
+  directory is refused the same way, `the Codex home is not a directory`. Neither case
   creates anything.
 - **The `rules/` directory is checked the same way.** A symlink or a
   non-directory at `$CODEX_HOME/rules` refuses the write with `the Codex rules
@@ -541,28 +547,30 @@ though the line it prints still mentions them. Everything else is confined to
 - **Loud on failure.** A policy write that does not succeed prints one line on
   stderr, and install still exits 0. Every writer uses
   the same sentence, which names the harness, the file in question and the
-  reason, and nothing else:
+  reason, and nothing else. The two leading spaces below are the install
+  section's own indent, not part of the sentence:
 
   ```text
-  ⚠️  Codex: the dangerous-command deny rules were not written (permission denied); fix what that names, then run `amplihack install` again
-  ⚠️  Codex: the dangerous-command deny rules were not written (the Codex home is a symlink); fix what that names, then run `amplihack install` again
-  ⚠️  Codex: the dangerous-command deny rules were not written (the Codex rules directory is a symlink); fix what that names, then run `amplihack install` again
-  ⚠️  Claude Code (home settings): the dangerous-command deny rules were not written (permissions is not a JSON object); fix what that names, then run `amplihack install` again
-  ⚠️  Claude Code (profile work): the dangerous-command deny rules were not written (permissions.deny is not a JSON array); fix what that names, then run `amplihack install` again
+    ⚠️  Codex: the dangerous-command deny rules were not written (permission denied); fix what that names, then run `amplihack install` again
+    ⚠️  Codex: the dangerous-command deny rules were not written (the Codex home is a symlink); fix what that names, then run `amplihack install` again
+    ⚠️  Codex: the dangerous-command deny rules were not written (the Codex rules directory is a symlink); fix what that names, then run `amplihack install` again
+    ⚠️  Claude Code (home settings): the dangerous-command deny rules were not written (permissions is not a JSON object); fix what that names, then run `amplihack install` again
+    ⚠️  Claude Code (profile work): the dangerous-command deny rules were not written (permissions.deny is not a JSON array); fix what that names, then run `amplihack install` again
   ```
 
   Four paths report this way: `amplihack install` and `amplihack update`
   (whose policy section carries the line), the per-profile refresh (reported
   through the same section), and profile seeding, which writes the line to
-  stderr itself as it seeds, because `amplihack profile add` has no policy
+  stderr itself as it seeds, prefixed `amplihack: warning:` rather than
+  indented under a marker, because `amplihack profile add` has no policy
   section to carry it. The launch-time repair is the fourth: it writes the
   same home settings file but says nothing about the policy, so a file it
   cannot write there is named by the next `amplihack install` or `amplihack
   update`.
 
-  A file the merge refuses before the policy writer runs — malformed JSON, a
-  symlink, a hard link, a foreign-owned or oversized `settings.json` — is
-  reported the same way. It is a file that took no entries, not a file that
+  A file the merge refuses before the policy writer runs, whether for malformed
+  JSON, a symlink, a hard link, or a foreign-owned or oversized
+  `settings.json`, is reported the same way. It is a file that took no entries, not a file that
   does not exist, and the two must not read alike. The reason names a JSON
   key or an I/O error kind; it never quotes a value read out of the file.
 
@@ -587,7 +595,7 @@ thread, which is what the record is scoped to:
 
 - A Codex launch reads the record before the launch repair writes the home
   settings file. The launch's own policy call takes whatever the record holds,
-  and the settings write that follows records its outcome afterwards — where
+  and the settings write that follows records its outcome afterwards, where
   the next phase would find it. The launch branch therefore clears first.
 - Profile seeding records as it seeds, and a test process that seeds and then
   installs on the same thread would see the seeding outcome if the install's
@@ -632,11 +640,16 @@ does not say which profile cannot be acted on.
 ## Uninstall
 
 `amplihack uninstall` removes the Codex rules file, and only that file: the
-file must start with the whole 41-character marker line
-`# amplihack: dangerous-command deny rules`, so a symlink, an unmarked
-regular file, or a file whose first line merely begins `# amplihack:` and
-then says something else, is left in place. It is removed whenever it is there,
-on the same unconditional terms as the rest of the Codex cleanup.
+file's bytes must begin with the whole 41-character marker
+`# amplihack: dangerous-command deny rules`, so a symlink, an unmarked regular
+file, or a file whose first line merely begins `# amplihack:` and then says
+something else, is left in place. It is removed whenever it is there, on the
+same unconditional terms as the rest of the Codex cleanup.
+
+The check is a prefix test on those 41 characters rather than a comparison of
+the whole first line, so a first line that starts with the marker and then
+carries further text of your own still counts as amplihack's file and is
+removed.
 
 The Claude entries are not removed. They sit in an array among your own
 entries, and amplihack does not edit that array on the way out. Removing them
@@ -753,8 +766,10 @@ its command line. See
 
 Each harness's matcher is third-party behaviour that can change between
 releases, so the claims this page rests on are listed here with the version
-they were checked against. A claim still open is one the implementation must
-settle before the sentence that depends on it is final.
+they were checked against. The two Claude Code rows name the session rather
+than a version, because the version that session ran was not recorded; treat
+them as weaker than the Codex rows. A claim still open is one the
+implementation must settle before the sentence that depends on it is final.
 
 | Claim | Status |
 |-------|--------|
@@ -777,18 +792,19 @@ The bypass-mode row carries more weight than the others. amplihack writes
 `defaultMode: bypassPermissions` into the same file it writes the deny entries
 into, and four of the clients it manages (`claude`, `rusty`, `rustyclawd` and
 `amplifier`) read that file. If Claude Code did not consult `permissions.deny`
-in that mode, the Claude rendering would cover nothing on any of them. The
-evidence for it is the live testing reported in
-[#2674](https://github.com/rysweet/amplihack-rs/issues/2674). It has not been
-re-run against the Claude Code version on your machine, and nothing on this
-page establishes it: every sentence that depends on it is written as a report
-of that issue. If you depend on the Claude rendering, check it yourself with
-one denied command in a bypass-mode session, and record the version here.
+in that mode, the Claude rendering would cover nothing on any of them. It was
+checked directly: in a session with `defaultMode: bypassPermissions` set and
+`Bash(pgrep:*)` denied, `pgrep --version` was refused, as was
+`true && pgrep --version`. That agrees with the live testing reported in
+[#2674](https://github.com/rysweet/amplihack-rs/issues/2674). It is one
+session on one Claude Code version, not a property of every version you may
+run, so if you depend on the Claude rendering, repeat the check with one
+denied command in a bypass-mode session and record the version here.
 
 The discovery check was made by putting a deliberately unparseable `.rules`
 file in `$CODEX_HOME/rules/` and starting `codex exec`: it stopped with
 `Error loading rules:` naming that file, which it had not been pointed at.
-That has a consequence beyond discovery — a malformed rules file in that
+That has a consequence beyond discovery: a malformed rules file in that
 directory stops Codex from starting at all, which is why the renderer refuses
 any character that is syntax in the file rather than escaping it.
 
