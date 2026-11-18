@@ -378,6 +378,8 @@ mod issue_2535_recipe_guide_cli;
 mod issue_2535_recipe_guide_injection;
 #[path = "issue_2535_recipe_guide_publish.rs"]
 mod issue_2535_recipe_guide_publish;
+#[path = "issue_2783_recipe_guide_work_root.rs"]
+mod issue_2783_recipe_guide_work_root;
 #[path = "issue_2539_step_recovery_driver.rs"]
 mod issue_2539_step_recovery_driver;
 #[path = "issue_2539_step_recovery_fixture.rs"]

@@ -134,6 +134,8 @@ pub struct GuideFixture {
     pub home: PathBuf,
     pub state: PathBuf,
     pub work: PathBuf,
+    /// A work root that is not the default `$HOME/.amplihack/work`.
+    pub alt_work: PathBuf,
     pub recipe_logs: PathBuf,
     pub records: PathBuf,
     pub tools: PathBuf,
@@ -244,6 +246,7 @@ impl GuideFixture {
         let home = root.join("home");
         let state = root.join("state");
         let work = home.join(".amplihack").join("work");
+        let alt_work = root.join("elsewhere").join("work");
         let recipe_logs = home.join(".amplihack").join("recipe-logs");
         let records = root.join("records");
         let tools = root.join("tools");
@@ -285,6 +288,7 @@ impl GuideFixture {
             home,
             state,
             work,
+            alt_work,
             recipe_logs,
             records,
             tools,
@@ -447,6 +451,67 @@ impl GuideFixture {
             format!("starting run\namplihack.recipe.log_pointer {pointer}\nmore output\n"),
         );
         log
+    }
+
+    /// Like [`Self::make_run`], but under [`Self::alt_work`], the work root a
+    /// run started with `AMPLIHACK_WORK_ROOT` set would use.
+    pub fn make_run_in_alt_work(&self, folder_id: &str, correlation_id: &str) -> PathBuf {
+        let dir = self.alt_work.join("runs").join(folder_id);
+        private_dir(&self.alt_work);
+        private_dir(&self.alt_work.join("runs"));
+        private_dir(&dir);
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "run_id": folder_id,
+            "recipe": "smart-orchestrator",
+            "pid": 0,
+            "cwd": self.root.display().to_string(),
+            "started_at": "2026-11-12T09:12:00Z",
+            "outcome": "running",
+            "attempts": [{"correlation_id": correlation_id}],
+            "steps": [],
+        });
+        private_file(&dir.join("run.json"), report.to_string());
+        dir
+    }
+
+    /// The early pointer object a run writes at start, with `run_dir` when
+    /// given, as `recipe run` records it (issue #2783).
+    pub fn pointer(correlation_id: &str, run_dir: Option<&Path>) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "schema_version": 1,
+            "event": "early",
+            "run_id": correlation_id,
+            "recipe_name": "smart-orchestrator",
+            "cwd": "/tmp/w",
+        });
+        if let Some(d) = run_dir {
+            v["run_dir"] = d.display().to_string().into();
+        }
+        v
+    }
+
+    /// `<recipe-logs>/<session>.log` whose body holds `pointer` as a real
+    /// pointer line between other output.
+    pub fn session_log_from_pointer(&self, session: &str, pointer: &serde_json::Value) -> PathBuf {
+        let log = self.recipe_logs.join(format!("{session}.log"));
+        private_file(
+            &log,
+            format!("starting run\namplihack.recipe.log_pointer {pointer}\nmore output\n"),
+        );
+        log
+    }
+
+    /// `amplihack recipe guide <args…> -` with `text` on stdin and both
+    /// work-root variables unset, whatever the caller's environment.
+    pub fn guide_without_work_root(&self, args: &[&str], text: &str) -> Output {
+        let mut full = vec!["recipe", "guide"];
+        full.extend_from_slice(args);
+        full.push("-");
+        let mut c = self.amplihack(&full);
+        c.env_remove("AMPLIHACK_WORK_ROOT")
+            .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT");
+        self.run_with_stdin(c, Some(text.as_bytes()))
     }
 
     pub fn pr_parent(&self) -> PathBuf {

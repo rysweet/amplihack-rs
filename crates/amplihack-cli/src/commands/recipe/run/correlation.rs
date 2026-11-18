@@ -431,3 +431,62 @@ mod tests_issue_1976 {
         assert_eq!(RecipeRunFinalStatus::ParseFailure.as_str(), "parse_failure");
     }
 }
+
+#[cfg(test)]
+mod tests_issue_2783 {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn correlation() -> RecipeRunCorrelation {
+        RecipeRunCorrelation::new(
+            "r".to_string(),
+            Path::new("/"),
+            &BTreeMap::new(),
+            Path::new("/bin/runner"),
+        )
+    }
+
+    fn pointer_json(c: &RecipeRunCorrelation) -> JsonValue {
+        // Contract: `emit_early` builds its line with `early_pointer_line`
+        // (the `LOG_POINTER_PREFIX` line without the newline), which the
+        // implementation factors out of `emit` so it can be read here.
+        let line = c.early_pointer_line();
+        serde_json::from_str(line.trim().trim_start_matches(LOG_POINTER_PREFIX)).unwrap()
+    }
+
+    #[test]
+    fn schema_version_is_unchanged() {
+        assert_eq!(SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn run_dir_is_recorded_in_full_after_worktree() {
+        let dir = PathBuf::from("/w/runs/3f1b7c2a-5d4e-4a90-8b61-7e2c9d0a4f18");
+        let c = correlation().with_run_location(Some(&dir));
+        let v = pointer_json(&c);
+        assert_eq!(v["run_dir"], dir.display().to_string());
+    }
+
+    #[test]
+    fn no_run_location_omits_the_field() {
+        let v = pointer_json(&correlation().with_run_location(None));
+        assert!(v.get("run_dir").is_none());
+    }
+
+    #[test]
+    fn an_oversize_run_dir_is_omitted_never_truncated() {
+        let long = PathBuf::from(format!("/w/{}/runs/x", "a".repeat(MAX_POINTER_PATH_BYTES)));
+        let v = pointer_json(&correlation().with_run_location(Some(&long)));
+        assert!(v.get("run_dir").is_none(), "{v}");
+    }
+
+    #[test]
+    fn a_run_dir_longer_than_the_value_bound_but_within_the_path_bound_is_whole() {
+        let long = PathBuf::from(format!(
+            "/w/{}/runs/x",
+            "a".repeat(MAX_POINTER_VALUE_BYTES + 100)
+        ));
+        let v = pointer_json(&correlation().with_run_location(Some(&long)));
+        assert_eq!(v["run_dir"], long.display().to_string());
+    }
+}
