@@ -53,7 +53,7 @@ fn gh_calls(f: &PublishFixture, operation: &str) -> usize {
 
 fn create_args(f: &PublishFixture) -> Vec<Vec<u8>> {
     fs::read(f.tmp.path().join("create.argv"))
-        .unwrap_or_default()
+        .expect("read recorded gh pr create arguments")
         .split(|b| *b == 0)
         .map(<[u8]>::to_vec)
         .collect()

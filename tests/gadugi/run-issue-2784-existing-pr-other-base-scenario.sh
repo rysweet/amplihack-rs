@@ -270,14 +270,17 @@ run_case() {
 field() {
   jq -rs --arg k "$2" \
     'if length == 1 and (.[0] | type) == "object" and (.[0] | has($k)) then (.[0][$k] | tostring) else "<missing>" end' \
-    "$1/publish-result.json" 2>/dev/null || printf '<missing>\n'
+    "$1/publish-result.json"
 }
 
 # expect_field <case dir> <key> <want>: adds a problem when the field differs.
 expect_field() {
   local got
-  got="$(field "$1" "$2")"
-  [ "$got" = "$3" ] || problems+=("$2 '$got', want '$3'")
+  if got="$(field "$1" "$2")"; then
+    [ "$got" = "$3" ] || problems+=("$2 '$got', want '$3'")
+  else
+    problems+=("cannot read $2 from publish result (jq exit $?)")
+  fi
 }
 
 create_calls() {
@@ -340,8 +343,17 @@ if dir="$(new_case no-pr '[]')"; then
   expect_field "$dir" pr_url https://github.com/owner/repo/pull/700
   expect_field "$dir" base_branch ""
   [ "$(create_calls "$dir")" = 1 ] || problems+=("$(create_calls "$dir") pr create call(s), want 1")
-  if [ -f "$dir/create.argv" ] && tr '\000' '\n' < "$dir/create.argv" | grep -q '^--base'; then
-    problems+=("gh pr create was given --base")
+  if [ ! -f "$dir/create.argv" ] || [ ! -r "$dir/create.argv" ]; then
+    problems+=("missing or unreadable gh pr create argv evidence")
+  elif create_argv="$(tr '\000' '\n' < "$dir/create.argv")"; then
+    if grep -q '^--base' <<< "$create_argv"; then
+      problems+=("gh pr create was given --base")
+    else
+      inspect_status=$?
+      [ "$inspect_status" -eq 1 ] || problems+=("cannot inspect create argv (grep exit $inspect_status)")
+    fi
+  else
+    problems+=("cannot decode create argv (tr exit $?)")
   fi
   [ ! -e "$dir/unexpected" ] || problems+=("unexpected gh call: $(head -n 1 "$dir/unexpected")")
   if [ "${#problems[@]}" -eq 0 ]; then
