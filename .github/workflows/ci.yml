@@ -785,6 +785,13 @@ jobs:
               --cargo /opt/toolchain/bin/cargo --rustc /opt/toolchain/bin/rustc \
               --precommit /opt/precommit/bin/pre-commit --host-sentinel "$sentinel" \
               --tested-sha "$(git rev-parse HEAD)"
+      - name: Restore evidence ownership for artifact upload (issue #2806)
+        if: always()
+        shell: bash
+        run: |
+          if [ -d artifacts/issue-2806 ]; then
+            sudo chown -R "$(id -u):$(id -g)" artifacts/issue-2806
+          fi
       - name: Retain build and drive evidence (issue #2806)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

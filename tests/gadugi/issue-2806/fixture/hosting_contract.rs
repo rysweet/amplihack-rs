@@ -206,6 +206,15 @@ pub fn validate(args: &[&str], repository: &str) -> Result<Vec<String>> {
             validate_endpoint(endpoint, repository)?;
         }
     }
+    if command == "api" {
+        let endpoint = positions[0];
+        let index = normalized
+            .iter()
+            .position(|arg| arg == endpoint)
+            .context("normalized endpoint absent")?;
+        let endpoint = normalized.remove(index);
+        normalized.insert(1, endpoint);
+    }
     Ok(normalized)
 }
 

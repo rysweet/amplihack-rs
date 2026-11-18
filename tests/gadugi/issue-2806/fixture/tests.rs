@@ -1183,7 +1183,7 @@ fn finalization_allowances_match_baseline_state_success_and_exit() {
         let classify = |observation: &evidence::PendingFinalization| {
             report
                 .classify(Assertion::failed(
-                    &allowance.assertion_id.split('.').next().unwrap(),
+                    allowance.assertion_id.split('.').next().unwrap(),
                     &allowance.assertion_id,
                     FailureKind::Regression,
                     &evidence::finalization_fingerprint(observation),
@@ -1488,4 +1488,22 @@ fn preservation_explanations_require_target_identity_explicit_skip_and_observed_
         runtime,
         "retained-run"
     ));
+}
+
+#[test]
+fn hosting_normalizes_supported_api_flags_before_dispatch() {
+    let repo = Repository::published();
+    let mut hosting = repo.hosting();
+    for args in [
+        vec!["api", "user", "--method", "GET"],
+        vec!["api", "-X", "GET", "user"],
+        vec!["api", "--hostname", "github.com", "user"],
+    ] {
+        let response = hosting.invoke(&repo.checkout, &args).unwrap();
+        assert_eq!(response.exit_code, 0);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.stdout).unwrap()["login"],
+            "fixture"
+        );
+    }
 }
