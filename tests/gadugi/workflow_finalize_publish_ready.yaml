@@ -71,6 +71,11 @@ assertions:
     params:
       target: stdout
       expected: "PASS: final_read_mismatches_enter_recovery"
+  - name: canonical-rejection-retains-report
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: noncanonical_discovery_retains_recovery_report"
   - name: protected-final-diagnostics
     type: output_contains
     params:

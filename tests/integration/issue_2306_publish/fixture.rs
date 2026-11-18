@@ -137,6 +137,8 @@ exec "$REAL_TOOL" "$@"
             .env("HOME", self.tmp.path().join("home"))
             .env("TMPDIR", self.tmp.path().join("private"))
             .env("GH_RETRY_TMPDIR", self.tmp.path().join("private"))
+            // Durable scope evidence must outlive ephemeral GH capture files.
+            .env("AMPLIHACK_RUNTIME_ROOT", self.tmp.path().join("runtime"))
             .env("CASE_ROOT", self.tmp.path())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")

@@ -293,7 +293,11 @@ impl Fixture {
             !self.root.join("ready").exists(),
             "unexpected readiness mutation"
         );
-        let calls = fs::read_to_string(self.root.join("gh-calls")).unwrap_or_default();
+        let calls = match fs::read_to_string(self.root.join("gh-calls")) {
+            Ok(calls) => calls,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => panic!("cannot verify GitHub mutation history: {error}"),
+        };
         assert!(
             !calls
                 .lines()

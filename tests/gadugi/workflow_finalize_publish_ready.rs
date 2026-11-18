@@ -68,6 +68,10 @@ fn main() {
             contracts::discovery_secondary_mismatches_enter_recovery,
         ),
         (
+            "noncanonical_discovery_retains_recovery_report",
+            contracts::noncanonical_discovery_retains_recovery_report,
+        ),
+        (
             "final_read_mismatches_enter_recovery",
             contracts::final_read_mismatches_enter_recovery,
         ),

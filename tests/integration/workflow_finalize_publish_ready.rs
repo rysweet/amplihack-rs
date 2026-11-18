@@ -537,6 +537,55 @@ pub fn discovery_secondary_mismatches_enter_recovery(f: &Fixture) {
     }
 }
 
+pub fn noncanonical_discovery_retains_recovery_report(f: &Fixture) {
+    f.audit(true);
+    success(f.publish());
+    // A long response exceeds recovery's excerpt limit. Its durable report
+    // must remain reachable through the final error line's path.
+    let hostile_url = format!(
+        "https://github.com/other/widget/pull/7?{}https://secret-user:secret-pass@example.invalid/",
+        "x".repeat(5000)
+    );
+    f.patch_candidate(&format!(".url=\"{hostile_url}\""));
+    let o = f
+        .step(READY)
+        .env_remove("RECIPE_VAR_pr_number")
+        .env_remove("RECIPE_VAR_pr_url")
+        .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    let evidence = fs::read_to_string(f.root.join("recovery-evidence.json")).unwrap();
+    assert!(
+        evidence.contains("discovered PR URL is not canonical"),
+        "{evidence}"
+    );
+    let reports = files_under(&f.root.join("runtime"));
+    let report_path = reports
+        .iter()
+        .find(|path| path.ends_with("exclusions.json"))
+        .expect("canonical URL rejection must persist diagnostics");
+    assert!(
+        evidence.contains(report_path.to_str().unwrap()),
+        "{evidence}"
+    );
+    let report = fs::read_to_string(report_path).unwrap();
+    for value in [
+        "canonical PR URL",
+        PR_URL,
+        "https://github.com/other/widget/pull/7",
+    ] {
+        assert!(report.contains(value), "{report}");
+    }
+    for data in [&show(&o), &evidence, &report] {
+        assert!(
+            !data.contains("secret-user") && !data.contains("secret-pass"),
+            "{data}"
+        );
+    }
+    f.assert_no_mutation();
+}
+
 pub fn final_read_mismatches_enter_recovery(f: &Fixture) {
     f.audit(true);
     success(f.publish());
@@ -791,7 +840,7 @@ pub fn hostile_candidate_text_is_data(f: &Fixture) {
     );
     assert!(!f.pr.join("injected").exists());
     for path in files_under(&f.root.join("runtime")) {
-        let data = fs::read_to_string(path).unwrap_or_default();
+        let data = fs::read_to_string(path).expect("read every persisted diagnostic report");
         assert!(
             !data.contains("secret-user") && !data.contains("secret-pass"),
             "credential leaked: {data}"
@@ -911,6 +960,16 @@ mod tests {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         Fixture::new(&source, Path::new(env!("CARGO_BIN_EXE_amplihack")))
     }
+    #[test]
+    fn mutation_oracle_rejects_unreadable_history() {
+        let f = fixture();
+        f.assert_no_mutation(); // No gh invocation is legitimate.
+        fs::create_dir(f.root.join("gh-calls")).unwrap();
+        assert!(std::panic::catch_unwind(|| f.assert_no_mutation()).is_err());
+        fs::remove_dir(f.root.join("gh-calls")).unwrap();
+        fs::write(f.root.join("gh-calls"), [0xff]).unwrap();
+        assert!(std::panic::catch_unwind(|| f.assert_no_mutation()).is_err());
+    }
     macro_rules! contract {
         ($($name:ident),+ $(,)?) => { $(#[test] fn $name() { super::$name(&fixture()); })+ };
     }
@@ -934,6 +993,7 @@ mod tests {
         remote_fast_forward_keeps_audit,
         identity_and_secondary_filters_still_apply,
         discovery_secondary_mismatches_enter_recovery,
+        noncanonical_discovery_retains_recovery_report,
         final_read_mismatches_enter_recovery,
         hostile_final_metadata_is_protected,
         valid_discovery_only_readiness_succeeds,
