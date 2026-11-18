@@ -1,5 +1,6 @@
 ---
 title: Step Failure Recovery Reference
+description: Recovery choices, evidence, and terminal or continuing behavior for recipe steps.
 last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
@@ -9,9 +10,10 @@ owner: workflow-team
 
 A recipe step that opts in no longer ends the run when it fails. An agent
 reads the failure and chooses one of four ways forward; the driver validates
-the choice and appends it to a record. Only a recorded handoff can end the
-run, always with exit 81 (issue #2539). Recovery has no timers, no waits and
-no attempt counter.
+the choice and appends it to a record. Call sites determine whether a recorded
+handoff ends the run. Finalize publication and readiness retain unresolved
+outcomes and continue; other callers can stop with exit 81. Recovery has no
+timers, no waits and no attempt counter.
 
 > **Internal command.** `amplihack orch helper step-recovery` is called by
 > bundle recipes. It is not a user-facing command and may change with the
@@ -58,9 +60,13 @@ A failed retry or alternative goes back to recovery with the full history.
 Each pass appends one record. Exit 81 from the command with no handoff on
 record is an ordinary failure.
 
+The flow above describes the driver's choices. Finalize publication and
+readiness use the [nonterminal integration](#finalize-publication-and-readiness)
+to preserve outcomes through later reporting and completion.
+
 ## Where it applies
 
-| Recipe | Step | Flags |
+| Recipe | Step | Recovery behavior |
 |---|---|---|
 | `autodrive-build` | `step-02-default-workflow` (sub-recipe), recovered by `step-02r-default-workflow-recovery` | `--already-failed --essential` |
 | `autodrive-crusty-loop` | `step-02-crusty-loop` | `--essential --stop-on-handoff` |
@@ -69,8 +75,8 @@ record is an ordinary failure.
 | `autodrive-merge-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
 | `autodrive-merge-loop` | `step-02-merge-ready-loop` | `--essential --stop-on-handoff` |
 | `autodrive-merge-loop` | `step-03-finalize` (sub-recipe), recovered by `step-03r-finalize-recovery` only when the loop asked for finalisation | `--already-failed --essential` |
-| `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff` |
-| `workflow-finalize` | `step-21-pr-ready` | `--essential --stop-on-handoff` |
+| `workflow-finalize` | `step-20b-push-cleanup` | Nonterminal recovery; publication outcome retained. |
+| `workflow-finalize` | `step-21-pr-ready` | Nonterminal recovery; readiness outcome retained. |
 | `workflow-finalize` | `validate-agentic-finalization` | `--guard` |
 
 Report steps: `workflow-finalize` `step-recovery-report` (before
@@ -118,19 +124,29 @@ wrapped by this driver either. See
 `step-20b-push-cleanup` allows supported local repairs and then re-executes
 `workflow_finalize_publish.sh`. The recovery agent does not push; the original
 publication operation owns staging, hook-enabled commits, and the push.
-`step-21-pr-ready` re-executes its original validation before any readiness
-mutation. Both are essential: `continue_recorded` is unavailable and a handoff
-stops the run with exit `81`.
+`step-21-pr-ready` requires confirmed publication and fresh validation before
+any readiness mutation. Unresolved evidence transfers to an agent for
+assessment within the recorded repository, branch, base, and PR identity.
+Secondary metadata alone does not end the run for its own open PR.
 
-Worktree-resolution, publication, and scope failures include actionable context.
+These call sites continue after an unresolved or safely declined operation.
+They retain the actual publication and readiness outcomes for final status,
+evidence collection, recovery reporting, and completion. A wrapper's successful
+exit means execution continues; it does not mean a push or readiness mutation
+succeeded. Reporting a handoff from either operation does not terminate this
+finalization path or convert the operation into success.
+
+Worktree-resolution, publication, and scope failures include recorded worktree
+context, intended PR identity, publication results, and local and remote commits.
 Scope failures include the absolute path to the complete redacted candidate
 report, so a truncated recovery excerpt does not lose the exclusion details.
 Recovery treats candidate text as untrusted evidence.
 
 A child cannot repair a parent's recipe context by exporting variables. If the
-original command cannot obtain valid context, recovery hands off to an owner
-who can restore it. Missing publication must be resolved through the publication
-path; rerunning readiness cannot push work. See
+original command cannot obtain valid context, recovery records the required
+owner action and continues with the operation unresolved. Missing publication
+must be resolved through the publication path; rerunning readiness cannot push
+work. See
 [Finalize Publication and PR Readiness](workflow-finalize-publication.md).
 
 To check that no step has two owners:
@@ -155,21 +171,12 @@ grep -n 'recipe: "push-failure-recovery"' amplifier-bundle/recipes/*.yaml
 
 ## Opting a step in
 
-A bash step keeps its body unchanged in a quoted here-document and runs it
-through the driver. Values come from quoted `$RECIPE_VAR_*` variables, never
-from `{{…}}`:
-
-```yaml
-    command: |
-      IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || :
-      ...the step's original commands, unchanged...
-      STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-21-pr-ready
-      exec amplihack orch helper step-recovery run --step-id step-21-pr-ready --essential --stop-on-handoff \
-        --dir "$RECIPE_VAR_step_recovery_dir" \
-        --goal "Mark PR ${RECIPE_VAR_pr_number:-unknown} ready for review" \
-        -- bash -c "$STEP_BODY" step-21-pr-ready
-```
+A bash step keeps its body in a quoted here-document and runs it through the
+driver. Values come from quoted `$RECIPE_VAR_*` variables, never from
+`{{…}}`. The [Crusty loop recipe](../../amplifier-bundle/recipes/autodrive-crusty-loop.yaml)
+provides a complete example: `step-02-crusty-loop` uses `--essential` and
+`--stop-on-handoff` to end that caller on a handoff. Finalize publication and
+readiness instead use the nonterminal integration above.
 
 Without a recovery directory the body runs in bash as before #2539. That
 fallback stays in each step, not in the driver, so a step with recovery off
@@ -356,12 +363,14 @@ A step with `--stop-on-handoff` or `--guard` exits 81, the runner stops, and
   path, and records a validator handoff when finalization evidence is
   missing.
 - `workflow-finalize` `step-recovery-report` runs after
-  `validate-agentic-finalization` and before `workflow-complete`, so a
-  handed-off run never reaches `workflow-complete`.
+  `validate-agentic-finalization` and before `workflow-complete`. Handoffs from
+  publication and readiness remain nonterminal at this call site and in later
+  validation. Completion retains their unresolved outcomes rather than
+  claiming successful publication or readiness.
 
-Behaviour change: a failure at `step-20b-push-cleanup`, `step-21-pr-ready` or
-`validate-agentic-finalization` now ends the run with exit 81 and a record,
-where it used to exit 1.
+The driver's report command still returns exit 81 for a recorded handoff.
+Finalize's integration preserves publication and readiness records as evidence
+without treating that report result as a reason to end the run.
 
 ## Recovery directory
 

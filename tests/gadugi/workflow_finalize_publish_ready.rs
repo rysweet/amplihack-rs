@@ -56,6 +56,26 @@ fn main() {
         .expect("pinned runner prerequisite");
     let cases: &[(&str, fn(&contracts::fixture::Fixture))] = &[
         (
+            "worktree_resolution_ignores_ambient_git_overrides",
+            contracts::worktree_resolution_ignores_ambient_git_overrides,
+        ),
+        (
+            "publication_and_readiness_ignore_ambient_git_overrides",
+            contracts::publication_and_readiness_ignore_ambient_git_overrides,
+        ),
+        (
+            "publication_handoff_continues_without_readying_audit_edits",
+            contracts::publication_handoff_continues_without_readying_audit_edits,
+        ),
+        (
+            "finalization_evidence_retains_operation_outcomes",
+            contracts::finalization_evidence_retains_operation_outcomes,
+        ),
+        (
+            "recovery_summary_continues_with_unresolved_operations",
+            contracts::recovery_summary_continues_with_unresolved_operations,
+        ),
+        (
             "publication_resolves_installed_runtime_helper",
             contracts::publication_resolves_installed_runtime_helper,
         ),

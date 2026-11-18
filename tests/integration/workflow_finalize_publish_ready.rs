@@ -117,6 +117,166 @@ pub fn main_checkout_uses_pr_worktree(f: &Fixture) {
     assert_eq!(f.git(&f.pr, &["ls-files", "caller-only.txt"]), "");
 }
 
+/// Ambient Git context belongs to the caller, never the recorded PR worktree.
+pub fn worktree_resolution_ignores_ambient_git_overrides(f: &Fixture) {
+    let output = f
+        .tool("worktree_setup_path.sh", &f.main)
+        .arg("issue-2787-context")
+        .env("GIT_DIR", f.main.join(".git"))
+        .env("GIT_COMMON_DIR", f.main.join(".git"))
+        .env("GIT_WORK_TREE", &f.main)
+        .env("GIT_INDEX_FILE", f.main.join(".git/index"))
+        .output()
+        .unwrap();
+    assert_eq!(success(output).trim(), f.pr.to_str().unwrap());
+}
+
+pub fn publication_and_readiness_ignore_ambient_git_overrides(f: &Fixture) {
+    let caller_head = f.head(&f.main);
+    let caller_index = fs::read(f.main.join(".git/index")).unwrap();
+    fs::write(f.main.join("caller-only.txt"), "preserve caller edits\n").unwrap();
+    f.audit(false);
+    for id in [PUBLISH, READY] {
+        success(
+            f.step(id)
+                .env("GIT_DIR", f.main.join(".git"))
+                .env("GIT_COMMON_DIR", f.main.join(".git"))
+                .env("GIT_WORK_TREE", &f.main)
+                .env("GIT_INDEX_FILE", f.main.join(".git/index"))
+                .output()
+                .unwrap(),
+        );
+    }
+    f.assert_ready();
+    assert_eq!(f.head(&f.main), caller_head);
+    assert_eq!(fs::read(f.main.join(".git/index")).unwrap(), caller_index);
+    assert_eq!(
+        fs::read_to_string(f.main.join("caller-only.txt")).unwrap(),
+        "preserve caller edits\n"
+    );
+}
+
+/// The GitHub HEAD already matches here. A declined audit commit must still
+/// prevent readiness, while leaving later workflow steps runnable.
+pub fn publication_handoff_continues_without_readying_audit_edits(f: &Fixture) {
+    f.audit(false);
+    let before = f.head(&f.pr);
+    let hook = f.git(
+        &f.pr,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "hooks/pre-commit",
+        ],
+    );
+    executable(
+        Path::new(hook.trim()),
+        "#!/bin/sh\necho 'audit commit declined' >&2\nexit 42\n",
+    );
+    let publication = success(
+        f.step(PUBLISH)
+            .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
+            .output()
+            .unwrap(),
+    );
+    assert!(f.root.join("recovery-evidence.json").exists());
+    assert!(publication.contains("handoff"), "{publication}");
+    success(
+        f.step(READY)
+            .env("RECIPE_VAR_cleanup_push_result", &publication)
+            .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
+            .output()
+            .unwrap(),
+    );
+    assert_eq!(f.head(&f.pr), before);
+    assert_eq!(f.remote_head(), before);
+    assert_eq!(
+        fs::read_to_string(f.pr.join("audit.txt")).unwrap(),
+        "audit fix included\n"
+    );
+    f.assert_no_mutation();
+}
+
+fn declined_operation(f: &Fixture, id: &str) -> String {
+    success(
+        f.command(&f.binary, &f.main)
+            .args([
+                "orch",
+                "helper",
+                "step-recovery",
+                "run",
+                "--step-id",
+                id,
+                "--essential",
+                "--dir",
+            ])
+            .arg(f.root.join("recovery"))
+            .args([
+                "--goal",
+                "Assess the unresolved PR operation",
+                "--",
+                "bash",
+                "-c",
+                "echo 'operation remains unconfirmed' >&2; exit 42",
+            ])
+            .output()
+            .unwrap(),
+    )
+}
+
+/// Exercise the existing nonterminal recovery API independently of the recipe
+/// wrapper, so an early wrapper failure cannot conceal lost final evidence.
+pub fn finalization_evidence_retains_operation_outcomes(f: &Fixture) {
+    f.audit(true);
+    let outcomes = [PUBLISH, READY].map(|id| declined_operation(f, id));
+    let evidence = success(
+        f.step("collect-finalization-evidence")
+            .env("RECIPE_VAR_cleanup_push_result", &outcomes[0])
+            .env("RECIPE_VAR_pr_ready_result", &outcomes[1])
+            .output()
+            .unwrap(),
+    );
+    let evidence_file = f.root.join("final-evidence.json");
+    fs::write(&evidence_file, &evidence).unwrap();
+    // Preserve the existing recovery decision schema, wherever the collector
+    // places operation evidence. No new completion schema is imposed here.
+    for id in [PUBLISH, READY] {
+        let checked = f
+            .command("jq", &f.main)
+            .args([
+                "-e",
+                "--arg",
+                "id",
+                id,
+                "any(.. | objects; .step_id == $id and .choice == \"handoff\")",
+            ])
+            .arg(&evidence_file)
+            .output()
+            .unwrap();
+        assert!(
+            checked.status.success(),
+            "lost {id} recovery outcome: {evidence}"
+        );
+    }
+    f.assert_no_mutation();
+}
+
+pub fn recovery_summary_continues_with_unresolved_operations(f: &Fixture) {
+    declined_operation(f, PUBLISH);
+    declined_operation(f, READY);
+    let report = success(
+        f.step("step-recovery-report")
+            .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
+            .output()
+            .unwrap(),
+    );
+    for observation in [PUBLISH, READY, "handoff"] {
+        assert!(report.contains(observation), "lost {observation}: {report}");
+    }
+    f.assert_no_mutation();
+}
+
 pub fn alias_publishes_remote_branch(f: &Fixture) {
     let alias = format!("{BRANCH}--wt-1");
     f.git(&f.pr, &["branch", "-m", &alias]);
@@ -143,7 +303,11 @@ pub fn persistent_ancestor_enters_recovery(f: &Fixture) {
         .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
         .output()
         .unwrap();
-    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    assert!(
+        o.status.success(),
+        "unresolved recovery must allow later workflow steps: {}",
+        show(&o)
+    );
     let evidence = fs::read_to_string(f.root.join("recovery-evidence.json"))
         .expect("the agent must receive validation evidence");
     assert!(evidence.contains("no_scoped_pr"), "{evidence}");
@@ -199,7 +363,11 @@ pub fn missing_worktree_reaches_publication_recovery(f: &Fixture) {
         .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
         .output()
         .unwrap();
-    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    assert!(
+        o.status.success(),
+        "unresolved recovery must allow later workflow steps: {}",
+        show(&o)
+    );
     let evidence = fs::read_to_string(f.root.join("recovery-evidence.json"))
         .expect("publication must permit agentic recovery");
     assert!(evidence.contains("worktree"), "{evidence}");
@@ -213,7 +381,11 @@ pub fn missing_worktree_reaches_readiness_recovery(f: &Fixture) {
         .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
         .output()
         .unwrap();
-    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    assert!(
+        o.status.success(),
+        "unresolved recovery must allow later workflow steps: {}",
+        show(&o)
+    );
     let evidence = fs::read_to_string(f.root.join("recovery-evidence.json")).unwrap();
     assert!(evidence.contains("worktree"), "{evidence}");
     f.assert_no_mutation();
@@ -464,7 +636,11 @@ fn readiness_rejection(f: &Fixture, discovery: bool) -> String {
             .env_remove("RECIPE_VAR_pr_url");
     }
     let o = command.output().unwrap();
-    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    assert!(
+        o.status.success(),
+        "unresolved recovery must allow later workflow steps: {}",
+        show(&o)
+    );
     let evidence = fs::read_to_string(evidence_path).expect("recovery must receive evidence");
     assert!(
         evidence.contains("final PR validation failed"),
@@ -554,7 +730,11 @@ pub fn noncanonical_discovery_retains_recovery_report(f: &Fixture) {
         .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
         .output()
         .unwrap();
-    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    assert!(
+        o.status.success(),
+        "unresolved recovery must allow later workflow steps: {}",
+        show(&o)
+    );
     let evidence = fs::read_to_string(f.root.join("recovery-evidence.json")).unwrap();
     assert!(
         evidence.contains("discovered PR URL is not canonical"),
@@ -985,7 +1165,11 @@ pub fn temporary_captures_removed_but_reports_persist(f: &Fixture) {
         .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
         .output()
         .unwrap();
-    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    assert!(
+        o.status.success(),
+        "unresolved recovery must allow later workflow steps: {}",
+        show(&o)
+    );
     assert!(
         files_under(&captures).is_empty(),
         "failed lookup capture leaked"
@@ -1127,6 +1311,116 @@ mod tests {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         Fixture::new(&source, Path::new(env!("CARGO_BIN_EXE_amplihack")))
     }
+
+    /// Run production commands, conditions and output bindings through the
+    /// pinned runner. The audit and unrelated phases are fixture setup; their
+    /// agents must not start. Assertions inspect remote objects and events.
+    fn run_publication_conditions(f: &Fixture, success: bool, finalize: bool, ci_wait: bool) {
+        let exported = fixture::success(
+            f.command(&f.binary, &f.main)
+                .args(["recipe", "show"])
+                .arg(
+                    f.source
+                        .join("amplifier-bundle/recipes/workflow-finalize.yaml"),
+                )
+                .args(["--format", "yaml"])
+                .output()
+                .unwrap(),
+        );
+        let mut recipe: serde_yaml::Value = serde_yaml::from_str(&exported).unwrap();
+        let terminal = serde_json::json!({
+            "terminal_success": success.to_string(),
+            "should_finalize": finalize.to_string(),
+            "should_run_ci_wait": ci_wait.to_string(),
+        });
+        let mut steps = vec![
+            serde_yaml::to_value(serde_json::json!({
+                "id": "fixture-terminal-state", "type": "bash", "parse_json": true,
+                "command": format!("printf '%s\\n' '{terminal}'"), "output": "terminal_state",
+            }))
+            .unwrap(),
+        ];
+        steps.extend(
+            recipe["steps"]
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .filter(|step| matches!(step["id"].as_str(), Some(PUBLISH | READY)))
+                .cloned(),
+        );
+        steps.push(
+            serde_yaml::to_value(serde_json::json!({
+                "id": "fixture-after-readiness", "type": "bash",
+                "command": "printf 'continued\\n' >> \"$FIXTURE/events\"",
+            }))
+            .unwrap(),
+        );
+        recipe["steps"] = serde_yaml::Value::Sequence(steps);
+        recipe["context"] = serde_yaml::to_value(serde_json::json!({
+            "repo_path": f.main, "worktree_setup": f.worktree_json(),
+            "base_branch": "main", "pr_number": "7", "pr_url": PR_URL,
+            "issue_number": "2787", "step_recovery_dir": "",
+        }))
+        .unwrap();
+        let path = f.root.join("publication-conditions.yaml");
+        fs::write(&path, serde_yaml::to_string(&recipe).unwrap()).unwrap();
+        let search = std::env::var_os("PATH").unwrap_or_default();
+        let runner = std::env::var_os("RECIPE_RUNNER_RS_PATH")
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_file())
+            .or_else(|| {
+                std::env::split_paths(&search)
+                    .map(|dir| dir.join("recipe-runner-rs"))
+                    .find(|path| path.is_file())
+            })
+            .expect("pinned recipe-runner-rs is required for behavioral recipe tests");
+        let output = f
+            .command(runner, &f.main)
+            .arg(&path)
+            .args(["--output-format", "json", "-C"])
+            .arg(&f.main)
+            .env("RECIPE_RUNNER_NO_UPDATE_CHECK", "1")
+            .output()
+            .unwrap();
+        fixture::success(output);
+        let events = fs::read_to_string(f.root.join("events")).unwrap();
+        assert!(events.contains("continued\n"), "{events}");
+    }
+
+    #[test]
+    fn readiness_only_path_publishes_before_reading_head() {
+        let f = fixture();
+        f.audit(true);
+        run_publication_conditions(&f, false, false, true);
+        f.assert_ready();
+    }
+
+    #[test]
+    fn finalize_only_path_publishes_without_readiness() {
+        let f = fixture();
+        f.audit(false);
+        run_publication_conditions(&f, false, true, false);
+        assert_eq!(f.remote_head(), f.head(&f.pr));
+        assert_eq!(
+            f.git(
+                &f.remote,
+                &["show", &format!("refs/heads/{BRANCH}:audit.txt")]
+            ),
+            "audit fix included\n"
+        );
+        f.assert_no_mutation();
+    }
+
+    #[test]
+    fn terminal_success_skips_publication_and_readiness() {
+        let f = fixture();
+        f.audit(true);
+        let before = f.remote_head();
+        run_publication_conditions(&f, true, true, true);
+        assert_eq!(f.remote_head(), before);
+        assert_ne!(f.remote_head(), f.head(&f.pr));
+        f.assert_no_mutation();
+    }
     #[test]
     fn mutation_oracle_rejects_unreadable_history() {
         let f = fixture();
@@ -1141,6 +1435,11 @@ mod tests {
         ($($name:ident),+ $(,)?) => { $(#[test] fn $name() { super::$name(&fixture()); })+ };
     }
     contract!(
+        worktree_resolution_ignores_ambient_git_overrides,
+        publication_and_readiness_ignore_ambient_git_overrides,
+        publication_handoff_continues_without_readying_audit_edits,
+        finalization_evidence_retains_operation_outcomes,
+        recovery_summary_continues_with_unresolved_operations,
         publication_resolves_installed_runtime_helper,
         publication_missing_runtime_helper_prevents_push,
         missing_worktree_reaches_readiness_recovery,

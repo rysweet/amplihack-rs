@@ -5,7 +5,9 @@ description: >
   local bare remotes under a private HOME. Covers committed and uncommitted
   audit work, invocation from main, aliases, exact PR validation, exclusion
   diagnostics and recovery, including discovery-only secondary filters and
-  hostile metadata or identity changes in the final PR read. CI Install Smoke
+  hostile metadata or identity changes in the final PR read. Also covers
+  ambient Git overrides, nonterminal recovery and operation evidence retained
+  by finalization. CI Install Smoke
   Test runs this Rust driver;
   do not run this scenario on a factory host.
 version: "1.0"
@@ -61,6 +63,26 @@ assertions:
     params:
       target: stdout
       expected: "PASS: recipe_through_built_binary"
+  - name: recorded-context-ignores-ambient-git
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: worktree_resolution_ignores_ambient_git_overrides"
+  - name: publication-recovery-continues-without-readiness
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: publication_handoff_continues_without_readying_audit_edits"
+  - name: finalization-retains-unresolved-outcomes
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: finalization_evidence_retains_operation_outcomes"
+  - name: recovery-summary-continues
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: recovery_summary_continues_with_unresolved_operations"
   - name: discovery-rejection-and-recovery
     type: output_contains
     params:

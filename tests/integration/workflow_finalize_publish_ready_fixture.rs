@@ -140,6 +140,8 @@ impl Fixture {
                 format!("{}:/usr/bin:/bin", self.root.join("bin").display()),
             )
             .env("HOME", self.root.join("tmp/home"))
+            .env("CLAUDE_CONFIG_DIR", self.root.join("tmp/home/.claude"))
+            .env("CODEX_HOME", self.root.join("tmp/home/.codex"))
             .env("TMPDIR", self.root.join("tmp"))
             .env("XDG_CONFIG_HOME", self.root.join("tmp/home/.config"))
             .env("XDG_STATE_HOME", self.root.join("tmp/home/.local/state"))
@@ -226,12 +228,16 @@ impl Fixture {
     pub fn step_body(&self, id: &str) -> String {
         success(
             self.command("bash", &self.main)
-                .arg(self.source.join("tests/gadugi/recipe-step-command.sh"))
+                .args([
+                    "-o", "pipefail", "-c",
+                    r#""$REAL_AMPLIHACK" recipe show "$2" --format json |
+                       jq -er --arg id "$1" '.steps[] | select(.id == $id) | .command | strings | select(length > 0)'"#,
+                    "load-recipe-command", id,
+                ])
                 .arg(
                     self.source
                         .join("amplifier-bundle/recipes/workflow-finalize.yaml"),
                 )
-                .arg(id)
                 .output()
                 .unwrap(),
         )

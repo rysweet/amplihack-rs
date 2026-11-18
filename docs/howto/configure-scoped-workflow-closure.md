@@ -1,3 +1,10 @@
+---
+title: Configure Scoped Workflow Closure
+description: Supply workflow ownership context and inspect publication, readiness, and recovery outcomes.
+last_updated: 2026-11-18
+doc_type: howto
+---
+
 # How to Configure Scoped Workflow Closure
 
 > [Home](../index.md) > How-To > Configure Scoped Workflow Closure
@@ -87,15 +94,16 @@ amplifier-bundle/tools/workflow_pr_scope.sh \
   --head-sha "$EXPECTED_HEAD_SHA"
 ```
 
-The command prints a `valid` JSON object only when the PR belongs to this exact
+The command prints an `ok: true` JSON object only when the PR belongs to this exact
 workflow scope.
 
 Known PR identity takes precedence after it is persisted. A supplied
 `PR_NUMBER` or `PR_URL` is authoritative: the helper inspects that exact PR and
-short-circuits the primary-key and tie-breaker passes. Validation fails only if
-the PR disagrees on repository, head branch, or base branch. A stale `--issue`
-or `--head-sha` does not reject an otherwise-matching PR — those are tie-breakers,
-not part of the authoritative match.
+short-circuits the primary-key and tie-breaker passes. The helper checks the
+repository, head branch, base branch, explicit identity, and configured
+discriminators. A stale `--issue` or `--head-sha` can produce invalid scope in
+this mode. During finalization, unresolved validation transfers to recovery;
+secondary metadata alone does not end the run for its own open PR.
 
 If no PR identity is persisted yet, you can omit `--pr-number`/`--pr-url` and let
 the primary key `--repo` + `--head` + `--base` resolve the workflow's unique PR:
@@ -115,20 +123,23 @@ tracking issue differs from the issue referenced in the PR body.
 
 ## 4. Check Readiness
 
-Use workflow-owned readiness, not a broad PR survey:
+Let the active workflow reach finalization. It commits applicable audit edits
+with hooks enabled and pushes outstanding commits before readiness reads HEAD.
+Publication runs even when only readiness is requested. Do not invoke readiness
+alone to publish work: that helper does not commit or push.
 
-```bash
-RECIPE_VAR_pr_number="$PR_NUMBER" \
-RECIPE_VAR_pr_url="$PR_URL" \
-RECIPE_VAR_issue_number="$ISSUE_NUMBER" \
-EXPECTED_PR_TITLE_PREFIX="Fix issue #754:" \
-WORKFLOW_STARTED_AT="$STARTED_AT" \
-amplifier-bundle/tools/workflow_pr_ready.sh
-```
+Inspect the [recorded worktree](../reference/workflow-finalize-publication.md#canonical-worktree)
+using the read-only example in the reference. Both publication and readiness
+use `RECIPE_VAR_worktree_setup`, even when the launch checkout is on `main`.
+Keep that setup output available to finalization; changing the current
+directory or exporting a bare worktree path does not replace it. No extra
+configuration is required.
 
-`workflow_pr_ready.sh` calls `workflow_pr_scope.sh` first. If scoped validation
-fails, readiness is blocked before checks, CI state, or mergeability are
-reported as current-work evidence.
+Read the publication and readiness outcomes separately. A confirmed push can
+coexist with unresolved readiness. If either operation remains unresolved,
+follow the recorded recovery action and diagnostic report rather than treating
+continued execution as proof that the PR is ready. Recovery preserves local
+work and continues the remaining workflow steps with the actual outcomes.
 
 ## 5. Read Monitor Output
 
@@ -179,7 +190,7 @@ and head repository must both match `REPOSITORY`.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `no_scoped_pr` | No PR matches the primary key (repository, head, base). | Verify the branch was pushed and a PR exists for `head → base`; correct the `--head`/`--base` values. A stale `--issue`/`--head-sha` is not the cause — those no longer reject a unique PR. |
+| `no_scoped_pr` | The lookup returned no candidates, or all candidates failed the applicable checks. Named-PR validation includes configured secondary checks. | Read the candidate-specific exclusions and retained report. Confirm publication used the recorded worktree and reached the remote, then resolve the listed branch, base, SHA, issue, creation-time, or title discrepancy through recovery. A unique discovery candidate does not need secondary tie-breakers. |
 | `multiple_scoped_prs` | Two or more OPEN PRs share the same head and base. | Add `pr_number` or `pr_url`, or make a tie-breaker (`issue_number`, `work_item_id`, `expected_pr_title_prefix`) distinguish them. |
 | `branch_mismatch` | The PR head ref differs from the workflow branch. | Use the branch attached to the PR or block the workflow until branch ownership is resolved. |
 | `invalid_pr_url` | The provided PR URL is not a GitHub pull request URL. | Correct the persisted PR URL before readiness/final-status steps. |
@@ -194,5 +205,6 @@ and head repository must both match `REPOSITORY`.
 ## Related
 
 - [Scoped Workflow Closure Reference](../reference/scoped-workflow-closure.md)
+- [Finalize Publication and PR Readiness](../reference/workflow-finalize-publication.md)
 - [Scoped Workflow Closure](../concepts/scoped-workflow-closure.md)
 - [Tutorial: Scoped Workflow Closure](../tutorials/scoped-workflow-closure.md)

@@ -1,3 +1,10 @@
+---
+title: Scoped Workflow Closure Reference
+description: PR and process identity fields, helper contracts, and workflow closure outcomes.
+last_updated: 2026-11-18
+doc_type: reference
+---
+
 # Scoped Workflow Closure Reference
 
 > [Home](../index.md) > Reference > Scoped Workflow Closure
@@ -63,8 +70,11 @@ exists, that OPEN candidate is adopted. OPEN candidates are preferred over
 closed candidates when state varies at a discovery resolution step.
 
 Readiness separately validates the exact published HEAD before mutation.
-Publication resolves local-only work before readiness runs; unresolved identity
-or metadata mismatches enter recovery without relaxing these checks. See
+Publication resolves local-only work before readiness reads HEAD, including
+when only readiness is requested. Unresolved identity or metadata mismatches
+enter agentic recovery within the existing ownership boundaries. Publication
+and readiness outcomes remain distinct through status and completion; an
+unresolved operation does not end the finalization path. See
 [Finalize Publication and PR Readiness](workflow-finalize-publication.md).
 
 ## Environment Inputs
@@ -442,7 +452,7 @@ These bundled tools and recipes use scoped validation:
 | Component | Contract |
 | --- | --- |
 | `workflow_publish_pr.sh` | Persists PR identity after creation and validates known PR identity before updating an existing PR. On `gh pr create` collision, re-runs the scoped lookup and adopts an existing OPEN PR as `existing-open-pr` success instead of failing the recipe. With an empty `base_branch`, passes `--any-base-open` to both GitHub lookups and records an adopted PR's own base. A failed collision lookup, including `multiple_scoped_prs`, still ends as `FAILED_PR_CREATE`. |
-| `workflow_pr_ready.sh` | Refuses readiness checks until `workflow_pr_scope.sh` returns `ok: true`. |
+| `workflow_pr_ready.sh` | Uses the recorded PR worktree after publication, then validates fresh scoped metadata before mutation. Unresolved validation enters nonterminal recovery. |
 | `workflow_final_status.sh` | Requires validated PR metadata before reporting terminal PR status. |
 | `workflow-terminal-state.yaml` | Uses persisted PR URL or number, then scoped lookup; no recent-PR fallback. |
 | `workflow-tdd.yaml` | Carries repository, head branch, base branch, tracking item, recipe run, and start-time scope through test and closure steps. |
@@ -463,8 +473,9 @@ Scoped closure preserves both authoritative filtering and discovery semantics:
   `multiple_scoped_prs` until scope is made more specific
 - in discovery mode, a stale `issue_number` or `head_sha` does **not** reject
   the unique primary-key PR; those fields break ties among multiple candidates
-- in authoritative mode, configured secondary discriminator mismatches reject
-  the named PR and enter recovery before readiness mutation
+- in authoritative mode, configured secondary discriminator mismatches return
+  invalid scope; finalize transfers the evidence to recovery before readiness
+  mutation, without ending the run on secondary metadata alone
 - `no_scoped_pr` distinguishes an empty lookup from candidates excluded by
   primary or authoritative secondary checks, with every failed check reported
 - with `--any-base-open`, two or more OPEN PRs from the head on other bases,
@@ -472,7 +483,10 @@ Scoped closure preserves both authoritative filtering and discovery semantics:
 - stale process records are display-only
 - PID reuse is rejected when runtime start metadata differs
 - missing runtime start metadata is rejected as incomplete process scope
-- exact-head readiness blocks when `head_sha` differs from PR head
+- exact-head readiness transfers to recovery when `head_sha` differs from PR
+  head after publication; an unpushed ancestor does not count as publication
+- unresolved publication and readiness retain their actual outcomes through
+  subsequent steps rather than becoming terminal failures or successful claims
 
 Failure output names the invalid reason and the checked identifiers. It does
 not persist secrets, full environment dumps, auth headers, agent prompts, or

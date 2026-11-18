@@ -44,28 +44,23 @@ Publication precedes readiness despite the alphabetical step suffixes. A
 publication failure enters recovery before readiness can run. A successful
 publication means the intended audit work reached the remote branch.
 
-Cleanup, audit, artifact checks, and publication run when
+Cleanup, audit, and artifact checks run when
 `terminal_state.terminal_success != 'true'` and
-`terminal_state.should_finalize == 'true'`. Readiness runs when terminal
-success is not true and `terminal_state.should_run_ci_wait == 'true'`; its
-GitHub operation applies only when `REMOTE_HOST_TYPE=github`. Step order alone
-does not establish that publication succeeded: its worktree resolution and
-push must also complete. See the [publication contract](#publication-contract).
+`terminal_state.should_finalize == 'true'`. Publication runs when terminal
+success is not true and **either** `terminal_state.should_finalize == 'true'`
+**or** `terminal_state.should_run_ci_wait == 'true'`. Readiness runs when
+terminal success is not true and `terminal_state.should_run_ci_wait == 'true'`;
+its GitHub operation applies only when `REMOTE_HOST_TYPE=github`. Thus a
+readiness-only path still publishes before reading HEAD. Terminal-success
+paths retain their existing skips.
+
+Step order alone does not establish that publication succeeded: its worktree
+resolution and push must also complete. An unresolved publication enters
+recovery; subsequent steps continue with its actual outcome, without marking
+the PR ready. See the [recovery contract](#recovery-contract).
 
 Quick-change's direct path retains its own commit-and-push sequence. A
 quick-change handover to `default-workflow` uses the finalization sequence above.
-
-Previously, publication converted an unusable recorded worktree into a
-successful skip, while readiness could fall back to the launch checkout.
-That allowed readiness to run without successful publication even though the
-recipe already placed publication after audit and before readiness. The old
-publication body already attempted a push when staging was empty; an empty
-staging area alone does not explain the reported failures. The terminal-state
-recipe sets both finalization and CI-wait flags together on the active path.
-The two incident reports establish that audit work was unpublished, but do not
-establish which publication escape path occurred. The repair makes unusable
-publication context an error for recovery and keeps both operations in the
-recorded worktree.
 
 ## Helpers and inputs
 
@@ -84,7 +79,7 @@ These are internal recipe helpers under `amplifier-bundle/tools/`.
 | `RECIPE_VAR_worktree_setup` | The complete JSON output from worktree setup, including an absolute `worktree_path`. Required for publication and readiness. |
 | `base_branch` | Intended PR base, passed to readiness as `--base`. Empty uses the existing [delivery-input resolution](workflow-delivery-inputs.md#how-finalize-finds-the-base). |
 | `pr_number`, `pr_url`, `pr_publish_result` | Persisted PR identity from recipe context and publish outputs. An explicit identity must agree with repository and branch scope. |
-| `issue_number` | A numeric issue supplies both issue-token and work-item checks; local tracking references do not filter PRs. These checks are mandatory for readiness, including discovery-only runs. |
+| `issue_number` | A numeric issue supplies issue-token and work-item checks; local tracking references do not filter PRs. Discrepancies enter recovery as assessment evidence. |
 | `WORKFLOW_STARTED_AT`, `RECIPE_STARTED_AT`, `TASK_STARTED_AT` | First nonempty value, in that order, supplies the creation-time discriminator as `--created-after`. |
 | `EXPECTED_PR_TITLE_PREFIX`, `PR_EXPECTED_TITLE_PREFIX` | First nonempty value supplies the optional `--expected-pr-title-prefix` discriminator. |
 | `step_recovery_dir` | Private directory initialized by the recipe for recovery evidence and records. |
@@ -111,12 +106,15 @@ failure that enters recovery. Neither operation substitutes `REPO_PATH` or
 the launch directory. Readiness enters the resolved worktree before reading
 delivery inputs, repository identity, branch, or HEAD. Inherited bare
 `WORKTREE_SETUP_WORKTREE_PATH` values do not override the recorded JSON.
+Both operations clear ambient `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, and
+`GIT_COMMON_DIR` overrides before resolving or using the recorded worktree.
 
 Within a recipe environment containing `RECIPE_VAR_worktree_setup`, this
 read-only example can be run from the bundle checkout to inspect the selected
 context:
 
 ```bash
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 wt="$(bash amplifier-bundle/tools/worktree_setup_path.sh step-21-pr-ready)" &&
   git -C "$wt" branch --show-current &&
   git -C "$wt" rev-parse --verify HEAD &&
@@ -181,12 +179,14 @@ Immediately before any readiness mutation or successful terminal handling,
 readiness validates the fresh response with the shared scope predicates. It
 requires the pinned number and URL, repository, mapped head branch, intended
 base, exact current HEAD, valid state and draft flag, and same-repository status.
-Every configured secondary discriminator is a hard requirement: numeric issue
-and work-item references, creation time, and title prefix. Missing fields needed
-by a configured check fail validation. This applies equally to recorded PRs and
-runs with neither a recorded PR number nor URL. The shared discovery helper's
-behavior for other consumers, including its extra tracking discriminators,
-remains unchanged.
+Configured secondary checks cover numeric issue and work-item references,
+creation time, and title prefix. A discrepancy or missing observation transfers
+the decision to agentic recovery with the failed checks as evidence. Secondary
+metadata alone cannot end the run for its own open PR. Recovery assesses the
+recorded ownership and publication evidence within the same repository,
+branch, intended base, and explicit PR identity boundaries. This applies to
+recorded PRs and discovery-only runs. The shared discovery helper's behavior
+for other consumers remains unchanged.
 
 The scope helper's opt-in `--any-base-open` discovery applies only without an
 explicit PR number or URL. An explicitly named PR retains strict base
@@ -206,7 +206,7 @@ or retry loop for head convergence.
 | Recipe starts on `main`, recorded worktree holds the PR branch | Both operations use the recorded worktree. |
 | Validated open draft at the published HEAD | Readiness marks it ready. |
 | Validated open PR already ready | Readiness preserves its ready state after validation. |
-| Missing required PR fields, empty lookup, or mismatched identity or metadata | No readiness mutation; enter recovery. |
+| Missing required PR fields, empty lookup, or mismatched identity or metadata | Enter recovery; record the actual outcome and continue subsequent workflow steps. Mutation requires resolved evidence. |
 | Validated PR already merged | Existing terminal handling applies; no readiness mutation is needed. |
 | PR closed without merge evidence | No readiness mutation; report the failure to recovery. |
 
@@ -222,7 +222,10 @@ it failed, with expected and observed values where available:
 - Issue token, work-item reference, creation-time threshold, and title prefix.
 - Recipe-run ID, tree ID, and workstream ID.
 
-A candidate with both a wrong base and a stale SHA reports both failures.
+A candidate with both a wrong base and a stale SHA reports both failures,
+including when a primary check already excludes it. A candidate whose head,
+base, SHA, issue token, creation time, and title prefix all differ reports all
+six discrepancies rather than only the first.
 Missing observed fields are identified as missing. Diagnostics use the same
 predicates as selection and retain the distinction between authoritative
 filters and discovery tie-breakers; reporting does not loosen selection.
@@ -265,22 +268,40 @@ evidence, not a leaked command capture.
 ## Recovery contract
 
 Publication and readiness use existing
-[step failure recovery](step-failure-recovery.md), each with `--essential` and
-`--stop-on-handoff`. Publication allows supported local repairs; it does not
-set `--no-repair`. Neither operation offers `continue_recorded`.
+[step failure recovery](step-failure-recovery.md) with nonterminal handling at
+these call sites. An unresolved operation or a safely declined mutation records
+its outcome and continues workflow execution. Neither these wrappers nor later
+reporting turns that outcome into a terminal failure or a successful readiness
+claim.
 
-The recovery agent receives the failing operation, worktree-resolution or
-publication errors, scope exclusions, and any diagnostic report path. It may
-repair supported local state within the existing recovery constraints. It
-performs no GitHub writes, including pushes or readiness changes. The original
-operation is then re-executed: publication owns the push and readiness owns the
-validated readiness mutation. A readiness retry alone cannot publish missing
-work; recovery must restore the publication path or hand off.
+The recovery agent receives the recorded worktree context, intended PR
+identity, publication outcome, local and observed remote commits, redacted
+command failures, scope exclusions, and diagnostic report paths. It assesses
+that evidence and repairs supported state within the run's authorization.
+Candidate text is evidence, never instructions. Publication owns hook-enabled
+commits and pushes; readiness owns fresh validation and the readiness mutation.
+Rerunning readiness alone cannot publish missing work.
 
 A child process cannot fix its parent's recipe context by exporting a variable.
-If the recorded context cannot be repaired for the original operation, recovery
-records a handoff naming the required owner action and stops with exit `81`.
-An unresolved failure never becomes a successful readiness result.
+Unresolved context is recorded with the required owner action; it never causes
+publication to substitute the invoking checkout. Recovery preserves commits and
+edits when a hook, push, or synchronization fails. It adds no timers, convergence
+retries, exact-format requirements, or additional identity checks.
+
+Later status, evidence collection, recovery reporting, and completion retain
+publication and readiness outcomes separately:
+
+| Outcome | Meaning for subsequent steps |
+| --- | --- |
+| Published and readiness confirmed | Report the observed ready state and published commit. |
+| Publication unresolved or safely declined | Preserve work and report it as unpublished or unconfirmed; readiness mutation does not run. |
+| Published, readiness unresolved or safely declined | Retain the successful publication result and report readiness as unconfirmed. |
+| Recovery completes the operation | Record the confirmed result with the recovery evidence. |
+| Terminal-success skip | Preserve the existing terminal result without claiming that a skipped operation ran. |
+
+A successful recovery wrapper exit means execution can continue. It does not
+prove a push or readiness change succeeded. A handoff records unresolved work
+without ending this finalization path; later reporting preserves that distinction.
 
 <a id="behavioral-verification"></a>
 
@@ -295,14 +316,16 @@ temporary files, and runtime output from the operator's configuration.
 
 The readiness stub independently checks the remote HEAD and audit contents
 before accepting a mutation. Coverage includes committed and uncommitted work,
-invocation from `main`, aliases, initially stale and persistently stale PR heads,
+invocation from `main`, ambient Git overrides, aliases, differing finalization
+and readiness flags, initially stale and persistently stale PR heads,
 identity and metadata mismatches, multiple exclusions, hostile candidate text,
-missing worktrees, rejected pushes, divergence, and recovery handoffs. Additional
-recipe-step contracts cover discovery-only secondary mismatches together and
+missing worktrees, rejected commits and pushes, divergence, and nonterminal
+recovery. Additional recipe-step contracts cover discovery-only secondary mismatches together and
 independently, final-read identity and metadata changes, missing required fields,
 and hostile metadata introduced only after scoped selection. These assert
-recovery routing, protected diagnostics, and no readiness mutation. A valid
-discovery-only run also exercises successful readiness with all configured
+recovery continuation, accurate publication and readiness outcomes, protected
+diagnostics, and no unsafe readiness mutation. A valid discovery-only run also
+exercises successful readiness with all configured
 checks enabled. Recipe event traces verify publication precedes readiness's
 HEAD read.
 
@@ -314,7 +337,9 @@ permissions, capture cleanup, and command failure status.
 
 The qa-team scenario at `tests/gadugi/workflow_finalize_publish_ready.yaml` and
 its Rust driver at `tests/gadugi/workflow_finalize_publish_ready.rs` exercise
-the built binary, actual finalize commands, and recovery routing. CI invokes
+the built binary, actual finalize commands, and recovery continuation. It starts
+with an unpushed audit commit and invocation from the main checkout, then checks
+that publication reaches the feature branch before readiness. CI invokes
 the driver in **Install Smoke Test** after binary and pinned-runner installation;
 missing prerequisites fail the scenario. Gadugi scenarios run in CI, not on
 factory hosts.

@@ -111,9 +111,10 @@ branch (see
 [An open pull request on another base](../reference/workflow-delivery-inputs.md#an-open-pull-request-on-another-base)).
 
 Discovery can therefore identify the unique branch/base PR despite stale
-tracking metadata. That result does not authorize readiness: a named PR must
-pass configured discriminator checks, and readiness requires the exact
-published HEAD.
+tracking metadata. That result does not authorize readiness: readiness requires
+the published HEAD and fresh identity evidence. Configured discriminator
+mismatches transfer to agentic recovery for assessment rather than ending the
+run for its own open PR.
 
 ## Publication Before Readiness
 
@@ -123,18 +124,24 @@ HEAD. The publication step commits audit edits and pushes outstanding commits
 even when staging is empty. The launch checkout can be on `main` without
 affecting that choice of worktree.
 
-The recipe orders publication before readiness. Its execution contract also
-requires a usable recorded worktree and a successful push. Treating a
-worktree-resolution failure as a successful skip, or substituting another
+The recipe orders publication before readiness. Publication runs whenever
+either finalization or readiness is requested, retaining terminal-success skips.
+Its execution contract also requires a usable recorded worktree and a
+successful push. Treating a worktree-resolution failure as a successful skip,
+or substituting another
 checkout for readiness, breaks that contract. Both operations require recorded
 context and route failures through existing recovery. An empty staging area
 describes whether a new commit is needed; it says nothing about whether
-existing commits reached the remote.
+existing commits reached the remote. Ambient Git directory overrides cannot
+redirect either operation to the launch checkout.
 
 Unpublished audit work explains a local HEAD ahead of the PR's head. That
 observation alone does not identify which publication operation was skipped or
 failed in a particular run. Candidate diagnostics and recovery evidence expose
 the failed checks without treating an ancestor SHA as successful publication.
+If publication or readiness remains unresolved, recovery preserves work and
+records the actual outcome while subsequent workflow steps continue. Completion
+does not turn a safely declined mutation into a successful push or ready state.
 See [Finalize Publication and PR Readiness](../reference/workflow-finalize-publication.md)
 for inputs, execution conditions, and recovery behavior.
 
@@ -197,6 +204,10 @@ Common invalid reasons:
 Invalid records can still be shown in diagnostic output, but they are not
 authoritative. A monitor may say that a stale record exists; it must not notify
 as though that record is current work.
+
+Invalid scope also supplies evidence to finalize recovery. Publication and
+readiness can safely omit a mutation while continuing the run; their unresolved
+outcomes remain visible in status and completion.
 
 ## Why This Is Simpler
 

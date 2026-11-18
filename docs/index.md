@@ -388,7 +388,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Best-Effort PR Labeling Reference](reference/workflow-pr-labels.md) - `WORKFLOW_PR_LABELS` contract and the `apply_pr_labels_best_effort` helper that stamps labels onto the published PR via a single `gh pr edit --add-label` call
 - [Workflow Terminal-State Reference](reference/workflow-terminal-state.md) - Target contract for development completion evidence, no-op states, failure semantics, shell helper API, and the branch PR lookup for agent-opened PRs
 - [Default Workflow Agentic Finalization](reference/default-workflow-agentic-finalization.md) - Structured finalizer schema, terminal-state vocabulary, configuration, and examples for robust workflow closure
-- [Finalize Publication and PR Readiness](reference/workflow-finalize-publication.md) - Canonical worktree context, additive audit publication, exact-head validation, candidate diagnostics, and recovery
+- [Finalize Publication and PR Readiness](reference/workflow-finalize-publication.md) - Recorded worktree context, audit publication before readiness, candidate diagnostics, and recovery that continues with actual outcomes
 - [How to Diagnose Workflow Terminal-State Failures](howto/diagnose-workflow-terminal-state.md) - Investigate missing evidence after planning, analysis, design, or worktree-only runs
 - [Tutorial: Workflow Terminal-State Closure](tutorials/workflow-terminal-state-closure.md) - Walk through completion evidence, planning-only failure, and rerun semantics
 - [Workflow-Owned PR Recovery Readiness](features/pr-recovery-readiness.md) - Recover an existing PR through `default-workflow` with branch reuse, hook readiness, additive-copy readiness, and workflow-owned finalization
