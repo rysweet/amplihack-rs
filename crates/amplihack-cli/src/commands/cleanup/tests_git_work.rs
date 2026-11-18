@@ -234,6 +234,34 @@ fn incomplete_metadata_cannot_fall_back_to_a_clean_enclosing_repository() {
 }
 
 #[test]
+fn linked_metadata_requires_a_checkout_that_points_back_to_it() {
+    let (_tmp, root) = scratch();
+    let (_, clone) = origin_and_clone(&root.join("outside"));
+    let checkout = linked_worktree(&clone, &root.join("checkout"), "linked");
+    let admin = admin_dir_of(&checkout);
+    assert_eq!(
+        metadata_checkout(&admin, None).unwrap(),
+        Some(checkout.clone())
+    );
+    make_dirty(&checkout);
+    assert_eq!(work_inside(&admin, None), Some(tree_reason(&admin, DIRTY)));
+
+    // Registration alone must not redirect inspection to a different, clean
+    // checkout, even when it belongs to the same common repository.
+    let other = linked_worktree(&clone, &root.join("other"), "other");
+    fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", other.join(".git").display()),
+    )
+    .unwrap();
+    let reason = work_inside(&admin, None).expect("mismatched registration keeps metadata");
+    assert!(
+        reason.contains("no verified registered checkout"),
+        "{reason}"
+    );
+}
+
+#[test]
 fn metadata_with_only_head_and_config_still_requires_inspection() {
     let (_tmp, root) = scratch();
     let folder = root.join("folder");

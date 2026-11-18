@@ -162,14 +162,15 @@ fn repository_git(dir: &Path, git_dir: Option<&Path>) -> std::process::Command {
     command
 }
 
-/// Classify metadata with Git. Non-bare metadata needs an explicit, usable
-/// checkout: without core.worktree Git defaults to its caller's directory.
+/// Classify metadata with Git. Non-bare metadata needs a verified checkout:
+/// without core.worktree Git defaults to its caller's directory. Linked
+/// worktree administration instead identifies its checkout through registration.
 fn metadata_checkout(metadata: &Path, deadline: Option<Instant>) -> Result<Option<PathBuf>> {
-    let query = |args: &[&str]| -> Result<String> {
+    let query = |dir: &Path, git_dir: Option<&Path>, args: &[&str]| -> Result<String> {
         if past_deadline(deadline) {
             bail!(DEADLINE_REASON);
         }
-        let mut command = repository_git(metadata, Some(metadata));
+        let mut command = repository_git(dir, git_dir);
         command.args(args);
         let output = crate::util::run_output_with_timeout(command, GIT_TIMEOUT)?;
         if past_deadline(deadline) {
@@ -182,20 +183,60 @@ fn metadata_checkout(metadata: &Path, deadline: Option<Instant>) -> Result<Optio
             .trim_end_matches('\n')
             .to_string())
     };
-    match query(&["rev-parse", "--is-bare-repository"])?.as_str() {
+    match query(
+        metadata,
+        Some(metadata),
+        &["rev-parse", "--is-bare-repository"],
+    )?
+    .as_str()
+    {
         "true" => Ok(None),
         "false" => {
-            let configured = query(&["config", "--path", "--get", "core.worktree"])
-                .map_err(|error| anyhow::anyhow!("cannot resolve core.worktree: {error:#}"))?;
+            let common = fs::canonicalize(metadata.join(query(
+                metadata,
+                Some(metadata),
+                &["rev-parse", "--git-common-dir"],
+            )?))
+            .context("cannot resolve metadata's common directory")?;
+            let canonical = fs::canonicalize(metadata).context("cannot resolve metadata")?;
+            if common != canonical {
+                let registered = query(
+                    metadata,
+                    Some(metadata),
+                    &["worktree", "list", "--porcelain", "-z"],
+                )?;
+                for (index, checkout) in registered
+                    .split('\0')
+                    .filter_map(|field| field.strip_prefix("worktree "))
+                    .enumerate()
+                {
+                    if index >= TREE_LIMIT {
+                        bail!("more than {TREE_LIMIT} registered worktrees to check");
+                    }
+                    let checkout = Path::new(checkout);
+                    let actual = query(checkout, None, &["rev-parse", "--absolute-git-dir"])
+                        .ok()
+                        .and_then(|path| fs::canonicalize(path).ok());
+                    if actual.as_ref() == Some(&canonical) {
+                        return fs::canonicalize(checkout)
+                            .map(Some)
+                            .context("cannot resolve registered checkout");
+                    }
+                }
+                bail!("linked metadata has no verified registered checkout");
+            }
+            let configured = query(
+                metadata,
+                Some(metadata),
+                &["config", "--path", "--get", "core.worktree"],
+            )
+            .map_err(|error| anyhow::anyhow!("cannot resolve core.worktree: {error:#}"))?;
             if configured.is_empty() {
                 bail!("non-bare metadata has no explicit core.worktree");
             }
             // Git resolves relative core.worktree values against the Git dir.
             let checkout = fs::canonicalize(metadata.join(configured))
                 .context("cannot resolve checkout configured by core.worktree")?;
-            let common =
-                fs::canonicalize(metadata.join(query(&["rev-parse", "--git-common-dir"])?))
-                    .context("cannot resolve metadata's common directory")?;
             if git_common_dir(&checkout).as_ref() != Some(&common) {
                 bail!("core.worktree does not identify a checkout of this repository");
             }

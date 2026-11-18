@@ -854,7 +854,9 @@ Git classifies discovered metadata using an explicitly selected Git directory.
 Only confirmed bare repositories skip dirty-state inspection. Separate Git
 directories require an explicit `core.worktree` identifying a usable checkout
 of the same repository; relative values resolve against the metadata directory,
-as Git specifies. Both dirty-state and unpushed checks apply to that checkout.
+as Git specifies. Linked-worktree administration directories resolve through
+Git's registered worktrees, with the checkout's Git directory verified against
+the discovered metadata. Both dirty-state and unpushed checks apply to that checkout.
 Absent, broken or ambiguous checkout information preserves the candidate with
 an inspection-failure reason. Bare repositories use the existing unpushed
 check; inspection errors preserve them. Cleanup does not fetch,
