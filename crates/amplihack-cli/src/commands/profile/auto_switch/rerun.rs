@@ -403,12 +403,23 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     };
     super::sweep_rerun(&rerun_dir);
     // Never reads stdin, so nothing here can block before signals are caught.
-    let stdin = RerunStdin::capture();
+    let mut stdin = RerunStdin::capture();
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    // The prompt is on the pipe: neither an auto-switch rerun nor the wait
-    // could give it to another attempt.
-    let piped_prompt = matches!(stdin, RerunStdin::Pipe) && !waiter.prompt_in_args();
-    if piped_prompt {
+    // Issue #2815: the step's prompt is on the pipe, which is how a recipe
+    // agent step is always given one. Copy it aside as it arrives, so a
+    // rerun can read the same bytes. The copier runs beside attempt 1 and
+    // this thread still reads nothing, so a pipe nobody closes cannot hold
+    // the supervisor up before the signals are caught.
+    if matches!(stdin, RerunStdin::Pipe)
+        && !waiter.prompt_in_args()
+        && let Some(captured) = scratch::capture_own_prompt(&rerun_dir)
+    {
+        stdin = captured;
+    }
+    // No copy was made: as before #2815, neither an auto-switch rerun nor
+    // the wait could give the prompt to another attempt.
+    let no_capture = matches!(stdin, RerunStdin::Pipe) && !waiter.prompt_in_args();
+    if no_capture {
         waiter.block(NoWait::PipedPrompt);
     }
     let signals = match Signals::register() {
@@ -547,7 +558,8 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             let current = profile.as_ref().unwrap_or(&sw.inherited).clone();
             tried.push(current.to_string());
             let eff = config::effective(&sw.state.root);
-            // The profile a piped prompt kept this step from rerunning under.
+            // The profile an unstored prompt kept this step from rerunning
+            // under.
             let mut refused: Option<ProfileName> = None;
             if eff.on
                 && let Some(next) = next_profile(
@@ -560,11 +572,11 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                     &waiter,
                 )
             {
-                if piped_prompt {
+                if no_capture {
                     // The limit is recorded; a rerun would get no prompt. The
                     // wait below refuses too, with `piped_prompt`.
                     eprintln!(
-                        "auto-switch: no rerun under profile {:?}: this step's prompt came on a pipe, which a rerun cannot read again",
+                        "auto-switch: no rerun under profile {:?}: this step's prompt came on a pipe and could not be stored, so a rerun cannot read it again",
                         next.profile.as_str()
                     );
                     refused = Some(next.profile);
@@ -588,13 +600,13 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             // passed over only for the threshold and still has capacity.
             // This is an auto-switch rerun; it does not call `after_limit`,
             // so the wait is still there if that profile is limited next.
-            if inherited_has_capacity && profile.is_some() && piped_prompt {
+            if inherited_has_capacity && profile.is_some() && no_capture {
                 // As for a candidate above: a rerun would get no prompt. The
                 // `skipped` event is written below.
                 inherited_has_capacity = false;
                 if refused.as_ref() != Some(&sw.inherited) {
                     eprintln!(
-                        "auto-switch: no rerun under profile {:?}: this step's prompt came on a pipe, which a rerun cannot read again",
+                        "auto-switch: no rerun under profile {:?}: this step's prompt came on a pipe and could not be stored, so a rerun cannot read it again",
                         sw.inherited.as_str()
                     );
                 }
@@ -618,9 +630,10 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // Set by now unless the inherited profile never ran and has no
         // known reset: a candidate's limit is another account's and never
         // times the wait. That happens when the move back to the inherited
-        // profile was refused (a piped prompt); the wait is refused for the
-        // same reason, so `after_limit` still writes the `skipped` event
-        // (`piped_prompt`, or `disabled`/`ci`) and never starts a wait.
+        // profile was refused (a prompt on a pipe that could not be
+        // stored); the wait is refused for the same reason, so
+        // `after_limit` still writes the `skipped` event (`piped_prompt`,
+        // or `disabled`/`ci`) and never starts a wait.
         // With nothing blocking the wait there is no reset to wait for, and
         // the result is passed up.
         let Some(wait) = inherited_wait.or_else(|| waiter.blocked_skip()) else {

@@ -5183,12 +5183,15 @@ The launch runs Claude under a supervising amplihack process:
 - stderr streams live; its last 64 KiB is kept;
 - stdout is written to a private temp file under
   `<root>/.auto-switch.d/rerun/` and printed once, after the final attempt;
-- the first attempt inherits stdin unchanged. A rerun gets a regular file
-  again from where the step started reading it, a terminal unchanged, and
-  anything else (a pipe, a socket) `/dev/null`, because what the first
-  attempt read from it is gone. stdin is never read or copied by the
-  supervisor, so a pipe nobody closes cannot hold it up (see
-  [Gate](#gate));
+- the first attempt inherits stdin unchanged, except a prompt piped on
+  stdin, which is copied as it arrives and replayed on every attempt (see
+  [Stdin](#stdin-handling)). A rerun gets a regular file again from where
+  the step started reading it, a terminal unchanged, and, for a piped
+  prompt, a read-only regular file holding the stored copy, opened at
+  offset 0 (not a pipe). A socket or a closed descriptor gets `/dev/null`.
+  The supervisor's main thread never reads stdin. The copier thread does,
+  and the supervisor joins it before a rerun, so a pipe that never reaches
+  end of file can delay a rerun (see [Stdin](#stdin-handling));
 - `SIGTERM` and `SIGHUP` are forwarded to the attempt; `SIGINT` reaches it
   through the terminal.
 
@@ -10834,28 +10837,70 @@ when auto-switch is on, otherwise in `$HOME/.amplihack/rerun/`.
 group and others cannot write (created at `0700` when missing, never
 `chmod`ed), and `rerun/` must be mode `0700`.
 
-**Stdin.** The supervisor never reads stdin. The first attempt inherits it
-unchanged. A rerun gets a regular file again from the offset the step
-started at (on Linux through its own open of `/proc/self/fd/0`, so no read
-offset is shared with other processes), a terminal unchanged, and anything
-else (a pipe, a socket, a closed descriptor) `/dev/null`: a pipe's contents
-went to the first attempt. Recipe agent steps get their prompt as `-p`
-argv, so this changes nothing for them, and a step that inherited a pipe
-the recipe run never closes no longer hangs. When stdin is a pipe and
-Claude's arguments carry no prompt, the prompt is on the pipe, so the step
-is neither rerun by auto-switch (`auto-switch: no rerun under profile …`)
-nor waited for (`skipped reason=piped_prompt`). The prompt is any
-positional argument, wherever it is, read with Claude's option table so
-that the values of options such as `--model`, `--output-format`,
-`--max-turns`, `--allowedTools` and `--append-system-prompt` are not taken
-for it; a prompt that starts with `-` counts only after `--`. The table
-includes Claude's hidden value-taking options (such as
-`--max-thinking-tokens`), which `claude --help` does not list. An option
-in no table, such as one a newer Claude added, is read as taking the next
-non-option word as its value. That errs toward "no prompt in the
-arguments", which with a piped stdin only means the step runs once as it
-did before the wait existed. The other way round would be worse: a wait of
-hours, then a rerun with no prompt.
+#### Stdin handling
+
+What an attempt receives depends on what stdin is:
+
+| Stdin | First attempt | A rerun |
+|-------|---------------|---------|
+| A pipe, prompt not in the arguments | A pipe fed by the copier (below) | A read-only regular file holding everything the copier stored, opened at offset 0. It is not a pipe |
+| A pipe, prompt in the arguments | Inherited unchanged | `/dev/null` |
+| A regular file | Inherited unchanged | The file again, from the offset the step started at (on Linux through its own open of `/proc/self/fd/0`, so no read offset is shared with other processes) |
+| A terminal | Inherited unchanged | Inherited unchanged |
+| A socket, a closed descriptor | Inherited unchanged | `/dev/null` |
+
+The feature covers any caller that supplies the prompt on stdin, whatever
+launches it. When stdin is a pipe and Claude's arguments carry no prompt, the
+supervisor starts a copier thread before the first attempt. The copier reads
+stdin in fixed-size blocks, writes each block to the attempt's stdin and to a
+private capture file, and closes the attempt's stdin when the pipe reaches end
+of file. The attempt sees the prompt as it arrives, with no delay.
+
+The capture file is `<pid>-0.in` in the supervisor's rerun directory (see
+above). It is created at `0600` with `O_EXCL`, `O_NOFOLLOW` and
+`O_CLOEXEC`, so a planted file or symlink is never written through, and no
+descriptor for it reaches Claude. It holds the prompt as opaque bytes, with
+no size cap, and is removed when the step ends, whether it succeeded or
+failed. A supervisor killed with `SIGKILL` leaves its file behind; the next
+supervised launch removes it once the owning process is gone.
+
+Before a rerun the supervisor joins the copier and checks that the whole
+prompt was stored. It then opens the file read-only at offset 0 and gives it
+to Claude as stdin, so every attempt reads byte-identical input and the step
+continues the usage-limit wait or auto-switch rerun it would have had with the
+prompt in `-p`. A write to an attempt that has already exited (`EPIPE`) is
+ignored, and does not stop the copy or the step.
+
+Two failures differ in what they do:
+
+- **The capture file cannot be created**, for instance because the rerun
+  directory is missing. No byte of stdin has been consumed, so attempt one
+  inherits stdin untouched. The step is then neither rerun by auto-switch
+  (`auto-switch: no rerun under profile …`) nor waited for
+  (`skipped reason=piped_prompt`). `piped_prompt` therefore means that the
+  prompt could not be stored, not that it was on a pipe.
+- **The copy fails or is cut short after attempt one started**, through a
+  copier error, a write error or an incomplete capture. Attempt one is not
+  affected, but the rerun returns an error instead of starting. The prompt is
+  never replayed from a partial file, and this case does not write
+  `skipped reason=piped_prompt`.
+
+The join has one cost. The copier ends only when the writer closes the pipe.
+If attempt one reports a usage limit without reading its prompt and the pipe
+never reaches end of file, the rerun is delayed until it does. The
+supervisor does not defend against this.
+
+The prompt is any positional argument, wherever it is, read with Claude's
+option table so that the values of options such as `--model`,
+`--output-format`, `--max-turns`, `--allowedTools` and
+`--append-system-prompt` are not taken for it; a prompt that starts with `-`
+counts only after `--`. The table includes Claude's hidden value-taking
+options (such as `--max-thinking-tokens`), which `claude --help` does not
+list. An option in no table, such as one a newer Claude added, is read as
+taking the next non-option word as its value. That errs toward "no prompt in
+the arguments", which means that the supervisor also copies stdin, a pipe
+that the step never reads included. The copy is then made and the join above
+applies to it.
 
 ### Order of attempts
 
@@ -10869,11 +10914,12 @@ After an attempt hits a usage limit, in this order:
    100%), and no eligible profile is left: rerun under the inherited
    profile at once. This is an auto-switch rerun, made at most once per
    step: no `start` or `end` is written and the wait stays unused, so a
-   limit on that rerun still goes through steps 4 to 7. With a piped
-   prompt this rerun is refused (`auto-switch: no rerun under profile …`)
-   and the step goes on to step 4: the log gets `skipped reason=disabled`
-   (or `ci`) from step 4 when the wait is off, else
-   `skipped reason=piped_prompt` from step 6;
+   limit on that rerun still goes through steps 4 to 7. A piped prompt is
+   replayed from its stored copy, so this rerun is made. Only when the
+   prompt could not be stored (see [Stdin](#stdin-handling)) is it refused
+   (`auto-switch: no rerun under profile …`) and the step goes on to
+   step 4: the log gets `skipped reason=disabled` (or `ci`) from step 4
+   when the wait is off, else `skipped reason=piped_prompt` from step 6;
 4. the wait disabled: `skipped reason=disabled` (or `ci`), and the result
    is passed up;
 5. this step has already waited on the login the failed attempt ran on, or
@@ -10919,7 +10965,8 @@ the inherited profile still has capacity and no wait is built: when the
 candidates are limited, the step goes back to the inherited profile through
 step 3, with no `start` or `end` event, and the wait is kept for a limit on
 that profile itself. A candidate's limit never times it. If that move is
-refused (a piped prompt), step 4 or 6 still writes the `skipped` event.
+refused (a piped prompt that could not be stored), step 4 or 6 still writes
+the `skipped` event.
 
 A step waits at most once for each login it runs on, and all of its waits
 share one `max_wait_secs` budget; see
@@ -11191,8 +11238,8 @@ on that login.
 #### When a capacity wait starts
 
 The checks run after steps 1 to 5 of [Order of attempts](#order-of-attempts),
-so a disabled wait, CI, a used wait and a piped prompt are refused first,
-with their usual `skipped` reasons.
+so a disabled wait, CI, a used wait and a piped prompt that could not be
+stored are refused first, with their usual `skipped` reasons.
 
 | Limit | Step's login | Another login could take over | Result |
 |-------|--------------|-------------------------------|--------|
