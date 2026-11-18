@@ -132,10 +132,22 @@ pub fn run_all(args: &[String]) -> Result<()> {
 }
 fn stage(case: &IsolatedCase, args: &[String], name: &str) -> Result<()> {
     let assets = argument(args, "--assets")?.canonicalize()?;
-    copy_tree(
-        &assets.join("amplifier-bundle"),
-        &case.home.join(".amplihack/amplifier-bundle"),
-    )?;
+    // Stage only assets these real recipes consume. Unrelated skill bundles
+    // contain compatibility symlinks and are not execution prerequisites.
+    for area in [
+        "recipes",
+        "tools",
+        "agents",
+        "skills/qa-team",
+        "skills/merge-ready",
+        "skills/auto-drive-to-merge",
+        "skills/crusty-old-engineer",
+    ] {
+        copy_tree(
+            &assets.join("amplifier-bundle").join(area),
+            &case.home.join(".amplihack/amplifier-bundle").join(area),
+        )?;
+    }
     copy_tree(
         &assets.join("tests/gadugi/issue-2806/responses"),
         &case.root.join("responses"),
@@ -223,7 +235,7 @@ fn stage(case: &IsolatedCase, args: &[String], name: &str) -> Result<()> {
         "pub fn answer() -> u32 { 0 }\n",
     )?;
     fs::write(checkout.join("expected.txt"), "42\n")?;
-    fs::write(checkout.join(".gitignore"), "target/\n")?;
+    fs::write(checkout.join(".gitignore"), "target/\nworktrees/\n")?;
     fs::write(
         checkout.join(".pre-commit-config.yaml"),
         "repos:\n  - repo: local\n    hooks:\n      - id: answer\n        name: answer content\n        language: system\n        entry: /usr/bin/cmp answer.txt expected.txt\n        pass_filenames: false\n        always_run: true\n",
@@ -675,12 +687,14 @@ fn drive(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
     }
     assert_value(report, name, "worktree", located, "no-worktree")?;
     if !located && name == "drive-missing" {
-        report.record(Assertion::blocked(
-            name,
-            &format!("{name}.merge"),
-            &format!("{name}.worktree"),
-            "private worktree resolution did not reach review and merge",
-        ))?;
+        for suffix in ["gates", "retained", "merge", "complete"] {
+            report.record(Assertion::blocked(
+                name,
+                &format!("{name}.{suffix}"),
+                &format!("{name}.worktree"),
+                "private worktree resolution did not reach review and merge",
+            ))?;
+        }
         return Ok(());
     }
     let readback = host.invoke(&repo, &["pr", "view", "1", "--json", "state,headRefOid"])?;
@@ -863,6 +877,33 @@ fn cleanup(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
             .context("interrupted repo absent")?,
     );
     let runtime = PathBuf::from(location["runtime"].as_str().context("runtime absent")?);
+    let before = evidence::observe_retention(
+        &repo,
+        &origin(case)?,
+        &commit,
+        "continue.txt",
+        b"unfinished work\n",
+    )?;
+    ensure!(
+        before.commit_reachable
+            && before.dirty_content_intact
+            && before.unpushed
+            && before.branch_usable,
+        "cleanup preconditions were not actually created"
+    );
+    save(&case.evidence.join("before-retention.json"), &before)?;
+    case.git(
+        &repo,
+        &[
+            "bundle",
+            "create",
+            case.evidence
+                .join("before-cleanup.bundle")
+                .to_str()
+                .context("bundle path")?,
+            "--all",
+        ],
+    )?;
     if name == "cleanup-clean" {
         fs::remove_file(repo.join("continue.txt"))?;
         case.git(&repo, &["push", "-q", "origin", "feat/answer"])?;
