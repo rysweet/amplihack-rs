@@ -759,7 +759,12 @@ jobs:
           cp target/release/examples/issue-2806-build-drive "$context/tools/"
           cp "$(command -v amplihack)" "$context/tools/amplihack"
           cp "$RECIPE_RUNNER_RS_PATH" "$context/tools/recipe-runner-rs"
-          cp -a "$(dirname "$(rustup which cargo)")/.." "$context/toolchain"
+          toolchain=$(dirname "$(dirname "$(rustup which cargo)")")
+          mkdir -p "$context/toolchain/bin"
+          cp -a "$toolchain/lib" "$context/toolchain/"
+          for tool in cargo rustc rustdoc rustfmt cargo-fmt; do
+            cp "$toolchain/bin/$tool" "$context/toolchain/bin/"
+          done
           for area in recipes tools agents; do
             cp -a "amplifier-bundle/$area" "$context/assets/amplifier-bundle/"
           done
