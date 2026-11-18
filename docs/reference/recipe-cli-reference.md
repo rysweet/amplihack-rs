@@ -707,7 +707,8 @@ does not read this folder; see [Known limits](#known-limits).
 | Code | Meaning | Example message on stderr |
 | --- | --- | --- |
 | `0` | The entry was written | |
-| `1` | No run matches the target. One line names the target and each place looked at: the session log path, the log directory, the recorded run folder if one was named but is absent, and `<work root>/runs/` | `recipe guide: no recipe run found for "nightly-fix"; looked at session log /home/alice/.amplihack/recipe-logs/nightly-fix.log (not found), pointer lines in /home/alice/.amplihack/recipe-logs (none names it), /home/alice/.amplihack/work/runs (no run folder or run.json with that ID)` |
+| `1` | No run matches the target. One line names the target and each place looked at: the session log path, the log directory, the recorded run folder if one was named but is absent, and `<work root>/runs/` | `recipe guide: no recipe run or detached session named "nightly-fix"; looked at session log /home/alice/.amplihack/recipe-logs/nightly-fix.log (not found), pointer lines in /home/alice/.amplihack/recipe-logs (none names it), /home/alice/.amplihack/work/runs (no run folder or run.json with that ID)` |
+| `1` | An issue URL that no recorded run names. Nothing is created under the state folder | `recipe guide: no recipe run or detached session named "https://github.com/rysweet/amplihack-rs/issues/2783"; looked at pointer lines in /home/alice/.amplihack/recipe-logs (none records that issue)` |
 | `1` | The target could be a run ID, but the work root cannot be resolved | `recipe guide: cannot look for run "nightly-fix": HOME is not set, so the default work root cannot be resolved` |
 | `1` | `AMPLIHACK_STATE_DIR` (or `HOME`) is set to a relative path, for a pull request URL target | `recipe guide: cannot find the state folder: AMPLIHACK_STATE_DIR is not an absolute path` |
 | `1` | The session's log has no pointer line | `recipe guide: /home/alice/.amplihack/recipe-logs/nightly-fix.log has no amplihack.recipe.log_pointer line` |
@@ -721,7 +722,7 @@ does not read this folder; see [Known limits](#known-limits).
 | `2` | Oversize text on stdin, or in a regular `--file` file | `guidance entry is 61440 bytes; the limit is 51200 bytes` |
 | `2` | Oversize text from a `--file` path that is not a regular file, or a regular file whose recorded size is wrong | `guidance entry is more than 51200 bytes; the limit is 51200 bytes` |
 | `2` | Invalid UTF-8, a refused character or a delimiter line | `recipe guide: guidance text contains a control character (U+001B)` |
-| `2` | Malformed pull request URL | `recipe guide: not a GitHub pull request URL: port is not allowed` |
+| `2` | Malformed pull request URL, or any other URL that is not an issue URL | `recipe guide: not a GitHub pull request URL: port is not allowed` |
 | `2` | Run inside a recipe run without `--from-step` | `recipe guide: refusing to add guidance from inside a recipe run (AMPLIHACK_RECIPE_RUN_ID is set); an agent step that means to add an entry must pass --from-step, and the entry is then shown as coming from an agent step` |
 
 Every failure prints one line and writes nothing.
