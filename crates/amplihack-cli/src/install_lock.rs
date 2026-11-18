@@ -1,8 +1,9 @@
 //! The install lock (issues #502 and #1954).
 //!
 //! Every piece of install work — `amplihack install`, the post-update install
-//! child, `update`'s binary replacement, startup self-heal and `uninstall` —
-//! runs while holding an exclusive `flock` on `~/.amplihack/.install.lock`.
+//! child, `update`'s binary replacement, startup self-heal, the launch
+//! bootstrap's re-stage (issue #1582) and `uninstall` — runs while holding an
+//! exclusive `flock` on `~/.amplihack/.install.lock`.
 //! Two installers therefore never stage, switch or clean up at the same time
 //! (issue #1954 cause B: an install and a self-heal collided on the shared
 //! staging directory).

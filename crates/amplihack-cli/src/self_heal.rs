@@ -21,6 +21,8 @@
 //! When the running binary is older than the stamp, nothing is installed and
 //! one warning goes to stderr. Guard #1 runs before the bundle check, Guard #2
 //! under the install lock; explicit `amplihack install` is never guarded.
+//! The launch bootstrap's re-stage takes the lock and runs Guard #2 through
+//! the same helper, [`restage_under_install_lock`] (issue #1582).
 //!
 //! ## Failure mode
 //!
@@ -356,68 +358,125 @@ where
     // via an advisory `flock` on `~/.amplihack/.install.lock`. The second
     // waiter re-reads the stamp inside the critical section; if the first
     // winner already wrote the up-to-date stamp, the waiter exits without
-    // re-running the installer.
+    // re-running the installer. Issue #1582: the launch bootstrap goes
+    // through the same helper.
+    restage_under_install_lock(
+        notice,
+        |stamp_now: Option<&str>| {
+            // Deliberately uncached: a concurrent installer may have rewritten
+            // the bundle moments ago, and this is the decision that guards
+            // against re-running the installer needlessly.
+            let installed_bundle_issue_now = installed_bundle_compatibility_issue_uncached()
+                .context("re-checking installed framework bundle compatibility under lock")?;
+            if stamp_now == Some(expected) && installed_bundle_issue_now.is_none() {
+                tracing::debug!(
+                    "self_heal: stamp and installed bundle brought current by concurrent installer; nothing to do"
+                );
+                return Ok(false);
+            }
+            Ok(true)
+        },
+        |notice: &mut W| {
+            // The install writes the stamp itself (issue #1526: not after a
+            // refused binary deploy, which only it knows about).
+            if let Err(error) = install_fn() {
+                let error = error.context("running install during startup self-heal");
+                let Some(failed) = error.downcast_ref::<SourceFetchFailed>() else {
+                    return Err(error);
+                };
+                if let Some(issue) = installed_bundle_compatibility_issue_uncached()
+                    .context("checking the installed bundle after a failed fetch")?
+                {
+                    tracing::debug!("self_heal: installed bundle can't be kept: {issue}");
+                    return Err(error);
+                }
+                // Best effort: the command runs whether or not the warning is written.
+                if let Err(e) =
+                    notice.write_all(format_kept_bundle_warning(failed, expected).as_bytes())
+                {
+                    tracing::debug!("self_heal: failed to emit kept-bundle warning: {e}");
+                }
+                return Ok(());
+            }
+            // The bundle just changed under us; drop the memoised verdict so the
+            // next invocation revalidates once and re-primes the cache.
+            if let Ok(path) = bundle_compat_cache_path() {
+                bundle_compat_cache::invalidate(&path);
+            }
+            writeln!(
+                notice,
+                "amplihack: framework assets re-staged for v{expected}"
+            )
+            .context("emitting self-heal notice")?;
+            Ok(())
+        },
+    )
+    .map(|_| ())
+}
+
+/// What [`restage_under_install_lock`] found once it held the install lock
+/// (issue #1582).
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LockedRestage {
+    /// The stamp re-read under the lock is newer than this binary (Guard #2):
+    /// nothing was installed, and the warning went to `notice`.
+    NewerInstalled,
+    /// The caller's re-check under the lock found nothing to do, usually
+    /// because the previous lock holder had just re-staged.
+    NotNeeded,
+    /// The caller's installer ran under the lock and succeeded.
+    Installed,
+}
+
+/// The one copy of take-lock, re-read stamp, Guard #2, re-check, install,
+/// shared by startup self-heal and the launch bootstrap (issue #1582).
+///
+/// Under the install lock, in this order:
+/// 1. re-reads the stamp (quietly: the caller's first read already reported a
+///    malformed one);
+/// 2. Issue #1526 Guard #2: when the stamp is now newer than this binary, a
+///    newer install finished while this process waited, so it writes the
+///    downgrade warning and returns [`LockedRestage::NewerInstalled`];
+/// 3. asks `still_needed`, given the stamp read under the lock, and returns
+///    [`LockedRestage::NotNeeded`] when it says no;
+/// 4. runs `install` and returns [`LockedRestage::Installed`].
+///
+/// Every decision the caller made before the lock is therefore made again
+/// here, so two launches that both decided to re-stage install once. Errors
+/// from either callback are returned unchanged and the lock is released.
+/// `AMPLIHACK_SKIP_AUTO_INSTALL` is not read here: each caller decides what
+/// the bypass means for it, and the warning itself honours it.
+pub(crate) fn restage_under_install_lock<W, N, I>(
+    notice: &mut W,
+    still_needed: N,
+    install: I,
+) -> Result<LockedRestage>
+where
+    W: Write,
+    N: FnOnce(Option<&str>) -> Result<bool>,
+    I: FnOnce(&mut W) -> Result<()>,
+{
     with_install_lock(|| {
-        // Re-check after acquiring the lock — the previous holder may
-        // have already brought the stamp current.
-        // Quiet: the read above has already reported a malformed stamp.
         let stamp_now = version_stamp::read_installed_version_quiet()
             .context("re-reading install stamp under lock")?;
-        // Issue #1526 Guard #2: a newer install may have finished while this
-        // process waited on the lock.
+        let expected = crate::VERSION;
         if let Some(installed) = stamp_now.as_deref()
             && version_stamp::relation(expected, installed) == VersionRelation::Older
         {
             tracing::debug!(
-                "self_heal: install stamp became {installed} while waiting on the install lock; \
+                "install stamp became {installed} while waiting on the install lock; \
                  binary {expected} refuses implicit re-stage"
             );
             warn_implicit_downgrade_once(notice, installed);
-            return Ok(());
+            return Ok(LockedRestage::NewerInstalled);
         }
-        // Deliberately uncached: a concurrent installer may have rewritten
-        // the bundle moments ago, and this is the decision that guards
-        // against re-running the installer needlessly.
-        let installed_bundle_issue_now = installed_bundle_compatibility_issue_uncached()
-            .context("re-checking installed framework bundle compatibility under lock")?;
-        if stamp_now.as_deref() == Some(expected) && installed_bundle_issue_now.is_none() {
-            tracing::debug!(
-                "self_heal: stamp and installed bundle brought current by concurrent installer; nothing to do"
-            );
-            return Ok(());
+        if !still_needed(stamp_now.as_deref())? {
+            tracing::debug!("re-check under the install lock found nothing to re-stage");
+            return Ok(LockedRestage::NotNeeded);
         }
-        // The install writes the stamp itself (issue #1526: not after a
-        // refused binary deploy, which only it knows about).
-        if let Err(error) = install_fn() {
-            let error = error.context("running install during startup self-heal");
-            let Some(failed) = error.downcast_ref::<SourceFetchFailed>() else {
-                return Err(error);
-            };
-            if let Some(issue) = installed_bundle_compatibility_issue_uncached()
-                .context("checking the installed bundle after a failed fetch")?
-            {
-                tracing::debug!("self_heal: installed bundle can't be kept: {issue}");
-                return Err(error);
-            }
-            // Best effort: the command runs whether or not the warning is written.
-            if let Err(e) =
-                notice.write_all(format_kept_bundle_warning(failed, expected).as_bytes())
-            {
-                tracing::debug!("self_heal: failed to emit kept-bundle warning: {e}");
-            }
-            return Ok(());
-        }
-        // The bundle just changed under us; drop the memoised verdict so the
-        // next invocation revalidates once and re-primes the cache.
-        if let Ok(path) = bundle_compat_cache_path() {
-            bundle_compat_cache::invalidate(&path);
-        }
-        writeln!(
-            notice,
-            "amplihack: framework assets re-staged for v{expected}"
-        )
-        .context("emitting self-heal notice")?;
-        Ok(())
+        install(notice)?;
+        Ok(LockedRestage::Installed)
     })
 }
 
