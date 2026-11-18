@@ -282,34 +282,42 @@ run's pointer line is kept in `<session>.log` in
 
 The first match is used, in this order:
 
-1. **URL.** A target that contains `://` is read only as a GitHub URL. A
-   `/pull/<number>` URL goes to the pull request's state folder, exactly as
-   before. An `/issues/<number>` URL is looked up as an issue (step 4). Any
-   other URL exits 2 and nothing else is tried.
-2. **Session name.** The pointer line in `<session>.log`. If it records
+1. **Issue URL.** A target of the form `https://github.com/<owner>/<repo>/issues/<number>`
+   is looked up as an issue: the pointer line whose `issue_url` matches, or
+   whose `issue_number` matches with the same owner and repository.
+2. **Pull request URL.** A `/pull/<number>` URL goes to the pull request's
+   state folder. Any other target that contains `://` exits 2 and nothing
+   else is tried.
+3. **Session name.** The pointer line in `<session>.log`. If it records
    `run_dir`, that folder is used.
-3. **Run ID.** The `run_dir` recorded by the pointer line that carries that
+4. **Run ID.** The `run_dir` recorded by the pointer line that carries that
    `run_id`, searched across the log directory. If no log records it, the ID
    is looked up under `<work root>/runs/`, first as a folder name and then
    as the correlation ID in each run's `run.json`.
-4. **Issue.** The pointer line whose `issue_number` or `issue_url` matches,
-   then that line's `run_dir`. A bare number is tried as an issue only after
-   the session and run ID lookups find nothing. An issue URL also has to
-   match the owner and repository the run recorded; a bare number matches
-   on the number alone, and the command prints the folder it chose.
+5. **Bare issue number.** `<number>` or `#<number>`, tried only after rules 3
+   and 4 find nothing. It matches the pointer line's `issue_number` alone,
+   without checking the repository, and the command prints the folder it
+   chose.
 
 Where both the recorded folder and the work root in the environment resolve,
 the recorded folder is used: it is the folder the run actually uses.
 
-A run that did not record `run_dir` (one started before this was recorded, or
-a foreground run, whose pointer line goes to the terminal and is not kept)
-is still found by run ID or session name through the work root in the
-environment, as before. Foreground runs are not found by issue.
+A run with no recorded `run_dir` (one started before the field existed, or a
+run whose pointer line was not kept in a log) is still looked up by run ID or
+session name through the work root in the environment, as it was before. It
+is not found by issue, because the issue lookup depends on the recorded
+pointer line.
 
-The recorded folder is checked before it is written to. Its parent must be
-named `runs`, its name must be a valid run ID, and neither it nor `run.json`
-may be a symbolic link. A recorded path that fails these checks is not
-used, and the reason appears in the not-found message.
+The recorded folder is checked before it is written to, and a folder that
+fails any check is not used. The reason appears in the not-found message.
+
+- The path is absolute and has no empty, `.` or `..` component.
+- Its parent is named `runs` and its name is a valid run ID.
+- Neither the folder nor `run.json` is a symbolic link.
+- `run.json` parses and agrees with the match: it lists the ID, session or
+  issue that selected the folder.
+- The work root implied by the folder (the parent of `runs`) passes the same
+  work root validation that `AMPLIHACK_WORK_ROOT` does.
 
 Logs are searched newest first, stopping at the first match. A log that
 cannot be read or is not trusted is skipped; a log you name as a session is
@@ -717,6 +725,11 @@ does not read this folder; see [Known limits](#known-limits).
 | `2` | Run inside a recipe run without `--from-step` | `recipe guide: refusing to add guidance from inside a recipe run (AMPLIHACK_RECIPE_RUN_ID is set); an agent step that means to add an entry must pass --from-step, and the entry is then shown as coming from an agent step` |
 
 Every failure prints one line and writes nothing.
+
+The not-found line shows at most three rejection reasons for recorded folders,
+followed by `and <n> more` with the exact number left out. Control characters
+in text taken from a log are replaced, and paths are shown escaped, so a
+crafted log cannot add lines or terminal sequences to the message.
 
 ### Known limits
 
