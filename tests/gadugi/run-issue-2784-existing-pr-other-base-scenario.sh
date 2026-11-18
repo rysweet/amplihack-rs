@@ -107,7 +107,17 @@ echo "binary under test: $BIN"
 
 RUNNER="${RECIPE_RUNNER_RS_PATH:-}"
 if [ -z "$RUNNER" ]; then
-  RUNNER="$(command -v recipe-runner-rs)"
+  if RUNNER="$(command -v recipe-runner-rs)"; then
+    :
+  else
+    status=$?
+    if [ "$status" -eq 1 ]; then
+      RUNNER=""
+    else
+      echo "FAIL: recipe-runner-rs lookup failed (exit $status)" >&2
+      echo "SCENARIO_FAILED"; exit "$status"
+    fi
+  fi
 fi
 if [ -z "$RUNNER" ] || [ ! -x "$RUNNER" ]; then
   echo "FAIL: recipe-runner-rs is required (set RECIPE_RUNNER_RS_PATH or put it on PATH)"
