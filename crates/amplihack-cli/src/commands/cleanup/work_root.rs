@@ -141,8 +141,10 @@ pub(crate) fn validate(path: &Path, home: &Path) -> Result<()> {
             }
             if meta.mode() & 0o022 != 0 {
                 bail!(
-                    "work root {} is writable by group or others; fix it with `chmod 700 {}`",
+                    "work root {} is writable by group or others (mode {:04o}); fix it with \
+                     `chmod 700 {}`",
                     path.display(),
+                    meta.mode() & 0o7777,
                     path.display()
                 );
             }

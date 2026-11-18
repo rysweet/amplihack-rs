@@ -127,7 +127,11 @@ pub(crate) fn resolve_state_dir_from(
 /// Resolve the state directory, creating it with mode 0700 if necessary.
 pub fn state_dir() -> Result<PathBuf> {
     let dir = resolve_state_dir();
-    fs::create_dir_all(&dir)
+    // Issue #2346: every folder created here, `~/.amplihack` included, is
+    // 0700 whatever the umask. `~/.amplihack` sits above the default work
+    // root, which the recipe runner's recovery store stops when a folder
+    // above it is group-writable.
+    create_private_dirs(&dir)
         .with_context(|| format!("failed to create state dir {}", dir.display()))?;
     #[cfg(unix)]
     {
@@ -135,6 +139,19 @@ pub fn state_dir() -> Result<PathBuf> {
         let _ = fs::set_permissions(&dir, Permissions::from_mode(0o700));
     }
     Ok(dir)
+}
+
+/// `create_dir_all` with mode 0700 on every folder it creates (issue #2346).
+/// Folders that already exist keep their mode.
+fn create_private_dirs(dir: &Path) -> std::io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(dir)
 }
 
 /// Compute the path to a tree's state file under the given directory.

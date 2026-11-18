@@ -768,9 +768,23 @@ impl RunWorkspace {
         }
     }
     /// Recovery never silently executes without durable admission.
+    ///
+    /// Issue #2346: the path to the work root is checked first, so a run that
+    /// the runner's recovery store would stop names each folder at fault and
+    /// its fix. The runner's own check still runs; when it fails after this
+    /// one passed, its reason ends the message, on the same line, after the
+    /// work root.
     pub(crate) fn begin_durable(recipe: &str, cwd: &Path) -> Result<Self> {
         let root = super::work_root::resolve_from_env()?;
-        recipe_runner_rs::recovery::private_fs::Directory::open(&root.path, true)?;
+        super::recovery_path::prepare_work_root(&root.path)?;
+        recipe_runner_rs::recovery::private_fs::Directory::open(&root.path, true).map_err(
+            |error| {
+                anyhow::anyhow!(
+                    "cannot open the recovery store at work root {}: {error:#}",
+                    crate::commands::install::paths::sanitize_path(&root.path)
+                )
+            },
+        )?;
         let (scope, guard) = RunScope::begin(root, recipe, cwd)?;
         Ok(Self::Scoped {
             scope: Box::new(scope),

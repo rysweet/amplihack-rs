@@ -7,7 +7,7 @@
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -37,13 +37,18 @@ const SIGNATURE_LEN: usize = 43;
 /// else in the folder is touched.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn create_tagged_target_dir(path: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(path)?;
+    // Issue #2346: the folder and every parent created here are 0700, and
+    // the tag 0600, whatever the umask.
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
     let tag = path.join("CACHEDIR.TAG");
     match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .custom_flags(libc::O_NOFOLLOW)
-        .mode(0o644)
+        .mode(0o600)
         .open(&tag)
     {
         Ok(mut file) => file.write_all(CACHEDIR_TAG.as_bytes()),

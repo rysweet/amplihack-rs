@@ -1,5 +1,6 @@
 //! Amplihack's work identity and launch admission; replay belongs to the runner.
-use anyhow::{Context, Result};
+use crate::commands::install::paths::sanitize_path;
+use anyhow::Result;
 use recipe_runner_rs::recovery::{admission::Admission, model::fingerprint, resources::git};
 use std::{collections::BTreeMap, path::Path};
 
@@ -125,6 +126,9 @@ pub(super) fn admit(
         anyhow::bail!("durable recipe execution requires a private work root");
     };
     let identity = identity(recipe, name, repo, context);
+    // Issue #2346: the top-level `Error: {error}` prints only the outermost
+    // message, so the runner's reason is written into it, after the work root
+    // and the run folder that it concerns.
     Admission::begin(
         &scope.work_root.path,
         &scope.run_dir,
@@ -132,5 +136,11 @@ pub(super) fn admit(
         fresh,
         settings,
     )
-    .context("cannot durably admit recipe launch")
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "cannot durably admit recipe launch (work root {}, run folder {}): {error:#}",
+            sanitize_path(&scope.work_root.path),
+            sanitize_path(&scope.run_dir)
+        )
+    })
 }

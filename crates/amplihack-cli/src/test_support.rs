@@ -109,8 +109,18 @@ mod scratch_base;
 /// base qualifies. The rule, and the lookups that need it, are in
 /// `tests/support/scratch_base.rs`, shared with `amplihack-hooks`,
 /// `amplihack-types` and `cli_integration`.
+///
+/// The folder is `0700` whatever the umask (issue #2346): a fixture that runs
+/// a recipe below it must not have a group-writable folder above its work
+/// root.
 pub(crate) fn tempdir_outside_framework_roots() -> tempfile::TempDir {
-    tempfile::tempdir_in(scratch_base::scratch_base()).unwrap()
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder.tempdir_in(scratch_base::scratch_base()).unwrap()
 }
 
 #[cfg(test)]

@@ -27,6 +27,10 @@
 //! (issue #2196), so neither a framework install nor a stray repository
 //! marker above the base (`/tmp/.git`, issue #1937) can change them.
 //!
+//! A base is also rejected when the recipe runner's recovery store would stop
+//! a work root under it: a symbolic link, or a group- or world-writable folder
+//! without the sticky bit, at or above it (issue #2346).
+//!
 //! This file uses only `std`. `amplihack-cli`'s `test_support`, the
 //! `cli_integration` target, `amplihack-hooks`' `user_prompt` tests and
 //! `amplihack-types`' `paths` tests include it with `#[path]`, so there is one
@@ -58,6 +62,53 @@ pub fn scratch_base_rejection(base: &Path, home: Option<&Path>) -> Option<String
             }
         }
     }
+    recovery_ancestor_rejection(base)
+}
+
+/// Issue #2346: why the recipe runner's recovery store would stop a work root
+/// under `base`, or `None` when it would not.
+///
+/// The runner (`recipe_runner_rs::recovery::private_fs::Directory::open`)
+/// stops a work root when a folder on its path, as written, is a symbolic
+/// link, or has a group or other write bit and no sticky bit. A test that runs
+/// a recipe under such a base fails with "unsafe recovery ancestor" for a
+/// reason that has nothing to do with what it tests, so the base is rejected
+/// by name and the next candidate tried. Under umask 0002 a `TMPDIR` made by
+/// a shell is `0775`, which is the usual cause.
+#[cfg(unix)]
+fn recovery_ancestor_rejection(base: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    for ancestor in base.ancestors() {
+        let Ok(meta) = std::fs::symlink_metadata(ancestor) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            return Some(format!(
+                "has symbolic link {} at or above it, which the recovery store's ancestor rule \
+                 stops",
+                ancestor.display()
+            ));
+        }
+        let mode = meta.mode();
+        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+            let bits = match (mode & 0o020 != 0, mode & 0o002 != 0) {
+                (true, true) => "group-writable and world-writable",
+                (false, true) => "world-writable",
+                _ => "group-writable",
+            };
+            return Some(format!(
+                "has {bits} {} (mode {:04o}) at or above it, which the recovery store's ancestor \
+                 rule stops",
+                ancestor.display(),
+                mode & 0o7777
+            ));
+        }
+    }
+    None
+}
+
+#[cfg(not(unix))]
+fn recovery_ancestor_rejection(_base: &Path) -> Option<String> {
     None
 }
 

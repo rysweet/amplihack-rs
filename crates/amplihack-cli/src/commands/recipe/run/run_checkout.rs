@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -165,8 +165,11 @@ impl RunCheckout {
         };
         let storage = match storage {
             Some(storage) => storage,
+            // Issue #2346: private storage under the work root is 0700
+            // whatever the umask.
             None => tempfile::Builder::new()
                 .prefix("execution-")
+                .permissions(fs::Permissions::from_mode(0o700))
                 .tempdir_in(parent)?
                 .keep(),
         };
@@ -464,13 +467,31 @@ impl RunCheckout {
         // A workflow may have created durable worktrees in this repository.
         // Its metadata must survive until those dependencies are released.
         if dependents > 1 {
-            fs::write(storage.join("durable-dependencies"), list)?;
+            write_private(&storage.join("durable-dependencies"), &list)?;
         } else {
             fs::remove_dir_all(&*storage)?;
         }
         *released = true;
         Ok(())
     }
+}
+/// Writes `bytes` to `path` as a private file: created 0600 whatever the
+/// umask, an existing file set to 0600 through its descriptor, and a
+/// symbolic link at `path` never followed (issue #2346).
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("cannot set mode 0600 on {}", path.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("cannot write {}", path.display()))
 }
 impl Drop for RunCheckout {
     fn drop(&mut self) {

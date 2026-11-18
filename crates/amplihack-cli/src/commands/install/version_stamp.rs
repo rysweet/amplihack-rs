@@ -92,6 +92,10 @@ fn write_stamp(contents: &str) -> Result<()> {
             final_path.display()
         )
     })?;
+    // Issue #2346: `~/.amplihack` is created 0700 whatever the umask, and an
+    // existing one keeps its mode.
+    crate::private_dir::ensure_private_leaf_dir(parent)
+        .with_context(|| format!("failed to create {} with mode 0700", parent.display()))?;
     fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
 
     // R1: refuse to overwrite a symlink at the stamp path. We do this

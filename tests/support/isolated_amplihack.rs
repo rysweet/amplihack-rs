@@ -118,8 +118,15 @@ pub fn no_git_prompt(command: &mut Command) -> &mut Command {
 pub fn shared_temp_home() -> &'static Path {
     static HOME: OnceLock<PathBuf> = OnceLock::new();
     HOME.get_or_init(|| {
+        // Mode 0700 is given explicitly: `tempfile` makes its folders 0777
+        // less the umask, so under umask 0002 the home was 0775, and the
+        // recovery store stops a work root below a group-writable folder
+        // (issue #2346).
         let dir = tempfile::Builder::new()
             .prefix("amplihack-test-home-")
+            .permissions(
+                <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+            )
             .tempdir()
             .expect("create the per-process test HOME")
             .keep();

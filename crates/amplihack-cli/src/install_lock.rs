@@ -188,6 +188,11 @@ pub fn acquire_at(path: &Path) -> Result<InstallLockGuard> {
 
 fn open_lock_file(path: &Path) -> Result<File> {
     if let Some(parent) = path.parent() {
+        // Issue #2346: the lock is often the first thing to create
+        // `~/.amplihack`, which sits above the default work root; it is made
+        // 0700 whatever the umask, and an existing one is left as it is.
+        crate::private_dir::ensure_private_leaf_dir(parent)
+            .with_context(|| format!("failed to create {} with mode 0700", parent.display()))?;
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
