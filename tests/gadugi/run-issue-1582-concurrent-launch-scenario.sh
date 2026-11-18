@@ -188,10 +188,11 @@ lockfile="$amp/.install.lock"
 
 # Every path under ~/.amplihack/.claude, following links, relative and sorted.
 list_files() {
-  { find -L "$claude_dir" -mindepth 1 -printf '%P\n' 2>/dev/null || true; } | LC_ALL=C sort
+  find -L "$claude_dir" -mindepth 1 -printf '%P\n' | LC_ALL=C sort
 }
+# Release roots only. Names starting with a dot, such as .retired, are not releases.
 list_releases() {
-  { find "$releases" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null || true; } |
+  find "$releases" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\n' |
     LC_ALL=C sort
 }
 
@@ -204,8 +205,8 @@ fi
 [ -d "$target" ] ||
   die "install --local staged no $target; the staged layout changed, so remove another framework directory"
 [ -d "$releases" ] || die "install --local created no releases directory"
-list_files > "$root/files.installed"
-list_releases > "$root/releases.installed"
+list_files > "$root/files.installed" || die "cannot list $claude_dir"
+list_releases > "$root/releases.installed" || die "cannot list $releases"
 echo "installed: $(wc -l < "$root/files.installed") paths under ~/.amplihack/.claude, $(wc -l < "$root/releases.installed") release(s)"
 
 # --- 2. remove a framework directory only the bootstrap checks ----------------
@@ -319,7 +320,7 @@ else
   flunk both-launches-exit-0 "launch exit statuses were $status_1 and $status_2"
 fi
 
-list_releases > "$root/releases.after"
+list_releases > "$root/releases.after" || die "cannot list $releases"
 new_releases="$(LC_ALL=C comm -13 "$root/releases.installed" "$root/releases.after" | wc -l)"
 if [ "$new_releases" -eq 1 ]; then
   pass one-new-release "one release directory was created after the install"
@@ -335,7 +336,7 @@ else
   flunk one-bootstrap-line "$bootstraps launches printed the re-stage line, expected 1"
 fi
 
-list_files > "$root/files.after"
+list_files > "$root/files.after" || die "cannot list $claude_dir"
 missing="$(LC_ALL=C comm -23 "$root/files.installed" "$root/files.after")"
 if [ -z "$missing" ]; then
   pass assets-complete "every path staged by the install exists again"
