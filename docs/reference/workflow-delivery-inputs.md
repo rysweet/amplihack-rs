@@ -193,11 +193,16 @@ step-21 and step-22b read the recorded base and pass it through
 the run there. A caller that needs the pull request on a fixed base sets
 `base_branch`.
 
-When the adopted pull request's base differs from the resolved base, step-16
-applies `WORKFLOW_PR_LABELS` only if that base passes
-`delivery_base_ref`, including `forbidden_base_branches`. Otherwise it logs a
-`WARNING:` line with the reason and leaves the pull request unlabelled; the
-publish result is unchanged.
+Step-16 retains the existing best-effort `WORKFLOW_PR_LABELS` behavior. It
+does not validate an adopted base before labeling, so configured labels can
+reach a pull request whose base is forbidden or has not been fetched, before
+finalize refuses it. A label alone establishes neither author trust nor base
+authorization; callers using labels to trigger merges must enforce those
+policies before merging. Issue #2784 explicitly excludes new guard checks.
+Author validation remains tracked in
+[#2789](https://github.com/rysweet/amplihack-rs/issues/2789), and auto-drive's
+separate base-policy gap in
+[#2790](https://github.com/rysweet/amplihack-rs/issues/2790).
 
 The pull request's author is not checked, so whoever can open a pull
 request from the branch chooses the base the run records

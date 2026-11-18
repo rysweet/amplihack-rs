@@ -105,7 +105,10 @@ case "$BIN" in
 esac
 echo "binary under test: $BIN"
 
-RUNNER="${RECIPE_RUNNER_RS_PATH:-$(command -v recipe-runner-rs 2>/dev/null || true)}"
+RUNNER="${RECIPE_RUNNER_RS_PATH:-}"
+if [ -z "$RUNNER" ]; then
+  RUNNER="$(command -v recipe-runner-rs)"
+fi
 if [ -z "$RUNNER" ] || [ ! -x "$RUNNER" ]; then
   echo "FAIL: recipe-runner-rs is required (set RECIPE_RUNNER_RS_PATH or put it on PATH)"
   echo "SCENARIO_FAILED"; exit 1
@@ -267,7 +270,20 @@ expect_field() {
   [ "$got" = "$3" ] || problems+=("$2 '$got', want '$3'")
 }
 
-create_calls() { grep -c '^pr create' "$1/gh.log" 2>/dev/null || true; }
+create_calls() {
+  local count status
+  if count="$(grep -c '^pr create' "$1/gh.log")"; then
+    printf '%s\n' "$count"
+  else
+    status=$?
+    if [ "$status" -eq 1 ]; then
+      printf '0\n'
+    else
+      printf 'ERROR: cannot count pr create calls (grep exit %s)\n' "$status" >&2
+      return "$status"
+    fi
+  fi
+}
 
 # --- case A: open PR #615 into dev, origin/HEAD main, base_branch empty ------
 # shellcheck disable=SC2016 # $head and $sha are jq variables, not shell ones

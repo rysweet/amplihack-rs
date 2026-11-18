@@ -78,12 +78,9 @@ DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-${SCRIPT_DIR}/workflo
 # that let GitHub choose, records "". With base_branch empty, that matched
 # pull request can be the one open pull request from this branch into another
 # base (#2784), and its own base is recorded. Step-16 does not check that
-# base; finalize checks it with delivery_base_ref, and labels are applied only
-# when it passes.
+# base; finalize checks it with delivery_base_ref. Best-effort labeling retains
+# its existing behavior and does not validate the adopted base (#2784).
 BASE_BRANCH_RESULT=""
-# The resolved base, set from resolve_pr_base_ref; never taken from the caller's
-# environment, which the label guard below compares against.
-BASE_BRANCH=""
 emit_publish_result() {
   jq -nc \
     --arg state "$PUBLISH_STATE" \
@@ -118,14 +115,6 @@ apply_pr_labels_best_effort() {
   # create-new path (no pre-existing PR was found), so this still labels
   # freshly created PRs.
   case "${PR_STATE:-}" in MERGED | CLOSED) return 0 ;; esac
-  # #2784: an adopted pull request's base was chosen by whoever opened it.
-  # Label it only when finalize would accept that base (delivery_base_ref).
-  local refusal
-  if [ "${PR_STATE:-}" = "OPEN" ] && [ "${BASE_BRANCH_RESULT:-}" != "${BASE_BRANCH:-}" ] \
-    && ! refusal="$({ delivery_base_ref "${BASE_BRANCH_RESULT:-}" "${CURRENT_BRANCH:-}" "${RECIPE_VAR_forbidden_base_branches:-}" >/dev/null; } 2>&1)"; then
-    echo "WARNING: workflow_publish_pr.sh: labels '${WORKFLOW_PR_LABELS}' not applied to adopted PR #${PR_NUMBER_RESULT}: ${refusal#ERROR: }" >&2
-    return 0
-  fi
   command -v gh >/dev/null 2>&1 || return 0
 
   # `gh pr edit --add-label` splits comma-separated labels natively, so the raw

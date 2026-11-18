@@ -282,27 +282,33 @@ fn publish_labelled(f: &PublishFixture, forbidden: &str) -> Output {
         .unwrap()
 }
 
-// The adopted pull request's base was chosen by whoever opened it. Labels
-// are a durable self-merge marker, so a base finalize would refuse gets none;
-// the publish result is unchanged and finalize still refuses the base.
+// #2784 preserves the existing label contract: base policy belongs to
+// finalization. A configured label alone does not authorize a merge.
 #[test]
-fn labels_skip_an_adopted_pr_whose_base_is_forbidden() {
+fn labels_apply_to_an_adopted_pr_even_when_its_base_is_forbidden() {
     let f = fixture();
     let output = publish_labelled(&f, "dev");
     assert_adopted(&output, 615, "dev", KEPT_DEV);
-    assert_eq!(gh_calls(&f, "pr edit"), 0, "{}", f.read("gh.log"));
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(gh_calls(&f, "pr edit"), 1, "{}", f.read("gh.log"));
     assert!(
-        stderr.contains("not applied to adopted PR #615")
-            && stderr.contains("matches forbidden_base_branches pattern 'dev'"),
+        String::from_utf8_lossy(&output.stderr).contains("best-effort labels"),
         "{}",
         describe(&output)
     );
 }
 
-// The control case: a base that passes delivery_base_ref is labelled as
-// before. The fixture's gh answers `pr edit` with exit 96, which the label
-// step reports as a warning without changing the result.
+// Fetch availability also does not change publish-time labeling. Finalize
+// still refuses a recorded base that has no remote-tracking reference.
+#[test]
+fn labels_apply_to_an_adopted_pr_even_when_its_base_is_unfetched() {
+    let f = PublishFixture::new();
+    let output = publish_labelled(&f, "");
+    assert_adopted(&output, 615, "dev", KEPT_DEV);
+    assert_eq!(gh_calls(&f, "pr edit"), 1, "{}", f.read("gh.log"));
+}
+
+// The allowed-base control. The fixture's gh answers `pr edit` with exit 96,
+// which the label step reports as a warning without changing the result.
 #[test]
 fn labels_apply_to_an_adopted_pr_whose_base_is_allowed() {
     let f = fixture();
