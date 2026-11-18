@@ -2,7 +2,7 @@
 title: Recipe Run and Auto-Drive Checkout Isolation
 description: Where recipe runs and auto-drive reviews execute, what they copy from the caller, and how they release what they own.
 doc_type: reference
-last_updated: 2026-11-17
+last_updated: 2026-11-18
 ---
 
 # Recipe run and auto-drive checkout isolation
@@ -26,6 +26,7 @@ any platform.
   - [The origin remote in the private repository](#the-origin-remote-in-the-private-repository)
 - [Independent, nested and resumed runs](#independent-nested-and-resumed-runs)
 - [Ownership and release](#ownership-and-release)
+  - [Worktrees that hold work](#worktrees-that-hold-work)
 - [Git commands a run makes](#git-commands-a-run-makes)
 - [Private review generations](#private-review-generations)
   - [Superseded generations are retired](#superseded-generations-are-retired)
@@ -296,11 +297,15 @@ in a private `exec dir` that belongs to one attempt:
     a process that is gone, or the run folder is gone). A directory with no
     claim is reclaimed only when it is empty;
   - no worktree registered in its `repository.git` lies outside it and still
-    exists. In default-workflow, step 04 creates such worktrees.
+    exists. In default-workflow, step 04 creates such worktrees;
+  - no worktree registered in its `repository.git` that lies inside it,
+    other than its own `checkout`, holds uncommitted changes or commits that
+    are not on a remote. See
+    [Worktrees that hold work](#worktrees-that-hold-work).
 
   Otherwise the new attempt prints why the path is still held (the owner is
-  still running, a durable worktree still uses it, or it is not a real
-  directory) and uses a fresh random path; replay then re-runs the
+  still running, a durable worktree still uses it, a worktree inside it holds
+  work, or it is not a real directory) and uses a fresh random path; replay then re-runs the
   checkout-dependent steps. `amplihack cleanup` applies the same rules to
   every path under `exec/` (category `run-exec`).
 
@@ -352,6 +357,68 @@ never started.
 Copied inputs, which may include `.env` files, live only in the `0700`
 `exec dir` and go with it. Error messages name paths, never file contents or
 environment values.
+
+### Worktrees that hold work
+
+A recipe adds its task and pull request worktrees to the run's private
+repository; `default-workflow` does so at step 04. When a run stops before
+their work reaches a remote, for example on a usage limit, those worktrees
+hold the only copy of it. Three rules keep that work. Each uses the checks
+that keep a `run-worktree` in
+[cleanup](../howto/clean-up-after-recipe-runs.md#uncommitted-and-unpushed-git-work):
+`git status --porcelain`, and a count of commits that are not on the
+upstream or, with no upstream, on any remote-tracking branch.
+
+**At release.** `RunCheckout::remove` removes the execution checkout with
+`git worktree remove --force`, then lists the repository's worktrees with
+`git worktree list --porcelain -z`. When other worktrees remain, it keeps
+`repository.git` and writes `durable-dependencies`, as before, and prints one
+line on stderr for each listed worktree that still exists and holds work:
+
+```text
+amplihack: worktree "/home/ryan/.amplihack/work/worktrees/amplihack-rs-1a2b3c4d/feat/issue-2784-workflow-publish-opens-a" has uncommitted changes; it is linked to this run's private repository "/home/ryan/.amplihack/work/exec/9b1f0c2e7d4a5b6c8e3f1a2b4c5d6e7f/repository.git", which is kept for it
+```
+
+The line only reports: release removes and keeps exactly what it did before.
+Worktree paths are taken from git's output as bytes, so a name that is not
+UTF-8 is named as it is on disk, quoted and escaped. The run's exit status
+does not change.
+
+**At reclaim.** A relaunch with the same recovery identity, and the `run-exec`
+category of `amplihack cleanup`, reclaim `<work root>/exec/<identity>/` only
+when no worktree registered in its `repository.git` that lies inside the
+storage holds work. Otherwise the storage is kept with a reason such as:
+
+```text
+worktree "/home/ryan/.amplihack/work/exec/9b1f0c2e7d4a5b6c8e3f1a2b4c5d6e7f/worktrees/feat" inside it has unpushed commits
+```
+
+The relaunch prints that reason in its `is still held by an earlier attempt`
+line and uses a fresh random path. At most 64 worktrees inside the storage are
+checked while the lock on `exec/` is held; with more, the storage is kept
+with the reason `more than 64 worktrees inside it to check`. A registered
+worktree outside the storage keeps it whether or not it holds work, with
+`durable worktree <path> still uses its repository`, as before.
+
+`run_isolation/exec_storage.rs` does not depend on cleanup. Its caller passes
+the check in as a `HoldsWork` function, as it passes the `OwnerEnded` check,
+and the check runs no git in a tree that belongs to another user or whose
+`.git` other users can write.
+
+**The run's own checkout is not checked.** `<storage>/checkout` is left out
+by an exact comparison of canonical paths, so a worktree nested below it is
+still checked. The checkout is built from the caller's snapshot: it is dirty
+whenever the caller's checkout was, and its `HEAD` can be the caller's own
+unpushed commit. The caller still has the originals, and a recipe's work
+goes into a task worktree, so checking the checkout would keep almost every
+storage folder without saving anything. A commit made on a branch in the
+checkout itself is still removed with it at release when no other worktree
+depends on the repository.
+
+The run's runtime folder, `<run dir>/runtime` or `<work root>/r/<short id>`,
+is covered separately: the runner keeps it when a git tree inside it holds
+work. See
+[A runtime folder that holds git work is kept](../howto/clean-up-after-recipe-runs.md#a-runtime-folder-that-holds-git-work-is-kept).
 
 ## Git commands a run makes
 
@@ -600,10 +667,11 @@ These are internal modules, not a public API.
 | Component | Responsibility |
 | --- | --- |
 | `run_isolation/input_snapshot.rs` | Captures `HEAD`, index and working tree separately; rejects unsafe inputs. |
-| `commands/recipe/run/run_checkout.rs` | Finds the repository (fails closed), provisions the private checkout, rebuilds the `origin` refspec, `origin/*` and `origin/HEAD`, maps paths, releases owned paths. |
+| `commands/recipe/run/run_checkout.rs` | Finds the repository (fails closed), provisions the private checkout, rebuilds the `origin` refspec, `origin/*` and `origin/HEAD`, maps paths, releases owned paths, and names each kept worktree that holds work. |
 | `run_isolation/review_generation.rs` | Review generations: provision, four-part validation (including a clean working tree), retirement of superseded generations in `advance`, release. `read_live` refuses retired generations; plain `read` is used only by `release`, `release_state` and the child walk. |
-| `run_isolation/exec_storage.rs` | Claims `<work root>/exec/<identity>/` and decides when it may be reclaimed; used by preparation and by `amplihack cleanup`. |
-| `commands/cleanup/run_dir.rs` | `RunWorkspace::begin_durable` for real runs, `RunWorkspace::dry_runtime` for dry runs; `record_attempt_checked` and `finish_checked` return errors. |
+| `run_isolation/exec_storage.rs` | Claims `<work root>/exec/<identity>/` and decides when it may be reclaimed; used by preparation and by `amplihack cleanup`. Takes the `OwnerEnded` and `HoldsWork` checks from its caller. |
+| `commands/cleanup/git_work.rs` | Decides whether a folder holds git work: finds the git trees in it, applies the ownership and mode rules, and runs the existing uncommitted and unpushed checks. `work_inside` serves the runtime folder, `run-tmp` and `tmp-leftover`; `tree_work` is the `HoldsWork` check and the check `RunCheckout::remove` reports with. |
+| `commands/cleanup/run_dir.rs` | `RunWorkspace::begin_durable` for real runs, `RunWorkspace::dry_runtime` for dry runs; `record_attempt_checked` and `finish_checked` return errors. `RuntimeGuard::release` returns `RuntimeRemoval::KeptForWork` for a runtime folder that holds git work. |
 | `commands/recipe/run/execute.rs` | Order of preparation, launch and release; joins errors. |
 
 Callers use `?` on every `Result` from checkout, admission and workspace
@@ -625,6 +693,9 @@ code. None of them is discarded with `.ok()`, `let _ =` or
 | A live review generation's recorded resource is a different directory: its storage directory, `repository.git`, its checkout or `launch` no longer carries the device and inode the manifest recorded for it | The command that read it is refused with `review generation resource identity changed; retained for recovery`. Nothing is removed, the record stays live with `"retired": false`, and the checkout and storage are left in place. `review-next` stops here rather than retiring the generation it would have replaced. A recorded path that is absent, is a symlink or is no longer a directory is refused earlier, by `review resource is not an owned directory: <path>` or the underlying I/O error. |
 | A storage path is no longer the recorded directory: a symlink, a non-directory, a different directory, or a directory missing one of the two children the manifest recorded inside it | Nothing is deleted. `review-next` warns and carries on; `review-release` fails with `review storage identity changed; retained` and the path. |
 | Stable execution path still held | The attempt prints the reason and uses a fresh random path. |
+| A worktree inside the stable execution path holds uncommitted changes or unpushed commits | The path is held; the reason names the worktree and what git found. |
+| A worktree linked to the private repository holds work when the run ends | `repository.git` is kept, as for any durable worktree, and one line on stderr names each such worktree. The run's status does not change. |
+| The run's runtime folder holds a git tree with work | The folder is kept and one line on stderr names the tree. The run's status does not change. |
 | Every step passed but release failed | The run fails. |
 
 Output formats keep their existing fields. The run's status follows the
@@ -672,11 +743,15 @@ isolation test cannot pass on empty data.
 | `crates/amplihack-cli/tests/issue_2738_private_clone.rs` | A step that writes to the index works in a private clone whose path differs from the caller's checkout; the caller's index and working tree are unchanged. |
 | `crates/amplihack-cli/tests/issue_2677_private_main_root.rs`, module `private_main_root` of `issue_2096_execution_isolation` | A new-branch run launched from the caller's main checkout with `-c repo_path=.` and an issue number: `workflow_worktree_root.sh root` names the run's storage folder, `base` resolves from it to the same worktree path as from the checkout, and a folder that is not a work tree and not that answer still fails. |
 | `crates/amplihack-cli/tests/issue_2096_review_isolation.rs` | Review generations and both call sites of the three-pair storage check. `advance_retires_superseded_generation` covers the retirement call site: after `advance` the old checkout and storage are gone and the manifest says `retired`. `release_frees_storage_left_by_failed_retirement` covers the release call site, where a retirement that did not reach the removal leaves storage behind. `advance_destroys_nothing_when_the_recorded_launch_directory_is_replaced` covers the fourth recorded pair on the retirement path: a generation whose recorded `launch` directory was replaced keeps its checkout, its storage and `retired: false`, because the read that precedes retirement compares all four pairs and refuses first. `retired_generation_is_refused` covers the commands that refuse a retired generation, and `release_root_after_retirement_removes_everything` the release of the whole chain. On the release path, `retired_release_refuses_symlinked_storage` and `retired_release_refuses_substituted_storage` cover the storage directory's own identity, and five tests cover the recorded children: storage whose recorded children are absent, whose recorded children were replaced by a tree of the same shape, whose recorded child is a symlink, and whose `launch` alone is gone while the other two pairs still match (`retired_release_refuses_storage_whose_launch_child_is_gone`), are each refused with nothing deleted, while `retired_release_frees_storage_the_removal_never_reached` holds the opposite side, that a whole recorded tree a failed retirement left behind is still freed. The substitution tests do not wait for the kernel to reuse an inode: they give the substitute the recorded top-level pair outright, which is the most inode reuse can hand it. `review_allocate_under_umask_0002_makes_folders_the_trust_scan_keeps` runs `internal review-allocate` in a child process under umask `002`: the allocation directory and its `review-generation-*` storage are both `0700`, and the shipped `autodrive_untrusted_entries <state> "$(id -u)" -print` prints nothing. |
+| `crates/amplihack-cli/tests/issue_2096_exec_reclaim.rs`, module `exec_reclaim` of `issue_2096_execution_isolation` | Reclaim of `<work root>/exec/<identity>/`. A storage folder holding a bare `repository.git` cloned from a local origin, a claim naming an ended run and a dirty worktree at `worktrees/feat` inside it: the relaunch says the path is held and gives the reason, and `amplihack cleanup` skips it with `inside it`; after a commit and a push to its origin, cleanup removes it. A storage folder whose only dirty tree is its own `checkout` is reclaimed. |
+| `crates/amplihack-cli/src/commands/cleanup/tests_git_work.rs` | Which git trees in a folder are checked, and the reasons given: a worktree whose repository is outside the folder, dirty, unpushed, or clean and pushed; a self-contained `git init` and a clone of an origin in the same folder; a stray `.git` folder, an invalid `.git` file, a dangling `.git` link, a symbolic link to an outside repository and a `.git` link to one; the walk, tree and time limits; a tree owned by another user; `.git/config` at `0666` and at `0664` in the user's own group; a remote URL that leaves the folder through `..`; a credential in a remote URL that never reaches the reason; control characters escaped in a reason; `status.showUntrackedFiles=no` in the repository. Cases that depend on permissions are skipped as root. |
+| `crates/amplihack-cli/src/commands/cleanup/tests_sweep.rs`, `tests_run_dir.rs` | A run whose `run.json` has a dead pid, with `outcome` `failure` and with `ended_at` empty, and a worktree in `r/<id>/tmp/wt` of a clone outside the folder holding an uncommitted file and an unpushed commit: the end-of-run sweep skips the folder, naming the tree, and the file and commit stay. The same run clean and pushed is removed, and so is a self-contained `git init` with a commit. A folder that cannot be removed gives one end-of-run warning over two sweeps and is recorded with `failed: true`. `RuntimeGuard` keeps a folder holding a dirty worktree, including below a folder at mode `000`, and removes it when clean and pushed. |
 | `crates/amplihack-cli/tests/issue_2096_real_hooks.rs` | Pre-commit and push hooks run in the execution checkout. |
 | `crates/amplihack-git/tests/issue_2096_git_policy.rs` | Git environment and configuration policy. |
 | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` | Review generation checks, `REVIEW_DIR_CHANGED` and `REVIEW_DIR_UNSTAMPED`. |
 | `tests/issue_1437_autodrive_loop.sh` | The #1437 loop contract with review generations in place; the default case (`NOT_READY`, then `MERGE_READY`, ending `DONE`) also checks that `review-release` runs exactly once and that no round starts in the PR worktree or the main checkout. Failure cases are listed below. |
 | `tests/gadugi/run-issue-2778-umask-crusty-scenario.sh`, scenario `tests/gadugi/scenarios/issue-2778-crusty-loop-under-umask-0002.yaml` | The two calls of step-02 of `autodrive-crusty-loop.yaml`, in that order, under umask `002`: the binary's own `internal review-allocate`, then the shipped `autodrive_loop.sh`. `gh` and the agent CLIs are stubs, and the `amplihack recipe` entry point is a stub that runs a stand-in round; that round runs the shipped `autodrive_crusty_record.sh` and the binary's own `orch helper autodrive-completion-write`. Every scenario command runs under `env -i` with a temporary `HOME`. It prints `PASS:` or `FAIL:` for each of five cases (the allocation directory is `0700`; no `untrusted-*` folder in the state dir; the round saw the review checkout; the loop exits 0 with `crusty-latest.json` written; no unexpected command was called), then `ALL_CASES_PASSED` or `SCENARIO_FAILED`. It uses the binary named by `AMPLIHACK_2778_QA_BIN` when that is set; otherwise it builds the checkout's binary with `cargo build`, in the caller's environment, before the scenario starts. CI runs it in the `install-smoke` job with `AMPLIHACK_2778_QA_BIN="$(command -v amplihack)"`, the binary that job has just installed. |
+| `tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh`, scenario `tests/gadugi/scenarios/issue-2785-usage-limit-keeps-work.yaml` | An `amplihack recipe run` of a two-step bash recipe, with no stub runner, under `env -i`, with a temporary `HOME`, `GIT_CONFIG_GLOBAL` and work root, a local bare origin, usage-limit waiting off and no network. The first step clones the origin into `$TMPDIR/work`, which is inside `r/<id>`, commits and prints the commit's SHA; the second prints a usage-limit message and fails. Unpushed case: the run is classified `usage_limit`, `ended_at` is set, the runner prints `runtime folder ... is kept`, the clone and the SHA are on disk, and `amplihack cleanup --apply --format json --only run-tmp` skips the folder with a reason naming the tree while the SHA stays. Pushed case: the runtime folder is gone and the SHA is in the origin. It prints only SHAs, paths and `PASS:` or `FAIL:` lines. CI runs it in the `install-smoke` job with `AMPLIHACK_2785_QA_BIN="$(command -v amplihack)"` and `AMPLIHACK_2785_QA_REQUIRE_ALL=1`, which turns a case that could not run into a failure. |
 
 Every file under `crates/amplihack-cli/tests/` is a module of one test
 binary. The crate sets `autotests = false`, so a test file is compiled only
@@ -695,6 +770,8 @@ cargo test -p amplihack-git --test issue_2096_git_policy
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 bash tests/issue_1437_autodrive_loop.sh
 bash tests/gadugi/run-issue-2778-umask-crusty-scenario.sh
+cargo test -p amplihack-cli --test cli_integration issue_2096_execution_isolation::exec_reclaim::
+cargo test -p amplihack-cli --lib commands::cleanup::
 ```
 
 ### Review commands in the loop test double
@@ -799,6 +876,16 @@ The double cannot detect faults in real review isolation. The
 - A relative `remote.origin.url` in the caller (for example `../upstream.git`)
   is copied as written and resolves against the private repository, not the
   caller. Use an absolute path or URL for such remotes.
+- A relaunch or continue run does not look for a stopped run's kept worktree
+  in that run's private repository. It prepares its own repository and builds
+  a new worktree from `origin/<branch>`. Push the kept work to that branch
+  first, as in
+  [Recover or discard kept work](../howto/clean-up-after-recipe-runs.md#recover-or-discard-kept-work),
+  so that the new run starts from it.
+- When `workflow-worktree` sets up a worktree at a path that already holds a
+  worktree on another branch, it removes the existing one
+  (`git worktree remove --force`, then `rm -rf`) without checking it for
+  uncommitted or unpushed work.
 
 ## Related
 
