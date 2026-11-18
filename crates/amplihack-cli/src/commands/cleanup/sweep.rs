@@ -1754,9 +1754,9 @@ fn write_records(entries: &[Entry], root: &WorkRoot) -> HashSet<PathBuf> {
     new_failures
 }
 
-/// Appends one sweep to the run's `cleanup-record.json` when `list` removed
-/// something or holds a failure the record does not hold yet, and returns
-/// those new failures. Paths are compared in the string form the record
+/// Appends one sweep to the run's `cleanup-record.json`, unless every
+/// failure in `list` is already recorded and nothing was removed, and returns
+/// the failures the record did not hold yet. Paths are compared in the string form the record
 /// holds, not by error text. A missing record starts empty; one that cannot
 /// be parsed is renamed aside with a warning so its history is kept; any
 /// other read error is returned.
@@ -1802,7 +1802,11 @@ fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<Vec<PathBuf
         .filter(|e| !recorded.contains(e.path.display().to_string().as_str()))
         .map(|e| e.path.clone())
         .collect();
-    if new_failures.is_empty() && !list.iter().any(|e| e.action == Action::Removed) {
+    // A sweep whose only news would be failures already recorded is not
+    // appended, so a folder that fails at every sweep is recorded once.
+    let failed = list.iter().any(|e| e.action == Action::Failed);
+    let removed = list.iter().any(|e| e.action == Action::Removed);
+    if failed && new_failures.is_empty() && !removed {
         return Ok(Vec::new());
     }
     record.run_id = id.to_string();

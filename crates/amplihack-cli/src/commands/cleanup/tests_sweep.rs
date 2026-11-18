@@ -787,6 +787,17 @@ fn stopped_run(fx: &Fx, ended: bool) -> (PathBuf, PathBuf) {
     (dir, runtime)
 }
 
+/// Before a second end-of-run sweep on the same work root: a child that
+/// another test forked while the first sweep held the work-root lock shares
+/// that lock until it execs, so the second sweep would find it held. This
+/// waits for that, as [`crate::test_support::release_flock`] does elsewhere
+/// in this file; it is not part of the behaviour under test.
+fn first_sweep_lock_released(fx: &Fx) {
+    let path = fx.work.lock_path();
+    let probe = fs::File::open(&path).unwrap();
+    crate::test_support::release_flock(probe, &path);
+}
+
 /// R10: a worktree inside the stopped run's folder, of a repository outside
 /// it, holds an uncommitted file and an unpushed commit. The end-of-run sweep
 /// keeps the folder, says why, prints nothing about it and writes no record.
@@ -843,6 +854,7 @@ fn end_of_run_removes_the_folder_once_its_work_is_committed_and_pushed() {
     git(&wt, &["add", "uncommitted.txt"]);
     git(&wt, &["commit", "-q", "-m", "the rest of the work"]);
     push(&wt);
+    first_sweep_lock_released(&fx);
     let second = end_of_run_inner(&fx.work).unwrap();
 
     let e = entry(&second.entries, &runtime);
@@ -971,6 +983,7 @@ fn end_of_run_warns_once_about_a_folder_it_cannot_remove() {
         "{named:?}"
     );
 
+    first_sweep_lock_released(&fx);
     let second = end_of_run_inner(&fx.work).unwrap();
     assert_eq!(
         entry(&second.entries, &runtime).action,
