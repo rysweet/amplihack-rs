@@ -745,6 +745,11 @@ jobs:
       - name: Outside-in — agent binary resolution and hand-off (issues #1481, #1525)
         shell: bash
         run: AMPLIHACK_1481_QA_REQUIRE_ALL=1 AMPLIHACK_1481_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
+      # Issue #2788: run the shipped round through the installed launcher and
+      # pinned runner. Missing prerequisites fail; no live agent or GitHub writes.
+      - name: "Outside-in - Codex Crusty review launch (issue #2788)"
+        shell: bash
+        run: AMPLIHACK_2788_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2788-codex-review-launch-scenario.sh
       # Issue #2778: the crusty loop's step-02 sequence under umask 0002, which
       # CI's own umask (0022) never exercises, against the binary installed above.
       - name: "Outside-in - Crusty loop under umask 0002 (issue #2778)"

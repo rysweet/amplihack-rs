@@ -8,8 +8,15 @@
 //! injected flags has to change this file too.
 
 use super::codex_agent_step::{
-    SANDBOX_FLAGS, codex_agent_step_args, codex_agent_step_notice, exec_subcommand_index,
+    SANDBOX_FLAGS, codex_agent_step_args as transform, codex_agent_step_notice,
+    exec_subcommand_index,
 };
+
+// Existing contracts describe launches with no owned review provenance.
+// The implementation step adds this Boolean to the pure transformer.
+fn codex_agent_step_args(args: &[String]) -> Vec<String> {
+    transform(args, false)
+}
 
 const SANDBOX: [&str; 2] = ["--sandbox", "danger-full-access"];
 /// The `-c` value amplihack added before #2317. It must never be injected now.
@@ -19,6 +26,100 @@ const APPROVALS_BYPASS: &str = "--dangerously-bypass-approvals-and-sandbox";
 
 fn v(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_string()).collect()
+}
+
+// ---- issue #2788: ownership controls only the Git-check bypass ----
+
+#[test]
+fn issue_2788_owned_exec_and_alias_get_skip_immediately_after_subcommand() {
+    for subcommand in ["exec", "e"] {
+        let input = v(&["-p", "ci", subcommand, "--sandbox", "read-only", "-"]);
+        let out = transform(&input, true);
+        assert_eq!(
+            out,
+            v(&[
+                "-p",
+                "ci",
+                subcommand,
+                "--skip-git-repo-check",
+                HOOK_TRUST,
+                "--sandbox",
+                "read-only",
+                "-"
+            ])
+        );
+        assert_eq!(count(&transform(&input, false), "--skip-git-repo-check"), 0);
+    }
+}
+
+#[test]
+fn issue_2788_explicit_skip_is_never_duplicated_or_removed() {
+    for input in [
+        v(&["exec", "--skip-git-repo-check", "-"]),
+        v(&[
+            "exec",
+            "--sandbox",
+            "read-only",
+            "--skip-git-repo-check",
+            "-",
+        ]),
+    ] {
+        for owned in [false, true] {
+            let out = transform(&input, owned);
+            assert_eq!(count(&out, "--skip-git-repo-check"), 1, "{out:?}");
+        }
+    }
+}
+
+#[test]
+fn issue_2788_flag_like_option_values_and_prompt_tokens_are_not_flags() {
+    for tail in [
+        v(&["--model", "--skip-git-repo-check", "-"]),
+        v(&["--profile", "--skip-git-repo-check", "-"]),
+        v(&["--", "--skip-git-repo-check"]),
+        v(&["The prompt mentions --skip-git-repo-check"]),
+    ] {
+        let mut input = v(&["exec"]);
+        input.extend(tail);
+        let out = transform(&input, true);
+        let mut expected = codex_agent_step_args(&input);
+        expected.insert(1, "--skip-git-repo-check".into());
+        assert_eq!(out, expected, "input: {input:?}");
+    }
+}
+
+#[test]
+fn issue_2788_owned_non_exec_argv_remains_unchanged() {
+    for input in [
+        v(&[]),
+        v(&["resume", "--last"]),
+        v(&["--", "exec"]),
+        v(&["--model", "exec"]),
+        v(&["review", "exec"]),
+    ] {
+        assert_eq!(transform(&input, true), input);
+    }
+}
+
+#[test]
+fn issue_2788_injection_is_idempotent_and_preserves_existing_sandbox_policy() {
+    for choice in [
+        v(&[]),
+        v(&["--sandbox=read-only"]),
+        v(&["-c", "sandbox_mode=read-only"]),
+        v(&["--yolo"]),
+    ] {
+        let mut input = v(&["exec"]);
+        input.extend(choice);
+        input.push("-".into());
+        let out = transform(&input, true);
+        assert_eq!(transform(&out, true), out);
+        let without_skip: Vec<_> = out
+            .into_iter()
+            .filter(|arg| arg != "--skip-git-repo-check")
+            .collect();
+        assert_eq!(without_skip, codex_agent_step_args(&input));
+    }
 }
 
 /// `head`, then the given injected tokens, then `tail`.
