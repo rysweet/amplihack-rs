@@ -755,6 +755,11 @@ jobs:
       - name: "Outside-in - Crusty loop under umask 0002 (issue #2778)"
         shell: bash
         run: AMPLIHACK_2778_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2778-umask-crusty-scenario.sh
+      # Issue #2784: step-16 with base_branch empty, an open pull request from the
+      # branch into dev and origin/HEAD main, through the pinned runner installed above.
+      - name: "Outside-in - Existing pull request on another base (issue #2784)"
+        shell: bash
+        run: AMPLIHACK_2784_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2784-existing-pr-other-base-scenario.sh
       # Issue #1619: outside-in check of the model and reasoning effort each
       # harness receives when a recipe agent step declares a tier, through the
       # pinned runner installed above. REQUIRE_ALL turns a case that could not
