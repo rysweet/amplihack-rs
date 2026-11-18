@@ -175,6 +175,49 @@ fn protected_report(f: &Fixture, output: &Output, reason: &str) -> Value {
 }
 
 #[test]
+fn diagnostic_fallback_outlives_temporary_captures() {
+    let f = fixture();
+    f.patch_candidate(r#".baseRefName="dev""#);
+    let output = f
+        .tool("workflow_pr_scope.sh", &f.main)
+        .args([
+            "--repo",
+            "acme/widget",
+            "--head",
+            BRANCH,
+            "--base",
+            "main",
+            "--pr-number",
+            "7",
+        ])
+        .env_remove("AMPLIHACK_WORKFLOW_RUNTIME_DIR")
+        .env_remove("AMPLIHACK_RUNTIME_ROOT")
+        .env_remove("XDG_RUNTIME_DIR")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", show(&output));
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["reason"], "no_scoped_pr");
+    let report = Path::new(result["diagnostic_report"].as_str().unwrap());
+    assert!(
+        report.starts_with(f.root.join("tmp/home/.local/state")),
+        "{}",
+        report.display()
+    );
+    assert!(fs::read_to_string(report).unwrap().contains("base branch"));
+    assert_eq!(
+        fs::metadata(report).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::read_dir(f.root.join("tmp")).unwrap().count(),
+        1,
+        "durable evidence must not be an operation-owned capture"
+    );
+    f.assert_no_mutation();
+}
+
+#[test]
 fn unrelated_head_with_array_body_produces_protected_exclusion() {
     let f = fixture();
     f.patch_candidate(r#".headRefName="unrelated" | .body=["password=FAKEJQSECRET"]"#);

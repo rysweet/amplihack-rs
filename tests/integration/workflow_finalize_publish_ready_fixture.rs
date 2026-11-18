@@ -57,13 +57,24 @@ impl Fixture {
                 .unwrap(),
         );
         let root = fs::canonicalize(root.trim()).unwrap();
+        // Recovery relaunches current_exe. Keep an owned pathname to the built
+        // inode so concurrent Cargo linking cannot remove that launch target.
+        let built = binary.canonicalize().expect("built amplihack binary");
+        let snapshot = root.join("built-amplihack");
+        match fs::hard_link(&built, &snapshot) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+                fs::copy(&built, &snapshot).expect("copy built binary across filesystems");
+            }
+            Err(error) => panic!("pin fixture executable {}: {error}", built.display()),
+        }
         let f = Self {
             main: root.join("main"),
             pr: root.join("pr"),
             remote: root.join("remotes/acme/widget.git"),
             root,
             source: source.canonicalize().unwrap(),
-            binary: binary.canonicalize().expect("built amplihack binary"),
+            binary: snapshot,
         };
         for dir in ["tmp/home", "bin", "runtime", "recovery", "remotes/acme"] {
             fs::create_dir_all(f.root.join(dir)).unwrap();

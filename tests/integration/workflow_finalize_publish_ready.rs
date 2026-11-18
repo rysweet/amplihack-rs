@@ -688,7 +688,8 @@ fn readiness_rejection(f: &Fixture, discovery: bool) -> String {
         "unresolved recovery must allow later workflow steps: {}",
         show(&o)
     );
-    let evidence = fs::read_to_string(evidence_path).expect("recovery must receive evidence");
+    let evidence = fs::read_to_string(evidence_path)
+        .unwrap_or_else(|error| panic!("recovery must receive evidence: {error}: {}", show(&o)));
     assert!(
         evidence.contains("final PR validation failed"),
         "{evidence}"

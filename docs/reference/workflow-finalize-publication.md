@@ -249,6 +249,13 @@ candidate diagnostics are saved to a securely created report in the run's
 runtime directory. The final error includes its absolute path so recovery can
 read the full report when its inline excerpt is truncated.
 
+If no runtime directory is configured, durable reports use `XDG_STATE_HOME`
+or `HOME/.local/state`. They do not use the temporary capture directory.
+Publication and readiness outcomes remain in collected evidence and the
+completion envelope. An unresolved operation is reported as `INCOMPLETE`, with
+`terminal_success=false`, while subsequent workflow steps continue. The
+validated result keeps its existing scalar fields.
+
 The internal `amplihack orch helper pr-scope-report` command uses recovery's
 existing redaction and descriptor-relative file creation for reports.
 Reports use private file permissions and do not follow symlinks. Candidate
