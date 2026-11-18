@@ -76,6 +76,7 @@ fn json_report_has_documented_shape_and_stable_order() {
                 "action",
                 "category",
                 "path",
+                "preserved",
                 "reason",
                 "run_id",
                 "size_bytes"
@@ -83,6 +84,7 @@ fn json_report_has_documented_shape_and_stable_order() {
             "{e}"
         );
         assert!(e["size_bytes"].is_u64() || e["size_bytes"].is_null());
+        assert!(e["preserved"].is_boolean(), "{e}");
     }
     let order: Vec<(String, String)> = list
         .iter()

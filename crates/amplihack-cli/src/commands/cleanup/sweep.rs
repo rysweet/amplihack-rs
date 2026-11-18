@@ -1900,13 +1900,18 @@ fn record_failures(entries: &[Entry], root: &WorkRoot) -> Result<HashSet<PathBuf
             Err(error) => return Err(error).context("cannot read cleanup-failures.json"),
         };
     let mut new = HashSet::new();
+    let mut changed = false;
     for entry in entries {
         if entry.action == Action::Removed {
-            recorded.remove(&entry.path);
+            changed |= recorded.remove(&entry.path).is_some();
         } else if entry.action == Action::Failed && !recorded.contains_key(&entry.path) {
             new.insert(entry.path.clone());
             recorded.insert(entry.path.clone(), entry.reason.clone());
+            changed = true;
         }
+    }
+    if !changed {
+        return Ok(new);
     }
     let mut bytes = serde_json::to_vec_pretty(&recorded)?;
     bytes.push(b'\n');

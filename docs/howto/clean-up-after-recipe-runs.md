@@ -736,11 +736,12 @@ under the existing cleanup lock and with atomic file replacement. Entries are
 keyed by managed path and retain the first warning identity. The record is
 outside the folder whose removal failed; suppression still works when that
 folder's per-run `cleanup-record.json` is absent or unwritable. Per-run cleanup
-history remains separate.
+history remains separate. Unchanged warning state is not rewritten, so a sweep
+with nothing to do does not modify the shared record.
 
 Later sweeps assess the folder normally. If removal fails again, the same
 path produces no further end-of-run warning, even if its error text changes.
-The ordinary failure outcome and log remain available. Other eligible folders
+The ordinary failure outcome and debug log remain available. Other eligible folders
 are still processed. Successful removal clears the obsolete warning entry.
 This record affects reporting only: it neither authorizes deletion nor
 schedules retries. A sweep does not retry a failed removal.
