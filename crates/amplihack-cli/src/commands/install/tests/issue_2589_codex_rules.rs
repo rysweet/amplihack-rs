@@ -33,7 +33,7 @@ impl Fx {
         let tmp = tempdir_outside_framework_roots();
         let home = tmp.path().join("home");
         let codex = home.join(".codex");
-        fs::create_dir_all(&codex).unwrap();
+        amplihack_utils::secure_files::create_private_directories(&codex).unwrap();
         Self {
             _tmp: tmp,
             home,
@@ -54,7 +54,7 @@ impl Fx {
 
     fn instance_config(&self, entries: &[&str]) {
         let dir = self.home.join(".amplihack");
-        fs::create_dir_all(&dir).unwrap();
+        amplihack_utils::secure_files::create_private_directories(&dir).unwrap();
         let list = entries
             .iter()
             .map(|e| format!("\"{e}\""))
@@ -139,7 +139,7 @@ fn an_unrelated_file_already_in_the_rules_directory_is_untouched() {
     let fx = Fx::new();
     let _env = fx.env();
     let dir = fx.codex.join(RULES_DIR);
-    fs::create_dir_all(&dir).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&dir).unwrap();
     let other = dir.join("no-pattern-kill.rules");
     fs::write(&other, "# applied by hand\n").unwrap();
     let before = fingerprint(&other);
@@ -177,8 +177,8 @@ fn a_project_layer_entry_reaches_no_rendering() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let fx = Fx::new();
     let project = fx._tmp.path().join("project");
-    fs::create_dir_all(project.join(".amplihack")).unwrap();
-    fs::create_dir_all(project.join(".git")).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&project.join(".amplihack")).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&project.join(".git")).unwrap();
     fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     fs::write(
         project.join(".amplihack/config.toml"),

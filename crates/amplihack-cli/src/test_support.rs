@@ -180,11 +180,7 @@ mod scratch_base_tests {
 
     /// A 0700 temporary folder, canonical, that the rule accepts.
     fn private_root() -> (tempfile::TempDir, std::path::PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
-        let tmp = tempfile::Builder::new()
-            .permissions(fs::Permissions::from_mode(0o700))
-            .tempdir()
-            .unwrap();
+        let tmp = super::tempdir_outside_framework_roots();
         let root = tmp.path().canonicalize().unwrap();
         assert_eq!(
             scratch_base_rejection(&root, None),

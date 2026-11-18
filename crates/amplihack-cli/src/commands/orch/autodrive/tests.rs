@@ -276,7 +276,12 @@ fn state_rejects_symlinks_traversal_and_unsafe_permissions() {
 #[test]
 fn state_rejects_special_files_and_untrusted_existing_directory_modes() {
     use std::os::unix::{fs::PermissionsExt, net::UnixListener};
-    let dir = tempfile::tempdir().unwrap();
+    // Unix socket paths need a short base even when the workflow's TMPDIR
+    // is a deeply nested run directory.
+    let dir = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in("/tmp")
+        .unwrap();
     let root = dir.path().join("autodrive-state");
     let store = EvidenceStore::create(&root).unwrap();
     // A one-letter name keeps the socket path within the sun_path limit

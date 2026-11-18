@@ -71,7 +71,7 @@ fn isolated_home() -> (
     let lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let tmp = crate::test_support::tempdir_outside_framework_roots();
     let home = tmp.path().join("home");
-    std::fs::create_dir_all(&home).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&home).unwrap();
     let env = crate::test_support::env_paths(&[("HOME", Some(&home))]);
     (env, tmp, lock)
 }
@@ -193,7 +193,7 @@ fn an_instance_addition_reaches_the_copilot_argv() {
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let tmp = crate::test_support::tempdir_outside_framework_roots();
     let home = tmp.path().join("home");
-    std::fs::create_dir_all(home.join(".amplihack")).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&home.join(".amplihack")).unwrap();
     std::fs::write(
         home.join(".amplihack/config.toml"),
         "[policy]\ndeny_commands = [\"shutdown\"]\n",
@@ -274,7 +274,7 @@ fn every_claude_family_harness_is_pinned_to_the_directory_the_policy_is_written_
     let _home = isolated_home();
     let tmp = crate::test_support::tempdir_outside_framework_roots();
     let config_dir = tmp.path().join("profile");
-    std::fs::create_dir_all(&config_dir).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&config_dir).unwrap();
 
     for name in ["claude", "rusty", "rustyclawd", "amplifier"] {
         let cmd = build_command_for_dir(

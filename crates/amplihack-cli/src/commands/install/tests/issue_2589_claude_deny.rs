@@ -26,7 +26,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 fn hooks_file(path: &Path) -> PathBuf {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    amplihack_utils::secure_files::create_private_directories(path.parent().unwrap()).unwrap();
     fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     path.to_path_buf()
@@ -35,7 +35,7 @@ fn hooks_file(path: &Path) -> PathBuf {
 /// `<root>/work/settings.json`, with `body` as its starting content.
 fn profile_settings(root: &Path, body: &str) -> PathBuf {
     let profile = root.join("work");
-    fs::create_dir_all(&profile).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&profile).unwrap();
     fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
     let settings = profile.join("settings.json");
     fs::write(&settings, body).unwrap();
@@ -71,7 +71,7 @@ fn read_json(path: &Path) -> Value {
 /// Writes `[policy] deny_commands = [...]` into `<home>/.amplihack/config.toml`.
 fn instance_config(home: &Path, entries: &[&str]) {
     let dir = home.join(".amplihack");
-    fs::create_dir_all(&dir).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&dir).unwrap();
     let list = entries
         .iter()
         .map(|e| format!("\"{e}\""))
@@ -89,7 +89,7 @@ fn instance_config(home: &Path, entries: &[&str]) {
 fn install_home_settings(home: &Path) -> PathBuf {
     let settings = home.join(".claude/settings.json");
     let staging = home.join("staging");
-    fs::create_dir_all(&staging).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&staging).unwrap();
     let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
     ensure_settings_json_for(&settings, &staging, 0, &hooks, None, true)
         .expect("install writes the home settings file");
@@ -122,7 +122,7 @@ fn install_keeps_a_users_own_deny_entry_and_unrelated_settings_keys() {
     let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
     let claude = home.join(".claude");
-    fs::create_dir_all(&claude).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&claude).unwrap();
     fs::write(
         claude.join("settings.json"),
         r#"{"language":"en","permissions":{"deny":["Bash(curl:*)"],"allow":["Bash"]}}"#,
@@ -164,7 +164,7 @@ fn an_instance_addition_appears_in_the_home_file_alongside_the_defaults() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
-    fs::create_dir_all(&home).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&home).unwrap();
     instance_config(&home, &["shutdown"]);
     let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
@@ -320,7 +320,7 @@ fn a_profile_without_a_settings_file_does_not_gain_one() {
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
     let root = home.join("profiles");
-    fs::create_dir_all(root.join("bare")).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&root.join("bare")).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let hooks = hooks_file(&home.join(".local/bin/amplihack-hooks"));
     let _env = env_paths(&[
@@ -347,7 +347,7 @@ fn seeding_a_new_profile_writes_the_policy_even_from_a_pre_change_home_file() {
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
     let source = home.join(".claude");
-    fs::create_dir_all(&source).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&source).unwrap();
     // The home file as it looked before this change: no deny entries at all.
     fs::write(
         source.join("settings.json"),
@@ -355,7 +355,7 @@ fn seeding_a_new_profile_writes_the_policy_even_from_a_pre_change_home_file() {
     )
     .unwrap();
     let root = home.join("profiles");
-    fs::create_dir_all(&root).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
@@ -431,7 +431,7 @@ fn a_home_file_whose_deny_is_not_an_array_is_left_as_found_and_warns() {
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
     let claude = home.join(".claude");
-    fs::create_dir_all(&claude).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&claude).unwrap();
     fs::write(
         claude.join("settings.json"),
         r#"{"language":"en","permissions":{"deny":"Bash(curl:*)"}}"#,
@@ -473,7 +473,7 @@ fn a_home_file_whose_permissions_is_not_an_object_is_left_as_found_and_warns() {
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
     let claude = home.join(".claude");
-    fs::create_dir_all(&claude).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&claude).unwrap();
     fs::write(
         claude.join("settings.json"),
         r#"{"language":"en","permissions":"bypassPermissions"}"#,
@@ -513,7 +513,7 @@ fn a_claude_warning_never_quotes_a_value_read_out_of_the_file() {
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
     let claude = home.join(".claude");
-    fs::create_dir_all(&claude).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&claude).unwrap();
     fs::write(
         claude.join("settings.json"),
         r#"{"permissions":{"deny":"SECRET-VALUE-9f2a"}}"#,
@@ -634,7 +634,7 @@ fn seeding_a_profile_it_cannot_write_records_the_refusal() {
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
     let source = home.join(".claude");
-    fs::create_dir_all(&source).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&source).unwrap();
     // A home file whose `permissions` is copied into the new profile and
     // cannot then take the entries.
     fs::write(
@@ -643,7 +643,7 @@ fn seeding_a_profile_it_cannot_write_records_the_refusal() {
     )
     .unwrap();
     let root = home.join("profiles");
-    fs::create_dir_all(&root).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
@@ -736,7 +736,7 @@ fn a_symlinked_home_settings_file_is_reported_as_refused_not_as_absent() {
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
     let claude = home.join(".claude");
-    fs::create_dir_all(&claude).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&claude).unwrap();
     let elsewhere = d.path().join("elsewhere.json");
     fs::write(&elsewhere, "{}\n").unwrap();
     std::os::unix::fs::symlink(&elsewhere, claude.join("settings.json")).unwrap();
@@ -812,7 +812,7 @@ fn seeding_a_profile_it_cannot_write_warns_where_the_user_will_see_it() {
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
     let source = home.join(".claude");
-    fs::create_dir_all(&source).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&source).unwrap();
     // `permissions` is a string, so it is copied into the new profile and
     // then cannot take the deny entries.
     fs::write(
@@ -821,7 +821,7 @@ fn seeding_a_profile_it_cannot_write_warns_where_the_user_will_see_it() {
     )
     .unwrap();
     let root = home.join("profiles");
-    fs::create_dir_all(&root).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
@@ -866,10 +866,10 @@ fn seeding_a_profile_that_takes_the_entries_warns_about_nothing() {
     let d = tempdir_outside_framework_roots();
     let home = d.path().join("home");
     let source = home.join(".claude");
-    fs::create_dir_all(&source).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&source).unwrap();
     fs::write(source.join("settings.json"), r#"{"language":"en"}"#).unwrap();
     let root = home.join("profiles");
-    fs::create_dir_all(&root).unwrap();
+    amplihack_utils::secure_files::create_private_directories(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let _env = env_paths(&[("HOME", Some(&home)), ("CODEX_HOME", None)]);
 
