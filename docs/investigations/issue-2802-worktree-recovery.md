@@ -78,3 +78,41 @@ and merge-queue jobs explicitly record incomplete release evidence. A pending,
 skipped, or prerequisite-failing scenario is not a passing result. Record the
 actual run URL, head, job, scenario step, conclusion, and Git-state evidence
 when available; do not imply the pre-merge trust restriction has been solved.
+
+## Implementation and local validation checkpoint
+
+Implementation was committed and pushed as `02e2f007`. It updates all five
+agent steps and the four recipe manifest hashes, leaves the Worktree helper
+unchanged, and preserves model tiers and downstream conditions. The trusted
+review helper's existing `private-review-dir` operation handles bare
+repositories without treating their parent directory as a main checkout.
+
+`pre-commit run --all-files` passed for both the investigation and
+implementation checkpoints, including artifact hygiene, recipe brick budget,
+formatting, and Clippy. Targeted checks then ran using
+`scripts/git-hook-cargo.sh cargo test --locked -p amplihack-cli --test
+cli_integration <module> -- --nocapture --test-threads=1`:
+
+| Module | Actual local result |
+| --- | --- |
+| `issue_2802_worktree_recovery` | 2 passed, 0 failed, 14 explicitly ignored real-agent cases |
+| `issue_2552_build_preflight_decision` | 4 passed, 0 failed |
+| `issue_2556_autodrive_evidence` | 1 passed, 0 failed |
+| `issue_1802_auto_drive_light_recipe` | 37 passed, 0 failed |
+
+These 44 passing checks establish fixture isolation, continued helper refusal,
+and compatibility with build/reuse and loop conditions. They do not establish
+the new agentic recovery behavior. The explicit provider key is absent; none
+of the 14 real-agent contracts was executed. Gadugi and its driver were not
+executed locally. Local documentation validation found all 529 relative file
+link targets in the seven affected documents; whitespace validation passed.
+
+[PR #2805](https://github.com/rysweet/amplihack-rs/pull/2805) is open for deputy
+review. Its initial [CI run](https://github.com/rysweet/amplihack-rs/actions/runs/44357937956)
+was in progress at implementation head
+`02e2f0079f83e5fcc895013d00183f2d1e76d9ec` when recorded. This is a PR event:
+the `Install Smoke Test` job's `Outside-in - private worktree recovery
+(issue #2802)` step is restricted to trusted main and cannot supply passing
+release evidence for this head. Its separate `Record unavailable PR release
+evidence (issue #2802)` step reports that limitation. No completed scenario
+conclusion, recovery trace, or passing release result is claimed.
