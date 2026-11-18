@@ -221,6 +221,19 @@ vcs = issue2806
 gpgsign = false
 "#,
     )?;
+    save(
+        &case.root.join("config.json"),
+        &json!({"case":name,"checkout":checkout,"origin":origin,"environment":{
+            "AMPLIHACK_SOURCE_ROOT":case.home.join(".amplihack"),"RECIPE_RUNNER_RS_PATH":case.root.join("bin/recipe-runner-rs"),
+            "AMPLIHACK_AGENT_BINARY":"codex","AMPLIHACK_NO_UPDATE_CHECK":"1","AMPLIHACK_SKIP_REFLECTION":"1",
+        "AMPLIHACK_SKIP_AUTO_INSTALL":"1","AMPLIHACK_NO_FRESHNESS_CHECK":"1","AMPLIHACK_NONINTERACTIVE":"1",
+        "AMPLIHACK_SKIP_POWER_STEERING":"1","AMPLIHACK_ROTATE_AUTOSTART":"0","AMPLIHACK_DISABLE_BLARIFY":"1",
+        "AMPLIHACK_GOVERNOR":"off","AMPLIHACK_USAGE_LIMIT_WAIT":"0",
+        "AMPLIHACK_CODEX_BINARY_PATH":case.root.join("bin/codex"),"AMPLIHACK_CLAUDE_BINARY_PATH":case.root.join("bin/claude"),
+        "AMPLIHACK_LAUNCHER_BINARY":case.root.join("bin/amplihack"),
+            "GIT_ALLOW_PROTOCOL":"file:issue2806","CARGO_HOME":case.home.join(".cargo"),"PRE_COMMIT_HOME":case.home.join(".cache/pre-commit")
+        }}),
+    )?;
     case.git(
         &checkout,
         &[
@@ -256,19 +269,6 @@ gpgsign = false
         &case.evidence.join("hosting.json"),
         "fixture/project",
         &origin,
-    )?;
-    save(
-        &case.root.join("config.json"),
-        &json!({"case":name,"checkout":checkout,"origin":origin,"environment":{
-            "AMPLIHACK_SOURCE_ROOT":case.home.join(".amplihack"),"RECIPE_RUNNER_RS_PATH":case.root.join("bin/recipe-runner-rs"),
-            "AMPLIHACK_AGENT_BINARY":"codex","AMPLIHACK_NO_UPDATE_CHECK":"1","AMPLIHACK_SKIP_REFLECTION":"1",
-        "AMPLIHACK_SKIP_AUTO_INSTALL":"1","AMPLIHACK_NO_FRESHNESS_CHECK":"1","AMPLIHACK_NONINTERACTIVE":"1",
-        "AMPLIHACK_SKIP_POWER_STEERING":"1","AMPLIHACK_ROTATE_AUTOSTART":"0","AMPLIHACK_DISABLE_BLARIFY":"1",
-        "AMPLIHACK_GOVERNOR":"off","AMPLIHACK_USAGE_LIMIT_WAIT":"0",
-        "AMPLIHACK_CODEX_BINARY_PATH":case.root.join("bin/codex"),"AMPLIHACK_CLAUDE_BINARY_PATH":case.root.join("bin/claude"),
-        "AMPLIHACK_LAUNCHER_BINARY":case.root.join("bin/amplihack"),
-            "GIT_ALLOW_PROTOCOL":"file:issue2806","CARGO_HOME":case.home.join(".cargo"),"PRE_COMMIT_HOME":case.home.join(".cache/pre-commit")
-        }}),
     )?;
     save(
         &case.evidence.join("isolation.json"),
@@ -575,6 +575,7 @@ fn finalization(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<
     fs::write(case.evidence.join("validate.stdout"), &output)?;
     fs::write(case.evidence.join("validate.stderr"), &completed.stderr)?;
     let terminal: Value = serde_json::from_str(&output)?;
+    let fresh = HostingStore::open(&case.evidence.join("hosting.json"))?.pr(1)?;
     let observed = evidence::PendingFinalization {
         context: fault.into(),
         context_read_error: read_error,
@@ -586,7 +587,12 @@ fn finalization(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<
         pr_state: HostingStore::open(&case.evidence.join("hosting.json"))?
             .pr(1)?
             .state,
-        checks: "pending".into(),
+        checks: match fresh.checks {
+            super::hosting::Checks::Pending => "pending",
+            super::hosting::Checks::Green => "green",
+            super::hosting::Checks::Failed => "failed",
+        }
+        .into(),
         terminal_state: terminal["terminal_state"]
             .as_str()
             .context("typed terminal_state absent")?
@@ -596,6 +602,9 @@ fn finalization(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<
         exit_code: completed.status.code().context("boundary signal exit")?,
     };
     save(&case.evidence.join("pending-observation.json"), &observed)?;
+    evidence::validate_pending_prerequisites(&observed).context(
+        "pending-check fixture prerequisites failed; regression allowances are forbidden",
+    )?;
     assert_value(
         report,
         name,
@@ -1073,7 +1082,11 @@ fn cleanup(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
         name,
         "explanation",
         explanation,
-        "cleanup did not explain preservation",
+        if observed.is_none() {
+            "cleanup did not explain preservation"
+        } else {
+            "preserved work lacked an explanation"
+        },
     )?;
     if observed.is_some() {
         case.git(&repo, &["add", "continue.txt"])?;

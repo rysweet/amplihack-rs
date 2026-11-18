@@ -291,7 +291,7 @@ pub struct PendingFinalization {
     pub terminal_success: bool,
     pub exit_code: i32,
 }
-pub fn validate_pending_finalization(observed: &PendingFinalization) -> Result<()> {
+pub fn validate_pending_prerequisites(observed: &PendingFinalization) -> Result<()> {
     ensure!(
         observed.origin_head == observed.pr_head
             && observed.pr_state == "OPEN"
@@ -315,6 +315,10 @@ pub fn validate_pending_finalization(observed: &PendingFinalization) -> Result<(
         ),
         _ => anyhow::bail!("unknown context case"),
     }
+    Ok(())
+}
+pub fn validate_pending_finalization(observed: &PendingFinalization) -> Result<()> {
+    validate_pending_prerequisites(observed)?;
     ensure!(
         observed.terminal_state == "BLOCKED_CI"
             && !observed.terminal_success

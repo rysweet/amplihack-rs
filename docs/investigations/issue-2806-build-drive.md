@@ -122,3 +122,9 @@ manifest and integration-test registration; production implementation is unchang
 The original before-cleanup bundle and recorded run metadata are retained. No
 allowance is granted for the earlier other-stopped case (its own cleanup had
 already removed the candidate), removal-error setup, or either drive launch.
+
+
+Run 44375223110 stopped case setup at the initial push: the transport allowlist
+was loaded from config.json only after that push. All ten setup failures remained
+unallowed harness errors. The fixture configuration must be persisted before the
+first operation that selects its local hosting transport.
