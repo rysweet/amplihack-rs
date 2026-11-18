@@ -471,7 +471,7 @@ impl RunCheckout {
         {
             bail!("execution ownership manifest changed; resources retained");
         }
-        if let Some(reason) = holds_work(storage) {
+        if let Some(reason) = holds_work(root) {
             eprintln!(
                 "amplihack: execution checkout {root:?} is kept with storage {storage:?}: {reason}"
             );
@@ -498,6 +498,8 @@ impl RunCheckout {
         if dependents > 1 {
             fs::write(storage.join("durable-dependencies"), &list)?;
             report_linked_work(&list, repository, *holds_work);
+        } else if let Some(reason) = holds_work(storage) {
+            eprintln!("amplihack: execution storage {storage:?} is kept: {reason}");
         } else {
             fs::remove_dir_all(&*storage)?;
         }
