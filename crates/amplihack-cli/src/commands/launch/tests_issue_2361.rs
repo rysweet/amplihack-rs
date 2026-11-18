@@ -201,6 +201,18 @@ fn recipe_step_environment_keeps_state_and_contract_out_of_the_checkout() {
     // Write through both resolved locations, as a step would.
     let session_dir = amplihack_types::session_state_dir(Some("test-session"))
         .expect("a session state directory resolves");
+    // 0700 whatever the umask: this also creates `~/.amplihack`, which the
+    // launch hooks settings require to be private (#2346).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&session_dir)
+            .unwrap();
+    }
+    #[cfg(not(unix))]
     fs::create_dir_all(&session_dir).unwrap();
     fs::write(session_dir.join("probe.json"), "{}\n").unwrap();
     let contract = ensure_contract_file(&contract_dir).expect("contract file is written");

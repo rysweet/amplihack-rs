@@ -1481,7 +1481,8 @@ fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut fixture_env = fixture_environment();
-    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    // 0700 whatever the umask: the work root lies directly below it (#2346).
+    let temp = crate::test_support::private_tempdir();
     let repo = temp.path().join("repo");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -3605,7 +3606,8 @@ fn test_execute_recipe_via_rust_child_sees_no_outer_run_identity() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    // 0700 whatever the umask: the work root lies directly below it (#2346).
+    let temp = crate::test_support::private_tempdir();
     let outer_run_dir = temp.path().join("outer/work/runs/outer-run");
     let outer_tree_dir = temp.path().join("outer/session-tree");
     std::fs::create_dir_all(&outer_run_dir).expect("create outer run dir");

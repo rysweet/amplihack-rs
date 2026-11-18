@@ -293,11 +293,15 @@ fn instance_config(home: &Path, entries: &[&str]) {
         .map(|e| format!("\"{e}\""))
         .collect::<Vec<_>>()
         .join(", ");
-    fs::write(
-        dir.join("config.toml"),
-        format!("[policy]\ndeny_commands = [{list}]\n"),
-    )
-    .unwrap();
+    let file = dir.join("config.toml");
+    fs::write(&file, format!("[policy]\ndeny_commands = [{list}]\n")).unwrap();
+    // The loader ignores a config file writable by group or others, which
+    // `fs::write` makes under umask 0002 (#2346): give the mode explicitly.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
 }
 
 #[test]

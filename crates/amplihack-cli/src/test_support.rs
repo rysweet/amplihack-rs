@@ -123,6 +123,21 @@ pub(crate) fn tempdir_outside_framework_roots() -> tempfile::TempDir {
     builder.tempdir_in(scratch_base::scratch_base()).unwrap()
 }
 
+/// A drop-in for `tempfile::tempdir()` whose folder is `0700` whatever the
+/// umask (issue #2346). `tempfile` makes its folders `0777` less the umask,
+/// so under umask 0002 a fixture root is `0775`, and the recipe runner's
+/// recovery store stops a work root below it. Use it for a fixture whose work
+/// root or `HOME` lies below the temporary folder.
+pub(crate) fn private_tempdir() -> tempfile::TempDir {
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o700));
+    }
+    builder.tempdir().expect("create a 0700 temporary folder")
+}
+
 #[cfg(test)]
 mod scratch_base_tests {
     use super::scratch_base::{FRAMEWORK_MARKERS, scratch_base_rejection};
