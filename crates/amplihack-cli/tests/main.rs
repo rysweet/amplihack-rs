@@ -29,6 +29,9 @@ mod isolated_amplihack;
 mod pinned_runner;
 mod support;
 
+#[path = "issue_2802_worktree_recovery.rs"]
+mod issue_2802_worktree_recovery;
+
 #[path = "issue_2096_execution_isolation.rs"]
 mod issue_2096_execution_isolation;
 #[path = "issue_2329_autodrive_outcomes.rs"]

@@ -1,0 +1,39 @@
+name: issue-2802-worktree-recovery
+description: >
+  CI-only release evidence for issue 2802. Execute the shipped build preflight,
+  build PR resolution, light resolution, merge preflight and Crusty preflight
+  with the real Codex adapter and pinned recipe runner. The Rust fixtures use
+  temporary private homes, a bare run repository, a detached launch checkout,
+  an independently published PR head and read-only gh metadata stubs. Inspect
+  actual registration, branch, SHA, helper verification, downstream consumption,
+  historical absence supersession, dirty and operator checkout preservation,
+  fetch failure diagnostics and non-OPEN behavior. No fake agent responses or
+  recovery implementation in the driver. Never execute on a development host.
+version: "1.0"
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, auto-drive, worktree, regression, ci-only]
+  priority: high
+  issues: ["2802"]
+steps:
+  - name: run-real-agent-recovery-contract
+    agent: cli-agent
+    action: execute
+    params:
+      command: bash tests/gadugi/drivers/issue-2802-worktree-recovery.sh
+  - name: require-complete-behavioral-evidence
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-real-agent-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "ALL_CASES_PASSED #2802: real-agent private worktree recovery"

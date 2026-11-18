@@ -755,6 +755,23 @@ jobs:
       - name: "Outside-in - Existing pull request on another base (issue #2784)"
         shell: bash
         run: AMPLIHACK_2784_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2784-existing-pr-other-base-scenario.sh
+      # Real-agent release evidence must not expose credentials to PR code.
+      # Only the trusted main ref runs this CI-only Gadugi driver. Missing
+      # credentials fail the selected run and cannot count as passing evidence.
+      - name: "Install supported Codex adapter for worktree QA (issue #2802)"
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        run: npm install --global @openai/codex@0.166.0
+      - name: "Outside-in - private worktree recovery (issue #2802)"
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        shell: bash
+        env:
+          ISSUE_2802_OPENAI_API_KEY: ${{ secrets.ISSUE_2802_OPENAI_API_KEY }}
+        run: AMPLIHACK_TEST_BINARY="$(command -v amplihack)" bash tests/gadugi/drivers/issue-2802-worktree-recovery.sh
+      - name: "Record unavailable PR release evidence (issue #2802)"
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        shell: bash
+        run: |
+          printf '%s\n' 'Issue #2802 real-agent release evidence: INCOMPLETE. This untrusted-code run receives no provider credentials; a skipped scenario is not passing release evidence.' >> "$GITHUB_STEP_SUMMARY"
       # Issue #1619: outside-in check of the model and reasoning effort each
       # harness receives when a recipe agent step declares a tier, through the
       # pinned runner installed above. REQUIRE_ALL turns a case that could not
