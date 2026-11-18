@@ -97,9 +97,8 @@ primary-key candidate.
 Publish widens the lookup in one case. When the run's `base_branch` is empty,
 `workflow_publish_pr.sh` passes `--any-base-open` to its GitHub lookups, so a
 single OPEN same-repository PR from `head_ref` into another base is adopted
-instead of a second PR being created into the default branch, provided that
-base passes `delivery_base_ref`. The adopted PR keeps its base, and publish
-records it. Azure DevOps publishing does not use this helper and is not
+instead of a second PR being created into the default branch. The adopted PR
+keeps its base, and publish records it. Azure DevOps publishing does not use this helper and is not
 covered. See
 [An open pull request on another base](workflow-delivery-inputs.md#an-open-pull-request-on-another-base).
 
@@ -425,7 +424,7 @@ These bundled tools and recipes use scoped validation:
 
 | Component | Contract |
 | --- | --- |
-| `workflow_publish_pr.sh` | Persists PR identity after creation and validates known PR identity before updating an existing PR. On `gh pr create` collision, re-runs the scoped lookup and adopts an existing OPEN PR as `existing-open-pr` success instead of failing the recipe. With an empty `base_branch`, passes `--any-base-open` to both GitHub lookups and checks an adopted PR's base with `delivery_base_ref` before it records that base. A failed collision lookup, including `multiple_scoped_prs`, still ends as `FAILED_PR_CREATE`. |
+| `workflow_publish_pr.sh` | Persists PR identity after creation and validates known PR identity before updating an existing PR. On `gh pr create` collision, re-runs the scoped lookup and adopts an existing OPEN PR as `existing-open-pr` success instead of failing the recipe. With an empty `base_branch`, passes `--any-base-open` to both GitHub lookups and records an adopted PR's own base. A failed collision lookup, including `multiple_scoped_prs`, still ends as `FAILED_PR_CREATE`. |
 | `workflow_pr_ready.sh` | Refuses readiness checks until `workflow_pr_scope.sh` returns `ok: true`. |
 | `workflow_final_status.sh` | Requires validated PR metadata before reporting terminal PR status. |
 | `workflow-terminal-state.yaml` | Uses persisted PR URL or number, then scoped lookup; no recent-PR fallback. |

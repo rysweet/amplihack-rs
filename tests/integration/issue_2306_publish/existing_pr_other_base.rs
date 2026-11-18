@@ -5,8 +5,7 @@
 //! Every case runs the shipped step-16 body through the unchanged
 //! `PublishFixture`: a local repository whose origin/HEAD is origin/main, a
 //! stub `gh` that logs each call, and no network. origin/dev is created at
-//! origin/main so an adopted `dev` base passes the base checks for the right
-//! reason.
+//! origin/main, as in a clone that has fetched `dev`.
 use super::fixture::{BRANCH, PublishFixture, describe, json};
 use serde_json::Value;
 use std::fs;
@@ -14,8 +13,6 @@ use std::process::Output;
 
 const KEPT_DEV: &str = "existing open PR #615 targets dev; the resolved base was main; kept dev";
 const COLLISION: &str = "adopted existing open PR after create collision";
-const BASE_CHECK_FAILED: &str =
-    "existing open PR #615 targets dev, which fails the base checks; no pull request was created";
 
 /// The fixture with origin/dev beside origin/main (origin/HEAD stays main).
 fn fixture() -> PublishFixture {
@@ -234,48 +231,5 @@ fn create_collision_adopts_an_open_pr_on_another_base() {
         );
         assert_adopted(&output, number, base, &message);
         assert_eq!(gh_calls(&f, "pr create"), 1, "{}", f.read("gh.log"));
-    }
-}
-
-// An adopted base comes from GitHub, so it passes the same checks as an
-// explicit base_branch before it is recorded or labelled: a forbidden base,
-// or one with no origin/<base>, stops the step and nothing is created.
-#[test]
-fn adopted_base_that_fails_the_base_checks_stops_without_a_create() {
-    for (forbidden, with_dev, reason) in [
-        ("dev", true, "matches forbidden_base_branches pattern 'dev'"),
-        ("", false, "has no remote-tracking ref origin/dev"),
-    ] {
-        let f = if with_dev {
-            fixture()
-        } else {
-            PublishFixture::new()
-        };
-        listed(&f, &[open_pr(&f, 615, "dev")]);
-        let output = f
-            .publish_command()
-            .env("RECIPE_VAR_forbidden_base_branches", forbidden)
-            .env("WORKFLOW_PR_LABELS", "ready-for-review")
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
-        let result = json(&output);
-        assert_eq!(result["state"], "FAILED_PR_IDENTITY", "{result}");
-        assert_eq!(result["legacy_state"], "invalid-pr-identity", "{result}");
-        assert_eq!(result["terminal_status"], "failure", "{result}");
-        assert_eq!(result["base_branch"], "", "{result}");
-        assert_eq!(result["message"], BASE_CHECK_FAILED, "{result}");
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains(reason),
-            "expected {reason:?}: {}",
-            describe(&output)
-        );
-        assert_no_create(&f, &output);
-        assert_eq!(
-            gh_calls(&f, "pr edit"),
-            0,
-            "no label may be applied to a pull request whose base failed the checks:\n{}",
-            f.read("gh.log")
-        );
     }
 }

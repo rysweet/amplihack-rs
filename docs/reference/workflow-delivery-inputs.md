@@ -33,7 +33,7 @@ lists the paths that do not use them.
 | Key | Default | Meaning |
 | --- | ------- | ------- |
 | `base_branch` | `""` | Branch a new task branch starts from and the pull request targets. Empty keeps the remote default branch for the new branch and the new pull request, unless the branch already has an open pull request into another base, which step-16 then uses ([below](#an-open-pull-request-on-another-base)); finalize then takes the base from the pull request the run opened or used. |
-| `forbidden_base_branches` | `""` | Shell globs that `base_branch` must not match, separated by spaces, tabs or newlines (see [below](#forbidden_base_branches)). With `base_branch` empty, step-16 also checks the base of an open pull request it would use from another base ([details](#an-open-pull-request-on-another-base)). |
+| `forbidden_base_branches` | `""` | Shell globs that `base_branch` must not match, separated by spaces, tabs or newlines (see [below](#forbidden_base_branches)). |
 | `strict_delivery` | `"false"` | Exactly `"true"` turns on the strict contract below. `"false"` or empty leaves it off. Step-03 fails on any other value, such as `1`, `yes` or `TRUE`. |
 | `repository` | `""` | Strict delivery: the `owner/repo` on github.com that owns `issue_number`. |
 | `pr_repository` | `""` | Strict delivery: the `owner/repo` that receives the pull request. Must be this checkout's `origin`. |
@@ -128,7 +128,7 @@ makes no extra GitHub call. The first rule that applies decides:
 | Order | Pull requests from the branch | What step-16 does |
 | ----- | ----------------------------- | ----------------- |
 | 1 | An open one into the resolved base | Uses it, as before. Open pull requests into other bases are ignored. |
-| 2 | Exactly one open one into another base | Uses it if its base passes the base check described below, and records that base as `base_branch` in the publish result. |
+| 2 | Exactly one open one into another base | Uses it, and records its base as `base_branch` in the publish result. |
 | 3 | Two or more open ones into other bases | Exits 1 before any create, with no publish result (shown below). |
 | 4 | No open one on any base | As before: a merged or closed pull request into the resolved base is classified, and otherwise `gh pr create` runs without `--base`. |
 
@@ -167,25 +167,13 @@ open pull requests from one branch have the same head commit, so these fields
 could not tell them apart, and a check that set the only candidate aside would
 lead straight to the second pull request this rule prevents.
 
-A base taken from another pull request is GitHub data, so step-16 checks it
-with `delivery_base_ref` and `forbidden_base_branches`, exactly as it checks a
-`base_branch` from the caller, before it records the base, applies labels or
-reports success. The refusals are the ones listed under
-[`base_branch`](#base_branch). The check runs only when that base differs from
-the resolved one. A base that fails it ends step-16 with exit 1,
-`FAILED_PR_IDENTITY`, `base_branch: ""` in the publish result, no labels and
-no new pull request:
-
-```text
-ERROR: FAILED_PR_IDENTITY (exit 1): existing open PR #615 targets dev, which fails the base checks; no pull request was created
-```
-
-The likeliest cause is a clone with no `origin/dev`, because the check never
-fetches. Run `git fetch origin dev` in the worktree, then run again.
-
-`forbidden_base_branches` is how a caller keeps runs from taking over a pull
-request into a protected branch, for example
-`forbidden_base_branches: "release/*"`.
+Step-16 adds no base check of its own for that base. Finalize checks it:
+step-21 and step-22b read the recorded base and pass it through
+`delivery_base_ref` with `forbidden_base_branches` (rule 4 of
+[How finalize finds the base](#how-finalize-finds-the-base)), so a base in
+`forbidden_base_branches`, or one with no `origin/<base>` in the clone, stops
+the run there. A caller that needs the pull request on a fixed base sets
+`base_branch`.
 
 When the pull request's base differs from the resolved base, the publish
 result's `message` names both:
@@ -199,10 +187,9 @@ it.
 
 When `gh pr create` fails, for example because a pull request appeared after
 the lookup, step-16 runs the collision lookup with the same option. One open
-pull request on another base is used, subject to the same base check, and the
-message starts with `adopted existing open PR after create collision; `
-followed by the clause above. A base that fails the check ends with
-`FAILED_PR_IDENTITY` and the message shown earlier. Any failure of the
+pull request on another base is used, and the message starts with
+`adopted existing open PR after create collision; ` followed by the clause
+above. Any failure of the
 collision lookup itself, including `multiple_scoped_prs` and `invalid_arg`,
 ends as it did before: the publish result's `state` is `FAILED_PR_CREATE`, its
 `message` is the create error followed by
@@ -304,9 +291,10 @@ request into the base worked out above, never one found by a wider search.
 
 Step-16 writes `base_branch` into the publish result only when the base was
 checked: the base it passed to `gh pr create --base`, or the `baseRefName` of
-an existing pull request whose identity it confirmed. For a pull request on
-another base that step-16 used, the `baseRefName` has also passed
-`delivery_base_ref` ([An open pull request on another base](#an-open-pull-request-on-another-base)). A pull request created
+an existing pull request whose identity it confirmed, which can be a pull
+request on another base
+([An open pull request on another base](#an-open-pull-request-on-another-base)).
+A pull request created
 without `--base`, the no-diff exit and every error exit record `""`. A run
 whose publish result has no `base_branch`, including runs from before the
 field existed, uses rule 3. A recorded base is still compared with the live
@@ -468,11 +456,6 @@ words (`Release/* release/*` rather than `[Rr]elease/*`). Git branch names
 cannot contain `[`, so a leading `[` was always glob syntax and never part of
 a name.
 
-With `base_branch` empty, step-16 applies the same list to the base of an
-open pull request it would use from another base. A match fails step-16 with
-`FAILED_PR_IDENTITY` instead of using that pull request; see
-[An open pull request on another base](#an-open-pull-request-on-another-base).
-
 ## `strict_delivery`
 
 A strict run works on the issue and the branch its caller assigned. If any of
@@ -545,8 +528,7 @@ must equal this reference exactly. Step-03 and step-16 fail when it does not.
 - It does not merge. Use `should_merge` and `no_merge` as before.
 - It does not fix the base when `base_branch` is empty. Step-16 then uses an
   open pull request from the branch into another base, if there is exactly
-  one and its base passes the base check
-  ([details](#an-open-pull-request-on-another-base)). A caller that needs a
+  one ([details](#an-open-pull-request-on-another-base)). A caller that needs a
   fixed base sets `base_branch`.
 - It does not verify that GitHub linked the pull request to the issue. A
   caller that needs that confirms it itself.
@@ -740,7 +722,7 @@ amplihack recipe run default-workflow \
 
 | Helper | Used by | Purpose |
 | ------ | ------- | ------- |
-| `delivery_base_ref BASE BRANCH FORBIDDEN` (`tools/workflow_delivery_inputs.sh`) | step-03, step-04 (new and existing branch), step-16 | Checks `base_branch` and `forbidden_base_branches` and prints `origin/<base_branch>`. Step-16 also checks the base of an open pull request it uses from another base. |
+| `delivery_base_ref BASE BRANCH FORBIDDEN` (`tools/workflow_delivery_inputs.sh`) | step-03, step-04 (new and existing branch), step-16 | Checks `base_branch` and `forbidden_base_branches` and prints `origin/<base_branch>`. |
 | `delivery_strict_mode STRICT REPOSITORY PR_REPOSITORY CLOSING_REFERENCE` | step-03 | Prints `true` or `false`, or fails on an unrecognised `strict_delivery` or a strict-only input without strict delivery. |
 | `strict_issue_tag ISSUE REPOSITORY PR_REPOSITORY` | step-03, step-15, step-16 | Prints `#N` or `owner/repo#N`. |
 | `same_github_repository A B` | step-03, step-16 | Case-insensitive `owner/repo` comparison. |
@@ -789,9 +771,8 @@ fail with `multiple_scoped_prs`; an open pull request into `dev` beside a
 closed one into `main`, where the pull request into `dev` is used and the
 result is `existing-open-pr` with `base_branch` `dev`, not
 `FAILED_CLOSED_UNMERGED`; an open pull request into `main`, which wins over one
-into `dev`; `base_branch=main`, which still creates with `--base=main`; a
-create collision followed by a pull request into `dev`; and
-`forbidden_base_branches=dev`, which fails before any create or label edit.
+into `dev`; `base_branch=main`, which still creates with `--base=main`; and
+a create collision followed by a pull request into `dev`.
 The `pr_scope_primary_key` tests check `--any-base-open` on the scope helper
 itself, including that an `ANY_BASE_OPEN` environment variable has no effect.
 

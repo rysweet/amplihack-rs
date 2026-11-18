@@ -77,8 +77,8 @@ DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-${SCRIPT_DIR}/workflo
 # gh pr create, or the base of a matched pull request that passed the scoped
 # lookup. Every other exit, and a create that let GitHub choose, records "".
 # With base_branch empty, that matched pull request can be the one open pull
-# request from this branch into another base (#2784); its own base is
-# recorded once it passes the base checks (check_adopted_base).
+# request from this branch into another base (#2784), and its own base is
+# recorded; finalize checks a recorded base with delivery_base_ref.
 BASE_BRANCH_RESULT=""
 emit_publish_result() {
   jq -nc \
@@ -168,20 +168,6 @@ load_pr_fields() {
 kept_base_clause() {
   printf 'existing open PR #%s targets %s; the resolved base was %s; kept %s' \
     "$PR_NUMBER_RESULT" "$BASE_BRANCH_RESULT" "$BASE_BRANCH" "$BASE_BRANCH_RESULT"
-}
-
-# #2784: a base taken from another open pull request is GitHub data, so it
-# passes the checks an explicit base_branch gets (delivery_base_ref: branch
-# name format, not a ref, not this branch, not in forbidden_base_branches,
-# origin/<base> present) before it is recorded or labelled. delivery_base_ref
-# prints the reason on stderr. A base equal to the resolved one is unchanged.
-check_adopted_base() {
-  [ "$BASE_BRANCH_RESULT" != "$BASE_BRANCH" ] || return 0
-  if delivery_base_ref "$BASE_BRANCH_RESULT" "$CURRENT_BRANCH" "${RECIPE_VAR_forbidden_base_branches:-}" >/dev/null; then
-    return 0
-  fi
-  finish_publish "FAILED_PR_IDENTITY" "invalid-pr-identity" "failure" \
-    "existing open PR #${PR_NUMBER_RESULT} targets ${BASE_BRANCH_RESULT}, which fails the base checks; no pull request was created" 1
 }
 
 resolve_pr_base_ref() {
@@ -869,14 +855,10 @@ if [ -n "$PR_URL_RESULT" ]; then
   # The scoped lookup matched this pull request with --base "$BASE_BRANCH" or,
   # with base_branch empty, as the one open pull request into another base.
   BASE_BRANCH_RESULT="${PR_BASE_REF:-$BASE_BRANCH}"
-  check_adopted_base
   case "$PR_STATE:$PR_MERGED_AT" in
     OPEN:*)
-      if [ "$BASE_BRANCH_RESULT" = "$BASE_BRANCH" ]; then
-        OPEN_PR_MESSAGE="existing open PR found for branch"
-      else
-        OPEN_PR_MESSAGE="$(kept_base_clause)"
-      fi
+      OPEN_PR_MESSAGE="existing open PR found for branch"
+      [ "$BASE_BRANCH_RESULT" = "$BASE_BRANCH" ] || OPEN_PR_MESSAGE="$(kept_base_clause)"
       finish_publish "existing-open-pr" "existing-open-pr" "success" "$OPEN_PR_MESSAGE" ;;
     MERGED:*) finish_publish "MERGED" "already-merged" "success" "branch PR is already merged" ;;
     CLOSED:?*) finish_publish "MERGED" "closed-after-merge" "success" "branch PR is closed after merge" ;;
@@ -1151,7 +1133,6 @@ else
     load_pr_fields "$RECOVERY_JSON"
     if [ -n "$PR_URL_RESULT" ] && [ "$PR_STATE" = "OPEN" ]; then
       BASE_BRANCH_RESULT="${PR_BASE_REF:-$BASE_BRANCH}"
-      check_adopted_base
       COLLISION_MESSAGE="adopted existing open PR after create collision"
       [ "$BASE_BRANCH_RESULT" = "$BASE_BRANCH" ] || COLLISION_MESSAGE="${COLLISION_MESSAGE}; $(kept_base_clause)"
       finish_publish "existing-open-pr" "existing-open-pr" "success" "$COLLISION_MESSAGE"

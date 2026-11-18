@@ -318,12 +318,12 @@ if [ "$ANY_BASE_OPEN" = "true" ] && [ -z "$PR_NUMBER" ] && [ -z "$PR_URL" ]; the
   if [ "$primary_open_count" -eq 0 ]; then
     other_base="$(match_open_on_other_base "$raw_json")"
     other_count="$(array_length "$other_base")"
-    other_listing="$(pr_numbers_and_bases "$other_base")"
-    if [ "$other_count" -eq 1 ]; then
-      echo "INFO: workflow_pr_scope.sh: no open PR from $HEAD_REF into $BASE_REF; using open PR $other_listing (#2784)" >&2
-      emit_scoped_match "$other_base"
-    fi
-    if [ "$other_count" -gt 1 ]; then
+    if [ "$other_count" -gt 0 ]; then
+      other_listing="$(pr_numbers_and_bases "$other_base")"
+      if [ "$other_count" -eq 1 ]; then
+        echo "INFO: workflow_pr_scope.sh: no open PR from $HEAD_REF into $BASE_REF; using open PR $other_listing (#2784)" >&2
+        emit_scoped_match "$other_base"
+      fi
       echo "INFO: workflow_pr_scope.sh: no open PR from $HEAD_REF into $BASE_REF and more than one into other bases: $other_listing; not choosing one (#2784)" >&2
       emit_multiple_scoped_prs "$other_base"
     fi
