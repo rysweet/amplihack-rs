@@ -1507,3 +1507,53 @@ fn hosting_normalizes_supported_api_flags_before_dispatch() {
         );
     }
 }
+
+#[test]
+fn hosting_supports_recorded_readonly_pagination_and_merge_metadata_only() {
+    let sha = "0".repeat(40);
+    for suffix in [
+        format!("actions/runs?head_sha={sha}&event=pull_request&per_page=100"),
+        "actions/workflows?per_page=100".into(),
+        "rules/branches/main?per_page=100".into(),
+        format!("commits/{sha}/check-runs?per_page=100&filter=all"),
+        format!("commits/{sha}/status?per_page=100"),
+    ] {
+        let endpoint = format!("repos/{{owner}}/{{repo}}/{suffix}");
+        assert!(
+            hosting::contract::validate(&["api", "--paginate", &endpoint], "fixture/project")
+                .is_ok(),
+            "{endpoint}"
+        );
+    }
+    assert!(
+        hosting::contract::validate(
+            &[
+                "pr",
+                "merge",
+                "1",
+                "--squash",
+                "--match-head-commit",
+                &sha,
+                "--subject",
+                "Implement answer (#1)",
+                "--body",
+                "Verified"
+            ],
+            "fixture/project"
+        )
+        .is_ok()
+    );
+    for args in [
+        vec![
+            "api",
+            "repos/fixture/project/actions/workflows?unexpected=true",
+        ],
+        vec!["pr", "view", "1", "--json", "unsupported"],
+        vec!["pr", "merge", "1", "--squash", "--rebase"],
+    ] {
+        assert!(
+            hosting::contract::validate(&args, "fixture/project").is_err(),
+            "{args:?}"
+        );
+    }
+}

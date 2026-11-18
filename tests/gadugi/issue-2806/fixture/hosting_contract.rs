@@ -44,7 +44,7 @@ pub fn validate(args: &[&str], repository: &str) -> Result<Vec<String>> {
             ("pr", "checks") => (2, &["--repo", "--json", "--jq"], &["--required"], 1),
             ("pr", "merge") => (
                 2,
-                &["--repo", "--match-head-commit"],
+                &["--repo", "--match-head-commit", "--subject", "--body"],
                 &["--squash", "--merge", "--rebase", "--delete-branch"],
                 1,
             ),
@@ -141,6 +141,32 @@ pub fn validate(args: &[&str], repository: &str) -> Result<Vec<String>> {
             ),
             _ => {}
         }
+    }
+    if let Some(fields) = options.get("--json") {
+        let supported = match command {
+            "repo" => "nameWithOwner,defaultBranchRef,viewerPermission,url",
+            "issue" => "number,state,title,body,url,comments,closedByPullRequestsReferences",
+            "pr" => {
+                "number,url,state,headRefName,headRefOid,baseRefName,baseRefOid,title,body,isDraft,isCrossRepository,headRepository,headRepositoryOwner,baseRepository,author,mergeStateStatus,mergeable,reviewDecision,createdAt,mergedAt,closedAt,comments,reviews,statusCheckRollup,closingIssuesReferences,name,bucket"
+            }
+            _ => bail!("JSON selection unsupported for this command"),
+        };
+        ensure!(
+            fields
+                .split(',')
+                .all(|field| supported.split(',').any(|allowed| field == allowed)),
+            "unsupported JSON selection"
+        );
+    }
+    if command == "pr" && operation == "merge" {
+        ensure!(
+            ["--merge", "--squash", "--rebase"]
+                .iter()
+                .filter(|flag| options.contains_key(**flag))
+                .count()
+                <= 1,
+            "conflicting merge strategies"
+        );
     }
     ensure!(
         !(options.contains_key("--body") && options.contains_key("--body-file")),
@@ -257,12 +283,23 @@ fn validate_endpoint(endpoint: &str, repository: &str) -> Result<()> {
     };
     ensure!(supported, "unsupported REST endpoint {endpoint}");
     if let Some(query) = query {
-        ensure!(
-            (relative.ends_with("/check-runs") && query == "filter=all")
-                || (relative == "contents/.github/workflows"
-                    && query.strip_prefix("ref=").is_some_and(valid_sha)),
-            "unsupported REST query parameters"
-        );
+        let permitted = match parts.as_slice() {
+            ["commits", _, "check-runs"] => {
+                ["filter=all", "per_page=100&filter=all"].contains(&query)
+            }
+            ["commits", _, "status"] | ["rules", "branches", "main"] | ["actions", "workflows"] => {
+                query == "per_page=100"
+            }
+            ["actions", "runs"] => query
+                .strip_prefix("head_sha=")
+                .and_then(|query| query.strip_suffix("&event=pull_request&per_page=100"))
+                .is_some_and(valid_sha),
+            ["contents", ".github", "workflows"] => {
+                query.strip_prefix("ref=").is_some_and(valid_sha)
+            }
+            _ => false,
+        };
+        ensure!(permitted, "unsupported REST query parameters");
     }
     Ok(())
 }
