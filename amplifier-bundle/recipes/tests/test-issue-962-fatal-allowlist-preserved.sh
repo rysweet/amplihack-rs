@@ -7,7 +7,7 @@
 # controls, not bookkeeping):
 #   - workflow-tdd.yaml      step-08c-enforce-verdict  (HOLLOW_SUCCESS -> exit 1)
 #   - workflow-pr-review.yaml step-19c-zero-bs-verification (-> exit 1)
-#   - git-identity.sh resolution sites (7 single-line `exit 2`, per #955)
+#   - git-identity.sh resolution sites (6 single-line `exit 2`, per #955)
 #
 # CONVERTED to visible-degrade (MUST NOT abort/discard work):
 #   - workflow-tdd.yaml      implementation-terminal-evidence  (no bare exit 2)
@@ -77,8 +77,9 @@ else
     fail "FATAL:step-19c" "zero-bs-verification lost its fatal exit 1"
 fi
 
-# git-identity: exactly 7 single-line fail-visible `exit 2` sites (per #955).
-GITID_RECIPES=(workflow-finalize.yaml workflow-refactor-review.yaml workflow-pr-review.yaml \
+# git-identity: exactly 6 single-line fail-visible `exit 2` sites (per #955).
+# Publication's extracted helper is covered by behavioral finalize contracts.
+GITID_RECIPES=(workflow-refactor-review.yaml workflow-pr-review.yaml \
                workflow-tdd.yaml workflow-publish.yaml consensus-publish.yaml consensus-pr-feedback.yaml)
 total_gitid_exit2=0
 for f in "${GITID_RECIPES[@]}"; do
@@ -86,10 +87,10 @@ for f in "${GITID_RECIPES[@]}"; do
     n="$(grep -E 'git identity helper not found' "${RECIPES}/${f}" 2>/dev/null | grep -cE 'exit[[:space:]]+2' || true)"
     total_gitid_exit2=$((total_gitid_exit2 + n))
 done
-if [[ "${total_gitid_exit2}" -eq 7 ]]; then
-    pass "FATAL:git-identity" "7 git-identity fail-visible exit-2 sites retained"
+if [[ "${total_gitid_exit2}" -eq 6 ]]; then
+    pass "FATAL:git-identity" "6 git-identity fail-visible exit-2 sites retained"
 else
-    fail "FATAL:git-identity" "found ${total_gitid_exit2} git-identity exit-2 sites (expected 7)"
+    fail "FATAL:git-identity" "found ${total_gitid_exit2} git-identity exit-2 sites (expected 6)"
 fi
 
 # ---------------------------------------------------------------------------

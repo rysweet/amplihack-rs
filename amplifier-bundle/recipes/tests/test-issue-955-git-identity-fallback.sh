@@ -29,7 +29,7 @@
 #        the three canonical tail fallbacks in its git-identity chain.
 #   STATIC2: workflow-publish.yaml multi-line block MUST also gain the three
 #        fallbacks while remaining exit-2-free (it never had an exit 2).
-#   GUARD: Exactly 7 single-line sites retain their terminal git-identity
+#   GUARD: Exactly 6 single-line sites retain their terminal git-identity
 #        `exit 2`; the multi-line publish block stays exit-2-free.
 #
 # This test SHOULD FAIL before the #955 fix lands (only 2 candidates present).
@@ -44,9 +44,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 
-# Every recipe that emits "git identity helper not found" (7 single-line sites).
+# Every recipe that emits "git identity helper not found" (6 single-line sites).
+# Finalize resolves the publication helper first and sources git-identity.sh
+# beside it. Its installed-bundle and hook-enabled commit behavior is covered
+# by workflow_finalize_publish_ready; it no longer has an inline identity chain.
 RECIPE_FILES=(
-    "workflow-finalize.yaml"
     "workflow-refactor-review.yaml"
     "workflow-pr-review.yaml"
     "workflow-tdd.yaml"
@@ -224,7 +226,7 @@ for f in "${RECIPE_FILES[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# STATIC2 + GUARD: exactly 7 single-line git-identity `exit 2` sites; the
+# STATIC2 + GUARD: exactly 6 single-line git-identity `exit 2` sites; the
 # workflow-publish.yaml multi-line block stays exit-2-free (only one file
 # references the ERROR text more than once? No — each file has exactly one
 # single-line ERROR site; publish's multi-line block never emits the ERROR).
@@ -235,10 +237,10 @@ for f in "${RECIPE_FILES[@]}"; do
          | grep -cE 'exit[[:space:]]+2' || true)"
     total_exit2=$((total_exit2 + n))
 done
-if [[ "${total_exit2}" -eq 7 ]]; then
-    pass "GUARD-exit2-total" "exactly 7 single-line git-identity exit-2 sites retained"
+if [[ "${total_exit2}" -eq 6 ]]; then
+    pass "GUARD-exit2-total" "exactly 6 single-line git-identity exit-2 sites retained"
 else
-    fail "GUARD-exit2-total" "found ${total_exit2} git-identity exit-2 sites (expected 7)"
+    fail "GUARD-exit2-total" "found ${total_exit2} git-identity exit-2 sites (expected 6)"
 fi
 
 # The publish multi-line block must NOT gain an exit 2: the file references the
