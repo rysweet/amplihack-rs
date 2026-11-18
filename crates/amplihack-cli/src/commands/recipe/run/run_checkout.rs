@@ -175,6 +175,8 @@ impl RunCheckout {
         };
         let repository = storage.join("repository.git");
         let root = storage.join("checkout");
+        // Git populates an existing empty allocation without broadening it.
+        fs::DirBuilder::new().mode(0o700).create(&repository)?;
         let owner = uuid::Uuid::new_v4().to_string();
         // No caller worktree registration, object alternates or hardlinks.
         // --no-local forces object transfer instead of copying object files.

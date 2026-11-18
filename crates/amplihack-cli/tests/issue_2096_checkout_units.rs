@@ -204,11 +204,22 @@ fn fresh_execution_storage_is_0700() {
         let scratch = f.root.join("scratch");
         fs::create_dir(&scratch).unwrap();
         let mut checkout = implementation::RunCheckout::prepare(&f.repo, &scratch, false).unwrap();
-        let implementation::RunCheckout::Private { storage, root, .. } = &checkout else {
+        let implementation::RunCheckout::Private {
+            storage,
+            repository,
+            root,
+            ..
+        } = &checkout
+        else {
             panic!("a repository gets a private checkout");
         };
         let mode = fs::metadata(storage).unwrap().permissions().mode() & 0o7777;
         assert_eq!(format!("{mode:04o}"), "0700", "{}", storage.display());
+        assert_eq!(
+            fs::metadata(repository).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "the bare repository allocation is private; Git contents keep normal modes"
+        );
         assert_eq!(
             fs::metadata(root).unwrap().permissions().mode() & 0o777,
             0o700,
