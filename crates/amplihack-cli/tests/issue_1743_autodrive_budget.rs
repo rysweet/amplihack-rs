@@ -193,6 +193,7 @@ struct Fixture {
     repo: PathBuf,
     cwd: PathBuf,
     task: PathBuf,
+    launch_tools: PathBuf,
 }
 
 impl Fixture {
@@ -204,7 +205,10 @@ impl Fixture {
         // Outside the real `~/.claude` and `~/.amplihack`: `assert_no_real_home`
         // fails on any file naming them, and every fixture path appears in the
         // stub logs (tests/support/scratch_base.rs).
-        let tmp = tempfile::tempdir_in(crate::support::scratch_base::scratch_base()).unwrap();
+        let tmp = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o700))
+            .tempdir_in(crate::support::scratch_base::scratch_base())
+            .unwrap();
         // Completion helpers require physical paths on macOS (/var is a symlink).
         let physical = tmp.path().canonicalize().unwrap();
         let p = |n: &str| physical.join(n);
@@ -218,8 +222,30 @@ impl Fixture {
             p("task-in"),
         );
         for d in [&bin, &log, &stub, &cwd] {
-            std::fs::create_dir_all(d).unwrap();
+            private_dir(d);
         }
+        // The source checkout itself can live under the real ~/.amplihack.
+        // Stage launch assets in the fixture so logged tool paths remain
+        // isolated without relaxing assert_no_real_home's checks.
+        let bundle = p("amplifier-bundle");
+        private_dir(&bundle);
+        for (name, extension) in [("tools", "sh"), ("recipes", "yaml")] {
+            let destination = bundle.join(name);
+            private_dir(&destination);
+            for entry in std::fs::read_dir(repo_root().join("amplifier-bundle").join(name)).unwrap()
+            {
+                let source = entry.unwrap().path();
+                if source.extension().and_then(|s| s.to_str()) == Some(extension) {
+                    let target = destination.join(source.file_name().unwrap());
+                    if extension == "sh" {
+                        crate::support::exec_stub::copy_executable(&source, &target);
+                    } else {
+                        std::fs::copy(&source, &target).unwrap();
+                    }
+                }
+            }
+        }
+        let launch_tools = bundle.join("tools");
         private_dir(&state);
         std::fs::write(&task, "issue 1743 fixture task\n").unwrap();
         git(&cwd, tmp.path(), &["init", "-q"]);
@@ -243,6 +269,7 @@ impl Fixture {
             repo,
             cwd,
             task,
+            launch_tools,
         };
         fx.plan(&["CONCERNS|0|0|0|a"]);
         Some(fx)
@@ -278,7 +305,7 @@ impl Fixture {
             std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
         );
         let mut c = crate::isolated_amplihack::isolated("bash");
-        c.arg(tool("autodrive_loop.sh"))
+        c.arg(self.launch_tools.join("autodrive_loop.sh"))
             .args(["--loop-name", loop_name, "--round-recipe", recipe])
             .args(["--clean-token", token, "--verdict-field", field])
             .arg("--repo")
