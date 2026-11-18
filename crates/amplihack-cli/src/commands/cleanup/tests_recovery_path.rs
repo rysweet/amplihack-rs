@@ -547,8 +547,8 @@ fn ownership_diagnostic_names_both_uids_and_requires_a_correctly_owned_location(
     );
     for part in [
         root.display().to_string(),
-        owner.to_string(),
-        euid().to_string(),
+        format!("uid {owner}"),
+        format!("uid {}", euid()),
     ] {
         assert!(text.contains(&part), "missing {part:?}: {text}");
     }
