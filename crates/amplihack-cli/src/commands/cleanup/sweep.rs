@@ -12,7 +12,8 @@ use super::eligibility::{
     run_has_ended, run_is_active,
 };
 use super::git_work::{
-    GIT_TIMEOUT, WALK_LIMIT, git_common_dir, printable, tree_work, unpushed_reason, work_inside,
+    END_OF_RUN_DEADLINE, GIT_TIMEOUT, WALK_LIMIT, git_common_dir, printable, tree_work,
+    unpushed_reason, work_inside,
 };
 use super::run_dir::{
     CLEANUP_RECORD, OWNED_PATHS, OwnedKind, OwnedPath, RUN_JSON, RUN_SCHEMA_VERSION, RunReport,
@@ -35,7 +36,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 const TMP_PREFIXES: &[&str] = &["replay-", "release-", "amplihack-workflow-"];
-pub(crate) use super::git_work::END_OF_RUN_DEADLINE;
 const RECORD_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The end-of-run sweep covers run-owned categories only (D5). Untagged
@@ -1756,10 +1756,10 @@ fn write_records(entries: &[Entry], root: &WorkRoot) -> HashSet<PathBuf> {
 
 /// Appends one sweep to the run's `cleanup-record.json`, unless every
 /// failure in `list` is already recorded and nothing was removed, and returns
-/// the failures the record did not hold yet. Paths are compared in the string form the record
-/// holds, not by error text. A missing record starts empty; one that cannot
-/// be parsed is renamed aside with a warning so its history is kept; any
-/// other read error is returned.
+/// the failures the record did not hold yet. Paths are compared in the string
+/// form the record holds, not by error text. A missing record starts empty;
+/// one that cannot be parsed is renamed aside with a warning so its history
+/// is kept; any other read error is returned.
 fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<Vec<PathBuf>> {
     let path = run_dir.join(CLEANUP_RECORD);
     let empty = || CleanupRecord {
