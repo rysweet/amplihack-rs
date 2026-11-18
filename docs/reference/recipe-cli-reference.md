@@ -245,10 +245,13 @@ amplihack recipe guide <TARGET> [-] [--file <PATH>] [--from-step]
 
 | Argument | Description |
 | --- | --- |
-| `<TARGET>` | The run to guide: a run ID, a detached session name, or a GitHub pull request URL for an auto-drive. See [Targets](#targets). |
+| `<TARGET>` | The run to guide: a detached session name, a run ID, a GitHub issue, or a GitHub pull request URL. See [Targets](#targets). |
 | `-` | Read the instruction from stdin. This is also what happens when neither `-` nor `--file` is given. |
 | `--file <PATH>` | Read the instruction from this file instead of stdin. Cannot be combined with `-`. |
 | `--from-step` | Allow the command inside a recipe run. Without it, the command exits 2 when `AMPLIHACK_RECIPE_RUN_ID` is set. See [Guidance from an agent step](#guidance-from-an-agent-step). |
+
+Builds (`smart-orchestrator`, `default-workflow` and similar) and drives
+(`auto-drive`) are both recipe runs, and both take guidance in the same way.
 
 Use this when you see a run going the wrong way and want to correct it
 without stopping it. The instruction is stored on disk. Nothing is sent to a
@@ -256,37 +259,66 @@ running agent; the next agent step reads it when it starts.
 
 ### Targets
 
-The target is matched in this order, and the first match is used:
+The run is found from what it recorded when it started, so the command works
+from any shell, with `AMPLIHACK_WORK_ROOT` and `AMPLIHACK_WORK_ROOT_EXPLICIT`
+set to anything or to nothing. A run started with a non-default work root is
+found as easily as one started with the default.
 
-1. **Pull request URL.** A target that contains `://` is read only as a
-   pull request URL. If it is not a well-formed GitHub pull request URL, the
-   command exits 2 and tries nothing else.
-2. **Run folder name.** A folder of that name under `<work root>/runs/`.
-3. **Correlation ID.** The `run_id` in a run's `run.json`.
-4. **Session name.** The run pointed to by `<session>.log`.
-
-If nothing matches, the command exits 1.
+At start, `recipe run` prints an `amplihack.recipe.log_pointer` line that
+includes `run_dir`, the absolute path of the run's folder (see
+[Recipe Run Correlation Reference](./recipe-run-correlation.md)). A detached
+run's pointer line is kept in `<session>.log` in
+[`recipe.log_dir`](./user-config.md#recipelog_dir) (default
+`~/.amplihack/recipe-logs`), which does not depend on the work root.
 
 | Form | Example | Where the instruction is stored |
 | --- | --- | --- |
-| Run folder name (`AMPLIHACK_RUN_ID`) | `8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15` | That run's folder |
-| Run ID from the log pointer (`run_id`, `AMPLIHACK_RECIPE_RUN_ID`), the same ID `recipe stop` takes | `5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81` | The folder of the run that ID belongs to |
 | Detached session name | `amp-smart-orchestrator-myapp-20261112-091200` | The folder of the run started in that session |
+| Run ID: folder name (`AMPLIHACK_RUN_ID`) or correlation ID (`run_id`, `AMPLIHACK_RECIPE_RUN_ID`, the ID `recipe stop` takes) | `5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81` | That run's folder |
+| Issue: `<number>`, `#<number>` or an issue URL | `2783`, `'#2783'`, `https://github.com/rysweet/amplihack-rs/issues/2783` | The folder of the run that recorded that issue |
 | Pull request URL | `https://github.com/rysweet/amplihack-rs/pull/2535` | The auto-drive state folder for that pull request |
 
-**Run IDs.** Both IDs are checked with the same rule as `recipe stop`
-before any path is built. The run folder name is looked up first, under
-`<work root>/runs/`. If no folder has that name, the ID is matched against
-the correlation ID of each attempt recorded in each run's `run.json`.
+`#<number>` starts a comment in most shells, so quote it: `'#2783'`.
 
-**Session names.** The command reads `<session>.log` in
-[`recipe.log_dir`](./user-config.md#recipelog_dir) (default
-`~/.amplihack/recipe-logs`), the log that `recipe run --detach` writes. It
-takes the `run_id` from the first `amplihack.recipe.log_pointer` line within
-the first 64 KiB of the log, accepts a pointer line of at most 4 KiB, and
-resolves that ID under `<work root>/runs/` only. A session
-name containing `/` is refused. If the log is missing or has no pointer line
-yet, the command exits 1 and names the log path it tried.
+The first match is used, in this order:
+
+1. **URL.** A target that contains `://` is read only as a GitHub URL. A
+   `/pull/<number>` URL goes to the pull request's state folder, exactly as
+   before. An `/issues/<number>` URL is looked up as an issue (step 4). Any
+   other URL exits 2 and nothing else is tried.
+2. **Session name.** The pointer line in `<session>.log`. If it records
+   `run_dir`, that folder is used.
+3. **Run ID.** The `run_dir` recorded by the pointer line that carries that
+   `run_id`, searched across the log directory. If no log records it, the ID
+   is looked up under `<work root>/runs/`, first as a folder name and then
+   as the correlation ID in each run's `run.json`.
+4. **Issue.** The pointer line whose `issue_number` or `issue_url` matches,
+   then that line's `run_dir`. A bare number is tried as an issue only after
+   the session and run ID lookups find nothing. An issue URL also has to
+   match the owner and repository the run recorded; a bare number matches
+   on the number alone, and the command prints the folder it chose.
+
+Where both the recorded folder and the work root in the environment resolve,
+the recorded folder is used: it is the folder the run actually uses.
+
+A run that did not record `run_dir` (one started before this was recorded, or
+a foreground run, whose pointer line goes to the terminal and is not kept)
+is still found by run ID or session name through the work root in the
+environment, as before. Foreground runs are not found by issue.
+
+The recorded folder is checked before it is written to. Its parent must be
+named `runs`, its name must be a valid run ID, and neither it nor `run.json`
+may be a symbolic link. A recorded path that fails these checks is not
+used, and the reason appears in the not-found message.
+
+Logs are searched newest first, stopping at the first match. A log that
+cannot be read or is not trusted is skipped; a log you name as a session is
+refused with an error.
+
+**Session names.** A session name containing `/` is refused. If the log is
+missing or has no pointer line yet, the command exits 1 and names the log
+path it tried. A pointer line of up to 32 KiB, within the first 64 KiB of the
+log, is read.
 
 **Pull request URLs.** The URL must have the form
 `https://github.com/<owner>/<repo>/pull/<number>`. A trailing `/`, a query
@@ -298,11 +330,25 @@ string or a fragment is allowed and ignored. These are refused with exit 2:
 - an owner longer than 39 bytes or a repository name longer than 100 bytes;
 - `.` or `..` as the owner or repository;
 - a pull request number of `0`, or one that does not fit in 64 bits;
-- any other path, such as `/issues/7` or `/pull/7/files`.
+- any other path, such as `/pull/7/files`.
 
 The pull request is not looked up on GitHub. A well-formed URL is accepted
 and its folder is created if it does not exist, so you can add guidance
-before you relaunch a drive.
+before you relaunch a drive. A pull request target writes only to that state
+folder; a run started with the pull request already reads it.
+
+**Finding a run without the environment:**
+
+```bash
+env -u AMPLIHACK_WORK_ROOT -u AMPLIHACK_WORK_ROOT_EXPLICIT \
+  amplihack recipe guide amp-smart-orchestrator-myapp-20261112-091200 - <<'EOF'
+Keep the existing public API; add the cache headers in the middleware only.
+EOF
+```
+
+```text
+guidance appended: /srv/builds/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15/guidance/20261112T100241.007311204Z-49102-0.md (72 bytes, operator)
+```
 
 ### Giving the text
 
@@ -653,7 +699,7 @@ does not read this folder; see [Known limits](#known-limits).
 | Code | Meaning | Example message on stderr |
 | --- | --- | --- |
 | `0` | The entry was written | |
-| `1` | No run, session or run folder matches the target | `recipe guide: no recipe run or detached session named "nightly-fix"` |
+| `1` | No run matches the target. One line names the target and each place looked at: the session log path, the log directory, the recorded run folder if one was named but is absent, and `<work root>/runs/` | `recipe guide: no recipe run found for "nightly-fix"; looked at session log /home/alice/.amplihack/recipe-logs/nightly-fix.log (not found), pointer lines in /home/alice/.amplihack/recipe-logs (none names it), /home/alice/.amplihack/work/runs (no run folder or run.json with that ID)` |
 | `1` | The target could be a run ID, but the work root cannot be resolved | `recipe guide: cannot look for run "nightly-fix": HOME is not set, so the default work root cannot be resolved` |
 | `1` | `AMPLIHACK_STATE_DIR` (or `HOME`) is set to a relative path, for a pull request URL target | `recipe guide: cannot find the state folder: AMPLIHACK_STATE_DIR is not an absolute path` |
 | `1` | The session's log has no pointer line | `recipe guide: /home/alice/.amplihack/recipe-logs/nightly-fix.log has no amplihack.recipe.log_pointer line` |

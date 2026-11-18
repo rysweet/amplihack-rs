@@ -46,7 +46,7 @@ Each line starts with the stable prefix `amplihack.recipe.log_pointer ` followed
 by one JSON object:
 
 ```text
-amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","branch":"main","task_description":"Fix flaky retry tests","issue_number":"753","runner_path":"/home/user/.local/bin/recipe-runner-rs","timestamp":"2026-06-12T03:55:11Z"}
+amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","run_dir":"/home/user/.amplihack/work/runs/5b60657b-76ef-4f49-8a22-8b89ed75f43e","branch":"main","task_description":"Fix flaky retry tests","issue_number":"753","runner_path":"/home/user/.local/bin/recipe-runner-rs","timestamp":"2026-06-12T03:55:11Z"}
 ```
 
 The final pointer uses the same `run_id`:
@@ -71,6 +71,7 @@ additive; consumers must ignore fields they do not understand.
 | `recipe_name` | string | early, final | yes | Resolved recipe identity used to launch the runner: the YAML `name` when available, otherwise the CLI recipe argument. |
 | `cwd` | string | early, final | yes | Effective execution directory after resolving `--working-dir`; this is not necessarily the parent process directory. |
 | `worktree` | string | early, final | no | Git worktree root discovered from `cwd`; outside Git, this equals `cwd`. |
+| `run_dir` | string | early, final | no | Absolute path of the run's folder (`<work root>/runs/<id>`). Written where the run has a workspace; omitted for capability probes and dry runs, and omitted rather than truncated if it exceeds 4096 bytes. `recipe guide` reads it to find the run. Additive: `schema_version` stays `1`. |
 | `branch` | string | early, final | no | Current Git branch when available. Omitted outside Git or detached HEAD. |
 | `task_description` | string | early, final | no | Explicit `task_description` context value, capped for log safety. |
 | `issue_number` | string | early, final | no | Explicit issue number context value when supplied. |
