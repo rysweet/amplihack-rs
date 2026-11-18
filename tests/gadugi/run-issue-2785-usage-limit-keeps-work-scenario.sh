@@ -204,7 +204,7 @@ steps:
         - kind: repository
           path: "{{repository_path}}"
     command: |
-      sha="\$(git -C '{{repository_path}}' rev-parse HEAD 2>/dev/null)" || exit 3
+      sha="\$(git -C "\${RECIPE_VAR_repository_path:?}" rev-parse HEAD 2>/dev/null)" || exit 3
       printf '"%s"\n' "\$sha"
   - id: "step-03-usage-limit-or-continue"
     type: "bash"
@@ -217,8 +217,8 @@ steps:
         printf '%s\n' 'Claude usage limit reached. Your limit will reset at 9pm (UTC).' >&2
         exit 1
       fi
-      work='{{repository_path}}'
-      sha='{{saved_commit}}'
+      work="\${RECIPE_VAR_repository_path:?}"
+      sha="\${RECIPE_VAR_saved_commit:?}"
       actual="\$(git -C "\$work" rev-parse HEAD 2>/dev/null)" || exit 3
       [ "\$actual" = "\$sha" ] || exit 3
       git -C "\$work" cat-file -e "\$sha^{commit}" 2>/dev/null || exit 3
