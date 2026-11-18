@@ -91,8 +91,11 @@ esac
 [ "$ahead" -eq 0 ] || stop "$at_caller and has $ahead commit(s) that are not on origin/$branch. The task worktree starts from origin/$branch and would not see those commits. Push them with 'git push origin $branch' (run 'git pull --rebase' first if origin/$branch has moved on), or discard them, then re-run"
 
 physical() { (cd -P -- "$1" 2>/dev/null && pwd -P); }
+# Git is asked through the caller: it shares refs, config and the worktree
+# list with <main_repo_path>, which is not a repository when the repository is
+# bare, as in a private recipe-run checkout (issue #2096).
 main_real="$(physical "$main")" || usage
-worktrees="$(git -C "$main" worktree list --porcelain)" \
+worktrees="$(git -C "$caller" worktree list --porcelain)" \
   || stop "cannot list the worktrees of $main for branch '$branch'; refusing to choose an alias worktree"
 # The worktree path git records for local branch $1, or nothing.
 checked_out_at() {
@@ -124,7 +127,7 @@ announce() {
 }
 
 # 5. Reuse pass, lowest n first.
-refs="$(git -C "$main" for-each-ref --format='%(refname)' "refs/heads/$branch--wt-*")" \
+refs="$(git -C "$caller" for-each-ref --format='%(refname)' "refs/heads/$branch--wt-*")" \
   || stop "cannot list the local branches of $main for branch '$branch'; refusing to choose an alias worktree"
 numbers=""
 while IFS= read -r ref; do
@@ -137,8 +140,8 @@ $refs
 EOF
 for n in $(printf '%s' "$numbers" | LC_ALL=C sort -n); do
   alias_name="$branch--wt-$n"
-  [ "$(git -C "$main" config --get "branch.$alias_name.remote" 2>/dev/null || true)" = "origin" ] || continue
-  [ "$(git -C "$main" config --get "branch.$alias_name.merge" 2>/dev/null || true)" = "refs/heads/$branch" ] || continue
+  [ "$(git -C "$caller" config --get "branch.$alias_name.remote" 2>/dev/null || true)" = "origin" ] || continue
+  [ "$(git -C "$caller" config --get "branch.$alias_name.merge" 2>/dev/null || true)" = "refs/heads/$branch" ] || continue
   want="$(physical "$main_real/worktrees/$alias_name")" || continue
   have="$(checked_out_at "$alias_name")"
   [ -n "$have" ] && [ "$(physical "$have")" = "$want" ] || continue
@@ -150,12 +153,12 @@ n=1
 while :; do
   alias_name="$branch--wt-$n"
   path="$main_real/worktrees/$alias_name"
-  if git -C "$main" show-ref --verify --quiet "refs/heads/$alias_name" \
+  if git -C "$caller" show-ref --verify --quiet "refs/heads/$alias_name" \
       || [ -e "$path" ] || [ -L "$path" ] || registered_at "$path"; then
     n=$((n + 1))
     continue
   fi
-  [ "$(git -C "$main" check-ref-format --branch "$alias_name" 2>/dev/null || true)" = "$alias_name" ] \
+  [ "$(git -C "$caller" check-ref-format --branch "$alias_name" 2>/dev/null || true)" = "$alias_name" ] \
     || stop "alias '$alias_name' for branch '$branch' is not a valid branch name; refusing to choose an alias worktree"
   announce "$alias_name"
 done

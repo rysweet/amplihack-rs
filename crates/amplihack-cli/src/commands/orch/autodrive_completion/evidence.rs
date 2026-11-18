@@ -50,12 +50,16 @@ pub fn review_stamp(tools: &Path, dir: &Path) -> Result<String> {
 }
 
 pub fn capture(state: &State) -> Result<Snapshot> {
-    let bytes = secure_fs::read(&state.record, LIMIT)?;
+    let bytes = secure_fs::read(secure_fs::Scope::of(&state.state_dir), &state.record, LIMIT)?;
     let mut sidecars = BTreeMap::new();
     for ext in ["findings", "minor", "severity"] {
         let path = state.record.with_extension(format!("json.{ext}"));
         let value = match std::fs::symlink_metadata(&path) {
-            Ok(_) => Some(secure_fs::read(&path, LIMIT)?),
+            Ok(_) => Some(secure_fs::read(
+                secure_fs::Scope::of(&state.state_dir),
+                &path,
+                LIMIT,
+            )?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
         };
@@ -74,20 +78,27 @@ pub fn validate(state: &State, expected: &Snapshot) -> Result<serde_json::Value>
         actual.record_hash == expected.record_hash && actual.sidecars == expected.sidecars,
         "round record or sidecar evidence changed"
     );
-    let bytes = secure_fs::read(&state.record, LIMIT)?;
+    let bytes = secure_fs::read(secure_fs::Scope::of(&state.state_dir), &state.record, LIMIT)?;
     ensure!(
-        bytes == secure_fs::read(&state.state_dir.join("crusty-latest.json"), LIMIT)?,
+        bytes
+            == secure_fs::read(
+                secure_fs::Scope::of(&state.state_dir),
+                &state.state_dir.join("crusty-latest.json"),
+                LIMIT
+            )?,
         "latest round copy differs"
     );
     ensure!(
         actual.sidecars["findings"].as_ref()
             == Some(&secure_fs::read(
+                secure_fs::Scope::of(&state.state_dir),
                 &state.state_dir.join("crusty-latest.json.findings"),
                 LIMIT
             )?),
         "latest findings copy differs"
     );
     let manifest = String::from_utf8(secure_fs::read(
+        secure_fs::Scope::of(&state.state_dir),
         &state.state_dir.join("crusty-records.tsv"),
         LIMIT,
     )?)?;

@@ -1,3 +1,10 @@
+---
+title: Launch Flag Injection — Reference
+description: Automatically injected agent CLI flags, ownership requirements, and caller overrides.
+doc_type: reference
+last_updated: 2026-11-18
+---
+
 # Launch Flag Injection — Reference
 
 When `amplihack` starts `claude`, `copilot`, `codex`, or `amplifier`, it builds
@@ -12,7 +19,9 @@ can override the defaults.
 - [--dangerously-skip-permissions](#-dangerously-skip-permissions)
 - [--model](#-model)
 - [--resume and --continue](#-resume-and-continue)
+- [--deny-tool (Copilot CLI)](#-deny-tool)
 - [Codex agent-step flags](#codex-agent-step-flags)
+  - [Owned review launch directories](#owned-review-launch-directories)
 - [Extra args passthrough](#extra-args-passthrough)
 - [Complete command-line assembly](#complete-command-line-assembly)
 - [Python launcher parity](#python-launcher-parity)
@@ -28,8 +37,10 @@ can override the defaults.
 | `--model <value>` | tool is Claude-compatible AND user did not pass `--model`, unless `AMPLIHACK_DEFAULT_MODEL` is set to an empty value outside the LiteLLM gateway path. Unset, the value is `claude-opus-5[1m]`; see [--model](#-model) | `claude`, `rusty`, `rustyclawd`, `amplifier` | pass `--model`, or set `AMPLIHACK_DEFAULT_MODEL=` (empty) to pass none |
 | `--resume` | only when `amplihack launch --resume` | `launch` only (not `claude`) | pass `--resume` to the `launch` subcommand |
 | `--continue` | only when `amplihack launch --continue` | `launch` only (not `claude`) | pass `--continue` to the `launch` subcommand |
+| `--deny-tool shell(<prefix>:*)` | always, once per entry in the [dangerous-command policy](./dangerous-command-policy.md); nothing in your own arguments suppresses one | `copilot` | none for a shipped prefix. `policy.deny_commands` only adds, and `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` leaves these flags in place. See [--deny-tool](#-deny-tool) |
 | `--sandbox danger-full-access` | argv after `--` contains an `exec`/`e` subcommand AND the caller chose no sandbox | `codex` | pass your own sandbox (`--sandbox`, `--sandbox=`, `-s`, `-s<mode>`, `-s=<mode>`, `-c sandbox_mode=…`); see [Codex agent-step flags](#codex-agent-step-flags) |
 | `--dangerously-bypass-hook-trust` | argv after `--` contains an `exec`/`e` subcommand AND the flag is not already present | `codex` | none; it is added once on every Codex `exec` launch |
+| `--skip-git-repo-check` | `exec`/`e` runs in a validated, amplihack-owned review launch directory AND the flag is not already present | `codex` | automatic from existing ownership evidence; caller-supplied flags are preserved |
 
 ---
 
@@ -262,7 +273,11 @@ The `claude`, `copilot`, `codex`, and `amplifier` subcommands do not support
 
 Recipe agent steps on Codex run `amplihack codex -- exec …`.
 When the arguments after `--` contain an `exec` subcommand (or its alias `e`),
-amplihack inserts two flags immediately after that token:
+amplihack inserts the following baseline flags immediately after that token.
+An [owned review launch directory](#owned-review-launch-directories) also
+receives `--skip-git-repo-check`:
+
+The command examples below assume execution in a Git checkout.
 
 ```sh
 amplihack codex -- exec --output-last-message /d0/run/final-message -
@@ -306,6 +321,9 @@ which is kept in
 a unit test fails if the list and that copy disagree. `--full-auto` is not
 on the list because codex-cli 0.140.0 to 0.166.0 reject it.
 
+The following table describes sandbox and hook-trust injection. The separate
+ownership rule below determines whether `--skip-git-repo-check` is also added.
+
 | Caller argv (after `--`) | What amplihack adds |
 |---|---|
 | `exec --output-last-message F -` | both flags after `exec` |
@@ -324,14 +342,33 @@ on the list because codex-cli 0.140.0 to 0.166.0 reject it.
 | (none), `resume --last`, `"Explain this repository"` | nothing; interactive argv is unchanged |
 | `-c exec`, `-m exec`, `-- exec` | nothing; `exec` here is a value or a positional, not the subcommand |
 
-**Notice (issue #2010).** When amplihack adds `--sandbox danger-full-access`,
-it writes one line to stderr before Codex starts. The line lists what was
-added, in the order it appears in the argv. The two possible lines are:
+**Notice (issue #2010).** When amplihack adds `--sandbox danger-full-access`
+or `--skip-git-repo-check`, it writes one line to stderr before Codex starts.
+The line lists every flag added, in the order it appears in the argv, followed
+by the issues that introduced them. The `--skip-git-repo-check` flag is always
+named when it is added, because whether it is added depends on ownership
+evidence on disk rather than on the argv
+([owned review launch directories](#owned-review-launch-directories)).
+
+In a directory that is not an owned review launch, the possible lines are:
 
 | Caller already set | Line written to stderr |
 |---|---|
 | nothing | `amplihack: codex exec: added --sandbox danger-full-access, --dangerously-bypass-hook-trust (#1985)` |
 | `--dangerously-bypass-hook-trust` | `amplihack: codex exec: added --sandbox danger-full-access (#1985)` |
+
+In an owned review launch directory, where the caller did not pass
+`--skip-git-repo-check`, the possible lines are:
+
+| Caller already set | Line written to stderr |
+|---|---|
+| nothing (the recipe runner's argv) | `amplihack: codex exec: added --skip-git-repo-check, --sandbox danger-full-access, --dangerously-bypass-hook-trust (#2788, #1985)` |
+| `--dangerously-bypass-hook-trust` | `amplihack: codex exec: added --skip-git-repo-check, --sandbox danger-full-access (#2788, #1985)` |
+| a sandbox | `amplihack: codex exec: added --skip-git-repo-check, --dangerously-bypass-hook-trust (#2788, #1985)` |
+| a sandbox and `--dangerously-bypass-hook-trust` | `amplihack: codex exec: added --skip-git-repo-check (#2788)` |
+
+A caller-supplied `--skip-git-repo-check` is not added again, so it is not
+named; the line is then the same as in a directory that is not owned.
 
 The line is written once per launch, and only to stderr, so a step's stdout
 and its `--output-last-message` file are unchanged. The line is built from
@@ -361,9 +398,10 @@ added; the table above is the record of what an agent step receives.
 
 No line is written when:
 
-- the caller chose a sandbox, in any of the forms listed above. The hook-trust
-  flag is still added in that case, without a line. Issue #2048 tracks
-  reporting it; issue #2009 is limited to whether the flag is added at all;
+- the caller chose a sandbox, in any of the forms listed above, and
+  `--skip-git-repo-check` is not added. The hook-trust flag is still added in
+  that case, without a line. Issue #2048 tracks reporting it; issue #2009 is
+  limited to whether the flag is added at all;
 - the argv has no `exec`/`e` subcommand, including an empty argv,
   `resume --last`, `-c exec` and `-- exec`.
 
@@ -390,8 +428,174 @@ untrusted hooks without saying so, which would turn off the command-check hook
 (software-factory #149), so hook trust is bypassed. Full access means a step
 can write `.codex/hooks.json`, `~/.codex/`, `.git/hooks` and credential
 stores, and a hook planted by one step runs in later steps without a trust
-prompt. The preconditions, including the trusted-checkout requirement, are in
+prompt. The execution-directory preconditions are in
 [Sandbox and hook trust for agent steps](../howto/install-codex-plugin.md#sandbox-and-hook-trust-for-agent-steps).
+
+### Owned review launch directories
+
+Codex normally requires a Git checkout or a trusted project for unattended
+execution. Auto-drive's Crusty context and review steps, and merge-ready
+review steps, run in a separate, amplihack-created launch directory that
+contains no Git checkout. For these invocations amplihack automatically adds
+`--skip-git-repo-check` immediately after `exec` or its alias `e`.
+
+Eligibility comes from the existing review ownership manifest and live
+ownership validation. The normalized child execution directory must equal
+the validated generation's recorded launch path exactly. The launcher's
+own working directory does not determine eligibility. Any agent step using
+that same owned launch directory receives the same treatment, independently
+of its recipe name.
+
+| Child execution directory | Automatically add `--skip-git-repo-check`? |
+| --- | --- |
+| Recorded launch directory of a live, validated review generation | Yes, for `exec`/`e` |
+| Ordinary Git checkout | No |
+| Linked Git worktree or the review generation's checkout | No |
+| Unowned directory outside Git | No |
+| Directory with missing, unreadable, malformed, stale, retired or unrelated ownership evidence | No |
+| A parent, child or sibling of the recorded launch directory | No |
+
+A directory name such as `launch`, an instruction file, or the absence of
+Git metadata does not establish ownership. Missing or invalid evidence
+withholds automatic injection; the lookup introduces no additional launch
+error. Codex then applies its normal directory check unless the caller
+explicitly supplied the flag.
+
+Flag detection uses parsed options. A caller-supplied
+`--skip-git-repo-check` is forwarded without adding a duplicate. The same
+text used as another option's value or as prompt text does not count as an
+explicit flag. A `--cd` or `-C` override must resolve to the same validated
+launch directory, including relative paths and symlinks. Both separate and
+attached values are supported before or after `exec`/`e` and after its prompt
+positional. Option values and text after `--` are not directory options.
+A different directory, repeated overrides, home expansion, conflicting
+logical and physical path resolution, malformed values or unknown options
+withhold automatic injection while retaining normal argument
+forwarding and explicit caller bypass flags. Starting in an unowned directory
+never gains eligibility by selecting an owned directory.
+
+Invocations without an `exec`/`e` subcommand receive no
+automatic directory-check bypass, and the ownership lookup does not run for
+them: the argument check comes first and rejects them without reading the
+filesystem.
+
+**Diagnosing a refused launch.** When the flag is added, the
+[stderr notice](#codex-agent-step-flags) names `--skip-git-repo-check`. A
+Codex step that fails with "not inside a trusted directory" while its notice
+names only the sandbox and hook-trust flags was not judged to be an owned
+launch directory: the directory is not the recorded launch path of a live
+generation, the generation was retired or replaced, or a `--cd`/`-C` override
+did not resolve to it. The reason is logged only at `debug` level
+(`RUST_LOG=amplihack_cli=debug`). The pinned recipe runner's advice in that
+message, to run from an existing Git checkout, does not apply to review
+launch directories, which are deliberately not checkouts.
+
+This behavior requires no new configuration key or environment variable.
+It writes no project trust entries or other settings to
+`$CODEX_HOME/config.toml`. Existing sandbox selection, hook handling,
+stdin prompt delivery and final-message capture retain their existing
+behavior. The review launch directory remains separate from the checkout;
+PR instruction files remain review data. See
+[private review generations](recipe-checkout-isolation.md#private-review-generations).
+
+#### Internal ownership interface
+
+The crate-private `runner_validation::is_owned_review_launch_dir(&Path) -> bool`
+provides the shared launcher with a read-only ownership result. It examines
+candidate manifests only in the immediate review allocation directory,
+derives their checkout paths internally, and reuses
+`review_generation::read_live(checkout)` validation. Exact normalized launch
+path equality is required; invalid candidates yield no eligibility.
+
+`build_command_for_dir` decides ownership for the explicit child execution
+directory in its Codex branch. It first uses the existing prompt parser to
+reject argv without `exec`/`e` and to prove any directory override selects
+that same directory; only then does it run the ownership lookup. The argument
+transformer and the stderr notice both receive that one Boolean and remain
+pure, so the notice cannot disagree with the argv. This interface adds no public API, ownership
+registry or manifest schema.
+
+---
+
+## --deny-tool
+
+Every Copilot CLI launch receives one `--deny-tool shell(<prefix>:*)` argument
+pair per prefix in amplihack's
+[dangerous-command policy](./dangerous-command-policy.md) — ten for the
+shipped list, which renders ten prefixes from six policy entries, since the
+five forced and deleting push forms share one entry. amplihack spawns
+`copilot` directly, with no shell in between, so each value is one argv
+element:
+
+```text
+copilot
+--deny-tool
+shell(pkill:*)
+--deny-tool
+shell(killall:*)
+--deny-tool
+shell(pgrep:*)
+--deny-tool
+shell(tmux kill-server:*)
+--deny-tool
+shell(tmux kill-session -a:*)
+--deny-tool
+shell(git push --force:*)
+--deny-tool
+shell(git push -f:*)
+--deny-tool
+shell(git push --force-with-lease:*)
+--deny-tool
+shell(git push --delete:*)
+--deny-tool
+shell(git push -d:*)
+```
+
+The `:*` suffix is the prefix form GitHub documents for shell rules:
+`shell(git:*)` matches `git push` but not `gitea`, while a bare value is
+documented as matching literally. See
+[Verified behaviour and open checks](./dangerous-command-policy.md#verified-behaviour-and-open-checks).
+
+The quotes in `--deny-tool 'shell(pkill:*)'` are shell syntax, needed only when
+you type the flag at a prompt yourself. The value amplihack passes holds no
+quotes; do not copy them into a config file.
+
+Copilot CLI is the only tool that receives these flags. Claude Code and Codex
+read the same policy from files amplihack writes at install time, so their
+command lines are unchanged; see
+[Dangerous Command Policy](./dangerous-command-policy.md).
+
+They are not the only flags a `copilot` launch receives. amplihack also
+injects `--allow-all` (issue #303), unless the caller passed an allow-all flag
+of its own or set `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1`. The opt-out suppresses
+`--allow-all` and leaves the deny flags in place. Which of the two wins for a
+command they both cover is Copilot's resolution order, not amplihack's:
+amplihack passes both and does not enforce a precedence between them.
+
+- Copilot CLI has no user-level file for command deny rules, only per-session
+  flags, so the policy is applied here rather than at install.
+- The flags are a function of the policy list alone. Nothing you pass is read
+  when they are built, so no argument of yours can suppress one. If you deny
+  the same prefix yourself, Copilot receives `--deny-tool` twice for it, in
+  whichever spellings were used; both deny the same command. Whether Copilot
+  accepts the repetition is recorded as an open check in
+  [Verified behaviour and open checks](./dangerous-command-policy.md#verified-behaviour-and-open-checks).
+  An earlier version did skip a prefix that already followed a `--deny-tool`
+  in your arguments; it was removed because the scan matched any adjacent
+  pair, including one where Copilot reads `--deny-tool` as another flag's
+  value, and so could drop a policy rule silently.
+- Entries from `policy.deny_commands` in `~/.amplihack/config.toml` follow the
+  shipped defaults, in the order written. A change applies to the next launch;
+  no install or update is needed.
+- A `copilot` started by hand, outside `amplihack`, receives none of this.
+
+Whether Copilot CLI resolves a `--deny-tool` over a session approval or an
+allow flag, and whether it accepts a multi-token prefix such as
+`shell(git push --force:*)` at all, are third-party behaviours recorded with the
+version they were checked against in
+[Verified behaviour and open checks](./dangerous-command-policy.md#verified-behaviour-and-open-checks).
+Until those checks are settled, the Copilot rendering is the weakest of the
+three.
 
 ---
 
@@ -433,12 +637,15 @@ assembles the final command line. The assembly order is:
    `AMPLIHACK_DEFAULT_MODEL` outside the gateway means no `--model`
 4. `--resume` (if requested — `launch` subcommand only)
 5. `--continue` (if requested — `launch` subcommand only)
-6. All `extra_args` in the order they were passed on the command line. For
+6. `--allow-all`, then `--deny-tool shell(<prefix>:*)` once per
+   dangerous-command policy entry, unconditionally. `copilot` only; see
+   [--deny-tool](#-deny-tool)
+7. All `extra_args` in the order they were passed on the command line. For
    `codex`, `codex_agent_step_args()` first inserts the
    [Codex agent-step flags](#codex-agent-step-flags) after an `exec`/`e`
-   subcommand, if there is one. When the sandbox is among them,
-   `codex_agent_step_notice()` supplies the one stderr line described under
-   [Codex agent-step flags](#codex-agent-step-flags)
+   subcommand, if there is one. When the sandbox or `--skip-git-repo-check`
+   is among them, `codex_agent_step_notice()` supplies the one stderr line
+   described under [Codex agent-step flags](#codex-agent-step-flags)
 
 The following examples show the full assembled command for each launch
 subcommand with no extra args:
@@ -451,7 +658,8 @@ amplihack claude --skip-permissions
 # → claude --dangerously-skip-permissions --model claude-opus-5[1m]
 
 amplihack copilot
-# → copilot
+# → copilot --allow-all --deny-tool shell(pkill:*) … (one --deny-tool argument
+#   pair per policy entry; see the --deny-tool section above)
 
 amplihack codex
 # → codex
@@ -500,3 +708,4 @@ Intentional divergences (not bugs) are documented in
 - [Parity Test Scenarios](./parity-test-scenarios.md) — tier5 and tier7 test cases that verify flag injection
 - [Run amplihack in Non-interactive Mode](../howto/run-in-noninteractive-mode.md) — CI configuration guide
 - [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) — How the pre-launch update check interacts with the launch sequence
+- [Dangerous Command Policy](./dangerous-command-policy.md): the policy list behind the injected `--deny-tool` flags, and the files written for Claude Code and Codex

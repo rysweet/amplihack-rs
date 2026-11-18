@@ -7,13 +7,33 @@
 #                 stand-in for `extract-json --require-field F` (pass the blob
 #                 through when it names F) and `extract-field --field F
 #                 --default D [--require-boolean]` (a string or bare value;
-#                 JSON \n and \t decoded, boolean types checked when required).
+#                 JSON \n and \t decoded, boolean types checked when required),
+#                 and for `normalise-loop-verdict` (pass CONTINUE, DONE or
+#                 STUCK through; anything else becomes STUCK).
+#
+#                 stdin rule (#2582): the mode is dispatched BEFORE stdin is
+#                 opened, and only these five modes read it —
+#                   normalise-loop-verdict  extract-json  extract-field
+#                   normalise-verdict       normalise-type
+#                 Every other mode answers 0 without reading, so a caller that
+#                 passes an open stdin cannot block on a channel the stub does
+#                 not use. `autodrive-completion-seal` is the mode that hung
+#                 tests/issue_1437_autodrive_loop.sh this way.
+#
+#                 The last two have no stand-in and answer nothing, but the
+#                 tree pipes into them, so they must keep draining: a mode that
+#                 is piped into belongs on that list even with no stand-in,
+#                 or its writer takes SIGPIPE and the pipeline ends 141 under
+#                 `set -o pipefail`. Adding a mode means two decisions: whether
+#                 it joins the list above, and whether it needs a stand-in
+#                 below. See docs/howto/keep-test-stubs-from-blocking-on-stdin.md.
 #   recipe show   exit 0.
 #   recipe run    the loop names recipes by absolute launch-side path (#1543),
 #                 so the recipe is keyed on its base name. Every call is logged
 #                 to $STUB_STATE/calls.
 #     loop-health-evaluator, call h:
-#                 saves loop_history to $STUB_STATE/history-h, prints
+#                 saves loop_history (from -c or --context-from-file,
+#                 #2582) to $STUB_STATE/history-h, prints
 #                 $STUB_HEALTH_EXTRA_h, then the runner's step-04 block (#1512)
 #                 with $STUB_HEALTH_h (default CONTINUE for h=1, DONE after),
 #                 and exits $STUB_HEALTH_RC_h (default 0).
@@ -24,8 +44,44 @@
 #                 writes $STUB_RECORD_n to the autodrive_round_record file
 #                 (default NOT_READY for n=1, MERGE_READY after), prints $STUB_OUT_n
 #                 and exits $STUB_RC_n (default 0).
+#                 With STUB_ROUND_DIRTIES_REVIEW=1 the round writes
+#                 stub-dirt.txt into the review_dir given as
+#                 `-c review_dir=...` and stages it there. The file name is
+#                 never printed, so it reaches stderr only through the loop.
+#     every recipe run that names --working-dir logs one line
+#                 `round-workdir <path>` to $STUB_STATE/round-workdirs.
+#   internal review-*   (#2096) the loop owns a private review checkout. POSIX
+#                 stand-ins with exact argument counts, each call logged as
+#                 one line to $STUB_STATE/review-calls. A generation is a real
+#                 detached worktree of REPO at $STUB_STATE/review-gen-<n>,
+#                 never REPO itself or its main checkout:
+#     review-allocate REPO STATE   creates review-gen-<n> and prints it; exits
+#                                  $STUB_REVIEW_ALLOCATE_RC (default 0; nothing
+#                                  is created or printed when non-zero).
+#     review-next REPO CHECKOUT    creates review-gen-<n+1> at REPO's HEAD and
+#                                  prints it; exits $STUB_REVIEW_NEXT_RC.
+#     review-launch CHECKOUT       prints CHECKOUT; exits $STUB_REVIEW_LAUNCH_RC.
+#     review-head CHECKOUT         exits $STUB_REVIEW_HEAD_RC when it is set and
+#                                  non-zero; otherwise prints `git rev-parse
+#                                  --verify HEAD` there, passing git's status.
+#     review-release CHECKOUT      prints nothing; exits $STUB_REVIEW_RELEASE_RC
+#                                  (default 0) and, on success, removes every
+#                                  $STUB_STATE/review-gen-* worktree with
+#                                  `git worktree remove --force` and increments
+#                                  $STUB_STATE/review-release.
+#                 Any other internal command or argument count is unhandled.
 set -u
 STATE="${STUB_STATE:?STUB_STATE is not set}"
+
+# Git for the stand-ins: no global or system configuration, no hooks.
+sgit() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -c core.hooksPath=/dev/null "$@"; }
+# new_generation <repo>: a detached worktree of <repo> at its HEAD; prints it.
+new_generation() {
+  local d
+  d="${STATE}/review-gen-$(count review-gen)"
+  sgit -C "$1" worktree add -q --detach "$d" HEAD >/dev/null 2>&1 || return 1
+  printf '%s\n' "$d"
+}
 
 count() { # count <name>: increments and prints $STATE/<name>
   local n
@@ -41,7 +97,15 @@ knob() { # knob <prefix> <n> <default>
 
 if [ "${1:-} ${2:-}" = "orch helper" ]; then
   if [ -n "${REAL_AMPLIHACK:-}" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
-  MODE="${3:-}"; FIELD=""; DEFAULT=""; REQUIRE_BOOLEAN=false
+  MODE="${3:-}"
+  # Answer and leave, before stdin or the arguments are touched, for every mode
+  # this stub has no stand-in for: see the stdin rule in this file's header.
+  # Only the five modes below carry a blob, and only they use the arguments.
+  case "$MODE" in
+    normalise-loop-verdict|extract-json|extract-field|normalise-verdict|normalise-type) : ;;
+    *) exit 0 ;;
+  esac
+  FIELD=""; DEFAULT=""; REQUIRE_BOOLEAN=false
   shift 3 || true
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -86,17 +150,38 @@ if [ "${1:-} ${2:-}" = "recipe show" ]; then exit 0; fi
 if [ "${1:-} ${2:-}" = "recipe run" ]; then
   RECIPE="$(basename -- "${3:-}" .yaml)"
   printf '%s\n' "$RECIPE" >> "${STATE}/calls"
-  RECORD=""; HISTORY=""; prev=""
+  RECORD=""; HISTORY=""; REVIEW=""; prev=""
   for a in "$@"; do
+    [ "$prev" = "--working-dir" ] && printf 'round-workdir %s\n' "$a" >> "${STATE}/round-workdirs"
     if [ "$prev" = "-c" ]; then
       case "$a" in
         autodrive_round_record=*) RECORD="${a#*=}" ;;
         loop_history=*) HISTORY="${a#*=}" ;;
+        review_dir=*) REVIEW="${a#*=}" ;;
       esac
       case "$a" in
         loop_*=*)
           context_name="$(printf '%s' "${a%%=*}" | tr '[:lower:]' '[:upper:]')"
           export "$context_name=${a#*=}"
+          ;;
+      esac
+    fi
+    # #2582: the loop hands the evaluator's free-text keys to the nested run
+    # by file, so they are no longer `-c key=value`. Read the file and treat
+    # the value exactly as the `-c` form above does, or this stub sees an
+    # empty history and the tests that read it assert nothing.
+    if [ "$prev" = "--context-from-file" ]; then
+      ctx_key="${a%%=*}"
+      ctx_file="${a#*=}"
+      ctx_value=""
+      [ -f "$ctx_file" ] && ctx_value="$(cat -- "$ctx_file")"
+      case "$ctx_key" in
+        loop_history) HISTORY="$ctx_value" ;;
+      esac
+      case "$ctx_key" in
+        loop_*)
+          context_name="$(printf '%s' "$ctx_key" | tr '[:lower:]' '[:upper:]')"
+          export "$context_name=$ctx_value"
           ;;
       esac
     fi
@@ -141,10 +226,51 @@ if [ "${1:-} ${2:-}" = "recipe run" ]; then
     exit "$(knob STUB_HEALTH_RC_ "$h" 0)"
   fi
   n="$(count rounds)"
+  if [ "${STUB_ROUND_DIRTIES_REVIEW:-}" = 1 ] && [ -n "$REVIEW" ]; then
+    printf 'a round wrote here\n' > "${REVIEW}/stub-dirt.txt"
+    sgit -C "$REVIEW" add -- stub-dirt.txt >/dev/null 2>&1
+  fi
   if [ "$n" = 1 ]; then d='{"merge_ready_verdict":"NOT_READY"}'; else d='{"merge_ready_verdict":"MERGE_READY"}'; fi
   [ -n "$RECORD" ] && { knob STUB_RECORD_ "$n" "$d" > "$RECORD"; : > "${RECORD}.findings"; }
   printf '%s\n' "$(knob STUB_OUT_ "$n" "round ran")"
   exit "$(knob STUB_RC_ "$n" 0)"
+fi
+
+if [ "${1:-}" = internal ]; then
+  case "${2:-}:$#" in
+    review-allocate:4|review-next:4|review-launch:3|review-head:3|review-release:3)
+      printf '%s\n' "${*:2}" >> "${STATE}/review-calls"
+      case "$2" in
+        review-allocate)
+          rc="${STUB_REVIEW_ALLOCATE_RC:-0}"
+          [ "$rc" = 0 ] || exit "$rc"
+          new_generation "$3" || exit 1
+          exit 0 ;;
+        review-next)
+          rc="${STUB_REVIEW_NEXT_RC:-0}"
+          [ "$rc" = 0 ] || exit "$rc"
+          new_generation "$3" || exit 1
+          exit 0 ;;
+        review-launch)
+          rc="${STUB_REVIEW_LAUNCH_RC:-0}"
+          [ "$rc" = 0 ] || exit "$rc"
+          printf '%s\n' "$3"; exit 0 ;;
+        review-head)
+          rc="${STUB_REVIEW_HEAD_RC:-0}"
+          [ "$rc" = 0 ] || exit "$rc"
+          exec git -C "$3" rev-parse --verify HEAD ;;
+        review-release)
+          rc="${STUB_REVIEW_RELEASE_RC:-0}"
+          [ "$rc" = 0 ] || exit "$rc"
+          for d in "${STATE}"/review-gen-*; do
+            [ -d "$d" ] || continue
+            common="$(sgit -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || exit 1
+            sgit --git-dir="$common" worktree remove --force "$d" >/dev/null 2>&1 || exit 1
+          done
+          count review-release >/dev/null
+          exit 0 ;;
+      esac ;;
+  esac
 fi
 
 echo "issue_1437_amplihack_stub: unhandled: $*" >&2

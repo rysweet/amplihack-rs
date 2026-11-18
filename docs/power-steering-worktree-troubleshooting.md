@@ -272,8 +272,11 @@ git worktree add /path/to/worktree branch-name
 **Emergency Workaround**:
 
 ```bash
-# Kill amplihack process
-pkill -f amplihack
+# Find the amplihack process, read the listing, then end the one you mean.
+# Do not stop processes by matching a command-line pattern: on a shared host
+# the pattern matches other people's runs as well as yours.
+ps -eo pid=,lstart=,args= | grep -E '[a]mplihack'
+kill <pid>
 
 # Force disable
 touch "$(git rev-parse --git-common-dir)/.claude/runtime/power-steering/.disabled"

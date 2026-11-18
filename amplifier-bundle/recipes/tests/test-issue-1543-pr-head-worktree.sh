@@ -46,6 +46,11 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd -P)"
+TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
+[[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=recipe-test-env.sh
+. "${TEST_ENV}"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 TOOL="${REPO_ROOT}/amplifier-bundle/tools/autodrive_pr_head.sh"
 
@@ -829,6 +834,8 @@ T23_BIN="$WORK/t23-bin"; mkdir -p "$T23_BIN"
 cat > "$T23_BIN/amplihack" <<'STUB'
 #!/usr/bin/env bash
 [ "${1:-}" = orch ] && exec "$REAL_AMPLIHACK" "$@"
+# The loop allocates and releases its private review generation (#2096).
+[ "${1:-}" = internal ] && exec "$REAL_AMPLIHACK" "$@"
 [ "${1:-} ${2:-}" = "recipe show" ] && exec "$REAL_AMPLIHACK" "$@"
 [ "${1:-} ${2:-}" = "recipe run" ] || exit 3
 R="$3"; WD="."; REC=""; prev=""

@@ -44,31 +44,6 @@ fn workspace_helper_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn workflow_pr_ready_command() -> Command {
-    let mut command = Command::new("bash");
-    command.arg(workspace_helper_path("workflow_pr_ready.sh"));
-    for key in [
-        "PR_URL",
-        "RECIPE_VAR_pr_url",
-        "PR_PUBLISH_RESULT_PR_URL",
-        "RECIPE_VAR_pr_publish_result__pr_url",
-        "PR_NUMBER",
-        "RECIPE_VAR_pr_number",
-        "PR_PUBLISH_RESULT_PR_NUMBER",
-        "RECIPE_VAR_pr_publish_result__pr_number",
-        "ISSUE_NUMBER",
-        "RECIPE_VAR_issue_number",
-        "EXPECTED_PR_TITLE_PREFIX",
-        "PR_EXPECTED_TITLE_PREFIX",
-        "WORKFLOW_STARTED_AT",
-        "RECIPE_STARTED_AT",
-        "TASK_STARTED_AT",
-    ] {
-        command.env_remove(key);
-    }
-    command
-}
-
 fn write_file(path: &Path, content: &str) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap_or_else(|e| panic!("create {}: {e}", parent.display()));
@@ -165,6 +140,10 @@ fn private_git_scope(tmp: &Path) -> PathBuf {
     );
     repo
 }
+
+/// A step-16 publish result that records the pull request's base (#2520).
+const RECORDED_MAIN_BASE: &str =
+    r#"{"pr_url":"https://github.com/owner/repo/pull/7","pr_number":"7","base_branch":"main"}"#;
 
 fn write_failing_gh(tmp: &Path, read: &str) {
     let gh = tmp.join("bin/gh");
@@ -270,16 +249,19 @@ fn run_agentic_finalization(mode: &str, envs: &[(&str, &str)]) -> std::process::
         .expect("run workflow_agentic_finalization.sh")
 }
 
+/// The shell a step runs, following an `amplifier-bundle/tools/` call-out
+/// left by the brick-budget extraction of issue #1619.
 fn step_command(recipe: &Value, id: &str) -> String {
-    recipe
-        .get("steps")
-        .and_then(Value::as_sequence)
-        .expect("recipe must contain top-level steps")
-        .iter()
-        .find(|step| step.get("id").and_then(Value::as_str) == Some(id))
-        .and_then(|step| step.get("command").and_then(Value::as_str))
-        .unwrap_or_else(|| panic!("step {id} must be a bash command step"))
-        .to_owned()
+    crate::recipe_step_body::resolved(
+        recipe
+            .get("steps")
+            .and_then(Value::as_sequence)
+            .expect("recipe must contain top-level steps")
+            .iter()
+            .find(|step| step.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|step| step.get("command").and_then(Value::as_str))
+            .unwrap_or_else(|| panic!("step {id} must be a bash command step")),
+    )
 }
 
 #[test]
@@ -390,8 +372,12 @@ fn pr_ready_helper_fails_closed_when_pr_view_metadata_is_unavailable() {
     let repo = private_git_scope(tmp.path());
     write_failing_gh(tmp.path(), "view");
 
+    // The publish result records the base step-16 gave the pull request
+    // (#2520), so the base is known without a GitHub read and the scoped
+    // lookup is the read that fails.
     let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_publish_result", RECORDED_MAIN_BASE)
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
         .expect("run workflow_pr_ready.sh");
@@ -438,9 +424,7 @@ exit 99
     );
     make_executable(&gh);
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = workflow_pr_ready_command()
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+    let output = private_scope_command(tmp.path(), tmp.path(), "workflow_pr_ready.sh")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
@@ -633,10 +617,7 @@ exit 99
     );
     make_executable(&gh);
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = workflow_pr_ready_command()
-        .current_dir(&repo)
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+    let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
@@ -748,10 +729,7 @@ exit 99
     );
     make_executable(&gh);
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = workflow_pr_ready_command()
-        .current_dir(&repo)
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+    let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
@@ -854,10 +832,7 @@ exit 99
     );
     make_executable(&gh);
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = workflow_pr_ready_command()
-        .current_dir(&repo)
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+    let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
@@ -899,9 +874,11 @@ fn final_status_unreadable_gh_is_uncertain_never_silent_success() {
     let repo = private_git_scope(tmp.path());
     write_failing_gh(tmp.path(), "view");
 
+    // Base recorded by step-16 (#2520): the scoped lookup is the read that fails.
     let output = private_scope_command(tmp.path(), &repo, "workflow_final_status.sh")
         .env("REMOTE_HOST_TYPE", "github")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_publish_result", RECORDED_MAIN_BASE)
         .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .env("TASK_DESCRIPTION", "test task")
         .env("ISSUE_NUMBER", "7")

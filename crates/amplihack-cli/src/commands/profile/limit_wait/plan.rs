@@ -2,7 +2,9 @@
 //! #1618). A reset wait needs the harness's own limit message with a reset
 //! at most five hours away. A far or unreadable reset is skipped, because no
 //! amount of waiting is known to help, unless another login could take over:
-//! [`upgrade`] then makes it a capacity wait (issue #1801). The deadline is
+//! [`upgrade`] then makes it a capacity wait (issue #1801). An organisation
+//! spend limit on a `$HOME/.claude` step becomes a login-change wait instead
+//! ([`upgrade_spend`], issue #2731). The deadline is
 //! the earliest row of the deadline table that applies, a tie named by the
 //! earlier row. All arithmetic saturates. A reset wait's deadline always lies
 //! in `now ..= now + 5 h + 120 s`; a capacity wait has no five-hour ceiling
@@ -58,6 +60,11 @@ pub(crate) enum WaitFor {
         harness: Harness,
         reset: Option<i64>,
     },
+    /// The login in `$HOME/.claude` changing (issue #2731): an organisation
+    /// spend limit that states no reset, on a step the rotator can move.
+    LoginChange {
+        harness: Harness,
+    },
     Skip(NoWait),
 }
 
@@ -110,6 +117,31 @@ pub(crate) fn upgrade(
     }
 }
 
+/// `w`, made a login-change wait when it is an organisation spend limit
+/// that states no reset on a `$HOME/.claude` step and a rotator is running
+/// (issue #2731). `spend` is the harness of such a limit, and `None` for
+/// every other limit and every step whose login the rotator never changes,
+/// so the promotion cannot reach one. No reset lifts a spend limit and no
+/// login of the same organisation would either, so this waits for the login
+/// to change rather than for a reading to show capacity: [`upgrade`]'s
+/// capacity wait stays exactly as issue #1801 left it.
+///
+/// `rotator` reads files, so it runs only for a limit that qualifies. Only
+/// the rotator moves a login into `~/.claude`, so with none running there is
+/// nothing to wait for and the skip stands.
+pub(crate) fn upgrade_spend(
+    w: WaitFor,
+    spend: Option<Harness>,
+    rotator: impl Fn() -> bool,
+) -> WaitFor {
+    match (w, spend) {
+        (WaitFor::Skip(NoWait::SpendLimit), Some(harness)) if rotator() => {
+            WaitFor::LoginChange { harness }
+        }
+        _ => w,
+    }
+}
+
 /// Which row set the deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Bound {
@@ -144,6 +176,43 @@ pub(crate) struct Plan {
     pub(crate) kind: PlanKind,
     /// The reset as read, for the log line; a capacity wait may have none.
     pub(crate) reset: Option<i64>,
+    /// This wait is for the login in `$HOME/.claude` changing, and for
+    /// nothing else (issue #2731). Set by [`plan_login_change`] alone, which
+    /// is why it is private: no other constructor, and no test, may raise
+    /// it. It is not a [`PlanKind`], because the kind says what the deadline
+    /// means and this plan's deadline means what [`PlanKind::Reset`]'s does.
+    login_change: bool,
+}
+
+impl Plan {
+    /// Whether a capacity reading may end this wait.
+    ///
+    /// True for a reset wait (issue #2694: a login with room ends it rather
+    /// than the step sleeping to a reset hours away) and for a capacity wait
+    /// (issue #1801: that is what it waits for). False for a login-change
+    /// wait, whose limit is on an organisation's credit: no reading reports
+    /// credit, and an exhausted credit leaves the session and weekly windows
+    /// looking healthy, so a reading would end the wait and send the step
+    /// back onto the same spent login.
+    pub(crate) fn capacity_may_end(&self) -> bool {
+        !self.login_change
+    }
+
+    /// A plan with a deadline the caller chooses, for the wait's own tests.
+    ///
+    /// There is deliberately no way to raise `login_change` here:
+    /// [`plan_login_change`] is its one source, so a test that wants such a
+    /// plan must call that and is then testing what the code does.
+    #[cfg(test)]
+    pub(super) fn for_test(until: i64, bound: Bound, kind: PlanKind, reset: Option<i64>) -> Self {
+        Self {
+            until,
+            bound,
+            kind,
+            reset,
+            login_change: false,
+        }
+    }
 }
 
 /// The deadline for a wait starting at `now` for `reset`, which
@@ -174,6 +243,7 @@ pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>, step: Option<(i64, u6
         bound,
         kind: PlanKind::Reset,
         reset: Some(reset),
+        login_change: false,
     }
 }
 
@@ -221,6 +291,36 @@ pub(crate) fn plan_capacity(
         bound,
         kind: PlanKind::Capacity,
         reset,
+        login_change: false,
+    }
+}
+
+/// The deadline for a login-change wait starting at `now`: `max` from now,
+/// or the step timeout less its lead when that is earlier, never before
+/// `now`. A tie is named `MaxWait`. There is no reset row, because the limit
+/// stated none, and no five-hour ceiling.
+///
+/// The plan's kind is [`PlanKind::Reset`] on purpose: the kind says what
+/// the deadline means, and reaching this one is `End::MaxReached`, which the
+/// caller turns into `failed reason=spend_limit`. What this wait does *not*
+/// consult is carried by [`Plan::capacity_may_end`] instead: no reading says
+/// whether the next login's organisation has credit, and the rotator picks
+/// what goes into `~/.claude` in any case.
+pub(crate) fn plan_login_change(now: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
+    let mut until = now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX)));
+    let mut bound = Bound::MaxWait;
+    if let Some(end) = step_deadline(now, step)
+        && end < until
+    {
+        until = end;
+        bound = Bound::StepTimeout;
+    }
+    Plan {
+        until: until.max(now),
+        bound,
+        kind: PlanKind::Reset,
+        reset: None,
+        login_change: true,
     }
 }
 

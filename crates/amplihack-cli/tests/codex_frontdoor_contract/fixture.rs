@@ -5,17 +5,7 @@ pub(super) fn cold_client_install_registers_hooks_and_launches_with_fresh_or_sta
     use std::io::Write;
     use std::process::Stdio;
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let cli = std::env::var_os("AMPLIHACK_TEST_BINARY")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("amplihack")
-        });
+    let cli = crate::support::amplihack_bin::amplihack_bin();
     for staged in [false, true] {
         let home = tempfile::tempdir().unwrap();
         let tools = home.path().join("tools");
@@ -98,34 +88,35 @@ esac
         );
         // Framework is staged by a different provider, before Codex is present.
         if staged {
-            let out = crate::isolated_amplihack::isolated(&cli)
-                .args(["install", "--local", source.to_str().unwrap()])
-                .env("HOME", home.path())
-                .env("PATH", &tools)
-                .env("AMPLIHACK_AGENT_BINARY", "claude")
-                .env("AMPLIHACK_SOURCE_ROOT", &source)
-                .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
-                .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
-                .env(
-                    "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
-                    tools.join("amplihack-hooks"),
-                )
-                .env_remove("AMPLIHACK_ORCHESTRATION_BOOTSTRAP")
-                .env_remove("AMPLIHACK_DEFAULT_MODEL")
-                .env_remove("AMPLIHACK_HOME")
-                .env_remove("AMPLIHACK_ASSET_RESOLVER")
-                .env_remove("AMPLIHACK_SESSION_ID")
-                .env_remove("AMPLIHACK_SESSION_DEPTH")
-                .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
-                .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
-                .env_remove("CODEX_BINARY_PATH")
-                .env_remove("CODEX_HOME")
-                .env("RECIPE_RUNNER_RS_PATH", tools.join("recipe-runner-rs"))
-                // `install` resolves hook scope from its cwd; keep it off the
-                // process cwd, which this binary shares with every other test module.
-                .current_dir(home.path())
-                .output()
-                .unwrap();
+            let out = crate::support::wait::output_within(
+                "amplihack install (staging)",
+                crate::isolated_amplihack::isolated(&cli)
+                    .args(["install", "--local", source.to_str().unwrap()])
+                    .env("HOME", home.path())
+                    .env("PATH", &tools)
+                    .env("AMPLIHACK_AGENT_BINARY", "claude")
+                    .env("AMPLIHACK_SOURCE_ROOT", &source)
+                    .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
+                    .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
+                    .env(
+                        "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+                        tools.join("amplihack-hooks"),
+                    )
+                    .env_remove("AMPLIHACK_ORCHESTRATION_BOOTSTRAP")
+                    .env_remove("AMPLIHACK_DEFAULT_MODEL")
+                    .env_remove("AMPLIHACK_HOME")
+                    .env_remove("AMPLIHACK_ASSET_RESOLVER")
+                    .env_remove("AMPLIHACK_SESSION_ID")
+                    .env_remove("AMPLIHACK_SESSION_DEPTH")
+                    .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
+                    .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
+                    .env_remove("CODEX_BINARY_PATH")
+                    .env_remove("CODEX_HOME")
+                    .env("RECIPE_RUNNER_RS_PATH", tools.join("recipe-runner-rs"))
+                    // `install` resolves hook scope from its cwd; keep it off the
+                    // process cwd, which this binary shares with every other test module.
+                    .current_dir(home.path()),
+            );
             assert!(
                 out.status.success(),
                 "staging failed: {} {}",

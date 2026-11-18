@@ -71,6 +71,16 @@ DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-${SCRIPT_DIR}/workflo
 # shellcheck source=workflow_delivery_inputs.sh
 . "$DELIVERY_INPUTS_HELPER"
 
+# base_branch in the publish result (#2520): the base of this run's pull
+# request, so finalize can find a pull request on a base other than
+# origin/HEAD. Set from the --base given to gh pr create, or from the base of
+# the pull request the scoped lookup matched. Every other exit, and a create
+# that let GitHub choose, records "". With base_branch empty, that matched
+# pull request can be the one open pull request from this branch into another
+# base (#2784), and its own base is recorded. Step-16 does not check that
+# base; finalize checks it with delivery_base_ref. Best-effort labeling retains
+# its existing behavior and does not validate the adopted base (#2784).
+BASE_BRANCH_RESULT=""
 emit_publish_result() {
   jq -nc \
     --arg state "$PUBLISH_STATE" \
@@ -80,7 +90,8 @@ emit_publish_result() {
     --arg pr_number "$PR_NUMBER_RESULT" \
     --arg branch_diff_status "$BRANCH_DIFF_STATUS" \
     --arg message "$MESSAGE" \
-    '{state:$state,legacy_state:$legacy_state,terminal_status:$terminal_status,pr_url:$pr_url,pr_number:$pr_number,branch_diff_status:$branch_diff_status,message:$message}'
+    --arg base_branch "$BASE_BRANCH_RESULT" \
+    '{state:$state,legacy_state:$legacy_state,terminal_status:$terminal_status,pr_url:$pr_url,pr_number:$pr_number,branch_diff_status:$branch_diff_status,message:$message,base_branch:$base_branch}'
 }
 
 # Best-effort: apply caller-configured labels to the GitHub PR that was just
@@ -131,6 +142,7 @@ finish_publish() {
     apply_pr_labels_best_effort
   fi
   if [ "$terminal_status" != "success" ]; then
+    BASE_BRANCH_RESULT=""
     printf 'ERROR: %s (exit %s): %s\n' "$state" "$exit_code" "$message" >&2
     PUBLISH_DIAGNOSED=true
   fi
@@ -143,12 +155,20 @@ load_pr_fields() {
   local pr_json="$1" _ml
   # while-read, not mapfile: macOS /bin/bash is 3.2 (issue #1423).
   PR_FIELDS=(); while IFS= read -r _ml; do PR_FIELDS+=("$_ml"); done < <(
-    printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // ""'
+    printf '%s' "$pr_json" | jq -r '.url // "", ((.number // "") | tostring), .state // "", .mergedAt // "", .baseRefName // ""'
   )
   PR_URL_RESULT="${PR_FIELDS[0]:-}"
   PR_NUMBER_RESULT="${PR_FIELDS[1]:-}"
   PR_STATE="${PR_FIELDS[2]:-}"
   PR_MERGED_AT="${PR_FIELDS[3]:-}"
+  PR_BASE_REF="${PR_FIELDS[4]:-}"
+}
+
+# #2784: names an adopted pull request whose base differs from the resolved
+# one. A constant format; every value is a %s argument.
+kept_base_clause() {
+  printf 'existing open PR #%s targets %s; the resolved base was %s; kept %s' \
+    "$PR_NUMBER_RESULT" "$BASE_BRANCH_RESULT" "$BASE_BRANCH" "$BASE_BRANCH_RESULT"
 }
 
 resolve_pr_base_ref() {
@@ -656,6 +676,9 @@ scoped_pr_lookup() {
   )
   [ -n "$expected_pr_title_prefix" ] && scope_args+=(--expected-pr-title-prefix "$expected_pr_title_prefix")
   [ -n "$created_after" ] && scope_args+=(--created-after "$created_after")
+  # #2784: with base_branch empty the base above came from origin/HEAD, so an
+  # open pull request from this branch into any other base is this run's too.
+  [ -n "${RECIPE_VAR_base_branch:-}" ] || scope_args+=(--any-base-open)
   if scope_output="$("$PR_SCOPE_HELPER" "${scope_args[@]}")"; then
     printf '%s\n' "$scope_output"
     return 0
@@ -830,8 +853,14 @@ if [ -n "$PR_URL_RESULT" ]; then
     VIEW_JSON="$(gh_pr_view_with_retry "$PR_URL_RESULT" --json url,number,state,mergedAt,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository)"
     load_pr_fields "$VIEW_JSON"
   fi
+  # The scoped lookup matched this pull request with --base "$BASE_BRANCH" or,
+  # with base_branch empty, as the one open pull request into another base.
+  BASE_BRANCH_RESULT="${PR_BASE_REF:-$BASE_BRANCH}"
   case "$PR_STATE:$PR_MERGED_AT" in
-    OPEN:*) finish_publish "existing-open-pr" "existing-open-pr" "success" "existing open PR found for branch" ;;
+    OPEN:*)
+      OPEN_PR_MESSAGE="existing open PR found for branch"
+      [ "$BASE_BRANCH_RESULT" = "$BASE_BRANCH" ] || OPEN_PR_MESSAGE="$(kept_base_clause)"
+      finish_publish "existing-open-pr" "existing-open-pr" "success" "$OPEN_PR_MESSAGE" ;;
     MERGED:*) finish_publish "MERGED" "already-merged" "success" "branch PR is already merged" ;;
     CLOSED:?*) finish_publish "MERGED" "closed-after-merge" "success" "branch PR is closed after merge" ;;
     CLOSED:*)
@@ -1104,7 +1133,10 @@ else
   if RECOVERY_JSON="$(scoped_pr_lookup)"; then
     load_pr_fields "$RECOVERY_JSON"
     if [ -n "$PR_URL_RESULT" ] && [ "$PR_STATE" = "OPEN" ]; then
-      finish_publish "existing-open-pr" "existing-open-pr" "success" "adopted existing open PR after create collision"
+      BASE_BRANCH_RESULT="${PR_BASE_REF:-$BASE_BRANCH}"
+      COLLISION_MESSAGE="adopted existing open PR after create collision"
+      [ "$BASE_BRANCH_RESULT" = "$BASE_BRANCH" ] || COLLISION_MESSAGE="${COLLISION_MESSAGE}; $(kept_base_clause)"
+      finish_publish "existing-open-pr" "existing-open-pr" "success" "$COLLISION_MESSAGE"
     fi
   else
     RECOVERY_STATUS=$?
@@ -1127,4 +1159,6 @@ esac
 if PR_NUMBER_RESULT="$(gh_pr_number_from_url "$PR_URL_RESULT")"; then :; else
   finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing could not resolve PR identity" 1
 fi
+# Only a base this step passed with --base; without it GitHub chose the base.
+[ -z "${RECIPE_VAR_base_branch:-}" ] || BASE_BRANCH_RESULT="$BASE_BRANCH"
 finish_publish "$PUBLISH_STATE" "$LEGACY_PUBLISH_STATE" "success" "draft PR created"

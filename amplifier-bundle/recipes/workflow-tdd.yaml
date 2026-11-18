@@ -26,6 +26,7 @@ context:
 steps:
   - id: "step-07-write-tests"
     agent: "amplihack:tester"
+    model: "standard"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
@@ -54,6 +55,7 @@ steps:
 
   - id: "step-08-implement"
     agent: "amplihack:builder"
+    model: "strong"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
@@ -108,6 +110,7 @@ steps:
   # Two-step pair: work-verifier (agent→JSON verdict) + enforce-verdict (bash→exit code).
   - id: "step-08c-work-verifier"
     agent: "amplihack:analyzer"
+    model: "standard"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
@@ -219,9 +222,7 @@ steps:
     # Fast-path opt-outs preserved from the legacy guard (issue #425):
     #   * Orchestration sentinel in implement output -> exit 0.
     #   * ALLOW_NO_OP=true (orchestration / docs-only / audit / meta) -> exit 0.
-    # Both opt-outs run BEFORE parsing the verdict so callers that legitimately
-    # produce no working-tree edits never get blocked, even if the verifier
-    # step itself fails or is skipped.
+    # Both run before the verdict is parsed, so a task with no edits still passes even where the verifier step failed or was skipped.
     command: |
       set -euo pipefail
       # The reader retains VERDICT_JSON for legacy-only Claude/Copilot callers.
@@ -243,6 +244,7 @@ steps:
     # The resume-checkpoint term governs resumption; the applicability term is
     # what makes the prompt's "Skip if no external integrations" real (#1334).
     agent: "amplihack:integration"
+    model: "strong"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "clarified_requirements.requires_integration_work != 'false' and resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |

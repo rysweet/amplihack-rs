@@ -24,10 +24,30 @@
 
 #[path = "../../../tests/support/isolated_amplihack.rs"]
 mod isolated_amplihack;
+// Issue #2658: shared pinned recipe-runner-rs resolution.
+#[path = "../../../tests/support/pinned_runner.rs"]
+mod pinned_runner;
 mod support;
 
+#[path = "issue_2096_execution_isolation.rs"]
+mod issue_2096_execution_isolation;
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
+#[path = "issue_2556_autodrive_evidence.rs"]
+mod issue_2556_autodrive_evidence;
+#[path = "issue_2575_agentic_merge_ready.rs"]
+mod issue_2575_agentic_merge_ready;
+mod issue_2575_finalize_recovery_runner;
+#[path = "issue_2582_context_off_argv.rs"]
+mod issue_2582_context_off_argv;
+#[path = "issue_2582_degraded_runner_no_set.rs"]
+mod issue_2582_degraded_runner_no_set;
+#[path = "issue_2582_nested_context_off_argv.rs"]
+mod issue_2582_nested_context_off_argv;
+#[path = "issue_2582_real_runner_argv.rs"]
+mod issue_2582_real_runner_argv;
+#[path = "issue_2585_launch_notices_stderr.rs"]
+mod issue_2585_launch_notices_stderr;
 
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
@@ -332,6 +352,8 @@ mod issue_1985_codex_agent_step_flags;
 mod issue_2001_codex_usage;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
+#[path = "issue_2019_private_binary.rs"]
+mod issue_2019_private_binary;
 #[path = "issue_2042_fake_proc_seam.rs"]
 mod issue_2042_fake_proc_seam;
 #[path = "issue_2042_host_proc_strace.rs"]
@@ -350,6 +372,38 @@ mod issue_2218_excluded;
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2336_autodrive_completion.rs"]
 mod issue_2336_autodrive_completion;
+#[path = "issue_2535_recipe_guide_cli.rs"]
+mod issue_2535_recipe_guide_cli;
+#[path = "issue_2535_recipe_guide_injection.rs"]
+mod issue_2535_recipe_guide_injection;
+#[path = "issue_2535_recipe_guide_publish.rs"]
+mod issue_2535_recipe_guide_publish;
+#[path = "issue_2539_step_recovery_driver.rs"]
+mod issue_2539_step_recovery_driver;
+#[path = "issue_2539_step_recovery_fixture.rs"]
+mod issue_2539_step_recovery_fixture;
+#[path = "issue_2539_step_recovery_init.rs"]
+mod issue_2539_step_recovery_init;
+#[path = "issue_2539_step_recovery_loop.rs"]
+mod issue_2539_step_recovery_loop;
+#[path = "issue_2539_step_recovery_policy.rs"]
+mod issue_2539_step_recovery_policy;
+#[path = "issue_2539_step_recovery_recipes.rs"]
+mod issue_2539_step_recovery_recipes;
+#[path = "issue_2539_step_recovery_recurrence.rs"]
+mod issue_2539_step_recovery_recurrence;
+#[path = "issue_2539_step_recovery_report.rs"]
+mod issue_2539_step_recovery_report;
+#[path = "issue_2539_step_recovery_stop.rs"]
+mod issue_2539_step_recovery_stop;
+#[path = "issue_2539_step_recovery_validation.rs"]
+mod issue_2539_step_recovery_validation;
+#[path = "issue_2658_routing_replay.rs"]
+mod issue_2658_routing_replay;
+#[path = "issue_2731_login_change_wait.rs"]
+mod issue_2731_login_change_wait;
+#[path = "issue_2788_codex_review_launch.rs"]
+mod issue_2788_codex_review_launch;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -434,3 +488,66 @@ mod issue_2279_doctor;
 
 #[path = "issue_2297_codex_installation.rs"]
 mod issue_2297_codex_installation;
+#[path = "issue_2552_build_preflight_decision.rs"]
+mod issue_2552_build_preflight_decision;
+
+// Issue #1619 (TDD): per-step model tiers reach the harness.
+// `issue_1619_tier_propagation` exercises the real chain through an
+// argv-recording fake harness: tier resolution per harness, the fall-back,
+// both overrides, Codex reasoning effort and the measurement record.
+// `issue_1619_tier_argv_safety` pins that rewriting `--model` disturbs
+// nothing else on the command line.
+#[path = "issue_1619_tier_argv_safety.rs"]
+mod issue_1619_tier_argv_safety;
+#[path = "issue_1619_tier_propagation.rs"]
+mod issue_1619_tier_propagation;
+// `issue_1619_step_tier_diagnostics` pins that what `[step_tiers]` could not
+// act on reaches the operator: the recipe-run process performs no launch of
+// its own, so a line it does not print is a line nobody sees.
+// `issue_1619_real_runner_step_tier` runs fixture recipes through the pinned
+// runner: a `[step_tiers]` override, and a declared tier on Claude, Codex
+// and Copilot.
+#[path = "issue_1619_real_runner_step_tier.rs"]
+mod issue_1619_real_runner_step_tier;
+#[path = "issue_1619_step_tier_diagnostics.rs"]
+mod issue_1619_step_tier_diagnostics;
+// `issue_1619_operator_default_model` pins the condition in the #1619 issue
+// comment of 16 November: an operator's own AMPLIHACK_DEFAULT_MODEL still
+// chooses the Claude column's model with the tier table in place, and never
+// reaches a Codex or Copilot step. `issue_1619_effort_ceiling` pins that a
+// declared per-column ceiling steps a raised effort down rather than failing.
+#[path = "issue_1619_effort_ceiling.rs"]
+mod issue_1619_effort_ceiling;
+#[path = "issue_1619_operator_default_model.rs"]
+mod issue_1619_operator_default_model;
+
+// Issue #1619: a step whose shell body was extracted into
+// amplifier-bundle/tools/ for the brick budget still has to be readable by
+// the tests that assert on it. One copy follows the call-out.
+#[path = "../../../tests/integration/recipe_step_body.rs"]
+mod recipe_step_body;
+// Issue #2738: the Git-command tracer is gone; the private clone per run
+// stays. `issue_2738_support` holds the fixture the stub-runner tests share;
+// `issue_2738_no_ptrace` drives the pinned runner and has none.
+#[path = "issue_2738_drive_shaped_layout.rs"]
+mod issue_2738_drive_shaped_layout;
+#[path = "issue_2738_git_outside_repo.rs"]
+mod issue_2738_git_outside_repo;
+#[path = "issue_2738_no_ptrace.rs"]
+mod issue_2738_no_ptrace;
+#[path = "issue_2738_private_clone.rs"]
+mod issue_2738_private_clone;
+#[path = "issue_2738_run_status.rs"]
+mod issue_2738_run_status;
+#[path = "issue_2738_support.rs"]
+mod issue_2738_support;
+
+// Issue #2756: a step reads the user's own global and system Git
+// configuration again, while #2096's repository-routing protection stays.
+#[path = "issue_2756_user_git_config.rs"]
+mod issue_2756_user_git_config;
+
+// Issue #2769: the #2663 outcome rule is the top-level drive's, not every
+// `autodrive-*` sub-recipe's.
+#[path = "issue_2769_autodrive_outcome_scope.rs"]
+mod issue_2769_autodrive_outcome_scope;

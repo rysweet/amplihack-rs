@@ -8,7 +8,10 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::commands::install::hook_block::{FileMerge, HookTarget, hook_target, merge_file};
+use crate::commands::install::apply_deny_policy;
+use crate::commands::install::hook_block::{
+    FileMerge, HookTarget, hook_target, merge_file, update_file,
+};
 pub use amplihack_utils::rotator_status::ROOT_ENV;
 const SHARED_ASSET_DIRS: &[&str] = &["agents", "commands", "output-styles", "rules", "skills"];
 const MAX_COPY_DEPTH: usize = 16;
@@ -89,6 +92,42 @@ impl ProfileStore {
             FileMerge::Unparseable(reason) | FileMerge::Refused(reason) => {
                 tracing::warn!("new profile settings.json: hooks block not written ({reason})");
             }
+        }
+    }
+
+    /// Issue #2589: gives a newly seeded profile the dangerous-command deny
+    /// entries. Seeding copies `permissions` from the user's settings file,
+    /// so a profile seeded from a file written before this change would
+    /// otherwise carry no entry at all. Never creates the file and never
+    /// fails the seeding: a file that cannot take the entries is recorded
+    /// and named on stderr, because `amplihack profile add` runs off the
+    /// install path and nothing else would print it (SEC-C3).
+    fn seed_policy_into(&self, profile_dir: &Path, name: &ProfileName) {
+        use crate::policy::claude::{DenyOutcome, record};
+        let label = format!("new profile {}", name.as_str());
+        let refusal = std::cell::RefCell::new(None);
+        let merge = update_file(&profile_dir.join("settings.json"), &|settings| {
+            *refusal.borrow_mut() = apply_deny_policy(settings, &label);
+        });
+        // `apply_deny_policy` records the file it met; a merge that refused
+        // the file never ran it, so that case is recorded here instead.
+        let reason = refusal.into_inner().or_else(|| match merge {
+            FileMerge::Written | FileMerge::AlreadyCurrent | FileMerge::Absent => None,
+            FileMerge::Unparseable(reason) | FileMerge::Refused(reason) => {
+                record(&label, &DenyOutcome::Unparseable(reason.clone()));
+                Some(reason)
+            }
+        });
+        // `amplihack profile add` runs off the install path, so this is the
+        // only place a refusal met here is printed (SEC-C3). The line goes
+        // through `policy::warn`, which writes it to stderr with the same
+        // `amplihack: warning: ` prefix as before and, in a test build,
+        // keeps a copy a behaviour test can read.
+        if let Some(reason) = reason {
+            crate::policy::warn(&crate::policy::write_failure_warning(
+                &format!("Claude Code ({label})"),
+                &reason,
+            ));
         }
     }
 
@@ -190,6 +229,7 @@ impl ProfileStore {
         if self.shared_assets.is_some() {
             self.seed_hooks_into(&staging);
         }
+        self.seed_policy_into(&staging, name);
         if let Err(error) = rename_noreplace(&staging, &dir) {
             let error = if error.kind() == std::io::ErrorKind::AlreadyExists {
                 ProfileError::AlreadyExists(name.to_string())

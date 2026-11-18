@@ -3,13 +3,14 @@
 Use this guide to inspect, override, and troubleshoot where workflow runtime
 output is written.
 
-Updated: 2026-11-01
+Updated: 2026-11-12
 
 ## Contents
 
 - [Use the default runtime root](#use-the-default-runtime-root)
 - [Override the runtime root](#override-the-runtime-root)
 - [Inspect the active runtime root](#inspect-the-active-runtime-root)
+- [How a step gets its TMPDIR](#how-a-step-gets-its-tmpdir)
 - [Clean known workflow runtime leftovers](#clean-known-workflow-runtime-leftovers)
 - [Handle Artifact Guard failures](#handle-artifact-guard-failures)
 - [Related documentation](#related-documentation)
@@ -32,8 +33,16 @@ child recipes, agents, provenance logging, publish helpers, and finalization
 helpers. `TMPDIR`, `TMP` and `TEMP` point at its `tmp/` subfolder.
 
 The runner removes the runtime root when the run ends, whether it succeeded or
-failed. The run report `run.json` stays in the run folder. A runtime root left
-by a killed run is removed by `amplihack cleanup` (category `run-tmp`). See
+failed, unless a running process still uses it. Before removing it, the runner
+gives the owner back read, write and search access on every folder in it that
+the run owns, so a test fixture left at mode `000` or `0500` does not block the
+removal. Entries the run does not own, or that sit on another filesystem, are
+left unchanged and named in a warning; the warning never fails the run. See
+[Locked folders inside the runtime folder](clean-up-after-recipe-runs.md#locked-folders-inside-the-runtime-folder).
+The run report `run.json`
+stays in the run folder. A runtime root left by a killed run, or kept because
+a process still used it, is removed by a later sweep or by `amplihack cleanup`
+(category `run-tmp`) once no process uses it. See
 [Clean Up After Recipe Runs](clean-up-after-recipe-runs.md) for the full
 layout and the work root settings.
 
@@ -56,8 +65,8 @@ Use an absolute, private path outside any repository checkout. The runner
 will not use a work root that is `/`, your home folder or one of its
 ancestors, a system folder, the system temporary folder, or a git checkout
 root, nor an existing folder that you do not own or that group or others can
-write to. In those cases the run still goes ahead: it prints a warning and
-uses a private temporary folder, with no run folder and no cleanup.
+write to. In those cases the run stops with an error naming the work root
+before any step runs.
 
 The runner always sets `AMPLIHACK_RUNTIME_ROOT` for its steps, so setting that
 variable before a run has no effect on where the runtime root goes. Setting
@@ -87,6 +96,72 @@ ls "$RUN_DIR"
 The `runtime/` subfolder exists only while the run is going. If the default
 path to `runtime/tmp` would be longer than 80 bytes, the runtime root is
 `<work root>/r/<first 12 hex digits of the run id>` instead.
+
+## How a step gets its TMPDIR
+
+The runner starts the step runner with `TMPDIR`, `TMP` and `TEMP` set to the
+`tmp/` folder of its own run, whatever value the shell that started the run
+had. It sets these three variables last, after the inherited environment and
+the recipe context (`-c` values), so neither can replace them. This matters
+when `amplihack recipe run` is started from inside another run, for example by
+an agent: the inherited `TMPDIR` belongs to the outer run, and may already have
+been removed.
+
+This guarantee covers only the environment the runner hands to the step runner.
+A step whose own `env:` block in the recipe YAML sets `TMPDIR`, and the reduced
+environment the step runner builds for an agent step, are applied later by the
+step runner and are not covered here.
+
+Before each attempt of a step, including retries, the runner creates
+`<runtime>/tmp` and `<runtime>/artifacts` again if they are missing, with mode
+`0700` and at the same path as before. A step therefore never starts with a
+runner-provided `TMPDIR` that does not exist, even if something deleted the
+folder during the run.
+
+You can see this by starting a run with a `TMPDIR` that does not exist:
+
+```bash
+export TMPDIR=/tmp/amplihack-gone TMP=/tmp/amplihack-gone TEMP=/tmp/amplihack-gone
+amplihack recipe run default-workflow \
+  -c task_description="Fix flaky login tests" \
+  -c repo_path=.
+```
+
+The step runner gets `TMPDIR=<runtime>/tmp`, which exists, and
+`/tmp/amplihack-gone` is never created.
+
+The runner refuses to launch the step, and the run fails, in two cases. If it
+cannot create the folder, it prints:
+
+```text
+amplihack: cannot create this run's TMPDIR "~/.amplihack/work/r/<id>/tmp": <reason>; refusing to launch the step
+```
+
+If `tmp` or `artifacts` already exists as a symbolic link or as a file, the
+runner does not follow or replace it, and prints:
+
+```text
+amplihack: this run's TMPDIR "~/.amplihack/work/r/<id>/tmp" is a symbolic link or not a directory; refusing to launch the step
+```
+
+The same message names `artifacts` when that is the folder at fault. The real
+messages show the full absolute path of the runtime root, in double quotes,
+where these examples show `~/.amplihack/work/r/<id>`. The runtime root is
+`<work root>/runs/<run id>/runtime`, or `<work root>/r/<short id>` when that
+path would be too long.
+
+A dry run (`recipe run --dry-run`) has no run folder. It creates a private
+`amplihack-dry-*` folder inside the inherited `TMPDIR`, so that `TMPDIR` must
+be an absolute path to an existing folder. If it is not, the dry run stops
+before any step runs and quotes the path:
+
+```text
+amplihack: inherited TMPDIR "/tmp/amplihack-gone" does not exist (or is not a directory); refusing to start the run — set TMPDIR to an existing directory
+amplihack: inherited TMPDIR "build/tmp" is not an absolute directory; refusing to start the run — set TMPDIR to an existing directory
+```
+
+The runner never creates a missing inherited `TMPDIR`, because that path may
+be the removed folder of another run.
 
 ## Clean known workflow runtime leftovers
 

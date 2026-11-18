@@ -1,7 +1,7 @@
 ---
 title: "Why Prompt Text Stays Out of argv"
 description: "Why amplihack never puts the operating contract, a task prompt or a recipe brief in an agent process's command line, and the threat model behind the rule."
-last_updated: 2026-11-08
+last_updated: 2026-11-16
 review_schedule: quarterly
 owner: rysweet
 doc_type: explanation
@@ -10,6 +10,8 @@ related:
   - ../howto/check-agent-argv-for-prompt-text.md
   - ../SYSTEM_PROMPT_APPEND.md
   - ./large-payload-delivery.md
+  - ../reference/recipe-context-transport.md
+  - ../howto/stop-background-jobs-by-pid.md
 ---
 
 # Why Prompt Text Stays Out of argv
@@ -96,8 +98,8 @@ The same holds when a caller passes the prompt through the wrapper:
 `amplihack copilot -- -p <text>` becomes `-p` and the pointer sentence.
 Codex options take values differently under each `exec` subcommand, so the
 rewrite reads them with one table per subcommand, checked against Codex's
-saved help text, and refuses a command line where it cannot tell which word
-is the prompt rather than leave the prompt on argv. Two
+saved help text, and ends with an error where it cannot tell which word is the
+prompt rather than leave the prompt on argv. Two
 passthrough forms are left alone and listed as exceptions: an interactive
 first prompt (`amplihack claude -- '<text>'`, `amplihack codex -- '<text>'`)
 and `amplihack amplifier -- run <text>`. See
@@ -143,20 +145,83 @@ source of content, so editing the file does not change what the agent gets.
 Task prompts, briefs and agent system prompts differ per session, so they go to
 a new 0700 directory per session, which is removed when the session ends.
 
-## Why the wrapper's own argv is a separate step
+## Why the wrapper's own argv was a separate step
 
-Recipe agent steps run `amplihack claude -- -p <brief> --system-prompt <agent md>`.
-amplihack rewrites those arguments for the `claude` child it starts, so the
-agent process is clean. The `amplihack claude` wrapper process was started by
-the recipe runner with the brief in its argv, and amplihack cannot change its
-own argv after the fact. That part is fixed in the runner, which is a separate
-repository with its own review, and takes effect when amplihack's pinned
-runner revision moves. The two are tracked as separate steps so that the
-agent processes are clean without waiting for the runner.
+Recipe agent steps used to run
+`amplihack claude -- -p <brief> --system-prompt <agent md>`. amplihack rewrote
+those arguments for the `claude` child it started, so the agent process was
+clean, but the `amplihack claude` wrapper process had been started by the
+recipe runner with the brief already in its argv, and no process can change its
+own argv after the fact. The remedy belonged to the runner, a separate
+repository with its own review, and reached amplihack when the pinned runner
+revision moved to one that reports `agent_prompt_file_v1`. Splitting the two
+let the agent processes be clean without waiting for the runner; both halves
+are now in place, and the live `/proc` walk in
+[the transport reference](../reference/recipe-context-transport.md#tests)
+checks the wrapper as well as the runner.
+
+## Recipe context on the runner's argv
+
+On 13 November an agent in a live auto-drive ran `pkill -f "vitest.mjs"` to
+stop a hung test run. `amplihack recipe run` was passing every recipe context
+value to `recipe-runner-rs` as `--set key=value`: 153 argv entries and
+12,397 bytes, including the task text. The task text contained "vitest", so the
+pattern matched the runner and ended the drive
+([#2582](https://github.com/rysweet/amplihack-rs/issues/2582)). This is the
+#2030 failure one level up the process tree.
+
+It happened three more times. On 14 November at 08:29Z and 16:44Z, and on
+15 November at 07:24Z, an agent stopping its own quality run with
+`pkill -f "scripts/check full"` matched every recipe runner whose argv carried
+that phrase from its task text. A kill audit rule on the host named the sender
+each time. Those three are this defect; the larger waves in which a `timeout`
+called `kill(0, SIGTERM)` on a process group many runs shared are a separate
+one ([#2674](https://github.com/rysweet/amplihack-rs/issues/2674)), and taking
+text off argv does not address them.
+
+The same rule now applies to recipe context. The pinned runner reports the
+`context_file_v1` capability, so amplihack writes the context to a 0600 file
+in the run's private runtime folder and passes only `--context-file <path>`.
+The `--set` arguments are kept for one case: a runner supplied through
+`RECIPE_RUNNER_RS_PATH` that is older than the pin and has no other way to
+receive the context.
+
+That remaining path is compatibility with an older binary someone chose to
+run, not a quiet weakening of the new one. The choice between the two is made
+from the capability report alone; it is recorded in the run log by name, so a
+run that took the older path can be seen; and a run that should use the file
+and cannot write it ends with an error rather than putting the values on argv,
+for the same reason as in [Why fail instead of falling back](#why-fail-instead-of-falling-back).
+
+The same applies one level down. The bundled callers that start a nested
+`amplihack recipe run`, the auto-drive loop's health evaluator and the
+quality loop's PR dispatch, pass agent output and task text with
+`--context-from-file` from a private file, not with `-c key="$VALUE"`. The
+nested `amplihack` process therefore has paths, labels and numbers on its argv,
+not the text.
+
+Both halves needed a runner release. `--context-file` came from
+[rysweet/amplihack-recipe-runner#211](https://github.com/rysweet/amplihack-recipe-runner/issues/211)
+and the prompt file from
+[#205](https://github.com/rysweet/amplihack-recipe-runner/issues/205); both
+reached amplihack when the pin moved to v0.7.0, which reports
+`context_file_v1` and `agent_prompt_file_v1`.
+
+Removing the text does not make a pattern kill safe, so the second half of
+#2582 is guidance: agents are told to stop their own jobs by the PID they
+recorded and never by name or pattern, and the copies of that guidance inside
+recipe prompts name no tool or process, because a word in a prompt delivered to
+every drive is a word every drive would have shared. See
+[Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md).
+
+Rules, file locations and errors are in the
+[Recipe Context Transport Reference](../reference/recipe-context-transport.md).
 
 ## Related
 
-- [Agent Prompt Channels Reference](../reference/agent-prompt-channels.md) - Channels, files, the version gate and errors
+- [Recipe Context Transport Reference](../reference/recipe-context-transport.md) - How recipe context reaches the runner without argv (#2582)
+- [Stop Background Jobs by PID](../howto/stop-background-jobs-by-pid.md) - The agent guidance against pattern kills
+- [Agent Prompt Channels Reference](../reference/agent-prompt-channels.md) - Channels, files, the Claude Code version requirement and errors
 - [Check Agent Processes for Prompt Text](../howto/check-agent-argv-for-prompt-text.md) - Run the `/proc` check
 - [System Prompt Append](../SYSTEM_PROMPT_APPEND.md) - What the contract is for
 - [Large Payload Delivery to Child Processes](./large-payload-delivery.md) - The `E2BIG` side of the same delivery layer

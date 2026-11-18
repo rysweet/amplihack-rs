@@ -317,6 +317,8 @@ exit 0
 /// JSON) or D.
 pub const FAKE_AMPLIHACK: &str = r#"#!/usr/bin/env bash
 case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
+# Review generations (#2096) are real: step-06 binds its record to one.
+if [ "${1:-}" = internal ]; then exec "${REAL_AMPLIHACK:?}" "$@"; fi
 ( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "${FAKE_LOG:?}/amplihack.log"
 if [ "${1:-} ${2:-}" != "orch helper" ]; then exit 0; fi
 case "${3:-}" in
@@ -434,6 +436,10 @@ pub fn run_bash(
         .env("HOME", home)
         .env("PATH", fakes.path_with_fakes())
         .env("FAKE_LOG", &fakes.log)
+        .env(
+            "REAL_AMPLIHACK",
+            crate::support::amplihack_bin::amplihack_bin(),
+        )
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env_remove("AMPLIHACK_CLAUDE_PROFILE_ROOT")
         .env_remove("GH_TOKEN")

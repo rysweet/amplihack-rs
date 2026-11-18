@@ -4,14 +4,16 @@ use crate::commands::governor::{self, AdmitRequest, Denied, GovernorArgs};
 mod binary;
 /// Issue #1570: `--context-file` and `--context-from-file`.
 pub(crate) mod context_sources;
+/// Issue #2582: recipe context reaches the runner in a 0600 file when it can.
+mod context_transport;
 mod correlation;
 pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
 /// Issue #1437 — evidence gathering and the marker tables `failure_class` reads.
-mod failure_evidence;
+pub(crate) mod failure_evidence;
 mod failure_markers;
-mod format;
+pub(crate) mod format;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.
 pub(crate) mod limit_patterns;
 mod limit_reset;
@@ -23,6 +25,10 @@ mod recovery;
 pub(crate) mod removed_keys;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
+/// Issue #2096 — each recipe run works in a checkout of its own.
+pub(crate) mod run_checkout;
+/// Issue #1619 — an instance overrides the model tier of one named step.
+pub(crate) mod step_tiers;
 /// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
 pub(crate) mod stop_signal;
 /// Issue #1437 — a failed step's terminating exit status, from the runner's envelope.
@@ -355,7 +361,7 @@ fn run_recipe_with_options(
         Ok(())
     } else {
         failure_class::emit_final_failure_class_marker(&result);
-        Err(exit_error(1))
+        Err(exit_error(termination::failed_run_exit_code(&result)))
     }
 }
 
@@ -480,7 +486,11 @@ fn scalar_to_context_value(value: &Value) -> String {
 }
 
 #[cfg(test)]
+mod tests_autodrive_final_status;
+#[cfg(test)]
 mod tests_autodrive_health_log;
+#[cfg(test)]
+mod tests_autodrive_success;
 #[cfg(test)]
 mod tests_context;
 #[cfg(test)]
@@ -498,9 +508,15 @@ mod tests_limit_reset;
 #[cfg(all(test, unix))]
 mod tests_merge_guard_pin;
 #[cfg(test)]
+mod tests_model_tiers_summary;
+#[cfg(test)]
 mod tests_parent_watch;
 #[cfg(test)]
 mod tests_root_sandbox;
+#[cfg(test)]
+mod tests_run_checkout_trace_vars;
+#[cfg(test)]
+mod tests_step_tiers;
 #[cfg(test)]
 mod tests_teardown;
 #[cfg(test)]
@@ -509,3 +525,6 @@ mod tests_terminal_record;
 mod tests_termination;
 #[cfg(test)]
 mod tests_termination_contract;
+
+#[cfg(all(test, unix))]
+mod test_runner;

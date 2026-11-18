@@ -1,3 +1,10 @@
+---
+title: Run a Recipe End-to-End
+description: Launch a recipe, inspect its result, and distinguish current checkout behavior from planned isolation.
+doc_type: howto
+last_updated: 2026-11-17
+---
+
 # Run a Recipe End-to-End
 
 How to use `amplihack recipe run` to execute a YAML recipe through the Rust CLI
@@ -133,6 +140,42 @@ the terminal status:
 ```text
 amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","status":"success","child_pid":41822,"exit_code":0,"runner_path":"/home/user/.local/bin/recipe-runner-rs"}
 ```
+
+---
+
+## Know where the run works
+
+A recipe run never runs steps in your checkout. Before the first step,
+`amplihack recipe run` copies your committed, staged, unstaged and untracked
+changes into a private repository and a detached checkout under the run
+folder. Steps, agents and hooks run there, and the checkout is removed when
+the run ends. Your index, `HEAD`, branches and Git configuration do not
+change, even when a step runs `git add` or `git commit`.
+
+- `-w` picks the source checkout and the subdirectory steps start in.
+- A context value that is exactly a path in your checkout, such as
+  `-c repo_path=$PWD`, is mapped to the same path in the run's checkout.
+  A path buried inside longer text is refused; pass it as its own value.
+- Ignored files are not copied, except the recipe file itself.
+- Steps read your own Git configuration, so your credential helper,
+  `safe.directory` entries, aliases and filters apply inside the run. An https
+  push or fetch from a step authenticates the same way one in your own shell
+  does, and fails the same way if no helper can answer without a terminal.
+  Your global `user.name` does not change who a workflow commit is attributed
+  to: commit-producing recipes set an explicit identity first, which
+  [Configure workflow commit identity](./configure-workflow-commit-identity.md)
+  covers.
+- `--dry-run` prepares no checkout and writes no run folder.
+- A resumed run gets a fresh checkout.
+- Real runs work the same on every platform. A run starts no tracer and needs
+  no `ptrace` privilege, so it also runs where `ptrace` is denied, such as a
+  container with `CAP_SYS_PTRACE` dropped. No record of the Git commands a run
+  makes is kept.
+
+Commits you want to keep belong in a durable task or PR worktree. Try it in
+[Inspect a local-input snapshot](../tutorials/recipe-checkout-isolation.md);
+the full rules are in the
+[checkout isolation reference](../reference/recipe-checkout-isolation.md).
 
 ---
 
@@ -452,3 +495,4 @@ amplihack recipe run recipe.yaml -c task_description="..." --verbose
 - [Environment Variables](../reference/environment-variables.md) — `AMPLIHACK_CONTEXT_*` and `RECIPE_RUNNER_RS_PATH`
 - [Run amplihack in Non-interactive Mode](./run-in-noninteractive-mode.md) — CI configuration
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How agents are located during recipe execution
+- [Recipe Run and Auto-Drive Checkout Isolation](../reference/recipe-checkout-isolation.md) — The run's own checkout, nested runs and what a run leaves behind

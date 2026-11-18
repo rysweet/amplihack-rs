@@ -24,7 +24,15 @@ fn keys_are_in_documented_order() {
             "recipe.log_dir",
             "recipe.usage_limit_wait",
             "recipe.usage_limit_max_wait_secs",
+            "policy.deny_commands",
             "orchestrator.max_depth",
+            // Issue #1619: per-step model tiers and the small-diff combined
+            // review. Documented in this position in
+            // docs/reference/user-config.md#keys.
+            "model.force",
+            "model.tier_map",
+            "review.combined_small_diff",
+            "review.combined_diff_threshold",
             "governor.enabled",
             "governor.max_concurrency",
             "governor.reserve_points",
@@ -56,7 +64,7 @@ fn no_project_scoped_key_names_a_path() {
 }
 
 #[test]
-fn user_only_keys_are_agent_home_node_log_dir_governor_and_sessions() {
+fn user_only_keys_are_agent_home_node_log_dir_policy_model_review_governor_and_sessions() {
     let user_only: Vec<&str> = KEYS
         .iter()
         .filter(|k| k.scope == Scope::UserOnly)
@@ -70,6 +78,22 @@ fn user_only_keys_are_agent_home_node_log_dir_governor_and_sessions() {
             "node.heap_consent",
             "node.max_old_space_mb",
             "recipe.log_dir",
+            // Issue #2589: a cloned repository must not change what any
+            // harness denies, so the instance additions are user-only.
+            "policy.deny_commands",
+            // Issue #1619: `model.force` names the model every launch asks
+            // for, and `model.tier_map` names the file that drives
+            // amplihack's rewriting of recipe YAML, whose steps run shell
+            // commands. A cloned repository must not choose either (the
+            // reason the review of #1647 gave for `agent.binary`).
+            "model.force",
+            "model.tier_map",
+            // Issue #1619: the review step reads these two from inside the
+            // worktree under review, so a project value would let a cloned
+            // repository decide that its own security and philosophy passes
+            // do not run. Same reason as the two `model.*` keys above.
+            "review.combined_small_diff",
+            "review.combined_diff_threshold",
             "governor.enabled",
             "governor.max_concurrency",
             "governor.reserve_points",
@@ -229,4 +253,261 @@ fn governor_keys_are_user_only_with_documented_ranges_and_defaults() {
     }
     assert!(parse_cli("governor.wait_secs", "0").is_ok());
     assert!(parse_cli("governor.reserve_points", "100").is_ok());
+}
+
+// =========================================================================
+// Issue #1619 (TDD): the model-tier and combined-review settings.
+//
+// Every key here has a live consumer, which is the no-dead-config rule of
+// issue #1606: `model.force` is read on every launch, the two path keys are
+// read when the tier mapping is loaded, and the two `review.*` keys are read
+// by the refactor-review phase's mode step.
+// =========================================================================
+
+#[test]
+fn the_model_tier_keys_exist_with_the_documented_scope_and_variable() {
+    let force = key_def("model.force").expect("model.force is a schema key");
+    assert_eq!(force.scope, Scope::UserOnly);
+    assert_eq!(force.env, Some("AMPLIHACK_FORCE_MODEL"));
+    assert_eq!(force.default, None, "forcing a model is opt-in");
+
+    let map = key_def("model.tier_map").expect("model.tier_map is a schema key");
+    assert_eq!(map.scope, Scope::UserOnly);
+    assert_eq!(map.kind, ValueKind::AbsPath);
+    assert_eq!(
+        map.env, None,
+        "model.tier_map names a file that drives recipe rewriting; it is set deliberately \
+         in the user's own config, not picked up from an inherited environment"
+    );
+}
+
+#[test]
+fn the_combined_review_keys_default_to_todays_behaviour() {
+    let switch = key_def("review.combined_small_diff").expect("a schema key");
+    assert_eq!(
+        switch.scope,
+        Scope::UserOnly,
+        "the review step reads this from inside the worktree under review, so a project \
+         value would let a cloned repository collapse its own security and philosophy \
+         passes into one generalist pass"
+    );
+    assert_eq!(switch.kind, ValueKind::Bool);
+    assert_eq!(
+        switch.default_value(),
+        Some(Value::Bool(false)),
+        "off by default, so the three separate review passes run exactly as they did \
+         before this feature"
+    );
+
+    let threshold = key_def("review.combined_diff_threshold").expect("a schema key");
+    assert_eq!(
+        threshold.scope,
+        Scope::UserOnly,
+        "a project-settable threshold of 100000 makes every diff small, which is the \
+         switch above under another name"
+    );
+    assert_eq!(
+        threshold.default_value(),
+        Some(Value::Int(200)),
+        "changed lines at or below which a diff counts as small"
+    );
+    assert!(
+        matches!(threshold.kind, ValueKind::Int { min: 1, .. }),
+        "a threshold of zero would mean no diff is ever small, which is what turning \
+         the switch off already does: {:?}",
+        threshold.kind
+    );
+}
+
+#[test]
+fn model_force_accepts_a_model_id_and_rejects_anything_that_could_act_as_an_argument() {
+    // The value lands as the argv token right after `--model`, and both codex
+    // and claude carry single-token sandbox-bypass flags
+    // (`--yolo`, `--dangerously-bypass-approvals-and-sandbox`,
+    // `--dangerously-skip-permissions`). It is validated on the raw input,
+    // before any trimming.
+    for good in [
+        "claude-opus-5[1m]",
+        "claude-sonnet-5-5",
+        "claude-sonnet-5.5",
+        "gpt-6.1-sol",
+        "gpt-6.1-sol:high",
+    ] {
+        assert!(
+            parse_cli("model.force", good).is_ok(),
+            "`{good}` must be accepted"
+        );
+    }
+    for bad in [
+        "",
+        " ",
+        " claude-opus-5[1m]",
+        "-s",
+        "--yolo",
+        "--dangerously-skip-permissions",
+        "a b",
+        "a\tb",
+        "a\nb",
+        "a/b",
+        "a\\b",
+        "a;b",
+        "a$b",
+        "a`b",
+        "a'b",
+        "a\"b",
+        "a|b",
+        &"x".repeat(129),
+    ] {
+        assert!(
+            parse_cli("model.force", bad).is_err(),
+            "`{bad:?}` must be rejected as a model id"
+        );
+    }
+}
+
+#[test]
+fn the_model_tier_map_is_held_to_the_same_path_rules_as_every_other_path_key() {
+    assert!(parse_cli("model.tier_map", "/home/x/.amplihack/model-tiers.toml").is_ok());
+    for bad in ["relative/path.toml", "/a/../b", "", "/a\0b"] {
+        assert!(
+            parse_cli("model.tier_map", bad).is_err(),
+            "model.tier_map: `{bad:?}`"
+        );
+    }
+}
+
+#[test]
+fn no_project_file_can_name_the_file_that_rewrites_recipes() {
+    // Stated separately from `no_project_scoped_key_names_a_path` because the
+    // consequence is specific: a project-scoped path key here would let a
+    // cloned repository choose the file that drives amplihack's rewriting of
+    // recipe YAML, whose bash step bodies execute.
+    for name in ["model.force", "model.tier_map"] {
+        assert_eq!(
+            key_def(name).unwrap().scope,
+            Scope::UserOnly,
+            "{name} must never be project-scoped"
+        );
+    }
+}
+
+// --- issue #2589: policy.deny_commands, a list-valued key -------------------
+//
+// Expected additions to the schema:
+//   * `ValueKind::CommandList`
+//   * `Value::List(Vec<String>)`
+//   * `KeyDef { name: "policy.deny_commands", scope: UserOnly,
+//               kind: ValueKind::CommandList, env: None, default: None }`
+//   * `MAX_DENY_COMMANDS`, the bound on how many entries one file may add.
+
+#[test]
+fn the_deny_commands_key_is_user_only_list_valued_and_has_no_variable() {
+    let def = key_def("policy.deny_commands").expect("the key is registered");
+    assert_eq!(def.scope, Scope::UserOnly);
+    assert_eq!(def.kind, ValueKind::CommandList);
+    assert_eq!(
+        def.env, None,
+        "no variable: a deny list that one shell can unset is not one"
+    );
+    assert_eq!(
+        def.default, None,
+        "unset by default; the defaults are in code"
+    );
+    assert!(!def.lower_only);
+}
+
+#[test]
+fn a_list_value_prints_its_entries_on_one_line_for_config_get() {
+    let value = Value::List(vec!["pkill".into(), "tmux kill-server".into()]);
+    assert_eq!(value.bare(), "pkill, tmux kill-server");
+}
+
+#[test]
+fn a_list_value_renders_as_a_toml_array_with_escaped_strings() {
+    let value = Value::List(vec!["a".into(), "b".into()]);
+    assert_eq!(value.to_string(), "[\"a\", \"b\"]");
+    assert_eq!(Value::List(Vec::new()).to_string(), "[]");
+}
+
+/// `config set` writes scalars only (`edit.rs`). Rather than half-write a
+/// list, the command says plainly that the key is set by editing the user
+/// file. Recorded as a follow-up, not a defect.
+#[test]
+fn a_list_key_cannot_be_set_from_the_command_line() {
+    let err = parse_cli("policy.deny_commands", "pkill").unwrap_err();
+    let text = err.to_string();
+    assert!(text.contains("policy.deny_commands"), "{text}");
+    assert!(
+        text.contains("user file") || text.contains("config.toml"),
+        "the error must say where the key is set: {text}"
+    );
+    assert_eq!(err.exit_code(), 2, "a usage error");
+}
+
+#[test]
+fn a_command_list_entry_is_validated_as_a_prefix() {
+    use super::schema::{from_toml, parse_command_list};
+
+    assert_eq!(
+        parse_command_list(&["pkill".to_string(), "tmux kill-server".to_string()]).unwrap(),
+        Value::List(vec!["pkill".into(), "tmux kill-server".into()])
+    );
+    for bad in [
+        vec!["".to_string()],
+        vec!["shell(x)".to_string()],
+        vec!["a\u{0}b".to_string()],
+        vec!["a\nb".to_string()],
+        vec!["x".repeat(200)],
+    ] {
+        assert!(parse_command_list(&bad).is_err(), "{bad:?}");
+    }
+
+    // A TOML value of the wrong shape is rejected with the kind's own
+    // requirement text, never accepted as a one-element list.
+    let doc: toml_edit::DocumentMut = "x = \"pkill\"\ny = [1, 2]\n".parse().unwrap();
+    for name in ["x", "y"] {
+        let item = doc.as_table().get(name).unwrap().as_value().unwrap();
+        assert!(from_toml(ValueKind::CommandList, item).is_err(), "{name}");
+    }
+}
+
+#[test]
+fn a_file_may_not_add_more_entries_than_the_bound() {
+    use super::schema::{MAX_DENY_COMMANDS, parse_command_list};
+    let at_limit: Vec<String> = (0..MAX_DENY_COMMANDS).map(|i| format!("cmd-{i}")).collect();
+    assert!(parse_command_list(&at_limit).is_ok());
+    let over: Vec<String> = (0..MAX_DENY_COMMANDS + 1)
+        .map(|i| format!("cmd-{i}"))
+        .collect();
+    assert!(parse_command_list(&over).is_err());
+}
+
+/// One requirement line stands for every way the value can be rejected, so
+/// it has to name every bound the validator enforces. A user whose entry was
+/// refused for a reason the line omits has nothing to correct.
+#[test]
+fn the_requirement_names_every_bound_the_validator_enforces() {
+    use super::schema::{MAX_DENY_COMMANDS, kind_requirement, parse_command_list};
+    use crate::policy::prefix::{MAX_BYTES, MAX_TOKENS};
+
+    let text = kind_requirement(ValueKind::CommandList);
+    for bound in [MAX_DENY_COMMANDS, MAX_BYTES, MAX_TOKENS] {
+        assert!(
+            text.contains(&bound.to_string()),
+            "the requirement omits {bound}: {text}"
+        );
+    }
+    assert!(
+        text.contains("exactly one space"),
+        "the requirement omits the separator rule: {text}"
+    );
+
+    // Each bound the line names is one the validator actually applies.
+    assert!(parse_command_list(&["x".repeat(MAX_BYTES)]).is_ok());
+    assert!(parse_command_list(&["x".repeat(MAX_BYTES + 1)]).is_err());
+    let words = |n: usize| vec![vec!["a"; n].join(" ")];
+    assert!(parse_command_list(&words(MAX_TOKENS)).is_ok());
+    assert!(parse_command_list(&words(MAX_TOKENS + 1)).is_err());
+    assert!(parse_command_list(&["a  b".to_string()]).is_err());
+    assert!(parse_command_list(&["a\tb".to_string()]).is_err());
 }

@@ -83,6 +83,10 @@ pub(crate) struct ExecLine {
     pub(crate) last: bool,
     /// The most values one variadic `--image` took.
     pub(crate) widest_image: usize,
+    /// Parsed directory options, excluding option values and prompt text.
+    directory_overrides: Vec<String>,
+    /// Unknown or malformed options cannot authorize automatic Git bypass.
+    known_options: bool,
 }
 
 /// Read `args` (what follows `codex`). `Ok(None)`: neither `codex exec` nor
@@ -99,6 +103,8 @@ pub(crate) fn parse_exec_line(args: &[String]) -> Result<Option<ExecLine>> {
         positionals: Vec::new(),
         last: false,
         widest_image: 0,
+        directory_overrides: Vec::new(),
+        known_options: true,
     };
     let mut after_delimiter = false;
     let mut i = 0;
@@ -140,11 +146,13 @@ pub(crate) fn parse_exec_line(args: &[String]) -> Result<Option<ExecLine>> {
             continue;
         }
         let table = line.scope.table();
+        let mut directory_option = false;
         let (arity, attached, name) = if let Some(long) = arg.strip_prefix("--") {
             let (name, inline) = match long.split_once('=') {
                 Some((name, _)) => (name, true),
                 None => (long, false),
             };
+            directory_option = name == "cd";
             let found = table.iter().find(|o| o.0 == name).map(|o| o.2);
             (found, inline, &arg[..2 + name.len()])
         } else {
@@ -159,6 +167,7 @@ pub(crate) fn parse_exec_line(args: &[String]) -> Result<Option<ExecLine>> {
                 match opt {
                     Some(Flag) => continue,
                     Some(a) => {
+                        directory_option = c == 'C';
                         found = Some(a);
                         attached = 1 + k + c.len_utf8() < arg.len();
                     }
@@ -171,6 +180,17 @@ pub(crate) fn parse_exec_line(args: &[String]) -> Result<Option<ExecLine>> {
             }
             (found, attached, name)
         };
+        line.known_options &= arity.is_some() && !(arity == Some(Flag) && attached);
+        if directory_option {
+            let value = if attached {
+                let rest = &arg[name.len()..];
+                rest.strip_prefix('=').unwrap_or(rest)
+            } else {
+                args.get(i + 1).map_or("", String::as_str)
+            };
+            line.known_options &= attached || !value.starts_with('-');
+            line.directory_overrides.push(value.to_owned());
+        }
         if line.scope == Scope::Resume && arg == "--last" {
             line.last = true;
         }
@@ -220,4 +240,49 @@ pub(crate) fn parse_exec_line(args: &[String]) -> Result<Option<ExecLine>> {
         i += 1;
     }
     Ok((line.scope != Scope::Root).then_some(line))
+}
+
+/// Automatic bypass is confined to the validated starting directory. Parse
+/// with the prompt reader so option values, short clusters, subcommands and
+/// `--` have the same meaning. Uncertain argv only withholds injection; the
+/// caller still forwards the original arguments for Codex to handle.
+///
+/// Returns `false` for every argv without an `exec`/`e` subcommand (including
+/// top-level `codex review`), and touches the filesystem only when the argv
+/// carries a `--cd`/`-C` value. The launcher calls this before the ownership
+/// scan, so interactive launches never read review manifests (#2788).
+pub(super) fn directory_override_matches(args: &[String], launch_dir: &std::path::Path) -> bool {
+    let Ok(Some(line)) = parse_exec_line(args) else {
+        return false;
+    };
+    if line.scope == Scope::TopReview || !line.known_options {
+        return false;
+    }
+    match line.directory_overrides.as_slice() {
+        [] => true,
+        [directory] if !directory.is_empty() && !directory.starts_with('~') => {
+            let Ok(launch) = launch_dir.canonicalize() else {
+                return false;
+            };
+            let selected = launch.join(directory);
+            // Codex normalizes parent components before using its working
+            // root, whereas filesystem canonicalization follows symlinks
+            // first. Require both interpretations to stay in the launch.
+            let mut logical = std::path::PathBuf::new();
+            for component in selected.components() {
+                match component {
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        logical.pop();
+                    }
+                    other => logical.push(other.as_os_str()),
+                }
+            }
+            selected.canonicalize().ok().as_ref() == Some(&launch)
+                && logical.canonicalize().ok().as_ref() == Some(&launch)
+        }
+        // Repeated overrides and home expansion are not proven confined;
+        // leave normal Codex validation and caller bypass flags intact.
+        _ => false,
+    }
 }

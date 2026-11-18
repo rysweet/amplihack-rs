@@ -1,8 +1,20 @@
+---
+title: Recipe Runner Logging Reference
+description: Progress output, correlation, and the JSON and JSONL a recipe run emits.
+doc_type: reference
+last_updated: 2026-11-17
+---
+
 # Recipe Runner Logging Reference
 
 Reference for live recipe progress, heartbeat events, bounded subprocess output
 snippets, run correlation pointers, and additive JSON fields emitted by
 `amplihack recipe run`.
+
+A run logs its own progress. It does not trace, journal or attribute the Git
+commands its runner, steps, agents and hooks launch, on any platform. What
+keeps a run out of your checkout is the private clone it works in, described in
+[Recipe run and auto-drive checkout isolation](recipe-checkout-isolation.md).
 
 ## Contents
 
@@ -14,6 +26,9 @@ snippets, run correlation pointers, and additive JSON fields emitted by
 - [Failure context](#failure-context)
 - [JSON result fields](#json-result-fields)
 - [JSONL log events](#jsonl-log-events)
+- [Git commands a run makes](#git-commands-a-run-makes)
+  - [Caller Git trace variables are cleared](#caller-git-trace-variables-are-cleared)
+  - [Run directories from earlier releases](#run-directories-from-earlier-releases)
 - [Configuration](#configuration)
 - [Examples](#examples)
 
@@ -292,6 +307,83 @@ Output snippet event:
 }
 ```
 
+## Git commands a run makes
+
+A run keeps no record of the Git commands its runner, steps, agents and hooks
+launch. Nothing traces, journals or attributes them, on Linux or anywhere
+else. There is no `git-commands.jsonl`, no `git-trace2/` directory, no
+`git-recording.json` and no `diagnostics/git/` directory in a run folder, and
+`run.json` carries no `git_recording` field.
+
+What keeps a run out of your checkout is the private clone it works in, not a
+record of what it did. See
+[Recipe run and auto-drive checkout isolation](recipe-checkout-isolation.md).
+
+### Caller Git trace variables are cleared
+
+A run clears `GIT_TRACE2`, `GIT_TRACE2_EVENT`, `GIT_TRACE2_PERF`,
+`GIT_TRACE2_CONFIG_PARAMS`, `GIT_TRACE2_REDACT` and `GIT_TRACE2_ENV_VARS`
+from the runner's environment, and sets none of them itself. Exporting one
+before `amplihack recipe run` therefore does not trace the run's Git
+commands; it has no effect on them at all.
+
+This is deliberate, and it is a credential boundary rather than a tidiness
+rule. Git redacts `Authorization:` headers in its Trace2 output by default,
+and `GIT_TRACE2_REDACT=0` turns that redaction off. An environment carrying
+both a `GIT_TRACE2*` target and `GIT_TRACE2_REDACT=0` would otherwise write
+the auth headers of the run's Git traffic to a target chosen outside the run.
+Full command lines can carry secrets the same way, so the whole namespace is
+cleared rather than filtered.
+
+The clearing is of the environment only. A run reads the user's own global and
+system Git configuration, so a `trace2.normalTarget`, `trace2.eventTarget` or
+`trace2.perfTarget` set in `~/.gitconfig` does take effect inside a run and
+writes to the target it names, and `trace2.configParams` and `trace2.envVars`
+widen what is written there. That is the user's own setting rather than an
+inherited one, and the boundary this section is about survives it: redaction
+has no configuration equivalent, so `GIT_TRACE2_REDACT` being cleared leaves
+Git's default redaction of `Authorization:` headers in force whichever way the
+target was chosen. See
+[paths and Git configuration](recipe-checkout-isolation.md#paths-and-git-configuration).
+
+To trace Git inside a run, set the variable where the Git command actually
+runs — in the recipe step itself — so the target is one you chose for that
+step and the trace does not follow every other process in the run:
+
+```yaml
+- id: trace-one-step
+  type: bash
+  command: |
+    mkdir -p "$PWD/trace2"
+    GIT_TRACE2_EVENT="$PWD/trace2" git fetch --prune
+```
+
+The target can be a file or a directory, and Git treats them differently: a
+path that names an existing directory gets one trace file per Git process,
+while any other path is appended to as a single file. Create the directory
+first, as above, if you want the per-process form.
+
+Trace2 output written this way is Git's, not amplihack's. Nothing reads it
+back and it has no effect on the run's outcome, but it can hold full command
+lines, so give it a target only you can read.
+
+### Run directories from earlier releases
+
+A run folder written before this release can still hold `git-commands.jsonl`,
+`git-trace2/`, `git-recording.json` or `diagnostics/`, and its `run.json` can
+still carry a `git_recording` object. Nothing writes or reads them now, and a
+`run.json` that carries the field still parses.
+
+Nothing removes them either. They sit at the top level of the run folder,
+outside the disposable `runtime/` directory the runner deletes when a run
+ends, and they belong to none of the categories the cleanup sweep collects
+(`run-tmp`, `run-worktree`, `run-target`, `run-exec`). Run folders themselves
+are never pruned, so an old recording stays until you delete its folder
+yourself. `git-commands.jsonl` recorded the full command line of every Git
+process the run started, which can carry credentials, so treat an old run
+folder as readable only by you. See
+[Clean up after recipe runs](../howto/clean-up-after-recipe-runs.md).
+
 ## Configuration
 
 Defaults are conservative and bounded. Configure them through environment
@@ -363,3 +455,4 @@ jq '.step_results[]
 - [RecipeResult Reference](./recipe-result.md) - Final result schema
 - [amplihack recipe Reference](./recipe-command.md) - Command-line flags
 - [Recipe Runner Architecture](../concepts/recipe-runner-architecture.md) - CLI and runner responsibility split
+- [Recipe Run and Auto-Drive Checkout Isolation](./recipe-checkout-isolation.md) - The run's own checkout and the auto-drive review directory

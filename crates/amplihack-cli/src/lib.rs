@@ -51,9 +51,15 @@ pub mod launcher_context;
 pub mod memory_config;
 pub mod nesting;
 pub(crate) mod path_conflicts;
+/// Issue #2589: the single dangerous-command policy list and its three
+/// per-harness renderings. Consumed by `commands::install` and
+/// `commands::launch`, so it sits at crate level.
+pub(crate) mod policy;
 #[cfg(test)]
 mod remote_cli_tests;
 pub mod resolve_bundle_asset;
+/// Issue #2535: operator guidance for recipe runs (`recipe guide`).
+pub(crate) mod run_guidance;
 pub mod runtime_assets;
 pub(crate) mod rust_toolchain;
 pub mod rust_trial;

@@ -19,6 +19,10 @@ Hooks are never bypassed and never weakened. `--no-verify`, `SKIP=`,
 suppressions are forbidden, and a round in which the agent makes such a
 change, or moves HEAD, the branch's refs or the stash, ends the step.
 
+If the push step still fails after this loop, the
+[push failure recovery](./recipe-push-failure-recovery.md) sub-recipe judges
+the cause and, for an environment cause, makes one clean-environment push.
+
 This page concerns **git hooks**. It has nothing to do with Claude Code hooks
 (`settings.json` `hooks`), which are described in
 [Hook Specifications](./hook-specifications.md).
@@ -650,7 +654,7 @@ inputs as arguments:
   the same `usage_limit_failure` check as `autodrive_loop.sh` on the
   evaluator's exit code and output: a non-zero exit with the runner's
   `usage_limit` failure-class marker gives `USAGE_LIMIT`, never `STUCK`. See
-  [Usage limits are not STUCK](auto-drive-to-merge.md#usage-limits-are-not-stuck).
+  [Usage limits are not STUCK](auto-drive-to-merge.md#usage-limits-are-not-stuck-or-hand-off).
 
 **Return codes:**
 
@@ -886,6 +890,9 @@ cargo test --locked -p amplihack --test integration issue_1671_hook_rejection_re
 
 ## Related references
 
+- [Recipe Push Failure Recovery](./recipe-push-failure-recovery.md): what
+  happens after step-15 or step-18c still fails; an agent judges
+  whether the change or the environment caused it, and a gate checks the push
 - [Loop-Health Evaluator Reference](./loop-health-evaluator.md): the
   `CONTINUE`/`DONE`/`STUCK` contract the loop relies on
 - [Auto Drive To Merge Reference](./auto-drive-to-merge.md): the

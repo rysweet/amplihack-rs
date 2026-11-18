@@ -95,7 +95,7 @@ ANSI colour codes are always emitted: green for `✓` lines, red for `✗` lines
 
 ## Effective config
 
-After the summary line, `doctor` prints an `Effective config` section. Its rows are the same as `amplihack config list --show-origin`: every config key in schema order, as `key = value  # origin`. Any problem found in a config file follows in a `Config problems:` block.
+After the summary line, `doctor` prints an `Effective config` section. Its rows are the same as `amplihack config list --show-origin`: every config key in schema order, as `key = value  # origin`. The first sample below is abridged at the marked line; the [full-output example](#example-all-checks-pass) lists every key. Any problem found in a config file follows in a `Config problems:` block.
 
 ```
 Effective config:
@@ -109,6 +109,7 @@ Effective config:
   recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
   recipe.log_dir = (unset)  # default
   orchestrator.max_depth = 2  # project (/home/alice/src/myapp/.amplihack/config.toml)
+  ... (model.*, review.*, governor.* and sessions.* follow, in schema order)
 
 Config problems:
   /home/alice/src/myapp/.amplihack/config.toml: paths.home: can only be set in the user file; ignored
@@ -149,6 +150,18 @@ Effective config:
   recipe.usage_limit_wait = true  # default
   recipe.usage_limit_max_wait_secs = (unset)  # default
   orchestrator.max_depth = 3  # default
+  model.force = (unset)  # default
+  model.tier_map = (unset)  # default
+  review.combined_small_diff = false  # default
+  review.combined_diff_threshold = 200  # default
+  governor.enabled = false  # default
+  governor.max_concurrency = 4  # default
+  governor.reserve_points = 10  # default
+  governor.step = 1  # default
+  governor.band_pct = 10  # default
+  governor.eval_interval_secs = 60  # default
+  governor.wait_secs = 600  # default
+  governor.max_reading_age_secs = 3600  # default
   sessions.daily_archive = true  # default
   sessions.archive_days = 3  # default
   sessions.archive_dest = (unset)  # default

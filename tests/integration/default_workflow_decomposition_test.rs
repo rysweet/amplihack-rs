@@ -25,7 +25,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use tempfile::TempDir;
 
 const BRICK_LIMIT: usize = 400;
@@ -120,15 +120,56 @@ fn load_yaml(name: &str) -> &'static serde_yaml::Value {
     }
 }
 
+/// The shell a bash step runs.
+///
+/// Issue #1619: a step whose body was extracted into
+/// `amplifier-bundle/tools/` for the brick budget runs that file, so the body
+/// every assertion below reads is the file's. The call-out is recognised by
+/// the one line that names the script, and the script must exist: a step that
+/// calls a file that is not there would otherwise read as a step with no
+/// requirements at all.
 fn step_command(recipe: &str, step_id: &str) -> &'static str {
-    load(recipe)
+    let inline = load(recipe)
         .steps
         .iter()
         .find(|step| step.id == step_id)
         .unwrap_or_else(|| panic!("{recipe}.yaml missing step {step_id}"))
         .command
         .as_deref()
-        .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must be a bash step"))
+        .unwrap_or_else(|| panic!("{recipe}.yaml step {step_id} must be a bash step"));
+    match extracted_body(inline) {
+        Some(body) => body,
+        None => inline,
+    }
+}
+
+/// The text of the `amplifier-bundle/tools/` script a call-out names, or
+/// `None` when the body is inline.
+fn extracted_body(inline: &str) -> Option<&'static str> {
+    static BODIES: LazyLock<Mutex<HashMap<String, &'static str>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    let marker = "# The body of this step lives in amplifier-bundle/tools/";
+    let line = inline
+        .lines()
+        .find(|line| line.trim_start().starts_with(marker))?;
+    let name = line
+        .trim_end()
+        .trim_end_matches(',')
+        .rsplit('/')
+        .next()
+        .expect("a call-out names its script");
+    let mut bodies = BODIES.lock().expect("extracted body cache");
+    if let Some(body) = bodies.get(name) {
+        return Some(body);
+    }
+    let path = recipes_dir().join("..").join("tools").join(name);
+    let text: &'static str = Box::leak(
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+            .into_boxed_str(),
+    );
+    bodies.insert(name.to_string(), text);
+    Some(text)
 }
 
 struct StepRun {
@@ -249,9 +290,13 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Phase 4: workflow-refactor-review (steps 09-11b)
     "step-09-refactor",
     "step-09b-optimize",
+    // Issue #1619: a small diff may have its three review passes as one.
+    // `review-mode` decides; off by default, so all three still run.
+    "review-mode",
     "step-10-pre-commit-review",
     "step-10b-security-review",
     "step-10c-philosophy-check",
+    "step-10d-combined-review",
     "step-11-incorporate-feedback",
     "step-11b-implement-feedback",
     "checkpoint-after-review-feedback",
@@ -266,6 +311,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-14c-sync-package-json",
     "step-14g-artifact-guard",
     "step-15-commit-push",
+    // Issue #2471: agentic recovery after a failed push (push-failure-recovery).
+    "step-15-push-recovery",
     "step-16-create-draft-pr",
     "step-16b-outside-in-fix-loop",
     // Phase 7: workflow-pr-review (steps 17a-19d)
@@ -278,6 +325,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-18a-analyze-feedback",
     "step-18b-implement-feedback",
     "step-18c-push-feedback-changes",
+    "step-18c-push-recovery",
     "step-18d-respond-to-comments",
     "step-18e-verification-gate",
     "step-19a-philosophy-check",
@@ -285,6 +333,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-19c-zero-bs-verification",
     "step-19d-verification-gate",
     // Phase 8: workflow-finalize (terminal gate + steps 20-22b + complete)
+    // Issue #2539: the run's step-recovery directory, checked or created first.
+    "step-recovery-init",
     "finalize-terminal-state",
     // Issue #1714: fast-forward to an accepted PR head before any agent edits.
     "step-20-sync-pr-head",
@@ -303,6 +353,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "agentic-finalizer",
     "finalizer-step-status",
     "validate-agentic-finalization",
+    // Issue #2539: a recorded handoff ends the run here, before completion.
+    "step-recovery-report",
     "workflow-complete",
 ];
 
@@ -328,6 +380,7 @@ const PR_REVIEW_STEP_INVENTORY: &[&str] = &[
     "step-18a-analyze-feedback",
     "step-18b-implement-feedback",
     "step-18c-push-feedback-changes",
+    "step-18c-push-recovery",
     "step-18d-respond-to-comments",
     "step-18e-verification-gate",
     "step-19a-philosophy-check",
