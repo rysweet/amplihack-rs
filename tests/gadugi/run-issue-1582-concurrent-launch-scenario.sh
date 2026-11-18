@@ -284,16 +284,15 @@ show_logs() {
   done
 }
 
-tokens=""
+# Each reader writes exactly one token. The first `exited` fails the scenario
+# at once, without waiting for the other launch's token.
 for _ in 1 2; do
   read -r -u "$tok" token || die "the token FIFO closed"
-  tokens="$tokens $token"
+  if [ "$token" != waiting ]; then
+    show_logs
+    die "a launch ended without waiting for the install lock, so it never decided to re-stage"
+  fi
 done
-if [ "$tokens" != " waiting waiting" ]; then
-  echo "tokens:$tokens"
-  show_logs
-  die "a launch ended without waiting for the install lock, so it never decided to re-stage"
-fi
 echo "both launches are waiting for the install lock"
 
 # --- 4. release the lock and wait for both launches --------------------------

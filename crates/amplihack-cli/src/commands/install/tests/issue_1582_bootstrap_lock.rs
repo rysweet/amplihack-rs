@@ -26,6 +26,28 @@ use std::fs;
 use std::sync::Barrier;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+/// A notice that counts the writes made without the install lock, so AC4 can
+/// tell Guard #2 under the lock from a stamp check made before taking it.
+#[derive(Default)]
+struct LockAwareNotice {
+    text: Vec<u8>,
+    writes_without_lock: u32,
+}
+
+impl std::io::Write for LockAwareNotice {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if !install_lock::held_by_current_thread() {
+            self.writes_without_lock += 1;
+        }
+        self.text.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// AC3. Two bootstraps on one home both find the assets missing before either
 /// takes the lock. The barrier holds each thread until both have made that
 /// unlocked decision, which is exactly the race from the 12 Nov incident.
@@ -143,7 +165,7 @@ fn newer_stamp_found_under_the_lock(bypass: bool) {
     let installs = Cell::new(0u32);
     let mut checks = 0u32;
     let mut before = None;
-    let mut notice = Vec::new();
+    let mut notice = LockAwareNotice::default();
     let result = ensure_framework_installed_using(
         &mut notice,
         || {
@@ -186,7 +208,12 @@ fn newer_stamp_found_under_the_lock(bypass: bool) {
         "after finding a v{newer} stamp under the lock the bootstrap must change nothing \
          under HOME: no staged assets, no slash commands, no settings.json, no stamp"
     );
-    let notice = String::from_utf8_lossy(&notice);
+    assert_eq!(
+        notice.writes_without_lock, 0,
+        "the warning must come from Guard #2 under the lock, not from a stamp check \
+         made before taking it"
+    );
+    let notice = String::from_utf8_lossy(&notice.text);
     if bypass {
         assert_eq!(
             notice, "",
@@ -208,33 +235,73 @@ fn a_newer_stamp_found_under_the_lock_stops_the_bootstrap_under_the_bypass() {
 }
 
 /// AC8. A launch whose assets are complete decides that without the lock: it
-/// neither waits behind an unrelated install nor creates the lock file.
+/// neither waits behind an unrelated install nor creates the lock file. The
+/// whole bootstrap runs, so a lock taken by any later step fails here too.
 #[test]
 fn a_launch_with_complete_assets_takes_no_lock_and_installs_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path();
-    let _env = IsolatedHome::new(home);
+    let fixture = tempfile::tempdir().unwrap();
+    let hooks_stub = create_exe_stub(&fixture.path().join("stub_bin"), "amplihack-hooks");
+    let mut env = IsolatedHome::new(home);
+    env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+    env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
     assert_home_is(home);
     create_minimal_staged_assets(home);
+    version_stamp::write_installed_version(crate::VERSION).unwrap();
     let lock = install_lock::lock_path(home);
     assert!(!lock.exists(), "precondition: no install lock file yet");
 
     let installs = Cell::new(0u32);
-    let mut notice = Vec::new();
-    let outcome = restage_framework_if_needed(
-        &mut notice,
-        framework_restage_needed_now,
-        counting_installer(&installs),
-    )
-    .expect("a complete install needs no re-stage");
+    crate::freshness::with_provider("claude", || {
+        ensure_framework_installed_using(
+            &mut Vec::new(),
+            framework_restage_needed_now,
+            counting_installer(&installs),
+        )
+    })
+    .expect("a launch with complete assets must succeed");
 
-    assert_eq!(outcome, LockedRestage::NotNeeded);
     assert_eq!(installs.get(), 0, "complete assets were re-staged");
-    assert_eq!(String::from_utf8_lossy(&notice), "");
     assert!(
         !lock.exists(),
         "a launch with complete assets must not take the install lock"
     );
+}
+
+/// `AMPLIHACK_SKIP_AUTO_INSTALL` stops startup self-heal only. The shared
+/// helper never reads it, so the bootstrap still re-stages missing assets
+/// under it, with the lock held and without a notice.
+#[test]
+fn the_bypass_does_not_stop_the_bootstrap_restage() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let mut env = IsolatedHome::new(home);
+    env.set("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
+    assert_home_is(home);
+    assert!(
+        framework_restage_needed_now().unwrap(),
+        "precondition: an empty home needs a re-stage"
+    );
+
+    let installs = Cell::new(0u32);
+    let mut notice = Vec::new();
+    let outcome = restage_framework_if_needed(&mut notice, framework_restage_needed_now, || {
+        assert!(install_lock::held_by_current_thread());
+        installs.set(installs.get() + 1);
+        create_minimal_staged_assets(home);
+        Ok(())
+    })
+    .expect("the bootstrap's re-stage under the bypass must succeed");
+
+    assert_eq!(outcome, LockedRestage::Installed);
+    assert_eq!(
+        installs.get(),
+        1,
+        "AMPLIHACK_SKIP_AUTO_INSTALL must not stop the bootstrap's re-stage"
+    );
+    assert_eq!(String::from_utf8_lossy(&notice), "");
+    assert!(!framework_restage_needed_now().unwrap());
 }
 
 /// The shared helper's contract, as self-heal and the bootstrap rely on it:

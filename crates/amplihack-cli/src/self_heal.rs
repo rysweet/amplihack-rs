@@ -436,8 +436,8 @@ pub(crate) enum LockedRestage {
 /// shared by startup self-heal and the launch bootstrap (issue #1582).
 ///
 /// Under the install lock, in this order:
-/// 1. re-reads the stamp (quietly: the caller's first read already reported a
-///    malformed one);
+/// 1. re-reads the stamp (quietly: startup self-heal's first read, earlier in
+///    the same process, reports a malformed one);
 /// 2. Issue #1526 Guard #2: when the stamp is now newer than this binary, a
 ///    newer install finished while this process waited, so it writes the
 ///    downgrade warning and returns [`LockedRestage::NewerInstalled`];
