@@ -1309,3 +1309,138 @@ fn container_boundary_requires_restricted_identity_no_capabilities_and_read_only
     fs::write(&sentinel, b"host").unwrap();
     assert!(environment::observe_container_boundary(&sentinel).is_err());
 }
+
+#[test]
+fn hosting_rejects_unsupported_methods_queries_and_trailing_arguments_with_harness_evidence() {
+    let repo = Repository::published();
+    let mut hosting = repo.hosting();
+    for args in [
+        vec!["api", "user", "--method", "DELETE"],
+        vec![
+            "api",
+            "graphql",
+            "-f",
+            "query=mutation { deleteRepository(input:{repositoryId:\"x\"}){clientMutationId}}",
+        ],
+        vec!["api", "user", "trailing"],
+        vec!["auth", "status", "trailing"],
+        vec!["pr", "view", "1", "trailing"],
+        vec!["pr", "create", "--unknown"],
+        vec!["api", "repos/fixture/project/unexpected/comments"],
+        vec!["api", "repos/fixture/project/actions/runs/unexpected"],
+        vec!["api", "user", "--method"],
+        vec!["api", "user", "--method=GET", "--method=DELETE"],
+    ] {
+        let before = fs::read(hosting.path()).unwrap();
+        assert!(hosting.invoke(&repo.checkout, &args).is_err(), "{args:?}");
+        assert_eq!(before, fs::read(hosting.path()).unwrap());
+    }
+    assert!(fs::read_dir(&repo.case.evidence).unwrap().any(|e| {
+        e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("fixture-error-hosting-")
+    }));
+}
+
+#[test]
+fn closed_hosting_grammar_accepts_every_supported_command_and_endpoint() {
+    let sha = "0".repeat(40);
+    let endpoint = format!("repos/{{owner}}/{{repo}}/commits/{sha}/check-runs?filter=all");
+    let identity = format!("query={}", hosting::contract::IDENTITY_QUERY);
+    let threads = format!("query={}", hosting::contract::THREADS_QUERY);
+    let calls = [
+        vec!["auth", "status", "--hostname", "github.com"],
+        vec!["api", "user", "-X", "GET"],
+        vec![
+            "api",
+            "graphql",
+            "--hostname",
+            "github.com",
+            "-f",
+            "owner=fixture",
+            "-f",
+            "name=project",
+            "-f",
+            &identity,
+        ],
+        vec![
+            "api",
+            "graphql",
+            "--paginate",
+            "-F",
+            "pr=1",
+            "-F",
+            "owner={owner}",
+            "-F",
+            "name={repo}",
+            "-f",
+            &threads,
+        ],
+        vec!["api", "--paginate", &endpoint],
+        vec!["repo", "view", "--json", "nameWithOwner"],
+        vec!["issue", "view", "7", "--json", "body"],
+        vec![
+            "pr",
+            "create",
+            "--base=main",
+            "--title",
+            "Answer",
+            "--body",
+            "Closes #7",
+            "--draft",
+        ],
+        vec![
+            "pr",
+            "list",
+            "--head",
+            "feat/answer",
+            "--state",
+            "open",
+            "--limit",
+            "10",
+            "--json",
+            "number",
+        ],
+        vec![
+            "pr",
+            "view",
+            "1",
+            "-R",
+            "fixture/project",
+            "--json",
+            "headRefOid",
+            "-q",
+            ".headRefOid",
+        ],
+        vec!["pr", "checks", "1", "--required"],
+        vec!["pr", "merge", "1", "--squash", "--match-head-commit", &sha],
+        vec!["pr", "comment", "1", "--body", "review"],
+        vec!["pr", "edit", "1", "--body-file", "body.md"],
+        vec!["pr", "review", "1", "--approve", "--body", "review"],
+        vec!["pr", "ready", "1"],
+    ];
+    for args in calls {
+        assert!(
+            hosting::contract::validate(&args, "fixture/project").is_ok(),
+            "{args:?}"
+        );
+    }
+    for suffix in [
+        "branches/main",
+        "branches/main/protection",
+        "branches/main/protection/required_pull_request_reviews",
+        "rules/branches/main",
+        "actions/workflows",
+        "actions/runs",
+        "contents/.github/workflows",
+        "issues/1/comments",
+        "pulls/1/reviews",
+    ] {
+        let endpoint = format!("repos/fixture/project/{suffix}");
+        assert!(
+            hosting::contract::validate(&["api", &endpoint], "fixture/project").is_ok(),
+            "{endpoint}"
+        );
+    }
+}

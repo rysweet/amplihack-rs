@@ -1,4 +1,7 @@
 //! Stateful local hosting fixture. Reads never advance pending checks.
+#[path = "hosting_contract.rs"]
+pub mod contract;
+
 use super::environment::{confined_path, observe_git};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -211,12 +214,21 @@ impl HostingStore {
             .open(self.path.with_extension("calls.jsonl"))?;
         serde_json::to_writer(&mut log, &invocation)?;
         writeln!(log)?;
-        if let Some(repo) = option(args, "--repo").or_else(|| option(args, "-R")) {
-            ensure!(
-                repo == self.state.repository,
-                "wrong hosting repository: {repo}"
-            );
-        }
+        let validated = contract::validate(args, &self.state.repository).inspect_err(|error| {
+            let marker = self
+                .path
+                .parent()
+                .expect("hosting state parent")
+                .join(format!(
+                    "fixture-error-hosting-{}.txt",
+                    uuid::Uuid::new_v4()
+                ));
+            if let Err(record_error) = fs::write(&marker, format!("{error:#}\n")) {
+                eprintln!("cannot record hosting harness error: {record_error}");
+            }
+        })?;
+        let args: Vec<&str> = validated.iter().map(String::as_str).collect();
+        let args = args.as_slice();
         // gh expands these documented repository placeholders and accepts its
         // pagination flag before or after the endpoint. Keep the original call
         // in the invocation log; normalize only for this fixture's dispatch.

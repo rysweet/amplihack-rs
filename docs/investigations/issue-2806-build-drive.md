@@ -260,3 +260,10 @@ probes require an absent host-only sentinel, the restricted identity, zero
 capability sets, `NoNewPrivs: 1`, a read-only root mount, loopback-only interfaces
 and a failed external connection; raw status and mount observations are retained
 in isolation-boundary.json. Container scenarios remain CI-only.
+
+Hosting dispatch now uses a closed argument grammar before any response or state
+mutation. It rejects unknown flags, trailing arguments, duplicate options, REST
+writes, unrelated endpoints/query parameters and GraphQL operations other than
+the exact identity/read-thread queries used by these recipes. Rejections record
+a fixture harness error as well as returning failure. Supported option aliases
+and native `--key=value` syntax remain covered by positive contract tests.
