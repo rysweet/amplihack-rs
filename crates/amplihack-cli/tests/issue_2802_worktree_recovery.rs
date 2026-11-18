@@ -160,6 +160,9 @@ impl Fixture {
                 f.source.to_str().unwrap(),
             ],
         );
+        // GitHub accepts repository URLs with and without .git. Preserve
+        // both spellings for a fetch from headRepository.url or origin.
+        std::os::unix::fs::symlink("project.git", f.source.with_extension("")).unwrap();
         // Clone the caller BEFORE publishing the PR head: its later private
         // clone cannot obtain that object from the operator's object store.
         f.git(
@@ -614,18 +617,20 @@ printf '%s\n' "$*" >> "$root/gh.log"
 kind="${1:-} ${2:-}"
 shift 2 || exit 2
 filter='.'
+repository=fixture/project
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --jq|-q) filter="$2"; shift 2 ;;
     --json|--repo|-R|--hostname|--state|--head|--base|--limit) shift 2 ;;
     --*) echo "fixture gh: unsupported option $1" >&2; exit 2 ;;
+    fixture/project|contributor/project) repository="$1"; shift ;;
     *) shift ;;
   esac
 done
 case "$kind" in
   'pr view') jq -cr "$filter" "$root/pr.json" ;;
   'pr list') jq -cr "[select(.state == \"OPEN\")] | $filter" "$root/pr.json" ;;
-  'repo view') jq -cn '{name:"project",nameWithOwner:"fixture/project",url:"https://github.com/fixture/project",owner:{login:"fixture"},defaultBranchRef:{name:"main"}}' | jq -cr "$filter" ;;
+  'repo view') jq -cn --arg repository "$repository" '{name:"project",nameWithOwner:$repository,url:("https://github.com/"+$repository),owner:{login:($repository|split("/")[0])},defaultBranchRef:{name:"main"}}' | jq -cr "$filter" ;;
   'auth status') echo 'fixture: metadata reads available' ;;
   *) echo "fixture gh: unsupported operation $kind" >&2; exit 2 ;;
 esac
