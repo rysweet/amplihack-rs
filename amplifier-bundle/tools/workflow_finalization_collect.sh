@@ -128,9 +128,15 @@ collect_evidence() {
   repo_path="$(workflow_finalization_metadata repo_path || :)"
   worktree_path="$target_dir"
   observed_phases="workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-refactor-review,workflow-precommit-test,workflow-publish,workflow-pr-review,workflow-finalize"
-  operations="$(workflow_finalization_operations)"
+  context_invalid=false
+  if ! operations="$(workflow_finalization_operations)"; then
+    # Preserve a complete conservative report when selected context is invalid.
+    # Readers already emitted the error; validation must retain that failure.
+    context_invalid=true
+    operations='{"publication":null,"readiness":null}'
+  fi
   {
-    printf '{"operations":%s,' "$operations"
+    printf '{"context_invalid":%s,"operations":%s,' "$context_invalid" "$operations"
     separator=''
     for field in schema_version repo_path worktree_path repo_valid branch_name head_sha base_ref dirty_worktree meaningful_diff commits_ahead missing_tooling remote_host_type github_remote gh_required pr_url pr_number publish_status implementation_completed verification_completed publish_state_reached terminal_no_op allow_no_op prior_terminal_state prior_terminal_success prior_terminal_reason branch_diff_status observed_phases; do
       printf '%s"%s":' "$separator" "$field"
@@ -139,6 +145,7 @@ collect_evidence() {
     done
     printf '}'
   } | jq '
+    .context_invalid as $context_invalid |
     .operations as $operations |
     .schema_version as $schema_version |
     .repo_path as $repo_path |
@@ -169,6 +176,7 @@ collect_evidence() {
     .observed_phases as $observed_phases |
     {
       schema_version: ($schema_version | tonumber),
+      context_invalid: $context_invalid,
       operations: $operations,
       git: {
         repo_path: $repo_path,

@@ -89,6 +89,8 @@ fn retry_diagnostics_redact_all_publishing_credential_formats_and_controls() {
         "sk-ABCDEFGHIJKLMNOPQRSTUVWX",
         "AKIAABCDEFGHIJKLMNOP",
         "ASIAABCDEFGHIJKLMNOP",
+        "password=FAKEJQSECRET",
+        "secret=FAKEASSIGNMENT",
         "AKIAABCDEFGHIJKLMNOP ASIAABCDEFGHIJKLMNOP",
         "https://user:pass@github.com/private",
     ] {

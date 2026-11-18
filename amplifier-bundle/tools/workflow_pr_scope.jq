@@ -49,24 +49,35 @@ def owner_name:
 def repo_name:
   (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // "");
 def candidate_checks:
+  def string_or_null: . == null or type == "string";
+  def strings($fields): . as $pr | all($fields[]; $pr[.] | string_or_null);
+  def number_or_null: . == null or (type == "number" and . > 0 and . == floor);
+  def bool_or_null: . == null or type == "boolean";
+  def valid_repository:
+    (.headRepository == null or
+      ((.headRepository | type) == "object" and (.headRepository | strings(["name","nameWithOwner"])))) and
+    (.headRepositoryOwner == null or (.headRepositoryOwner | type) == "string" or
+      ((.headRepositoryOwner | type) == "object" and (.headRepositoryOwner | strings(["login","name"]))));
   def text: ((.title // "") + " " + (.body // ""));
   def has_token($token): text | contains($token);
+  # Malformed fields exclude the candidate, while independent type-safe checks
+  # still explain head/base/identity mismatches. Never retain malformed values.
   candidate_validation_exclusions as $invalid |
-  if ($invalid | length) > 0 then {primary:$invalid,secondary:[]}
-  else {primary:[
-    check("head branch"; $headRefName; .headRefName; (.headRefName // "") == $headRefName),
-    check("base branch"; $baseRefName; .baseRefName; (.baseRefName // "") == $baseRefName),
-    check("cross repository"; false; .isCrossRepository; (.isCrossRepository // false) == false),
-    check("repository"; $repo; (owner_name + "/" + repo_name); (owner_name + "/" + repo_name) == $repo),
-    (if $prNumber != "" then check("PR number"; $prNumber; .number; ((.number // "") | tostring) == $prNumber) else empty end),
-    (if $prUrl != "" then check("PR URL"; $prUrl; .url; (.url // "") == $prUrl) else empty end)
-  ], secondary:[
-    (if $headRefOid != "" then check("head SHA"; $headRefOid; .headRefOid; (.headRefOid // "") == $headRefOid) else empty end),
-    (if $expected_pr_title_prefix != "" then check("title prefix"; $expected_pr_title_prefix; .title; ((.title // "") | startswith($expected_pr_title_prefix))) else empty end),
-    (if $created_after != "" then check("created-after"; $created_after; .createdAt; (.createdAt // "") >= $created_after) else empty end),
-    (if $issueId != "" then check("issue token"; $issueId; {number:.number,text:text}; (((.number // "") | tostring) == $issueId) or has_token("#" + $issueId) or has_token("issue-" + $issueId)) else empty end),
-    (if $workItemId != "" then check("work-item"; $workItemId; {number:.number,text:text}; (((.number // "") | tostring) == $workItemId) or has_token("#" + $workItemId) or has_token("AB#" + $workItemId) or has_token("work-item-" + $workItemId)) else empty end),
-    (if $recipeRunId != "" then check("recipe run"; $recipeRunId; text; has_token($recipeRunId)) else empty end),
-    (if $treeId != "" then check("tree"; $treeId; text; has_token($treeId)) else empty end),
-    (if $workstreamId != "" then check("workstream"; $workstreamId; text; has_token($workstreamId)) else empty end)
+  if type != "object" then {primary:$invalid,secondary:[]}
+  else {primary:($invalid + [
+    (select(strings(["headRefName"])) | check("head branch"; $headRefName; .headRefName; (.headRefName // "") == $headRefName)),
+    (select(strings(["baseRefName"])) | check("base branch"; $baseRefName; .baseRefName; (.baseRefName // "") == $baseRefName)),
+    (select(.isCrossRepository | bool_or_null) | check("cross repository"; false; .isCrossRepository; (.isCrossRepository // false) == false)),
+    (select(valid_repository) | check("repository"; $repo; (owner_name + "/" + repo_name); (owner_name + "/" + repo_name) == $repo)),
+    (if $prNumber != "" and (.number | number_or_null) then check("PR number"; $prNumber; .number; ((.number // "") | tostring) == $prNumber) else empty end),
+    (if $prUrl != "" and strings(["url"]) then check("PR URL"; $prUrl; .url; (.url // "") == $prUrl) else empty end)
+  ]), secondary:[
+    (if $headRefOid != "" and strings(["headRefOid"]) then check("head SHA"; $headRefOid; .headRefOid; (.headRefOid // "") == $headRefOid) else empty end),
+    (if $expected_pr_title_prefix != "" and strings(["title"]) then check("title prefix"; $expected_pr_title_prefix; .title; ((.title // "") | startswith($expected_pr_title_prefix))) else empty end),
+    (if $created_after != "" and strings(["createdAt"]) then check("created-after"; $created_after; .createdAt; (.createdAt // "") >= $created_after) else empty end),
+    (if $issueId != "" and strings(["title","body"]) and (.number | number_or_null) then check("issue token"; $issueId; {number:.number,text:text}; (((.number // "") | tostring) == $issueId) or has_token("#" + $issueId) or has_token("issue-" + $issueId)) else empty end),
+    (if $workItemId != "" and strings(["title","body"]) and (.number | number_or_null) then check("work-item"; $workItemId; {number:.number,text:text}; (((.number // "") | tostring) == $workItemId) or has_token("#" + $workItemId) or has_token("AB#" + $workItemId) or has_token("work-item-" + $workItemId)) else empty end),
+    (if $recipeRunId != "" and strings(["title","body"]) then check("recipe run"; $recipeRunId; text; has_token($recipeRunId)) else empty end),
+    (if $treeId != "" and strings(["title","body"]) then check("tree"; $treeId; text; has_token($treeId)) else empty end),
+    (if $workstreamId != "" and strings(["title","body"]) then check("workstream"; $workstreamId; text; has_token($workstreamId)) else empty end)
   ]} end;

@@ -674,8 +674,6 @@ pub fn identity_and_secondary_filters_still_apply(f: &Fixture) {
         ".title=\"Other prefix #2787\"",
         "del(.headRefName)",
         "del(.headRepositoryOwner)",
-        "del(.state)",
-        "del(.isDraft)",
     ] {
         fs::write(f.root.join("candidate.json"), &original).unwrap();
         f.patch_candidate(filter);
@@ -795,57 +793,36 @@ pub fn discovery_secondary_mismatches_enter_recovery(f: &Fixture) {
     }
 }
 
-pub fn noncanonical_discovery_retains_recovery_report(f: &Fixture) {
+pub fn discovery_preserves_shared_url_and_optional_metadata_predicates(f: &Fixture) {
     f.audit(true);
     success(f.publish());
-    // A long response exceeds recovery's excerpt limit. Its durable report
-    // must remain reachable through the final error line's path.
-    let hostile_url = format!(
-        "https://github.com/other/widget/pull/7?{}https://secret-user:secret-pass@example.invalid/",
-        "x".repeat(5000)
+    // Existing discovery accepts this URL spelling. Keep it pinned for the
+    // validation, while gh addressing stays pinned to the number/repository.
+    f.patch_candidate(
+        r#".url="https://github.com/acme/widget/pull/7/" | del(.isCrossRepository,.createdAt)"#,
     );
-    f.patch_candidate(&format!(".url=\"{hostile_url}\""));
-    let o = f
-        .step(READY)
-        .env_remove("RECIPE_VAR_pr_number")
-        .env_remove("RECIPE_VAR_pr_url")
-        .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
-        .output()
-        .unwrap();
-    assert!(
-        o.status.success(),
-        "unresolved recovery must allow later workflow steps: {}",
-        show(&o)
+    success(
+        f.step(READY)
+            .env_remove("RECIPE_VAR_pr_number")
+            .env_remove("RECIPE_VAR_pr_url")
+            .output()
+            .unwrap(),
     );
-    let evidence = fs::read_to_string(f.root.join("recovery-evidence.json")).unwrap();
-    assert!(
-        evidence.contains("discovered PR URL is not canonical"),
-        "{evidence}"
+    f.assert_ready();
+    // Missing optional status flags retain the historical defaults on the
+    // fresh response too; they are not extra prerequisites for readiness.
+    fs::write(
+        f.root.join("final-filter.jq"),
+        "del(.state,.isDraft,.isCrossRepository)",
+    )
+    .unwrap();
+    success(
+        f.step(READY)
+            .env_remove("RECIPE_VAR_pr_number")
+            .env_remove("RECIPE_VAR_pr_url")
+            .output()
+            .unwrap(),
     );
-    let reports = files_under(&f.root.join("runtime"));
-    let report_path = reports
-        .iter()
-        .find(|path| path.ends_with("exclusions.json"))
-        .expect("canonical URL rejection must persist diagnostics");
-    assert!(
-        evidence.contains(report_path.to_str().unwrap()),
-        "{evidence}"
-    );
-    let report = fs::read_to_string(report_path).unwrap();
-    for value in [
-        "canonical PR URL",
-        PR_URL,
-        "https://github.com/other/widget/pull/7",
-    ] {
-        assert!(report.contains(value), "{report}");
-    }
-    for data in [&show(&o), &evidence, &report] {
-        assert!(
-            !data.contains("secret-user") && !data.contains("secret-pass"),
-            "{data}"
-        );
-    }
-    f.assert_no_mutation();
 }
 
 pub fn final_read_mismatches_enter_recovery(f: &Fixture) {
@@ -874,9 +851,6 @@ pub fn final_read_mismatches_enter_recovery(f: &Fixture) {
             ("del(.url)", "PR URL"),
             ("del(.headRefName)", "head branch"),
             ("del(.headRepositoryOwner)", "repository"),
-            ("del(.isCrossRepository)", "cross repository flag"),
-            ("del(.state)", "state"),
-            ("del(.isDraft)", "draft flag"),
         ] {
             fs::write(f.root.join("final-filter.jq"), filter).unwrap();
             let report = readiness_rejection(f, discovery);
@@ -1551,7 +1525,7 @@ mod tests {
         remote_fast_forward_keeps_audit,
         identity_and_secondary_filters_still_apply,
         discovery_secondary_mismatches_enter_recovery,
-        noncanonical_discovery_retains_recovery_report,
+        discovery_preserves_shared_url_and_optional_metadata_predicates,
         final_read_mismatches_enter_recovery,
         hostile_final_metadata_is_protected,
         valid_discovery_only_readiness_succeeds,

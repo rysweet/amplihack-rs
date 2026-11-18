@@ -32,22 +32,11 @@ gh_sanitize_stderr() (
   # Explicit pipefail even when the caller uses a conditional function call.
   set -o pipefail
   [ -n "${1:-}" ] && [ -s "$1" ] || return 0
-  # Re-scan AWS matches: their trailing boundary can also begin the next key.
-  LC_ALL=C tr '\r\n\t' '   ' <"$1" | LC_ALL=C tr -d '\000-\037\177' |
-    LC_ALL=C sed -E \
-      -e $'s/\302[\200-\237]//g' \
-      -e $'s/\330\234//g' \
-      -e $'s/\342\200[\213-\217\252-\256]//g' \
-      -e $'s/\342\201[\240-\257]//g' \
-      -e $'s/\357\273\277//g' \
-      -e 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' \
-      -e 's#gh[pousr]_[A-Za-z0-9]{16,}#REDACTED_TOKEN#g' \
-      -e 's#github_pat_[A-Za-z0-9_]{16,}#REDACTED_TOKEN#g' \
-      -e 's#(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}#\1REDACTED_TOKEN#g' \
-      -e ':aws' \
-      -e 's#(^|[^A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}([^0-9A-Za-z]|$)#\1REDACTED_TOKEN\3#g' \
-      -e 't aws' |
-    # Consume all input: truncating with head can SIGPIPE the redactor.
+  # Use recovery/publication's single credential and terminal-control policy.
+  # JSON stdout remains transport data; only human-readable diagnostics enter
+  # this path. Consume the whole sanitizer stream before limiting the excerpt.
+  amplihack orch helper sanitize-output <"$1" |
+    LC_ALL=C tr '\r\n\t' '   ' |
     LC_ALL=C awk 'length(s) < 500 {s = s substr($0, 1, 500 - length(s))} END {printf "%s", s}'
 )
 

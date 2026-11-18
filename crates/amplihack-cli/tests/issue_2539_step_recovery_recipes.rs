@@ -1,6 +1,6 @@
 //! Issue #2539: the converted bundle recipes load, validate and route each
-//! converted step through `step-recovery run`, and `workflow-finalize` ends a
-//! handed-off run at its report step with exit 81, before `workflow-complete`.
+//! converted step through `step-recovery run`. Finalization retains handoff
+//! records and continues to `workflow-complete` to report unresolved outcomes.
 //! The fixture recipe run through the real runner is in
 //! `issue_2539_step_recovery_fixture.rs`.
 
@@ -9,7 +9,7 @@
 use std::process::Output;
 
 use crate::support::auto_drive_light::{recipe, step_command};
-use crate::support::step_recovery::{Fixture, HANDOFF_EXIT, bundle_recipes, show};
+use crate::support::step_recovery::{Fixture, bundle_recipes, show};
 
 /// `(recipe, step whose command runs the driver, recorded step id)`. Bash
 /// steps are wrapped in place; an agent or sub-recipe step keeps its type,
@@ -165,16 +165,8 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
             "step-02b-review-dir-unchanged",
             "--guard",
         ),
-        (
-            "workflow-finalize",
-            "step-20b-push-cleanup",
-            "--essential --stop-on-handoff",
-        ),
-        (
-            "workflow-finalize",
-            "step-21-pr-ready",
-            "--essential --stop-on-handoff",
-        ),
+        ("workflow-finalize", "step-20b-push-cleanup", "--essential"),
+        ("workflow-finalize", "step-21-pr-ready", "--essential"),
     ] {
         let command = step_command(name, id);
         assert!(
@@ -279,7 +271,7 @@ fn workflow_finalize_reports_after_validation_and_before_completion() {
     assert!(pos("step-recovery-report") < pos("workflow-complete"));
 
     // The report step's own command, run with the real binary: a recorded
-    // handoff ends it with 81, an empty directory lets the run go on.
+    // handoff is retained for completion, and an empty directory is removed.
     let f = Fixture::new();
     std::os::unix::fs::symlink(
         crate::support::amplihack_bin::amplihack_bin(),
@@ -360,6 +352,11 @@ fn workflow_finalize_reports_after_validation_and_before_completion() {
     assert_eq!(rec.status.code(), Some(0), "{}", show(&rec));
     // A handed-off run keeps the directory it created, for the operator.
     let o = run_as(&f, &own);
-    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let report: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(
+        report["step_recovery_handoffs"][0]["step_id"],
+        "step-21-pr-ready"
+    );
     assert!(own.join("step-21-pr-ready.jsonl").is_file());
 }

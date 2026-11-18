@@ -161,6 +161,11 @@ fn redaction_removes_every_documented_secret_form() {
         ("authorization: token abcdef123456", "abcdef123456"),
         ("token=tok-value-1", "tok-value-1"),
         ("password=hunter2", "hunter2"),
+        (
+            "audit_ghp_ABCDEFGHIJKLMNOPQRSTUVWX.txt",
+            "ghp_ABCDEFGHIJKLMNOPQRSTUVWX",
+        ),
+        ("ASIAABCDEFGHIJKLMNOP", "ASIAABCDEFGHIJKLMNOP"),
         ("secret=s3cr3t", "s3cr3t"),
         ("api_key=k-123", "k-123"),
         ("https://bot:pw-in-url@example.invalid/r.git", "pw-in-url"),

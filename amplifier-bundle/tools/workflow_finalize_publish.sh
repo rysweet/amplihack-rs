@@ -17,7 +17,22 @@ emit_captured_output() {
 }
 commit_output_file=""
 push_output_file=""
-trap 'rm -f -- "$commit_output_file" "$push_output_file"' EXIT
+command_output_file=""
+trap 'rm -f -- "$commit_output_file" "$push_output_file" "$command_output_file"' EXIT
+# Synchronization, artifact checks and staging can also print untrusted paths.
+run_captured_command() {
+  local command_rc=0 sanitize_rc=0
+  command_output_file="$(mktemp -t step20b-cleanup-command-XXXXXX)"
+  "$@" >"$command_output_file" 2>&1 || command_rc=$?
+  if [ "$command_rc" -eq 0 ]; then
+    emit_captured_output "$command_output_file" || sanitize_rc=$?
+  else
+    emit_captured_output "$command_output_file" >&2 || sanitize_rc=$?
+  fi
+  rm -f -- "$command_output_file"
+  [ "$command_rc" -eq 0 ] || return "$command_rc"
+  return "$sanitize_rc"
+}
 wt="$(bash "$SCRIPT_DIR/worktree_setup_path.sh" step-20b-push-cleanup)"
 cd -P "$wt"
 # Keep the existing dedicated linked-worktree requirement for staging.
@@ -36,12 +51,14 @@ fi
 git check-ref-format "refs/heads/$remote_branch"
 echo "=== Pushing Cleanup Changes ==="
 # Synchronize before creating cleanup commits; never rewrite existing history.
-bash "$SCRIPT_DIR/workflow_pr_head_sync.sh" --strict
-. "$SCRIPT_DIR/workflow_runtime_artifacts.sh"
-preflight_known_workflow_runtime_artifacts .
-amplihack hygiene artifact-guard --repo . --mode pre-publish
-git add -A
-amplihack hygiene artifact-guard --repo . --mode pre-publish
+run_captured_command bash "$SCRIPT_DIR/workflow_pr_head_sync.sh" --strict
+# Expanded by the child shell, retaining errexit inside the sourced helper.
+# shellcheck disable=SC2016
+run_captured_command env SCRIPT_DIR="$SCRIPT_DIR" bash -c 'set -euo pipefail; . "$1"; preflight_known_workflow_runtime_artifacts .' \
+  publication-preflight "$SCRIPT_DIR/workflow_runtime_artifacts.sh"
+run_captured_command amplihack hygiene artifact-guard --repo . --mode pre-publish
+run_captured_command git add -A
+run_captured_command amplihack hygiene artifact-guard --repo . --mode pre-publish
 STAGED="$(git diff --cached --name-only)"
 if [ -n "$STAGED" ]; then
   . "$SCRIPT_DIR/git-identity.sh"
@@ -65,10 +82,10 @@ if [ -n "$STAGED" ]; then
   else
     commit_rc=$?
     echo "ERROR: git commit failed during step-20b-push-cleanup (exit $commit_rc)" >&2
+    git --no-pager diff --cached --name-status >>"$commit_output_file" 2>&1 || true
+    git --no-pager status --short >>"$commit_output_file" 2>&1 || true
     emit_captured_output "$commit_output_file" >&2 || true
     rm -f "$commit_output_file"
-    git --no-pager diff --cached --name-status >&2
-    git --no-pager status --short >&2
     exit "$commit_rc"
   fi
 else

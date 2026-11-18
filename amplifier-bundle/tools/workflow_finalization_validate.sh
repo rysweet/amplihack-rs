@@ -75,7 +75,7 @@ FIELDS
   terminal_failure="true"
 
   # Keep publication/readiness evidence through classification and completion.
-  operations="$(printf '%s' "$finalization_evidence" | jq -Rsc '(fromjson? // {}) | .operations // {}')"
+  operations="$(printf '%s' "$finalization_evidence" | jq -Rsc '(fromjson? // {}) | if type == "object" then .operations // {} else {} end')"
 
   emit_result() {
     local field separator publish_state_reached observed_phases missing_evidence
@@ -135,7 +135,8 @@ FIELDS
     # absent/null and Boolean fields retain their supported semantics.
     if ! evidence_values="$(printf '%s' "$finalization_evidence" | jq -cs '
         if length == 1 and (.[0] | type) == "object" then
-          .[0] | [ .git.dirty_worktree, .tooling.missing, .tooling.gh_required,
+          .[0] | if .context_invalid == true then error("invalid workflow context") else . end |
+          [ .git.dirty_worktree, .tooling.missing, .tooling.gh_required,
                    .prior_terminal_state.terminal_state,
                    .agent_outputs.hollow_success_signals ]
           | if all(.[]; if type == "string" then index("\u0000") == null

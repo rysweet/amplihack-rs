@@ -1,11 +1,11 @@
-//! Issue #2539: a handoff on a guard or outward-action step stops the recipe
-//! at that step with exit 81 (`--stop-on-handoff`, `--guard`), a guard step
-//! cannot be repaired, and a failed `init` disables recovery without
+//! Issue #2539: guards and explicit `--stop-on-handoff` stop with exit 81.
+//! Finalization retains unresolved handoffs and continues to completion.
+//! Guards cannot be repaired; a failed `init` disables recovery without
 //! stopping the run.
 //!
 //! The recipe tests run the real converted step commands, read from the
 //! bundle's YAML, in a small recipe through the real runner, followed by a
-//! marker step that must never run. The driver's own recovery recipe goes
+//! marker step that observes whether continuation is allowed. Recovery goes
 //! through the fixture's stub runner, which plays the agent.
 
 #![cfg(unix)]
@@ -110,7 +110,7 @@ fn handoff() -> serde_json::Value {
 }
 
 #[test]
-fn a_handoff_on_pr_ready_ends_the_recipe_with_81_and_the_ci_step_never_runs() {
+fn a_handoff_on_pr_ready_retains_the_outcome_and_allows_later_steps() {
     let f = Fixture::new();
     f.choose(1, handoff());
     let step21 = via_stub(&bundle_command("workflow-finalize", "step-21-pr-ready"));
@@ -120,10 +120,10 @@ fn a_handoff_on_pr_ready_ends_the_recipe_with_81_and_the_ci_step_never_runs() {
     ];
     // On a GitHub host with no PR-ready helper installed, step-21 fails.
     let o = run_recipe(&f, steps, &[("REMOTE_HOST_TYPE", "github")]);
-    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert!(
-        !f.root.join("step-22").exists(),
-        "step-22 ran:\n{}",
+        f.root.join("step-22").exists(),
+        "step-22 did not run after a nonterminal handoff:\n{}",
         show(&o)
     );
     let records = f.records("step-21-pr-ready");

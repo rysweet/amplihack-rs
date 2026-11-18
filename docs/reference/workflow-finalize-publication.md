@@ -166,19 +166,33 @@ reuses recovery's credential redaction and terminal-control handling. A
 sanitizer failure emits a fixed diagnostic and never prints raw or partial
 output. Failed commits and pushes retain their original exit status; a
 sanitizer failure after a successful command fails publication for recovery.
+Synchronization, artifact checks, staging, and rejected-commit filename listings
+are also captured and sanitized before display. The original failing command
+status takes precedence over any formatter failure.
+
+Readiness applies this same sanitizer to successful ready/comment output and
+the retry helper's failure diagnostics, including password/secret assignments,
+credentials embedded in filenames, AWS session keys, and terminal controls.
+JSON metadata stays separate from human-readable output. A formatter failure
+after a successful readiness mutation emits a fixed warning and preserves the
+completed operation's success; partial formatter output is never displayed.
 
 ## Readiness contract
 
 `workflow_pr_ready.sh` reads HEAD after publication, from the same canonical
 worktree. Scoped selection discovers a candidate using the shared helper's
-existing rules. Readiness pins the selected PR number and canonical repository
-URL, then fetches fresh metadata for that PR. Candidate discovery alone does
+existing rules. Readiness pins the selected PR number and URL, then fetches fresh metadata
+for that PR, addressing gh through its number in the established repository.
+URL spelling follows the shared identity predicates; readiness
+does not add a canonical-format gate. Candidate discovery alone does
 not establish readiness, even when exactly one branch/base candidate exists.
 
 Immediately before any readiness mutation or successful terminal handling,
 readiness validates the fresh response with the shared scope predicates. It
 requires the pinned number and URL, repository, mapped head branch, intended
-base, exact current HEAD, valid state and draft flag, and same-repository status.
+base, exact current HEAD, and same-repository status. Missing optional fields
+retain the shared predicates' historical defaults; wrong-type fields remain
+malformed.
 Configured secondary checks cover numeric issue and work-item references,
 creation time, and title prefix. A discrepancy or missing observation transfers
 the decision to agentic recovery with the failed checks as evidence. Secondary
@@ -235,6 +249,8 @@ and alternate-base discovery. Missing or null observations retain the existing
 predicate defaults; wrong-type fields and non-object records are explicit
 `malformed candidate` exclusions. Their reports retain only valid identifying
 fields, expected types, and observed types, never malformed field contents.
+Malformed fields do not suppress independent type-safe exclusions: a malformed
+body on an unrelated head targeting the wrong base reports all three failures.
 Malformed observations get durable reports even when another candidate can be
 selected. Invalid JSON, multiple metadata documents, and parser failures return
 `invalid_pr_metadata` with a protected report; captured parser stderr follows
@@ -254,7 +270,11 @@ or `HOME/.local/state`. They do not use the temporary capture directory.
 Publication and readiness outcomes remain in collected evidence and the
 completion envelope. An unresolved operation is reported as `INCOMPLETE`, with
 `terminal_success=false`, while subsequent workflow steps continue. The
-validated result keeps its existing scalar fields.
+validated result keeps its existing scalar fields. Invalid operation context
+still produces a complete conservative collection report with
+`context_invalid:true`; validation retains `FAILED_INVALID_EVIDENCE` even if
+later completion flags are positive. Malformed evidence containers are handled
+by that classifier before operation extraction can index them.
 
 The internal `amplihack orch helper pr-scope-report` command uses recovery's
 existing redaction and descriptor-relative file creation for reports.

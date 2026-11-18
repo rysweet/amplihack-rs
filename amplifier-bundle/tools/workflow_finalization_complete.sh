@@ -35,7 +35,7 @@ complete_workflow() {
   local operations collected
   operations="$(workflow_finalization_operations)"
   collected="$(workflow_context_read finalization_evidence || :)"
-  collected="$(printf '%s' "$collected" | jq -Rsc '(fromjson? // {}) | .operations // {}')"
+  collected="$(printf '%s' "$collected" | jq -Rsc '(fromjson? // {}) | if type == "object" then .operations // {} else {} end')"
   operations="$(printf '{"current":%s,"collected":%s}' "$operations" "$collected" | jq -c '
     {publication:(.current.publication // .collected.publication // null),
      readiness:(.current.readiness // .collected.readiness // null)}')"

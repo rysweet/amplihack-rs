@@ -29,8 +29,8 @@ static RULES: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
         // Remove URL credentials before a secret-like username or password can
         // consume the @ delimiter and prevent URL redaction.
         (r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@", "${1}[REDACTED]@"),
-        (r"\bgh[pousr]_[A-Za-z0-9]{16,}", REDACTED),
-        (r"\bgithub_pat_[A-Za-z0-9_]{16,}", REDACTED),
+        (r"gh[pousr]_[A-Za-z0-9]{16,}", REDACTED),
+        (r"github_pat_[A-Za-z0-9_]{16,}", REDACTED),
         (r"\bsk-ant-[A-Za-z0-9_-]{8,}", REDACTED),
         (r"(?i)(\bauthorization\s*[:=]\s*).*", "${1}[REDACTED]"),
         (r"(?i)(\bbearer\s+)[^\s\x22']+", "${1}[REDACTED]"),
@@ -39,7 +39,7 @@ static RULES: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
             "${1}[REDACTED]",
         ),
         (r"\bsk-[A-Za-z0-9_-]{20,}", REDACTED),
-        (r"\bAKIA[0-9A-Z]{16}\b", REDACTED),
+        (r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", REDACTED),
         (
             r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\z)",
             REDACTED,

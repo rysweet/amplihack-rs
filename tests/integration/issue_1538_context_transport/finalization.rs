@@ -288,3 +288,24 @@ fn validator_file_dirty_blocker_cannot_be_overridden_by_stale_clean_evidence() {
 fn finalizer_invalid_mode_retains_error_two() {
     Fixture::new().finalizer("invalid").exit(2);
 }
+
+#[test]
+fn collector_context_failure_stays_invalid_when_its_evidence_is_validated() {
+    let collected = Fixture::new().file_raw("{bad").finalizer("collect");
+    collected.exit(0);
+    assert_eq!(collected.json()["context_invalid"], true);
+    validate(
+        Fixture::new()
+            .env("RECIPE_VAR_finalization_evidence", collected.stdout)
+            .env(
+                "RECIPE_VAR_implementation_terminal_evidence",
+                json!({"implementation_completed":true}).to_string(),
+            )
+            .env(
+                "RECIPE_VAR_verification_terminal_evidence",
+                json!({"verification_completed":true}).to_string(),
+            ),
+        "FAILED_INVALID_EVIDENCE",
+        1,
+    );
+}

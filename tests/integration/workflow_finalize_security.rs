@@ -120,6 +120,133 @@ fn sanitizer_failure_never_releases_partial_output_or_masks_command_failure() {
     }
 }
 
+#[test]
+fn rejected_commit_filenames_are_sanitized_and_retain_commit_failure() {
+    let f = fixture();
+    fs::write(f.pr.join(format!("audit_{TOKEN}.txt")), "audit edit\n").unwrap();
+    let hooks = f.git(
+        &f.pr,
+        &["rev-parse", "--path-format=absolute", "--git-path", "hooks"],
+    );
+    executable(
+        &Path::new(hooks.trim()).join("pre-commit"),
+        "#!/bin/sh\necho 'distinctive commit rejection' >&2\nexit 1\n",
+    );
+    let before = f.remote_head();
+    let output = f.publish();
+    assert_eq!(output.status.code(), Some(1), "{}", show(&output));
+    assert_safe(&show(&output));
+    assert!(show(&output).contains("distinctive commit rejection"));
+    assert!(show(&output).contains("audit_[REDACTED].txt"));
+    assert_eq!(before, f.remote_head());
+    f.assert_no_mutation();
+}
+
+#[test]
+fn staging_and_artifact_failure_diagnostics_are_sanitized() {
+    for artifact in [false, true] {
+        let f = fixture();
+        f.audit(false);
+        let before = f.remote_head();
+        let (tool, condition, delegate) = if artifact {
+            (
+                "amplihack",
+                "[ \"${1:-} ${2:-}\" = 'hygiene artifact-guard' ]",
+                "\"$REAL_AMPLIHACK\"",
+            )
+        } else {
+            ("git", "[ \"${1:-}\" = add ]", "/usr/bin/git")
+        };
+        executable(
+            &f.root.join("bin").join(tool),
+            &format!(
+                "#!/bin/bash\nif {condition}; then printf '%s\\033[31m\\r\\007\\n' 'distinctive publication rejection {SECRETS}' >&2; exit 43; fi\nexec {delegate} \"$@\"\n"
+            ),
+        );
+        let output = f.publish();
+        assert_eq!(output.status.code(), Some(43), "{}", show(&output));
+        assert_safe(&show(&output));
+        assert!(show(&output).contains("distinctive publication rejection"));
+        assert_eq!(before, f.remote_head());
+        f.assert_no_mutation();
+    }
+}
+
+fn gh_output_fixture(f: &Fixture, operation: &str, fail: bool) {
+    fs::rename(f.root.join("bin/gh"), f.root.join("bin/gh.original")).unwrap();
+    executable(
+        &f.root.join("bin/gh"),
+        &format!(
+            "#!/bin/bash\nif [ \"${{1:-}} ${{2:-}}\" = '{operation}' ]; then\n printf '%s\\033[31m\\r\\007\\n' 'distinctive gh diagnostic {SECRETS}' {}\n {}\nfi\nexec \"$FIXTURE/bin/gh.original\" \"$@\"\n",
+            if fail { ">&2" } else { "" },
+            if fail { "exit 23" } else { ":" },
+        ),
+    );
+}
+
+#[test]
+fn successful_ready_and_comment_output_is_sanitized() {
+    for operation in ["pr ready", "pr comment"] {
+        let f = fixture();
+        f.audit(true);
+        success(f.publish());
+        gh_output_fixture(&f, operation, false);
+        let output = f.ready();
+        assert!(output.status.success(), "{}", show(&output));
+        assert_safe(&show(&output));
+        assert!(show(&output).contains("distinctive gh diagnostic"));
+        assert!(show(&output).contains("REDACTED"));
+        f.assert_ready();
+    }
+}
+
+#[test]
+fn readiness_failure_diagnostics_are_sanitized_without_masking_status() {
+    for operation in ["pr view", "pr ready", "pr comment"] {
+        let f = fixture();
+        f.audit(true);
+        success(f.publish());
+        gh_output_fixture(&f, operation, true);
+        let output = f.ready();
+        assert_eq!(
+            output.status.code(),
+            Some(match operation {
+                "pr view" => 1,
+                "pr ready" => 23,
+                _ => 0,
+            }),
+            "{}",
+            show(&output)
+        );
+        assert_safe(&show(&output));
+        assert!(show(&output).contains("distinctive gh diagnostic"));
+        assert!(show(&output).contains("REDACTED"));
+        if operation == "pr comment" {
+            f.assert_ready();
+        } else {
+            assert!(!f.root.join("ready").exists());
+        }
+    }
+}
+
+#[test]
+fn readiness_formatter_failure_hides_partial_output_and_preserves_mutation() {
+    let f = fixture();
+    f.audit(true);
+    success(f.publish());
+    executable(
+        &f.root.join("bin/amplihack"),
+        &format!(
+            "#!/bin/bash\nif [ \"$*\" = 'orch helper sanitize-output' ]; then printf '%s' '{SECRETS}'; exit 71; fi\nexec \"$REAL_AMPLIHACK\" \"$@\"\n"
+        ),
+    );
+    let output = f.ready();
+    assert!(output.status.success(), "{}", show(&output));
+    assert_safe(&show(&output));
+    assert!(show(&output).contains("sanitization unavailable"));
+    f.assert_ready();
+}
+
 fn scope(f: &Fixture, explicit: bool) -> Output {
     let mut command = f.tool("workflow_pr_scope.sh", &f.main);
     command.args([
@@ -220,7 +347,9 @@ fn diagnostic_fallback_outlives_temporary_captures() {
 #[test]
 fn unrelated_head_with_array_body_produces_protected_exclusion() {
     let f = fixture();
-    f.patch_candidate(r#".headRefName="unrelated" | .body=["password=FAKEJQSECRET"]"#);
+    f.patch_candidate(
+        r#".headRefName="unrelated" | .baseRefName="dev" | .body=["password=FAKEJQSECRET"]"#,
+    );
     let report = protected_report(&f, &scope(&f, true), "no_scoped_pr");
     assert_eq!(report["candidates"][0]["number"], 7);
     assert_eq!(
@@ -231,6 +360,15 @@ fn unrelated_head_with_array_body_produces_protected_exclusion() {
         report["candidates"][0]["exclusions"][0]["observed"],
         "array"
     );
+    let checks: Vec<_> = report["candidates"][0]["exclusions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["check"].as_str().unwrap())
+        .collect();
+    for check in ["head branch", "base branch"] {
+        assert!(checks.contains(&check), "{report}");
+    }
 }
 
 #[test]
