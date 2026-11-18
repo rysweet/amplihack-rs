@@ -388,30 +388,57 @@ fn the_other_kinds_of_stdin_behave_as_before_with_a_mutable_policy() {
     assert_eq!(cat(null.for_attempt(2).unwrap()), b"");
 }
 
+/// The capture hands the child no descriptor of its own beyond the stdin it
+/// was given, and that stdin cannot be written back to, so an attempt
+/// cannot rewrite the prompt a later attempt will read.
+///
+/// The descriptor half is a floor rather than a guard: every handle here is
+/// made through `std`, which sets `O_CLOEXEC` on all of them whatever
+/// `custom_flags` says, so only a move to raw `libc` could break it. It is
+/// asserted against a baseline child taken in the same process, because
+/// what the test binary already had open is not this module's doing and a
+/// CI runner hands its test binaries descriptors a developer's shell does
+/// not.
 #[cfg(target_os = "linux")]
 #[test]
-fn the_child_holds_only_descriptors_0_1_and_2() {
+fn an_attempt_gets_only_its_own_stdin_and_cannot_write_to_it() {
     let (_t, dir) = rerun();
-    let (source, feeder) = fed_pipe(b"prompt".to_vec());
-    let mut policy = capture_prompt(&dir, source);
-    let list = |stdin: Stdio| {
+    let list = |stdin: Stdio| -> std::collections::BTreeSet<String> {
         let out = Command::new("/bin/sh")
             .args(["-c", "cat >/dev/null; ls /proc/$$/fd"])
             .stdin(stdin)
             .stdout(Stdio::piped())
             .output()
             .unwrap();
-        String::from_utf8(out.stdout).unwrap()
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .split_whitespace()
+            .map(str::to_string)
+            .collect()
     };
+    let baseline = list(Stdio::null());
+    let prompt = b"the stored prompt".to_vec();
+    let (source, feeder) = fed_pipe(prompt.clone());
+    let mut policy = capture_prompt(&dir, source);
     for n in 1..=2 {
         let fds = list(policy.for_attempt(n).unwrap());
-        let extra: Vec<&str> = fds
-            .split_whitespace()
-            .filter(|f| !["0", "1", "2", "255"].contains(f))
-            .collect();
+        let extra: Vec<&String> = fds.difference(&baseline).collect();
         assert!(extra.is_empty(), "attempt {n} inherited {extra:?}");
     }
     feeder.join().unwrap();
+    // A rerun's stdin is the capture opened read-only: writing to it fails
+    // and the stored prompt is untouched, so attempt 2 cannot change what
+    // attempt 3 reads.
+    let wrote = Command::new("/bin/sh")
+        .args(["-c", "echo tampered >&0"])
+        .stdin(policy.for_attempt(2).unwrap())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!wrote.success(), "a rerun's stdin must not be writable");
+    assert_eq!(fs::read(capture_file(&dir)).unwrap(), prompt);
+    assert_eq!(cat(policy.for_attempt(3).unwrap()), prompt);
 }
 
 #[test]
