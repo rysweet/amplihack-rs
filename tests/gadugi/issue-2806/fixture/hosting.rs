@@ -1,5 +1,5 @@
 //! Stateful local hosting fixture. Reads never advance pending checks.
-use super::environment::observe_git;
+use super::environment::{confined_path, observe_git};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -153,10 +153,15 @@ impl HostingStore {
     }
     fn pr_json(&self, pr: &PullRequest) -> Result<Value> {
         let base_sha = self.origin_head(&pr.base)?;
-        let conclusion = if pr.checks == Checks::Green {
-            "SUCCESS"
-        } else {
-            ""
+        let conclusion = match pr.checks {
+            Checks::Green => "SUCCESS",
+            Checks::Failed => "FAILURE",
+            Checks::Pending => "",
+        };
+        let state = match pr.checks {
+            Checks::Green => "SUCCESS",
+            Checks::Failed => "FAILURE",
+            Checks::Pending => "PENDING",
         };
         Ok(
             json!({"number":pr.number,"url":format!("https://github.com/{}/pull/{}",self.state.repository,pr.number),
@@ -167,8 +172,30 @@ impl HostingStore {
             "mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"APPROVED",
             "createdAt":"2026-11-18T00:00:00Z","mergedAt":if pr.state == "MERGED" { json!("2026-11-18T00:01:00Z") } else { Value::Null },
             "closedAt":Value::Null,"comments":pr.comments,"reviews":[],
-            "statusCheckRollup":[{"name":"fixture-verification","status":if pr.checks == Checks::Pending {"IN_PROGRESS"} else {"COMPLETED"},"conclusion":conclusion,"state":if pr.checks==Checks::Green {"SUCCESS"} else {"PENDING"}}]}),
+            "statusCheckRollup":[{"name":"fixture-verification","status":if pr.checks == Checks::Pending {"IN_PROGRESS"} else {"COMPLETED"},"conclusion":conclusion,"state":state}]}),
         )
+    }
+    fn read_body(&self, cwd: &Path, args: &[&str]) -> Result<Option<String>> {
+        if let Some(body) = option(args, "--body") {
+            return Ok(Some(body.into()));
+        }
+        let Some(file) = option(args, "--body-file") else {
+            return Ok(None);
+        };
+        ensure!(
+            file != "-",
+            "stdin body must be supplied by executable adapter"
+        );
+        let root = self
+            .path
+            .parent()
+            .and_then(Path::parent)
+            .context("hosting state has no case root")?;
+        let path = cwd.join(file);
+        let relative = path
+            .strip_prefix(root)
+            .context("hosting body file escapes private root")?;
+        Ok(Some(fs::read_to_string(confined_path(root, relative)?)?))
     }
     pub fn invoke(&mut self, cwd: &Path, args: &[&str]) -> Result<Response> {
         let invocation = Invocation {
@@ -244,6 +271,7 @@ impl HostingStore {
                     "duplicate open PR"
                 );
                 let number = self.state.prs.len() as u64 + 1;
+                let body = self.read_body(cwd, args)?.unwrap_or_default();
                 self.state.prs.push(PullRequest {
                     number,
                     state: "OPEN".into(),
@@ -251,7 +279,7 @@ impl HostingStore {
                     base: base.into(),
                     head_sha: head,
                     title: option(args, "--title").unwrap_or("Implement answer").into(),
-                    body: option(args, "--body").unwrap_or("").into(),
+                    body,
                     checks: Checks::Pending,
                     comments: vec![],
                 });
@@ -341,25 +369,17 @@ impl HostingStore {
                         }
                     }
                     "comment" | "review" => {
-                        let body = if let Some(file) = option(args, "--body-file") {
-                            ensure!(
-                                file != "-",
-                                "stdin body must be supplied by the executable adapter"
-                            );
-                            fs::read_to_string(file)?
-                        } else {
-                            option(args, "--body")
-                                .ok_or_else(|| anyhow::anyhow!("comment requires body"))?
-                                .into()
-                        };
+                        let body = self
+                            .read_body(cwd, args)?
+                            .context("comment requires body")?;
                         self.state.prs[index].comments.push(json!({"body":body,"author":{"login":"fixture"},"createdAt":"2026-11-18T00:00:00Z"}));
                         self.persist()?;
                         Response::text("comment recorded")
                     }
                     "ready" => Response::text("ready"),
                     "edit" => {
-                        if let Some(body) = option(args, "--body") {
-                            self.state.prs[index].body = body.into();
+                        if let Some(body) = self.read_body(cwd, args)? {
+                            self.state.prs[index].body = body;
                         }
                         self.persist()?;
                         Response::text("updated")

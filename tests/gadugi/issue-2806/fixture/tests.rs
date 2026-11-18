@@ -931,3 +931,59 @@ fn hosting_rejects_cross_repository_identity_without_mutating_the_pr() {
     );
     assert_eq!(fs::read(hosting.path()).unwrap(), before);
 }
+
+#[test]
+fn process_network_view_requires_complete_namespace_observations() {
+    let header = "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast|bytes packets errs drop fifo colls carrier compressed\n";
+    let counts = "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0";
+    assert_eq!(
+        environment::network_interfaces(&format!("{header} lo: {counts}\n")).unwrap(),
+        vec!["lo"]
+    );
+    assert_eq!(
+        environment::network_interfaces(&format!("{header} lo: {counts}\n eth0: {counts}\n"))
+            .unwrap(),
+        vec!["eth0", "lo"]
+    );
+    assert!(environment::network_interfaces(header).is_err());
+    assert!(environment::network_interfaces(&format!("{header} lo: 0 0\n")).is_err());
+}
+
+#[test]
+fn hosting_reads_the_real_publish_body_file_and_reports_failed_checks_as_failed() {
+    let repo = Repository::published();
+    let mut hosting = repo.hosting();
+    let path = repo.case.tmp.join("publish-body.md");
+    fs::write(&path, "Closes #7\n\nVerified answer implementation.\n").unwrap();
+    let response = hosting
+        .invoke(
+            &repo.checkout,
+            &[
+                "pr",
+                "create",
+                "--head",
+                "feat/answer",
+                "--base",
+                "main",
+                "--title",
+                "Implement answer",
+                "--body-file",
+                path.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(response.exit_code, 0);
+    assert_eq!(
+        hosting.pr(1).unwrap().body,
+        fs::read_to_string(path).unwrap()
+    );
+    hosting.set_checks(1, Checks::Failed).unwrap();
+    let response = hosting
+        .invoke(
+            &repo.checkout,
+            &["pr", "view", "1", "--json", "statusCheckRollup"],
+        )
+        .unwrap();
+    let value: Value = serde_json::from_slice(&response.stdout).unwrap();
+    assert_eq!(value["statusCheckRollup"][0]["conclusion"], "FAILURE");
+}

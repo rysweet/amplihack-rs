@@ -77,3 +77,13 @@ proof yet. Source inspection and issue status do not justify an allowance.
 CI must retain exact baseline failures, prerequisites and fingerprints before
 allowing only #2802, #2785 or #2343. Unreachable behavior stays not executed;
 newly passing assertions always pass even with a remaining allowance.
+
+## First CI observation
+
+Run 44369680421, Install Smoke Test job 135032745645, compiled the driver
+and installed its prerequisites. Execution stopped before case setup because
+/sys/class/net reflected the sysfs mount's original namespace after unshare.
+This is a harness failure, not evidence for any regression allowance. The
+correct namespace observation is /proc/self/net/dev. Persist the initial report
+and prerequisite observations before enforcing network isolation so early
+failures retain artifacts too. The expected-failure file remains empty.

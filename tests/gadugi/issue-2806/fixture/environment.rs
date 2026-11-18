@@ -214,3 +214,23 @@ pub fn observe_git(cwd: &Path, args: &[&str]) -> Result<String> {
         .args(args);
     checked(command.output()?, "Git observation")
 }
+
+/// Parse the current process's network namespace view, not a pre-existing sysfs mount.
+pub fn network_interfaces(devices: &str) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for line in devices.lines().skip(2) {
+        let (name, counts) = line
+            .split_once(':')
+            .context("malformed /proc/self/net/dev record")?;
+        let name = name.trim();
+        ensure!(
+            !name.is_empty() && counts.split_whitespace().count() == 16,
+            "incomplete network-interface record"
+        );
+        names.push(name.to_owned());
+    }
+    ensure!(!names.is_empty(), "no network interfaces observed");
+    names.sort();
+    names.dedup();
+    Ok(names)
+}

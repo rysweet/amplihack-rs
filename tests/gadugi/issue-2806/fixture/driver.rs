@@ -74,19 +74,23 @@ pub fn run_all(args: &[String]) -> Result<()> {
         fs::copy(baseline_source, baseline_target)?;
         report.add_allowance(allowance)?;
     }
-    let network: Vec<_> = fs::read_dir("/sys/class/net")?
-        .map(|e| e.map(|e| e.file_name()))
-        .collect::<std::io::Result<_>>()?;
+    report.persist()?;
+    let network =
+        super::environment::network_interfaces(&fs::read_to_string("/proc/self/net/dev")?)?;
+    save(
+        &evidence_root.join("prerequisites.json"),
+        &json!({"network_interfaces":network,"network_source":"/proc/self/net/dev","tested_sha":sha}),
+    )?;
     ensure!(
-        network.len() == 1 && network[0] == "lo",
-        "scenario requires a CI network namespace with only loopback"
+        network == ["lo"],
+        "scenario requires a CI network namespace with only loopback; observed {network:?}"
     );
     // Evidence and case roots are retained; TempDir would delete work needed for diagnosis.
     let run_root = tempfile::Builder::new().prefix("qa2806-").tempdir()?.keep();
     fs::set_permissions(&run_root, fs::Permissions::from_mode(0o700))?;
     save(
         &evidence_root.join("identity.json"),
-        &json!({"tested_sha":sha,"production_base":BASE,"runner_revision":fs::read_to_string(argument(args,"--assets")?.join("claude-plugin/recipe-runner.rev"))?.trim(),"private_root":run_root,"network_interfaces":network.iter().map(|x|x.to_string_lossy()).collect::<Vec<_>>()}),
+        &json!({"tested_sha":sha,"production_base":BASE,"runner_revision":fs::read_to_string(argument(args,"--assets")?.join("claude-plugin/recipe-runner.rev"))?.trim(),"private_root":run_root,"network_interfaces":network}),
     )?;
     for name in evidence::CASES {
         let case = IsolatedCase::create(&run_root.join(name))?;
