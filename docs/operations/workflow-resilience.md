@@ -1,3 +1,9 @@
+---
+title: Workflow Publish and Finalize Resilience
+description: Publish and finalize outcomes for existing pull requests and terminal branch states.
+doc_type: reference
+---
+
 # Workflow Publish and Finalize Resilience
 
 > Compatibility note: this page now uses the provider-neutral workflow contract.
@@ -45,26 +51,31 @@ branch state.
 | Azure DevOps host | `ManualRequired` with an Azure Repos pull-request action; no `gh pr create` or `az repos pr create` call. |
 | Local or unsupported host | `ManualRequired` with provider-neutral next action; no remote provider command. |
 | No branch diff against base | Success with `state=no-diff`; no PR is created. |
-| Existing open PR for the same head branch | Success with `state=existing-open-pr`; existing PR URL is returned. |
+| Existing open PR for the same head branch | Success with `state=existing-open-pr`; existing PR URL is returned. On GitHub with `base_branch` empty, an open PR into another base counts too; its base is kept, and it takes precedence over a merged or closed PR into the default branch ([details](../reference/workflow-delivery-inputs.md#an-open-pull-request-on-another-base)). |
 | Existing merged PR for the same head branch | Success with `state=already-merged`; merged PR URL is returned. |
 | Existing closed PR that was merged | Success with `state=closed-after-merge`; merged PR URL is returned. |
-| Existing closed, unmerged PR with branch diff | Failure with a clear action message. |
+| Closed, unmerged PR selected after open-PR discovery, with branch diff | Failure with a clear action message. |
 | Branch has diff and no existing PR | Create one draft PR and return its URL. |
 
-The recipe must check branch diff and PR state before publishing. It never creates an
-empty PR and never creates a second PR for the same live branch when an open or
-merged PR already exists.
+The recipe checks branch diff and PR state before publishing and never creates
+an empty PR. On GitHub with `base_branch` empty, it prefers an eligible open PR
+on the resolved base, otherwise adopts a unique eligible open PR on another
+base. It records that PR's number, URL and actual base. Multiple eligible
+cross-base candidates stop publication before creation. An explicit
+`base_branch` keeps lookup and creation scoped to that base.
 
 Publishing is also collision-tolerant at create time. If `gh pr create` fails
 because a pull request already exists for the branch (a race with the pre-create
 check, or a stale local view), `workflow-publish` re-runs the scoped PR lookup;
 when an OPEN PR now exists it returns `state=existing-open-pr` success rather than
-`FAILED_PR_CREATE`. Only a genuinely absent PR combined with a failed create is a
-hard failure.
+`FAILED_PR_CREATE`. Collision recovery uses the same base-selection rules as
+the initial lookup. If it cannot identify an eligible open PR, including when
+the lookup is ambiguous, publication returns `FAILED_PR_CREATE`.
 
-Closed-unmerged PRs with remaining branch diff are a hard failure. The workflow
-must not silently republish, mark them complete, or hide the fact that user
-action is required.
+When a closed-unmerged PR is selected after open-PR discovery, remaining branch
+diff is a hard failure requiring user action. The workflow must not silently
+republish or mark that PR complete. With `base_branch` empty, an eligible open
+cross-base PR takes precedence over a closed-unmerged PR on the resolved base.
 
 ## Finalize behavior
 
@@ -102,7 +113,7 @@ These context keys influence publish/finalize behavior:
 | `provider_context` | publish, finalize | Structured provider helper result. `GitHub` enables GitHub PR handling; `AzureDevOps`, `Local`, and `Unsupported` use manual or blocked publication states. |
 | `remote_host_type` | publish | Legacy compatibility input. Implementations may accept `github`, `azure-devops`, `azdo`, or `local`, but must normalize to `provider_context` before provider operations. |
 | `branch_name` | publish, finalize | Current workflow branch or explicit branch to inspect. |
-| `base_branch` | publish, finalize | Base branch for diff checks. Defaults to the detected remote default branch. |
+| `base_branch` | publish, finalize | Explicit base for lookup, creation and diff checks. When empty, publish resolves the default base and can adopt an open GitHub PR on another base; finalize uses the recorded PR base. See [base selection](../reference/workflow-delivery-inputs.md#an-open-pull-request-on-another-base). |
 | `pr_number` | finalize | Existing PR to finalize when known. |
 | `pr_url` | finalize | Existing PR URL to parse when `pr_number` is absent. |
 | `issue_number` | publish | Issue/work item identifier used in PR title/body generation. |

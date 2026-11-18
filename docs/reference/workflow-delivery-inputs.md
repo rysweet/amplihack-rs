@@ -1,3 +1,9 @@
+---
+title: Workflow Delivery Inputs Reference
+description: Base selection, existing pull request adoption, and strict delivery inputs.
+doc_type: reference
+---
+
 # Workflow Delivery Inputs Reference
 
 > [Home](../index.md) > Reference > Workflow Delivery Inputs
@@ -14,6 +20,7 @@ lists the paths that do not use them.
 
 - [Inputs](#inputs)
 - [`base_branch`](#base_branch)
+  - [An open pull request on another base](#an-open-pull-request-on-another-base)
 - [How finalize finds the base](#how-finalize-finds-the-base)
 - [`forbidden_base_branches`](#forbidden_base_branches)
 - [`strict_delivery`](#strict_delivery)
@@ -31,7 +38,7 @@ lists the paths that do not use them.
 
 | Key | Default | Meaning |
 | --- | ------- | ------- |
-| `base_branch` | `""` | Branch a new task branch starts from and the pull request targets. Empty keeps the remote default branch for the new branch and the new pull request; finalize then takes the base from the pull request the run opened. |
+| `base_branch` | `""` | Branch a new task branch starts from and the pull request targets. Empty keeps the remote default branch for the new branch and the new pull request, unless the branch already has an open pull request into another base, which step-16 then uses ([below](#an-open-pull-request-on-another-base)); finalize then takes the base from the pull request the run opened or used. |
 | `forbidden_base_branches` | `""` | Shell globs that `base_branch` must not match, separated by spaces, tabs or newlines (see [below](#forbidden_base_branches)). |
 | `strict_delivery` | `"false"` | Exactly `"true"` turns on the strict contract below. `"false"` or empty leaves it off. Step-03 fails on any other value, such as `1`, `yes` or `TRUE`. |
 | `repository` | `""` | Strict delivery: the `owner/repo` on github.com that owns `issue_number`. |
@@ -62,7 +69,10 @@ checks the pull request against the base that pull request actually has, as
 described in [How finalize finds the base](#how-finalize-finds-the-base). A
 local `origin/HEAD` that is out of date, for example after the repository's
 default branch on GitHub changed to `dev`, no longer makes step-21 miss the
-pull request.
+pull request. On GitHub, before it creates anything, step-16 also looks for an
+open pull request from the branch into any base, and uses it instead of
+opening a second one; see
+[An open pull request on another base](#an-open-pull-request-on-another-base).
 
 When `base_branch` is set:
 
@@ -73,7 +83,7 @@ When `base_branch` is set:
 | step-08c | The work verifier counts commits from `worktree_setup.base_ref`, or `origin/HEAD` when the receipt has no base. |
 | step-14 | The version-bump agent compares against `worktree_setup.base_ref`, or `main` when the receipt has no base. |
 | step-15, step-16 | The protected-branch guard refuses `main`, `master` and `base_branch`. A set `base_branch` adds a refused branch; it never removes one. |
-| step-16 | The base is `origin/<base_branch>`, with no discovery or fallback. `gh pr create` gets `--base=<base_branch>`. On Azure DevOps the same base is the `--target-branch`. |
+| step-16 | The base is `origin/<base_branch>`, with no discovery or fallback. `gh pr create` gets `--base=<base_branch>`. On Azure DevOps the same base is the `--target-branch`. An open pull request from the branch into another base is neither looked for nor used, so `gh pr create --base=<base_branch>` still runs when one exists. |
 | terminal-state probe (publish and finalize) | The base is `origin/<base_branch>`. The diff, the commit count and the pull request's `baseRefName` are checked against it. |
 | step-21 | `workflow_pr_ready.sh --base <base_branch>`: the scoped match and the `baseRefName` check before `gh pr ready` expect `base_branch`. |
 | terminal adjudication, step-22b | `workflow_terminal_evidence.sh collect-for-step --base <base_branch>` and `workflow_final_status.sh --base <base_branch>`: the no-diff check, the scoped match and the "work already in the base" evidence use `base_branch`. |
@@ -102,6 +112,159 @@ other base is substituted, when `base_branch`:
 GitHub applies closing keywords only when a pull request merges into the
 repository's default branch. With any other base, `Closes` links the pull
 request to the issue but does not close the issue when it merges.
+
+### An open pull request on another base
+
+With `base_branch` empty, step-16 takes the base from `origin/HEAD` as
+described above. A branch can already have an open pull request into a
+different base, for example one opened into `dev` by an earlier run or by a
+person, while `origin/HEAD` names `main`. On GitHub, step-16 uses that pull
+request instead of opening a second one into `main` (#2784).
+
+This applies to GitHub only. On Azure DevOps, step-16 still uses only an
+active pull request whose target branch is the resolved base
+(`select_matching_azdo_pr`), so a branch that already has an active pull
+request into another target branch is still given a second one.
+
+Step-16 passes `--any-base-open` to `workflow_pr_scope.sh` only when
+`base_branch` is empty. The scope helper reads the same
+`gh pr list --head <branch> --state all` reply it already uses, so the search
+makes no extra GitHub call. The first rule that applies decides:
+
+| Order | Pull requests from the branch | What step-16 does |
+| ----- | ----------------------------- | ----------------- |
+| 1 | An open one into the resolved base | Uses it, as before. Open pull requests into other bases are ignored. |
+| 2 | Exactly one open one into another base | Uses it, and records its base as `base_branch` in the publish result. |
+| 3 | Two or more open ones into other bases | Exits 1 before any create, with no publish result (shown below). |
+| 4 | No open one on any base | As before: a merged or closed pull request into the resolved base is classified, and otherwise `gh pr create` runs without `--base`. |
+
+Closed and merged pull requests into other bases are never used and do not
+change the outcome.
+
+Rule 2 comes before rule 4, so an open pull request into another base wins
+over a merged or closed pull request into the resolved base. Such a branch
+used to end with the outcome of the pull request into the resolved base:
+`MERGED` (`already-merged` or `closed-after-merge`), `CLOSED_OBSOLETE` or
+`FAILED_CLOSED_UNMERGED`. It now ends with `existing-open-pr` on the other
+base. For example, a branch that still differs from `main`, with closed pull
+request #600 into `main` and open pull request #615 into `dev`, no longer
+fails with `FAILED_CLOSED_UNMERGED`: step-16 uses #615.
+
+Under rule 3 the lookup stops step-16 before it creates anything. Step-16 exits
+1 without writing a publish result, and stderr reads:
+
+```text
+ERROR: FAILED_PR_IDENTITY (exit 1): scoped PR lookup failed: multiple_scoped_prs
+ERROR: workflow_publish_pr.sh: scoped_pr_lookup failed (exit 1)
+```
+
+A pull request into another base is considered only when:
+
+- its `headRefName` is exactly the branch being delivered;
+- it is open;
+- its `baseRefName` is not empty and differs from the resolved base;
+- `isCrossRepository` is `false` and the head repository's `owner/name` is this
+  checkout's `origin`. A pull request from a fork that uses the same branch
+  name is not considered.
+
+These eligibility conditions apply independently. A candidate with
+`isCrossRepository: true` is excluded even when its repository metadata
+otherwise matches. A candidate with an empty `baseRefName` is also excluded;
+the helper does not substitute the resolved base for missing metadata. If
+there are no other candidates, either case returns `no_scoped_pr`.
+
+In discovery mode, the issue number, head commit, title prefix and creation
+time are not requirements for a unique match. They break ties among pull
+requests into the resolved base. Two open pull requests from one branch have
+the same head commit, so these fields
+could not tell them apart, and a check that set the only candidate aside would
+lead straight to the second pull request this rule prevents.
+
+An explicitly named pull request (`--pr-number` or `--pr-url`) keeps the
+existing authoritative validation, including supplied issue and head-SHA
+checks. `--any-base-open` does not widen that lookup. See the
+[scope helper selection rules](scoped-workflow-closure.md#pr-scope-helper).
+
+Step-16 adds no base check of its own for that base. Finalize checks it:
+step-21 and step-22b read the recorded base and pass it through
+`delivery_base_ref` with `forbidden_base_branches` (rule 4 of
+[How finalize finds the base](#how-finalize-finds-the-base)), so a base in
+`forbidden_base_branches`, or one with no `origin/<base>` in the clone, stops
+the run there. A caller that needs the pull request on a fixed base sets
+`base_branch`.
+
+Step-16 retains the existing best-effort `WORKFLOW_PR_LABELS` behavior. It
+does not validate an adopted base before labeling, so configured labels can
+reach a pull request whose base is forbidden or has not been fetched, before
+finalize refuses it. A label alone establishes neither author trust nor base
+authorization; callers using labels to trigger merges must enforce those
+policies before merging. Issue #2784 explicitly excludes new guard checks.
+Author validation remains tracked in
+[#2789](https://github.com/rysweet/amplihack-rs/issues/2789), and auto-drive's
+separate base-policy gap in
+[#2790](https://github.com/rysweet/amplihack-rs/issues/2790).
+
+The pull request's author is not checked, so whoever can open a pull
+request from the branch chooses the base the run records
+([#2789](https://github.com/rysweet/amplihack-rs/issues/2789)).
+
+When the pull request's base differs from the resolved base, the publish
+result's `message` names both:
+
+```text
+existing open PR #615 targets dev; the resolved base was main; kept dev
+```
+
+The pull request keeps its base. Step-16 does not retarget, close or comment on
+it.
+
+When `gh pr create` fails, for example because a pull request appeared after
+the lookup, step-16 runs the collision lookup with the same option. One open
+pull request on another base is used, and the message starts with
+`adopted existing open PR after create collision; ` followed by the clause
+above. Any failure of the collision lookup itself, including
+`multiple_scoped_prs`, ends as it did before: the publish result's `state` is
+`FAILED_PR_CREATE`, its `message` is the create error followed by
+`; scoped collision lookup failed (exit 1)`, and step-16 exits with the status
+of `gh pr create`. Stderr also carries the lookup's own `FAILED_PR_IDENTITY`
+line.
+
+When the bases match, both messages stay as they were:
+`existing open PR found for branch` and
+`adopted existing open PR after create collision`.
+
+Strict delivery does not change any of this. With `strict_delivery: "true"`
+and `base_branch` empty, step-16 checks `pr_repository` and
+`closing_reference` before the lookup, as before, and then uses an open pull
+request on another base by the same rules. A strict caller that needs the pull
+request on a fixed base sets `base_branch`.
+
+Example: the project's
+[isolated publish scenario](../../tests/gadugi/scenarios/issue-2784-existing-pr-on-other-base.yaml)
+uses repository identity `owner/repo` and branch `feat/issue-2784-qa`.
+`origin/HEAD` names `main`, `origin/dev` exists, and the stub `gh` returns open
+pull request #615 into `dev`. With `base_branch` empty, step-16 makes no
+`gh pr create` call and writes this expected publish result:
+
+```json
+{
+  "state": "existing-open-pr",
+  "legacy_state": "existing-open-pr",
+  "terminal_status": "success",
+  "pr_url": "https://github.com/owner/repo/pull/615",
+  "pr_number": "615",
+  "branch_diff_status": "has-diff",
+  "message": "existing open PR #615 targets dev; the resolved base was main; kept dev",
+  "base_branch": "dev"
+}
+```
+
+`branch_diff_status` is still measured against the resolved base. Finalize
+takes `dev` from the publish result (rule 2 of
+[How finalize finds the base](#how-finalize-finds-the-base)), so step-21 finds
+#615 with `workflow_pr_scope.sh --base dev` and marks it ready. The same run
+started with `-c base_branch=main` does not look for #615: step-16 runs
+`gh pr create --base=main`.
 
 ## How finalize finds the base
 
@@ -148,14 +311,17 @@ the final report, is the one exception; see
 
 Each helper works the base out once and uses that one value for both the
 scoped lookup (`workflow_pr_scope.sh --base`) and the identity check before
-`gh pr ready`. `workflow_pr_scope.sh` does not change: it still requires
-`--base` and still compares the head branch, head commit, head repository and
-`baseRefName`. A pull request this run did not open is never found by a
-search.
+`gh pr ready`. `workflow_pr_scope.sh` still requires `--base` and still
+compares the head branch, head commit, head repository and `baseRefName`. The
+finalize helpers never pass `--any-base-open`, so they find only a pull
+request into the base worked out above, never one found by a wider search.
 
 Step-16 writes `base_branch` into the publish result only when the base was
 checked: the base it passed to `gh pr create --base`, or the `baseRefName` of
-an existing pull request whose identity it confirmed. A pull request created
+an existing pull request whose identity it confirmed, which can be a pull
+request on another base
+([An open pull request on another base](#an-open-pull-request-on-another-base)).
+A pull request created
 without `--base`, the no-diff exit and every error exit record `""`. A run
 whose publish result has no `base_branch`, including runs from before the
 field existed, uses rule 3. A recorded base is still compared with the live
@@ -218,9 +384,10 @@ The terminal-state recipe's strict gate (`strict-terminal-state` in
 `workflow-terminal-state.yaml`) runs the same `workflow_final_status.sh` with
 `--base "${RECIPE_VAR_base_branch:-}"`. With an empty `base_branch` it gets the
 same fallback, and it passes when the fallback match confirms the success
-state the publish evidence set. That is safe: `workflow_pr_scope.sh` keeps
-only pull requests whose live `baseRefName` equals `--base`, so a match means
-the pull request's base really is the default branch.
+state the publish evidence set. That is safe: the gate does not pass
+`--any-base-open`, so `workflow_pr_scope.sh` keeps only pull requests whose
+live `baseRefName` equals `--base`, and a match means the pull request's base
+really is the default branch.
 
 A base that is *refused* (exit code 1) is never replaced. The fallback does
 not run when:
@@ -342,7 +509,7 @@ Required inputs:
 | step-06d | Reads the issue with `gh issue view N --repo github.com/<repository>`. A closed issue in this checkout's repository that shares the number no longer skips implementation. |
 | step-08c | The work verifier reads the issue through the URL step-03 recorded, which names the owning repository. |
 | step-15 | The commit message names the issue with `strict_issue_tag`, the rule step-03 and step-16 use: `owner/repo#N` when the issue is in another repository, compared case-insensitively. |
-| step-16 | `pr_repository` and `closing_reference` are checked again against the checkout's `origin` before any write. The title suffix, summary and issue line use the reference. The issue title is read from `repository`. The issue claim check is skipped when the issue is in another repository (see below). |
+| step-16 | `pr_repository` and `closing_reference` are checked again against the checkout's `origin` before any write. The title suffix, summary and issue line use the reference. The issue title is read from `repository`. The issue claim check is skipped when the issue is in another repository (see below). With `base_branch` empty, the lookup can still use an open pull request on another base ([details](#an-open-pull-request-on-another-base)). |
 
 The issue must be open, as on the ordinary path (#1595). A task that was
 closed while it waited in the caller's queue, as completed or as not planned,
@@ -386,6 +553,10 @@ must equal this reference exactly. Step-03 and step-16 fail when it does not.
   about its constraints puts them in `requirements`, which step-02 receives
   verbatim.
 - It does not merge. Use `should_merge` and `no_merge` as before.
+- It does not fix the base when `base_branch` is empty. Step-16 then uses an
+  open pull request from the branch into another base, if there is exactly
+  one ([details](#an-open-pull-request-on-another-base)). A caller that needs a
+  fixed base sets `base_branch`.
 - It does not verify that GitHub linked the pull request to the issue. A
   caller that needs that confirms it itself.
 
@@ -611,7 +782,20 @@ cargo test -p amplihack --test integration issue_1881_local_default_tracking::st
 cargo test -p amplihack --test integration workflow_publish_pr_metadata::recovery
 cargo test -p amplihack --test integration workflow_delivery_inputs
 cargo test -p amplihack --test integration workflow_finalize_resilience
+cargo test -p amplihack --test integration workflow_publish_pr_metadata::existing_pr_other_base
+cargo test -p amplihack --test integration pr_scope_primary_key::
 bash tests/issue_1596_final_status_branch_pr_lookup.sh
+```
+
+The outside-in scenario for
+[An open pull request on another base](#an-open-pull-request-on-another-base)
+runs the shipped step-16 through `amplihack recipe run` with a stub `gh`; CI's
+install-smoke job runs it against the installed binary. It needs
+`recipe-runner-rs` on `PATH` or in `RECIPE_RUNNER_RS_PATH`:
+
+```bash
+AMPLIHACK_2784_QA_BIN="$(command -v amplihack)" \
+  bash tests/gadugi/run-issue-2784-existing-pr-other-base-scenario.sh
 ```
 
 The shell test runs step-22b with a fake `gh` whose `gh pr view` returns
