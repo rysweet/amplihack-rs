@@ -47,9 +47,10 @@ fn spool(dir: &Path) -> Result<File> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&path)
         .with_context(|| format!("cannot create spool file in {}", dir.display()))?;
-    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     std::fs::remove_file(&path)
         .with_context(|| format!("cannot unlink spool file {}", path.display()))?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("cannot finalize private spool in {}", dir.display()))?;
     Ok(file)
 }
 

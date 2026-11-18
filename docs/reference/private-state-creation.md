@@ -35,12 +35,16 @@ never follows a final symlink. `create_private_file` always creates exclusively.
 or publication can observe the temporary file.
 
 Directories are traversed with `openat(O_DIRECTORY | O_NOFOLLOW)` and created
-with `mkdirat` relative to the parent handle. On Linux an `O_PATH` handle and
-`fchmodat2(AT_EMPTY_PATH)` restore owner access even to a new mode-`0000`
-directory. The operation fails if that kernel mechanism is unsupported; there
-is no pathname chmod fallback. On other Unix systems ordinary directory
-handles and `fchmod` are used; a mask that prevents opening the new directory
-produces an error. Existing directories are traversed without changing their
+with `mkdirat` relative to the parent handle. A descriptor's actual mode is
+checked before return. On Linux, directories already at the required owned
+mode need no chmod; readable directory handles use ordinary `fchmod`.
+Initially inaccessible directories use `O_PATH` and `fchmodat2(AT_EMPTY_PATH)`.
+When that syscall or flag is unavailable, a verified procfs directory handle
+addresses the live numeric descriptor through its kernel-owned magic link.
+This supports older Linux kernels without chmodding a user pathname. Actual
+permission errors are propagated. If no secure mechanism is available, the
+operation fails. On other Unix systems ordinary directory handles and `fchmod`
+are used; a mask that prevents opening the new directory produces an error. Existing directories are traversed without changing their
 modes. Callers remain responsible for admitting existing parents and using a
 trusted hierarchy; recovery's ancestor checks remain authoritative.
 

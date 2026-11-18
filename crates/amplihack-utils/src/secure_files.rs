@@ -273,6 +273,28 @@ mod tests {
         tmp
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn procfs_directory_finalization_restores_owner_access_through_a_pinned_handle() {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        let tmp = private_tempdir();
+        let path = tmp.path().join("inaccessible");
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let directory = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&path)
+            .unwrap();
+        let result = unix::finalize_directory_via_procfs(&directory);
+        let observed = directory.metadata().map(|meta| meta.mode() & 0o7777);
+        // Restore this fixture before assertions even when finalization failed.
+        let cleanup = fs::set_permissions(&path, fs::Permissions::from_mode(0o700));
+        assert!(result.is_ok(), "{result:?}; fixture cleanup: {cleanup:?}");
+        assert_eq!(observed.unwrap(), 0o700);
+        cleanup.unwrap();
+    }
+
     #[test]
     fn temp_bases_are_canonical_and_distinct() {
         let bases = temp_bases();

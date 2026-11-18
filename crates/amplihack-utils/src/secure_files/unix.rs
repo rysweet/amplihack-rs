@@ -563,6 +563,32 @@ pub(super) fn ensure_legacy_directory(path: &Path) -> io::Result<()> {
 
 fn finalize_directory(dir: &fs::File) -> io::Result<()> {
     use std::os::fd::AsRawFd;
+    let metadata = dir.metadata()?;
+    if metadata.uid() == euid() && metadata.mode() & 0o7777 == 0o700 {
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::FromRawFd;
+        // A readable handle to the same pinned inode supports ordinary fchmod
+        // on older kernels. The fixed dot component cannot be substituted.
+        let fd = unsafe {
+            libc::openat(
+                dir.as_raw_fd(),
+                c".".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd >= 0 {
+            // SAFETY: openat returned a fresh directory descriptor.
+            let readable = unsafe { fs::File::from_raw_fd(fd) };
+            return readable.set_permissions(fs::Permissions::from_mode(0o700));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::PermissionDenied {
+            return Err(error);
+        }
+    }
     #[cfg(target_os = "linux")]
     // SAFETY: dir is a live O_PATH descriptor and AT_EMPTY_PATH addresses
     // that inode, including when it currently has mode 0000.
@@ -579,8 +605,61 @@ fn finalize_directory(dir: &fs::File) -> io::Result<()> {
     // SAFETY: dir is an owned directory descriptor.
     let result = unsafe { libc::fchmod(dir.as_raw_fd(), 0o700) };
     if result < 0 {
-        Err(io::Error::last_os_error())
+        let error = io::Error::last_os_error();
+        #[cfg(target_os = "linux")]
+        if matches!(error.raw_os_error(), Some(libc::ENOSYS | libc::EINVAL)) {
+            return finalize_directory_via_procfs(dir);
+        }
+        Err(error)
     } else {
         Ok(())
     }
+}
+
+/// Compatibility for kernels without fchmodat2/AT_EMPTY_PATH. Procfs owns
+/// these magic links: the numeric entry addresses our live, pinned descriptor,
+/// not a user pathname. Verify the backing filesystem before following it.
+#[cfg(target_os = "linux")]
+pub(super) fn finalize_directory_via_procfs(dir: &fs::File) -> io::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    // SAFETY: fixed terminated path, no creation flags; the final entry must
+    // be a directory, and no user-controlled final symlink is followed.
+    let fd = unsafe {
+        libc::open(
+            c"/proc/self/fd".as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "private directory mode restoration requires fchmodat2 or procfs: {}",
+                io::Error::last_os_error()
+            ),
+        ));
+    }
+    // SAFETY: open returned a fresh descriptor owned exactly once.
+    let proc_dir = unsafe { fs::File::from_raw_fd(fd) };
+    let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
+    // SAFETY: descriptor is live and info points to writable statfs storage.
+    if unsafe { libc::fstatfs(proc_dir.as_raw_fd(), info.as_mut_ptr()) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful fstatfs initialized info.
+    let info = unsafe { info.assume_init() };
+    if i128::from(info.f_type) != i128::from(libc::PROC_SUPER_MAGIC) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "private directory mode restoration requires a real procfs descriptor directory",
+        ));
+    }
+    let name = std::ffi::CString::new(dir.as_raw_fd().to_string())
+        .expect("decimal descriptors contain no NUL");
+    // SAFETY: proc_dir pins a kernel procfs fd directory, and dir stays live.
+    // Its numeric magic link cannot be replaced by another filesystem user.
+    if unsafe { libc::fchmodat(proc_dir.as_raw_fd(), name.as_ptr(), 0o700, 0) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
