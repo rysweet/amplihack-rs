@@ -12,15 +12,14 @@
 //!
 //! 1. the user's own global configuration — a commit identity and a
 //!    URL-scoped credential helper — reaches a step;
-//! 2. #2096's protection is untouched: inherited `GIT_DIR` and
+//! 2. inherited Git routing is scrubbed: `GIT_DIR` and
 //!    `GIT_INDEX_FILE` still cannot send a run's Git back to the checkout
 //!    they name.
 //!
 //! The runner is a stub shell script wired through `RECIPE_RUNNER_RS_PATH`.
-//! `RunCheckout::apply_to` is applied to exactly that command, at both of its
-//! call sites in `execute.rs`, so the stub's environment is the environment
-//! every step would inherit. The stub runs the real Git operations rather
-//! than asserting on a list of variable names.
+//! `execute.rs` scrubs routing after constructing that command, so the stub's
+//! environment is the environment every step would inherit. The stub runs real
+//! Git operations rather than asserting on a list of variable names.
 //!
 //! Nothing here reads or writes the developer's real `~/.gitconfig`,
 //! `~/.claude` or `~/.amplihack`: `Fixture::base_environment` clears the
@@ -41,8 +40,7 @@ use std::{
 
 /// The commit identity that exists only in the temporary `HOME`'s
 /// `.gitconfig`. The caller's checkout deliberately has no `--local`
-/// `user.name`, because `RunCheckout::prepare` copies a local one into the
-/// private clone and would mask what this test is asking about.
+/// `user.name`, which would mask what this test is asking about.
 const SENTINEL_NAME: &str = "Issue 2756 Global Identity";
 const SENTINEL_EMAIL: &str = "issue-2756@example.invalid";
 
@@ -233,7 +231,7 @@ impl Fixture {
     }
 
     /// A commit with an identity given on the command line, so no `--local`
-    /// `user.name` is left behind for `RunCheckout::prepare` to copy.
+    /// `user.name` is left behind to mask the global identity.
     fn commit_in(&self, dir: &Path, message: &str) {
         self.git_in(
             dir,
