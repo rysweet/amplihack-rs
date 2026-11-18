@@ -1,6 +1,6 @@
 ---
 title: Build Preflight Decision
-description: PR facts, build-or-reuse decisions, and planned recovery of missing worktrees in the private run repository.
+description: PR facts, build-or-reuse decisions, and recovery of missing worktrees in the private run repository.
 last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
@@ -114,33 +114,34 @@ When no PR exists, the preflight creates no worktree and no state. The PR is not
 known yet, so state keyed by a branch name such as `main` would collide across
 lanes (#1680). Step-03 keys the state once phase 1 has opened the PR.
 
-### Planned missing-worktree recovery [PLANNED - Implementation Pending]
+### Missing-worktree recovery (#2802)
 
-Issue #2802 will add explicit recovery instructions to build preflight and
-step-03. The current recipe resolves existing worktrees but does not explicitly
-recover a missing one. For an observed OPEN PR, the planned steps will fetch
-the head and create a separate linked worktree in the private run repository
-on the head branch at the exact observed SHA. They must verify canonical
-repository ownership, registration, branch, and SHA, and require success from
-`amplihack orch helper autodrive worktree` before publishing `repo`.
-The detached launch checkout, dirty contents, and operator-clone worktrees
-remain intact; a worktree in another clone cannot establish private ownership.
+Build preflight and step-03 explicitly recover a genuinely missing linked
+worktree for an observed OPEN PR. They fetch the PR head, use the trusted
+worktree-base convention, create a separate checkout in the captured run
+repository on the head branch at the exact observed SHA, and verify common
+directory ownership, registration, branch, SHA, and the existing Worktree
+helper before publishing `repo`. The detached launch checkout and its contents,
+dirty worktrees, and operator-clone worktrees remain intact.
 
-Build preflight remains `fast`; step-03 remains `strong`. Under the planned
-contract, if preflight reports a missing worktree, step-03 can recover it and replace that blocker with
-current verified evidence. The original observation remains in `reason` or
-`attempts`. Existing OPEN PRs continue to skip step-02; recovery does not
-require another implementation run.
+Preflight remains `fast`; step-03 remains `strong`. Step-03 rechecks current
+state independently of preflight. Successful verification supersedes only
+resolved worktree/state absence, retaining the original observation in
+`reason` or `attempts` and preserving unrelated blockers. Existing OPEN PRs
+still skip step-02 and can complete build-phase resolution without another
+implementation run. The step conditions and typed handoffs are unchanged.
 
-In the missing-worktree recovery path, `no-worktree` means the head fetch
-actually failed and includes its concrete diagnostic. Ownership, identity,
-creation, and validation failures remain explicit failures of those
-operations. MERGED and other non-OPEN PRs retain their existing outcomes
-without recovery mutations. See [auto-drive worktree recovery](autodrive-worktree-recovery.md)
-for branch preservation, failure classifications, the
-[planned investigation record](autodrive-worktree-recovery.md#planned-investigation-record),
-and required behavioral evidence. The issue-2802 Rust harness, Gadugi scenario
-and driver, and CI integration are planned; no passing result is claimed here.
+Only an actual failed head fetch is `no-worktree` in the recovery path, with
+its concrete sanitized diagnostic and exit status. Ownership, identity,
+creation, and validation failures remain explicit. Non-OPEN PRs receive no
+recovery mutations. Review resolution uses the existing owned-review operation
+when the private bare repository has no main checkout.
+
+See [auto-drive worktree recovery](autodrive-worktree-recovery.md) and the
+[investigation record](../investigations/issue-2802-worktree-recovery.md).
+The Rust harness and CI-only Gadugi scenario/driver exist; their real-agent
+recovery and release results remain unverified without provider credentials.
+Gadugi is never run on this host.
 
 ## Behaviour test
 
@@ -210,6 +211,6 @@ elsewhere:
 ## Related
 
 - [Auto Drive To Merge Reference](./auto-drive-to-merge.md) - the drive that `autodrive-build` feeds
-- [Auto-drive Worktree Recovery](./autodrive-worktree-recovery.md) - planned private-repository recovery, verification, and required CI-only release evidence
+- [Auto-drive Worktree Recovery](./autodrive-worktree-recovery.md) - private-repository recovery, verification, and required CI-only release evidence
 - [Auto-Drive-Light Recipe](./auto-drive-light.md) - its preflight wording is tracked separately on #2539
 - [Workflow Terminal State](./workflow-terminal-state.md) - what step-02's `default-workflow` run reports back to step-03

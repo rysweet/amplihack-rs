@@ -1,21 +1,19 @@
 ---
 title: Auto-drive Worktree Recovery
-description: Planned recovery of missing PR-head worktrees in a private auto-drive repository, failure classification, and required evidence.
+description: Recovery of missing PR-head worktrees in a private auto-drive repository, failure classification, and required evidence.
 last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
 ---
 
-# Auto-drive worktree recovery [PLANNED - Implementation Pending]
+# Auto-drive worktree recovery
 
-This reference specifies intended behavior for issue #2802. The current recipes
-resolve existing worktrees but lack an explicit missing-worktree recovery
-sequence. Recovery, the test harness, and CI integration described here remain
-planned until their implementation lands. Existing behavior is identified below.
-
-For an observed OPEN PR, the planned recovery fetches a missing head, creates
-a separate linked worktree in the run's own repository, and verifies it before continuing.
+The five agent steps below instruct recovery for an observed OPEN PR: fetch a
+missing head, create a separate linked worktree in the run's own repository,
+and verify it before continuing. This instruction repair has behavioral
+contracts and CI wiring; real-agent and release results remain unverified
+until actually executed.
 The detached launch checkout remains at its base commit with its contents
 unchanged. An operator clone's worktree cannot substitute for a worktree
 registered in the private run repository.
@@ -29,21 +27,21 @@ registered in the private run repository.
 - [Current results and historical observations](#current-results-and-historical-observations)
 - [Configuration and authentication](#configuration-and-authentication)
 - [Failure classifications](#failure-classifications)
-- [Planned behavior examples](#planned-behavior-examples)
-- [Planned investigation record](#planned-investigation-record)
+- [Behavior examples](#behavior-examples)
+- [Investigation record](#investigation-record)
 - [Required behavioral and release evidence](#required-behavioral-and-release-evidence)
 - [Related references](#related-references)
 
 ## Entry points
 
-| Recipe | Planned recovery step |
+| Recipe | Recovery step |
 | --- | --- |
 | `autodrive-build` | `step-01-build-preflight` and `step-03-resolve-pr` |
 | `auto-drive-light` | Existing-PR worktree resolution |
 | `autodrive-merge-loop` | `step-01-merge-loop-preflight` |
 | `autodrive-crusty-loop` | `step-01-crusty-loop-preflight`, before existing-worktree reconciliation |
 
-Recovery will be an agent responsibility within these steps. Existing build
+Recovery is an agent responsibility within these steps. Existing build
 preflight uses the `fast` model tier; build step-03 uses `strong`. Tier selection alone is
 not evidence that recovery succeeds or fails.
 
@@ -72,7 +70,7 @@ repository's branch of the same name is insufficient.
 
 ## Recovery sequence
 
-The planned entry-point instructions must carry out this sequence:
+The entry-point instructions require this sequence:
 
 1. Inspect worktrees registered in the captured private repository. Reuse an
    existing valid candidate through the established validation path. An
@@ -132,10 +130,9 @@ remove Crusty's established ahead-worktree review behavior.
 
 ## Current results and historical observations
 
-Build step-03 already consumes the complete `build_preflight` report. Under
-the planned contract it must recheck current state and recover a worktree that
-preflight found missing. After successful
-creation and verification, the earlier absence remains historical evidence in
+Build step-03 consumes the complete `build_preflight` report and rechecks
+current state, recovering a worktree that preflight found missing. After
+successful creation and verification, the earlier absence remains historical evidence in
 `reason` or `attempts`; it no longer belongs in current `blockers`.
 
 This does not clear an access, identity, private-state, or implementation
@@ -150,7 +147,7 @@ merge-loop base synchronization retain their existing contracts.
 
 ## Configuration and authentication
 
-Planned recovery is automatic for eligible OPEN PRs and adds no context key or CLI
+Recovery is automatic for eligible OPEN PRs and adds no context key or CLI
 option. Existing settings retain their meaning:
 
 | Input | Recovery use |
@@ -171,16 +168,15 @@ credentials in remote URLs, prompts, or evidence.
 These classifications describe the missing-worktree recovery path; they do
 not introduce new output fields or redefine unrelated entry-point outcomes.
 
-Crusty will report each recovery failure through its existing JSON fields:
+Crusty reports each recovery failure through its existing JSON fields:
 `should_run="false"`, a nonempty `skip_reason`, the operation and cause in
 `reason`, a named current failure in `blockers`, and attempted operations,
 sanitized diagnostics and available exit statuses in `attempts`. Keep the
 observed PR identity and head; leave `repo=""` until all worktree checks pass.
-The planned prompt will extend the reason vocabulary below, without adding
-fields or changing their types. Downstream conditions still gate on
+The recovery reason vocabulary below adds no fields or field types. Downstream conditions still gate on
 `should_run`, not on reason tokens.
 
-| Observation | Planned Crusty `skip_reason` and diagnostic |
+| Observation | Crusty `skip_reason` and diagnostic |
 | --- | --- |
 | Head fetch fails | `no-worktree`; concrete fetch diagnostic and exit status. Sanitize credentials while retaining the failure cause. |
 | Fetch succeeds but does not supply the observed SHA, or branch/SHA differs | `worktree-identity-failed`; expected and observed identity and the failed check. |
@@ -190,9 +186,8 @@ fields or changing their types. Downstream conditions still gate on
 | Linked registration is absent or the Worktree helper refuses the candidate | `worktree-validation-failed`; failed check, helper diagnostic and exit status where available. |
 | Private state cannot be established | Existing `no-state`, with `state_dir=""`; retain any unrelated blockers. |
 
-These operation-specific tokens are planned additions to the recipe's current
-reason list. The shipped `no-worktree` reason still covers any missing or
-unverifiable worktree. Existing divergence remains `worktree-diverged`; a
+These operation-specific tokens distinguish recovery failures within the existing
+report fields. `no-worktree` in this path is reserved for an actual fetch failure. Existing divergence remains `worktree-diverged`; a
 creation failure must not be presented as divergence without that evidence.
 Build preflight has no `should_run` or `skip_reason`; it retains its PR facts
 and reports these failures in `reason`, `blockers`, and `attempts`. Other
@@ -205,9 +200,9 @@ the verified checkout must still match the observed full SHA; a mismatched
 candidate is an identity failure rather than permission to silently change
 the target.
 
-## Planned behavior examples
+## Behavior examples
 
-These are acceptance cases for the intended recovery, not observed test results.
+These are acceptance cases for the instructed recovery, not observed test results.
 
 | Starting state | Result |
 | --- | --- |
@@ -218,33 +213,38 @@ These are acceptance cases for the intended recovery, not observed test results.
 | Destination already contains a dirty incompatible worktree | Preserve it and report the conflict explicitly; do not replace it. |
 | PR is already MERGED | Retain the merged outcome without fetching or creating a recovery worktree. |
 
-## Planned investigation record
+## Investigation record
 
-The investigation must distinguish source-confirmed omissions from causal
-hypotheses. Record execution evidence in issue #2802 or private runtime logs;
-this section defines the required record, not a completed investigation.
+[The investigation checkpoint](../investigations/issue-2802-worktree-recovery.md)
+records the pre-repair omissions and separates hypotheses from confirmed
+findings. All five steps previously requested an existing worktree without a
+fetch/create/verify path for absence. Build step-03 consumed the earlier
+preflight report without explicitly superseding recovered absence. Model-tier
+causation and actual verdict propagation remain unresolved without comparable
+real-agent traces. The repair preserves `fast` preflight and `strong` resolution.
 
-| Classification | Finding or question | Source or evidence required |
-| --- | --- | --- |
-| Confirmed omission | Build preflight, build step-03, light resolution, merge preflight, and Crusty preflight lack an explicit fetch/create/verify sequence for a missing worktree. | Read the entry-point prompts in [autodrive-build](../../amplifier-bundle/recipes/autodrive-build.yaml), [auto-drive-light](../../amplifier-bundle/recipes/auto-drive-light.yaml), [autodrive-merge-loop](../../amplifier-bundle/recipes/autodrive-merge-loop.yaml), and [autodrive-crusty-loop](../../amplifier-bundle/recipes/autodrive-crusty-loop.yaml). Existing behind-head repair does not recover absence. |
-| Confirmed omission | The issue-2802 Rust harness, Gadugi scenario/driver, and CI integration described below are absent. | Repository file inventory and [CI workflow](../../.github/workflows/ci.yml); their proposed paths below are deliverables, not evidence of execution. |
-| Hypothesis | The `fast` tier causes recovery failures that `strong` would avoid. | Run the same real-agent fixture and recovery instructions with recorded adapter/model configuration and operation traces. Current tier labels alone establish no cause. |
-| Hypothesis | An earlier absence blocker survives successful recovery, or a verdict is lost or misclassified downstream. | Trace the complete preflight and step-03 outputs, verified Git state, round record, decision writer result, and downstream consumer at the same head. A missing recovery instruction alone proves neither verdict loss nor a propagation defect. |
+The unchanged Worktree validator still refuses invalid candidates. No
+production recovery helper, output schema, guard, retry, timer, or timeout
+change was added. The existing trusted worktree-base and private-state helpers
+retain their contracts. Review-directory resolution uses the existing
+`review-dir` operation, or `private-review-dir` for a private bare repository
+without a main checkout; the latter provisions an owned generation outside the
+PR worktree rather than treating the bare repository's parent as trusted.
 
-For each run, retain the source revision, entry point, adapter/model, observed
-PR state and SHA, captured repository identity, attempted operations and exit
-statuses, helper output, current blockers, and downstream outcome. Mark each
-hypothesis supported, refuted, or unresolved with its evidence; unavailable
-credentials or an unexecuted case leave it unresolved. Do not treat the
-required tests below as results already obtained.
+For each real-agent run, retain the source revision, entry point, adapter/model,
+observed PR state and SHA, captured repository identity, attempted operations
+and exit statuses, helper output, current blockers, and downstream outcome.
+Unavailable credentials or unexecuted cases leave the hypotheses unresolved.
 
 ## Required behavioral and release evidence
 
-**Planned:** The Rust harness, Gadugi scenario and driver below do not yet
-exist, and CI has no issue-2802 integration. The following requirements define
-the evidence implementation must supply; this reference claims no passing run.
+**Validation status:** The Rust harness, Gadugi scenario/driver and CI wiring
+exist. The two local fixture/helper checks are infrastructure evidence only.
+The 14 real-agent cases have not been executed here: the explicitly supplied
+provider credential is unavailable. No passing recovery or release result is
+claimed, and Gadugi has not been run on this host.
 
-The planned `crates/amplihack-cli/tests/issue_2802_worktree_recovery.rs` must use
+The `crates/amplihack-cli/tests/issue_2802_worktree_recovery.rs` harness uses
 isolated Git fixtures and a real supported agent adapter to execute shipped recovery
 instructions. Required fixtures include a bare private clone, detached launch checkout,
 known PR-head branch and SHA, operator clone, and a `gh` metadata stub that
@@ -260,10 +260,10 @@ Coverage must also include valid reuse, fetch errors, occupied destinations,
 invalid-helper candidates, permitted fork heads, and non-OPEN immutability.
 Recipe-text and prompt-phrase assertions are not behavioral evidence.
 
-The planned release scenario is
+The CI-only release scenario is
 `tests/gadugi/scenarios/issue-2802-worktree-recovery.yaml`, with the thin driver
-`tests/gadugi/drivers/issue-2802-worktree-recovery.sh`. Planned CI wiring must
-run it using the installed binary and pinned runner. The driver must reuse the
+`tests/gadugi/drivers/issue-2802-worktree-recovery.sh`. CI wiring runs it in the
+trusted main context using the installed binary and pinned runner. The driver reuses the
 real-agent path; it must not fetch, create worktrees, or manufacture success.
 Neither the scenario nor its driver may run on the development host.
 

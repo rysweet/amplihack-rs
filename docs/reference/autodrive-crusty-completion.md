@@ -43,7 +43,7 @@ only when it is `"true"`. An open PR with a verified worktree at the PR head,
 valid private state and no complete Crusty round at that head always runs the
 loop.
 
-The current recipe sets `should_run` to `"false"` only in these cases, each
+The recipe sets `should_run` to `"false"` only in these cases, each
 with named blockers or observations:
 
 | `skip_reason` | Observation |
@@ -52,31 +52,30 @@ with named blockers or observations:
 | `closed` | The PR is closed without merging. |
 | `complete-at-head` | An evidence-valid `CLEAN` or `MINOR_ONLY` round already exists at the current PR head. |
 | `no-access` | The PR cannot be read, or cannot be identified unambiguously, through any configured authenticated interface. |
-| `no-worktree` | No linked worktree for the PR head branch can be found or verified. |
+| `no-worktree` | The missing-head recovery fetch failed, with its concrete diagnostic and exit status. |
 | `no-state` | The private state directory cannot be created, or existing state is unsafe. `state_dir` is then `""`. |
 | `worktree-diverged` | The worktree and the PR head have diverged and cannot be reconciled without losing commits. |
 
 `skip_reason` is `""` if and only if `should_run` is `"true"`. It is
 informational: the step conditions compare only `should_run`.
 
-**[PLANNED - Implementation Pending, #2802]:** For an OPEN PR with a genuinely
-missing linked worktree, preflight will first
-[recover it in the private run repository](autodrive-worktree-recovery.md).
-The current recipe has no explicit missing-worktree recovery sequence.
-The planned recovery fetches the observed head, creates a separate linked
-worktree on the head branch at that SHA, verifies ownership and registration, and requires success
-from the existing Worktree helper. The detached launch checkout and dirty
-worktrees remain unchanged. Creation, ownership, identity, and validation
-failures are explicit failures of those operations, not `no-worktree` fetch
-failures. Non-OPEN PRs receive no recovery mutations.
+**Issue #2802:** For an OPEN PR with a genuinely missing linked worktree,
+preflight first [recovers it in the private run repository](autodrive-worktree-recovery.md).
+It fetches the observed head, creates a separate checkout on the head branch
+at that SHA, verifies ownership and registration, and requires success from
+the unchanged Worktree helper. The detached launch checkout and dirty contents
+remain unchanged. Non-OPEN PRs receive no recovery mutations.
 
-Within that recovery path, `no-worktree` will be reserved for an actual fetch
-failure. Creation, ownership, identity, and validation failures will set
-`should_run="false"` and an operation-specific nonempty `skip_reason`, with
-the cause in `reason`, the named failure in `blockers`, and diagnostics and
-exit statuses in `attempts`. `repo` stays empty until worktree verification
-succeeds. The [planned failure mapping](autodrive-worktree-recovery.md#failure-classifications)
-specifies those reason tokens; it adds no output fields or field types.
+In this path only an actual fetch failure is `no-worktree`. Creation, ownership,
+identity, and validation failures set `should_run="false"` and respectively
+`worktree-creation-failed`, `worktree-ownership-failed`,
+`worktree-identity-failed`, or `worktree-validation-failed` in `skip_reason`.
+The cause belongs in `reason`, the named failure in `blockers`, and sanitized
+diagnostics and exit statuses in `attempts`. `repo` stays empty until worktree
+verification succeeds. These are reason values in existing fields, not a new
+schema. See [failure mapping](autodrive-worktree-recovery.md#failure-classifications).
+Real-agent recovery and CI-only release evidence remain unverified until the
+credentialed suite runs; local helper checks alone do not establish recovery.
 
 The preflight agent decides whether a round is complete at the head, using
 the rule from #2345: a `CLEAN` round, or a `MINOR_ONLY` round whose follow-up
@@ -84,7 +83,7 @@ obligations are met. No Rust function makes that judgement. An existing open
 PR whose round at the current head is incomplete, missing or recorded at an
 older head is not `complete-at-head`, so step-02 and step-03 run.
 
-Under the planned contract, newly recovered worktrees must match the exact
+Newly recovered worktrees must match the exact
 observed SHA. The following existing-worktree rules already apply:
 
 - A worktree behind the PR head is repaired with `git fetch` and

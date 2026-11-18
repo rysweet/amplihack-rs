@@ -185,9 +185,9 @@ PR number and URL, branches, head, base, and observed state. Explicit PR input
 takes precedence. Conflicting identifiers remain blockers. Missing platform
 access produces a named incomplete outcome.
 
-**[PLANNED - Implementation Pending, #2802]:** For an observed OPEN PR whose
+**Issue #2802:** For an observed OPEN PR whose
 head branch has no linked worktree in the private run repository, the build
-and merge-loop entry points will
+and merge-loop entry points
 [fetch, create, and verify a separate linked worktree](autodrive-worktree-recovery.md)
 there. The verified absolute path becomes `repo`; the detached launch checkout
 stays unchanged. Successful recovery supersedes historical absence while
@@ -195,9 +195,8 @@ preserving unrelated blockers. Only an actual head-fetch failure is
 `no-worktree` in this recovery path; creation and validation failures remain
 explicit. Existing-worktree reconciliation and merge-loop base synchronization
 retain their existing behavior.
-The current recipes resolve existing worktrees without an explicit
-missing-worktree recovery sequence. Required real-agent and CI evidence is
-[planned](autodrive-worktree-recovery.md#required-behavioral-and-release-evidence),
+Required real-agent and CI evidence remains
+[unverified](autodrive-worktree-recovery.md#required-behavioral-and-release-evidence),
 not a claim of passing validation.
 
 ### Where phases 2 and 3 run
