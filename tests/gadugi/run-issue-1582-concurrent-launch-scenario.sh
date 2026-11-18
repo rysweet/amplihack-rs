@@ -32,8 +32,10 @@
 # writes one token to a FIFO: `waiting` when the lock-wait line appears (it is
 # printed after about two seconds of waiting), or `exited` if the launch ends
 # without it. A launch that never waits for the lock fails the scenario at
-# once. A launch that blocks anywhere else blocks the scenario; CI bounds the
-# step with timeout-minutes.
+# once. A launch that blocks anywhere else, before the lock-wait line or after
+# it has taken the lock, blocks the scenario. Neither this driver nor its CI
+# step sets a time limit, so in CI such a launch holds the Install Smoke Test
+# runner until GitHub Actions' default job limit (360 minutes) ends the job.
 #
 # claude, node, amplihack-hooks and recipe-runner-rs are stubs first on PATH,
 # so nothing real is launched. AMPLIHACK_HOME names this checkout, so the

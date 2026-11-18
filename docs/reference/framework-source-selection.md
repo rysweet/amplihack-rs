@@ -174,9 +174,12 @@ Every install stages under `~/.amplihack/.install.lock`. Explicit `install`,
 including the install child that `amplihack update` starts, chooses its
 source and runs any release tag fetch before it takes the lock. Self-heal and
 the launch bootstrap's re-stage take the lock first, so their fetch runs
-under it. Once they hold the lock, they also re-read the stamp and check
-again whether a re-stage is needed, so a launch that waited for another
-install stages nothing if that install has already done the work (#1582).
+under it, and other installs and launches that need the lock can wait up to
+the 60-second limit above
+([#2798](https://github.com/rysweet/amplihack-rs/issues/2798)). Once they hold
+the lock, they also re-read the stamp and check again whether a re-stage is
+needed, so a launch that waited for another install stages nothing if that
+install has already done the work (#1582).
 
 ## Fetch backoff
 

@@ -408,7 +408,10 @@ Rules:
 - Explicit `install`, including the post-update install child, chooses its
   framework source and runs any release tag fetch before it takes the lock.
   Self-heal and the launch bootstrap's re-stage take the lock first, so their
-  fetch runs under it.
+  fetch runs under it, and other installs and launches that need the lock can
+  wait for that fetch (up to its 60-second limit). Whether to fetch before
+  taking the lock is tracked in
+  [#2798](https://github.com/rysweet/amplihack-rs/issues/2798).
 - Self-heal and the launch bootstrap re-read the version stamp once they hold
   the lock, through one shared helper (`self_heal::restage_under_install_lock`).
   If the stamp is now newer than the running binary, they stage nothing. If
@@ -732,7 +735,8 @@ These checks accept a link into a release and still reject anything else:
   lock. The steps that follow it (the slash-command top-up, the
   `settings.json` hook repair, the Codex reconciliation, the Codex deny rules
   and the Claude `permissions.deny` refresh) do not take the lock, so two
-  launches started together can run them at the same time.
+  launches started together can run them at the same time. This is tracked in
+  [#2798](https://github.com/rysweet/amplihack-rs/issues/2798).
 - Auto-drive binds its full trusted execution bundle per invocation.
   Other consumers that read `$AMPLIHACK_HOME/amplifier-bundle/<file>` directly
   after a switch can see a different complete file.
