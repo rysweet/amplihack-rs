@@ -17,6 +17,20 @@ const CONFIG: &str =
     "# fixture configuration must remain unchanged\nsandbox_mode = \"read-only\"\n";
 const PROMPT: &[u8] = b"Review this commit and return the Crusty verdict.\n";
 const FINAL: &str = "{\"crusty_verdict\":\"CLEAN\",\"concerns\":[]}\n";
+/// The #2010 notice for the runner's argv. Only an owned launch names the
+/// Git-check bypass, so stderr records whether ownership was established.
+const OWNED_NOTICE: &str = "amplihack: codex exec: added --skip-git-repo-check, \
+                            --sandbox danger-full-access, \
+                            --dangerously-bypass-hook-trust (#2788, #1985)";
+const CHECKOUT_NOTICE: &str = "amplihack: codex exec: added --sandbox danger-full-access, \
+                               --dangerously-bypass-hook-trust (#1985)";
+
+fn stderr_lines(out: &Output) -> Vec<String> {
+    String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
 
 // Parse values before flags, just as Codex does. Check Git context BEFORE
 // producing a final message: without automatic injection the reported bug
@@ -292,6 +306,11 @@ fn crusty_step_in_provisioned_launch_runs_with_one_skip_flag() {
     let launch = f.step(&f.launch, &[]);
     succeeds(&launch.out);
     assert_eq!(launch.skip_count, 1, "{:?}", launch.argv);
+    let stderr = stderr_lines(&launch.out);
+    assert!(
+        stderr.iter().any(|line| line == OWNED_NOTICE),
+        "the notice must name the Git-check bypass: {stderr:?}"
+    );
     assert_eq!(
         fs::read_to_string(f.root.join("final-message")).unwrap(),
         FINAL
@@ -322,6 +341,17 @@ fn ordinary_linked_and_owned_review_checkouts_keep_codex_git_check() {
             "checkout {}: {:?}",
             cwd.display(),
             launch.argv
+        );
+        let stderr = stderr_lines(&launch.out);
+        assert!(
+            stderr.iter().any(|line| line == CHECKOUT_NOTICE),
+            "checkout {}: {stderr:?}",
+            cwd.display()
+        );
+        assert!(
+            !stderr.iter().any(|line| line.contains(SKIP)),
+            "checkout {}: {stderr:?}",
+            cwd.display()
         );
     }
 }

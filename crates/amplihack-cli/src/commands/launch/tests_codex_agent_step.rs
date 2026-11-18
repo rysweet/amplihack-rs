@@ -774,7 +774,81 @@ const NOTICE_SANDBOX_ONLY: &str =
     "amplihack: codex exec: added --sandbox danger-full-access (#1985)";
 
 fn notice(argv: &[&str]) -> Option<String> {
-    codex_agent_step_notice(&v(argv))
+    codex_agent_step_notice(&v(argv), false)
+}
+
+fn owned_notice(argv: &[&str]) -> Option<String> {
+    codex_agent_step_notice(&v(argv), true)
+}
+
+// ---- issue #2788: the notice names the Git-check bypass ----
+
+const NOTICE_OWNED_ALL: &str = "amplihack: codex exec: added --skip-git-repo-check, \
+                                --sandbox danger-full-access, \
+                                --dangerously-bypass-hook-trust (#2788, #1985)";
+
+/// The runner's own argv: an owned launch names all three flags, in argv order.
+#[test]
+fn issue_2788_owned_notice_names_skip_check_first() {
+    for argv in [
+        &["exec", "--output-last-message", "/r/final", "-"][..],
+        &["e", "-"][..],
+        &["-m", "gpt", "exec", "-"][..],
+    ] {
+        assert_eq!(
+            owned_notice(argv).as_deref(),
+            Some(NOTICE_OWNED_ALL),
+            "argv {argv:?}"
+        );
+        assert_eq!(notice(argv).as_deref(), Some(NOTICE_ALL), "argv {argv:?}");
+    }
+}
+
+/// A caller's sandbox suppresses the #2010 line only when nothing else that
+/// depends on hidden state is added; the Git-check bypass is still named.
+#[test]
+fn issue_2788_owned_notice_survives_caller_sandbox_choice() {
+    assert_eq!(
+        owned_notice(&["exec", "--sandbox", "read-only", "-"]).as_deref(),
+        Some(
+            "amplihack: codex exec: added --skip-git-repo-check, --dangerously-bypass-hook-trust (#2788, #1985)"
+        )
+    );
+    assert_eq!(
+        owned_notice(&["exec", "--sandbox", "read-only", HOOK_TRUST, "-"]).as_deref(),
+        Some("amplihack: codex exec: added --skip-git-repo-check (#2788)")
+    );
+    assert_eq!(
+        owned_notice(&["exec", HOOK_TRUST, "-"]).as_deref(),
+        Some(
+            "amplihack: codex exec: added --skip-git-repo-check, --sandbox danger-full-access (#2788, #1985)"
+        )
+    );
+    assert_eq!(notice(&["exec", "--sandbox", "read-only", "-"]), None);
+}
+
+/// A caller-supplied bypass is not added again, so it is not named, and argv
+/// without `exec` gets no line even when the directory is owned.
+#[test]
+fn issue_2788_owned_notice_omits_skip_check_not_added() {
+    assert_eq!(
+        owned_notice(&["exec", "--skip-git-repo-check", "-"]).as_deref(),
+        Some(NOTICE_ALL)
+    );
+    assert_eq!(
+        owned_notice(&[
+            "exec",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            HOOK_TRUST,
+            "-"
+        ]),
+        None
+    );
+    for argv in [&[][..], &["resume", "--last"][..], &["--", "exec"][..]] {
+        assert_eq!(owned_notice(argv), None, "argv {argv:?}");
+    }
 }
 
 #[test]
@@ -973,8 +1047,9 @@ fn notice_ignores_argument_content() {
     assert!(line.is_ascii(), "{line:?}");
 }
 
-/// The line is `Some` exactly when `--sandbox danger-full-access` is spliced in,
-/// and it never names something the argv does not contain.
+/// The line is `Some` exactly when `--sandbox danger-full-access` or
+/// `--skip-git-repo-check` is spliced in, and it never names something the
+/// argv does not contain.
 #[test]
 fn notice_matches_the_injected_argv() {
     let mut inputs = every_input();
@@ -985,24 +1060,33 @@ fn notice_matches_the_injected_argv() {
         "sandbox_workspace_write.network_access=false",
         HOOK_TRUST,
     ]));
+    inputs.push(v(&["exec", "--skip-git-repo-check", "-"]));
+    inputs.push(v(&["exec", "--sandbox", "read-only", HOOK_TRUST, "-"]));
     for input in inputs {
-        let out = codex_agent_step_args(&input);
-        let added = |token: &str| count(&out, token) > count(&input, token);
-        let line = codex_agent_step_notice(&input);
-        assert_eq!(
-            line.is_some(),
-            added("danger-full-access"),
-            "input {input:?}: argv {out:?}, notice {line:?}"
-        );
-        let Some(line) = line else { continue };
-        assert!(!line.contains("network"), "{input:?}: {line}");
-        assert!(!line.contains("workspace-write"), "{input:?}: {line}");
-        assert_eq!(
-            line.contains(HOOK_TRUST),
-            added(HOOK_TRUST),
-            "{input:?}: {line}"
-        );
-        assert_eq!(line.lines().count(), 1, "{line:?}");
+        for owned in [false, true] {
+            let out = transform(&input, owned);
+            let added = |token: &str| count(&out, token) > count(&input, token);
+            let line = codex_agent_step_notice(&input, owned);
+            assert_eq!(
+                line.is_some(),
+                added("danger-full-access") || added("--skip-git-repo-check"),
+                "owned {owned}, input {input:?}: argv {out:?}, notice {line:?}"
+            );
+            let Some(line) = line else { continue };
+            assert!(!line.contains("network"), "{input:?}: {line}");
+            assert!(!line.contains("workspace-write"), "{input:?}: {line}");
+            assert_eq!(
+                line.contains(HOOK_TRUST),
+                added(HOOK_TRUST),
+                "{input:?}: {line}"
+            );
+            assert_eq!(
+                line.contains("--skip-git-repo-check"),
+                added("--skip-git-repo-check"),
+                "owned {owned}, {input:?}: {line}"
+            );
+            assert_eq!(line.lines().count(), 1, "{line:?}");
+        }
     }
 }
 
@@ -1028,9 +1112,11 @@ fn full_access_injected_only_after_exec() {
 fn notice_is_pure_and_repeatable() {
     let argv = v(&["exec", "-"]);
     let before = argv.clone();
-    assert_eq!(
-        codex_agent_step_notice(&argv),
-        codex_agent_step_notice(&argv)
-    );
+    for owned in [false, true] {
+        assert_eq!(
+            codex_agent_step_notice(&argv, owned),
+            codex_agent_step_notice(&argv, owned)
+        );
+    }
     assert_eq!(argv, before);
 }

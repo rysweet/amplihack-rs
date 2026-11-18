@@ -4,7 +4,12 @@
 # Shell composes the existing CLI/recipe processes; production code is Rust.
 # Run in CI, never on a factory host. No live credentials or host agent state.
 set -euo pipefail
-umask 022
+# Owner-only from the first mkdir. `amplihack recipe run` opens
+# AMPLIHACK_WORK_ROOT through the pinned runner's private store, which refuses
+# any root that is not owned and mode 0700 (recipe-runner-rs 2833a0b,
+# src/recovery/private_fs.rs). Under umask 022 the work, home and tmp roots
+# were 0755 and the run stopped before its first step.
+umask 077
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
@@ -21,11 +26,25 @@ BIN="$(realpath -- "$BIN")"
 RUNNER="$(realpath -- "$RUNNER")"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/issue-2788-qa.XXXXXX")"
 WORK="$(cd -- "$WORK" && pwd -P)"
+# fail <label>: name the failing step on stdout; the EXIT trap then prints
+# each evidence file under its own header and SCENARIO_FAILED. Without the
+# headers a tail of round.err cannot be told apart from the job's own stderr:
+# the first CI failure of this driver (job 134724256224) printed the tail of
+# round.err, `recipe run`'s "Error: recovery directory must be owned and mode
+# 0700", and it read as a failure in the setup commands before the run.
+fail() {
+  echo "FAIL: $*"
+  exit 1
+}
 cleanup() {
   local rc=$?
   if [ "$rc" -ne 0 ]; then
-    for log in "$WORK/round.err" "$WORK/round.out" "$WORK/launches/events.jsonl"; do
-      if [ -f "$log" ]; then tail -n 35 -- "$log"; fi
+    for log in round.err round.out launches/events.jsonl writer.out \
+      prepared.json state/crusty-round-1.json completion.json gh-calls; do
+      if [ -f "$WORK/$log" ]; then
+        echo "--- $log (last 60 lines) ---"
+        tail -n 60 -- "$WORK/$log"
+      fi
     done
     echo SCENARIO_FAILED
   fi
@@ -34,8 +53,10 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$WORK/bin" "$WORK/home/.codex" "$WORK/home/.claude" \
   "$WORK/home/.amplihack" "$WORK/home/.config" "$WORK/tmp" "$WORK/work" \
-  "$WORK/state" "$WORK/launches"
-chmod 700 "$WORK/state"
+  "$WORK/state" "$WORK/launches" || fail 'create scratch folders'
+for root in "$WORK" "$WORK/home" "$WORK/tmp" "$WORK/work" "$WORK/state"; do
+  [ "$(stat -c %a -- "$root")" = 700 ] || fail "scratch root ${root#"$WORK"} is not mode 0700"
+done
 
 # No inherited PATH: a missing fixture must never start a real agent.
 for tool in bash sh cat cmp cp chmod cut dirname find git grep head id jq ls mkdir \
@@ -70,10 +91,10 @@ fixture_git() {
   scenario_env git -c user.name=QA -c user.email=qa@example.invalid \
     -c commit.gpgsign=false -c init.templateDir= "$@"
 }
-fixture_git init -q -b main "$WORK/main"
-fixture_git -C "$WORK/main" commit --allow-empty -qm baseline
-fixture_git -C "$WORK/main" worktree add -qb qa/pr-7 "$WORK/pr"
-fixture_git -C "$WORK/pr" rev-parse HEAD > "$WORK/head"
+fixture_git init -q -b main "$WORK/main" || fail 'fixture git init'
+fixture_git -C "$WORK/main" commit --allow-empty -qm baseline || fail 'fixture git commit'
+fixture_git -C "$WORK/main" worktree add -qb qa/pr-7 "$WORK/pr" || fail 'fixture git worktree add'
+fixture_git -C "$WORK/pr" rev-parse HEAD > "$WORK/head" || fail 'fixture git rev-parse'
 
 cat > "$WORK/bin/codex" <<'STUB'
 #!/bin/bash
@@ -165,19 +186,24 @@ chmod 700 "$WORK/bin/codex" "$WORK/bin/gh" "$WORK/bin/codex-code-mode-host" "$WO
 
 TOOLS="$REPO_ROOT/amplifier-bundle/tools"
 RECIPE="$REPO_ROOT/amplifier-bundle/recipes/autodrive-crusty-round.yaml"
-REVIEW="$(scenario_env "$BIN" internal review-allocate "$WORK/pr" "$WORK/state")"
-LAUNCH="$(scenario_env "$BIN" internal review-launch "$REVIEW")"
+REVIEW="$(scenario_env "$BIN" internal review-allocate "$WORK/pr" "$WORK/state")" ||
+  fail 'review-allocate'
+LAUNCH="$(scenario_env "$BIN" internal review-launch "$REVIEW")" || fail 'review-launch'
 HEAD_SHA="$(cat "$WORK/head")"
 RECORD="$WORK/state/crusty-round-1.json"
 scenario_env "$BIN" orch helper autodrive-completion-prepare \
   --state-dir "$WORK/state" --round-label round-1 --record "$RECORD" \
-  --repo "$WORK/pr" --review-dir "$REVIEW" --launch-tools "$TOOLS" > "$WORK/prepared.json"
-PRIVATE_STATE="$(jq -r .private_state "$WORK/prepared.json")"
+  --repo "$WORK/pr" --review-dir "$REVIEW" --launch-tools "$TOOLS" > "$WORK/prepared.json" ||
+  fail 'autodrive-completion-prepare'
+PRIVATE_STATE="$(jq -er .private_state "$WORK/prepared.json")" ||
+  fail 'autodrive-completion-prepare printed no private_state'
 
 # This is the unchanged shipped recipe, not a substitute returning fixed
 # step outputs. All three agent steps cross the actual Codex launch path.
+# `set -e` does not apply inside a subshell on the left of `||`, so the
+# directory change is checked explicitly.
 (
-  cd -- "$WORK/main"
+  cd -- "$WORK/main" || exit 1
   scenario_env "$BIN" recipe run "$RECIPE" --working-dir "$WORK/main" --no-detach \
     -c "repo_path=$WORK/pr" -c "review_dir=$REVIEW" -c "review_launch_dir=$LAUNCH" \
     -c "reviewed_head_sha=$HEAD_SHA" -c "autodrive_launch_tools=$TOOLS" \
@@ -185,33 +211,38 @@ PRIVATE_STATE="$(jq -r .private_state "$WORK/prepared.json")"
     -c 'task_description=Verify Codex review launch execution for issue 2788' \
     -c "autodrive_round_record=$RECORD" -c "autodrive_completion_state=$PRIVATE_STATE" \
     -c autodrive_round_label=round-1 -c autodrive_dry_run=true
-) > "$WORK/round.out" 2> "$WORK/round.err"
+) > "$WORK/round.out" 2> "$WORK/round.err" || fail 'recipe run autodrive-crusty-round'
 
 jq -se --arg launch "$LAUNCH" '
   (map(.label) == ["context","review","decision"]) and
   all(.[]; .cwd == $launch and .git_checkout == false and .skip_count == 1)
-' "$WORK/launches/events.jsonl" >/dev/null
+' "$WORK/launches/events.jsonl" >/dev/null ||
+  fail "codex_context_review_and_decision_in_owned_launch (launch $LAUNCH)"
 echo 'PASS: codex_context_review_and_decision_in_owned_launch'
-OWNER="$(jq -r .owner "${REVIEW}.review-owner.json")"
+OWNER="$(jq -er .owner "${REVIEW}.review-owner.json")" || fail 'review owner manifest has no owner'
 jq -e --arg head "$HEAD_SHA" --arg owner "$OWNER" '
   .crusty_verdict == "CLEAN" and .reviewed_head_sha == $head and .head_sha == $head and
   .review_generation == $owner and .commits_this_round == 0 and .concern_count == 0
-' "$RECORD" >/dev/null
-[ ! -s "$RECORD.findings" ] && [ ! -e "$RECORD.minor" ] && [ ! -e "$RECORD.severity" ]
+' "$RECORD" >/dev/null || fail "clean_verdict_matches_head_and_generation (head $HEAD_SHA)"
+[ ! -s "$RECORD.findings" ] && [ ! -e "$RECORD.minor" ] && [ ! -e "$RECORD.severity" ] ||
+  fail 'clean_verdict_matches_head_and_generation: unexpected findings, minor or severity sidecar'
 echo 'PASS: clean_verdict_matches_head_and_generation'
 
 # The loop normally publishes these copies after a round. Reproduce that
 # publication, then validate completion through the production dispatcher.
-cp -- "$RECORD" "$WORK/state/crusty-latest.json"
-cp -- "$RECORD.findings" "$WORK/state/crusty-latest.json.findings"
-HASH="$(fixture_git -C "$WORK/pr" hash-object --no-filters "$RECORD")"
+cp -- "$RECORD" "$WORK/state/crusty-latest.json" || fail 'publish crusty-latest.json'
+cp -- "$RECORD.findings" "$WORK/state/crusty-latest.json.findings" ||
+  fail 'publish crusty-latest.json.findings'
+HASH="$(fixture_git -C "$WORK/pr" hash-object --no-filters "$RECORD")" || fail 'hash round record'
 printf 'round-1\tcrusty-round-1.json\t%s\n' "$HASH" > "$WORK/state/crusty-records.tsv"
 scenario_env "$BIN" orch helper autodrive-completion-dispatch \
-  --private-state "$PRIVATE_STATE" --child-exit-code 0 > "$WORK/completion.json"
+  --private-state "$PRIVATE_STATE" --child-exit-code 0 > "$WORK/completion.json" ||
+  fail 'autodrive-completion-dispatch'
 jq -e '.loop_result == "DONE" and .round_verdict == "CLEAN" and .evaluator_invoked == false' \
-  "$WORK/completion.json" >/dev/null
-DECISION="$(jq -r .decision_file "$WORK/prepared.json")"
-jq -e '.action == "complete"' "$DECISION" >/dev/null
+  "$WORK/completion.json" >/dev/null || fail 'real_completion_writer_and_dispatcher_complete (dispatch result)'
+DECISION="$(jq -er .decision_file "$WORK/prepared.json")" || fail 'prepared.json has no decision_file'
+jq -e '.action == "complete"' "$DECISION" >/dev/null ||
+  fail 'real_completion_writer_and_dispatcher_complete (decision action)'
 echo 'PASS: real_completion_writer_and_dispatcher_complete'
 if ! cmp -s -- "$WORK/codex-config.before" "$WORK/home/.codex/config.toml"; then
   echo 'FAIL: Codex configuration changed'; exit 1

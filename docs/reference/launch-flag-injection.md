@@ -342,14 +342,33 @@ ownership rule below determines whether `--skip-git-repo-check` is also added.
 | (none), `resume --last`, `"Explain this repository"` | nothing; interactive argv is unchanged |
 | `-c exec`, `-m exec`, `-- exec` | nothing; `exec` here is a value or a positional, not the subcommand |
 
-**Notice (issue #2010).** When amplihack adds `--sandbox danger-full-access`,
-it writes one line to stderr before Codex starts. The line lists the sandbox
-and hook-trust flags added, in the order they appear in the argv. The two possible lines are:
+**Notice (issue #2010).** When amplihack adds `--sandbox danger-full-access`
+or `--skip-git-repo-check`, it writes one line to stderr before Codex starts.
+The line lists every flag added, in the order it appears in the argv, followed
+by the issues that introduced them. The `--skip-git-repo-check` flag is always
+named when it is added, because whether it is added depends on ownership
+evidence on disk rather than on the argv
+([owned review launch directories](#owned-review-launch-directories)).
+
+In a directory that is not an owned review launch, the possible lines are:
 
 | Caller already set | Line written to stderr |
 |---|---|
 | nothing | `amplihack: codex exec: added --sandbox danger-full-access, --dangerously-bypass-hook-trust (#1985)` |
 | `--dangerously-bypass-hook-trust` | `amplihack: codex exec: added --sandbox danger-full-access (#1985)` |
+
+In an owned review launch directory, where the caller did not pass
+`--skip-git-repo-check`, the possible lines are:
+
+| Caller already set | Line written to stderr |
+|---|---|
+| nothing (the recipe runner's argv) | `amplihack: codex exec: added --skip-git-repo-check, --sandbox danger-full-access, --dangerously-bypass-hook-trust (#2788, #1985)` |
+| `--dangerously-bypass-hook-trust` | `amplihack: codex exec: added --skip-git-repo-check, --sandbox danger-full-access (#2788, #1985)` |
+| a sandbox | `amplihack: codex exec: added --skip-git-repo-check, --dangerously-bypass-hook-trust (#2788, #1985)` |
+| a sandbox and `--dangerously-bypass-hook-trust` | `amplihack: codex exec: added --skip-git-repo-check (#2788)` |
+
+A caller-supplied `--skip-git-repo-check` is not added again, so it is not
+named; the line is then the same as in a directory that is not owned.
 
 The line is written once per launch, and only to stderr, so a step's stdout
 and its `--output-last-message` file are unchanged. The line is built from
@@ -379,9 +398,10 @@ added; the table above is the record of what an agent step receives.
 
 No line is written when:
 
-- the caller chose a sandbox, in any of the forms listed above. The hook-trust
-  flag is still added in that case, without a line. Issue #2048 tracks
-  reporting it; issue #2009 is limited to whether the flag is added at all;
+- the caller chose a sandbox, in any of the forms listed above, and
+  `--skip-git-repo-check` is not added. The hook-trust flag is still added in
+  that case, without a line. Issue #2048 tracks reporting it; issue #2009 is
+  limited to whether the flag is added at all;
 - the argv has no `exec`/`e` subcommand, including an empty argv,
   `resume --last`, `-c exec` and `-- exec`.
 
@@ -455,7 +475,20 @@ forwarding and explicit caller bypass flags. Starting in an unowned directory
 never gains eligibility by selecting an owned directory.
 
 Invocations without an `exec`/`e` subcommand receive no
-automatic directory-check bypass.
+automatic directory-check bypass, and the ownership lookup does not run for
+them: the argument check comes first and rejects them without reading the
+filesystem.
+
+**Diagnosing a refused launch.** When the flag is added, the
+[stderr notice](#codex-agent-step-flags) names `--skip-git-repo-check`. A
+Codex step that fails with "not inside a trusted directory" while its notice
+names only the sandbox and hook-trust flags was not judged to be an owned
+launch directory: the directory is not the recorded launch path of a live
+generation, the generation was retired or replaced, or a `--cd`/`-C` override
+did not resolve to it. The reason is logged only at `debug` level
+(`RUST_LOG=amplihack_cli=debug`). The pinned recipe runner's advice in that
+message, to run from an existing Git checkout, does not apply to review
+launch directories, which are deliberately not checkouts.
 
 This behavior requires no new configuration key or environment variable.
 It writes no project trust entries or other settings to
@@ -474,10 +507,12 @@ derives their checkout paths internally, and reuses
 `review_generation::read_live(checkout)` validation. Exact normalized launch
 path equality is required; invalid candidates yield no eligibility.
 
-`build_command_for_dir` resolves ownership for the explicit child execution
-directory in its Codex branch and uses the existing prompt parser to prove
-any directory override selects that same directory. The argument transformer
-receives that Boolean and remains pure. This interface adds no public API, ownership
+`build_command_for_dir` decides ownership for the explicit child execution
+directory in its Codex branch. It first uses the existing prompt parser to
+reject argv without `exec`/`e` and to prove any directory override selects
+that same directory; only then does it run the ownership lookup. The argument
+transformer and the stderr notice both receive that one Boolean and remain
+pure, so the notice cannot disagree with the argv. This interface adds no public API, ownership
 registry or manifest schema.
 
 ---
@@ -608,9 +643,9 @@ assembles the final command line. The assembly order is:
 7. All `extra_args` in the order they were passed on the command line. For
    `codex`, `codex_agent_step_args()` first inserts the
    [Codex agent-step flags](#codex-agent-step-flags) after an `exec`/`e`
-   subcommand, if there is one. When the sandbox is among them,
-   `codex_agent_step_notice()` supplies the one stderr line described under
-   [Codex agent-step flags](#codex-agent-step-flags)
+   subcommand, if there is one. When the sandbox or `--skip-git-repo-check`
+   is among them, `codex_agent_step_notice()` supplies the one stderr line
+   described under [Codex agent-step flags](#codex-agent-step-flags)
 
 The following examples show the full assembled command for each launch
 subcommand with no extra args:

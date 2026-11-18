@@ -246,11 +246,16 @@ pub(crate) fn parse_exec_line(args: &[String]) -> Result<Option<ExecLine>> {
 /// with the prompt reader so option values, short clusters, subcommands and
 /// `--` have the same meaning. Uncertain argv only withholds injection; the
 /// caller still forwards the original arguments for Codex to handle.
+///
+/// Returns `false` for every argv without an `exec`/`e` subcommand (including
+/// top-level `codex review`), and touches the filesystem only when the argv
+/// carries a `--cd`/`-C` value. The launcher calls this before the ownership
+/// scan, so interactive launches never read review manifests (#2788).
 pub(super) fn directory_override_matches(args: &[String], launch_dir: &std::path::Path) -> bool {
     let Ok(Some(line)) = parse_exec_line(args) else {
         return false;
     };
-    if !line.known_options {
+    if line.scope == Scope::TopReview || !line.known_options {
         return false;
     }
     match line.directory_overrides.as_slice() {

@@ -211,3 +211,34 @@ fn directory_authorization_requires_one_known_resolvable_override() {
         assert!(directory_override_matches(&argv, launch.path()), "{args:?}");
     }
 }
+
+/// #2788: the launcher evaluates this argv check before the ownership scan,
+/// so it must reject every argv that cannot receive the Git-check bypass:
+/// interactive Codex, other subcommands and top-level `codex review`. The
+/// directory does not exist, so a `true` here could only come from argv.
+#[test]
+fn directory_authorization_rejects_non_exec_argv_before_any_lookup() {
+    use super::codex_exec_args::directory_override_matches;
+    let missing = std::path::Path::new("/nonexistent/issue-2788/launch");
+    for args in [
+        vec![],
+        vec!["a prompt"],
+        vec!["resume", "--last"],
+        vec!["review", "-"],
+        vec!["review", "--uncommitted"],
+        vec!["exec", "help"],
+        vec!["--", "exec"],
+        vec!["-m", "exec"],
+    ] {
+        let argv = args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        assert!(!directory_override_matches(&argv, missing), "{args:?}");
+    }
+    for args in [
+        vec!["exec", "-"],
+        vec!["e", "-"],
+        vec!["exec", "resume", "--last", "-"],
+    ] {
+        let argv = args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        assert!(directory_override_matches(&argv, missing), "{args:?}");
+    }
+}

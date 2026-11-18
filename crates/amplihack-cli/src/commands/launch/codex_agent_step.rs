@@ -9,9 +9,11 @@
 //! `--dangerously-bypass-hook-trust`, because Codex silently skips hooks whose
 //! trust is not recorded. The amplihack hooks enforce the same deny rules for
 //! both harnesses. A sandbox the caller chose is never overridden. This module
-//! is pure: it reads only the argv tail and the launcher's ownership fact.
-//! It also describes the injection as one stderr line for issue #2010, which
-//! the caller prints; the module itself still does no I/O.
+//! is pure: it reads only the argv tail and the ownership Boolean the launcher
+//! computed (#2788); the filesystem lookup behind that Boolean happens in
+//! `command.rs`, not here. It also describes the injection as one stderr line
+//! for issue #2010, which the caller prints; the module itself still does no
+//! I/O.
 //!
 //! Whether an option takes a value comes from the per-scope Codex option
 //! tables in `amplihack-launcher/src/prompt_delivery/codex_options.rs`, the
@@ -208,25 +210,45 @@ pub(super) fn codex_agent_step_args(args: &[String], owned_review_launch: bool) 
 
 /// Issue #2010: the stderr line naming what [`codex_agent_step_args`] adds,
 /// for example `amplihack: codex exec: added --sandbox danger-full-access,
-/// --dangerously-bypass-hook-trust (#1985)`.
+/// --dangerously-bypass-hook-trust (#1985)`. `owned_review_launch` must be the
+/// value passed to [`codex_agent_step_args`] for the same launch.
 ///
-/// Returns `None` unless `--sandbox danger-full-access` is added. When the caller
-/// chose a sandbox, the hook-trust bypass may still be added but no line is
-/// returned; issue #2048 tracks reporting that case. Issue #2009 covers
-/// whether the bypass is added at all, not whether it is reported.
+/// Returns `None` unless `--sandbox danger-full-access` or
+/// `--skip-git-repo-check` is added. The Git-check bypass is always named when
+/// it is added (#2788), because it depends on ownership evidence on disk that
+/// the operator cannot see in the argv the recipe author wrote. When the caller
+/// chose a sandbox and the directory is not an owned review launch, the
+/// hook-trust bypass may still be added but no line is returned; issue #2048
+/// tracks reporting that case. Issue #2009 covers whether the bypass is added
+/// at all, not whether it is reported.
 ///
 /// Pure. The text is built only from fixed constants, never from caller argv,
 /// so paths, `-c` values, profile names and prompt text cannot reach stderr.
-pub(super) fn codex_agent_step_notice(args: &[String]) -> Option<String> {
-    let plan = plan(args, false).filter(|plan| plan.sandbox)?;
-    let line = if plan.hook_trust {
-        NOTICE_WITH_HOOK_TRUST
-    } else {
-        NOTICE_SANDBOX_ONLY
+pub(super) fn codex_agent_step_notice(
+    args: &[String],
+    owned_review_launch: bool,
+) -> Option<String> {
+    let plan =
+        plan(args, owned_review_launch).filter(|plan| plan.sandbox || plan.skip_git_repo_check)?;
+    // Same order as the splice in `codex_agent_step_args`.
+    let sandbox = SANDBOX.join(" ");
+    let mut flags: Vec<&str> = Vec::new();
+    if plan.skip_git_repo_check {
+        flags.push(SKIP_GIT_REPO_CHECK);
+    }
+    if plan.sandbox {
+        flags.push(&sandbox);
+    }
+    if plan.hook_trust {
+        flags.push(HOOK_TRUST);
+    }
+    let issues = match (plan.skip_git_repo_check, plan.sandbox || plan.hook_trust) {
+        (true, true) => "#2788, #1985",
+        (true, false) => "#2788",
+        (false, _) => "#1985",
     };
-    Some(line.to_string())
+    Some(format!(
+        "amplihack: codex exec: added {} ({issues})",
+        flags.join(", ")
+    ))
 }
-
-const NOTICE_WITH_HOOK_TRUST: &str = "amplihack: codex exec: added --sandbox danger-full-access, --dangerously-bypass-hook-trust (#1985)";
-const NOTICE_SANDBOX_ONLY: &str =
-    "amplihack: codex exec: added --sandbox danger-full-access (#1985)";
