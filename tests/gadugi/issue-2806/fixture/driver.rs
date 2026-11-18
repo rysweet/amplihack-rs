@@ -162,7 +162,8 @@ fn stage(case: &IsolatedCase, args: &[String], name: &str) -> Result<()> {
         ("gh", fixture.clone()),
         ("claude", fixture.clone()),
         ("codex", fixture.clone()),
-        ("git-remote-issue2806", fixture),
+        ("git-remote-issue2806", fixture.clone()),
+        ("model-launcher", fixture),
     ] {
         ensure!(
             source.is_absolute() && source.is_file(),
@@ -170,7 +171,15 @@ fn stage(case: &IsolatedCase, args: &[String], name: &str) -> Result<()> {
             source.display()
         );
         let target = case.root.join("bin").join(key);
-        if ["gh", "claude", "codex", "git-remote-issue2806"].contains(&key) {
+        if [
+            "gh",
+            "claude",
+            "codex",
+            "git-remote-issue2806",
+            "model-launcher",
+        ]
+        .contains(&key)
+        {
             // Launchers canonicalize executable paths. Preserve the fixture's
             // invocation name even after that canonicalization.
             fs::copy(source, target)?;
@@ -230,7 +239,7 @@ gpgsign = false
         "AMPLIHACK_SKIP_POWER_STEERING":"1","AMPLIHACK_ROTATE_AUTOSTART":"0","AMPLIHACK_DISABLE_BLARIFY":"1",
         "AMPLIHACK_GOVERNOR":"off","AMPLIHACK_USAGE_LIMIT_WAIT":"0",
         "AMPLIHACK_CODEX_BINARY_PATH":case.root.join("bin/codex"),"AMPLIHACK_CLAUDE_BINARY_PATH":case.root.join("bin/claude"),
-        "AMPLIHACK_LAUNCHER_BINARY":case.root.join("bin/amplihack"),
+        "AMPLIHACK_LAUNCHER_BINARY":case.root.join("bin/model-launcher"),
             "GIT_ALLOW_PROTOCOL":"file:issue2806","CARGO_HOME":case.home.join(".cargo"),"PRE_COMMIT_HOME":case.home.join(".cache/pre-commit")
         }}),
     )?;
@@ -840,7 +849,7 @@ pub fn hold_work(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn sweep(case: &IsolatedCase, label: &str) -> Result<Value> {
+fn cleanup_output(case: &IsolatedCase, label: &str) -> Result<(Value, i32)> {
     let output = case
         .command(&case.root.join("bin/amplihack"))?
         .args([
@@ -862,13 +871,28 @@ fn sweep(case: &IsolatedCase, label: &str) -> Result<Value> {
         case.evidence.join(format!("{label}.stderr")),
         &output.stderr,
     )?;
-    ensure!(
-        output.status.success(),
-        "cleanup command failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(serde_json::from_slice(&output.stdout)?)
+    let exit = output
+        .status
+        .code()
+        .context("cleanup terminated by signal")?;
+    save(
+        &case.evidence.join(format!("{label}.exit.json")),
+        &json!({"exit_code":exit}),
+    )?;
+    Ok((
+        serde_json::from_slice(&output.stdout).context("cleanup did not return its JSON report")?,
+        exit,
+    ))
 }
+fn sweep(case: &IsolatedCase, label: &str) -> Result<Value> {
+    let (value, exit) = cleanup_output(case, label)?;
+    ensure!(
+        exit == 0,
+        "cleanup command failed with exit {exit}; see {label}.stdout/stderr"
+    );
+    Ok(value)
+}
+
 fn cleanup(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
     let caller = checkout(case)?.join("worktrees/pr-1");
     let recipe = case.root.join("cleanup-run.yaml");
@@ -962,8 +986,28 @@ fn cleanup(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
         fs::set_permissions(protected, fs::Permissions::from_mode(0o500))?;
         writeln!(pipe, "finish")?;
         child.wait()?;
-        let first = sweep(case, "cleanup-first")?;
-        let second = sweep(case, "cleanup-second")?;
+        let (first, first_exit) = cleanup_output(case, "cleanup-first")?;
+        let (second, second_exit) = cleanup_output(case, "cleanup-second")?;
+        for (report, exit) in [(&first, first_exit), (&second, second_exit)] {
+            ensure!([0, 1].contains(&exit), "unexpected cleanup exit {exit}");
+            let entries = report["entries"]
+                .as_array()
+                .context("cleanup entries missing")?;
+            ensure!(
+                entries
+                    .iter()
+                    .filter(|entry| entry["action"] == "failed")
+                    .all(|entry| entry["path"] == runtime.to_string_lossy().as_ref()
+                        && entry["reason"]
+                            .as_str()
+                            .is_some_and(|reason| reason.contains("Permission denied"))),
+                "unrelated cleanup failure cannot receive a regression allowance"
+            );
+            ensure!(
+                exit == 0 || entries.iter().any(|entry| entry["action"] == "failed"),
+                "cleanup failed without a removal-error record"
+            );
+        }
         save(&case.evidence.join("cleanup-first.json"), &first)?;
         save(&case.evidence.join("cleanup-second.json"), &second)?;
         let first_text =

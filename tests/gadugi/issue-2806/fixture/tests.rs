@@ -987,3 +987,11 @@ fn hosting_reads_the_real_publish_body_file_and_reports_failed_checks_as_failed(
     let value: Value = serde_json::from_slice(&response.stdout).unwrap();
     assert_eq!(value["statusCheckRollup"][0]["conclusion"], "FAILURE");
 }
+
+#[test]
+fn recovered_pending_finalization_can_pass_with_a_consistent_build_success() {
+    for state in ["IMPLEMENTED_VERIFIED", "EXISTING_OPEN_PR"] {
+        let observed=serde_json::from_value(json!({"context":"valid","context_read_error":null,"fault_before_consumption":false,"origin_head":BASE,"pr_head":BASE,"pr_state":"OPEN","checks":"pending","terminal_state":state,"terminal_success":true,"exit_code":0})).unwrap();
+        assert!(evidence::validate_pending_finalization(&observed).is_ok());
+    }
+}

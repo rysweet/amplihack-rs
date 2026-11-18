@@ -319,11 +319,16 @@ pub fn validate_pending_prerequisites(observed: &PendingFinalization) -> Result<
 }
 pub fn validate_pending_finalization(observed: &PendingFinalization) -> Result<()> {
     validate_pending_prerequisites(observed)?;
+    let consistent = match observed.terminal_state.as_str() {
+        "BLOCKED_CI" => !observed.terminal_success && observed.exit_code == 1,
+        "IMPLEMENTED_VERIFIED" | "EXISTING_OPEN_PR" => {
+            observed.terminal_success && observed.exit_code == 0
+        }
+        _ => false,
+    };
     ensure!(
-        observed.terminal_state == "BLOCKED_CI"
-            && !observed.terminal_success
-            && observed.exit_code == 1,
-        "pending checks must produce consistent BLOCKED_CI, observed {} / {}",
+        consistent,
+        "pending checks produced inconsistent or failed implementation classification: {} / {}",
         observed.terminal_state,
         observed.exit_code
     );

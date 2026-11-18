@@ -26,7 +26,10 @@ fn execute() -> Result<()> {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    if matches!(name, "gh" | "claude" | "codex" | "git-remote-issue2806") {
+    if matches!(
+        name,
+        "gh" | "claude" | "codex" | "git-remote-issue2806" | "model-launcher"
+    ) {
         return fixture(name, &args[1..]);
     }
     match args.get(1).map(String::as_str) {
@@ -57,17 +60,28 @@ fn execute() -> Result<()> {
 fn fixture(name: &str, arguments: &[String]) -> Result<()> {
     let root = std::path::PathBuf::from(std::env::var("AMPLIHACK_2806_ROOT")?);
     let case = IsolatedCase::open(&root)?;
+    if name == "model-launcher" {
+        return launch_model(&case, arguments);
+    }
     if name == "git-remote-issue2806" {
         return hosting::local_transport(&case, arguments);
     }
     let args: Vec<&str> = arguments.iter().map(String::as_str).collect();
     if args == ["--version"] {
-        let version = if name == "claude" {
-            "2.1.319"
-        } else {
-            "0.166.0"
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(case.evidence.join("version-probes.jsonl"))?;
+        writeln!(
+            log,
+            "{}",
+            serde_json::json!({"client":name,"args":arguments,"pid":std::process::id()})
+        )?;
+        match name {
+            "codex" => println!("codex-cli 0.98.0"),
+            "claude" => println!("2.1.319 (Claude Code)"),
+            _ => println!("gh version 2.70.0 (fixture)"),
         };
-        println!("{name} {version} (issue-2806 fixture)");
         return Ok(());
     }
     if name == "codex" && args.first() == Some(&"plugin") {
@@ -149,6 +163,49 @@ fn fixture(name: &str, arguments: &[String]) -> Result<()> {
         agent::write_codex_final(&case, std::path::Path::new(path), &response)?;
     } else {
         println!("{response}");
+    }
+    Ok(())
+}
+
+/// Transparent model-launch transport: execute the real CLI and retain its
+/// stderr before runtime cleanup. Model task stdin and stdout pass unchanged.
+fn launch_model(case: &IsolatedCase, arguments: &[String]) -> Result<()> {
+    use std::process::{Command, Stdio};
+    ensure!(
+        matches!(
+            arguments.first().map(String::as_str),
+            Some("codex" | "claude")
+        ),
+        "unsupported model launch command"
+    );
+    let id = uuid::Uuid::new_v4();
+    let mut log = std::fs::File::create(case.evidence.join(format!("launcher-{id}.stderr")))?;
+    let mut child = Command::new(case.root.join("bin/amplihack"))
+        .args(arguments)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    std::fs::write(
+        case.evidence.join(format!("launcher-{id}.pid")),
+        format!("{}\n", child.id()),
+    )?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("launcher stderr missing"))?;
+    let mut bytes = [0u8; 8192];
+    loop {
+        let size = stderr.read(&mut bytes)?;
+        if size == 0 {
+            break;
+        }
+        log.write_all(&bytes[..size])?;
+        std::io::stderr().write_all(&bytes[..size])?;
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
     }
     Ok(())
 }

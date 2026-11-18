@@ -128,3 +128,13 @@ Run 44375223110 stopped case setup at the initial push: the transport allowlist
 was loaded from config.json only after that push. All ten setup failures remained
 unallowed harness errors. The fixture configuration must be persisted before the
 first operation that selects its local hosting transport.
+
+Run 44376919581 established that the local Git transport works and that a
+separate holder keeps the other-stopped candidate through its owner's cleanup;
+the later recorded run removes it after the holder exits. The Codex fixture's
+advertised 0.166.0 packaging requires codex-code-mode-host, although this fixture
+implements no code-mode-host protocol. Advertise the supported 0.98.0 exec/stdin/
+final-message transport instead; keep the production installation check intact.
+A transparent model-launch wrapper executes the real CLI and retains its stderr.
+The removal-error fixture must accept cleanup's documented nonzero exit when its
+JSON reports the exact injected removal failure, then perform the second sweep.

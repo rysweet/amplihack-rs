@@ -368,6 +368,10 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
             observe_git(&review_dir, &["show", &format!("{reviewed}:answer.txt")])? == "42",
             "reviewed commit does not implement answer"
         );
+        let diff = observe_git(&review_dir, &["show", &reviewed])?;
+        fs::write(case.evidence.join(format!("review-{reviewed}.diff")), diff)?;
+        let receipt = agent::Receipt::clean_review(reviewed.clone(), reviewed.clone());
+        agent::validate_receipt(&review_dir, &receipt)?;
         json!({"crusty_verdict":"CLEAN","concerns":[],"summary":format!("reviewed {reviewed}: answer function and content satisfy scoped task")}).to_string()
     } else if task
         .starts_with("Use noninteractive command execution with GH_PAGER=cat. Post this Crusty")
@@ -380,7 +384,7 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
                 pr.head_sha
             ),
         )?;
-        "Crusty verdict posted at observed head.".into()
+        json!({"verdict_posted":"true","head_sha":pr.head_sha}).to_string()
     } else if task.starts_with("Assess whether this Crusty review objective is complete") {
         let record = PathBuf::from(text_context("autodrive_round_record")?);
         let result = fs::read(&record).and_then(|bytes| {
@@ -429,6 +433,10 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         command
             .arg(format!("REPO_PATH={}", repo.display()))
             .arg("AUTODRIVE_QA_BASE=main")
+            .arg(format!(
+                "AUTODRIVE_ROUND_LABEL={}",
+                text_context("autodrive_round_label")?
+            ))
             .arg(format!("AUTODRIVE_QA_EVIDENCE={path}"))
             .arg("/bin/bash")
             .arg(helper)

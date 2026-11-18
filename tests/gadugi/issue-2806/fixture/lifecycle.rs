@@ -176,3 +176,11 @@ impl TrackedChild {
             .ok_or_else(|| anyhow::anyhow!("child stdin is not piped or was already taken"))
     }
 }
+
+#[cfg(not(target_os = "linux"))]
+pub fn accept_event(
+    _listener: &std::os::unix::net::UnixListener,
+    _child: &TrackedChild,
+) -> Result<std::os::unix::net::UnixStream> {
+    anyhow::bail!("CI lifecycle execution requires Linux pidfds")
+}
