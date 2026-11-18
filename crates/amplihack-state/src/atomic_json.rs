@@ -151,16 +151,21 @@ impl AtomicJsonFile {
             path: dir.to_path_buf(),
             source: e,
         })?;
-        serde_json::to_writer_pretty(temp.as_file(), value).map_err(|e| {
-            AtomicJsonError::Serialize {
+        {
+            // JSON emits many small fragments; batch them before syncing and
+            // publishing the temporary file, with bounded buffer memory.
+            let mut writer = io::BufWriter::new(temp.as_file());
+            serde_json::to_writer_pretty(&mut writer, value).map_err(|e| {
+                AtomicJsonError::Serialize {
+                    path: self.path.clone(),
+                    source: e,
+                }
+            })?;
+            writer.flush().map_err(|e| AtomicJsonError::Io {
                 path: self.path.clone(),
                 source: e,
-            }
-        })?;
-        temp.as_file().flush().map_err(|e| AtomicJsonError::Io {
-            path: self.path.clone(),
-            source: e,
-        })?;
+            })?;
+        }
         temp.as_file().sync_all().map_err(|e| AtomicJsonError::Io {
             path: self.path.clone(),
             source: e,
@@ -204,16 +209,19 @@ impl AtomicJsonFile {
             path: dir.to_path_buf(),
             source: e,
         })?;
-        serde_json::to_writer_pretty(temp.as_file(), &data).map_err(|e| {
-            AtomicJsonError::Serialize {
+        {
+            let mut writer = io::BufWriter::new(temp.as_file());
+            serde_json::to_writer_pretty(&mut writer, &data).map_err(|e| {
+                AtomicJsonError::Serialize {
+                    path: self.path.clone(),
+                    source: e,
+                }
+            })?;
+            writer.flush().map_err(|e| AtomicJsonError::Io {
                 path: self.path.clone(),
                 source: e,
-            }
-        })?;
-        temp.as_file().flush().map_err(|e| AtomicJsonError::Io {
-            path: self.path.clone(),
-            source: e,
-        })?;
+            })?;
+        }
         temp.as_file().sync_all().map_err(|e| AtomicJsonError::Io {
             path: self.path.clone(),
             source: e,
@@ -351,6 +359,62 @@ mod tests {
         let expected = dir.path().join("accessor.json");
         let file = AtomicJsonFile::new(expected.clone());
         assert_eq!(file.path(), expected);
+    }
+
+    #[test]
+    fn large_documents_are_fully_published_by_write_and_update() {
+        let dir = tempfile::tempdir().unwrap();
+        for private in [false, true] {
+            let path = dir.path().join(format!("{private}/state.json"));
+            let file = if private {
+                AtomicJsonFile::new_private(&path)
+            } else {
+                AtomicJsonFile::new(&path)
+            };
+            let mut expected = TestData {
+                count: 1,
+                name: "escaped\n\"text\"".repeat(4096),
+            };
+            file.write(&expected).unwrap();
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                serde_json::to_vec_pretty(&expected).unwrap()
+            );
+            expected.count += 1;
+            expected.name.push_str("updated");
+            let updated = file.update::<TestData, _>(|data| *data = expected.clone());
+            assert_eq!(updated.unwrap(), expected);
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                serde_json::to_vec_pretty(&expected).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn serialization_failure_preserves_the_document_and_removes_the_temporary_file() {
+        struct FailedSerialization;
+        impl Serialize for FailedSerialization {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::{Error, SerializeSeq};
+                let mut sequence = serializer.serialize_seq(None)?;
+                // Fail after enough output to write through the buffer.
+                sequence.serialize_element(&"x".repeat(32768))?;
+                Err(S::Error::custom("serialization failed"))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let file = AtomicJsonFile::new_private(&path);
+        file.write(&TestData::default()).unwrap();
+        let original = fs::read(&path).unwrap();
+        assert!(matches!(
+            file.write(&FailedSerialization),
+            Err(AtomicJsonError::Serialize { .. })
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+        file.write(&TestData::default()).unwrap();
     }
 
     #[cfg(unix)]
