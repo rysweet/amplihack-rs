@@ -56,6 +56,14 @@ fn worktree(case: &IsolatedCase) -> Result<PathBuf> {
         super::evidence::validate_drive_location(&observed)?;
         return Ok(observed.resolved_worktree);
     }
+    let implementation = case.evidence.join("implementation-worktree.json");
+    if driver::config(case)?["case"] == "build" && implementation.is_file() {
+        let path: PathBuf = serde_json::from_slice(&fs::read(implementation)?)?;
+        let relative = path
+            .strip_prefix(&case.root)
+            .context("implementation path escapes case")?;
+        return super::environment::confined_path(&case.root, relative);
+    }
     // The runner resolves working_dir before invoking the client. Use the
     // actual invocation directory, never a caller checkout fallback.
     let cwd = std::env::current_dir()?.canonicalize()?;
@@ -321,6 +329,35 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         json!({"current_version":current,"new_version":current,"change_classification":"PATCH",
             "rationale":"correct existing answer() behavior; PATCH contract and operator instruction require no version change",
             "changes_summary":diff}).to_string()
+    } else if task.starts_with("# Step 16b: Outside-In Testing and Fix Loop") {
+        let api = verify(case, &repo)?;
+        let bytes = check(case, &repo, "/usr/bin/cmp", &["answer.txt", "expected.txt"])?;
+        let mut hosting = host(case)?;
+        let pr = hosting.pr(1)?;
+        ensure!(
+            observe_git(&repo, &["rev-parse", "HEAD"])? == pr.head_sha,
+            "published head differs from outside-in test target"
+        );
+        let body = format!(
+            "{}\n\nStep 16b: Outside-In Testing Results\nRust consumer assertion: {api}\nByte-exact answer file: {bytes}\nBoth passed; zero fixes.\n",
+            pr.body
+        );
+        ensure!(
+            hosting
+                .invoke(&repo, &["pr", "edit", "1", "--body", &body])?
+                .exit_code
+                == 0,
+            "outside-in evidence publication failed"
+        );
+        hosting.set_checks(1, Checks::Green)?;
+        driver::save(
+            &case.evidence.join("green-transition.json"),
+            &json!({"head":pr.head_sha,
+            "cause":"explicit build check completion after published-head API and byte verification"}),
+        )?;
+        format!(
+            "Completed public answer() assertion and byte-exact answer file checks: {api}; {bytes}. PR description updated. Zero fixes."
+        )
     } else if task.starts_with("Evaluate goal achievement after round 1.") {
         let prs = host(case)?.open_prs()?;
         ensure!(prs.len() == 1, "reflection found no single open PR");
@@ -755,8 +792,10 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         let clean = task_field(task, "` equals `", "`")?;
         let measured = task_json(task, "```json\n")?;
         let pr = host(case)?.pr(1)?;
-        let ready: Value =
-            serde_json::from_slice(&fs::read(case.evidence.join("ready-observation.json"))?)?;
+        let ready: Value = serde_json::from_slice(
+            &fs::read(case.evidence.join("ready-observation.json"))
+                .context("readiness did not complete before loop evaluation")?,
+        )?;
         ensure!(
             own == "MERGE_READY"
                 && clean == own

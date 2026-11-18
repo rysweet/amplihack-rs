@@ -185,3 +185,10 @@ with an independently seeded OPEN PR at its published head; the real report
 ends incomplete without finalization. baseline/97 records the original
 no-worktree assertion as #2802. Its downstream checks remain unexecuted. The
 separate successful control must still complete review, readiness and merge.
+
+The native build's subsequent Step 16b is an additional real outside-in action:
+it verifies the public Rust API and file bytes at the published head, updates
+the PR description, then explicitly completes the fixture check. Reads never
+advance pending checks. Later build agents without a declared working_dir use
+the implementation worktree actually recorded by the implementation action;
+they cannot accidentally validate the detached launch checkout.
