@@ -102,7 +102,7 @@ pub fn private_file(path: &Path, body: &str) {
 
 impl Fixture {
     pub fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let home = root.join("home");
         let profiles = root.join("profiles");
@@ -111,9 +111,9 @@ impl Fixture {
         let work = root.join("work");
         let tools = root.join("tools");
         for d in [&home, &config, &records, &work, &tools] {
-            fs::create_dir_all(d).unwrap();
+            crate::support::private_tempdir::private_dir_all(d);
         }
-        fs::create_dir_all(&profiles).unwrap();
+        crate::support::private_tempdir::private_dir_all(&profiles);
         fs::set_permissions(&profiles, fs::Permissions::from_mode(0o700)).unwrap();
         executable(&tools.join("claude"), STUB_CLAUDE);
         Self {

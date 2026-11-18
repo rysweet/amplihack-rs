@@ -152,7 +152,7 @@ struct Fx {
 
 impl Fx {
     fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let fx = Self {
             home: root.join("home"),
@@ -170,7 +170,7 @@ impl Fx {
             &fx.tools,
             &fx.logs,
         ] {
-            fs::create_dir_all(d).unwrap();
+            crate::support::private_tempdir::private_dir_all(d);
         }
         for name in ["gh", "tmux"] {
             crate::support::exec_stub::write_executable(

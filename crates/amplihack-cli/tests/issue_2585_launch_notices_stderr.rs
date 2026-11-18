@@ -57,7 +57,7 @@ struct Fixture {
 impl Fixture {
     /// A fixture whose user config saves `node.heap_consent = true`.
     fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let home = root.join("home");
         let amplihack_home = root.join("amplihack-home");
@@ -66,15 +66,22 @@ impl Fixture {
         let work = root.join("work");
         let tools = root.join("tools");
         for d in [&home, &amplihack_home, &config, &work, &tools] {
-            fs::create_dir_all(d).unwrap();
+            crate::support::private_tempdir::private_dir_all(d);
         }
-        fs::create_dir_all(&profiles).unwrap();
+        crate::support::private_tempdir::private_dir_all(&profiles);
         fs::set_permissions(&profiles, fs::Permissions::from_mode(0o700)).unwrap();
 
         // `user_config::heap_consent()` reads only `$HOME/.amplihack/config.toml`.
         let user_config = home.join(".amplihack").join("config.toml");
-        fs::create_dir_all(user_config.parent().unwrap()).unwrap();
+        crate::support::private_tempdir::private_dir_all(user_config.parent().unwrap());
         fs::write(&user_config, "[node]\nheap_consent = true\n").unwrap();
+        // amplihack ignores a config file writable by group or others, which
+        // `fs::write` makes under umask 0002 (#2346).
+        fs::set_permissions(
+            &user_config,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .unwrap();
 
         crate::support::exec_stub::write_executable(&tools.join("claude"), FAKE_CLAUDE, 0o755);
 

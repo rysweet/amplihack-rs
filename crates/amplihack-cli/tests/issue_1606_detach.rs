@@ -60,7 +60,7 @@ impl Fx {
     }
 
     fn with_runner(runner: &str) -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let (tmux_dir, tmux_tmp) = tmux_socket_dir(&root);
         let fx = Self {
@@ -74,7 +74,7 @@ impl Fx {
             _tmux_tmp: tmux_tmp,
         };
         for dir in [&fx.home, &fx.project, &fx.tools, &fx.records, &fx.tmux_dir] {
-            fs::create_dir_all(dir).unwrap();
+            crate::support::private_tempdir::private_dir_all(dir);
         }
         // A real repository: a recipe run's checkout discovery fails closed on
         // a malformed `.git` (#2096).
@@ -960,7 +960,9 @@ impl Fx {
     /// its own. Returns the record's path.
     fn plant_record(&self, run_id: &str, body: &str) -> PathBuf {
         let procs = self.runs_dir().join("planted-run-dir").join("procs");
-        fs::create_dir_all(&procs).unwrap();
+        // 0700 whatever the umask, the work root and `~/.amplihack` included:
+        // they are created here when no run has made them (#2346).
+        crate::support::private_tempdir::private_dir_all(&procs);
         for dir in [
             self.runs_dir(),
             self.runs_dir().join("planted-run-dir"),

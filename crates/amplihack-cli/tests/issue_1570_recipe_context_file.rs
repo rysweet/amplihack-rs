@@ -60,13 +60,13 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().to_path_buf();
         let home = root.join("home");
         let records = root.join("records");
         let tools = root.join("tools");
         for d in [&home, &records, &tools] {
-            fs::create_dir_all(d).unwrap();
+            crate::support::private_tempdir::private_dir_all(d);
         }
         executable(&tools.join("recipe-runner-rs"), STUB_RUNNER);
         let recipe = root.join("recipe.yaml");

@@ -221,10 +221,10 @@ impl Fixture {
     /// The same fixture with the nested round chosen by the caller, so one
     /// drive can be run over a round that succeeds and a round that fails.
     fn with_round(top_level: &str, round: &str) -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let home = root.join("home");
-        fs::create_dir_all(&home).unwrap();
+        crate::support::private_tempdir::private_dir_all(&home);
 
         let trusted = root.join("trusted");
         let bundle = trusted.join("amplifier-bundle");
@@ -239,7 +239,7 @@ impl Fixture {
         }
 
         let repo = root.join("pr");
-        fs::create_dir_all(&repo).unwrap();
+        crate::support::private_tempdir::private_dir_all(&repo);
         git(&repo, &["init", "-q", "-b", "feat/issue-2769"]);
         fs::write(repo.join("README.md"), "fixture\n").unwrap();
         git(&repo, &["add", "README.md"]);

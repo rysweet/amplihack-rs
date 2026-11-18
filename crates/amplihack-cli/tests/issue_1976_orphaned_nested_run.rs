@@ -73,7 +73,7 @@ struct Fx {
 
 impl Fx {
     fn new(runner: &str) -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let fx = Self {
             home: root.join("home"),
@@ -86,7 +86,7 @@ impl Fx {
             spawned: std::cell::RefCell::new(Vec::new()),
         };
         for d in [&fx.home, &fx.tools, &fx.records, &fx.state] {
-            fs::create_dir_all(d).unwrap();
+            crate::support::private_tempdir::private_dir_all(d);
         }
         fs::set_permissions(&fx.state, fs::Permissions::from_mode(0o700)).unwrap();
         let status = Command::new("mkfifo")

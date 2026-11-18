@@ -95,11 +95,11 @@ impl Drop for Cleanup {
 #[test]
 fn a_step_under_the_real_runner_gets_the_parent_variables_and_its_nested_run_stops_with_75() {
     let runner = real_runner();
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::support::private_tempdir::private_tempdir();
     let root = tmp.path().canonicalize().unwrap();
     let (home, records) = (root.join("home"), root.join("records"));
     for dir in [&home, &records] {
-        fs::create_dir_all(dir).unwrap();
+        crate::support::private_tempdir::private_dir_all(dir);
     }
     let fifo = records.join("fifo");
     assert!(

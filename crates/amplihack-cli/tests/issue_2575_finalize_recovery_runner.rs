@@ -200,10 +200,10 @@ fn private(dir: &Path) {
 
 impl Fixture {
     fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let home = root.join("home");
-        fs::create_dir_all(&home).unwrap();
+        crate::support::private_tempdir::private_dir_all(&home);
         let trusted = root.join("trusted");
         let bundle = trusted.join("amplifier-bundle");
         copy_bundle(&super_root_bundle(), &bundle);
@@ -220,7 +220,7 @@ impl Fixture {
         .unwrap();
 
         let repo = root.join("pr");
-        fs::create_dir_all(&repo).unwrap();
+        crate::support::private_tempdir::private_dir_all(&repo);
         git(&repo, &["init", "-q", "-b", "feat/issue-2575"]);
         fs::write(repo.join("README.md"), "fixture\n").unwrap();
         git(&repo, &["add", "README.md"]);

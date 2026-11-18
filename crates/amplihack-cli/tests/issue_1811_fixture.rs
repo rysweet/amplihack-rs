@@ -110,13 +110,13 @@ pub struct Fixture {
 impl Fixture {
     /// Profiles `alpha` (active) and `beta`, both logged in, no readings.
     pub fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let home = tmp.path().join("home");
         let records = tmp.path().join("records");
         let work = tmp.path().join("work");
         let tools = tmp.path().join("tools");
         for d in [&home, &records, &work, &tools] {
-            fs::create_dir_all(d).unwrap();
+            crate::support::private_tempdir::private_dir_all(d);
         }
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
         write_executable(&tools.join("claude"), FAKE_CLAUDE, 0o755);

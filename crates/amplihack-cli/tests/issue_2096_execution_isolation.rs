@@ -103,12 +103,12 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub(crate) fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::support::private_tempdir::private_tempdir();
         let root = fs::canonicalize(temp.path()).unwrap();
         let repo = root.join("caller");
         let home = root.join("home");
-        fs::create_dir_all(&repo).unwrap();
-        fs::create_dir_all(&home).unwrap();
+        crate::support::private_tempdir::private_dir_all(&repo);
+        crate::support::private_tempdir::private_dir_all(&home);
         let runner = root.join("recipe-runner-rs");
         crate::support::exec_stub::write_executable(&runner, STUB_RUNNER, 0o755);
         let f = Self {

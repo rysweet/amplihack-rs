@@ -128,7 +128,7 @@ impl Attempt {
 
 impl Fixture {
     pub fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         // #2658: the pinned revision, from a receipt-checked override or a
         // build cached in the test target directory; never the host's

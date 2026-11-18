@@ -70,14 +70,22 @@ struct Run {
 /// As `run_with`, with `extra` appended to the `recipe run` arguments, and
 /// the runner's own argv alongside what the run printed.
 fn run_with_args(tier_file: &str, extra: &[&str]) -> Run {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::support::private_tempdir::private_tempdir();
     let root = tmp.path();
     let (home, tools) = (root.join("home"), root.join("tools"));
     let amplihack_home = home.join(".amplihack");
     for dir in [&home, &tools, &amplihack_home] {
-        fs::create_dir_all(dir).unwrap();
+        crate::support::private_tempdir::private_dir_all(dir);
     }
-    fs::write(amplihack_home.join("model-tiers.toml"), tier_file).unwrap();
+    let tiers = amplihack_home.join("model-tiers.toml");
+    fs::write(&tiers, tier_file).unwrap();
+    // amplihack ignores a tier file writable by group or others, which
+    // `fs::write` makes under umask 0002 (#2346).
+    fs::set_permissions(
+        &tiers,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+    .unwrap();
 
     let runner: PathBuf = tools.join("recipe-runner-rs");
     crate::support::exec_stub::write_executable(

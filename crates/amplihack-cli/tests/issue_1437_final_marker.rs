@@ -49,11 +49,11 @@ fn run_fixture(stub: &str) -> (i32, String) {
         .strip_prefix("#!/bin/sh\n")
         .expect("a stub runner starts with #!/bin/sh");
     let stub = format!("#!/bin/sh\n{CAPABILITIES}{body}");
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = crate::support::private_tempdir::private_tempdir();
     let root = tmp.path();
     let (home, tools) = (root.join("home"), root.join("tools"));
     for dir in [&home, &tools] {
-        fs::create_dir_all(dir).unwrap();
+        crate::support::private_tempdir::private_dir_all(dir);
     }
     let runner = tools.join("recipe-runner-rs");
     crate::support::exec_stub::write_executable(&runner, &stub, 0o755);

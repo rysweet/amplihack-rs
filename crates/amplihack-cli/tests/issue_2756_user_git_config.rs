@@ -125,13 +125,13 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::support::private_tempdir::private_tempdir();
         let root = fs::canonicalize(temp.path()).unwrap();
         let repo = root.join("caller");
         let other = root.join("other");
         let home = root.join("home");
         for dir in [&repo, &other, &home] {
-            fs::create_dir_all(dir).unwrap();
+            crate::support::private_tempdir::private_dir_all(dir);
         }
         let runner = root.join("recipe-runner-rs");
         let helper = root.join("fake-credential-helper");

@@ -57,7 +57,7 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let home = root.join("home");
         let amplihack_home = root.join("amplihack-home");
@@ -65,7 +65,7 @@ impl Fixture {
         let tools = root.join("tools");
         let run_dir = root.join("run");
         for d in [&home, &amplihack_home, &work, &tools, &run_dir] {
-            fs::create_dir_all(d).unwrap();
+            crate::support::private_tempdir::private_dir_all(d);
         }
         // `codex-code-mode-host` must sit beside `codex`: amplihack's health
         // check refuses a codex install whose helper is missing.
@@ -95,8 +95,16 @@ impl Fixture {
 
     fn write_home_file(&self, name: &str, text: &str) {
         let dir = self.home.join(".amplihack");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(name), text).unwrap();
+        crate::support::private_tempdir::private_dir_all(&dir);
+        let file = dir.join(name);
+        fs::write(&file, text).unwrap();
+        // amplihack ignores a user file writable by group or others, which
+        // `fs::write` makes under umask 0002 (#2346).
+        fs::set_permissions(
+            &file,
+            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+        )
+        .unwrap();
     }
 
     /// `amplihack <harness> -- <passthrough>`, isolated and not yet run, so a

@@ -81,14 +81,14 @@ impl Fx {
     }
 
     fn with_home_name(home_name: &str) -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         let home = root.join(home_name);
         let project = root.join("project");
         let tools = root.join("tools");
         let records = root.join("records");
         for d in [&home, &project, &tools, &records] {
-            fs::create_dir_all(d).unwrap();
+            crate::support::private_tempdir::private_dir_all(d);
         }
         // A `.git` directory with a HEAD marks the project root; no git needed.
         mark_repository(&project);

@@ -266,10 +266,10 @@ mod runner {
 
     impl Fixture {
         fn new() -> Self {
-            let temp = tempfile::tempdir().unwrap();
+            let temp = crate::support::private_tempdir::private_tempdir();
             let root = temp.path().canonicalize().unwrap();
             let home = root.join("home");
-            fs::create_dir_all(&home).unwrap();
+            crate::support::private_tempdir::private_dir_all(&home);
             let bundle = root.join("trusted");
             copy_without_gate(
                 &super::root().join("amplifier-bundle"),
