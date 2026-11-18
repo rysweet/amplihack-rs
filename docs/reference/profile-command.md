@@ -10843,14 +10843,15 @@ What an attempt receives depends on what stdin is:
 
 | Stdin | First attempt | A rerun |
 |-------|---------------|---------|
-| A pipe, prompt not in the arguments | A pipe fed by the copier (below) | A read-only regular file holding everything the copier stored, opened at offset 0. It is not a pipe |
-| A pipe, prompt in the arguments | Inherited unchanged | `/dev/null` |
+| A pipe or a socket, prompt not in the arguments | A pipe fed by the copier (below) | A read-only regular file holding everything the copier stored, opened at offset 0. It is not a pipe |
+| A pipe or a socket, prompt in the arguments | Inherited unchanged | `/dev/null` |
 | A regular file | Inherited unchanged | The file again, from the offset the step started at (on Linux through its own open of `/proc/self/fd/0`, so no read offset is shared with other processes) |
 | A terminal | Inherited unchanged | Inherited unchanged |
-| A socket, a closed descriptor | Inherited unchanged | `/dev/null` |
+| A closed descriptor | Inherited unchanged | `/dev/null` |
 
 The feature covers any caller that supplies the prompt on stdin, whatever
-launches it. When stdin is a pipe and Claude's arguments carry no prompt, the
+launches it. A socket is not told apart from a pipe, and is treated the same
+way. When stdin is a pipe and Claude's arguments carry no prompt, the
 supervisor starts a copier thread before the first attempt. The copier reads
 stdin in fixed-size blocks, writes each block to the attempt's stdin and to a
 private capture file, and closes the attempt's stdin when the pipe reaches end
@@ -10858,8 +10859,9 @@ of file. The attempt sees the prompt as it arrives, with no delay.
 
 The capture file is `<pid>-0.in` in the supervisor's rerun directory (see
 above). It is created at `0600` with `O_EXCL`, `O_NOFOLLOW` and
-`O_CLOEXEC`, so a planted file or symlink is never written through, and no
-descriptor for it reaches Claude. It holds the prompt as opaque bytes, with
+`O_CLOEXEC`, so a planted file or symlink is never written through, and the
+only descriptor for it Claude ever holds is the rerun's own stdin, which is
+read-only. It holds the prompt as opaque bytes, with
 no size cap, and is removed when the step ends, whether it succeeded or
 failed. A supervisor killed with `SIGKILL` leaves its file behind; the next
 supervised launch removes it once the owning process is gone.
