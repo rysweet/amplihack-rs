@@ -364,34 +364,54 @@ fn a_worktree_inside_the_storage_with_work_keeps_it_until_the_work_is_pushed() {
     );
     let work = feat.join("step-07-tests.rs");
     fs::write(&work, "// written before the stop\n").unwrap();
-    let dirty = format!("git tree {feat:?} has uncommitted changes");
+    let named_worktree = format!("{feat:?}");
 
     let out = relaunch(&f, "second");
     assert_ne!(cwd(&f, "second"), stable.join("checkout"));
     let text = stderr(&out);
     assert!(
-        text.contains("still held") && text.contains(&dirty),
+        text.contains("still held")
+            && text.contains(&named_worktree)
+            && text.contains("has uncommitted changes"),
         "the relaunch names the worktree and what it holds: {text}"
     );
-    assert!(work.is_file(), "the relaunch removed nothing");
+    assert_eq!(
+        fs::read_to_string(&work).unwrap(),
+        "// written before the stop\n"
+    );
 
     let kept = entry(&cleanup(&f, true), &stable);
     assert_eq!(kept["action"], "skipped", "{kept:#}");
     assert!(
-        kept["reason"].as_str().unwrap().contains(&dirty),
+        kept["reason"].as_str().unwrap().contains(&named_worktree)
+            && kept["reason"]
+                .as_str()
+                .unwrap()
+                .contains("has uncommitted changes"),
         "{kept:#}"
     );
-    assert!(work.is_file(), "cleanup removed nothing");
+    assert_eq!(
+        fs::read_to_string(&work).unwrap(),
+        "// written before the stop\n"
+    );
 
     git_ok(&f, &feat, &["add", "step-07-tests.rs"]);
     git_ok(&f, &feat, &["commit", "-qm", "step 07"]);
+    let sha = git_ok(&f, &feat, &["rev-parse", "HEAD"]);
     let kept = entry(&cleanup(&f, true), &stable);
     assert_eq!(kept["action"], "skipped", "{kept:#}");
     assert!(
-        kept["reason"].as_str().unwrap().contains(&format!(
-            "git tree {feat:?} has no upstream and commits on no remote branch"
-        )),
+        kept["reason"].as_str().unwrap().contains(&named_worktree)
+            && kept["reason"]
+                .as_str()
+                .unwrap()
+                .contains("commits on no remote branch"),
         "a commit on no remote still keeps it: {kept:#}"
+    );
+    assert_eq!(git_ok(&f, &feat, &["rev-parse", "HEAD"]), sha);
+    assert_eq!(
+        fs::read_to_string(&work).unwrap(),
+        "// written before the stop\n"
     );
 
     git_ok(&f, &feat, &["push", "-q", "-u", "origin", "feat"]);

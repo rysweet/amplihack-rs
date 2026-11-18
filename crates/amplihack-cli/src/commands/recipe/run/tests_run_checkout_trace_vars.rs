@@ -76,6 +76,23 @@ fn no_trace_target_is_set_in_place_of_the_callers() {
 // Issue #2785: release must inspect every repository that its recursive
 // deletion or forced worktree removal would destroy, including the primary
 // checkout. Use the same real Git checks production supplies.
+// The caller holds env_lock so production Git commands see only this home
+// and the real PATH, rather than another test's temporary configuration.
+fn isolated_git_environment(root: &std::path::Path) -> crate::test_support::EnvGuard {
+    let home = root.join("home");
+    let work = root.join("work");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&work).unwrap();
+    let mut env = crate::test_support::env_paths(&[
+        ("HOME", Some(&home)),
+        ("AMPLIHACK_WORK_ROOT", Some(&work)),
+    ]);
+    env.assign("PATH", crate::test_support::host_path());
+    env.assign("GIT_CONFIG_GLOBAL", "/dev/null");
+    env.assign("GIT_CONFIG_NOSYSTEM", "1");
+    env
+}
+
 #[test]
 fn checkout_release_keeps_primary_work_and_its_backing_metadata() {
     use crate::commands::cleanup::{
@@ -83,8 +100,13 @@ fn checkout_release_keeps_primary_work_and_its_backing_metadata() {
         git_work::folder_work,
     };
     use std::fs;
+    crate::test_support::host_path();
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     for state in ["clean", "dirty", "unpushed", "both"] {
         let tmp = tempfile::tempdir().unwrap();
+        let _env = isolated_git_environment(tmp.path());
         let (_, caller) = origin_and_clone(&tmp.path().join("source"));
         let scratch = tmp.path().join("runtime");
         fs::create_dir(&scratch).unwrap();
@@ -127,8 +149,13 @@ fn checkout_release_keeps_ignored_nested_work_and_supporting_repository() {
         git_work::folder_work,
     };
     use std::fs;
+    crate::test_support::host_path();
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     for beneath_checkout in [false, true] {
         let tmp = tempfile::tempdir().unwrap();
+        let _env = isolated_git_environment(tmp.path());
         let (origin, caller) = origin_and_clone(&tmp.path().join("source"));
         let scratch = tmp.path().join("runtime");
         fs::create_dir(&scratch).unwrap();
@@ -171,9 +198,14 @@ fn storage_reclaim_preserves_real_primary_and_unregistered_nested_work() {
         git_work::folder_work,
     };
     use std::fs;
+    crate::test_support::host_path();
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     for nested in [false, true] {
         for state in ["clean", "dirty", "unpushed"] {
             let tmp = tempfile::tempdir().unwrap();
+            let _env = isolated_git_environment(tmp.path());
             let (origin, _) = origin_and_clone(&tmp.path().join("source"));
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -257,8 +289,13 @@ fn tombstone_removal_keeps_work_created_before_reclamation_was_interrupted() {
         clone_of, commit, git, make_dirty, origin_and_clone,
     };
     use std::fs;
+    crate::test_support::host_path();
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     for state in ["clean", "dirty", "unpushed"] {
         let tmp = tempfile::tempdir().unwrap();
+        let _env = isolated_git_environment(tmp.path());
         let (origin, _) = origin_and_clone(&tmp.path().join("source"));
         let tombstone = tmp.path().join(".reclaim-2785");
         fs::create_dir(&tombstone).unwrap();
