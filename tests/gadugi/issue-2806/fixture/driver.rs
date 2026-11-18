@@ -270,7 +270,11 @@ fn seed_published(case: &IsolatedCase) -> Result<()> {
     let repo = checkout(case)?;
     case.git(&repo, &["checkout", "-qb", "feat/answer"])?;
     super::responses::implement(case, &repo)?;
-    case.git(&repo, &["add", "answer.txt", "src/lib.rs"])?;
+    fs::write(
+        repo.join("README.md"),
+        "# Answer\n\nanswer() returns 42. answer.txt contains 42 followed by a newline.\nRun cargo test --workspace --locked and pre-commit run --all-files.\n",
+    )?;
+    case.git(&repo, &["add", "answer.txt", "src/lib.rs", "README.md"])?;
     case.git(&repo, &["commit", "-qm", "Implement answer"])?;
     case.git(&repo, &["push", "-qu", "origin", "feat/answer"])?;
     let mut host = HostingStore::open(&case.evidence.join("hosting.json"))?;
@@ -613,6 +617,10 @@ pub fn finalize_boundary(args: &[String]) -> Result<()> {
 
 fn drive(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
     let repo = checkout(case)?;
+    fs::write(
+        repo.join("worktrees/pr-1/caller-dirty.txt"),
+        "operator work must survive\n",
+    )?;
     let output = run_recipe(
         case,
         "auto-drive-to-merge",
@@ -636,6 +644,31 @@ fn drive(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
     } else {
         false
     };
+    let dirty = repo.join("worktrees/pr-1/caller-dirty.txt");
+    assert_value(
+        report,
+        name,
+        "caller-dirty",
+        fs::read(&dirty)? == b"operator work must survive\n",
+        "drive changed operator dirty work",
+    )?;
+    if !located {
+        let proof: Value = serde_json::from_slice(
+            &fs::read(case.evidence.join("worktree-missing.json")).context(
+                "drive did not reach worktree resolution; no regression attribution permitted",
+            )?,
+        )?;
+        let caller_common = observe_git(
+            &repo,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?;
+        ensure!(
+            proof["private_common_dir"] != caller_common
+                && proof["pr_state"] == "OPEN"
+                && proof["pr_head"] == host.pr(1)?.head_sha,
+            "missing-worktree prerequisites are not established"
+        );
+    }
     assert_value(report, name, "worktree", located, "no-worktree")?;
     if !located && name == "drive-missing" {
         report.record(Assertion::blocked(
@@ -649,6 +682,45 @@ fn drive(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
     let readback = host.invoke(&repo, &["pr", "view", "1", "--json", "state,headRefOid"])?;
     let readback: Value = serde_json::from_slice(&readback.stdout)?;
     save(&case.evidence.join("merged-readback.json"), &readback)?;
+    let gates = fs::read_to_string(case.evidence.join("preflight-gates.jsonl"))?;
+    let gates: Vec<Value> = gates
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<std::result::Result<_, _>>()?;
+    assert_value(
+        report,
+        name,
+        "gates",
+        ["build-preflight", "crusty-preflight", "merge-preflight"]
+            .iter()
+            .all(|contract| gates.iter().any(|gate| gate["contract"] == *contract)),
+        "not all three entry gates executed",
+    )?;
+    let observed: evidence::DriveObservation =
+        serde_json::from_slice(&fs::read(case.evidence.join("drive-location.json"))?)?;
+    let retained = observe_git(
+        &observed.resolved_worktree,
+        &["show", &format!("{}:answer.txt", observed.observed_head)],
+    )? == "42";
+    assert_value(
+        report,
+        name,
+        "retained",
+        retained,
+        "drive did not retain committed implementation",
+    )?;
+    case.git(
+        &observed.resolved_worktree,
+        &[
+            "bundle",
+            "create",
+            case.evidence
+                .join("drive.bundle")
+                .to_str()
+                .context("bundle path")?,
+            "--all",
+        ],
+    )?;
     let pr = host.pr(1)?;
     let merge = pr.state == "MERGED"
         && host.invocations()?.iter().any(|call| {

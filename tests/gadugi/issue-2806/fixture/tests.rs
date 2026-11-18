@@ -891,3 +891,43 @@ fn private_execution_evidence_rejects_caller_and_detached_launch_as_pr_worktrees
     observation.resolved_worktree = observation.launch_checkout.clone();
     assert!(evidence::validate_drive_location(&observation).is_err());
 }
+
+#[test]
+fn aggregate_never_accepts_case_names_without_each_required_observation() {
+    let (_temp, fixture) = case();
+    let mut report = Report::new(&fixture.evidence, BASE).unwrap();
+    for name in evidence::CASES {
+        report
+            .record(Assertion::passed(name, &format!("{name}.complete")))
+            .unwrap();
+    }
+    assert!(
+        !report.success(),
+        "case labels cannot replace required behavioral observations"
+    );
+}
+
+#[test]
+fn hosting_rejects_cross_repository_identity_without_mutating_the_pr() {
+    let repo = Repository::published();
+    let mut hosting = repo.hosting();
+    repo.open_pr(&mut hosting);
+    let before = fs::read(hosting.path()).unwrap();
+    assert!(
+        hosting
+            .invoke(
+                &repo.checkout,
+                &[
+                    "pr",
+                    "view",
+                    "1",
+                    "--repo",
+                    "other/project",
+                    "--json",
+                    "state"
+                ]
+            )
+            .is_err()
+    );
+    assert_eq!(fs::read(hosting.path()).unwrap(), before);
+}

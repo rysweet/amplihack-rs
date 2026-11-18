@@ -1,5 +1,34 @@
 {
-  "transport": {"claude": "plain stdout, -p or --append-system-prompt-file", "codex": "exec, stdin task, --output-last-message"},
+  "transport": {
+    "claude": "bare -p, task on stdin, --system-prompt-file; plain stdout",
+    "codex": "exec, stdin task, --output-last-message"
+  },
   "selection": "Task heading or uniquely declared JSON fields; no invocation ordinal or invented step identifier",
-  "unsupported": "fatal harness error"
+  "unsupported": "fatal harness error",
+  "preflight_contracts": {
+    "build-preflight": [
+      "pr_found",
+      "pr_state",
+      "repo",
+      "blockers"
+    ],
+    "crusty-preflight": [
+      "should_run",
+      "skip_reason",
+      "repo",
+      "blockers"
+    ],
+    "merge-preflight": [
+      "should_run",
+      "pr_state",
+      "repo",
+      "blockers"
+    ],
+    "resolve-pr": [
+      "should_run",
+      "pr_state",
+      "repo",
+      "blockers"
+    ]
+  }
 }

@@ -115,8 +115,37 @@ fn post(case: &IsolatedCase, body: &str) -> Result<()> {
     Ok(())
 }
 fn preflight(case: &IsolatedCase, task: &str) -> Result<String> {
+    let contract = if task.contains("Read build_preflight") {
+        "resolve-pr"
+    } else if task.contains("\"pr_found\":\"true|false|unknown\"") {
+        "build-preflight"
+    } else if task.contains("\"skip_reason\":\"\"") {
+        "crusty-preflight"
+    } else {
+        "merge-preflight"
+    };
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(case.root.join("responses/contracts.json"))?)?;
+    let fields = manifest["preflight_contracts"][contract]
+        .as_array()
+        .context("preflight contract absent from fixture manifest")?;
+    let fields: Vec<&str> = fields
+        .iter()
+        .map(|field| field.as_str().context("contract field is not text"))
+        .collect::<Result<_>>()?;
+    let declaration = agent::Contract::json_object(contract, &fields);
+    agent::select_contract(task, &[declaration])?;
     let cwd = std::env::current_dir()?;
     let pr = host(case)?.pr(1)?;
+    let mut gates = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(case.evidence.join("preflight-gates.jsonl"))?;
+    writeln!(
+        gates,
+        "{}",
+        json!({"contract":contract,"cwd":cwd,"head":pr.head_sha,"common_dir":observe_git(&cwd,&["rev-parse","--path-format=absolute","--git-common-dir"] )?})
+    )?;
     let mut found = find_worktree(&cwd, &pr.branch)?;
     if found.is_none() && driver::config(case)?["case"] == "drive-control" {
         let target = cwd
@@ -152,7 +181,7 @@ fn preflight(case: &IsolatedCase, task: &str) -> Result<String> {
     let Some(repo) = found else {
         driver::save(
             &case.evidence.join("worktree-missing.json"),
-            &json!({"executed":true,"prerequisites_satisfied":true,"private_common_dir":observe_git(&cwd,&["rev-parse","--path-format=absolute","--git-common-dir"] )?,"pr_head":pr.head_sha,"registered_worktrees":observe_git(&cwd,&["worktree","list","--porcelain"] )?}),
+            &json!({"executed":true,"prerequisites_satisfied":true,"private_common_dir":observe_git(&cwd,&["rev-parse","--path-format=absolute","--git-common-dir"] )?,"pr_head":pr.head_sha,"pr_state":pr.state,"contract":contract,"registered_worktrees":observe_git(&cwd,&["worktree","list","--porcelain"] )?}),
         )?;
         return Ok(json!({"pr_found":"true","pr":"1","pr_url":"https://github.com/fixture/project/pull/1","pr_state":"OPEN","branch":pr.branch,"head_sha":pr.head_sha,"should_run":"false","skip_reason":"no-worktree","base_branch":"main","base_sha":observe_git(&driver::origin(case)?,&["rev-parse","main"] )?,"state_dir":"","repo":"","review_dir":cwd,"reason":"no-worktree","blockers":["no-worktree"],"attempts":[]}).to_string());
     };
@@ -419,10 +448,64 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
             pr.checks == Checks::Green && evidence["qa_status"] == "PASS",
             "readiness lacks passing measured evidence"
         );
-        let body = format!(
-            "Merge-ready assessment at {}: measured Rust suite PASS, required fixture check GREEN, authorized Crusty comment at head, no conflicts or unresolved discussion. Ready.",
-            pr.head_sha
+        let reviewed = text_context("reviewed_head_sha")?;
+        ensure!(
+            reviewed == pr.head_sha,
+            "readiness head differs from reviewed commit"
         );
+        let review = PathBuf::from(text_context("review_dir")?);
+        ensure!(
+            observe_git(&review, &["show", &format!("{reviewed}:README.md")])?.contains("42"),
+            "readiness lacks user documentation at the assessed commit"
+        );
+        let changed = observe_git(&review, &["diff", "--name-only", "origin/main", &reviewed])?;
+        ensure!(
+            changed
+                .lines()
+                .all(|path| ["src/lib.rs", "answer.txt", "README.md"].contains(&path)),
+            "readiness found unrelated changes"
+        );
+        let crusty = context("crusty_evidence")?;
+        ensure!(
+            crusty["crusty_status"] == "DONE_CLEAN"
+                && crusty["crusty_reviewed_head_sha"] == pr.head_sha,
+            "readiness lacks accepted Crusty evidence at head"
+        );
+        let criteria = [
+            "1 QA: current-round Rust suite PASS; Gadugi exemption measured by trusted helper",
+            "2 Documentation: README at assessed commit describes answer 42",
+            "3 Quality: authorized Crusty CLEAN comment at assessed head",
+            "4 Checks: fixture-verification explicitly green at assessed head",
+            "5 Metadata: open PR 1 with head/base, title and scoped body",
+            "6 Reviews: fixture policy requires zero approvals, no requested changes",
+            "7 Conflicts: Git and hosting observe clean base relationship",
+            "8 Protection: required fixture-verification check passed",
+            "9 Issue: closes issue 7",
+            "10 Discussion: no blocking fixture threads",
+            "11 Finalization: production finalizer must merge at matched head and confirm merged state",
+            "12 Evidence: write-up retained in PR discussion and description",
+            "13 Scope: only answer.txt, src/lib.rs and README.md changed",
+        ];
+        ensure!(
+            !pr.title.is_empty() && pr.body.contains("#7"),
+            "readiness metadata is incomplete"
+        );
+        let body = format!(
+            "Merge-ready assessment at {}\n\n{}\n\nReady.",
+            pr.head_sha,
+            criteria.join("\n")
+        );
+        let edited = host(case)?.invoke(
+            &repo,
+            &[
+                "pr",
+                "edit",
+                "1",
+                "--body",
+                &format!("{}\n\n{}", pr.body, body),
+            ],
+        )?;
+        ensure!(edited.exit_code == 0, "readiness description update failed");
         post(case, &body)?;
         body
     } else if task.starts_with("Observe PR #") && task.contains("before finalisation") {
