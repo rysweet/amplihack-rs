@@ -416,6 +416,25 @@ in the actual linked PR worktree. Codex discovers Git there normally.
 Amplihack does not inspect review-folder ownership, authorize launch folders,
 write project trust entries, or automatically add `--skip-git-repo-check`.
 A caller-supplied flag is forwarded as an explicit argument.
+Removing `--skip-git-repo-check` is not offset by a broader trust flag: the
+agent-step injection now decides only the sandbox and hook trust, as it did
+before #2788.
+
+The reviewer's working directory is the PR worktree, so it is controlled by the
+branch under review, and the agent-step trust each provider already receives is
+not narrowed for it. A Codex agent step still gets `--sandbox
+danger-full-access` and `--dangerously-bypass-hook-trust`, a Claude step
+`--dangerously-skip-permissions`, and a Copilot step `--allow-all-tools`. The
+injection is pure and reads only the argv tail, so it cannot tell a reviewer
+step from a step that must commit, and no per-step narrowing is available
+without adding a mechanism. Instruction files, agent and skill definitions,
+hook and MCP configuration and scripts discovered in that worktree are
+therefore reachable by the provider: what keeps them from directing the review
+is the reviewer prompt's rule that worktree content is data and is never
+executed or obeyed, together with `loop-preflight` refusing a round recipe that
+resolves inside the reviewed tree. A PR that plants a hook or an MCP server in
+its own tree is within the exposure this leaves; treat it as an open residual
+risk rather than something the flag removal addressed.
 
 Shared argument parsing, supported subcommands, explicit `--cd` / `-C`,
 sandbox selection, hook trust, stdin prompt delivery, and final-message capture

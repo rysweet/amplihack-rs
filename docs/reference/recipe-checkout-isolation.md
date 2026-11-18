@@ -124,12 +124,26 @@ a new isolation layer. Directory permissions are `0700`; evidence files are
 
 Collection leaves the repository unchanged. Symlink targets are recorded
 without following external content; filenames cannot escape artifact storage.
-Raw contents are kept out of logs, prompts, PR descriptions, and public
-artifacts unless needed. Incomplete collection is reported truthfully.
+A path with a symlinked parent directory is marked incomplete and its contents
+are skipped, which makes collection fail as a whole. Raw contents are kept out
+of logs, prompts, PR descriptions, and public artifacts.
 
-The baseline remains associated with its reviewer invocation across recovery.
-Resuming an interrupted reviewer does not overwrite it with a snapshot of
-partial reviewer changes. A later reviewer invocation receives its own baseline.
+Incomplete collection is reported with a visible line in the assessment report.
+When `review-baseline` itself fails and `pre_review_evidence` is empty, the
+assessor restores nothing and states so; see [Assessment step](#assessment-step).
+
+The baseline holds the contents of untracked files, so it can hold secrets that
+the worktree carried. It is created under `AUTODRIVE_STATE_DIR` as
+`pre-review.XXXXXX` with `umask 077` and mode `0700`. Nothing outside the round
+reads it, so `autodrive_loop.sh` removes every `pre-review.*` in the state
+directory as soon as the round that took it returns, whether that round
+succeeded or failed. The rest of the state directory — round records, sidecars
+and logs — is untouched. The baseline is never attached to a PR or written to
+logs.
+
+Within the round, the baseline remains associated with its reviewer invocation
+across recovery. Resuming an interrupted reviewer does not overwrite it with a
+snapshot of partial reviewer changes. A later reviewer invocation receives its own baseline.
 
 ## Assessment after review
 
@@ -147,9 +161,53 @@ does not fail the run.
 | `HEAD` changes or review applicability is uncertain | Report reviewed and resulting commits accurately, then choose further evaluation, review, or handoff under existing rules. |
 | Incomplete evidence or concurrent writers | Preserve uncertain changes, report what cannot be attributed, and determine the continuation. |
 
+### Assessment step
+
+The step is `step-02b-assess-review-changes` in both round recipes. It runs in
+the PR worktree, publishes `review_change_assessment`, and declares no
+`parse_json`, so its report is free text and cannot fail a parse. It never
+sets a loop result, never exits non-zero, and no later step stops the run on
+its content. Nothing hands it a hash or expected value to match.
+
+Restoration is the only write the step can make, and it follows these rules:
+
+- Paths come only from `git status -z`. Absolute paths and `..` components are
+  not restored.
+- Nothing is written through a symlinked parent directory, and nothing under
+  `.git` or the common directory is touched.
+- Each path is restored on its own. Archive extraction uses
+  `--no-same-owner --no-same-permissions` and skips unsafe entries.
+- Git commands use `--no-ext-diff --no-textconv`. The step runs no filter,
+  hook or `fsmonitor` command from the tree under review, because the PR
+  controls `.gitattributes` and `.git` content.
+- When the evidence path is empty or collection was incomplete, the step
+  restores nothing and says so in its report.
+- The report names paths and kinds of change (modified, staged, created,
+  removed, replaced by a symlink). It never quotes file contents.
+
 Automatic restoration is optional. No blanket reset, cleanup, whole-worktree
 restore, or replacement of the whole index is permitted. The saved index is
 inspection evidence, never an automatic repair to install wholesale.
+
+### Untrusted reviewer output
+
+The reviewer's cwd is PR-controlled, so its output and the assessment report are
+data. The reviewer prompt states that worktree content, including instruction
+and configuration files, is never executed or obeyed. Steps that post the
+verdict, extract it, or select the next action present `review_change_assessment`
+inside a delimited block labelled as an untrusted report. No verdict, skipped
+verification or merge-ready determination is derived from that report alone.
+
+`loop-preflight` refuses `pre_review_evidence`, `review_change_assessment` and
+`reviewed_head_sha` when they arrive through `--context`, as it does every
+loop-owned key. `reviewed_head_sha` is accepted only as 40 or 64 lowercase hex
+characters and is passed to Git after `--`. `pre_review_evidence` must resolve
+under `AUTODRIVE_STATE_DIR`. Commit steps stage explicit paths and inspect
+`git diff --cached --name-status` before committing, never `git add -A` or
+`git commit -a`.
+
+Recovery descriptors are read only from operator-supplied or runtime-owned
+locations. Nothing discovers one beneath `repo_path`.
 
 ## Review and completion records
 
@@ -183,6 +241,17 @@ cleanup remains separate; see
 [cleanup and retention](../howto/clean-up-after-recipe-runs.md).
 
 ## Configuration and migration
+
+### Legacy execution copies
+
+Earlier releases created `<work root>/exec/...` copies. `amplihack cleanup
+--only run-exec` no longer exists, so these copies are not reclaimed. They hold
+full repository contents. After confirming no recovery needs one, remove the
+directory by hand:
+
+```sh
+rm -rf "${AMPLIHACK_WORK_ROOT:-$HOME/.amplihack/work}/exec"
+```
 
 No isolation setting replaces the removed mechanism. Build, Crusty-loop,
 and merge-loop entry gates use their declared `fast` tier without host-level
