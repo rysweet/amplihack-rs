@@ -1,0 +1,89 @@
+{
+  "tested_sha": "97d56c6194071548551470bd0fc837be7609595c",
+  "implementation_base": "3af9633bd9244169c16434a5fc59a88af3c9bb24",
+  "assertion_id": "drive-missing.worktree",
+  "issue": 2802,
+  "executed": true,
+  "prerequisites_satisfied": true,
+  "failure_kind": "regression",
+  "failure_fingerprint": "no-worktree",
+  "observations": {
+    "worktree-missing.json": {
+      "contract": "merge-preflight",
+      "executed": true,
+      "pr_head": "5d46782da523f2af673fee3fe21bc8386ca334ea",
+      "pr_state": "OPEN",
+      "prerequisites_satisfied": true,
+      "private_common_dir": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work/r/execution-E6vxYe/repository.git",
+      "registered_worktrees": "worktree /home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work/r/execution-E6vxYe/repository.git\nbare\n\nworktree /home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work/r/execution-E6vxYe/checkout\nHEAD e76b2e9fd9fb550c797d72b548f08f38ba7bc7f8\ndetached"
+    },
+    "hosting.json": {
+      "repository": "fixture/project",
+      "origin": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/origin.git",
+      "prs": [
+        {
+          "number": 1,
+          "state": "OPEN",
+          "branch": "feat/answer",
+          "base": "main",
+          "head_sha": "5d46782da523f2af673fee3fe21bc8386ca334ea",
+          "title": "Implement answer",
+          "body": "Closes #7",
+          "checks": "pending",
+          "is_draft": false,
+          "comments": [],
+          "created_at": "2026-11-18T19:42:52Z",
+          "merged_at": null
+        }
+      ]
+    },
+    "isolation.json": {
+      "clients": [
+        "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/bin/gh",
+        "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/bin/claude",
+        "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/bin/codex"
+      ],
+      "home": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home",
+      "mode": "0700",
+      "origin": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/origin.git",
+      "root": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing",
+      "work_root": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work"
+    },
+    "auto-drive-to-merge.exit.json": {
+      "exit_code": 81
+    },
+    "preflight_gates": [
+      {
+        "common_dir": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work/r/execution-E6vxYe/repository.git",
+        "contract": "build-preflight",
+        "cwd": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work/r/execution-E6vxYe/checkout",
+        "head": "5d46782da523f2af673fee3fe21bc8386ca334ea"
+      },
+      {
+        "common_dir": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work/r/execution-E6vxYe/repository.git",
+        "contract": "resolve-pr",
+        "cwd": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work/r/execution-E6vxYe/checkout",
+        "head": "5d46782da523f2af673fee3fe21bc8386ca334ea"
+      },
+      {
+        "common_dir": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work/r/execution-E6vxYe/repository.git",
+        "contract": "crusty-preflight",
+        "cwd": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work/r/execution-E6vxYe/checkout",
+        "head": "5d46782da523f2af673fee3fe21bc8386ca334ea"
+      },
+      {
+        "common_dir": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work/r/execution-E6vxYe/repository.git",
+        "contract": "merge-preflight",
+        "cwd": "/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/work/r/execution-E6vxYe/checkout",
+        "head": "5d46782da523f2af673fee3fe21bc8386ca334ea"
+      }
+    ],
+    "production_terminal_stderr": "\"worktree\":\"/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/project-drive-pr1\",\"branch\":\"main\",\"task_description\":\"Drive PR #1 through review and merge; merge is authorized.\",\"pr_number\":\"1\",\"runner_path\":\"/home/runner/work/_temp/recipe-runner/bin/recipe-runner-rs\",\"agent_binary\":\"codex\",\"agent_binary_source\":\"env\",\"amplihack_home\":\"/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home/.amplihack\",\"child_pid\":26526,\"exit_code\":1,\"status\":\"failure\",\"timestamp\":\"2026-11-18T19:42:53Z\"}\namplihack.recipe.failure_class {\"action\":\"terminal\",\"attempt\":1,\"class\":\"indeterminate\",\"completed_steps\":[\"step-recovery-init\",\"autodrive-prerequisites\",\"autodrive-pr-input\",\"autodrive-build\",\"autodrive-crusty-loop\",\"autodrive-check-unmerged\",\"autodrive-merge-loop\"],\"evidence\":\"\u2026(earlier evidence elided)\u2026\\nier recorded handoff record=/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home/.local/state/amplihack/step-recovery/55a8a8937dad42d996744819c523fcf1/autodrive-report.jsonl\\n{\\\"step_recovery_handoffs\\\":[{\\\"needs\\\":\\\"read the drive log, then rerun finalization or the drive\\\",\\\"owner\\\":\\\"run-requester\\\",\\\"reason\\\":\\\"the drive ended with no finalization evidence and no earlier recorded handoff\\\",\\\"record\\\":\\\"/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home/.local/state/amplihack/step-recovery/55a8a8937dad42d996744819c523fcf1/autodrive-report.jsonl\\\",\\\"source\\\":\\\"validator\\\",\\\"step_id\\\":\\\"autodrive-report\\\"}]}\\n[runner stderr] recipe recovery: fresh reason=identity_unavailable\\n[2026-11-18T19:42:53Z ERROR recipe_runner_rs::runner] Step 'autodrive-report' failed: bash step failed: Command failed (exit 81): {\\\"step_recovery_handoffs\\\":[]}\\n    ERROR: no finalisation or hand-off evidence; readiness is incomplete\\n    [step-recovery] handoff recorded in /home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home/.local/state/amplihack/step-recovery/55a8a8937dad42d996744819c523fcf1/autodrive-report.jsonl\\n    [step-recovery] HANDOFF step=autodrive-report owner=run-requester needs=read the drive log, then rerun finalization or the drive reason=the drive ended with no finalization evidence and no earlier recorded handoff record=/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home/.local/state/amplihack/step-recovery/55a8a8937dad42d996744819c523fcf1/autodrive-report.jsonl\\n    {\\\"step_recovery_handoffs\\\":[{\\\"needs\\\":\\\"read the drive log, then rerun finalization or the drive\\\",\\\"owner\\\":\\\"run-requester\\\",\\\"reason\\\":\\\"the drive ended with no finalization evidence and no earlier recorded handoff\\\",\\\"record\\\":\\\"/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home/.local/state/amplihack/step-recovery/55a8a8937dad42d996744819c523fcf1/autodrive-report.jsonl\\\",\\\"source\\\":\\\"validator\\\",\\\"step_id\\\":\\\"autodrive-report\\\"}]}\",\"failed_steps\":[\"autodrive-report\"],\"issue\":1267,\"reasoning\":\"classified `indeterminate` \u2014 no transport, environmental, or work marker found in the failure evidence\",\"retryable\":false,\"schema_version\":1,\"signal\":null,\"structural_refusal\":false}\nERROR: recipe run terminated on attempt 1 \u2014 classified `indeterminate` \u2014 no transport, environmental, or work marker found in the failure evidence. Not retried: only an unambiguously transient transport fault is. [issue #1267]\namplihack.recipe.failure_class {\"action\":\"terminal\",\"attempt\":1,\"class\":\"indeterminate\",\"completed_steps\":[\"step-recovery-init\",\"autodrive-prerequisites\",\"autodrive-pr-input\",\"autodrive-build\",\"autodrive-crusty-loop\",\"autodrive-check-unmerged\",\"autodrive-merge-loop\"],\"evidence\":\"\u2026(earlier evidence elided)\u2026\\nier recorded handoff record=/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home/.local/state/amplihack/step-recovery/55a8a8937dad42d996744819c523fcf1/autodrive-report.jsonl\\n{\\\"step_recovery_handoffs\\\":[{\\\"needs\\\":\\\"read the drive log, then rerun finalization or the drive\\\",\\\"owner\\\":\\\"run-requester\\\",\\\"reason\\\":\\\"the drive ended with no finalization evidence and no earlier recorded handoff\\\",\\\"record\\\":\\\"/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home/.local/state/amplihack/step-recovery/55a8a8937dad42d996744819c523fcf1/autodrive-report.jsonl\\\",\\\"source\\\":\\\"validator\\\",\\\"step_id\\\":\\\"autodrive-report\\\"}]}\\n[runner stderr] recipe recovery: fresh reason=identity_unavailable\\n[2026-11-18T19:42:53Z ERROR recipe_runner_rs::runner] Step 'autodrive-report' failed: bash step failed: Command failed (exit 81): {\\\"step_recovery_handoffs\\\":[]}\\n    ERROR: no finalisation or hand-off evidence; readiness is incomplete\\n    [step-recovery] handoff recorded in /home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home/.local/state/amplihack/step-recovery/55a8a8937dad42d996744819c523fcf1/autodrive-report.jsonl\\n    [step-recovery] HANDOFF step=autodrive-report owner=run-requester needs=read the drive log, then rerun finalization or the drive reason=the drive ended with no finalization evidence and no earlier recorded handoff record=/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home/.local/state/amplihack/step-recovery/55a8a8937dad42d996744819c523fcf1/autodrive-report.jsonl\\n    {\\\"step_recovery_handoffs\\\":[{\\\"needs\\\":\\\"read the drive log, then rerun finalization or the drive\\\",\\\"owner\\\":\\\"run-requester\\\",\\\"reason\\\":\\\"the drive ended with no finalization evidence and no earlier recorded handoff\\\",\\\"record\\\":\\\"/home/runner/work/_temp/issue-2806.9hhipH/tmp/qa2806-VFHUjj/drive-missing/home/.local/state/amplihack/step-recovery/55a8a8937dad42d996744819c523fcf1/autodrive-report.jsonl\\\",\\\"source\\\":\\\"validator\\\",\\\"step_id\\\":\\\"autodrive-report\\\"}]}\",\"failed_steps\":[\"autodrive-report\"],\"issue\":1267,\"reasoning\":\"classified `indeterminate` \u2014 no transport, environmental, or work marker found in the failure evidence\",\"retryable\":false,\"schema_version\":1,\"signal\":null,\"structural_refusal\":false}\n"
+  },
+  "ci_run": "https://github.com/rysweet/amplihack-rs/actions/runs/44382405727",
+  "artifact_id": 14463279392,
+  "production_diff_from_base": [
+    "crates/amplihack-cli/Cargo.toml",
+    "crates/amplihack-cli/tests/main.rs"
+  ]
+}

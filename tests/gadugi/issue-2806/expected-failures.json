@@ -68,5 +68,12 @@
     "base_sha": "adb27f70a7cd7fcd1ebb4fec4696d1b541c6810d",
     "evidence_path": "baseline/0b26/cleanup-removal-failure.reported-once.json",
     "failure_fingerprint": "same removal failure reported by repeated cleanup"
+  },
+  {
+    "assertion_id": "drive-missing.worktree",
+    "issue": 2802,
+    "base_sha": "97d56c6194071548551470bd0fc837be7609595c",
+    "evidence_path": "baseline/97/drive-missing.worktree.json",
+    "failure_fingerprint": "no-worktree"
   }
 ]

@@ -288,3 +288,10 @@ runtime was observed intact after interruption and before the second recorded
 run's sweep. The removal case retains both real permission-denied reports and
 both exit codes. These allowances preserve each original assertion; passing
 behavior takes precedence over an allowance.
+
+CI [run 44382405727](https://github.com/rysweet/amplihack-rs/actions/runs/44382405727)
+at `97d56c6194071548551470bd0fc837be7609595c` supplies
+`baseline/97/drive-missing.worktree.json` for #2802. The private repository has
+only its bare registration and detached launch checkout, and every entry gate
+reports no-worktree without a fixture error. Only the resolution assertion is
+allowed; review, retention and merge downstream remain explicitly unexecuted.

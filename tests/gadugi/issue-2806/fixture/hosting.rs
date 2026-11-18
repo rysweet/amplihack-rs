@@ -172,7 +172,7 @@ impl HostingStore {
             "title":pr.title,"body":pr.body,"isDraft":pr.is_draft,"isCrossRepository":false,
             "headRepository":{"nameWithOwner":self.state.repository},"headRepositoryOwner":{"login":"fixture"},
             "baseRepository":{"nameWithOwner":self.state.repository},"author":{"login":"fixture"},
-            "mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"APPROVED",
+            "mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"",
             "createdAt":pr.created_at,"mergedAt":pr.merged_at,
             "closedAt":pr.merged_at,"comments":pr.comments,"reviews":[],
             "statusCheckRollup":[{"name":"fixture-verification","status":if pr.checks == Checks::Pending {"IN_PROGRESS"} else {"COMPLETED"},"conclusion":conclusion,"state":state}]}),
@@ -241,7 +241,7 @@ impl HostingStore {
             ["auth", "status", ..] => Response::text("fixture: authenticated locally"),
             ["api", "user", ..] => Response::json(json!({"login":"fixture"}))?,
             ["api", "graphql", ..] => Response::json(
-                json!({"data":{"viewer":{"login":"fixture"},"repository":{"nameWithOwner":self.state.repository,"viewerPermission":"ADMIN"}}}),
+                json!({"data":{"viewer":{"login":"fixture"},"repository":{"nameWithOwner":self.state.repository,"viewerPermission":"ADMIN","pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}),
             )?,
             ["api", endpoint, ..]
                 if endpoint.starts_with(&format!("repos/{}/", self.state.repository)) =>
@@ -254,6 +254,10 @@ impl HostingStore {
                         .context("comment PR missing")?
                         .parse()?;
                     Response::json(json!(self.pr(number)?.comments))?
+                } else if endpoint.ends_with("/protection/required_pull_request_reviews") {
+                    Response::json(
+                        json!({"required_approving_review_count":0,"require_code_owner_reviews":false,"require_last_push_approval":false}),
+                    )?
                 } else if endpoint.ends_with("/protection") {
                     Response::json(
                         json!({"required_status_checks":{"strict":true,"contexts":["fixture-verification"]},"required_pull_request_reviews":{"required_approving_review_count":0}}),

@@ -308,6 +308,19 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         let first = verify(case, &repo)?;
         let second = check(case, &repo, "/usr/bin/cmp", &["answer.txt", "expected.txt"])?;
         json!({"status":"PASS","exit_code":0,"scenarios":[{"status":"PASS","exit_code":0,"name":"answer public function returns 42"},{"status":"PASS","exit_code":0,"name":"answer file matches expected bytes"}],"evidence":[first,second]}).to_string()
+    } else if task.starts_with("# Step 14: Bump Version in Cargo.toml") {
+        let manifest: toml::Value = toml::from_str(&fs::read_to_string(repo.join("Cargo.toml"))?)?;
+        let current = manifest["package"]["version"]
+            .as_str()
+            .context("fixture package version absent")?;
+        let diff = observe_git(&repo, &["diff", "main", "--stat"])?;
+        ensure!(
+            fs::read(repo.join("answer.txt"))? == b"42\n",
+            "version assessment lacks implemented fix"
+        );
+        json!({"current_version":current,"new_version":current,"change_classification":"PATCH",
+            "rationale":"correct existing answer() behavior; PATCH contract and operator instruction require no version change",
+            "changes_summary":diff}).to_string()
     } else if task.starts_with("Evaluate goal achievement after round 1.") {
         let prs = host(case)?.open_prs()?;
         ensure!(prs.len() == 1, "reflection found no single open PR");
@@ -596,7 +609,73 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
     {
         let pr = host(case)?.pr(1)?;
         ensure!(pr.checks == Checks::Green, "platform checks not green");
-        json!({"platform":"github","host":"github.com","repository":"fixture/project","pr":1,"head_sha":pr.head_sha,"pr_state":pr.state,"merge_state":"CLEAN","approval_status":"MET","approval_source":"local hosting fixture configuration","approval_blocker":"","blockers":[],"attempts":[]}).to_string()
+        let helper = case
+            .home
+            .join(".amplihack/amplifier-bundle/tools/autodrive_platform_facts.sh");
+        let output = case
+            .command(Path::new("/bin/bash"))?
+            .arg("-p")
+            .arg(helper)
+            .arg("1")
+            .current_dir(&repo)
+            .output()?;
+        fs::write(case.evidence.join("platform-facts.stdout"), &output.stdout)?;
+        fs::write(case.evidence.join("platform-facts.stderr"), &output.stderr)?;
+        let mut measured: Value = serde_json::from_str(&checked(output, "platform measurements")?)?;
+        ensure!(
+            measured["head_sha"] == pr.head_sha
+                && measured["approval_status"] == "MET"
+                && measured["unresolved_threads"] == "0"
+                && measured["merge_state"] == "CLEAN",
+            "platform facts do not establish readiness"
+        );
+        measured["platform"] = json!("github");
+        measured["host"] = json!("github.com");
+        measured["repository"] = json!("fixture/project");
+        measured["source_repository"] = json!("fixture/project");
+        measured["pr_url"] = json!("https://github.com/fixture/project/pull/1");
+        measured["pr_state"] = json!(pr.state);
+        measured["head_branch"] = json!(pr.branch);
+        measured["base_branch"] = json!(pr.base);
+        measured["base_sha"] = json!(observe_git(
+            &driver::origin(case)?,
+            &["rev-parse", &pr.base]
+        )?);
+        measured["merge_base_sha"] = json!(observe_git(
+            &repo,
+            &["merge-base", &pr.head_sha, "origin/main"]
+        )?);
+        let mut hosting = host(case)?;
+        for (field, args) in [
+            (
+                "pull_request",
+                vec![
+                    "pr",
+                    "view",
+                    "1",
+                    "--json",
+                    "title,body,statusCheckRollup,reviews",
+                ],
+            ),
+            (
+                "discussion",
+                vec![
+                    "api",
+                    "repos/{owner}/{repo}/issues/1/comments",
+                    "--paginate",
+                ],
+            ),
+        ] {
+            let response = hosting.invoke(&repo, &args)?;
+            ensure!(
+                response.exit_code == 0,
+                "platform observation {field} failed"
+            );
+            measured[field] = serde_json::from_slice(&response.stdout)?;
+        }
+        measured["blockers"] = json!([]);
+        measured["attempts"] = json!([]);
+        measured.to_string()
     } else if task.starts_with("# merge-ready assessment") {
         let pr = host(case)?.pr(1)?;
         let evidence = task_json(task, "- qa-team scenarios: `")?;
@@ -616,7 +695,8 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
             observe_git(&review, &["show", &format!("{reviewed}:README.md")])?.contains("42"),
             "readiness lacks user documentation at the assessed commit"
         );
-        let changed = observe_git(&review, &["diff", "--name-only", "origin/main", &reviewed])?;
+        let base_sha = observe_git(&driver::origin(case)?, &["rev-parse", &pr.base])?;
+        let changed = observe_git(&review, &["diff", "--name-only", &base_sha, &reviewed])?;
         ensure!(
             changed
                 .lines()

@@ -1,5 +1,5 @@
 {
-  "task": "Issue #7: write answer.txt containing 42 followed by a newline, implement answer() returning 42, and leave the published PR open. Branch: feat/answer",
+  "task": "Issue #7: fix answer() returning 0 so it returns 42, write answer.txt containing 42 followed by a newline, and leave the published PR open. Branch: feat/answer",
   "branch": "feat/answer",
   "implementation": {
     "files": [
@@ -38,7 +38,7 @@
     "assumptions": [],
     "questions_resolved": [],
     "estimated_complexity": "low",
-    "classification": "feature",
+    "classification": "bugfix",
     "requires_api_design": "false",
     "requires_database_design": "false",
     "requires_integration_work": "false"

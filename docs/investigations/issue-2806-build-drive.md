@@ -163,3 +163,25 @@ Publication source inspection additionally confirmed the native writer emits
 accepts both documented option spellings, infers only the actual current
 branch, preserves draft state, and refuses a draft merge until real readiness
 changes it. A contract test covers this exact publication and transition.
+
+Readiness now also runs the trusted platform-facts helper. Hosting fixtures
+expose the seeded zero-review policy and empty review-thread connection; the
+helper must independently measure approval status, unresolved conversations,
+merge state and head before the response can report readiness. Raw measurements
+and the PR/discussion readbacks are retained beside the expected-check evidence.
+
+Run 44382405727 at `97d56c6194071548551470bd0fc837be7609595c` (artifact
+14463279392) completed Crusty objective completion and measured expected checks
+GREEN in the control. Readiness exposed a fixture assumption: the private
+review-generation repository need not have origin/main. Compare the reviewed
+commit with the independently observed base SHA instead. The build reached its
+version assessment; answer() already exists, so correcting its result is a
+PATCH and the supported contract leaves the observed version unchanged.
+Neither failure receives an allowance.
+
+The missing-worktree case has no client/harness errors in this run. All entry
+observations find only the private bare repository and detached launch checkout,
+with an independently seeded OPEN PR at its published head; the real report
+ends incomplete without finalization. baseline/97 records the original
+no-worktree assertion as #2802. Its downstream checks remain unexecuted. The
+separate successful control must still complete review, readiness and merge.
