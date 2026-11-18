@@ -14,6 +14,14 @@ Our development philosophy embodies a Zen-like minimalism that values simplicity
 - **Present-moment focus**: The code handles what's needed now rather than anticipating every possible future scenario.
 - **Pragmatic trust**: We trust external systems enough to interact with them directly, handling failures as they occur rather than assuming they'll happen.
 
+### Agentic Steps, Not Brittle Checks
+
+Recipes are composable workflows of agentic steps. Deterministic code fetches, renders, installs and records. It does not judge. When something does not match what was expected, an agent step assesses the situation against guidance and acts: it proceeds, repairs, or stops with a stated reason.
+
+Every fix to a failing step or check either removes the brittle mechanism or replaces it with such an agent step. A fix adds no new fail-closed gate, exact-format parser, must-match check or exit code that ends a run. Extending an existing check to cover one more case is a last resort and the design must justify it in writing.
+
+The one exception is a step that protects data: it may decline to act, and so may any agent step, but declining does not end the run. Never delete unpushed work, never force-push, and never perform an equivalent destructive operation such as a hard reset, a forced branch deletion or a forced clean. The rule applies to recipe steps and workflow checks. It does not apply to authentication, authorisation, input validation, secret handling or integrity verification of artefacts, and a user-facing command such as `amplihack install` still verifies its own completeness and reports failure.
+
 ### The Brick Philosophy for AI Development
 
 _"We provide the blueprint, and AI builds the product, one modular piece at a time."_

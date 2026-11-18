@@ -44,6 +44,8 @@ Validate architectural decisions through amplihack's philosophy:
 5. **Value**: "Does the complexity add proportional value?"
 6. **Error Visibility**: "Are all errors propagated visibly? Any swallowed exceptions or silent fallbacks?"
 7. **No Silent Degradation**: "Does any code path silently drop data, skip work, or substitute defaults?"
+8. **Brittle Checks**: "Does this change add or extend a check, parser, gate or exit path that can end a run, or a script that judges what an agent should judge? If so, that is a major concern unless it only prevents data loss. Name the agentic alternative, such as removing the check or giving the situation to an agent step with guidance."
+9. **Checking Balance**: "Does the change add more checking code than it removes?"
 
 ## Red Flags
 

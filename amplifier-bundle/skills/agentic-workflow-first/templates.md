@@ -53,12 +53,12 @@ steps:
       RECORD
     output: "record_written"
 
-  # (c) THIN RAIL — read the record fail-CLOSED, then route (Step 3c / Template D)
+  # (c) THIN RAIL: read the record for integrity, then route (Step 3c / Template D)
   - id: "route"
     type: "bash"
     command: |
       set -euo pipefail
-      "{{repo_path}}/scripts/read_record.sh" "${RECORD_PATH:?}"   # fail-closed reader
+      "{{repo_path}}/scripts/read_record.sh" "${RECORD_PATH:?}"   # record-integrity reader
     output: "route_result"
 ```
 
@@ -107,15 +107,20 @@ format in this repo; keep prompts inline.
 Control flow reads ONLY typed fields (`decision`, `schema_version`, `nonce`). `rationale`
 is human-facing and must never drive routing (that would re-introduce AP-1).
 
-## Template D — Fail-CLOSED reader (`scripts/read_record.sh`, the thin rail)
+## Template D: Record-integrity reader (`scripts/read_record.sh`, the thin rail)
+
+The rail reports what it found about ownership, freshness and parseability. A
+nonzero exit here is that report to the step which invoked the rail, not a gate
+that ends the run. The decision to stop belongs to an agent step, which reads
+the report and decides.
 
 ```bash
 #!/usr/bin/env bash
-# Thin rail: read a typed record fail-CLOSED. Aborts on ANY doubt (AP-1).
+# Thin rail: read a typed record and report on ANY doubt (AP-1).
 set -euo pipefail
 REC="${1:?record path required}"
 
-# WHY each guard: any failure => abort the step; never proceed on default data.
+# WHY each guard: any failure => report and hand to an agent step; never proceed on default data.
 [ -f "$REC" ]                        || { echo "record missing: $REC" >&2; exit 1; }
 perms=$(stat -c '%a' "$REC" 2>/dev/null || stat -f '%Lp' "$REC")  # GNU || BSD/macOS
 [ "$perms" = "600" ]                 || { echo "record not 0o600 (got $perms)" >&2; exit 1; }
@@ -127,7 +132,7 @@ ver=$(jq -r '.schema_version' "$REC")
 
 decision=$(jq -r '.decision' "$REC")   # route ONLY on the typed field
 # Optional allowlist (defense-in-depth): when ALLOWED_DECISIONS is set (space-separated),
-# reject any decision outside it — fail CLOSED here, before the caller ever routes on it.
+# report any decision outside it here, before the caller ever routes on it.
 if [ -n "${ALLOWED_DECISIONS:-}" ]; then
   case " $ALLOWED_DECISIONS " in
     *" $decision "*) : ;;

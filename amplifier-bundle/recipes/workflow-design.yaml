@@ -45,6 +45,9 @@ steps:
       3. Plan implementation approach
       4. Document module specifications
       5. Identify risks and dependencies
+      6. If the task is a failing step or check: first try removing it; if it
+         cannot go, replace it with an agent step that assesses and acts;
+         extending the check is a last resort the design must justify here.
 
       Consider the INVESTIGATION-FIRST PATTERN if the codebase is unfamiliar.
 

@@ -184,6 +184,13 @@ steps:
       - Zero-BS: No stubs, faked data, swallowed exceptions?
       - Modular Design: Clean boundaries?
       - Test-Driven: Adequate coverage?
+      - Brittle Checks: Does this change add or extend a check, parser, gate
+        or exit path that can end a run, or a script that judges what an
+        agent should judge? If so, that is a major concern unless it only
+        prevents data loss. Name the agentic alternative, such as removing
+        the check or giving the situation to an agent step with guidance.
+      - Checking Balance: Does the change add more checking code than it
+        removes?
 
       Report any philosophy violations.
     output: "philosophy_review"
@@ -231,6 +238,13 @@ steps:
       - [ ] Zero-BS: no stubs, faked data or swallowed exceptions
       - [ ] Modular design: clean boundaries
       - [ ] Test-driven: adequate coverage
+      - [ ] Does this change add or extend a check, parser, gate or exit
+            path that can end a run, or a script that judges what an agent
+            should judge? If so, that is a major concern unless it only
+            prevents data loss. Name the agentic alternative, such as
+            removing the check or giving the situation to an agent step
+            with guidance.
+      - [ ] Does the change add more checking code than it removes?
 
       End with the issues found and what you recommend for each.
     output: "combined_review"

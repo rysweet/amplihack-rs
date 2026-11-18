@@ -29,6 +29,8 @@ or "reduce the code".
 Default behavior is to write code. This skill forces the opposite default: prove a
 step *cannot* be a prompt or a tool before you write imperative logic for it.
 
+The same rule governs fixes. Deterministic code fetches, renders, installs and records; it does not judge. When a step or check fails, the fix removes the brittle mechanism or replaces it with an agent step that assesses the situation against guidance and proceeds, repairs, or stops with a stated reason. Do not add a new fail-closed gate, exact-format parser, must-match check or run-ending exit code. Extending the check is a last resort the design must justify in writing. A step that only protects data (never delete unpushed work, never force-push) may decline to act but does not end the run.
+
 ## The 6-Step Decision Procedure
 
 Follow these in order for any new piece of work.
@@ -52,7 +54,7 @@ Tag each step as exactly one of:
   IO, `git`, `gh`. Choose this for anything with an external effect or a single
   correct deterministic result.
 - **(c) Thin rail** — minimal glue code: typed-record IO, guardrails, attempt caps,
-  fail-closed reads. Choose this ONLY for plumbing that is neither judgment nor an
+  record-integrity reads. Choose this ONLY for plumbing that is neither judgment nor an
   external capability.
 
 **Classification test — apply literally:**
@@ -67,7 +69,7 @@ Tag each step as exactly one of:
 Write the workflow as a recipe YAML (repo format — see `templates.md`). Agentic steps
 use `type: "agent"` with a `prompt:` block; tools use `type: "bash"`. Data flows
 between steps as **typed records** (a file/JSON schema written by one step, read
-fail-closed by the next) — NEVER by scraping/parsing another step's stdout prose.
+integrity-checked by the next), never by scraping/parsing another step's stdout prose.
 
 ### Step 5 — Write code only for the thin rail
 Write imperative code ONLY for step-type (c), and only for what genuinely cannot be a
@@ -83,7 +85,7 @@ carry the data.
 
 See `reference.md` for the four named anti-patterns and their replacements:
 1. Brittle stdout / JSON scraping of agent output → typed, owner-only (`0o600`),
-   freshness-checked records read **fail-CLOSED**.
+   freshness-checked records whose reader reports what it found and never guesses.
 2. Imperative heuristics standing in for judgment (`classify_signal`, `orient`,
    `decide`) → an agentic step behind a prompt.
 3. Wall-clock timeouts that kill working agentic steps → idle/liveness detection.
@@ -92,10 +94,10 @@ See `reference.md` for the four named anti-patterns and their replacements:
 
 ## Templates & Example
 
-- `templates.md` — copy-ready recipe, prompt, typed-record, and fail-closed-reader
+- `templates.md`: copy-ready recipe, prompt, typed-record, and record-integrity-reader
   skeletons matching the repo's real shapes.
 - `worked-example.md` — one behavior (classify + route a signal) built as recipe +
-  prompt + typed record + ~10-line rail, contrasted with a naive hardcoded function.
+  prompt + typed record + ~10-line rail, contrasted with a naive hardcoded function. A second example replaces step-21 pr-ready's `workflow_pr_scope.sh` with an agent step.
 
 ## §7 — Honest note on reflexive irony
 
@@ -103,6 +105,6 @@ Some shipped recipes in this repo still hand data between steps by having a late
 parse an earlier step's stdout (e.g. `parse_json` over agent output). That works, and
 this skill does not claim those recipes are broken. The **recipe step is the agentic
 unit** either way. What this skill teaches is the *improved handoff*: a step writes a
-**typed record** (owner-only, freshness-checked) and the next step reads it fail-closed.
+**typed record** (owner-only, freshness-checked) and the next step reads it for integrity and hands anything unreadable to an agent step.
 Model new work on the typed-record handoff; treat stdout-scraping as legacy, not as the
 target pattern.

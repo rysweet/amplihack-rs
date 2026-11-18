@@ -14,6 +14,14 @@ Our development philosophy embodies a Zen-like minimalism that values simplicity
 - **Present-moment focus**: The code handles what's needed now rather than anticipating every possible future scenario.
 - **Pragmatic trust**: We trust external systems enough to interact with them directly, handling failures as they occur rather than assuming they'll happen.
 
+### Agentic Steps, Not Brittle Checks
+
+Recipes are composable workflows of agentic steps. Deterministic code fetches, renders, installs and records. It does not judge. When something does not match what was expected, an agent step assesses the situation against guidance and acts: it proceeds, repairs, or stops with a stated reason.
+
+Every fix to a failing step or check either removes the brittle mechanism or replaces it with such an agent step. A fix adds no new fail-closed gate, exact-format parser, must-match check or exit code that ends a run. Extending an existing check to cover one more case is a last resort and the design must justify it in writing.
+
+The one exception is a step that protects data: it may decline to act, and so may any agent step, but declining does not end the run. Never delete unpushed work, never force-push, and never perform an equivalent destructive operation such as a hard reset, a forced branch deletion or a forced clean. The rule applies to recipe steps and workflow checks. It does not apply to authentication, authorisation, input validation, secret handling or integrity verification of artefacts, and a user-facing command such as `amplihack install` still verifies its own completeness and reports failure.
+
 ### The Brick Philosophy for AI Development
 
 _"We provide the blueprint, and AI builds the product, one modular piece at a time."_
@@ -56,7 +64,7 @@ Like a brick model, our software is built from small, clear modules. Each module
 - **No swallowed exceptions**: Handle errors transparently and ensure they are visible during development
 - **Install completeness**: `amplihack install` MUST guarantee that every component the user-facing CLI advertises is actually present and functional after install completes. This includes: every framework asset the post-install verifier checks (e.g. `CLAUDE.md`, hooks, settings), every helper binary that recipes/skills/hooks invoke (e.g. `recipe-runner-rs`), and every PATH-resident command users will type. If install cannot place a component, install must fail loudly with a precise error — never finish "successfully" while the verifier prints `❌`. When adding a new component (binary, asset, hook), update both the install staging code AND the verifier in the same change so they cannot drift.
 
-Recipes are deterministic orchestration of agentic steps, not implicit shells that assume the host environment is already perfect. Any host-tool call (`git`, `gh`, `cargo`, package managers, cloud CLIs) must declare or check its preconditions at the step boundary and surface clear errors when those preconditions are required. Optional host-tool work, such as telemetry or decorative status reporting, must skip visibly with an explicit note instead of silently degrading; strict workflow work, such as branch, worktree, commit, or PR creation, must fail loudly with an actionable message.
+Recipes are composable workflows of agentic steps, not implicit shells that assume the host environment is already perfect. A step that calls a host tool (`git`, `gh`, `cargo`, package managers, cloud CLIs) reports at the step boundary what the tool returned, without credentials or environment values. When the result is not what the step expected, an agent step reads that report against guidance and proceeds, repairs, or stops with a stated reason. Optional host-tool work, such as telemetry or decorative status reporting, notes visibly when it is skipped instead of silently degrading.
 
 ### 4. Library vs Custom Code
 

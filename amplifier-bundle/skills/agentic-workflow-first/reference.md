@@ -17,9 +17,9 @@ silently breaks the handoff, and a partial parse can proceed on default/garbage 
   (versioned, with a nonce/timestamp).
 - Create it **owner-only** (`0o600`) **atomically at creation** (open with mode; never
   `chmod` after write — that is a TOCTOU window).
-- The consuming step reads it **fail-CLOSED**: missing file, wrong permissions, parse
-  failure, schema mismatch, or a stale record → **abort the step**. Never proceed on
-  partial or default data.
+- The consuming step reads it for **record integrity**: missing file, wrong permissions, parse
+  failure, schema mismatch, or a stale record -> report what was found and hand the
+  situation to an agent step. Never proceed on partial or default data.
 - Include a **freshness / nonce** check so a stale record from a previous run cannot be
   replayed by a concurrent run.
 
