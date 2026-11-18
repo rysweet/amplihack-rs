@@ -1,3 +1,12 @@
+---
+title: Scoped Workflow Closure
+description: How explicit workflow identity, publication, and validation keep closure tied to current work.
+last_updated: 2026-11-18
+review_schedule: as-needed
+owner: workflow-team
+doc_type: explanation
+---
+
 # Scoped Workflow Closure
 
 > [Home](../index.md) > Concepts > Scoped Workflow Closure
@@ -38,11 +47,13 @@ workflow's PR:
 repository + head branch + base branch  (same-repository, not cross-repo)
 ```
 
-Tracking discriminators — PR/issue/work-item token, recipe/workstream id, title
-prefix, start time, and head SHA — are **tie-breakers**. They resolve the rare
-case of multiple candidates (for example, an OPEN and a previously CLOSED PR on
-the same head and base). A stale or drifted discriminator never rejects the
-unique primary-key PR.
+During discovery, tracking discriminators — issue/work-item token,
+recipe/workstream id, title prefix, start time, and head SHA — are
+**tie-breakers**. They resolve multiple candidates, such as an OPEN and a
+previously CLOSED PR on the same head and base. A unique primary-key candidate
+does not need a tie-breaker. When a PR number or URL is supplied, every
+configured discriminator is a hard filter. Readiness also validates all
+configured checks against fresh metadata before changing the PR.
 
 For processes and workstreams the persisted scope still requires the full
 identity tuple:
@@ -56,18 +67,18 @@ Missing primary-key scope is not a soft match. It is display-only history.
 ## PR Scope
 
 PR scope identifies the pull request owned by the current workflow. The fields
-divide into the primary key and the tie-breakers:
+identify the PR and constrain operations on it:
 
 | Scope field | Role | Purpose |
 | --- | --- | --- |
 | `repository` | Primary key | Exact GitHub repository owner/name (same-repo only). |
 | `head_ref` | Primary key | Exact PR branch expected for the workflow. |
 | `base_ref` | Primary key | Exact target branch. |
-| `pr_number` or `pr_url` | Authoritative override | Concrete PR identity when already known; bypasses primary-key and tie-breaker resolution. |
-| `issue_number` or `work_item_id` | Tie-breaker | Tracking item the PR is expected to close or reference. |
-| `expected_pr_title_prefix` | Tie-breaker | Deterministic title prefix. |
-| `created_after` | Tie-breaker | Run start time; used to discard older candidates. |
-| `head_sha` | Tie-breaker | Exact head SHA for exact-head operations. |
+| `pr_number` or `pr_url` | Authoritative identity | Selects a concrete PR; primary-key and configured discriminator checks still apply. |
+| `issue_number` or `work_item_id` | Discriminator | Tracking item the PR is expected to close or reference. |
+| `expected_pr_title_prefix` | Discriminator | Deterministic title prefix. |
+| `created_after` | Discriminator | Run start time; used to discard older candidates. |
+| `head_sha` | Discriminator | Exact head SHA for exact-head operations. |
 
 The shell helper `workflow_pr_scope.sh` is the single authority for current-work
 PR ownership. `workflow_publish_pr.sh`, `workflow_pr_ready.sh`, and
@@ -83,17 +94,51 @@ workflow's PR (see
 Persisted PR identity has priority: a known `pr_number` or `pr_url` is
 authoritative and validated directly. Otherwise the helper resolves the primary
 key. A single primary-key candidate is adopted as-is — no issue token, head SHA,
-or title prefix is additionally required. Tie-breakers apply only when more than
-one candidate shares the same head and base; if they eliminate everything but one
-OPEN candidate remains, that candidate is adopted. OPEN is always preferred over
-closed. The helper never falls back to recent PRs, PR author, or broad
-title/body search.
+or title prefix is additionally required. When multiple candidates share the same
+head and base, a unique discriminator match wins, even if it is closed. If
+multiple discriminator matches remain, the helper adopts the single OPEN PR
+among them. If no discriminator matches remain, it instead looks for a single
+OPEN PR among the original primary-key candidates. Either fallback returns
+`multiple_scoped_prs` unless exactly one OPEN candidate remains. The helper never
+falls back to recent PRs, PR author, or broad title/body search.
 
-This is why the workflow reliably adopts its own PR even when the branch bakes in
-a local tracking issue (`feat/issue-1014-...`) while the PR body references a
-different upstream issue (`#4610`), or when the remote head advances past the
-locally captured SHA. The unique `(head, base, same-repo)` PR is matched;
-the stale discriminators are ignored rather than treated as hard rejections.
+Publish is the one caller that may look past the base. On GitHub, with an
+empty `base_branch` and no OPEN PR into the resolved base, it also accepts a
+single OPEN same-repository PR from the same head into another base. Multiple
+eligible OPEN PRs on other bases return `multiple_scoped_prs`. This prevents a
+branch that already has an open PR from receiving a second PR into the default
+branch (see
+[An open pull request on another base](../reference/workflow-delivery-inputs.md#an-open-pull-request-on-another-base)).
+
+Discovery can therefore identify the unique branch/base PR despite stale
+tracking metadata. That result does not authorize readiness: a named PR must
+pass configured discriminator checks, and readiness requires the exact
+published HEAD.
+
+## Publication Before Readiness
+
+An open PR can identify the right branch while still missing audit work.
+Finalization publishes from the recorded PR worktree before readiness reads
+HEAD. The publication step commits audit edits and pushes outstanding commits
+even when staging is empty. The launch checkout can be on `main` without
+affecting that choice of worktree.
+
+The recipe orders publication before readiness. Its execution contract also
+requires a usable recorded worktree and a successful push. Treating a
+worktree-resolution failure as a successful skip, or substituting another
+checkout for readiness, breaks that contract. Both operations require recorded
+context and route failures through existing recovery. An empty staging area
+describes whether a new commit is needed; it says nothing about whether
+existing commits reached the remote.
+
+Unpublished audit work explains a local HEAD ahead of the PR's head. That
+observation alone does not identify which publication operation was skipped or
+failed in a particular run. Candidate diagnostics and recovery evidence expose
+the failed checks without treating an ancestor SHA as successful publication.
+See [Finalize Publication and PR Readiness](../reference/workflow-finalize-publication.md)
+for inputs, execution conditions, and recovery behavior.
+
+## Repository Boundaries
 
 Cross-repository and fork PRs are rejected by default. A workflow that starts in
 `rysweet/amplihack-rs` may close only a PR whose base repository and head
@@ -139,8 +184,8 @@ Common invalid reasons:
 | Reason | Meaning |
 | --- | --- |
 | `missing_scope` | The persisted state predates scoped closure fields. |
-| `no_scoped_pr` | No PR matches the primary key (repository, head, base). This is an empty result, not a stale-discriminator rejection. |
-| `multiple_scoped_prs` | Two or more OPEN candidates share the same head and base and survive tie-breaking. |
+| `no_scoped_pr` | No candidate passes the applicable scope checks. Diagnostics distinguish an empty lookup from candidates excluded by primary-key or authoritative discriminator checks. |
+| `multiple_scoped_prs` | Candidates remain unresolved after discriminator matching and the single-OPEN fallback, including unresolved closed candidates; also returned by opt-in discovery for multiple eligible OPEN PRs on other bases. |
 | `repo_mismatch` | Repository differs from the current workflow. |
 | `workdir_mismatch` | Work directory differs from persisted process scope. |
 | `branch_mismatch` | Branch or head ref differs from scope. |

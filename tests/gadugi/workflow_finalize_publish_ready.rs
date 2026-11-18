@@ -110,6 +110,18 @@ fn main() {
             contracts::diagnostics_report_all_exclusions,
         ),
         (
+            "diagnostics_preserve_missing_observations",
+            contracts::diagnostics_preserve_missing_observations,
+        ),
+        (
+            "diagnostics_keep_each_candidates_exclusions",
+            contracts::diagnostics_keep_each_candidates_exclusions,
+        ),
+        (
+            "temporary_captures_removed_but_reports_persist",
+            contracts::temporary_captures_removed_but_reports_persist,
+        ),
+        (
             "recipe_publication_precedes_readiness",
             contracts::recipe_publication_precedes_readiness,
         ),

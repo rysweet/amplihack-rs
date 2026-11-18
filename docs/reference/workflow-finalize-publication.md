@@ -44,8 +44,28 @@ Publication precedes readiness despite the alphabetical step suffixes. A
 publication failure enters recovery before readiness can run. A successful
 publication means the intended audit work reached the remote branch.
 
+Cleanup, audit, artifact checks, and publication run when
+`terminal_state.terminal_success != 'true'` and
+`terminal_state.should_finalize == 'true'`. Readiness runs when terminal
+success is not true and `terminal_state.should_run_ci_wait == 'true'`; its
+GitHub operation applies only when `REMOTE_HOST_TYPE=github`. Step order alone
+does not establish that publication succeeded: its worktree resolution and
+push must also complete. See the [publication contract](#publication-contract).
+
 Quick-change's direct path retains its own commit-and-push sequence. A
 quick-change handover to `default-workflow` uses the finalization sequence above.
+
+Previously, publication converted an unusable recorded worktree into a
+successful skip, while readiness could fall back to the launch checkout.
+That allowed readiness to run without successful publication even though the
+recipe already placed publication after audit and before readiness. The old
+publication body already attempted a push when staging was empty; an empty
+staging area alone does not explain the reported failures. The terminal-state
+recipe sets both finalization and CI-wait flags together on the active path.
+The two incident reports establish that audit work was unpublished, but do not
+establish which publication escape path occurred. The repair makes unusable
+publication context an error for recovery and keeps both operations in the
+recorded worktree.
 
 ## Helpers and inputs
 
@@ -73,6 +93,11 @@ These are internal recipe helpers under `amplifier-bundle/tools/`.
 There is no setting to bypass scope validation or accept an unpublished HEAD.
 Helper discovery through an installation or repository path does not make that
 path the target worktree.
+
+These helpers use the workflow's existing Git authentication, GitHub CLI
+authentication, and delivery inputs. No additional configuration or public API
+is required. The recipe owns invocation and recovery; calling readiness alone
+does not commit or push audit work.
 
 ## Canonical worktree
 
@@ -131,6 +156,12 @@ pushes, and worktree-resolution failures return nonzero for recovery. An empty
 staging area does not skip a push of already committed audit work. A missing
 worktree does not count as successful publication.
 
+Only the commit operation depends on staged changes. For example, when the
+audit has already committed a fix, publication can print
+`No staged changes from cleanup` and still push that commit. Git operations
+affect the recorded worktree; uncommitted edits in the launch checkout remain
+untouched.
+
 ## Readiness contract
 
 `workflow_pr_ready.sh` reads HEAD after publication, from the same canonical
@@ -149,6 +180,11 @@ by a configured check fail validation. This applies equally to recorded PRs and
 runs with neither a recorded PR number nor URL. The shared discovery helper's
 behavior for other consumers, including its extra tracking discriminators,
 remains unchanged.
+
+The scope helper's opt-in `--any-base-open` discovery applies only without an
+explicit PR number or URL. An explicitly named PR retains strict base
+validation even if that option is supplied. Readiness validates the intended
+base resolved from delivery inputs; cross-base discovery does not bypass it.
 
 Readiness passes neither `--allow-head-behind` nor `--allow-head-ahead`. A PR
 initially one commit behind succeeds when publication sends the missing commit
@@ -200,6 +236,11 @@ each failed check with expected and observed values; response URLs, repositories
 branches, and secondary metadata never enter raw error messages. Recovery gets
 the report path even when its inline evidence is truncated. Credentials,
 authenticated URLs, and unrelated environment contents are excluded.
+
+Temporary command captures are removed on success and failure. Durable
+diagnostic reports have an independent lifetime and remain available to
+recovery after those captures are removed. A retained report is recovery
+evidence, not a leaked command capture.
 
 ## Recovery contract
 

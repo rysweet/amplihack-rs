@@ -86,3 +86,18 @@ assertions:
     params:
       target: stdout
       expected: "PASS: valid_discovery_only_readiness_succeeds"
+  - name: incomplete-metadata-retains-diagnostics
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: diagnostics_preserve_missing_observations"
+  - name: separate-candidate-exclusions
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: diagnostics_keep_each_candidates_exclusions"
+  - name: capture-cleanup-retains-recovery-report
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: temporary_captures_removed_but_reports_persist"

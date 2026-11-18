@@ -101,6 +101,14 @@ unique candidate, and a stale or mismatched discriminator never rejects the sole
 primary-key candidate in discovery mode. A named PR must satisfy all configured
 discriminators; readiness also requires the exact published HEAD.
 
+Publish widens the lookup in one case. When the run's `base_branch` is empty,
+`workflow_publish_pr.sh` passes `--any-base-open` to its GitHub lookups, so a
+single OPEN same-repository PR from `head_ref` into another base is adopted
+instead of a second PR being created into the default branch. The adopted PR
+keeps its base, and publish records it. Azure DevOps publishing does not use this helper and is not
+covered. See
+[An open pull request on another base](workflow-delivery-inputs.md#an-open-pull-request-on-another-base).
+
 ## PR Scope Persistence
 
 PR identity is passed through recipe context and publish outputs. Closure
@@ -177,7 +185,8 @@ Rules:
    same repository and PR, which must still satisfy the primary key and every
    configured secondary discriminator.
 3. In discovery mode, when the primary key returns exactly one candidate, the
-   helper returns it without consulting any tie-breaker.
+   helper returns it without consulting any tie-breaker. With `--any-base-open`, rule 9 is
+   applied first when that candidate is not OPEN.
 4. `--issue`, `--work-item`, `--expected-pr-title-prefix`, `--created-after`, and
    `--head-sha` are hard filters in authoritative mode and tie-breakers for
    multiple discovery candidates. `--expected-pr-title-prefix` checks the title
@@ -192,10 +201,40 @@ Rules:
 6. The PR base repository and head repository must match `--repo` by default;
    fork and cross-repository PRs are rejected during the primary-key pass.
 7. A PR on a different head branch is never matched. Zero primary-key candidates
-   exit non-zero with `no_scoped_pr`; two or more OPEN candidates that survive
-   tie-breaking exit non-zero with `multiple_scoped_prs`.
+   exit non-zero with `no_scoped_pr`, unless `--any-base-open` finds a PR
+   (rule 9); two or more OPEN candidates that survive tie-breaking exit
+   non-zero with `multiple_scoped_prs`.
 8. The helper never falls back to `gh pr list --author @me`, recent PR ordering,
    or broad title/body grep.
+9. `--any-base-open` is off by default and is read only from the command line;
+   an `ANY_BASE_OPEN` environment variable has no effect. It applies in
+   discovery mode only and is ignored when `--pr-number` or `--pr-url` is
+   given. When the primary key has no OPEN candidate, the helper looks among
+   the same `gh pr list` candidates for OPEN PRs with `headRefName == --head`,
+   a non-empty `baseRefName` other than `--base`, `isCrossRepository == false`
+   and head `owner/name == --repo`. Exactly one is returned as `ok: true` with
+   its own `baseRefName`; two or more exit non-zero with
+   `multiple_scoped_prs`; none leaves the result to the passes below. A PR
+   found here wins over a merged or closed primary-key candidate. The
+   tie-breakers are not applied to these PRs. The helper makes no extra GitHub
+   call for this pass. When it finds one or more such PRs, it writes one
+   `INFO:` line to stderr naming only their numbers and bases; otherwise it
+   writes nothing. Only `workflow_publish_pr.sh` passes the option, and only
+   when the run's `base_branch` is empty.
+
+```bash
+amplifier-bundle/tools/workflow_pr_scope.sh \
+  --repo rysweet/amplihack-rs \
+  --head feat/issue-754-scoped-closure \
+  --base main \
+  --issue 754 \
+  --head-sha "$(git rev-parse HEAD)" \
+  --any-base-open
+```
+
+With one OPEN PR from `feat/issue-754-scoped-closure` into `dev` and none into
+`main`, this prints that PR with `"baseRefName": "dev"`. Without
+`--any-base-open` the same input exits non-zero with `no_scoped_pr`.
 
 ## PR Scope Result Schema
 
@@ -245,6 +284,7 @@ first pass that produces a single result wins.
 | --- | --- | --- |
 | Authoritative override | `--pr-number` or `--pr-url` supplied | Inspect that exact PR. Return it on match; fail closed on mismatch. Skips the remaining passes. |
 | Primary key | No authoritative override | Filter to `headRefName == --head AND baseRefName == --base AND isCrossRepository == false AND owner/name == --repo`. |
+| Open on another base | `--any-base-open` set, no authoritative override, and the primary key has no OPEN candidate | Filter to `headRefName == --head AND baseRefName != "" AND baseRefName != --base AND state == OPEN AND isCrossRepository == false AND owner/name == --repo`. One: return it as `ok: true`, ahead of any merged or closed primary-key candidate. Two or more: exit non-zero with `multiple_scoped_prs`. None: continue with the passes below. |
 | Single primary-key candidate | Primary key returns exactly one | Return it as `ok: true`. No tie-breaker is consulted. |
 | Tie-breakers | Primary key returns two or more | Apply `--issue`, `--work-item`, `--expected-pr-title-prefix`, `--created-after`, `--head-sha`, preferring OPEN over closed. |
 | Single-OPEN fallback | Tie-breakers eliminate all, one OPEN remains | Return that OPEN candidate rather than `no_scoped_pr`. |
@@ -256,6 +296,8 @@ Safety invariants that hold across all passes:
 - A PR on a different `headRefName` is never matched.
 - `isCrossRepository == true` and fork PRs are rejected in the primary-key pass.
 - The head/base equality check is part of the primary key, never a tie-breaker.
+- `--any-base-open` relaxes only the base equality, and only for OPEN PRs. It
+  never relaxes the head, same-repository or cross-repository checks.
 - All GitHub stderr is routed through URL-credential redaction and length-capped
   before it appears in any diagnostic output.
 
@@ -399,7 +441,7 @@ These bundled tools and recipes use scoped validation:
 
 | Component | Contract |
 | --- | --- |
-| `workflow_publish_pr.sh` | Persists PR identity after creation and validates known PR identity before updating an existing PR. On `gh pr create` collision, re-runs the scoped lookup and adopts an existing OPEN PR as `existing-open-pr` success instead of failing the recipe. |
+| `workflow_publish_pr.sh` | Persists PR identity after creation and validates known PR identity before updating an existing PR. On `gh pr create` collision, re-runs the scoped lookup and adopts an existing OPEN PR as `existing-open-pr` success instead of failing the recipe. With an empty `base_branch`, passes `--any-base-open` to both GitHub lookups and records an adopted PR's own base. A failed collision lookup, including `multiple_scoped_prs`, still ends as `FAILED_PR_CREATE`. |
 | `workflow_pr_ready.sh` | Refuses readiness checks until `workflow_pr_scope.sh` returns `ok: true`. |
 | `workflow_final_status.sh` | Requires validated PR metadata before reporting terminal PR status. |
 | `workflow-terminal-state.yaml` | Uses persisted PR URL or number, then scoped lookup; no recent-PR fallback. |
@@ -425,6 +467,8 @@ Scoped closure preserves both authoritative filtering and discovery semantics:
   the named PR and enter recovery before readiness mutation
 - `no_scoped_pr` distinguishes an empty lookup from candidates excluded by
   primary or authoritative secondary checks, with every failed check reported
+- with `--any-base-open`, two or more OPEN PRs from the head on other bases,
+  and none OPEN on `--base`, block with `multiple_scoped_prs`
 - stale process records are display-only
 - PID reuse is rejected when runtime start metadata differs
 - missing runtime start metadata is rejected as incomplete process scope
@@ -441,6 +485,7 @@ The regression suite covers these contracts:
 ```bash
 cargo test -p amplihack-cli --test cli_integration issue_754_scoped_monitor_contracts::
 cargo test -p amplihack --test integration pr_scope_primary_key::
+cargo test -p amplihack --test integration workflow_publish_pr_metadata::existing_pr_other_base
 
 amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh \
   scoped-pr-identity
@@ -460,6 +505,11 @@ Representative checks:
 | two or more OPEN candidates on the same head and base | helper exits non-zero with `multiple_scoped_prs` |
 | fork or cross-repository PR candidate | helper rejects it during the primary-key pass |
 | `gh pr create` collides with an existing OPEN PR | publish returns `existing-open-pr` success (exit 0), not `FAILED_PR_CREATE` |
+| `--any-base-open --base main` with one OPEN PR into `dev` | helper returns it with `ok: true` and `baseRefName` `dev` |
+| the same input without `--any-base-open`, or with only `ANY_BASE_OPEN=true` in the environment | helper exits non-zero with `no_scoped_pr` |
+| `--any-base-open` with an OPEN PR into `dev` whose head owner is another account | helper exits non-zero with `no_scoped_pr` |
+| publish with empty `base_branch`, `origin/HEAD` at `main`, one OPEN PR into `dev` | publish returns `existing-open-pr` with `base_branch` `dev` and makes no `gh pr create` call |
+| the same publish with a CLOSED PR into `main` beside the OPEN PR into `dev` | publish returns `existing-open-pr` with `base_branch` `dev`, not `FAILED_CLOSED_UNMERGED` |
 | persisted legacy workstream lacks scope | monitor marks display-only and does not notify |
 | persisted PID is dead | validation returns `dead` |
 | PID exists with different start marker | validation returns `pid_reused` |

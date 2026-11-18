@@ -848,6 +848,173 @@ pub fn hostile_candidate_text_is_data(f: &Fixture) {
     }
 }
 
+pub fn diagnostics_preserve_missing_observations(f: &Fixture) {
+    // Partial repository metadata must not make jq terminate before the
+    // complete exclusion report can reach recovery.
+    f.patch_candidate(
+        "del(.headRefName,.baseRefName,.title,.body,.createdAt) | .headRepositoryOwner={}",
+    );
+    let o = f
+        .tool("workflow_pr_scope.sh", &f.main)
+        .args([
+            "--repo",
+            "acme/widget",
+            "--head",
+            BRANCH,
+            "--base",
+            "main",
+            "--pr-number",
+            "7",
+            "--issue",
+            "2787",
+            "--created-after",
+            "2026-11-18T01:23:00Z",
+            "--expected-pr-title-prefix",
+            "Fix:",
+        ])
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "{}", show(&o));
+    assert!(
+        !o.stdout.is_empty(),
+        "missing observations must produce structured no_scoped_pr evidence: {}",
+        show(&o)
+    );
+    let result = f.root.join("scope-result.json");
+    fs::write(&result, &o.stdout).unwrap();
+    let report = success(
+        f.command("jq", &f.main)
+            .args(["-er", "select(.ok == false and .reason == \"no_scoped_pr\") | .diagnostic_report | select(type == \"string\" and length > 0)"])
+            .arg(result)
+            .output()
+            .unwrap(),
+    );
+    success(
+        f.command("jq", &f.main)
+            .args(["-e", r#"
+                .candidates | length == 1 and (.[0] |
+                  .number == 7 and (.exclusions | map(.check) | sort) ==
+                    (["head branch","base branch","repository","issue token","created-after","title prefix"] | sort) and
+                  all(.exclusions[]; has("expected") and has("observed")) and
+                  all(.exclusions[] | select(.check == "head branch" or .check == "base branch" or .check == "created-after" or .check == "title prefix"); .observed == null))
+            "#])
+            .arg(report.trim())
+            .output()
+            .unwrap(),
+    );
+    f.assert_no_mutation();
+}
+
+pub fn diagnostics_keep_each_candidates_exclusions(f: &Fixture) {
+    let candidates = success(
+        f.command("jq", &f.main)
+            .args([
+                "-c",
+                r#"[
+                (. | .number=7 | .headRefName="other-branch"),
+                (. | .number=8 | .url="https://github.com/acme/widget/pull/8" | .baseRefName="dev")
+            ]"#,
+            ])
+            .arg(f.root.join("candidate.json"))
+            .output()
+            .unwrap(),
+    );
+    fs::write(f.root.join("candidates.json"), candidates).unwrap();
+    executable(
+        &f.root.join("bin/gh"),
+        "#!/bin/bash\nset -euo pipefail\n[ \"${1:-} ${2:-}\" = 'pr list' ] || exit 99\ncat \"$FIXTURE/candidates.json\"\n",
+    );
+    let o = f
+        .tool("workflow_pr_scope.sh", &f.main)
+        .args([
+            "--repo",
+            "acme/widget",
+            "--head",
+            BRANCH,
+            "--base",
+            "main",
+            "--head-sha",
+            &f.head(&f.pr),
+        ])
+        .output()
+        .unwrap();
+    assert!(!o.status.success(), "{}", show(&o));
+    let result = f.root.join("scope-result.json");
+    fs::write(&result, &o.stdout).unwrap();
+    let report = success(
+        f.command("jq", &f.main)
+            .args([
+                "-er",
+                "select(.reason == \"no_scoped_pr\") | .diagnostic_report",
+            ])
+            .arg(result)
+            .output()
+            .unwrap(),
+    );
+    success(
+        f.command("jq", &f.main)
+            .args([
+                "-e",
+                r#".candidates | length == 2 and
+                (.[0] | .number == 7 and .url == "https://github.com/acme/widget/pull/7" and
+                  (.exclusions | map(.check) | sort) == ["head SHA","head branch"]) and
+                (.[1] | .number == 8 and .url == "https://github.com/acme/widget/pull/8" and
+                  (.exclusions | map(.check) | sort) == ["base branch","head SHA"])
+            "#,
+            ])
+            .arg(report.trim())
+            .output()
+            .unwrap(),
+    );
+}
+
+pub fn temporary_captures_removed_but_reports_persist(f: &Fixture) {
+    let captures = f.root.join("captures");
+    fs::create_dir(&captures).unwrap();
+    f.audit(false);
+    success(f.step(PUBLISH).env("TMPDIR", &captures).output().unwrap());
+    assert!(
+        files_under(&captures).is_empty(),
+        "publication capture leaked"
+    );
+    f.patch_candidate(".baseRefName=\"dev\"");
+    let o = f
+        .step(READY)
+        .env("TMPDIR", &captures)
+        .env("GH_RETRY_TMPDIR", &captures)
+        .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    assert!(
+        files_under(&captures).is_empty(),
+        "failed lookup capture leaked"
+    );
+    let evidence = fs::read_to_string(f.root.join("recovery-evidence.json")).unwrap();
+    let reports: Vec<_> = files_under(&f.root.join("runtime"))
+        .into_iter()
+        .filter(|path| path.ends_with("exclusions.json"))
+        .collect();
+    assert_eq!(reports.len(), 1, "complete diagnostic must survive cleanup");
+    let report = &reports[0];
+    assert!(evidence.contains(report.to_str().unwrap()), "{evidence}");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        fs::metadata(report).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(report.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    assert!(fs::read_to_string(report).unwrap().contains("base branch"));
+    f.assert_no_mutation();
+}
+
 fn files_under(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     for entry in fs::read_dir(dir).unwrap().map(Result::unwrap) {
@@ -999,6 +1166,9 @@ mod tests {
         valid_discovery_only_readiness_succeeds,
         empty_lookup_is_failure,
         diagnostics_report_all_exclusions,
+        diagnostics_preserve_missing_observations,
+        diagnostics_keep_each_candidates_exclusions,
+        temporary_captures_removed_but_reports_persist,
         hostile_candidate_text_is_data,
         recipe_publication_precedes_readiness
     );

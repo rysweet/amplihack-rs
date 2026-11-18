@@ -2,11 +2,19 @@
 # its expected and observed data, so diagnostics cannot drift from filtering.
 def check($name; $expected; $observed; $passed):
   {check:$name, expected:$expected, observed:$observed, passed:$passed};
+# GraphQL supplies an owner object; REST adapters may supply its name directly.
+# An absent or incomplete owner is missing identity evidence, never an object
+# to concatenate into the repository name. Discovery uses these same helpers.
+def owner_name:
+  .headRepositoryOwner |
+  (if type == "object" then (.login // .name // "")
+   elif type == "string" then . else "" end) |
+  if type == "string" then . else "" end;
+def repo_name:
+  (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // "");
 def candidate_checks:
   def text: ((.title // "") + " " + (.body // ""));
   def has_token($token): text | contains($token);
-  def owner_name: (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // "");
-  def repo_name: (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // "");
   {primary:[
     check("head branch"; $headRefName; .headRefName; (.headRefName // "") == $headRefName),
     check("base branch"; $baseRefName; .baseRefName; (.baseRefName // "") == $baseRefName),
