@@ -5,6 +5,19 @@ umask 022
 export GIT_PAGER=cat PAGER=cat LESS=FRX
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Buffer sanitizer output too: on failure never release partial/raw output.
+emit_captured_output() {
+  local safe
+  if safe="$(amplihack orch helper sanitize-output <"$1" 2>/dev/null)"; then
+    printf '%s\n' "$safe"
+  else
+    echo "ERROR: captured publication output sanitization unavailable" >&2
+    return 1
+  fi
+}
+commit_output_file=""
+push_output_file=""
+trap 'rm -f -- "$commit_output_file" "$push_output_file"' EXIT
 wt="$(bash "$SCRIPT_DIR/worktree_setup_path.sh" step-20b-push-cleanup)"
 cd -P "$wt"
 # Keep the existing dedicated linked-worktree requirement for staging.
@@ -46,13 +59,13 @@ if [ -n "$STAGED" ]; then
   }
   commit_output_file=$(mktemp -t step20b-cleanup-commit-XXXXXX)
   if commit_with_pre_commit_guard -m "final cleanup pass" >"$commit_output_file" 2>&1; then
-    cat "$commit_output_file"
+    emit_captured_output "$commit_output_file"
     rm -f "$commit_output_file"
     echo "Cleanup commit created with $(wc -l <<< "$STAGED") file(s)"
   else
     commit_rc=$?
     echo "ERROR: git commit failed during step-20b-push-cleanup (exit $commit_rc)" >&2
-    cat "$commit_output_file" >&2
+    emit_captured_output "$commit_output_file" >&2 || true
     rm -f "$commit_output_file"
     git --no-pager diff --cached --name-status >&2
     git --no-pager status --short >&2
@@ -64,13 +77,12 @@ fi
 # Push even when the audit committed all its edits already. Use the established
 # remote mapping, regardless of push.default or a local alias branch name.
 push_output_file="$(mktemp -t step20b-cleanup-push-XXXXXX)"
-trap 'rm -f -- "$push_output_file"' EXIT
 if git push -u origin "HEAD:refs/heads/$remote_branch" >"$push_output_file" 2>&1; then
-  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$push_output_file"
+  emit_captured_output "$push_output_file"
 else
   push_rc=$?
   echo "ERROR: git push failed during step-20b-push-cleanup (exit $push_rc)" >&2
-  sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$push_output_file" >&2
+  emit_captured_output "$push_output_file" >&2 || true
   exit "$push_rc"
 fi
 echo "=== Cleanup Complete ==="

@@ -90,6 +90,8 @@ pub enum OrchHelperCommands {
     },
     /// Persist and render untrusted PR exclusion evidence (bundle internal).
     PrScopeReport,
+    /// Redact credentials and strip terminal controls from captured output.
+    SanitizeOutput,
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -551,6 +553,7 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         }
         OrchHelperCommands::StepRecovery { command } => step_recovery::run(command),
         OrchHelperCommands::PrScopeReport => step_recovery::scope_report::run(),
+        OrchHelperCommands::SanitizeOutput => step_recovery::scope_report::sanitize_output(),
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
             let found = match require_field.as_deref() {

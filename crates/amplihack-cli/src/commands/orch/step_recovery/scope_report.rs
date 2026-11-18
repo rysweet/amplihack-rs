@@ -1,7 +1,7 @@
 //! Complete PR exclusion reports, using the same secret redaction as recovery.
 use anyhow::{Context, Result};
 use serde_json::Value;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 fn clean(value: &mut Value) {
@@ -11,6 +11,17 @@ fn clean(value: &mut Value) {
         Value::Object(fields) => fields.values_mut().for_each(clean),
         _ => (),
     }
+}
+
+/// Buffer the whole input before emitting anything, so read or formatting
+/// failures cannot release partially sanitized command output.
+pub fn sanitize_output() -> Result<()> {
+    let mut raw = Vec::new();
+    std::io::stdin().lock().read_to_end(&mut raw)?;
+    let safe =
+        super::evidence::strip_controls(&super::evidence::redact(&String::from_utf8_lossy(&raw)));
+    std::io::stdout().lock().write_all(safe.as_bytes())?;
+    Ok(())
 }
 
 /// Read diagnostics as JSON data; print safe evidence to stderr and its durable

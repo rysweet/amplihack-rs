@@ -162,6 +162,13 @@ audit has already committed a fix, publication can print
 affect the recorded worktree; uncommitted edits in the launch checkout remain
 untouched.
 
+Captured commit-hook and push output passes through the internal
+`amplihack orch helper sanitize-output` command on success and failure. It
+reuses recovery's credential redaction and terminal-control handling. A
+sanitizer failure emits a fixed diagnostic and never prints raw or partial
+output. Failed commits and pushes retain their original exit status; a
+sanitizer failure after a successful command fails publication for recovery.
+
 ## Readiness contract
 
 `workflow_pr_ready.sh` reads HEAD after publication, from the same canonical
@@ -219,6 +226,19 @@ A candidate with both a wrong base and a stale SHA reports both failures.
 Missing observed fields are identified as missing. Diagnostics use the same
 predicates as selection and retain the distinction between authoritative
 filters and discovery tie-breakers; reporting does not loosen selection.
+
+Every candidate is type-checked before selection, including unrelated heads
+and alternate-base discovery. Missing or null observations retain the existing
+predicate defaults; wrong-type fields and non-object records are explicit
+`malformed candidate` exclusions. Their reports retain only valid identifying
+fields, expected types, and observed types, never malformed field contents.
+Malformed observations get durable reports even when another candidate can be
+selected. Invalid JSON, multiple metadata documents, and parser failures return
+`invalid_pr_metadata` with a protected report; captured parser stderr follows
+the same redaction path before display or persistence.
+The fresh readiness response uses the same validation before checking merge
+evidence, so malformed `mergedAt` or text fields cannot skip readiness or its
+protected exclusions.
 
 Stdout retains the existing successful JSON shape and structured failure reason
 codes. Readable exclusions go to stderr and the run log. Complete redacted
@@ -285,6 +305,12 @@ recovery routing, protected diagnostics, and no readiness mutation. A valid
 discovery-only run also exercises successful readiness with all configured
 checks enabled. Recipe event traces verify publication precedes readiness's
 HEAD read.
+
+`tests/integration/workflow_finalize_security.rs` adds successful and failed
+hook/push output checks, sanitizer-failure checks, unrelated-head malformed
+bodies, wrong-type metadata, mixed valid and malformed candidates, and parser
+failures. These verify credential removal, control handling, protected report
+permissions, capture cleanup, and command failure status.
 
 The qa-team scenario at `tests/gadugi/workflow_finalize_publish_ready.yaml` and
 its Rust driver at `tests/gadugi/workflow_finalize_publish_ready.rs` exercise

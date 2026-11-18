@@ -607,7 +607,7 @@ pub fn final_read_mismatches_enter_recovery(f: &Fixture) {
             (r#".createdAt="2020-01-01T00:00:00Z""#, "created-after"),
             ("del(.title)", "title prefix"),
             ("del(.createdAt)", "created-after"),
-            (".createdAt={}", "creation time type"),
+            (".createdAt={}", "malformed candidate: createdAt"),
             ("del(.number)", "PR number"),
             ("del(.url)", "PR URL"),
             ("del(.headRefName)", "head branch"),
