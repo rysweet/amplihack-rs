@@ -199,14 +199,6 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
 
     // Issue #2346: `~/.amplihack` is created 0700 whatever the umask, and an
     // existing one keeps its mode.
-    if let Some(dot_amplihack) = runtimes_dir.parent() {
-        crate::private_dir::ensure_private_leaf_dir(dot_amplihack).with_context(|| {
-            format!(
-                "failed to create {} with mode 0700",
-                dot_amplihack.display()
-            )
-        })?;
-    }
     amplihack_utils::secure_files::create_private_directories(&runtimes_dir)
         .with_context(|| format!("failed to create {}", runtimes_dir.display()))?;
 

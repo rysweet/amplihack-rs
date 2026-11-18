@@ -94,8 +94,6 @@ fn write_stamp(contents: &str) -> Result<()> {
     })?;
     // Issue #2346: `~/.amplihack` is created 0700 whatever the umask, and an
     // existing one keeps its mode.
-    crate::private_dir::ensure_private_leaf_dir(parent)
-        .with_context(|| format!("failed to create {} with mode 0700", parent.display()))?;
     amplihack_utils::secure_files::create_private_directories(parent)
         .with_context(|| format!("failed to create {}", parent.display()))?;
 

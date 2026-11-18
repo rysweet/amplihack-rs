@@ -55,8 +55,6 @@ pub(crate) mod path_conflicts;
 /// per-harness renderings. Consumed by `commands::install` and
 /// `commands::launch`, so it sits at crate level.
 pub(crate) mod policy;
-/// Issue #2346: `~/.amplihack` created 0700 whatever the umask.
-pub(crate) mod private_dir;
 #[cfg(test)]
 mod remote_cli_tests;
 pub mod resolve_bundle_asset;

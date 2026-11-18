@@ -210,14 +210,11 @@ fn write_cache(cache_path: &Path, entry: &CacheEntry) {
     };
     // Issue #2346: the cache lives in `~/.amplihack`, and writing it is often
     // the first thing to create that folder: 0700 whatever the umask.
-    if let Err(err) = crate::private_dir::ensure_private_leaf_dir(parent) {
+    if let Err(err) = amplihack_utils::secure_files::create_private_directories(parent) {
         tracing::debug!(
             "bundle_compat: could not create {} with mode 0700: {err}",
             parent.display()
         );
-        return;
-    }
-    if amplihack_utils::secure_files::create_private_directories(parent).is_err() {
         return;
     }
     let Ok(encoded) = serde_json::to_string(entry) else {

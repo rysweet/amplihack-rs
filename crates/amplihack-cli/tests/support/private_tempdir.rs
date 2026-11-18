@@ -9,10 +9,8 @@
 //! with what it tests. These helpers give the mode explicitly, so the result
 //! does not depend on the umask of the shell that ran `cargo test`.
 //!
-//! Named `private_tempdir` rather than `private_dir` so it is not confused
-//! with the product module `crate::private_dir`. Uses only `std` and
-//! `tempfile`. No helper changes the process umask, and none changes the
-//! mode of a folder that already exists.
+//! Uses only `std` and `tempfile`. No helper changes the process umask, and
+//! none changes the mode of a folder that already exists.
 
 #![allow(dead_code)]
 
