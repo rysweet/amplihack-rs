@@ -80,12 +80,23 @@ fn write_list_stub_gh(bin_dir: &Path, list_json: &Path) {
 /// success). No git repo is required: `--repo/--head/--base/--head-sha` are all
 /// passed explicitly.
 fn run_scope(dir: &Path, bin_dir: &Path, args: &[&str]) -> (String, bool) {
+    run_scope_env(dir, bin_dir, args, &[])
+}
+
+/// `run_scope` with extra environment variables for the helper.
+fn run_scope_env(
+    dir: &Path,
+    bin_dir: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> (String, bool) {
     let old_path = std::env::var("PATH").unwrap_or_default();
     let output = Command::new("bash")
         .arg(helper_path("workflow_pr_scope.sh"))
         .args(args)
         .current_dir(dir)
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+        .envs(envs.iter().copied())
         .output()
         .expect("run workflow_pr_scope.sh");
     (
@@ -527,4 +538,191 @@ fn publish_adopts_existing_open_pr_on_create_collision_instead_of_failing() {
         !stdout.contains("FAILED_PR_CREATE"),
         "create collision recovered by an existing OPEN PR must NOT report FAILED_PR_CREATE\nstdout:\n{stdout}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2784: `--any-base-open`. With base_branch empty, the publish step
+// resolves --base from origin/HEAD; an OPEN same-repository PR from --head into
+// another base must be found instead of missed (which led to a duplicate
+// `gh pr create`). The option is opt-in, read only from argv, and applies only
+// in discovery mode when the resolved base has no OPEN candidate.
+// ---------------------------------------------------------------------------
+
+const ISSUE_2784_HEAD: &str = "feat/issue-611-ui";
+
+/// A candidate from `ISSUE_2784_HEAD` with its own number, state, base and
+/// head repository owner.
+fn candidate_2784(number: u64, state: &str, base: &str, owner: &str) -> serde_json::Value {
+    serde_json::json!({
+        "number": number,
+        "title": "feat: ui platform (#611)",
+        "body": "Fixes #611",
+        "state": state,
+        "createdAt": "2026-11-17T00:00:00Z",
+        "mergedAt": if state == "MERGED" { Some("2026-11-17T01:00:00Z") } else { None },
+        "url": format!("https://github.com/owner/repo/pull/{number}"),
+        "headRefName": ISSUE_2784_HEAD,
+        "baseRefName": base,
+        "headRefOid": "bd6a8e8c00000000000000000000000000000000",
+        "headRepositoryOwner": {"login": owner},
+        "headRepository": {"name": "repo"},
+        "isCrossRepository": false,
+        "isDraft": true
+    })
+}
+
+/// Run the scope helper over `candidates` with `--base main` plus `extra`.
+fn scope_2784(
+    candidates: &[serde_json::Value],
+    extra: &[&str],
+    envs: &[(&str, &str)],
+) -> (String, bool) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let bin_dir = tmp.path().join("bin");
+    let list = tmp.path().join("candidates.json");
+    fs::write(
+        &list,
+        serde_json::Value::Array(candidates.to_vec()).to_string(),
+    )
+    .expect("write candidates");
+    write_list_stub_gh(&bin_dir, &list);
+    let mut args = vec![
+        "--repo",
+        "owner/repo",
+        "--head",
+        ISSUE_2784_HEAD,
+        "--base",
+        "main",
+        "--issue",
+        "611",
+    ];
+    args.extend_from_slice(extra);
+    run_scope_env(tmp.path(), &bin_dir, &args, envs)
+}
+
+fn scope_json(stdout: &str) -> serde_json::Value {
+    serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("scope helper must print one JSON object ({e}):\n{stdout}"))
+}
+
+#[test]
+fn any_base_open_adopts_the_single_open_pr_on_another_base() {
+    let (stdout, ok) = scope_2784(
+        &[candidate_2784(615, "OPEN", "dev", "owner")],
+        &["--any-base-open"],
+        &[],
+    );
+    assert!(ok, "the open PR into dev must be found; stdout:\n{stdout}");
+    let found = scope_json(&stdout);
+    assert_eq!(found["ok"], true, "{found}");
+    assert_eq!(found["scoped"], true, "{found}");
+    assert_eq!(found["number"], 615, "{found}");
+    assert_eq!(found["baseRefName"], "dev", "{found}");
+}
+
+#[test]
+fn without_any_base_open_an_open_pr_on_another_base_is_not_matched() {
+    let (stdout, ok) = scope_2784(&[candidate_2784(615, "OPEN", "dev", "owner")], &[], &[]);
+    assert!(
+        !ok,
+        "other callers keep the base-scoped lookup; stdout:\n{stdout}"
+    );
+    assert_eq!(scope_json(&stdout)["reason"], "no_scoped_pr", "{stdout}");
+}
+
+#[test]
+fn any_base_open_never_adopts_a_pr_whose_head_is_in_another_repository() {
+    // isCrossRepository is false but the head repository is other/repo: both
+    // same-repository conditions must hold.
+    let (stdout, ok) = scope_2784(
+        &[candidate_2784(615, "OPEN", "dev", "other")],
+        &["--any-base-open"],
+        &[],
+    );
+    assert!(
+        !ok,
+        "a PR headed in other/repo must not match; stdout:\n{stdout}"
+    );
+    assert_eq!(scope_json(&stdout)["reason"], "no_scoped_pr", "{stdout}");
+}
+
+#[test]
+fn any_base_open_is_read_from_arguments_not_the_environment() {
+    // An inherited variable must not turn cross-base selection on for the
+    // helper's other callers.
+    let (stdout, ok) = scope_2784(
+        &[candidate_2784(615, "OPEN", "dev", "owner")],
+        &[],
+        &[("ANY_BASE_OPEN", "true")],
+    );
+    assert!(
+        !ok,
+        "ANY_BASE_OPEN in the environment must have no effect; stdout:\n{stdout}"
+    );
+    assert_eq!(scope_json(&stdout)["reason"], "no_scoped_pr", "{stdout}");
+}
+
+#[test]
+fn any_base_open_ignores_closed_and_merged_prs_on_other_bases() {
+    let (stdout, ok) = scope_2784(
+        &[
+            candidate_2784(615, "CLOSED", "dev", "owner"),
+            candidate_2784(616, "MERGED", "release", "owner"),
+        ],
+        &["--any-base-open"],
+        &[],
+    );
+    assert!(
+        !ok,
+        "only an OPEN PR on another base is adopted; stdout:\n{stdout}"
+    );
+    assert_eq!(scope_json(&stdout)["reason"], "no_scoped_pr", "{stdout}");
+}
+
+#[test]
+fn any_base_open_has_no_effect_on_an_explicitly_named_pr() {
+    // Authoritative mode (--pr-number) keeps the base in the primary key. The
+    // helper reads a named PR with `gh pr view`, so this stub answers that
+    // with PR #615 into dev; the list stub has no answer for `pr view`.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let bin_dir = tmp.path().join("bin");
+    let view = tmp.path().join("view.json");
+    fs::write(
+        &view,
+        candidate_2784(615, "OPEN", "dev", "owner").to_string(),
+    )
+    .expect("write view");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let gh = bin_dir.join("gh");
+    fs::write(
+        &gh,
+        format!(
+            "#!/usr/bin/env bash\nset -uo pipefail\ncase \"${{1:-}} ${{2:-}}\" in\n  \"pr view\") cat {view:?} ;;\n  *) echo 'unexpected gh call' >&2; exit 96 ;;\nesac\n",
+            view = view.display().to_string()
+        ),
+    )
+    .expect("write gh stub");
+    make_executable(&gh);
+    let (stdout, ok) = run_scope(
+        tmp.path(),
+        &bin_dir,
+        &[
+            "--repo",
+            "owner/repo",
+            "--head",
+            ISSUE_2784_HEAD,
+            "--base",
+            "main",
+            "--issue",
+            "611",
+            "--any-base-open",
+            "--pr-number",
+            "615",
+        ],
+    );
+    assert!(
+        !ok,
+        "a named PR into another base is still no match; stdout:\n{stdout}"
+    );
+    assert_eq!(scope_json(&stdout)["reason"], "no_scoped_pr", "{stdout}");
 }
