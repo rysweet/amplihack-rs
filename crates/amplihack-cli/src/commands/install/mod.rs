@@ -540,6 +540,7 @@ where
     // Issue #254: framework assets are now bundled in the amplihack-rs source
     // tree.  The legacy upstream freshness check is removed;
     // framework updates are delivered via amplihack-rs binary updates instead.
+
     // Issue #1582: a newer install that finished while this launch waited for
     // the install lock stops the bootstrap here, as Guard #1 does above.
     match restage_framework_if_needed(notice, needed, install)? {

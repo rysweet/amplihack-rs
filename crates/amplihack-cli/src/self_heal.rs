@@ -425,7 +425,8 @@ pub(crate) enum LockedRestage {
     /// The caller's re-check under the lock found nothing to do, usually
     /// because the previous lock holder had just re-staged.
     NotNeeded,
-    /// The caller's installer ran under the lock and succeeded.
+    /// The caller's install callback ran under the lock and returned `Ok`.
+    /// For self-heal this includes a failed fetch that kept the existing bundle.
     Installed,
 }
 
