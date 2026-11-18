@@ -329,7 +329,8 @@ else
   sed 's/^/    after: /' "$root/releases.after"
 fi
 
-bootstraps="$({ grep -h 'Bootstrapping amplihack framework assets' "$root/log.1" "$root/log.2" || true; } | wc -l)"
+bootstraps="$(awk '/Bootstrapping amplihack framework assets/ { n++ } END { print n + 0 }' "$root/log.1" "$root/log.2")" ||
+  die "cannot read the launch logs"
 if [ "$bootstraps" -eq 1 ]; then
   pass one-bootstrap-line "one launch re-staged and the other found nothing to do"
 else

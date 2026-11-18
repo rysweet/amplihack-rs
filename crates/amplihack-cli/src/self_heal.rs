@@ -414,16 +414,18 @@ where
     .map(|_| ())
 }
 
-/// What [`restage_under_install_lock`] found once it held the install lock
-/// (issue #1582).
+/// The outcome of a re-stage attempt (issue #1582), decided by
+/// [`restage_under_install_lock`] with the install lock held, except that the
+/// launch bootstrap also returns `NotNeeded` from its check before the lock.
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LockedRestage {
     /// The stamp re-read under the lock is newer than this binary (Guard #2):
     /// nothing was installed, and the warning went to `notice`.
     NewerInstalled,
-    /// The caller's re-check under the lock found nothing to do, usually
-    /// because the previous lock holder had just re-staged.
+    /// Nothing to re-stage, decided either before the lock (the launch
+    /// bootstrap's check, which takes no lock) or by the caller's re-check
+    /// under it, usually because the previous lock holder had just re-staged.
     NotNeeded,
     /// The caller's install callback ran under the lock and returned `Ok`.
     /// For self-heal this includes a failed fetch that kept the existing bundle.
