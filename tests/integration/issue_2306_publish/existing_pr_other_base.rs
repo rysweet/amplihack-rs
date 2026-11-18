@@ -233,3 +233,91 @@ fn create_collision_adopts_an_open_pr_on_another_base() {
         assert_eq!(gh_calls(&f, "pr create"), 1, "{}", f.read("gh.log"));
     }
 }
+
+// When two open pull requests on other bases appear between the first lookup
+// and `gh pr create`, the collision lookup cannot choose either: the create
+// failure stands, with the lookup's failure appended, and nothing is labelled.
+#[test]
+fn create_collision_with_two_open_prs_on_other_bases_fails_the_create() {
+    let f = fixture();
+    f.write(
+        "create.stderr",
+        &format!("a pull request for branch \"{BRANCH}\" into branch \"main\" already exists"),
+    );
+    f.write(
+        "collision.json",
+        &Value::Array(vec![open_pr(&f, 615, "dev"), open_pr(&f, 616, "staging")]).to_string(),
+    );
+    let output = f
+        .publish_command()
+        .env("CREATE_STATUS", "23")
+        .env("WORKFLOW_PR_LABELS", "self-merge-eligible")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", describe(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("FAILED_PR_CREATE")
+            && stderr.contains("; scoped collision lookup failed (exit 1)"),
+        "{}",
+        describe(&output)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("\"terminal_status\":\"success\""),
+        "{}",
+        describe(&output)
+    );
+    assert_eq!(gh_calls(&f, "pr create"), 1, "{}", f.read("gh.log"));
+    assert_eq!(gh_calls(&f, "pr edit"), 0, "{}", f.read("gh.log"));
+}
+
+/// Step-16 with WORKFLOW_PR_LABELS set and the given forbidden_base_branches,
+/// with PR #615 into dev as the branch's only pull request.
+fn publish_labelled(f: &PublishFixture, forbidden: &str) -> Output {
+    listed(f, &[open_pr(f, 615, "dev")]);
+    f.publish_command()
+        .env("WORKFLOW_PR_LABELS", "self-merge-eligible")
+        .env("RECIPE_VAR_forbidden_base_branches", forbidden)
+        .output()
+        .unwrap()
+}
+
+// The adopted pull request's base was chosen by whoever opened it. Labels
+// are a durable self-merge marker, so a base finalize would refuse gets none;
+// the publish result is unchanged and finalize still refuses the base.
+#[test]
+fn labels_skip_an_adopted_pr_whose_base_is_forbidden() {
+    let f = fixture();
+    let output = publish_labelled(&f, "dev");
+    assert_adopted(&output, 615, "dev", KEPT_DEV);
+    assert_eq!(gh_calls(&f, "pr edit"), 0, "{}", f.read("gh.log"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not applied to adopted PR #615")
+            && stderr.contains("matches forbidden_base_branches pattern 'dev'"),
+        "{}",
+        describe(&output)
+    );
+}
+
+// The control case: a base that passes delivery_base_ref is labelled as
+// before. The fixture's gh answers `pr edit` with exit 96, which the label
+// step reports as a warning without changing the result.
+#[test]
+fn labels_apply_to_an_adopted_pr_whose_base_is_allowed() {
+    let f = fixture();
+    let output = publish_labelled(&f, "release/*");
+    assert_adopted(&output, 615, "dev", KEPT_DEV);
+    assert!(
+        f.read("gh.log")
+            .lines()
+            .any(|l| l == "pr edit 615 --add-label self-merge-eligible"),
+        "gh.log:\n{}",
+        f.read("gh.log")
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("not applied to adopted PR"),
+        "{}",
+        describe(&output)
+    );
+}
