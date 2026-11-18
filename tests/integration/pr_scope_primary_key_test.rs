@@ -726,3 +726,101 @@ fn any_base_open_has_no_effect_on_an_explicitly_named_pr() {
     );
     assert_eq!(scope_json(&stdout)["reason"], "no_scoped_pr", "{stdout}");
 }
+
+/// One pull request in the shape of the REST `/pulls` payload, which the scope
+/// helper reads when the GraphQL `gh pr list` call is rate-limited.
+fn rest_pull_2784(number: u64, base: &str, head_full_name: &str) -> serde_json::Value {
+    let (owner, name) = head_full_name
+        .split_once('/')
+        .expect("head_full_name is owner/name");
+    serde_json::json!({
+        "number": number,
+        "title": "feat: ui platform (#611)",
+        "body": "Fixes #611",
+        "state": "open",
+        "created_at": "2026-11-17T00:00:00Z",
+        "merged_at": null,
+        "html_url": format!("https://github.com/owner/repo/pull/{number}"),
+        "head": {
+            "ref": ISSUE_2784_HEAD,
+            "sha": "bd6a8e8c00000000000000000000000000000000",
+            "repo": {"full_name": head_full_name, "name": name, "owner": {"login": owner}}
+        },
+        "base": {"ref": base, "repo": {"full_name": "owner/repo"}}
+    })
+}
+
+#[test]
+fn any_base_open_adopts_through_the_rest_fallback_when_graphql_is_rate_limited() {
+    // The factory hosts often exhaust the GraphQL budget. The helper then reads
+    // the candidates from REST /pulls; the base, state and repository fields
+    // mapped there must give the same result as the GraphQL list. A fork pull
+    // request on the same base is in the payload and must not be counted.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let bin_dir = tmp.path().join("bin");
+    let pulls = tmp.path().join("pulls.json");
+    let log = tmp.path().join("gh.log");
+    fs::write(
+        &pulls,
+        serde_json::json!([
+            rest_pull_2784(615, "dev", "owner/repo"),
+            rest_pull_2784(700, "dev", "other/repo"),
+        ])
+        .to_string(),
+    )
+    .expect("write pulls");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let gh = bin_dir.join("gh");
+    let pulls_path =
+        format!("repos/owner/repo/pulls?head=owner:{ISSUE_2784_HEAD}&state=all&per_page=100");
+    fs::write(
+        &gh,
+        format!(
+            "#!/usr/bin/env bash\nset -uo pipefail\nprintf 'call %s\\n' \"$*\" >> {log:?}\n\
+             case \"${{1:-}} ${{2:-}}\" in\n\
+             \x20 \"pr list\") echo 'GraphQL: API rate limit already exceeded for user ID 1.' >&2; exit 1 ;;\n\
+             \x20 \"api rate_limit\") printf '{{\"resources\":{{\"graphql\":{{\"remaining\":0,\"reset\":4102444800}},\"core\":{{\"remaining\":4000,\"reset\":4102444800}}}}}}\\n' ;;\n\
+             \x20 {pulls_call:?}) cat {pulls:?} ;;\n\
+             \x20 *) echo 'unexpected gh call' >&2; exit 96 ;;\n\
+             esac\n",
+            log = log.display().to_string(),
+            pulls_call = format!("api {pulls_path}"),
+            pulls = pulls.display().to_string(),
+        ),
+    )
+    .expect("write gh stub");
+    make_executable(&gh);
+    let (stdout, ok) = run_scope_env(
+        tmp.path(),
+        &bin_dir,
+        &[
+            "--repo",
+            "owner/repo",
+            "--head",
+            ISSUE_2784_HEAD,
+            "--base",
+            "main",
+            "--issue",
+            "611",
+            "--any-base-open",
+        ],
+        &[(
+            "GH_RETRY_TMPDIR",
+            tmp.path().to_str().expect("utf-8 tempdir"),
+        )],
+    );
+    let calls = fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        ok,
+        "the open same-repository PR into dev must be found via REST; stdout:\n{stdout}\ngh calls:\n{calls}"
+    );
+    let found = scope_json(&stdout);
+    assert_eq!(found["ok"], true, "{found}");
+    assert_eq!(found["number"], 615, "{found}");
+    assert_eq!(found["baseRefName"], "dev", "{found}");
+    assert_eq!(found["isCrossRepository"], false, "{found}");
+    assert!(
+        calls.contains(&format!("call api {pulls_path}")),
+        "the candidates must come from REST /pulls; gh calls:\n{calls}"
+    );
+}
