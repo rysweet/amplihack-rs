@@ -944,6 +944,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         dry_run,
         &[recipe_path.to_path_buf()],
         stable_storage,
+        crate::commands::cleanup::git_work::tree_work,
     ) {
         Ok(checkout) => checkout,
         Err(error) => {

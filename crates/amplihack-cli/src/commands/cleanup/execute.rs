@@ -135,7 +135,7 @@ pub(super) fn execute(
             if *tombstone {
                 return exec_storage::remove_tombstone(target, None);
             }
-            match exec_storage::reclaim(target, run_has_ended)? {
+            match exec_storage::reclaim(target, run_has_ended, tree_work)? {
                 exec_storage::Verdict::Reclaimable(_) => Ok(()),
                 exec_storage::Verdict::Absent => refuse!("{} is already gone", target.display()),
                 exec_storage::Verdict::Kept(reason) => refuse!("{reason}"),
@@ -143,6 +143,12 @@ pub(super) fn execute(
         }
         Op::RemoveRunTmp { run_dir } => {
             run_still_inactive(run_dir)?;
+            // Issue #2785: work committed or changed since the plan. Searched
+            // before the quick liveness checks, so they stay closest to the
+            // removal.
+            if let Some(reason) = work_inside(target, settings.deadline) {
+                refuse!("{reason}");
+            }
             // A child of a killed runner (an agent, cargo) may outlive it and
             // still use its TMPDIR.
             if procs.in_use(target) {
@@ -158,8 +164,13 @@ pub(super) fn execute(
                 run_still_inactive(run_dir)?;
                 refuse_if_other_live_owner(item, settings)?;
             }
-            if item.category == Category::TmpLeftover && has_live_pid_marker(target) {
-                refuse!("in use: a pid marker names a running process");
+            if item.category == Category::TmpLeftover {
+                if let Some(reason) = work_inside(target, settings.deadline) {
+                    refuse!("{reason}");
+                }
+                if has_live_pid_marker(target) {
+                    refuse!("in use: a pid marker names a running process");
+                }
             }
             if procs.in_use(target) {
                 refuse!("in use by a running process");

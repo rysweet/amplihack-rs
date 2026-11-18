@@ -613,6 +613,15 @@ pub(crate) fn active_worktrees(repo: &Path) -> Result<BTreeSet<PathBuf>> {
 /// `git worktree remove`, and inside `gh`. Cleanup runs as the invoking user,
 /// on worktrees of that user's own runs, so such a filter gains no rights
 /// beyond those of whoever could already write that configuration.
+///
+/// Since issue #2785 cleanup also runs git on trees a step left in TMPDIR and
+/// in temporary leftovers, before it removes their folder. Every caller only
+/// reads state or removes a worktree, so the command also reaches no other
+/// repository (`protocol.allow=never`, no lazy fetch of a partial clone),
+/// reads nothing from stdin, and lists untracked files whatever
+/// `status.showUntrackedFiles` a repository sets, so `status --porcelain`
+/// cannot hide them. Owner and mode checks before git runs on such a tree are
+/// in `cleanup::git_work`; filters a repository configures can still run.
 pub(crate) fn hardened_git() -> std::process::Command {
     let mut command = amplihack_git::command();
     command
@@ -621,10 +630,16 @@ pub(crate) fn hardened_git() -> std::process::Command {
             "core.fsmonitor=false",
             "-c",
             "core.hooksPath=/dev/null",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "status.showUntrackedFiles=normal",
         ])
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0");
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .stdin(std::process::Stdio::null());
     command
 }
 

@@ -2,9 +2,9 @@
 //! This isolates Git state; it does not sandbox arbitrary same-user file I/O.
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::os::unix::ffi::OsStringExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -16,6 +16,9 @@ use input_snapshot::{InputSnapshot, trim_lf};
 pub(crate) mod exec_storage;
 
 pub(crate) const RUN_CHECKOUT_ENV: &str = "AMPLIHACK_RUN_CHECKOUT";
+/// At release, at most this many worktrees still linked to the private
+/// repository are asked about work (issue #2785).
+const LINKED_WORKTREE_LIMIT: usize = 64;
 
 /// Git's Trace2 variables, removed from every run so that a caller's tracing
 /// settings cannot follow a run's Git commands (#2738).
@@ -59,7 +62,16 @@ pub(crate) enum RunCheckout {
         owner: String,
         identities: [(u64, u64); 3],
         released: bool,
+        /// Asked about each worktree still linked to `repository` when
+        /// release keeps it (issue #2785).
+        holds_work: exec_storage::HoldsWork,
     },
+}
+
+/// For direct component contracts, which have no cleanup module to ask.
+#[cfg(test)]
+fn no_work(_: &Path) -> Option<String> {
+    None
 }
 
 impl RunCheckout {
@@ -69,7 +81,7 @@ impl RunCheckout {
         reason = "direct component contracts import this source module separately"
     )]
     pub(crate) fn prepare(working_dir: &Path, scratch: &Path, dry_run: bool) -> Result<Self> {
-        Self::prepare_with_inputs(working_dir, scratch, dry_run, &[], None)
+        Self::prepare_with_inputs(working_dir, scratch, dry_run, &[], None, no_work)
     }
 
     /// `stable_storage`, when given, is where this attempt's private
@@ -80,12 +92,18 @@ impl RunCheckout {
     /// attempt left once that attempt's run has ended and no durable worktree
     /// uses it. When the path is still held, this attempt says why and uses a
     /// fresh random path instead.
+    ///
+    /// `holds_work` says whether a worktree holds uncommitted changes or
+    /// commits that are not on a remote (issue #2785). Reclaim asks it about
+    /// worktrees inside the stable path, and release about worktrees still
+    /// linked to the private repository.
     pub(crate) fn prepare_with_inputs(
         working_dir: &Path,
         scratch: &Path,
         dry_run: bool,
         inputs: &[PathBuf],
         stable_storage: Option<StableStorage<'_>>,
+        holds_work: exec_storage::HoldsWork,
     ) -> Result<Self> {
         if dry_run {
             return Ok(Self::Caller(
@@ -148,7 +166,12 @@ impl RunCheckout {
             .context("runtime directory has no parent")?;
         let storage = match stable_storage {
             Some(stable) => {
-                match exec_storage::claim(stable.path, stable.owner_run_dir, stable.owner_ended)? {
+                match exec_storage::claim(
+                    stable.path,
+                    stable.owner_run_dir,
+                    stable.owner_ended,
+                    holds_work,
+                )? {
                     exec_storage::Claim::Claimed(path) => Some(path),
                     exec_storage::Claim::Held(reason) => {
                         eprintln!(
@@ -282,6 +305,7 @@ impl RunCheckout {
             owner,
             identities,
             released: false,
+            holds_work,
         })
     }
 
@@ -414,6 +438,7 @@ impl RunCheckout {
             owner,
             identities,
             released,
+            holds_work,
             ..
         } = self
         else {
@@ -464,7 +489,8 @@ impl RunCheckout {
         // A workflow may have created durable worktrees in this repository.
         // Its metadata must survive until those dependencies are released.
         if dependents > 1 {
-            fs::write(storage.join("durable-dependencies"), list)?;
+            fs::write(storage.join("durable-dependencies"), &list)?;
+            report_linked_work(&list, repository, *holds_work);
         } else {
             fs::remove_dir_all(&*storage)?;
         }
@@ -477,6 +503,35 @@ impl Drop for RunCheckout {
         if let Err(error) = self.remove() {
             eprintln!("amplihack: execution checkout retained: {error:#}");
         }
+    }
+}
+/// Names each worktree in the `-z` porcelain `list` of `repository`, after
+/// the repository's own entry, that `holds_work` finds work in: release keeps
+/// the repository for it, and this says what it holds (issue #2785). Only
+/// reports; what is removed does not change.
+fn report_linked_work(list: &[u8], repository: &Path, holds_work: exec_storage::HoldsWork) {
+    let linked: Vec<PathBuf> = list
+        .split(|b| *b == 0)
+        .filter_map(|field| field.strip_prefix(b"worktree "))
+        .skip(1)
+        .map(|path| PathBuf::from(OsStr::from_bytes(path)))
+        .collect();
+    for worktree in linked.iter().take(LINKED_WORKTREE_LIMIT) {
+        if fs::symlink_metadata(worktree).is_err() {
+            continue;
+        }
+        if let Some(reason) = holds_work(worktree) {
+            eprintln!(
+                "amplihack: worktree {worktree:?} {reason}; it is linked to this run's private \
+                 repository {repository:?}, which is kept for it"
+            );
+        }
+    }
+    if linked.len() > LINKED_WORKTREE_LIMIT {
+        eprintln!(
+            "amplihack: only the first {LINKED_WORKTREE_LIMIT} worktrees linked to this run's \
+             private repository {repository:?} were checked for work"
+        );
     }
 }
 fn identity(path: &Path) -> Result<(u64, u64)> {

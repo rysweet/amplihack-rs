@@ -11,6 +11,9 @@ use super::eligibility::{
     PrInfo, Verdict, is_valid_branch, is_valid_id, lookup_pr, no_pr_verdict, pr_verdict,
     run_has_ended, run_is_active,
 };
+use super::git_work::{
+    GIT_TIMEOUT, WALK_LIMIT, git_common_dir, printable, tree_work, unpushed_reason, work_inside,
+};
 use super::run_dir::{
     CLEANUP_RECORD, OWNED_PATHS, OwnedKind, OwnedPath, RUN_JSON, RUN_SCHEMA_VERSION, RunReport,
     TargetOrigin, format_owned_line, now_rfc3339, read_capped_nofollow, read_owned_paths, short_id,
@@ -31,11 +34,8 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-/// Size and age walks stop after this many entries.
-const WALK_LIMIT: usize = 1_000_000;
-const GIT_TIMEOUT: Duration = Duration::from_secs(60);
 const TMP_PREFIXES: &[&str] = &["replay-", "release-", "amplihack-workflow-"];
-pub(crate) const END_OF_RUN_DEADLINE: Duration = Duration::from_secs(120);
+pub(crate) use super::git_work::END_OF_RUN_DEADLINE;
 const RECORD_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The end-of-run sweep covers run-owned categories only (D5). Untagged
@@ -359,70 +359,9 @@ fn walk_files(root: &Path) -> (Vec<(PathBuf, fs::Metadata)>, Vec<String>) {
 
 // ----- git helpers ----------------------------------------------------------
 
-fn git_common_dir(dir: &Path) -> Option<PathBuf> {
-    let mut command = hardened_git();
-    command
-        .arg("-C")
-        .arg(dir)
-        .args(["rev-parse", "--git-common-dir"]);
-    let output = crate::util::run_output_with_timeout(command, GIT_TIMEOUT).ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8(output.stdout).ok()?;
-    let raw = PathBuf::from(text.trim());
-    let abs = if raw.is_absolute() {
-        raw
-    } else {
-        dir.join(raw)
-    };
-    fs::canonicalize(abs).ok()
-}
-
 /// The main checkout of the repository at `dir` (`None` for a bare repo).
 fn main_checkout(common_dir: &Path) -> Option<PathBuf> {
     (common_dir.file_name()? == ".git").then(|| common_dir.parent().map(Path::to_path_buf))?
-}
-
-/// Why `worktree` must be kept for commits that may exist only locally, or
-/// `None` when every commit is on a remote. With an upstream, commits ahead of
-/// it count. When the upstream is gone (the branch was deleted after merge and
-/// pruned), commits reachable from any remote-tracking ref count as pushed, so
-/// a merged worktree is not kept for ever under a false "unpushed" reason.
-fn unpushed_reason(worktree: &Path) -> Option<String> {
-    let count = |range: &[&str]| -> Result<u64> {
-        let mut command = hardened_git();
-        command
-            .arg("-C")
-            .arg(worktree)
-            .args(["rev-list", "--count"])
-            .args(range);
-        let output = crate::util::run_output_with_timeout(command, GIT_TIMEOUT)?;
-        if !output.status.success() {
-            bail!("{}", sanitized_stderr_short(&output.stderr));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().parse()?)
-    };
-    let mut upstream = hardened_git();
-    upstream
-        .arg("-C")
-        .arg(worktree)
-        .args(["rev-parse", "--verify", "--quiet", "@{upstream}"]);
-    let has_upstream = crate::util::run_output_with_timeout(upstream, GIT_TIMEOUT)
-        .is_ok_and(|output| output.status.success());
-    let (result, label) = if has_upstream {
-        (count(&["@{upstream}..HEAD"]), "has unpushed commits")
-    } else {
-        (
-            count(&["HEAD", "--not", "--remotes"]),
-            "has no upstream and commits on no remote branch",
-        )
-    };
-    match result {
-        Ok(0) => None,
-        Ok(_) => Some(label.to_string()),
-        Err(error) => Some(format!("cannot check for unpushed commits: {error:#}")),
-    }
 }
 
 /// The branch checked out in `worktree`, or `None` for a detached HEAD.
@@ -858,6 +797,11 @@ impl Collector<'_> {
                             "in use by a running process",
                             Some(id),
                         ));
+                    } else if let Some(reason) = work_inside(dir, self.s.deadline) {
+                        // Issue #2785: a stopped run's only copy of its work.
+                        tracing::info!(path = ?dir, reason = %reason, "run-tmp folder kept for git work");
+                        self.items
+                            .push(Item::skip(Category::RunTmp, dir, reason, Some(id)));
                     } else {
                         let reason = if report.ended_at.is_some() {
                             "run has ended"
@@ -1223,7 +1167,7 @@ impl Collector<'_> {
                     )
                 })
             } else {
-                exec_storage::inspect(&path, run_has_ended)
+                exec_storage::inspect(&path, run_has_ended, tree_work)
             };
             match verdict {
                 Ok(exec_storage::Verdict::Absent) => {}
@@ -1287,6 +1231,12 @@ impl Collector<'_> {
                     "in use by a running process",
                     None,
                 ));
+                continue;
+            }
+            if let Some(reason) = work_inside(&path, self.s.deadline) {
+                tracing::info!(path = ?path, reason = %reason, "tmp-leftover folder kept for git work");
+                self.items
+                    .push(Item::skip(Category::TmpLeftover, &path, reason, None));
                 continue;
             }
             self.items.push(Item {
@@ -1735,6 +1685,14 @@ struct RecordItem {
     size_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// The sweep tried to remove the path and could not (issue #2785). The
+    /// end-of-run sweep warns about a path only until it is recorded so.
+    #[serde(default, skip_serializing_if = "is_false")]
+    failed: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1750,40 +1708,59 @@ struct CleanupRecord {
     sweeps: Vec<RecordSweep>,
 }
 
-/// Appends a sweep to `cleanup-record.json` of every run that lost something,
-/// and drops removed paths from its `owned-paths`.
-fn write_records(entries: &[Entry], root: &WorkRoot) {
+/// Appends a sweep to `cleanup-record.json` of every run that lost something
+/// or met a failure no earlier sweep recorded, and drops removed paths from
+/// its `owned-paths`. Returns the failed paths no earlier sweep recorded: the
+/// ones the end-of-run sweep warns about (issue #2785). When a run's record
+/// cannot be written, or the run has no folder, all its failures count as new.
+fn write_records(entries: &[Entry], root: &WorkRoot) -> HashSet<PathBuf> {
     let mut by_run: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
     for e in entries {
         if let Some(id) = e.run_id.as_deref() {
             by_run.entry(id).or_default().push(e);
         }
     }
+    let mut new_failures = HashSet::new();
     for (id, list) in by_run {
-        if !list.iter().any(|e| e.action == Action::Removed) || !is_valid_id(id) {
+        let removed = list.iter().any(|e| e.action == Action::Removed);
+        let failures = || {
+            list.iter()
+                .filter(|e| e.action == Action::Failed)
+                .map(|e| e.path.clone())
+        };
+        if !removed && failures().next().is_none() {
             continue;
         }
         let run_dir = root.runs_dir().join(id);
-        if !is_real_dir(&run_dir) {
+        if !is_valid_id(id) || !is_real_dir(&run_dir) {
+            new_failures.extend(failures());
             continue;
         }
-        if let Err(error) = write_record(&run_dir, id, &list) {
-            eprintln!(
-                "amplihack cleanup: warning: could not write the cleanup record of run {id}: {error:#}"
-            );
+        match write_record(&run_dir, id, &list) {
+            Ok(new) => new_failures.extend(new),
+            Err(error) => {
+                new_failures.extend(failures());
+                eprintln!(
+                    "amplihack cleanup: warning: could not write the cleanup record of run {id}: {error:#}"
+                );
+            }
         }
-        if let Err(error) = prune_owned_paths(&run_dir) {
+        if removed && let Err(error) = prune_owned_paths(&run_dir) {
             eprintln!(
                 "amplihack cleanup: warning: could not update owned-paths of run {id}: {error:#}"
             );
         }
     }
+    new_failures
 }
 
-/// Appends one sweep to the run's `cleanup-record.json`. A missing record
-/// starts empty; one that cannot be parsed is renamed aside with a warning so
-/// its history is kept; any other read error is returned.
-fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<()> {
+/// Appends one sweep to the run's `cleanup-record.json` when `list` removed
+/// something or holds a failure the record does not hold yet, and returns
+/// those new failures. Paths are compared in the string form the record
+/// holds, not by error text. A missing record starts empty; one that cannot
+/// be parsed is renamed aside with a warning so its history is kept; any
+/// other read error is returned.
+fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<Vec<PathBuf>> {
     let path = run_dir.join(CLEANUP_RECORD);
     let empty = || CleanupRecord {
         run_id: id.to_string(),
@@ -1812,12 +1789,29 @@ fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<()> {
             return Err(error).with_context(|| format!("cannot read {}", path.display()));
         }
     };
+    let recorded: HashSet<&str> = record
+        .sweeps
+        .iter()
+        .flat_map(|sweep| sweep.skipped.iter())
+        .filter(|item| item.failed)
+        .map(|item| item.path.as_str())
+        .collect();
+    let new_failures: Vec<PathBuf> = list
+        .iter()
+        .filter(|e| e.action == Action::Failed)
+        .filter(|e| !recorded.contains(e.path.display().to_string().as_str()))
+        .map(|e| e.path.clone())
+        .collect();
+    if new_failures.is_empty() && !list.iter().any(|e| e.action == Action::Removed) {
+        return Ok(Vec::new());
+    }
     record.run_id = id.to_string();
     let item = |e: &Entry, with_reason: bool| RecordItem {
         kind: e.category.as_str().to_string(),
         path: e.path.display().to_string(),
         size_bytes: if with_reason { None } else { e.size_bytes },
         reason: with_reason.then(|| e.reason.clone()),
+        failed: e.action == Action::Failed,
     };
     record.sweeps.push(RecordSweep {
         cleaned_at: now_rfc3339(),
@@ -1834,7 +1828,8 @@ fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<()> {
     });
     let mut bytes = serde_json::to_vec_pretty(&record)?;
     bytes.push(b'\n');
-    write_atomic_0600(&path, &bytes)
+    write_atomic_0600(&path, &bytes)?;
+    Ok(new_failures)
 }
 
 /// Drops paths that no longer exist from `owned-paths`, and removes the file
@@ -1863,12 +1858,27 @@ fn prune_owned_paths(run_dir: &Path) -> Result<()> {
 
 /// Collects, applies (when `settings.apply` and `locked`) and records.
 pub(crate) fn run_sweep(settings: &Settings, locked: bool) -> Result<Vec<Entry>> {
+    sweep_recorded(settings, locked).map(|(entries, _)| entries)
+}
+
+/// [`run_sweep`], with the failed paths that no earlier sweep recorded.
+fn sweep_recorded(settings: &Settings, locked: bool) -> Result<(Vec<Entry>, HashSet<PathBuf>)> {
     let items = collect(settings)?;
     let entries = apply_items(items, settings, locked);
-    if settings.apply && locked {
-        write_records(&entries, &settings.work_root);
-    }
-    Ok(entries)
+    let new_failures = if settings.apply && locked {
+        write_records(&entries, &settings.work_root)
+    } else {
+        HashSet::new()
+    };
+    Ok((entries, new_failures))
+}
+
+/// What one end-of-run sweep did, and the lines it has for stderr.
+#[derive(Debug)]
+pub(crate) struct EndOfRun {
+    pub entries: Vec<Entry>,
+    /// Whole lines; [`end_of_run`] prints them and nothing else.
+    pub warnings: Vec<String>,
 }
 
 /// The best-effort end-of-run sweep (D5). Never returns an error and never
@@ -1877,7 +1887,16 @@ pub(crate) fn end_of_run(work_root: &WorkRoot) {
     let outcome =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| end_of_run_inner(work_root)));
     match outcome {
-        Ok(Ok(())) => {}
+        Ok(Ok(outcome)) => {
+            tracing::debug!(
+                entries = outcome.entries.len(),
+                warnings = outcome.warnings.len(),
+                "end-of-run cleanup finished"
+            );
+            for warning in &outcome.warnings {
+                eprintln!("{warning}");
+            }
+        }
         Ok(Err(error)) => eprintln!("amplihack: warning: end-of-run cleanup: {error:#}"),
         Err(_) => {
             eprintln!("amplihack: warning: end-of-run cleanup panicked; nothing else was affected")
@@ -1885,17 +1904,29 @@ pub(crate) fn end_of_run(work_root: &WorkRoot) {
     }
 }
 
-fn end_of_run_inner(work_root: &WorkRoot) -> Result<()> {
+/// The sweep [`end_of_run`] runs. A folder it cannot remove is warned about
+/// only while no sweep has recorded that failure (issue #2785); a failure
+/// already recorded goes to the log. A failure that belongs to no run is
+/// warned about every time.
+pub(crate) fn end_of_run_inner(work_root: &WorkRoot) -> Result<EndOfRun> {
+    let mut warnings = Vec::new();
     let keep = match super::keep_hours_from_env() {
         Ok(hours) => hours,
         Err(error) => {
-            eprintln!("amplihack: warning: {error:#}; using the default keep period");
+            warnings.push(format!(
+                "amplihack: warning: {error:#}; using the default keep period"
+            ));
             super::DEFAULT_KEEP_HOURS
         }
     };
     let Some(_lock) = try_lock(&work_root.lock_path())? else {
-        eprintln!("amplihack: end-of-run cleanup skipped: {REASON_LOCK_HELD}");
-        return Ok(());
+        warnings.push(format!(
+            "amplihack: end-of-run cleanup skipped: {REASON_LOCK_HELD}"
+        ));
+        return Ok(EndOfRun {
+            entries: Vec::new(),
+            warnings,
+        });
     };
     let settings = Settings {
         work_root: work_root.clone(),
@@ -1911,21 +1942,31 @@ fn end_of_run_inner(work_root: &WorkRoot) -> Result<()> {
         claude_projects_dir: None,
         hook_cache_base: super::hook_cache_base(),
     };
-    let entries = run_sweep(&settings, true)?;
+    let (entries, new_failures) = sweep_recorded(&settings, true)?;
     for e in &entries {
         match e.action {
             Action::Removed => {
                 tracing::info!(path = %e.path.display(), category = e.category.as_str(), "end-of-run cleanup removed")
             }
-            Action::Failed => eprintln!(
-                "amplihack: warning: end-of-run cleanup could not remove {}: {}",
-                e.path.display(),
-                e.reason
-            ),
+            Action::Failed if e.run_id.is_none() || new_failures.contains(&e.path) => {
+                warnings.push(format!(
+                    "amplihack: warning: end-of-run cleanup could not remove {:?}: {}",
+                    e.path,
+                    printable(&e.reason)
+                ));
+            }
+            Action::Failed => {
+                tracing::info!(
+                    path = ?e.path,
+                    category = e.category.as_str(),
+                    reason = %e.reason,
+                    "end-of-run cleanup could not remove a folder again; an earlier sweep recorded it"
+                );
+            }
             _ => {}
         }
     }
-    Ok(())
+    Ok(EndOfRun { entries, warnings })
 }
 
 #[cfg(test)]

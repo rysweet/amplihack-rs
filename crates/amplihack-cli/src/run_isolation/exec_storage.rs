@@ -12,11 +12,18 @@
 //!   written;
 //! - no worktree registered in its private `repository.git` lies outside it
 //!   and still exists. In default-workflow, step 04 creates such worktrees,
-//!   and removing their repository would break them.
+//!   and removing their repository would break them;
+//! - no worktree registered there that lies inside it, other than its own
+//!   `checkout`, holds uncommitted changes or commits that are not on a
+//!   remote (issue #2785). The checkout is installed from the caller's
+//!   snapshot, whose originals the caller keeps, so it is not asked. At most
+//!   [`INSIDE_WORKTREE_LIMIT`] worktrees are asked; past that the path is
+//!   kept.
 //!
 //! Claims and reclaims of one `exec/` folder hold an exclusive lock on it, so
 //! a reclaim never moves aside a path that another attempt has just claimed.
-//! This file stands alone: the caller supplies the "has this run ended" check.
+//! This file stands alone: the caller supplies the "has this run ended" and
+//! "does this worktree hold work" checks.
 
 use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
@@ -29,10 +36,17 @@ use std::path::{Path, PathBuf};
 pub(crate) const CLAIM: &str = "claim.json";
 const TOMBSTONE_PREFIX: &str = ".reclaim-";
 const RECORD_MAX_BYTES: u64 = 64 * 1024;
+/// At most this many worktrees inside one storage folder are asked about
+/// work while the `exec/` lock is held.
+const INSIDE_WORKTREE_LIMIT: usize = 64;
 
 /// Whether the run in a run folder has ended. An error means "cannot tell",
 /// which never permits a removal.
 pub(crate) type OwnerEnded = fn(&Path) -> Result<bool>;
+
+/// Why the worktree at a path holds work that is not on a remote, or `None`
+/// (issue #2785). `Some` keeps the storage it lies in.
+pub(crate) type HoldsWork = fn(&Path) -> Option<String>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Verdict {
@@ -60,8 +74,12 @@ pub(crate) fn is_tombstone(name: &OsStr) -> bool {
 }
 
 /// What [`reclaim`] would do with `stable`, without changing anything.
-pub(crate) fn inspect(stable: &Path, owner_ended: OwnerEnded) -> Result<Verdict> {
-    Ok(inspect_identity(stable, owner_ended)?.0)
+pub(crate) fn inspect(
+    stable: &Path,
+    owner_ended: OwnerEnded,
+    holds_work: HoldsWork,
+) -> Result<Verdict> {
+    Ok(inspect_identity(stable, owner_ended, holds_work)?.0)
 }
 
 /// Claims `stable` for the run in `owner_run_dir`. When the path exists it
@@ -69,14 +87,19 @@ pub(crate) fn inspect(stable: &Path, owner_ended: OwnerEnded) -> Result<Verdict>
 /// error while deciding is also `Held`, with the error as the reason: this
 /// attempt then uses a fresh path, and the path stays for `amplihack cleanup`
 /// to report.
-pub(crate) fn claim(stable: &Path, owner_run_dir: &Path, owner_ended: OwnerEnded) -> Result<Claim> {
+pub(crate) fn claim(
+    stable: &Path,
+    owner_run_dir: &Path,
+    owner_ended: OwnerEnded,
+    holds_work: HoldsWork,
+) -> Result<Claim> {
     let parent = private_parent(stable)?;
     let tombstone = {
         let _lock = lock(&parent)?;
         if create(stable, owner_run_dir)? {
             return Ok(Claim::Claimed(stable.to_path_buf()));
         }
-        let tombstone = match move_aside(stable, owner_ended) {
+        let tombstone = match move_aside(stable, owner_ended, holds_work) {
             Ok((Verdict::Kept(reason), _)) => return Ok(Claim::Held(reason)),
             Ok((_, tombstone)) => tombstone,
             Err(error) => return Ok(Claim::Held(format!("{error:#}"))),
@@ -94,13 +117,17 @@ pub(crate) fn claim(stable: &Path, owner_run_dir: &Path, owner_ended: OwnerEnded
 
 /// Removes `stable` when the rules in the module comment allow it, checking
 /// them again first. `Reclaimable` means it was removed; `Kept` says why not.
-pub(crate) fn reclaim(stable: &Path, owner_ended: OwnerEnded) -> Result<Verdict> {
+pub(crate) fn reclaim(
+    stable: &Path,
+    owner_ended: OwnerEnded,
+    holds_work: HoldsWork,
+) -> Result<Verdict> {
     let parent = stable
         .parent()
         .context("execution storage path has no parent")?;
     let (verdict, tombstone) = {
         let _lock = lock(parent)?;
-        move_aside(stable, owner_ended)?
+        move_aside(stable, owner_ended, holds_work)?
     };
     if let Some((tombstone, identity)) = tombstone {
         remove_tombstone(&tombstone, Some(identity))?;
@@ -130,6 +157,7 @@ pub(crate) fn remove_tombstone(tombstone: &Path, identity: Option<(u64, u64)>) -
 fn inspect_identity(
     stable: &Path,
     owner_ended: OwnerEnded,
+    holds_work: HoldsWork,
 ) -> Result<(Verdict, Option<(u64, u64)>)> {
     let metadata = match fs::symlink_metadata(stable) {
         Ok(metadata) => metadata,
@@ -196,14 +224,8 @@ fn inspect_identity(
             None,
         ));
     }
-    if let Some(worktree) = live_dependant(stable)? {
-        return Ok((
-            Verdict::Kept(format!(
-                "durable worktree {} still uses its repository",
-                worktree.display()
-            )),
-            None,
-        ));
+    if let Some(reason) = live_dependant(stable, holds_work)? {
+        return Ok((Verdict::Kept(reason), None));
     }
     Ok((
         Verdict::Reclaimable(format!(
@@ -220,8 +242,9 @@ fn inspect_identity(
 fn move_aside(
     stable: &Path,
     owner_ended: OwnerEnded,
+    holds_work: HoldsWork,
 ) -> Result<(Verdict, Option<(PathBuf, (u64, u64))>)> {
-    let (verdict, identity) = inspect_identity(stable, owner_ended)?;
+    let (verdict, identity) = inspect_identity(stable, owner_ended, holds_work)?;
     let (Verdict::Reclaimable(_), Some(identity)) = (&verdict, identity) else {
         return Ok((verdict, None));
     };
@@ -231,11 +254,24 @@ fn move_aside(
     Ok((verdict, Some((tombstone, identity))))
 }
 
-/// The first worktree registered in `<stable>/repository.git` that lies
-/// outside `stable` and still exists. Git records each one's `.git` file in
-/// `worktrees/<name>/gitdir`, as an absolute path or one relative to that
-/// folder; an entry without it is one Git itself would prune.
-fn live_dependant(stable: &Path) -> Result<Option<PathBuf>> {
+/// Why a worktree registered in `<stable>/repository.git` keeps `stable`, or
+/// `None`. See [`live_dependant_with`].
+fn live_dependant(stable: &Path, holds_work: HoldsWork) -> Result<Option<String>> {
+    live_dependant_with(stable, holds_work, INSIDE_WORKTREE_LIMIT)
+}
+
+/// Why a worktree registered in `<stable>/repository.git` that still exists
+/// keeps `stable`: one outside it does, whatever it holds; one inside it,
+/// other than `<stable>/checkout`, does when `holds_work` finds work in it,
+/// asked in path order; more than `limit` inside it do, unasked. Git records
+/// each one's `.git` file in `worktrees/<name>/gitdir`, as an absolute path or
+/// one relative to that folder; an entry without it is one Git itself would
+/// prune.
+fn live_dependant_with(
+    stable: &Path,
+    holds_work: HoldsWork,
+    limit: usize,
+) -> Result<Option<String>> {
     let admin = stable.join("repository.git").join("worktrees");
     let entries = match fs::read_dir(&admin) {
         Ok(entries) => entries,
@@ -247,6 +283,10 @@ fn live_dependant(stable: &Path) -> Result<Option<PathBuf>> {
     let own = stable
         .canonicalize()
         .with_context(|| format!("cannot resolve {}", stable.display()))?;
+    // An exact comparison of canonical paths: a worktree nested below the
+    // checkout is still asked.
+    let own_checkout = own.join("checkout");
+    let mut inside = Vec::new();
     for entry in entries {
         let entry = entry.with_context(|| format!("cannot list {}", admin.display()))?;
         let record = entry.path().join("gitdir");
@@ -271,13 +311,27 @@ fn live_dependant(stable: &Path) -> Result<Option<PathBuf>> {
         let resolved = gitfile
             .canonicalize()
             .with_context(|| format!("cannot resolve {}", gitfile.display()))?;
-        if !resolved.starts_with(&own) {
-            return Ok(Some(
-                resolved.parent().map(Path::to_path_buf).unwrap_or(resolved),
-            ));
+        let outside = !resolved.starts_with(&own);
+        let worktree = resolved.parent().map(Path::to_path_buf).unwrap_or(resolved);
+        if outside {
+            return Ok(Some(format!(
+                "durable worktree {} still uses its repository",
+                worktree.display()
+            )));
+        }
+        if worktree != own_checkout {
+            inside.push(worktree);
         }
     }
-    Ok(None)
+    if inside.len() > limit {
+        return Ok(Some(format!(
+            "more than {limit} worktrees inside it to check"
+        )));
+    }
+    inside.sort();
+    Ok(inside.into_iter().find_map(|worktree| {
+        holds_work(&worktree).map(|reason| format!("worktree {worktree:?} inside it {reason}"))
+    }))
 }
 
 /// Creates `stable` exclusively and writes its claim record. `false` when

@@ -4,6 +4,7 @@
 
 pub(crate) mod archive;
 pub(crate) mod eligibility;
+pub(crate) mod git_work;
 pub(crate) mod procs;
 pub(crate) mod run_dir;
 pub(crate) mod sweep;

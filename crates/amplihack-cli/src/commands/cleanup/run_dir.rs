@@ -4,6 +4,7 @@
 //! append to, `cleanup-record.json` after a sweep removed something, and the
 //! ephemeral `runtime/` folder that [`RuntimeGuard`] removes when the run ends.
 
+use super::git_work::{END_OF_RUN_DEADLINE, work_inside};
 use super::work_root::{WorkRoot, create_private_dir_all};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 pub(crate) const RUN_JSON: &str = "run.json";
 pub(crate) const OWNED_PATHS: &str = "owned-paths";
@@ -59,13 +61,18 @@ pub(crate) enum RuntimeRemoval {
     /// Another process still uses the folder, so it was left in place for a
     /// later sweep (issue #2486).
     KeptInUse,
+    /// A git tree inside the folder holds uncommitted changes or commits
+    /// that are not on a remote, or the search for one could not finish, so
+    /// the whole folder was left in place for a later sweep (issue #2785).
+    KeptForWork,
 }
 
 /// Removes a runtime folder when dropped, including during unwinding, unless
 /// another process still uses it (issue #2486): a child that outlives the run
 /// and still has its working folder, an open file or TMPDIR/TMP/TEMP there
 /// keeps the folder, and the end-of-run sweep removes it once no process
-/// holds it.
+/// holds it. A folder holding git work that is not on a remote is kept the
+/// same way (issue #2785).
 #[derive(Debug)]
 pub(crate) struct RuntimeGuard {
     path: Option<PathBuf>,
@@ -149,6 +156,11 @@ impl RuntimeGuard {
     }
 
     fn release(&mut self) -> Result<RuntimeRemoval> {
+        self.release_with(Instant::now() + END_OF_RUN_DEADLINE)
+    }
+
+    /// [`Self::release`], with the deadline of the search for git work.
+    fn release_with(&mut self, deadline: Instant) -> Result<RuntimeRemoval> {
         let Some(path) = self.path.take() else {
             return Ok(RuntimeRemoval::Removed);
         };
@@ -180,9 +192,33 @@ impl RuntimeGuard {
             return Ok(RuntimeRemoval::KeptInUse);
         }
         // No process uses the folder: give the owner back access to folders
-        // a step left locked, so removal is not stopped by them.
+        // a step left locked, so removal is not stopped by them, and so the
+        // search below sees what they hold.
         let unchanged = restore_owner_access(&path, euid());
         report_unchanged(&path, &unchanged);
+        // Issue #2785: a step may have cloned or added a worktree under
+        // TMPDIR and stopped, on a usage limit for example, before its work
+        // reached a remote. That work is kept with the whole folder.
+        if let Some(reason) = work_inside(&path, Some(deadline)) {
+            tracing::warn!(path = ?path, reason = %reason, "runtime folder kept for git work");
+            eprintln!(
+                "amplihack: runtime folder {path:?} is kept: {reason}; \
+                 `amplihack cleanup --apply` removes it once that work is committed and on a remote"
+            );
+            return Ok(RuntimeRemoval::KeptForWork);
+        }
+        // The search can take a while: remove only the folder still held.
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() && (meta.dev(), meta.ino()) == self.identity => {}
+            Ok(_) => bail!(
+                "runtime resource identity changed; replacement retained at {}",
+                path.display()
+            ),
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return Ok(RuntimeRemoval::Removed);
+            }
+            Err(error) => return Err(error).context("inspect runtime ownership before release"),
+        }
         match fs::remove_dir_all(&path) {
             Ok(()) => Ok(RuntimeRemoval::Removed),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(RuntimeRemoval::Removed),
