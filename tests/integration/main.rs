@@ -570,3 +570,7 @@ mod issue_1619_review_mode;
 // the tests that assert on it. One place follows the call-out.
 #[path = "recipe_step_body.rs"]
 mod recipe_step_body;
+
+// Issues #2343, #1726, #2809: finalization reads the run's real outcome.
+#[path = "issue_2343_finalization_outcome.rs"]
+mod issue_2343_finalization_outcome;

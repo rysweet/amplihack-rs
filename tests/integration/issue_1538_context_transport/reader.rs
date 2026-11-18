@@ -89,3 +89,38 @@ fn reader_file_selection_survives_selector_changes() {
     r.exit(0);
     assert_eq!(r.stdout, "false");
 }
+
+// #1726: an object-typed key declared with an empty default and not yet set
+// reads as absent (status 2, nothing on either stream), not as invalid.
+#[test]
+fn reader_unset_empty_object_key_is_absent_not_invalid() {
+    for key in ["worktree_setup", "pr_publish_result", "verdict_json"] {
+        let r = Fixture::new()
+            .env(&format!("RECIPE_VAR_{key}"), "")
+            .run(&script(&format!("workflow_context_read {key}")));
+        r.exit(2);
+        assert!(r.stdout.is_empty(), "{key}: {}", r.stdout);
+        assert!(r.stderr.is_empty(), "{key}: {}", r.stderr);
+    }
+}
+
+#[test]
+fn reader_empty_scalar_key_still_reads_as_empty_success() {
+    let r = Fixture::new()
+        .env("RECIPE_VAR_branch_name", "")
+        .run(&script("workflow_context_read branch_name"));
+    r.exit(0);
+    assert!(r.stdout.is_empty());
+}
+
+#[test]
+fn reader_missing_context_file_is_absent_for_every_key_kind() {
+    for key in ["verdict_json", "worktree_setup", "branch_name"] {
+        let r = Fixture::new()
+            .env("AMPLIHACK_CONTEXT_FILE", "/missing/issue2343/context.json")
+            .run(&script(&format!("workflow_context_read {key}")));
+        r.exit(2);
+        assert!(r.stdout.is_empty());
+        assert!(r.stderr.is_empty(), "{key}: {}", r.stderr);
+    }
+}
