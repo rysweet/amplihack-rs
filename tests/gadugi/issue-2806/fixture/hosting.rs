@@ -25,6 +25,7 @@ pub struct PullRequest {
     pub title: String,
     pub body: String,
     pub checks: Checks,
+    pub is_draft: bool,
     pub comments: Vec<Value>,
     pub created_at: String,
     pub merged_at: Option<String>,
@@ -168,7 +169,7 @@ impl HostingStore {
         Ok(
             json!({"number":pr.number,"url":format!("https://github.com/{}/pull/{}",self.state.repository,pr.number),
             "state":pr.state,"headRefName":pr.branch,"headRefOid":pr.head_sha,"baseRefName":pr.base,"baseRefOid":base_sha,
-            "title":pr.title,"body":pr.body,"isDraft":false,"isCrossRepository":false,
+            "title":pr.title,"body":pr.body,"isDraft":pr.is_draft,"isCrossRepository":false,
             "headRepository":{"nameWithOwner":self.state.repository},"headRepositoryOwner":{"login":"fixture"},
             "baseRepository":{"nameWithOwner":self.state.repository},"author":{"login":"fixture"},
             "mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"APPROVED",
@@ -300,10 +301,9 @@ impl HostingStore {
                 json!({"number":7,"state":"OPEN","title":"Implement answer","body":"Write answer.txt containing 42 and verify it.","url":format!("https://github.com/{}/issues/7",self.state.repository),"comments":[],"closedByPullRequestsReferences":[]}),
             )?,
             ["pr", "create", ..] => {
-                let branch = option(args, "--head")
-                    .ok_or_else(|| anyhow::anyhow!("pr create requires --head"))?;
-                let base = option(args, "--base")
-                    .ok_or_else(|| anyhow::anyhow!("pr create requires --base"))?;
+                let current_branch = observe_git(cwd, &["branch", "--show-current"])?;
+                let branch = option(args, "--head").unwrap_or(&current_branch);
+                let base = option(args, "--base").unwrap_or("main");
                 let head = self.origin_head(branch)?;
                 self.origin_head(base)?;
                 ensure!(
@@ -325,6 +325,7 @@ impl HostingStore {
                     title: option(args, "--title").unwrap_or("Implement answer").into(),
                     body,
                     checks: Checks::Pending,
+                    is_draft: args.contains(&"--draft"),
                     comments: vec![],
                     created_at: chrono::Utc::now()
                         .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -402,6 +403,7 @@ impl HostingStore {
                         let expected = option(args, "--match-head-commit");
                         let actual = self.origin_head(&pr.branch)?;
                         if pr.state != "OPEN"
+                            || pr.is_draft
                             || pr.checks != Checks::Green
                             || expected != Some(pr.head_sha.as_str())
                             || actual != pr.head_sha
@@ -430,7 +432,11 @@ impl HostingStore {
                         self.persist()?;
                         Response::text("comment recorded")
                     }
-                    "ready" => Response::text("ready"),
+                    "ready" => {
+                        self.state.prs[index].is_draft = args.contains(&"--undo");
+                        self.persist()?;
+                        Response::text("ready state updated")
+                    }
                     "edit" => {
                         if let Some(body) = self.read_body(cwd, args)? {
                             self.state.prs[index].body = body;
@@ -472,9 +478,18 @@ impl HostingStore {
     }
 }
 pub fn option<'a>(args: &'a [&str], key: &str) -> Option<&'a str> {
-    args.windows(2)
-        .find(|pair| pair[0] == key)
-        .map(|pair| pair[1])
+    for (index, arg) in args.iter().enumerate() {
+        if *arg == key {
+            return args.get(index + 1).copied();
+        }
+        if let Some(value) = arg
+            .strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
+            return Some(value);
+        }
+    }
+    None
 }
 
 /// Git's documented remote-helper `connect` protocol, backed by real local

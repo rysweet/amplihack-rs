@@ -1063,3 +1063,40 @@ fn required_checks_api_is_head_bound_and_keeps_pending_until_explicit_transition
     assert!(chrono::DateTime::parse_from_rfc3339(readback["createdAt"].as_str().unwrap()).is_ok());
     assert!(readback["mergedAt"].is_null());
 }
+
+#[test]
+fn native_publish_arguments_use_current_branch_equals_options_and_real_draft_transitions() {
+    let repo = Repository::published();
+    let mut hosting = repo.hosting();
+    let created = hosting
+        .invoke(
+            &repo.checkout,
+            &[
+                "pr",
+                "create",
+                "--draft",
+                "--base=main",
+                "--title",
+                "Answer",
+                "--body",
+                "Closes #7",
+            ],
+        )
+        .unwrap();
+    assert_eq!(created.exit_code, 0);
+    assert_eq!(hosting.pr(1).unwrap().branch, "feat/answer");
+    assert!(hosting.pr(1).unwrap().is_draft);
+    hosting.set_checks(1, Checks::Green).unwrap();
+    let args = ["pr", "merge", "1", "--match-head-commit", &repo.head];
+    assert_ne!(hosting.invoke(&repo.checkout, &args).unwrap().exit_code, 0);
+    assert_eq!(
+        hosting
+            .invoke(&repo.checkout, &["pr", "ready", "1"])
+            .unwrap()
+            .exit_code,
+        0
+    );
+    assert!(!hosting.pr(1).unwrap().is_draft);
+    assert_eq!(hosting.invoke(&repo.checkout, &args).unwrap().exit_code, 0);
+    assert_eq!(hosting::option(&["--base=main"], "--base"), Some("main"));
+}

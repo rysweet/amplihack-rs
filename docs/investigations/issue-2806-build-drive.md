@@ -157,3 +157,9 @@ allowances retain that behavior in baseline/0b26. Production implementation
 files are unchanged from the initial base; only test registration differs.
 The missing-worktree observation is not allowed yet because a subsequent
 unsupported task in that same case was still a harness failure.
+
+Publication source inspection additionally confirmed the native writer emits
+`--base=main` and omits --head for the current branch. The hosting adapter
+accepts both documented option spellings, infers only the actual current
+branch, preserves draft state, and refuses a draft merge until real readiness
+changes it. A contract test covers this exact publication and transition.
