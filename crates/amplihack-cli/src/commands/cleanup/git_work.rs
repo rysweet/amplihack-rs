@@ -394,16 +394,18 @@ fn candidates(root: &Path, policy: &Policy) -> Result<Vec<PathBuf>, String> {
             if seen.is_multiple_of(DEADLINE_STRIDE) && policy.past_deadline() {
                 return Err(DEADLINE_REASON.to_string());
             }
-            let path = entry.path();
             if entry.file_name() == ".git" {
                 out.push(dir.clone());
                 continue;
             }
-            match fs::symlink_metadata(&path) {
-                Ok(meta) if meta.file_type().is_dir() => stack.push(path),
+            // The type the folder listing already gives, so no entry costs a
+            // stat of its own; like `symlink_metadata`, it does not follow a
+            // link.
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => stack.push(entry.path()),
                 Ok(_) => {}
                 Err(error) if passable(&error) => {}
-                Err(error) => return Err(cannot(&path, error)),
+                Err(error) => return Err(cannot(&entry.path(), error)),
             }
         }
     }
