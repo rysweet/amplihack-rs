@@ -517,9 +517,6 @@ fn report_linked_work(list: &[u8], repository: &Path, holds_work: exec_storage::
         .map(|path| PathBuf::from(OsStr::from_bytes(path)))
         .collect();
     for worktree in linked.iter().take(LINKED_WORKTREE_LIMIT) {
-        if fs::symlink_metadata(worktree).is_err() {
-            continue;
-        }
         if let Some(reason) = holds_work(worktree) {
             eprintln!(
                 "amplihack: worktree {worktree:?} {reason}; it is linked to this run's private \

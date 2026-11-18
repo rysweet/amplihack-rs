@@ -164,18 +164,8 @@ impl RuntimeGuard {
         let Some(path) = self.path.take() else {
             return Ok(RuntimeRemoval::Removed);
         };
-        let metadata = match fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Ok(RuntimeRemoval::Removed);
-            }
-            Err(error) => return Err(error).context("inspect runtime ownership before release"),
-        };
-        if !metadata.is_dir() || (metadata.dev(), metadata.ino()) != self.identity {
-            bail!(
-                "runtime resource identity changed; replacement retained at {}",
-                path.display()
-            );
+        if !self.still_held(&path)? {
+            return Ok(RuntimeRemoval::Removed);
         }
         // One fresh scan: a child started by the last step may still run.
         // Without `/proc` `found_user` is false and the folder is removed as
@@ -208,21 +198,27 @@ impl RuntimeGuard {
             return Ok(RuntimeRemoval::KeptForWork);
         }
         // The search can take a while: remove only the folder still held.
-        match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.is_dir() && (meta.dev(), meta.ino()) == self.identity => {}
-            Ok(_) => bail!(
-                "runtime resource identity changed; replacement retained at {}",
-                path.display()
-            ),
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                return Ok(RuntimeRemoval::Removed);
-            }
-            Err(error) => return Err(error).context("inspect runtime ownership before release"),
+        if !self.still_held(&path)? {
+            return Ok(RuntimeRemoval::Removed);
         }
         match fs::remove_dir_all(&path) {
             Ok(()) => Ok(RuntimeRemoval::Removed),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(RuntimeRemoval::Removed),
             Err(error) => Err(error).context("release owned runtime directory"),
+        }
+    }
+
+    /// Whether `path` is still the folder this guard holds: `false` when it
+    /// is gone, an error when something else is there (issue #2096).
+    fn still_held(&self, path: &Path) -> Result<bool> {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_dir() && (meta.dev(), meta.ino()) == self.identity => Ok(true),
+            Ok(_) => bail!(
+                "runtime resource identity changed; replacement retained at {}",
+                path.display()
+            ),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error).context("inspect runtime ownership before release"),
         }
     }
 }

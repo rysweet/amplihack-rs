@@ -24,10 +24,10 @@ use crate::commands::hygiene::cleanup::{
     git_has_dirty_state, hardened_git, sanitized_stderr_short,
 };
 use anyhow::{Result, bail};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{ErrorKind, Read};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -177,6 +177,15 @@ fn writable_by_others(meta: &fs::Metadata, gid: u32) -> bool {
     mode & 0o002 != 0 || (mode & 0o020 != 0 && meta.gid() != gid)
 }
 
+/// `bytes` without trailing line ends, as git reads a `.git` file and as it
+/// ends a path it prints.
+fn trim_line_end(mut bytes: &[u8]) -> &[u8] {
+    while let [rest @ .., b'\n' | b'\r'] = bytes {
+        bytes = rest;
+    }
+    bytes
+}
+
 /// The folder a `.git` file names on its `gitdir:` line, as git reads it:
 /// trailing line ends are dropped and a relative path is taken from the
 /// tree's folder. `None` when the file cannot be read or has no such line.
@@ -197,10 +206,7 @@ fn gitdir_line(gitfile: &Path, tree: &Path) -> Option<PathBuf> {
     if bytes.len() as u64 > GITFILE_MAX_BYTES {
         return None;
     }
-    while bytes.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
-        bytes.pop();
-    }
-    let named = bytes.strip_prefix(b"gitdir: ")?;
+    let named = trim_line_end(&bytes).strip_prefix(b"gitdir: ")?;
     if named.is_empty() {
         return None;
     }
@@ -419,26 +425,24 @@ enum Selection {
 /// Rules 3 to 6 for the candidate `tree` inside the canonical `root`.
 fn select(tree: &Path, root: &Path, policy: &Policy) -> Selection {
     let named = match guard(tree, policy.uid, policy.gid) {
-        Guard::Pass => return Selection::Pass,
         Guard::Unsafe => return Selection::Keep(NOT_INSPECTED.to_string()),
-        Guard::Inspect(named) => named,
+        Guard::Inspect(Some(named)) => named,
+        Guard::Pass | Guard::Inspect(None) => return Selection::Pass,
     };
     // git must agree that `tree` is the top of the repository its `.git`
     // names, so a stray `.git` inside another repository is not taken for
     // that repository.
-    let Some(named) = named else {
-        return Selection::Pass;
-    };
     if absolute_git_dir(tree).as_deref() != Some(named.as_path()) {
         return Selection::Pass;
     }
     let Some(common) = git_common_dir(tree) else {
         return Selection::Pass;
     };
-    if !common.starts_with(root) || !remotes_inside(tree, root) {
-        return Selection::Check;
+    if common.starts_with(root) && remotes_inside(tree, root) {
+        Selection::Pass
+    } else {
+        Selection::Check
     }
-    Selection::Pass
 }
 
 /// `git rev-parse --absolute-git-dir` in `tree`, canonical.
@@ -452,11 +456,7 @@ fn absolute_git_dir(tree: &Path) -> Option<PathBuf> {
     if !output.status.success() {
         return None;
     }
-    let mut bytes = output.stdout;
-    while bytes.last().is_some_and(|b| *b == b'\n' || *b == b'\r') {
-        bytes.pop();
-    }
-    fs::canonicalize(PathBuf::from(OsString::from_vec(bytes))).ok()
+    fs::canonicalize(OsStr::from_bytes(trim_line_end(&output.stdout))).ok()
 }
 
 /// Whether every remote URL of the repository at `tree` points inside
