@@ -29,6 +29,9 @@ CREATED_AFTER=""
 HEAD_SHA=""
 ALLOW_HEAD_BEHIND="false"
 ALLOW_HEAD_AHEAD="false"
+# Set only from argv, never from the environment, so an inherited variable
+# cannot turn cross-base selection on for this helper's other callers (#2784).
+ANY_BASE_OPEN="false"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -47,6 +50,9 @@ Scope options:
   --head-sha SHA
   --allow-head-behind   accept an OPEN named PR whose head is an ancestor of --head-sha (#1467)
   --allow-head-ahead    accept an OPEN named PR whose head is a fast-forward of --head-sha (#1714)
+  --any-base-open       discovery only: when no OPEN PR from --head targets --base, match the one
+                        OPEN same-repository PR from --head into another base (#2784); two or more
+                        give multiple_scoped_prs. No effect with --pr-number or --pr-url.
 USAGE
 }
 
@@ -67,6 +73,7 @@ while [ "$#" -gt 0 ]; do
     --head-sha) HEAD_SHA="${2:-}"; shift 2 ;;
     --allow-head-behind) ALLOW_HEAD_BEHIND="true"; shift ;;
     --allow-head-ahead) ALLOW_HEAD_AHEAD="true"; shift ;;
+    --any-base-open) ANY_BASE_OPEN="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
       jq -nc --arg reason "invalid_arg" --arg arg "$1" '{ok:false,reason:$reason,arg:$arg}'
@@ -171,6 +178,14 @@ if ! printf '%s' "$raw_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
   emit_failure "invalid_pr_metadata" "GitHub PR metadata was not a JSON array"
 fi
 
+# The head repository's owner/name, shared by every same-repository filter.
+HEAD_REPO_JQ_DEFS='
+      def owner_name:
+        (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // "");
+      def repo_name:
+        (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // "");
+'
+
 # PRIMARY KEY: (headRefName, baseRefName, same-repo, non-cross-repository).
 # GitHub forbids a second OPEN PR for the same head->base in the same repo, so
 # this tuple is already a reliable unique key for the recipe's own PR. Issue
@@ -186,11 +201,7 @@ match_by_primary_key() {
     --arg headRefName "$HEAD_REF" \
     --arg baseRefName "$BASE_REF" \
     --arg prNumber "$PR_NUMBER" \
-    --arg prUrl "$PR_URL" '
-      def owner_name:
-        (.headRepositoryOwner.login // .headRepositoryOwner.name // .headRepositoryOwner // "");
-      def repo_name:
-        (.headRepository.name // ((.headRepository.nameWithOwner // "") | split("/") | .[-1]) // "");
+    --arg prUrl "$PR_URL" "$HEAD_REPO_JQ_DEFS"'
       [
         .[]
         | select((.headRefName // "") == $headRefName)
@@ -241,6 +252,31 @@ array_length() {
   printf '%s' "$1" | jq 'length'
 }
 
+# Issue #2784 (--any-base-open): OPEN same-repository PRs from --head into a
+# base other than --base. The same-repository conditions are the primary
+# key's; only the base differs, and only OPEN PRs count.
+match_open_on_other_base() {
+  printf '%s' "$1" | jq -c \
+    --arg repo "$REPO" \
+    --arg headRefName "$HEAD_REF" \
+    --arg baseRefName "$BASE_REF" "$HEAD_REPO_JQ_DEFS"'
+      [
+        .[]
+        | select((.headRefName // "") == $headRefName)
+        | select((.baseRefName // "") != "")
+        | select((.baseRefName // "") != $baseRefName)
+        | select(((.state // "") | ascii_upcase) == "OPEN")
+        | select((.isCrossRepository // false) == false)
+        | select(((owner_name + "/" + repo_name) == $repo))
+      ]'
+}
+
+# "#<number> into <base>" for each PR, comma-separated: diagnostics carry
+# numbers and base names only, never titles, bodies or raw JSON.
+pr_numbers_and_bases() {
+  printf '%s' "$1" | jq -r '[ .[] | "#\(.number // "") into \(.baseRefName // "")" ] | join(", ")'
+}
+
 emit_multiple_scoped_prs() {
   jq -nc --arg reason "multiple_scoped_prs" --argjson candidates "$1" '{ok:false,reason:$reason,candidates:$candidates}'
   echo "ERROR: workflow_pr_scope.sh: multiple_scoped_prs: more than one PR matched the explicit workflow scope" >&2
@@ -266,6 +302,33 @@ prefer_single_open_or_fail() {
 
 primary="$(match_by_primary_key "$raw_json")"
 primary_count="$(array_length "$primary")"
+
+# Issue #2784: with base_branch empty, step-16 resolves --base from origin/HEAD,
+# and an open PR from this head into another base (dev, say) was missed, so the
+# caller created a second PR. Opt-in and discovery only; it applies when no
+# primary-key candidate is OPEN, so an OPEN PR into --base still wins, and an
+# OPEN PR into another base wins over a MERGED or CLOSED one into --base. Two
+# or more share one head SHA, so nothing can choose between them: they fail.
+# No extra GitHub call: `pr list --head --state all` has no base filter. Each
+# value is assigned in its own statement so set -e stops on a jq failure
+# instead of reading it as "no match".
+if [ "$ANY_BASE_OPEN" = "true" ] && [ -z "$PR_NUMBER" ] && [ -z "$PR_URL" ]; then
+  primary_open="$(open_candidates "$primary")"
+  primary_open_count="$(array_length "$primary_open")"
+  if [ "$primary_open_count" -eq 0 ]; then
+    other_base="$(match_open_on_other_base "$raw_json")"
+    other_count="$(array_length "$other_base")"
+    other_listing="$(pr_numbers_and_bases "$other_base")"
+    if [ "$other_count" -eq 1 ]; then
+      echo "INFO: workflow_pr_scope.sh: no open PR from $HEAD_REF into $BASE_REF; using open PR $other_listing (#2784)" >&2
+      emit_scoped_match "$other_base"
+    fi
+    if [ "$other_count" -gt 1 ]; then
+      echo "INFO: workflow_pr_scope.sh: no open PR from $HEAD_REF into $BASE_REF and more than one into other bases: $other_listing; not choosing one (#2784)" >&2
+      emit_multiple_scoped_prs "$other_base"
+    fi
+  fi
+fi
 
 if [ "$primary_count" -eq 0 ]; then
   emit_failure "no_scoped_pr" "no PR matched the explicit workflow scope"
