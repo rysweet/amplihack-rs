@@ -1,6 +1,6 @@
 //! Issue #2756: a recipe step reads the user's own Git configuration again.
 //!
-//! Since #2290 `RunCheckout::apply_to` set `GIT_CONFIG_NOSYSTEM=1`,
+//! Until #2808 `RunCheckout::apply_to` (now removed) set `GIT_CONFIG_NOSYSTEM=1`,
 //! `GIT_CONFIG_SYSTEM=/dev/null` and `GIT_CONFIG_GLOBAL=/dev/null` on the
 //! recipe-runner command itself, so every step, hook and agent started under a
 //! run lost the user's global and system Git configuration. A URL-scoped
@@ -86,7 +86,6 @@ while [ $# -gt 0 ]; do
 done
 cd "$dir"
 printf '%s' "$(pwd -P)" > "$out/cwd"
-printf '%s' "${AMPLIHACK_RUN_CHECKOUT:-}" > "$out/run_checkout"
 status=0
 git rev-parse --absolute-git-dir > "$out/git_dir" 2> "$out/git_dir.err" || status=$?
 printf '%s' "$status" > "$out/git_dir.status"

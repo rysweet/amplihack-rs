@@ -529,7 +529,7 @@ mod tests_parent_watch;
 #[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]
-mod tests_run_checkout_trace_vars;
+mod tests_runner_git_environment;
 #[cfg(test)]
 mod tests_step_tiers;
 #[cfg(test)]

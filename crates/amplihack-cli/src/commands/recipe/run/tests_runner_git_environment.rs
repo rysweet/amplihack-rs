@@ -1,4 +1,4 @@
-//! Issue #2738: a caller's Git Trace2 settings do not follow a run.
+//! Issues #2738/#2808: a caller's Git routing and Trace2 settings do not follow a run.
 //!
 //! The Git-command tracer removed in #2738 cleared these variables as a side
 //! effect of owning its own trace target. command construction now owns
@@ -42,7 +42,7 @@ fn the_cleared_list_names_every_trace2_variable_including_redact() {
     }
 }
 
-/// A caller checkout is still a run: the clearing is outside the state match.
+/// The caller's own checkout is a run like any other: the clearing is unconditional.
 #[test]
 fn a_caller_checkout_clears_the_callers_trace_settings() {
     let mut command = Command::new("runner");
@@ -71,4 +71,54 @@ fn no_trace_target_is_set_in_place_of_the_callers() {
             "{var} must be removed, never set to a target of the run's own"
         );
     }
+}
+
+/// Routing variables would point a step's git at a repository other than the
+/// named checkout. The scrub is hygiene for any child, not a private-copy aid.
+#[test]
+fn inherited_git_routing_variables_do_not_reach_the_runner_child() {
+    let mut command = Command::new("runner");
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    ] {
+        command.env(var, "/caller/chosen/target");
+    }
+    scrub_runner_git_environment(&mut command);
+    for var in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+    ] {
+        assert_eq!(
+            env_of(&command, var),
+            Some(None),
+            "{var} must be removed from the run's environment"
+        );
+    }
+}
+
+/// The scrub must not remove the user's own identity or credentials.
+#[test]
+fn user_identity_and_credentials_are_left_inherited() {
+    let mut command = Command::new("runner");
+    command
+        .env("GIT_AUTHOR_NAME", "Someone")
+        .env("GH_TOKEN", "token");
+    scrub_runner_git_environment(&mut command);
+    assert_eq!(
+        env_of(&command, "GIT_AUTHOR_NAME"),
+        Some(Some(OsString::from("Someone")))
+    );
+    assert_eq!(
+        env_of(&command, "GH_TOKEN"),
+        Some(Some(OsString::from("token")))
+    );
 }
