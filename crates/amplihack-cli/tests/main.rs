@@ -402,6 +402,8 @@ mod issue_2539_step_recovery_validation;
 mod issue_2658_routing_replay;
 #[path = "issue_2731_login_change_wait.rs"]
 mod issue_2731_login_change_wait;
+#[path = "issue_2788_codex_review_launch.rs"]
+mod issue_2788_codex_review_launch;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

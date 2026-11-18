@@ -9,6 +9,12 @@ use std::{collections::BTreeMap, fmt, path::Path};
 #[path = "run_isolation/review_generation.rs"]
 mod review_generation;
 
+/// Whether existing live review provenance owns this exact launch directory.
+/// Missing or invalid evidence leaves the launcher's normal behavior intact.
+pub(crate) fn is_owned_review_launch_dir(directory: &Path) -> bool {
+    review_generation::is_owned_launch_dir(directory)
+}
+
 fn error(code: &str) -> anyhow::Error {
     anyhow!("{code}")
 }
