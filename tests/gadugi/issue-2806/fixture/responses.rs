@@ -927,7 +927,6 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
             || heading.starts_with("# Step 2b:")
             || heading.starts_with("# Step 2c:")
             || heading.starts_with("# Step 5:")
-            || heading.starts_with("# Step 5d:")
         {
             format!(
                 "Scoped task: {}. Repository: {}. No external services or input parsing.",

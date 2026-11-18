@@ -628,12 +628,8 @@ fn finalization(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<
         context_read_error: read_error,
         fault_before_consumption: fault != "valid",
         origin_head: observe_git(&origin(case)?, &["rev-parse", "refs/heads/feat/answer"])?,
-        pr_head: HostingStore::open(&case.evidence.join("hosting.json"))?
-            .pr(1)?
-            .head_sha,
-        pr_state: HostingStore::open(&case.evidence.join("hosting.json"))?
-            .pr(1)?
-            .state,
+        pr_head: fresh.head_sha,
+        pr_state: fresh.state,
         checks: match fresh.checks {
             super::hosting::Checks::Pending => "pending",
             super::hosting::Checks::Green => "green",

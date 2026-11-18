@@ -142,15 +142,15 @@ fn fixture(name: &str, arguments: &[String]) -> Result<()> {
         "{}",
         serde_json::json!({"client":name,"args":arguments,"cwd":std::env::current_dir()?,"home":std::env::var("HOME")?,"pid":std::process::id()})
     )?;
-    let task = if name == "codex" {
+    if name == "codex" {
         ensure!(
             args.contains(&"exec") && args.contains(&"-"),
             "unsupported Codex transport"
         );
-        let mut task = String::new();
-        std::io::stdin().read_to_string(&mut task)?;
-        task
-    } else if args.contains(&"--system-prompt-file") && args.contains(&"-p") {
+    }
+    let task_on_stdin =
+        name == "codex" || (args.contains(&"--system-prompt-file") && args.contains(&"-p"));
+    let task = if task_on_stdin {
         let mut task = String::new();
         std::io::stdin().read_to_string(&mut task)?;
         task
