@@ -294,6 +294,9 @@ pub fn unresolved_operations_reach_completion(f: &Fixture) {
     );
     let completion = success(
         run("workflow-complete")
+            .env_remove("RECIPE_VAR_cleanup_push_result")
+            .env_remove("RECIPE_VAR_pr_ready_result")
+            .env("RECIPE_VAR_finalization_evidence", &evidence)
             .env("RECIPE_VAR_workflow_result", result)
             .output()
             .unwrap(),

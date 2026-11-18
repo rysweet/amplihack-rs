@@ -32,8 +32,13 @@ complete_workflow() {
     fi
   done
   # Preserve the operation evidence even when an earlier result omitted it.
-  local operations
+  local operations collected
   operations="$(workflow_finalization_operations)"
+  collected="$(workflow_context_read finalization_evidence || :)"
+  collected="$(printf '%s' "$collected" | jq -Rsc '(fromjson? // {}) | .operations // {}')"
+  operations="$(printf '{"current":%s,"collected":%s}' "$operations" "$collected" | jq -c '
+    {publication:(.current.publication // .collected.publication // null),
+     readiness:(.current.readiness // .collected.readiness // null)}')"
   result="$(printf '{"result":%s,"operations":%s}' "$result" "$operations" | jq -c '
     .operations as $operations | .result |
     if any($operations[]; .recovery != null) then
