@@ -22,10 +22,13 @@ whose pull request was merged or closed more than a day ago. The
 `amplihack cleanup` command does the same on demand, and also archives old
 logs and removes temporary folders left by killed runs.
 
-No cleanup path removes a git worktree or clone that holds uncommitted
-changes or commits not yet on a remote. The folder that holds it is kept, and
-the reason is printed. See
-[Uncommitted and unpushed git work](#uncommitted-and-unpushed-git-work).
+Cleanup keeps a folder that holds a git worktree or clone with uncommitted
+changes or commits not yet on a remote, when that tree's repository or one of
+its remotes lies outside the folder. `amplihack cleanup` gives the reason. A
+repository made entirely inside the folder, the run's own private checkout and
+a few other cases are not protected; see
+[Uncommitted and unpushed git work](#uncommitted-and-unpushed-git-work) and
+[Work the check does not keep](#work-the-check-does-not-keep).
 
 ## Contents
 
@@ -177,9 +180,11 @@ under the 108-byte limit on Unix socket paths for tools that create sockets in
 `<work root>/r/execution-<id>/`.
 
 A run with a recovery identity keeps its private repository and checkout in
-`<work root>/exec/<identity>/` instead of `execution-<id>/`. The task and pull
-request worktrees that a recipe adds are linked to that private repository;
-[Worktree location](#worktree-location) gives where they go. See
+`<work root>/exec/<identity>/` instead of `execution-<id>/`. When an earlier
+attempt still holds that path, the run says why and uses `execution-<id>/`
+after all. The task and pull request worktrees that a recipe adds are linked
+to that private repository; [Worktree location](#worktree-location) gives
+where they go. See
 [checkout isolation](../reference/recipe-checkout-isolation.md#where-each-kind-of-run-executes).
 
 ### The run report
@@ -431,7 +436,9 @@ earlier one failed, and the final error names every failure.
       When the sweep removes a worktree, that worktree's target goes with it in
       the same sweep, whether the run recorded it as `created` or `reused`; see
       [When a target is removed](#when-a-target-is-removed). A `run-tmp`
-      folder that holds git work is kept and reported as `skipped`; see
+      folder that holds git work is kept. The sweep prints nothing about it
+      and logs the reason at `info` level; `amplihack cleanup` lists it as
+      `skipped`. See
       [Uncommitted and unpushed git work](#uncommitted-and-unpushed-git-work).
 
 `AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 3.3. Everything
@@ -443,15 +450,15 @@ not try to resume it.
 
 The sweep is best effort. If another cleanup holds the lock, the sweep is
 skipped. It stops after 120 seconds. A folder it cannot remove is named in a
-warning the first time only; see
+warning only when no earlier sweep has recorded that failure; see
 [A folder that cannot be removed is reported once](#a-folder-that-cannot-be-removed-is-reported-once).
 No problem in the sweep changes the run's exit status. Untagged targets, log archiving and
 scans of the system temporary folder are left to `amplihack cleanup`, so a
 run never removes the pre-commit hook caches of your other checkouts.
 
-When the sweep removes something from a run, or fails for the first time to
-remove one of the run's paths, it adds an entry to that run's
-`cleanup-record.json`:
+When a sweep with `--apply`, the end-of-run sweep included, removes something
+from a run, or fails to remove one of the run's paths that no earlier sweep
+recorded as failed, it adds an entry to that run's `cleanup-record.json`:
 
 ```json
 {
@@ -477,10 +484,16 @@ remove one of the run's paths, it adds an entry to that run's
 }
 ```
 
-If the sweep removed nothing from the run and failed on no path for the first
-time, no record is written. A folder kept because it holds git work does not
-by itself cause a record to be written; the reason appears in the sweep's
-report instead.
+If the sweep removed nothing from the run and found no new failure, no record
+is written. An entry, when one is added, lists every path of the run the sweep
+skipped or failed on in `skipped`, with its reason, as well as what it
+removed.
+
+A folder kept because it holds git work does not by itself cause a record to
+be written, and the end-of-run sweep does not print it. It appears in a
+record only when the same sweep also removes, or newly fails on, another path
+of the same run. Run `amplihack cleanup` to see every kept folder and its
+reason.
 
 A real run starts its workspace with `RunWorkspace::begin_durable`. If the
 work root cannot be used, for example because it is group-writable, the run
@@ -609,15 +622,21 @@ So once the runner has found that no process uses `runtime/`, and has given
 the owner access back to its folders, it searches the folder for git trees
 and asks git whether each one holds work. The rules are in
 [Uncommitted and unpushed git work](#uncommitted-and-unpushed-git-work). When
-a tree holds work, the runner leaves the whole folder in place, with its mode
-unchanged, and prints one line on stderr:
+a tree holds work, the runner leaves the whole folder in place and prints one
+line on stderr:
 
 ```text
-amplihack: runtime folder "/home/ryan/.amplihack/work/r/975c30488cc0" is kept: git tree "/home/ryan/.amplihack/work/r/975c30488cc0/tmp/work" has uncommitted changes; `amplihack cleanup` removes it once that work is committed and on a remote
+amplihack: runtime folder "/home/ryan/.amplihack/work/r/975c30488cc0" is kept: git tree "/home/ryan/.amplihack/work/r/975c30488cc0/tmp/work" has uncommitted changes; `amplihack cleanup --apply` removes it once that work is committed and on a remote
 ```
 
-The run's exit status does not change. The search has 120 seconds. A folder
-whose search has not finished by then is kept, with the reason
+The folder itself stays at mode `0700`. The only change to modes is the
+owner access given back to its subfolders in the previous step. The run's exit
+status does not change.
+
+The search has about 120 seconds. The deadline is checked before each tree,
+so a git command already started for a tree can run past it, within its own
+time limit. A folder whose search has not finished by the deadline is
+kept, with the reason
 `search for git trees did not finish before the end-of-run deadline`.
 
 When no tree holds work, the runner checks once more that the path is still
@@ -628,7 +647,10 @@ and then removes it.
 The kept folder is an ordinary `run-tmp` candidate. Every later sweep, from a
 later run or from `amplihack cleanup --apply`, searches it again and removes
 it once the work in each tree is committed and on a remote, or has been
-discarded. See [Recover or discard kept work](#recover-or-discard-kept-work).
+discarded. The line above is printed once, by the run that owned the folder.
+The end-of-run sweeps of later runs keep the folder without printing anything,
+so use `amplihack cleanup` to list it. See
+[Recover or discard kept work](#recover-or-discard-kept-work).
 
 A kept runtime folder holds more than the work: step output, the run's context
 file and anything else a step wrote to `TMPDIR`, which can include a token. It
@@ -690,15 +712,17 @@ keeps it, which is correct while the run lives.
 The end-of-run sweep tries every eligible folder in the work root, including
 the runtime folders of earlier runs. A folder it cannot remove, for example
 one that holds a folder owned by another user, fails in the same way at every
-later sweep. The sweep therefore names such a folder in a warning only the
-first time it fails:
+later sweep. The sweep therefore names such a folder in a warning only when no
+earlier sweep has recorded the failure:
 
 ```text
 amplihack: warning: end-of-run cleanup could not remove "/home/ryan/.amplihack/work/r/4bc94033ddb5": cannot remove /home/ryan/.amplihack/work/r/4bc94033ddb5: Permission denied (os error 13)
 ```
 
-The first failure is written to the `cleanup-record.json` of the run that owns
-the folder, with `"failed": true`:
+Every sweep that runs with `--apply` and holds the cleanup lock records
+failures in the same way: the end-of-run sweep and `amplihack cleanup --apply`
+alike. The first sweep to fail on a path writes the failure to the
+`cleanup-record.json` of the run that owns the folder, with `"failed": true`:
 
 ```json
 {
@@ -720,17 +744,22 @@ the folder, with `"failed": true`:
 }
 ```
 
-Later sweeps still try the folder, once each; a sweep never retries. When a
-path is already recorded as failed, a new failure goes to the log at `info`
-level (`RUST_LOG=amplihack_cli=info`) instead of stderr, and no sweep is added
-to the record for it. Paths are compared, not error text, so a later failure
-with a different error is not warned about either. A failure is still warned
-about every time when it belongs to no run, or when its record cannot be
-written.
+The sweep entry also lists the run's other skipped paths, as described in
+[What happens when a run ends](#what-happens-when-a-run-ends).
 
-`amplihack cleanup --apply` is not affected. Its report lists every failure,
-every time, as `failed`, and it exits with `1`. To list the folders the
-end-of-run sweep has failed on:
+Later sweeps still try the folder, once each; a sweep never retries. When a
+path is already recorded as failed, the end-of-run sweep writes a new failure
+to the log at `info` level (`RUST_LOG=amplihack_cli=info`) instead of stderr,
+and no sweep is added to the record for it. Paths are compared, not error
+text, so a later failure with a different error is not warned about either.
+A failure is still warned about every time when it belongs to no run, or when
+its record cannot be written.
+
+A failure that `amplihack cleanup --apply` meets first is recorded by it, so
+no end-of-run sweep warns about that path afterwards. The report and exit
+status of `amplihack cleanup --apply` do not change: it lists every failure,
+every time, as `failed`, and exits with `1`. To list the folders any sweep has
+recorded as failed:
 
 ```bash
 WORK_ROOT="${AMPLIHACK_WORK_ROOT:-$HOME/.amplihack/work}"
@@ -746,18 +775,22 @@ it.
 ## Uncommitted and unpushed git work
 
 Before a cleanup path removes a folder that can hold a git worktree or clone,
-it searches the folder for git trees. If a tree it checks has uncommitted
-changes, or commits that are not on a remote, the whole folder is kept. The
-reason names the tree and what git found. Every later sweep looks again and
-removes the folder once neither is true.
+it searches the folder for git trees. It checks each tree whose repository or
+remotes lie outside the folder, by the rules in
+[Which git trees are checked](#which-git-trees-are-checked). If a checked tree
+has uncommitted changes, or commits that are not on a remote, the whole
+folder is kept. The reason names the tree and what git found. Every later
+sweep looks again and removes the folder once neither is true. Some work is
+not kept; see [Work the check does not keep](#work-the-check-does-not-keep).
 
 | Removal | When the search runs | What is kept, and where the reason appears |
 | --- | --- | --- |
 | The runner's own removal of the runtime folder at the end of a run | After the in-use check and after owner access is restored | The runtime folder; one line on stderr. See [A runtime folder that holds git work is kept](#a-runtime-folder-that-holds-git-work-is-kept). |
-| `run-tmp`, in the end-of-run sweep and in `amplihack cleanup` | When the plan is made, after the active and in-use checks; again just before removal | The folder; a `skipped` entry. |
+| `run-tmp`, in `amplihack cleanup` | When the plan is made, after the active and in-use checks; again just before removal | The folder; a `skipped` entry. |
+| `run-tmp`, in the end-of-run sweep | As for `amplihack cleanup` | The folder. Nothing is printed; the reason is logged at `info` level (`RUST_LOG=amplihack_cli=info`). |
 | `tmp-leftover`, in `amplihack cleanup` | When the plan is made, after the `pid` marker and in-use checks; again just before removal | The folder; a `skipped` entry. |
 | `run-exec`, and reuse of `<work root>/exec/<identity>/` by a relaunch | For each worktree registered in the storage's `repository.git` that lies inside the storage, except the run's own `checkout` | The storage folder; a `skipped` entry, or the relaunch's `is still held` line. See [Worktrees that hold work](../reference/recipe-checkout-isolation.md#worktrees-that-hold-work). |
-| Release of the run's private repository at the end of a run | For each worktree still linked to the repository when release keeps it | Nothing beyond what release already keeps; one line on stderr for each worktree with work. |
+| Release of the run's private repository at the end of a run | For each worktree still linked to the repository when release keeps it, at most 64 | Nothing beyond what release already keeps; one line on stderr for each worktree with work. |
 | `run-worktree` | Unchanged: a recorded worktree with work is skipped with the same reasons, as before | The worktree. |
 
 Just before removal, `--apply` repeats the search for `run-tmp` and
@@ -773,7 +806,7 @@ reason each is preceded by `git tree "<path>"`:
 
 | Reason | What git reports |
 | --- | --- |
-| `has uncommitted changes` | `git status --porcelain` prints anything, including an untracked file, or fails. Untracked files are always listed, whatever `status.showUntrackedFiles` the repository sets. |
+| `has uncommitted changes` | `git status --porcelain` prints anything, including an untracked file, or fails. Untracked files are always listed, whatever `status.showUntrackedFiles` the repository sets. Ignored files, those matched by `.gitignore` or `.git/info/exclude`, are not listed and do not count. |
 | `has unpushed commits` | The checked-out branch has commits its upstream does not have. |
 | `has no upstream and commits on no remote branch` | There is no upstream, as on a detached `HEAD`, and `HEAD` has commits that no remote-tracking branch has. |
 | `cannot check for unpushed commits: <git error>` | git could not count the commits. Control characters in the error are escaped. |
@@ -790,12 +823,20 @@ run-tmp         skipped                               -  /home/ryan/.amplihack/w
                 reason: git tree "/home/ryan/.amplihack/work/r/975c30488cc0/tmp/work" has no upstream and commits on no remote branch
 ```
 
-To list every folder kept, with its reason:
+A dry run also skips folders for other reasons, such as a run that is still
+active or a folder a running process uses. To list only the folders kept for
+git work, with the reason:
 
 ```bash
 amplihack cleanup --format json --only run-tmp --only tmp-leftover --only run-exec \
-  | jq -r '.entries[] | select(.action == "skipped") | "\(.path)\t\(.reason)"'
+  | jq -r '.entries[]
+      | select(.action == "skipped" and (.reason | test("git tree|inside it")))
+      | "\(.path)\t\(.reason)"'
 ```
+
+The pattern matches every reason in this section and in
+[Limits on the search](#limits-on-the-search), and the `run-exec` reasons
+that name a worktree inside the storage.
 
 A kept folder is a skip, not a failure, so `amplihack cleanup` still exits
 with `0`.
@@ -810,27 +851,42 @@ these rules:
 1. The folder is walked without following symbolic links, and no `.git`
    folder is entered. An entry that cannot be read for lack of permission, or
    that disappears during the walk, is passed over. Any other read error, or
-   a folder whose path cannot be resolved, keeps the folder with the reason
-   `cannot search for git trees: <error>`.
+   a folder whose path cannot be resolved for a reason other than that it no
+   longer exists, keeps the folder with the reason
+   `cannot search for git trees: <error>`. A folder that no longer exists has
+   nothing to keep.
 2. A folder that holds a `.git` entry, whether a folder, a file or a symbolic
    link, is a candidate.
 3. A candidate whose folder or `.git` entry belongs to another user is passed
-   over, and git is not run in it.
-4. If the `.git` the entry resolves to, or `.git/config` when `.git` is a
-   folder, is writable by other users, or writable by its group when that
-   group is not yours, git is not run there either. The folder is kept with
-   the reason `git tree "<path>" is writable by other users and was not
-   inspected`. A `.git/config` at mode `0664` in your own group, as
-   `umask 002` leaves it, is inspected normally.
+   over, and git is not run in it. It does not keep the folder.
+4. Before git runs, cleanup checks the modes of what git reads first. The
+   paths checked depend on the kind of `.git` entry:
+
+   | `.git` entry | Paths checked |
+   | --- | --- |
+   | A folder | The `.git` folder and `.git/config`. |
+   | A file, as in a linked worktree | The `.git` file, and the folder named on its `gitdir:` line. Cleanup reads that line itself, without running git, and takes a relative path from the tree's folder, as git does. |
+   | A symbolic link | What the link points to, checked as a folder or a file above. |
+
+   If any of these is writable by other users, or writable by its group when
+   that group is not your effective group, git is not run there. The folder is
+   kept with the reason `git tree "<path>" is writable by other users and was
+   not inspected`. A `.git/config` at mode `0664` in your own group, as
+   `umask 002` leaves it, is inspected normally. A `.git` file that cannot be
+   read, or has no `gitdir:` line, is left to rule 5.
+
+   The repository's own `config`, which a linked worktree shares and git also
+   reads, is not checked for owner or mode.
 5. git must agree that the candidate is the top of a repository:
    `git rev-parse --git-common-dir` succeeds and, when `.git` is a folder,
    `git rev-parse --absolute-git-dir` names that same folder. A `.git` folder
-   git does not recognise, an invalid `.git` file and a dangling `.git` link
-   are not trees.
+   git does not recognise or cannot read, an invalid `.git` file and a
+   dangling `.git` link are not trees.
 6. A tree is self-contained when its repository, the common git folder, lies
    inside the folder being removed and every remote URL it has also points
    inside that folder. A self-contained tree goes with the folder and is not
-   checked, because nothing outside the folder refers to it. A remote URL
+   checked, because nothing outside the folder refers to it; any uncommitted
+   changes and commits in it go too. A remote URL
    points inside only when it is an absolute path, or a `file://` URL with no
    host, that lies inside the folder. Every other URL, such as `https://`,
    `ssh://`, `git@github.com:` or a relative path, points outside.
@@ -846,6 +902,8 @@ these rules:
 | A repository made with `git init` that has no remote | No |
 | A clone of a bare repository in the same folder | No |
 | A symbolic link to a repository outside the folder | No; links are not followed |
+| A tree that belongs to another user | No; git is not run in it |
+| A tree whose `.git` folder git cannot read | No; git does not recognise it |
 
 Remote URLs are read only to decide inside or outside. They never appear in a
 reason, a line on stderr, a log event or a record, because they can carry
@@ -862,11 +920,34 @@ has its own time limit of 30 or 60 seconds.
 | --- | --- | --- |
 | Entries walked per folder | 1,000,000 | The folder is kept: `search for git trees stopped after 1000000 entries`. |
 | Trees checked per folder | 64 | The folder is kept: `more than 64 git trees to check`. |
-| Time at the end of a run | 120 seconds; in the sweep, what is left of the sweep's 120 seconds | The folder is kept for now: `search for git trees did not finish before the end-of-run deadline`. |
+| Time at the end of a run | About 120 seconds; in the sweep, what is left of the sweep's 120 seconds | The folder is kept for now: `search for git trees did not finish before the end-of-run deadline`. |
 | Time in `amplihack cleanup` | No limit | Not applicable. |
+
+The time limit is checked before each tree. Any git command already started
+for a tree finishes, or reaches its own 30- or 60-second limit, so the search
+can end a little after the deadline.
 
 A folder kept for a limit has no work found in it yet. Remove what you do not
 need by hand, as below, and run cleanup again.
+
+### Work the check does not keep
+
+The search keeps work only in trees it checks. These are removed without a
+check, or with a check that does not see the work:
+
+| Work | Why it is not kept |
+| --- | --- |
+| A repository made inside the folder, such as `git init` with no remote, or a clone whose origin is in the same folder | It is self-contained (rule 6), so it goes with the folder, uncommitted changes and commits included. |
+| Uncommitted changes and commits in the run's own private checkout, `execution-<id>/checkout` or `<work root>/exec/<identity>/checkout` | Release removes the checkout, and the private repository with it when no other worktree depends on it. See [Worktrees that hold work](../reference/recipe-checkout-isolation.md#worktrees-that-hold-work). |
+| A tree that belongs to another user | Cleanup does not run git in it (rule 3). |
+| A tree whose `.git` folder git cannot read | It is not recognised as a tree (rule 5), so the tree's files can be removed with the folder. |
+| Ignored files in a checked tree | `git status` does not list them, so a tree whose only changes are ignored files counts as clean. |
+| Anything in a `run-target` or `untagged-target` folder | Target folders are not searched. |
+| The `amplihack-dry-*` folder of `recipe run --dry-run` | It is not searched; no step runs in a dry run. |
+
+Outside cleanup, `workflow-worktree` replaces a stale worktree at the path it
+needs without checking it for work; see
+[Limits](../reference/recipe-checkout-isolation.md#limits).
 
 ### Recover or discard kept work
 
@@ -1282,12 +1363,12 @@ amplihack cleanup --apply --skip-logs
 
 | Category | What it collects | Action |
 | --- | --- | --- |
-| `run-tmp` | `<work root>/runs/<id>/runtime` (or `<work root>/r/<short id>`) left by a run that is no longer active, such as one that was killed. The keep period does not apply: the folder is removed as soon as the run is inactive, no running process (such as a child the killed run left behind) uses it, and no git tree in it holds [uncommitted or unpushed work](#uncommitted-and-unpushed-git-work). | remove |
+| `run-tmp` | `<work root>/runs/<id>/runtime` (or `<work root>/r/<short id>`) left by a run that is no longer active, such as one that was killed. The keep period does not apply: the folder is removed as soon as the run is inactive, no running process (such as a child the killed run left behind) uses it, and no git tree in it that the search checks holds [uncommitted or unpushed work](#uncommitted-and-unpushed-git-work). | remove |
 | `run-worktree` | Worktrees recorded in a run's `owned-paths`, under `<work root>/worktrees/` or `<main checkout>/worktrees/`, once the run is eligible. | `git worktree remove`; the branch is kept |
 | `run-target` | Targets recorded in a run's `owned-paths`: on the events in [When a target is removed](#when-a-target-is-removed), or for legacy lines once the run is eligible. Also the target removed by `--worktree-target`. A linked target loses both its destination and the link. | remove |
 | `run-exec` | Folders directly under `<work root>/exec/`: the stable execution storage of runs with a recovery identity ([checkout isolation](../reference/recipe-checkout-isolation.md)). One is collected when the run named in its `claim.json` has ended, no worktree registered in its private repository still exists outside it, and no worktree registered there inside it, other than its own `checkout`, holds [uncommitted or unpushed work](#uncommitted-and-unpushed-git-work); an empty folder with no claim, and a `.reclaim-*` folder an interrupted reclaim moved aside, are collected too. A symlink is never followed. The keep period does not apply. A relaunch with the same identity applies the same rules before it reuses the path. | remove |
 | `untagged-target` | Folders directly under `<work root>/targets/`, and `amplihack-precommit-target-*` folders in the hook cache base, that no run recorded and that have not been modified within the keep period. | remove |
-| `tmp-leftover` | Top-level `replay-*`, `release-*` and `amplihack-workflow-*` folders in the system temporary folder that you own, that are older than the keep period, that hold no `pid` marker naming a live process, and that no running process has as its working folder, holds a file open in, or has as its `TMPDIR`, `TMP` or `TEMP`, and in which no git tree holds [uncommitted or unpushed work](#uncommitted-and-unpushed-git-work). | remove |
+| `tmp-leftover` | Top-level `replay-*`, `release-*` and `amplihack-workflow-*` folders in the system temporary folder that you own, that are older than the keep period, that hold no `pid` marker naming a live process, and that no running process has as its working folder, holds a file open in, or has as its `TMPDIR`, `TMP` or `TEMP`, and in which no git tree that the search checks holds [uncommitted or unpushed work](#uncommitted-and-unpushed-git-work). | remove |
 | `recipe-log` | Files in `recipe.log_dir` older than `--log-days`. | archive |
 | `session-log` | Files in `${CODEX_HOME:-~/.codex}/sessions`, including its nested date folders, older than `--log-days`. Claude sessions under `~/.claude/projects` are listed but skipped with ``archived by `amplihack sessions archive` ``: that command archives each whole session as one restorable unit, never touches a session a running `claude` still uses, and runs once a day from the login rotator. See [the sessions command](../reference/sessions-command.md). | archive |
 
@@ -1513,8 +1594,10 @@ outside these folders is reported as skipped.
 A `run-tmp`, `tmp-leftover` or `run-exec` folder, and a runtime folder the
 runner removes at the end of its run, is removed only if no git tree it holds
 has uncommitted changes or commits that are not on a remote, by the rules in
-[Which git trees are checked](#which-git-trees-are-checked). Whatever the
-category, cleanup never removes a git tree with such work.
+[Which git trees are checked](#which-git-trees-are-checked). Those rules check
+only trees whose repository or remotes lie outside the folder, in folders and
+`.git` entries you own. Trees that go with the folder unchecked are listed in
+[Work the check does not keep](#work-the-check-does-not-keep).
 
 A worktree is removed only if all of these hold:
 
@@ -1534,13 +1617,20 @@ protocol disallowed (`protocol.allow=never`), lazy fetching of missing objects o
 (`GIT_NO_LAZY_FETCH=1`), standard input closed, and untracked files always
 listed (`status.showUntrackedFiles=normal`). A repository's own `.git/config`
 can still name clean and smudge filters, and those can run during
-`git status` and `git worktree remove`, and inside `gh`. The search for git
-work runs `git status` in trees under runtime folders and temporary
-leftovers as well as in recorded worktrees. Cleanup runs as you, and only in
-trees you own whose `.git` other users cannot write, so such a filter has no
-more rights than whoever could already write that configuration. A partial
-clone that would need to fetch missing objects for `git status` fails the
-check, and its folder is kept.
+`git status` and `git worktree remove`, and inside `gh`. Cleanup runs them as
+you, so such a filter has no more rights than whoever could already write
+that configuration.
+
+The search for git work runs `git status` in trees under runtime folders,
+temporary leftovers and execution storage, as well as in recorded worktrees.
+The search, and the check made for each worktree at release and at reclaim,
+run git only in trees you own whose `.git` other users cannot write; see rules
+3 and 4 in [Which git trees are checked](#which-git-trees-are-checked). The
+`run-worktree` checks and `amplihack hygiene cleanup` do not make that owner
+and mode check, as before.
+
+A partial clone that would need to fetch missing objects for `git status`
+fails the check and is kept, with the folder that holds it.
 
 Before each removal, cleanup resolves the path again and requires it to
 resolve to the same place it did when the item was collected, and still to lie
@@ -1685,10 +1775,15 @@ at the path in the message. Push it or discard it, then run
 reason in a `skipped` entry of `amplihack cleanup` means the same thing.
 
 **A folder is skipped with `is writable by other users and was not
-inspected`.** The tree's `.git`, or its `.git/config`, can be written by other
-users, so cleanup does not run git in it and keeps the folder. Find out how
-the mode changed before you trust the repository's configuration, then
-remove the write bits and run cleanup again:
+inspected`.** Something git would read first in that tree can be written by
+other users, or by a group that is not yours, so cleanup does not run git in
+it and keeps the folder. Rule 4 in
+[Which git trees are checked](#which-git-trees-are-checked) lists the paths
+checked for each kind of `.git` entry. Find out how the mode changed before
+you trust the repository's configuration.
+
+When `.git` is a folder, check it and its `config`, then remove the write
+bits and run cleanup again:
 
 ```bash
 TREE="/home/ryan/.amplihack/work/r/975c30488cc0/tmp/work"   # from the reason
@@ -1696,12 +1791,23 @@ ls -ld "$TREE/.git" "$TREE/.git/config"
 chmod go-w "$TREE/.git" "$TREE/.git/config"
 ```
 
-For a linked worktree, `.git` is a file that names the worktree's folder in
-its repository; check that folder instead.
+When `.git` is a file, as in a linked worktree, check the file and the folder
+named on its `gitdir:` line:
+
+```bash
+GITDIR="$(sed -n 's/^gitdir: //p' "$TREE/.git")"
+case "$GITDIR" in /*) ;; *) GITDIR="$TREE/$GITDIR" ;; esac   # relative to the tree
+ls -ld "$TREE/.git" "$GITDIR"
+chmod go-w "$TREE/.git" "$GITDIR"
+```
+
+A group write bit is accepted when the group is your own effective group, as
+`umask 002` leaves files; `chmod g-w` is then not needed.
 
 **`end-of-run cleanup could not remove` appeared once and not again.** The
 folder still cannot be removed; later runs record the failure in the log
-instead of on stderr. See
+instead of on stderr. When `amplihack cleanup --apply` met the failure first,
+the end-of-run sweep gives no warning for it at all. See
 [A folder that cannot be removed is reported once](#a-folder-that-cannot-be-removed-is-reported-once).
 `amplihack cleanup --apply --only run-tmp` reports it again, as `failed`.
 
