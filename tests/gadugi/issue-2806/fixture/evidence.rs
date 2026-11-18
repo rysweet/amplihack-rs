@@ -290,8 +290,7 @@ pub fn validate_missing_drive_terminal(stderr: &str, exit: Option<i32>) -> Resul
     let expected = normalize(&expected)?;
     let last = stderr
         .lines()
-        .filter(|line| !line.trim().is_empty())
-        .next_back()
+        .rfind(|line| !line.trim().is_empty())
         .context("missing-worktree terminal evidence absent")?;
     ensure!(
         last.starts_with(MARKER),
