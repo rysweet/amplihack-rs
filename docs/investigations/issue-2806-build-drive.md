@@ -200,3 +200,11 @@ a local fixture-integration test under env -i. Keep the production identity
 policy unchanged; no push-recovery response or retry is needed for this setup
 error. The same CI run completed every control drive assertion, including the
 production merge and fresh MERGED readback.
+
+Run 44385467051 at `aae17697d0d4ec41c9b61b85ea7fab2ff607037f` completed
+every default-workflow phase and independently passed build commit, content,
+origin, open-PR and PR-head assertions. The final smart-orchestrator reflection
+uses a separate prose contract; it is now supported with fresh local/origin/PR
+observations and a nonempty green required-check read, shared with first-round
+reflection and terminal adjudication. The unsupported prompt remained a fatal
+harness error in that run; no expected-failure allowance was added.

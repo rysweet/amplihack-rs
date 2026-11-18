@@ -115,6 +115,57 @@ fn post(case: &IsolatedCase, body: &str) -> Result<()> {
     );
     Ok(())
 }
+fn build_delivery(case: &IsolatedCase, repo: &Path) -> Result<super::hosting::PullRequest> {
+    let mut hosting = host(case)?;
+    let prs = hosting.open_prs()?;
+    ensure!(prs.len() == 1, "delivery requires exactly one open PR");
+    let pr = prs[0].clone();
+    let readback = hosting.invoke(
+        repo,
+        &["pr", "view", "1", "--json", "state,isDraft,headRefOid"],
+    )?;
+    ensure!(readback.exit_code == 0, "delivery PR readback failed");
+    let state: Value = serde_json::from_slice(&readback.stdout)?;
+    let checks = hosting.invoke(
+        repo,
+        &["pr", "checks", "1", "--required", "--json", "name,state"],
+    )?;
+    let checks_json: Value = serde_json::from_slice(&checks.stdout)?;
+    ensure!(
+        checks.exit_code == 0
+            && checks_json
+                .as_array()
+                .is_some_and(|checks| !checks.is_empty()
+                    && checks.iter().all(|check| check["state"] == "SUCCESS")),
+        "delivery checks are incomplete"
+    );
+    let observed = super::evidence::observe_build(
+        repo,
+        &driver::origin(case)?,
+        &hosting,
+        pr.number,
+        "answer.txt",
+    )?;
+    ensure!(
+        observed.local_committed
+            && observed.remote_matches
+            && observed.open_pr_matches
+            && state["state"] == "OPEN"
+            && state["isDraft"] == false
+            && state["headRefOid"] == pr.head_sha
+            && observe_git(repo, &["show", "HEAD:answer.txt"])? == "42",
+        "delivery evidence is incomplete"
+    );
+    driver::save(
+        &case.evidence.join(format!(
+            "delivery-observation-{}.json",
+            uuid::Uuid::new_v4()
+        )),
+        &json!({"git":observed,"pr":state,"checks":checks_json}),
+    )?;
+    Ok(pr)
+}
+
 fn preflight(case: &IsolatedCase, task: &str) -> Result<String> {
     let contract = if task.contains("Read build_preflight") {
         "resolve-pr"
@@ -365,9 +416,14 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
             "Completed public answer() assertion and byte-exact answer file checks: {api}; {bytes}. PR description updated. Zero fixes."
         )
     } else if task.starts_with("Evaluate goal achievement after round 1.") {
-        let prs = host(case)?.open_prs()?;
-        ensure!(prs.len() == 1, "reflection found no single open PR");
-        json!({"goal_status":"ACHIEVED","summary":format!("origin and open PR #{} at {}",prs[0].number,prs[0].head_sha)}).to_string()
+        let pr = build_delivery(case, &repo)?;
+        json!({"goal_status":"ACHIEVED","summary":format!("origin and open PR #{} at {}",pr.number,pr.head_sha)}).to_string()
+    } else if task.starts_with("Final assessment after all execution rounds.") {
+        let pr = build_delivery(case, &repo)?;
+        format!(
+            "Verified committed answer 42 at {}, matching origin and open non-draft PR #{} with a nonempty green required-check set.\nGOAL_STATUS: ACHIEVED",
+            pr.head_sha, pr.number
+        )
     } else if task.starts_with("Outside-in testing validation check.") {
         "Outside-in evidence retained: cargo public API assertion and byte-exact answer file check."
             .into()
@@ -380,14 +436,10 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
             serde_json::to_string(&prs)?
         )
     } else if task.starts_with("# Terminal-State Adjudication") {
-        let prs = host(case)?.open_prs()?;
-        ensure!(
-            prs.len() == 1,
-            "adjudication cannot find open PR carrying work"
-        );
+        let pr = build_delivery(case, &repo)?;
         format!(
-            "PR #{} is open at {}.\nTERMINAL_VERDICT: SUCCESS",
-            prs[0].number, prs[0].head_sha
+            "Observed committed work, matching origin and open PR #{} at {}.\nTERMINAL_VERDICT: SUCCESS",
+            pr.number, pr.head_sha
         )
     } else if task.starts_with("Determine QA prerequisites using the trusted qa-team") {
         for tool in ["cargo", "rustc", "gh", "codex", "claude"] {
