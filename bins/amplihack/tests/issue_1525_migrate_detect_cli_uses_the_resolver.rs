@@ -36,10 +36,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let dir = tempfile::tempdir().expect("create tempdir");
+        let dir = crate::private_tempdir::private_tempdir();
         // A `.git` boundary stops the resolver's walk-up at the work dir.
-        fs::create_dir_all(dir.path().join("work/.git")).expect("create work dir");
-        fs::create_dir_all(dir.path().join("home")).expect("create home");
+        crate::private_tempdir::private_dir_all(&dir.path().join("work/.git"));
+        crate::private_tempdir::private_dir_all(&dir.path().join("home"));
         Self { dir }
     }
 
@@ -57,7 +57,7 @@ impl Fixture {
 
     fn write_context(&self, body: &str) -> PathBuf {
         let path = self.context_path();
-        fs::create_dir_all(path.parent().unwrap()).expect("create runtime dir");
+        crate::private_tempdir::private_dir_all(path.parent().unwrap());
         fs::write(&path, body).expect("write launcher context");
         path
     }
@@ -99,7 +99,7 @@ impl Fixture {
 /// A timestamp in the writer's own format, so a format change there is
 /// tested here too.
 fn now_rfc3339() -> String {
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = crate::private_tempdir::private_tempdir();
     amplihack_cli::launcher_context::write_launcher_context(
         dir.path(),
         amplihack_cli::launcher_context::LauncherKind::Claude,

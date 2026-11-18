@@ -25,7 +25,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let dir = tempfile::tempdir().expect("create tempdir");
+        let dir = crate::private_tempdir::private_tempdir();
         let runner = dir.path().join("recipe-runner-rs");
         // Records what it was handed. The unset/empty distinction matters for
         // the tag, so it is written as an explicit marker rather than "".
@@ -55,11 +55,11 @@ impl Fixture {
             "name: probe\nsteps:\n  - id: noop\n    type: bash\n    command: \"true\"\n",
         )
         .expect("write recipe");
-        fs::create_dir_all(dir.path().join("home")).expect("create home");
+        crate::private_tempdir::private_dir_all(&dir.path().join("home"));
         // A `.git` boundary stops the launcher-context walk-up at the work
         // dir, so a context file above the temp dir (for example with TMPDIR
         // under $HOME) cannot answer for these tests.
-        fs::create_dir_all(dir.path().join("work").join(".git")).expect("create work dir");
+        crate::private_tempdir::private_dir_all(&dir.path().join("work").join(".git"));
         Self { dir }
     }
 
@@ -446,7 +446,7 @@ fn recipe_run_writes_no_launcher_context() {
 fn the_launcher_context_is_read_from_the_working_dir() {
     let fx = Fixture::new();
     let project = fx.path().join("project");
-    fs::create_dir_all(project.join(".git")).expect("create project");
+    crate::private_tempdir::private_dir_all(&project.join(".git"));
     amplihack_cli::launcher_context::write_launcher_context(
         &project,
         amplihack_cli::launcher_context::LauncherKind::Codex,
@@ -496,8 +496,8 @@ fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {
     let fx = Fixture::new();
     let bin = fx.path().join("bin");
     let tmp = fx.path().join("tmp");
-    fs::create_dir_all(&bin).expect("create bin");
-    fs::create_dir_all(&tmp).expect("create tmp");
+    crate::private_tempdir::private_dir_all(&bin);
+    crate::private_tempdir::private_dir_all(&tmp);
     let probe = fx.path().join("claude-probe.log");
     // A stand-in `claude` that records what each invocation was handed.
     fs::write(
@@ -579,7 +579,7 @@ fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {
 /// resolver will report it.
 fn write_raw_launcher_context(dir: &Path, body: &str) -> PathBuf {
     let runtime = dir.join(".claude").join("runtime");
-    fs::create_dir_all(&runtime).expect("create runtime dir");
+    crate::private_tempdir::private_dir_all(&runtime);
     fs::write(runtime.join("launcher_context.json"), body).expect("write launcher context");
     dir.canonicalize()
         .expect("canonicalize")
@@ -672,7 +672,7 @@ fn a_malformed_launcher_context_is_named_with_its_reason() {
 fn a_bad_file_below_a_good_one_is_named_alongside_the_file_that_answered() {
     let fx = Fixture::new();
     let project = fx.path().join("project");
-    fs::create_dir_all(project.join(".git")).expect("create project");
+    crate::private_tempdir::private_dir_all(&project.join(".git"));
     amplihack_cli::launcher_context::write_launcher_context(
         &project,
         amplihack_cli::launcher_context::LauncherKind::Codex,
@@ -829,7 +829,7 @@ impl Fixture {
     /// started from a Copilot session does.
     fn tmux_server_started_from_copilot(&self) -> PathBuf {
         let bin = self.path().join("tmux-bin");
-        fs::create_dir_all(&bin).expect("create stub dir");
+        crate::private_tempdir::private_dir_all(&bin);
         let tmux = bin.join("tmux");
         fs::write(
             &tmux,
@@ -859,7 +859,7 @@ impl Fixture {
     /// of the stand-in, whatever it hands its child is what the tests see.
     fn copilot_whose_agent_runs(&self) -> PathBuf {
         let bin = self.path().join("copilot-bin");
-        fs::create_dir_all(&bin).expect("create stub dir");
+        crate::private_tempdir::private_dir_all(&bin);
         let copilot = bin.join("copilot");
         fs::write(
             &copilot,

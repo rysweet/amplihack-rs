@@ -1041,7 +1041,11 @@ fn terminal_state_allows_git_only_no_diff_when_no_pr_dependency_exists() {
 fn terminal_success_states_execute_runner_skip_gates_for_mutation_publish_ci_and_merge() {
     let publish = load_recipe("workflow-publish");
     let finalize = load_recipe("workflow-finalize");
-    let tmp = TempDir::new().expect("tempdir");
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .expect("private temporary recipe root");
     let marker = tmp.path().join("mutation-marker");
 
     for terminal_state in ["MERGED", "CLOSED_OBSOLETE", "NO_DIFF_SUCCESS"] {

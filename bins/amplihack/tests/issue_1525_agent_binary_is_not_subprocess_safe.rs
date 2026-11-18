@@ -33,11 +33,11 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = crate::private_tempdir::private_tempdir();
         let bin = dir.path().join("bin");
-        fs::create_dir_all(&bin).expect("create bin");
-        fs::create_dir_all(dir.path().join("home")).expect("create home");
-        fs::create_dir_all(dir.path().join("work").join(".git")).expect("create work");
+        crate::private_tempdir::private_dir_all(&bin);
+        crate::private_tempdir::private_dir_all(&dir.path().join("home"));
+        crate::private_tempdir::private_dir_all(&dir.path().join("work").join(".git"));
         // A docker that is running, already has the image, and records the
         // arguments of `docker run`, one per line.
         fs::write(

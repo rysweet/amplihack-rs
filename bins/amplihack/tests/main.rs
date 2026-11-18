@@ -18,6 +18,10 @@
 #[path = "../../../tests/support/isolated_amplihack.rs"]
 mod isolated_amplihack;
 
+// Reuse private fixture creation for recipe-launching binary tests.
+#[path = "../../../crates/amplihack-cli/tests/support/private_tempdir.rs"]
+mod private_tempdir;
+
 #[path = "issue_1445_host_only_litellm.rs"]
 mod issue_1445_host_only_litellm;
 #[path = "issue_1481_recipe_run_agent_binary.rs"]

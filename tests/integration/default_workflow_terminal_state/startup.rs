@@ -1,5 +1,7 @@
 //! Private roots for CLI children testing recipe conditions, not startup repair.
-use std::{fs, path::Path, path::PathBuf, process::Command};
+#[cfg(not(unix))]
+use std::fs;
+use std::{path::Path, path::PathBuf, process::Command};
 
 fn selected_tool(name: &str) -> PathBuf {
     std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
@@ -16,7 +18,7 @@ pub(super) fn isolate(command: &mut Command, root: &Path) {
         .unwrap_or_else(|| selected_tool("recipe-runner-rs"));
     let runner = runner.canonicalize().expect("selected recipe runner");
     let bin = root.join("tools");
-    fs::create_dir_all(&bin).expect("private tools");
+    amplihack_utils::secure_files::create_private_directories(&bin).expect("private tools");
     for name in ["bash", "sh", "jq", "git"] {
         let selected = selected_tool(name).canonicalize().expect("selected tool");
         #[cfg(unix)]
@@ -43,7 +45,8 @@ pub(super) fn isolate(command: &mut Command, root: &Path) {
         ("TMPDIR", "tmp"),
     ] {
         let path = root.join(name);
-        fs::create_dir_all(&path).expect("private child root");
+        amplihack_utils::secure_files::create_private_directories(&path)
+            .expect("private child root");
         command.env(key, path);
     }
     command
