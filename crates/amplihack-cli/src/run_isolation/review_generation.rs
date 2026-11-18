@@ -290,6 +290,56 @@ fn read_live(checkout: &Path) -> Result<Generation> {
     }
     Ok(generation)
 }
+
+/// Discover live ownership without changing resources or launch behavior.
+/// Candidate names only locate records; `read_live` and exact launch-path
+/// equality establish ownership. Never search beyond the allocation directory.
+pub(super) fn is_owned_launch_dir(directory: &Path) -> bool {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let discover = || -> Result<bool> {
+        let directory = directory.canonicalize()?;
+        let allocation = directory
+            .parent()
+            .and_then(Path::parent)
+            .context("execution directory has no review allocation parent")?;
+        for entry in fs::read_dir(allocation)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let Some(checkout_name) = name
+                .as_bytes()
+                .strip_suffix(b".review-owner.json")
+                .map(OsStr::from_bytes)
+                .and_then(|name| Path::new(name).file_name())
+            else {
+                continue;
+            };
+            // Only regular manifest candidates have contents to validate;
+            // special files and symlinks confer no ownership evidence.
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let checkout = allocation.join(checkout_name);
+            match read_live(&checkout) {
+                Ok(generation) if generation.launch == directory => return Ok(true),
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::debug!(%error, "review launch candidate has no live ownership")
+                }
+            }
+        }
+        Ok(false)
+    };
+    match discover() {
+        Ok(owned) => owned,
+        Err(error) => {
+            tracing::debug!(%error, "review launch ownership unavailable");
+            false
+        }
+    }
+}
+
 pub(crate) fn validate(source: &Path, checkout: &Path) -> Result<()> {
     let generation = read_live(checkout)?;
     let common = PathBuf::from(git(
