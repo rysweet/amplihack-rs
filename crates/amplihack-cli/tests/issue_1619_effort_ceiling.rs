@@ -76,6 +76,8 @@ fn a_ceiling_never_raises_an_effort() {
 
 #[test]
 fn no_ceiling_leaves_the_shipped_efforts_alone() {
+    // With no tier file no Codex step asks for `xhigh`, so a model that does
+    // not accept it still runs every step.
     let f = Fixture::new();
     for (tier, expected) in [("fast", "low"), ("standard", "high"), ("strong", "high")] {
         let launch = f.run("codex", &["exec", "--model", tier, "-"]);
@@ -84,6 +86,11 @@ fn no_ceiling_leaves_the_shipped_efforts_alone() {
             Some(expected),
             "the shipped mapping declares no ceiling. argv: {:?}",
             launch.argv
+        );
+        assert!(
+            launch.output.status.success(),
+            "stderr:\n{}",
+            launch.stderr()
         );
     }
 }
@@ -106,26 +113,6 @@ fn a_max_effort_that_is_not_an_effort_is_reported_and_changes_nothing() {
         !launch.stderr().is_empty(),
         "and the operator is told where they wrote it"
     );
-}
-
-#[test]
-fn with_no_tier_file_no_codex_step_asks_for_xhigh() {
-    let f = Fixture::new();
-    for tier in ["fast", "standard", "strong"] {
-        let launch = f.run("codex", &["exec", "--model", tier, "-"]);
-        assert_ne!(
-            launch.effort(),
-            Some("xhigh"),
-            "`{tier}`: a Codex model that does not accept xhigh must still run every step of \
-             an instance with no tier file. argv: {:?}",
-            launch.argv
-        );
-        assert!(
-            launch.output.status.success(),
-            "stderr:\n{}",
-            launch.stderr()
-        );
-    }
 }
 
 #[test]

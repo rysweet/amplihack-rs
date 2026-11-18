@@ -176,20 +176,6 @@ fn the_shipped_codex_column_names_no_model_and_sets_an_effort() {
 }
 
 #[test]
-fn no_shipped_codex_effort_is_xhigh() {
-    let table = Table::shipped();
-    for tier in Tier::ALL {
-        assert_ne!(
-            table.entry("codex", tier).and_then(|e| e.effort),
-            Some(Effort::Xhigh),
-            "codex/{}: with no tier file, a model that does not accept `xhigh` must not fail \
-             the step",
-            tier.as_str()
-        );
-    }
-}
-
-#[test]
 fn the_shipped_copilot_column_has_no_entries() {
     // An empty cell is an absent cell, so shipping three empty ones would be
     // dead config. The column exists to be filled in by an instance.
