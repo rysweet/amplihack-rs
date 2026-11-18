@@ -215,6 +215,7 @@ impl Report {
             "drive-control.merge",
             "drive-control.complete",
             "drive-missing.caller-dirty",
+            "drive-missing.terminal",
             "drive-missing.gates",
             "drive-missing.retained",
             "drive-missing.complete",
@@ -247,6 +248,69 @@ impl Report {
             })
     }
 }
+/// Validate #2802's independently observed terminal failure against its recorded
+/// runner outcome. Earlier worktree evidence never excuses a new execution error.
+pub fn validate_missing_drive_terminal(stderr: &str, exit: Option<i32>) -> Result<()> {
+    let baseline: Value =
+        serde_json::from_str(include_str!("../baseline/97/drive-missing.worktree.json"))?;
+    ensure!(
+        exit.map(i64::from)
+            == baseline["observations"]["auto-drive-to-merge.exit.json"]["exit_code"].as_i64(),
+        "missing-worktree drive has unmatched process exit"
+    );
+    let baseline_stderr = baseline["observations"]["production_terminal_stderr"]
+        .as_str()
+        .context("baseline terminal stderr absent")?;
+    const MARKER: &str = "amplihack.recipe.failure_class ";
+    let expected: Value = serde_json::from_str(
+        baseline_stderr
+            .lines()
+            .last()
+            .context("baseline terminal absent")?
+            .strip_prefix(MARKER)
+            .context("baseline terminal marker absent")?,
+    )?;
+    // Full runner failure fields must match. Only machine-specific paths and
+    // timestamps in the documented report error are normalized.
+    let paths = regex::Regex::new(r#"/[^\s"\\]+"#)?;
+    let timestamps = regex::Regex::new(r"\[\d{4}-\d{2}-\d{2}T[^\]]+\]")?;
+    let normalize = |record: &Value| -> Result<Value> {
+        let mut record = record.clone();
+        let evidence = record["evidence"]
+            .as_str()
+            .context("terminal evidence is not text")?;
+        let (_, report_error) = evidence
+            .split_once("[runner stderr] recipe recovery:")
+            .context("terminal lacks recorded runner report failure")?;
+        let report_error = paths.replace_all(report_error, "/PRIVATE");
+        record["evidence"] =
+            Value::String(timestamps.replace_all(&report_error, "[TIME]").into_owned());
+        Ok(record)
+    };
+    let expected = normalize(&expected)?;
+    let last = stderr
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .next_back()
+        .context("missing-worktree terminal evidence absent")?;
+    ensure!(
+        last.starts_with(MARKER),
+        "unmatched output after terminal failure record"
+    );
+    let mut count = 0;
+    for line in stderr.lines().filter_map(|line| line.strip_prefix(MARKER)) {
+        let observed: Value =
+            serde_json::from_str(line).context("malformed runner terminal record")?;
+        ensure!(
+            normalize(&observed)? == expected,
+            "unmatched runner terminal failure"
+        );
+        count += 1;
+    }
+    ensure!(count > 0, "runner terminal record absent");
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 pub struct BuildObservation {
     pub local_committed: bool,

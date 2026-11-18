@@ -237,3 +237,9 @@ or the shell helper's exact `true`/`false` string, and a normal process exit.
 Malformed evidence is a harness failure before classification. The #2343
 fingerprints now include success and exit values already present in the original
 baseline observations; changed values cannot receive those allowances.
+
+The #2802 worktree XFAIL is recorded independently of recipe termination.
+The drive must also match baseline/97's exit 81 and structured report failure;
+only private paths and timestamps in that diagnostic are normalized. Missing,
+malformed or additional terminal errors fail the harness even when downstream
+worktree-dependent assertions remain unexecuted.

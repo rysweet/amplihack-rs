@@ -1200,3 +1200,45 @@ fn finalization_allowances_match_baseline_state_success_and_exit() {
         }
     }
 }
+
+#[test]
+fn missing_worktree_never_hides_unrelated_or_malformed_terminal_failures() {
+    let baseline: Value =
+        serde_json::from_str(include_str!("../baseline/97/drive-missing.worktree.json")).unwrap();
+    let stderr = baseline["observations"]["production_terminal_stderr"]
+        .as_str()
+        .unwrap();
+    assert!(evidence::validate_missing_drive_terminal(stderr, Some(81)).is_ok());
+    for exit in [None, Some(0), Some(1), Some(127)] {
+        assert!(evidence::validate_missing_drive_terminal(stderr, exit).is_err());
+    }
+    for malformed in [
+        "",
+        "runner crashed",
+        "amplihack.recipe.failure_class {}",
+        "amplihack.recipe.failure_class {bad}",
+    ] {
+        assert!(evidence::validate_missing_drive_terminal(malformed, Some(81)).is_err());
+    }
+    // No fixture-error marker is needed to detect a subsequent shell failure.
+    assert!(
+        evidence::validate_missing_drive_terminal(
+            &format!("{stderr}bash: missing-command: command not found\n"),
+            Some(81)
+        )
+        .is_err()
+    );
+    let marker = "amplihack.recipe.failure_class ";
+    let mut record: Value =
+        serde_json::from_str(stderr.lines().last().unwrap().strip_prefix(marker).unwrap()).unwrap();
+    record["failed_steps"] = json!(["autodrive-report", "unrelated-step"]);
+    assert!(
+        evidence::validate_missing_drive_terminal(&format!("{marker}{record}"), Some(81)).is_err()
+    );
+    record["failed_steps"] = json!(["autodrive-report"]);
+    let original = record["evidence"].as_str().unwrap().to_owned();
+    record["evidence"] = json!(format!("{original}\nbash: unrelated shell failure"));
+    assert!(
+        evidence::validate_missing_drive_terminal(&format!("{marker}{record}"), Some(81)).is_err()
+    );
+}

@@ -755,6 +755,11 @@ fn drive(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
     }
     assert_value(report, name, "worktree", located, "no-worktree")?;
     if !located && name == "drive-missing" {
+        evidence::validate_missing_drive_terminal(
+            std::str::from_utf8(&output.stderr)?,
+            output.status.code(),
+        )?;
+        report.record(Assertion::passed(name, &format!("{name}.terminal")))?;
         for suffix in ["gates", "retained", "merge", "complete"] {
             report.record(Assertion::blocked(
                 name,
@@ -764,6 +769,13 @@ fn drive(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
             ))?;
         }
         return Ok(());
+    }
+    if name == "drive-missing" {
+        ensure!(
+            output.status.success(),
+            "resolved drive has unsuccessful terminal exit"
+        );
+        report.record(Assertion::passed(name, &format!("{name}.terminal")))?;
     }
     let readback = host.invoke(&repo, &["pr", "view", "1", "--json", "state,headRefOid"])?;
     let readback: Value = serde_json::from_slice(&readback.stdout)?;
