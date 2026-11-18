@@ -1444,3 +1444,48 @@ fn closed_hosting_grammar_accepts_every_supported_command_and_endpoint() {
         );
     }
 }
+
+#[test]
+fn preservation_explanations_require_target_identity_explicit_skip_and_observed_condition() {
+    let runtime = Path::new("/fixture/work/r/retained");
+    let valid = json!({"path":runtime,"run_id":"retained-run","action":"skipped","reason":"has uncommitted changes"});
+    let explained = |entry| {
+        evidence::preservation_explained(&json!({"entries":[entry]}), runtime, "retained-run")
+    };
+    assert!(explained(valid.clone()));
+    let mut by_run = valid.clone();
+    by_run["path"] = json!("/fixture/work/r/retained/repository");
+    by_run["reason"] = json!("has unpushed commits");
+    assert!(explained(by_run));
+    let mut unrelated = valid.clone();
+    unrelated["path"] = json!("/fixture/work/r/unrelated");
+    unrelated["run_id"] = json!("another-run");
+    assert!(!explained(unrelated));
+    for action in [
+        "removed",
+        "would-remove",
+        "failed",
+        "archived",
+        "would-archive",
+        "preserve",
+    ] {
+        let mut entry = valid.clone();
+        entry["action"] = json!(action);
+        assert!(!explained(entry));
+    }
+    for reason in [
+        Value::Null,
+        json!(""),
+        json!("no dirty or unpushed work"),
+        json!("runtime retained"),
+    ] {
+        let mut entry = valid.clone();
+        entry["reason"] = reason;
+        assert!(!explained(entry));
+    }
+    assert!(!evidence::preservation_explained(
+        &json!({}),
+        runtime,
+        "retained-run"
+    ));
+}

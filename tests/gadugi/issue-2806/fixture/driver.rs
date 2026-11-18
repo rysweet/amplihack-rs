@@ -1178,15 +1178,13 @@ fn cleanup(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
         observed.as_ref().is_some_and(|v| v.dirty_content_intact),
         "cleanup lost uncommitted work",
     )?;
-    let explanation = cleanup["entries"].as_array().is_some_and(|entries| {
-        entries.iter().any(|entry| {
-            entry["reason"].as_str().is_some_and(|reason| {
-                reason.contains("dirty")
-                    || reason.contains("unpushed")
-                    || reason.contains("uncommitted")
-            })
-        })
-    });
+    let explanation = evidence::preservation_explained(
+        &cleanup,
+        &runtime,
+        location["run_id"]
+            .as_str()
+            .context("interrupted run identity absent")?,
+    );
     assert_value(
         report,
         name,

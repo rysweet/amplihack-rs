@@ -267,3 +267,8 @@ writes, unrelated endpoints/query parameters and GraphQL operations other than
 the exact identity/read-thread queries used by these recipes. Rejections record
 a fixture harness error as well as returning failure. Supported option aliases
 and native `--key=value` syntax remain covered by positive contract tests.
+
+Cleanup explanations must identify the target runtime or interrupted run ID,
+carry the production `skipped` preservation action, and state the documented
+uncommitted-change or unpushed-commit condition. Unrelated entries, removal
+entries mentioning those conditions and missing explanations cannot satisfy it.

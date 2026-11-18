@@ -494,3 +494,21 @@ pub fn validate_drive_location(observed: &DriveObservation) -> Result<()> {
     );
     Ok(())
 }
+
+/// Cleanup's explicit `skipped` action preserves the identified candidate.
+/// Explanation text alone, including text on removal records, is insufficient.
+pub fn preservation_explained(cleanup: &Value, runtime: &Path, run_id: &str) -> bool {
+    cleanup["entries"].as_array().is_some_and(|entries| {
+        entries.iter().any(|entry| {
+            let target = entry["path"]
+                .as_str()
+                .is_some_and(|path| Path::new(path) == runtime)
+                || (!run_id.is_empty() && entry["run_id"].as_str() == Some(run_id));
+            target
+                && entry["action"] == "skipped"
+                && entry["reason"].as_str().is_some_and(|reason| {
+                    matches!(reason, "has uncommitted changes" | "has unpushed commits")
+                })
+        })
+    })
+}
