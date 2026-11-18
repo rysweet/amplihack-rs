@@ -738,6 +738,15 @@ jobs:
           command -v tmux >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q tmux; }
           tmux -V
           bash scripts/install-pinned-recipe-runner.sh
+      - name: "Outside-in: finalize publishes audit work before readiness (issue #2787)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v jq >/dev/null
+          work=$(mktemp -d)
+          trap 'rm -rf -- "$work"' EXIT
+          rustc --edition=2024 tests/gadugi/workflow_finalize_publish_ready.rs -o "$work/driver"
+          "$work/driver" "$PWD" "$(command -v amplihack)" "$(command -v recipe-runner-rs)"
       # Outside-in check of `amplihack agent-binary`, its --shell hand-off, the
       # agent binary a recipe step is handed, and a real detached tmux launch,
       # against the binary installed above. REQUIRE_ALL turns any case that

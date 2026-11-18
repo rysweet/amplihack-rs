@@ -1,0 +1,61 @@
+name: workflow-finalize-publish-ready
+description: >
+  Issue 2787 outside-in release evidence. Runs actual finalize commands with
+  the built binary, a pinned runner, a stateful gh stub, linked worktrees and
+  local bare remotes under a private HOME. Covers committed and uncommitted
+  audit work, invocation from main, aliases, exact PR validation, exclusion
+  diagnostics and recovery. CI Install Smoke Test runs this Rust driver;
+  do not run this scenario on a factory host.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: [rustc, amplihack, recipe-runner-rs, git, jq]
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, finalize, publication, regression]
+  priority: high
+  issues: ["2787"]
+steps:
+  - name: publication-before-ready
+    agent: cli-agent
+    action: execute
+    params:
+      command: >-
+        bash -euo pipefail -c 'work=$(mktemp -d); trap '\''rm -rf -- "$work"'\'' EXIT;
+        rustc --edition=2024 tests/gadugi/workflow_finalize_publish_ready.rs -o "$work/driver";
+        "$work/driver" "$PWD" "$(command -v amplihack)" "$(command -v recipe-runner-rs)"'
+  - name: successful-exit
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-contracts-pass
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: committed-audit-published
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unpushed_commit"
+  - name: uncommitted-audit-published
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: uncommitted_audit"
+  - name: canonical-worktree-used
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: main_checkout_uses_pr_worktree"
+  - name: actual-binary-and-runner
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: recipe_through_built_binary"
