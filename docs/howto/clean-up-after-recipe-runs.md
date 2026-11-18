@@ -451,9 +451,11 @@ A run that fails before its first step, for example on an unborn `HEAD`,
 still finishes its recovery admission as `Failure`, so the next launch does
 not try to resume it.
 
-The sweep is best effort. If another cleanup holds the lock, the sweep is
-skipped. It stops after 120 seconds. A folder it cannot remove is named in a
-warning only when no earlier sweep has recorded that failure; see
+The sweep is best effort. If another cleanup holds `<work root>/.cleanup.lock`,
+the sweep is skipped without waiting. Its 120-second budget is cooperative:
+in-progress Git commands and filesystem operations can run past it. See
+[Limits on the search](#limits-on-the-search). A folder it cannot remove is
+named in a warning only when no earlier sweep has recorded that failure; see
 [A folder that cannot be removed is reported once](#a-folder-that-cannot-be-removed-is-reported-once).
 No problem in the sweep changes the run's exit status. Untagged targets, log archiving and
 scans of the system temporary folder are left to `amplihack cleanup`, so a
@@ -641,9 +643,10 @@ The folder itself stays at mode `0700`. The only change to modes is the
 owner access given back to its subfolders in the previous step. The run's exit
 status does not change.
 
-The search has about 120 seconds. The deadline is checked before each tree,
-so a git command already started for a tree can run past it, within its own
-time limit. A folder whose search has not finished by the deadline is
+The search has a cooperative 120-second budget. The deadline is checked during
+discovery and between repository-inspection operations. An operation already
+started can run past it; Git commands retain their existing individual time
+limits. A folder whose search has not finished by the deadline is
 kept, with the reason
 `search for git trees did not finish before the end-of-run deadline`.
 
@@ -787,17 +790,29 @@ eligible containing folders remain removable.
 
 Retention appears in normal output with the candidate path, repository path
 and reason, as well as in structured cleanup entries. No extra configuration
-or preservation flag is needed. Cleanup remains best effort and non-blocking.
+or preservation flag is needed. Cleanup remains best effort; the end-of-run
+cleanup lock is acquired without waiting. See
+[inspection deadlines and locks](../reference/recipe-checkout-isolation.md#inspection-deadlines-and-locks)
+for the separate execution-storage lock.
 
-The checks are the ones that already keep a `run-worktree`, unchanged. In a
-reason each is preceded by `git tree "<path>"`:
+The checks reuse the dirty-state and unpushed rules that keep a `run-worktree`.
+In a reason each is preceded by `git tree "<path>"`:
 
 | Reason | What git reports |
 | --- | --- |
-| `has uncommitted changes` | `git status --porcelain` prints anything, including an untracked file, or fails. Untracked files are always listed, whatever `status.showUntrackedFiles` the repository sets. Ignored files, those matched by `.gitignore` or `.git/info/exclude`, are not listed and do not count. |
+| `has uncommitted changes` | `git status --porcelain` succeeds and prints changes, including untracked files. Untracked files are always listed, whatever `status.showUntrackedFiles` the repository sets. Ignored files are not listed and do not count. |
+| Dirty-state inspection error | The existing status command cannot complete successfully. The candidate is kept with the inspection failure; this does not establish that its contents are dirty. |
 | `has unpushed commits` | The checked-out branch has commits its upstream does not have. |
 | `has no upstream and commits on no remote branch` | There is no upstream, as on a detached `HEAD`, and `HEAD` has commits that no remote-tracking branch has. |
 | `cannot check for unpushed commits: <git error>` | git could not count the commits. Control characters in the error are escaped. |
+
+Unpushed detection compares local references. With a configured upstream it
+checks commits ahead of that upstream; without a usable upstream it compares
+`HEAD` with all remote-tracking branches. Cleanup performs no fetch. A cached
+remote-tracking reference is evidence from the last local update, not a live
+check that a remote still holds the commit. A recent push to a different branch
+may therefore require updating local tracking references before cleanup can
+recognize the repository as fully pushed.
 
 For example, a dry run over the temporary folders:
 
@@ -825,13 +840,14 @@ and `refs` entries. It continues below repository roots to discover
 independently nested repositories. It skips Git object storage and does not
 follow directory symlinks into unrelated paths.
 
-Every discovered repository uses the existing `git_has_dirty_state` and
-`unpushed_reason` checks, with their existing hardened Git settings. Dirty
-state is checked first; an unpushed check follows when needed. Bare repositories
-have no working tree, so only the existing unpushed check applies to them;
-inspection errors preserve them. Cleanup does
-not fetch, introduce a second definition of Git state, or decide preservation
-from the location of a remote.
+Every discovered repository uses the existing dirty-state command and
+`unpushed_reason` check, with their existing hardened Git settings. Dirty
+state is checked first; an unpushed check follows when needed. Status failures
+remain distinguishable from reported changes without adding a second Git
+probe. Bare repositories have no working tree, so only the existing unpushed
+check applies to them; inspection errors preserve them. Cleanup does not fetch,
+introduce a second definition of Git state, or decide preservation from the
+location of a remote.
 
 Incomplete discovery or inspection keeps the candidate and explains why. This
 includes unreadable directories, malformed or unreadable Git metadata, and
@@ -859,11 +875,20 @@ credentials or remote secrets. Control characters in diagnostics are escaped.
 | Entries walked per folder | 1,000,000 | The folder is kept: `search for git trees stopped after 1000000 entries`. |
 | Trees checked per folder | 64 | The folder is kept: `more than 64 git trees to check`. |
 | Time at the end of a run | About 120 seconds; in the sweep, what is left of the sweep's 120 seconds | The folder is kept for now: `search for git trees did not finish before the end-of-run deadline`. |
-| Time in `amplihack cleanup` | No limit | Not applicable. |
+| Overall deadline in `amplihack cleanup` | None | Traversal, repository-count and individual Git-command limits still apply. |
 
-The time limit is checked before each tree. Any git command already started
-for a tree finishes, or reaches its own 30- or 60-second limit, so the search
-can end a little after the deadline.
+The caller's deadline is carried through discovery, Git-state inspection,
+backing-repository dependency checks, execution-storage inspection and target
+removal. Target inspection uses the actual destination while its Cargo locks
+remain held. Each operation uses the remaining budget rather than starting
+another 120-second budget.
+
+The deadline is cooperative, not a wall-clock upper bound. Checks during
+traversal and between inspection operations stop further inspection when the
+budget expires. An already-running Git command can consume its own 30- or
+60-second limit, and filesystem operations can also run past the deadline.
+Activity checks and repeated inspection reduce concurrent-write risk; they do
+not provide a filesystem snapshot.
 
 A folder kept for a limit has not been fully inspected. The result does not
 establish whether it contains work. Inspect and save anything needed before

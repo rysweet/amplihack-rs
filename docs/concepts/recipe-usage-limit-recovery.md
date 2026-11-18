@@ -201,19 +201,19 @@ The checkout-location evidence is narrower than the reported loss:
 
 A step can create an independent clone or worktree beneath its runtime
 `TMPDIR`. Deleting that runtime directory therefore risks deleting repository
-work regardless of where the primary execution checkout lives. Behavioral
-fixtures exercise that boundary; the CI continuation acceptance criteria below
-require exercising it across a relaunch as well.
+work regardless of where the primary execution checkout lives. The
+[CI continuation contract](#ci-continuation-contract) exercises that boundary
+across a relaunch as well.
 
 The issue reports runtime loss for `r/975c30488cc0`, `r/38e7ac3816f1` and
 `r/8814ce575634`. Their original checkout paths, contents immediately before
-cleanup, and complete removal records are unavailable here. The source
+cleanup, and complete removal records are unavailable. The source
 establishes a deletion risk; it does not prove which path deleted each reported
 run's work.
 
 For the contrast run `r/609c83e7f30b`, the owner reports a usage-limit stop
 after a push and that the folder survived. Its contemporaneous dirty-state
-evidence, cleanup-lock holder evidence and `run.json` are unavailable here.
+evidence, cleanup-lock holder evidence and `run.json` are unavailable.
 A push does not establish a clean working tree; survival does not establish
 whether a lock prevented a sweep or why the other folders disappeared. The
 same limit applies to inferring a cause from the reported surviving v1.2.162
@@ -221,15 +221,14 @@ run. The incident discussion remains in issue #2785.
 
 ## CI continuation contract
 
-**[CI verification pending]** The required release evidence is a
-passing CI-only continuation scenario driven by
+Release evidence requires a passing CI-only continuation scenario driven by
 `tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh` and described
 by `tests/gadugi/scenarios/issue-2785-usage-limit-keeps-work.yaml`.
 The driver declares recovery outputs for the repository path and commit,
 relaunches the unpushed case with the same identity, and requires an executed
 continuation to read the retained repository. The pushed counterpart checks
-clean removal. These assertions require verification in CI; local component
-tests and static validation of the driver do not supply release evidence.
+clean removal. Local component tests and static validation of the driver do
+not supply release evidence; that evidence comes from passing CI execution.
 
 Run the scenario only in CI's `install-smoke` job using the installed Amplihack
 binary and pinned recipe runner. Missing prerequisites must fail the scenario.

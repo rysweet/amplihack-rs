@@ -28,6 +28,7 @@ any platform.
 - [Independent, nested and resumed runs](#independent-nested-and-resumed-runs)
 - [Ownership and release](#ownership-and-release)
   - [Worktrees that hold work](#worktrees-that-hold-work)
+  - [Inspection deadlines and locks](#inspection-deadlines-and-locks)
 - [Git commands a run makes](#git-commands-a-run-makes)
 - [Private review generations](#private-review-generations)
   - [Superseded generations are retired](#superseded-generations-are-retired)
@@ -364,8 +365,11 @@ Error messages name paths, never file contents or environment values.
 ### Worktrees that hold work
 
 Repository contents determine preservation at every deletion boundary.
-`git_work::tree_work` uses the existing `git_has_dirty_state` and
-`unpushed_reason` helpers for a repository. `git_work::work_inside` discovers
+`git_work::tree_work` uses the fallible result of the existing dirty-state
+command and the existing `unpushed_reason` helper for a repository. The
+conservative Boolean `git_has_dirty_state` wrapper remains available to other
+callers; cleanup distinguishes inspection failure from reported changes without
+running another status command. `git_work::work_inside` discovers
 repositories at and beneath a candidate, including independently nested clones
 and linked worktrees, within the existing traversal budget. Dirty state is
 checked first and unpushed state when needed. These internal helpers introduce
@@ -375,7 +379,7 @@ no public API or separate Git-state policy.
 | --- | --- |
 | `RunCheckout::remove` | Inspect the primary checkout and containing storage before forced worktree removal or recursive deletion. Keep work and required backing metadata. |
 | Stable execution storage claim or `run-exec` cleanup | Inspect all affected repositories, including `checkout`; keep storage with work or incomplete inspection. Preserve existing owner-ended, claim, ownership, locking and dependency rules. |
-| Tombstone deletion | Inspect the actual storage before deletion; moving it to a tombstone does not make work disposable. |
+| Tombstone deletion | Inspect fresh storage at its original location under the execution-storage lock immediately before relocation. Inspect older tombstones at their current locations; incomplete inspection keeps them. |
 | Runtime release and final sweep | Apply the same checks before deleting runtime storage, recorded worktrees or targets, including nested repositories. |
 
 The primary checkout has no exemption, even when its initial state was copied
@@ -389,6 +393,12 @@ it depends on survive. Registered external worktrees continue to retain their
 backing repository under the existing dependency rules. A relaunch that cannot
 reclaim stable storage reports why it is held and uses a fresh execution path;
 it does not erase the retained repository.
+
+Fresh execution-storage tombstones have already been inspected before relocation
+under the lock. Removal retains the recorded identity check. Relocation can
+invalidate absolute Git administrative paths, so a Git failure after relocation
+cannot establish that storage is disposable. Older tombstones are inspected
+where they reside and remain when their metadata cannot establish safety.
 
 Preservation is a structured successful cleanup outcome. The recipe keeps its
 original outcome, including a usage-limit stop, and normal output identifies
@@ -404,6 +414,39 @@ run and older runs encountered by its sweep. See
 for user-visible reasons and
 [removal-warning history](../howto/clean-up-after-recipe-runs.md#a-folder-that-cannot-be-removed-is-reported-once)
 for reporting across sweeps.
+
+### Inspection deadlines and locks
+
+The end-of-run sweep tries `<work root>/.cleanup.lock` without waiting. A busy
+lock skips the sweep. Once acquired, the sweep uses a cooperative 120-second
+budget. Direct runtime release has its own 120-second inspection budget;
+`amplihack cleanup` has no overall deadline. Existing traversal limits and
+individual Git-command limits still apply.
+
+Repository discovery and inspection carry the caller's deadline through nested
+repositories, backing dependencies, execution-storage callbacks and target
+removal. Checks during traversal and between inspection operations preserve the
+candidate if the remaining budget expires. Target inspection examines the
+actual destination while its existing Cargo locks are held. No callback starts
+a fresh budget. An already-running Git command or filesystem operation can run
+past the deadline; it is not a wall-clock upper bound.
+
+Execution storage uses a separate exclusive, blocking lock on the `exec/`
+directory when claiming or reclaiming stable storage. Preparation can reach
+it through `RunCheckout::prepare_with_inputs` and `exec_storage::claim`;
+explicit `amplihack cleanup --only run-exec --apply` can reach it through
+`exec_storage::reclaim`. The end-of-run sweep selects only `run-tmp`,
+`run-worktree` and `run-target`. Checkout release inspects dependencies without
+claiming or reclaiming stable storage, so normal finalization does not reach
+this blocking lock. The non-waiting end-of-run cleanup lock does not imply that
+every storage operation uses non-waiting locking.
+
+Unpushed detection uses cached local remote-tracking references and performs
+no fetch. It preserves the existing upstream comparison and, when no usable
+upstream exists, comparison against all remote-tracking branches. These
+references do not verify current remote availability. Repeated eligibility and
+repository inspection reduce concurrent-write risk but do not provide a
+filesystem snapshot.
 
 ## Git commands a run makes
 
@@ -741,7 +784,7 @@ isolation test cannot pass on empty data.
 | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` | Review generation checks, `REVIEW_DIR_CHANGED` and `REVIEW_DIR_UNSTAMPED`. |
 | `tests/issue_1437_autodrive_loop.sh` | The #1437 loop contract with review generations in place; the default case (`NOT_READY`, then `MERGE_READY`, ending `DONE`) also checks that `review-release` runs exactly once and that no round starts in the PR worktree or the main checkout. Failure cases are listed below. |
 | `tests/gadugi/run-issue-2778-umask-crusty-scenario.sh`, scenario `tests/gadugi/scenarios/issue-2778-crusty-loop-under-umask-0002.yaml` | The two calls of step-02 of `autodrive-crusty-loop.yaml`, in that order, under umask `002`: the binary's own `internal review-allocate`, then the shipped `autodrive_loop.sh`. `gh` and the agent CLIs are stubs, and the `amplihack recipe` entry point is a stub that runs a stand-in round; that round runs the shipped `autodrive_crusty_record.sh` and the binary's own `orch helper autodrive-completion-write`. Every scenario command runs under `env -i` with a temporary `HOME`. It prints `PASS:` or `FAIL:` for each of five cases (the allocation directory is `0700`; no `untrusted-*` folder in the state dir; the round saw the review checkout; the loop exits 0 with `crusty-latest.json` written; no unexpected command was called), then `ALL_CASES_PASSED` or `SCENARIO_FAILED`. It uses the binary named by `AMPLIHACK_2778_QA_BIN` when that is set; otherwise it builds the checkout's binary with `cargo build`, in the caller's environment, before the scenario starts. CI runs it in the `install-smoke` job with `AMPLIHACK_2778_QA_BIN="$(command -v amplihack)"`, the binary that job has just installed. |
-| `tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh`, scenario `tests/gadugi/scenarios/issue-2785-usage-limit-keeps-work.yaml` | Installed Amplihack and the pinned runner, isolated temporary HOME and work root, and a local bare origin. Declares recovery outputs, stops through usage-limit finalization, and relaunches the unpushed case to require predecessor evidence, reused steps and an executed continuation reading the retained commit and contents. A clean, pushed counterpart checks removal. Missing prerequisites fail. **[CI verification pending]** These assertions are not release evidence until CI passes. See [the continuation contract](../concepts/recipe-usage-limit-recovery.md#ci-continuation-contract). |
+| `tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh`, scenario `tests/gadugi/scenarios/issue-2785-usage-limit-keeps-work.yaml` | CI-only contract using installed Amplihack and the pinned runner, isolated temporary HOME and work root, and a local bare origin. Declares recovery outputs, exercises production usage-limit classification and finalization, and relaunches the unpushed case to require predecessor evidence, reused steps and an executed continuation reading the retained commit and contents. A clean, pushed counterpart checks removal. Missing prerequisites fail. Passing CI execution supplies release evidence; see [the continuation contract](../concepts/recipe-usage-limit-recovery.md#ci-continuation-contract). |
 
 Every file under `crates/amplihack-cli/tests/` is a module of one test
 binary. The crate sets `autotests = false`, so a test file is compiled only
@@ -778,6 +821,12 @@ Behavioral coverage also checks target destinations and edits made between
 planning and removal. Tests assert retained files, commit usability, structured
 outcomes and visible reasons. They use real temporary repositories and local
 bare remotes, without source-text assertions, timers or retries.
+
+Permission-denial coverage runs under an unprivileged identity with isolated
+HOME, configuration and work roots. Successive sweeps each retain a structured
+failure while emitting one removal warning and removing an unrelated eligible
+folder. Successful removal clears warning suppression. A root-only skip does
+not demonstrate this behavior.
 
 ### Review commands in the loop test double
 
