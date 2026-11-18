@@ -36,12 +36,9 @@ use std::os::unix::fs::{MetadataExt, symlink};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-#[path = "tests_git_fixture.rs"]
-#[allow(dead_code)]
-mod git_fixture;
 // Named, not a glob, so these win over any helper of the same name in
 // `git_work.rs`.
-use git_fixture::{
+use crate::commands::cleanup::git_fixture::{
     Unlock, admin_dir_of, chmod, clean_pushed_worktree, clone_of, commit, egid, euid, git,
     linked_worktree, make_dirty, origin_and_clone, push, running_as_root,
 };

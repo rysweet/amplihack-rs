@@ -1030,10 +1030,7 @@ fn a_run_finishes_with_an_older_releases_recording_files_beside_its_report() {
 // - `RunWorkspace::finish_checked` treats `KeptForWork` like `KeptInUse`:
 //   the run's own outcome is reported and nothing fails.
 
-#[path = "tests_git_fixture.rs"]
-#[allow(dead_code)]
-mod git_fixture;
-use git_fixture::{
+use crate::commands::cleanup::git_fixture::{
     Unlock, chmod, clean_pushed_worktree, commit, git, has_object, linked_worktree, make_dirty,
     origin_and_clone, running_as_root,
 };

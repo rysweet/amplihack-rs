@@ -741,10 +741,7 @@ fn remove_target_refuses_a_shape_change_at_apply() {
 //   the failure with `"failed": true`, and a later sweep that fails on the
 //   same path still reports it as `failed` but adds no warning.
 
-#[path = "tests_git_fixture.rs"]
-#[allow(dead_code)]
-mod git_fixture;
-use git_fixture::{
+use crate::commands::cleanup::git_fixture::{
     Unlock, chmod, clean_pushed_worktree, clone_of, commit, git, has_object, linked_worktree,
     make_dirty, origin_and_clone, push, running_as_root,
 };

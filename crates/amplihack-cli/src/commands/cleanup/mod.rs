@@ -451,3 +451,8 @@ pub(crate) fn cleanup_on_exit_enabled() -> bool {
 #[cfg(test)]
 #[path = "tests_cli.rs"]
 mod tests_cli;
+
+/// Git trees for the issue #2785 tests in `git_work`, `sweep` and `run_dir`.
+#[cfg(test)]
+#[path = "tests_git_fixture.rs"]
+pub(crate) mod git_fixture;

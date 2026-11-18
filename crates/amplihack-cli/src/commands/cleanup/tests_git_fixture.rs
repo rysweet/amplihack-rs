@@ -1,8 +1,8 @@
 //! Git trees for the issue #2785 cleanup tests: a bare origin, a clone of it,
 //! linked worktrees of that clone, uncommitted files and unpushed commits.
 //!
-//! Included with `#[path]` by `tests_git_work.rs`, `tests_sweep.rs` and
-//! `tests_run_dir.rs`, so each test module gets its own copy.
+//! Declared once, test-only, in `cleanup/mod.rs` as `git_fixture`, and used
+//! by `tests_git_work.rs`, `tests_sweep.rs` and `tests_run_dir.rs`.
 //!
 //! Every git command here runs with no global or system configuration and a
 //! fixed identity, and with this host's `PATH` (see
