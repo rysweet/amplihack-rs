@@ -360,7 +360,16 @@ pub struct PendingFinalization {
 pub fn finalization_outcome(value: &Value, exit: Option<i32>) -> Result<(String, bool, i32)> {
     let state = value["terminal_state"]
         .as_str()
-        .filter(|state| !state.is_empty())
+        .filter(|state| {
+            matches!(
+                *state,
+                "BLOCKED_CI"
+                    | "IMPLEMENTED_VERIFIED"
+                    | "EXISTING_OPEN_PR"
+                    | "FAILED_IMPLEMENTATION"
+                    | "FAILED_INVALID_EVIDENCE"
+            )
+        })
         .context("typed terminal_state absent")?;
     let success = match &value["terminal_success"] {
         Value::Bool(value) => *value,
