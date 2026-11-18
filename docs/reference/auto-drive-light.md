@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: small-change eligibility, authorization, escalation, and shared readiness outcomes.
-last_updated: 2026-11-11
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -27,6 +27,17 @@ Commands are suggestions; agents assess failures and recover without waiving
 criteria. The shared path uses agent finalization with no shell merge gate or process-identity dependency.
 
 Crusty review completion follows the [Crusty completion contract](autodrive-crusty-completion.md): an evidence-valid `CLEAN` or `MINOR_ONLY` completes iteration without a loop-health evaluator call. Both primary reviews and rereviews file or verify each required follow-up, linked to the task, before recording phase completion. A filing failure or dry run with unrecorded required follow-ups leaves the phase incomplete.
+
+**[PLANNED - Implementation Pending, #2802]:** Existing-PR resolution will use
+[auto-drive worktree recovery](autodrive-worktree-recovery.md).
+For an observed OPEN PR without a linked worktree in the private run repository,
+it will fetch the head, create a separate linked worktree on the head branch at
+the observed SHA, and verify it before continuing. Explicit PR precedence,
+light-drive binding, and repository restrictions still apply. The detached
+launch checkout and dirty worktrees remain unchanged; fetch failures name
+their cause, while creation and validation failures retain explicit outcomes.
+The current recipe resolves existing worktrees without an explicit
+missing-worktree recovery sequence.
 
 ## Contents
 

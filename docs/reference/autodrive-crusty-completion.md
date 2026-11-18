@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Crusty Completion Contract
 description: Completion-first dispatch, decision integrity, and follow-up finalization for Crusty reviews.
-last_updated: 2026-11-17
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -43,7 +43,8 @@ only when it is `"true"`. An open PR with a verified worktree at the PR head,
 valid private state and no complete Crusty round at that head always runs the
 loop.
 
-`should_run` is `"false"` only in these cases, each with named blockers:
+The current recipe sets `should_run` to `"false"` only in these cases, each
+with named blockers or observations:
 
 | `skip_reason` | Observation |
 | --- | --- |
@@ -58,13 +59,33 @@ loop.
 `skip_reason` is `""` if and only if `should_run` is `"true"`. It is
 informational: the step conditions compare only `should_run`.
 
+**[PLANNED - Implementation Pending, #2802]:** For an OPEN PR with a genuinely
+missing linked worktree, preflight will first
+[recover it in the private run repository](autodrive-worktree-recovery.md).
+The current recipe has no explicit missing-worktree recovery sequence.
+The planned recovery fetches the observed head, creates a separate linked
+worktree on the head branch at that SHA, verifies ownership and registration, and requires success
+from the existing Worktree helper. The detached launch checkout and dirty
+worktrees remain unchanged. Creation, ownership, identity, and validation
+failures are explicit failures of those operations, not `no-worktree` fetch
+failures. Non-OPEN PRs receive no recovery mutations.
+
+Within that recovery path, `no-worktree` will be reserved for an actual fetch
+failure. Creation, ownership, identity, and validation failures will set
+`should_run="false"` and an operation-specific nonempty `skip_reason`, with
+the cause in `reason`, the named failure in `blockers`, and diagnostics and
+exit statuses in `attempts`. `repo` stays empty until worktree verification
+succeeds. The [planned failure mapping](autodrive-worktree-recovery.md#failure-classifications)
+specifies those reason tokens; it adds no output fields or field types.
+
 The preflight agent decides whether a round is complete at the head, using
 the rule from #2345: a `CLEAN` round, or a `MINOR_ONLY` round whose follow-up
 obligations are met. No Rust function makes that judgement. An existing open
 PR whose round at the current head is incomplete, missing or recorded at an
 older head is not `complete-at-head`, so step-02 and step-03 run.
 
-The worktree position relative to the PR head affects the result as follows:
+Under the planned contract, newly recovered worktrees must match the exact
+observed SHA. The following existing-worktree rules already apply:
 
 - A worktree behind the PR head is repaired with `git fetch` and
   `git merge --ff-only`, then checked again with

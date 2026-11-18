@@ -1,7 +1,7 @@
 ---
 title: Build Preflight Decision
-description: how autodrive-build step-01 reports PR facts and step-02 decides from them whether to build a new PR or reuse an existing one (#2552).
-last_updated: 2026-11-13
+description: PR facts, build-or-reuse decisions, and planned recovery of missing worktrees in the private run repository.
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -114,6 +114,34 @@ When no PR exists, the preflight creates no worktree and no state. The PR is not
 known yet, so state keyed by a branch name such as `main` would collide across
 lanes (#1680). Step-03 keys the state once phase 1 has opened the PR.
 
+### Planned missing-worktree recovery [PLANNED - Implementation Pending]
+
+Issue #2802 will add explicit recovery instructions to build preflight and
+step-03. The current recipe resolves existing worktrees but does not explicitly
+recover a missing one. For an observed OPEN PR, the planned steps will fetch
+the head and create a separate linked worktree in the private run repository
+on the head branch at the exact observed SHA. They must verify canonical
+repository ownership, registration, branch, and SHA, and require success from
+`amplihack orch helper autodrive worktree` before publishing `repo`.
+The detached launch checkout, dirty contents, and operator-clone worktrees
+remain intact; a worktree in another clone cannot establish private ownership.
+
+Build preflight remains `fast`; step-03 remains `strong`. Under the planned
+contract, if preflight reports a missing worktree, step-03 can recover it and replace that blocker with
+current verified evidence. The original observation remains in `reason` or
+`attempts`. Existing OPEN PRs continue to skip step-02; recovery does not
+require another implementation run.
+
+In the missing-worktree recovery path, `no-worktree` means the head fetch
+actually failed and includes its concrete diagnostic. Ownership, identity,
+creation, and validation failures remain explicit failures of those
+operations. MERGED and other non-OPEN PRs retain their existing outcomes
+without recovery mutations. See [auto-drive worktree recovery](autodrive-worktree-recovery.md)
+for branch preservation, failure classifications, the
+[planned investigation record](autodrive-worktree-recovery.md#planned-investigation-record),
+and required behavioral evidence. The issue-2802 Rust harness, Gadugi scenario
+and driver, and CI integration are planned; no passing result is claimed here.
+
 ## Behaviour test
 
 `crates/amplihack-cli/tests/issue_2552_build_preflight_decision.rs` runs the
@@ -182,5 +210,6 @@ elsewhere:
 ## Related
 
 - [Auto Drive To Merge Reference](./auto-drive-to-merge.md) - the drive that `autodrive-build` feeds
+- [Auto-drive Worktree Recovery](./autodrive-worktree-recovery.md) - planned private-repository recovery, verification, and required CI-only release evidence
 - [Auto-Drive-Light Recipe](./auto-drive-light.md) - its preflight wording is tracked separately on #2539
 - [Workflow Terminal State](./workflow-terminal-state.md) - what step-02's `default-workflow` run reports back to step-03
