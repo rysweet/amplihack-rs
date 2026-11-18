@@ -558,3 +558,15 @@ mod issue_2712_recipe_test_work_root;
 // recipe-runner-rs with agent steps stubbed, all under isolated(..).
 #[path = "issue_1966_consensus_criticality.rs"]
 mod issue_1966_consensus_criticality;
+
+// Issue #1619 (TDD): the small-diff combined review. Runs the review-mode
+// step's script against a temporary git repository with the settings in a
+// temporary home, and checks the answer it prints in each case.
+#[path = "issue_1619_review_mode_test.rs"]
+mod issue_1619_review_mode;
+
+// Issue #1619: a step whose shell body was extracted into
+// amplifier-bundle/tools/ for the brick budget still has to be readable by
+// the tests that assert on it. One place follows the call-out.
+#[path = "recipe_step_body.rs"]
+mod recipe_step_body;

@@ -37,6 +37,7 @@ steps:
     parse_json: true
     output: "merge_sync"
     agent: "amplihack:core:builder"
+    model: "strong"
     prompt: |
       Clear inherited git state first (issue #2033): every shell call is a new process that inherits this agent's environment, so an inherited `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE` would point git, gh and the repository's tests at another repository. Start every shell call that runs git, gh, tests or hooks with `export GIT_PAGER=cat GH_PAGER=cat PAGER=cat; [ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }` and run the command in that same call. When autodrive_tools_dir is empty (this recipe used on its own), use `$AMPLIHACK_HOME/amplifier-bundle/tools` instead. Find trusted tools by that directory, never through the git toplevel, which an inherited `GIT_WORK_TREE` could redirect.
 
@@ -49,6 +50,7 @@ steps:
     parse_json: true
     output: "qa_evidence"
     agent: "amplihack:core:builder"
+    model: "standard"
     prompt: |
       Clear inherited git state first (issue #2033): every shell call is a new process that inherits this agent's environment, so an inherited `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE` would point git, gh and the repository's tests at another repository. Start every shell call that runs git, gh, tests or hooks with `export GIT_PAGER=cat GH_PAGER=cat PAGER=cat; [ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }` and run the command in that same call. When autodrive_tools_dir is empty (this recipe used on its own), use `$AMPLIHACK_HOME/amplifier-bundle/tools` instead. Find trusted tools by that directory, never through the git toplevel, which an inherited `GIT_WORK_TREE` could redirect.
 
@@ -61,6 +63,7 @@ steps:
     parse_json: true
     output: "ci_evidence"
     agent: "amplihack:core:builder"
+    model: "fast"
     prompt: |
       Clear inherited git state first (issue #2033): every shell call is a new process that inherits this agent's environment, so an inherited `GIT_DIR`, `GIT_WORK_TREE` or `GIT_INDEX_FILE` would point git, gh and the repository's tests at another repository. Start every shell call that runs git, gh, tests or hooks with `export GIT_PAGER=cat GH_PAGER=cat PAGER=cat; [ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }` and run the command in that same call. When autodrive_tools_dir is empty (this recipe used on its own), use `$AMPLIHACK_HOME/amplifier-bundle/tools` instead. Find trusted tools by that directory, never through the git toplevel, which an inherited `GIT_WORK_TREE` could redirect.
 

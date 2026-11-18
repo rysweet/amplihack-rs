@@ -29,6 +29,7 @@ steps:
   - id: "observe-finalization-entry"
     type: "agent"
     agent: "amplihack:core:reviewer"
+    model: "fast"
     working_dir: "{{review_dir}}"
     parse_json: false
     prompt: |
@@ -157,6 +158,7 @@ steps:
   - id: "state-outcome"
     type: "agent"
     agent: "amplihack:core:reviewer"
+    model: "fast"
     working_dir: "{{review_dir}}"
     parse_json: false
     prompt: |

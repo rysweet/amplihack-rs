@@ -1047,6 +1047,24 @@ pub(super) fn execute_recipe_via_rust_fresh(
             .as_deref()
             .map_err(|e| *e),
     );
+    // Issue #1619: the run summary's `Model tiers:` section reads the records
+    // this run's agent steps write into the run directory. A top-level
+    // `recipe run` hands AMPLIHACK_RUN_DIR to its children without setting it
+    // on itself, so the directory is named here rather than read back from
+    // the environment.
+    if let Some(run_dir) = workspace.borrow().run_dir() {
+        super::format::remember_run_dir(run_dir);
+    }
+    // Issue #1619: an instance may give one named step a tier of its own. The
+    // step id never reaches the child, so the override is applied recipe-side:
+    // patched copies of only the recipes that declare a named step, written
+    // into this run's own directory and handed to the runner as its first
+    // `-R`. With nothing configured nothing is staged, no argument is added
+    // and the run behaves exactly as it did before. A staging failure is
+    // reported and the run continues on the recipes as written: a tier
+    // preference must never stop a run.
+    let staged_recipes =
+        stage_step_tier_overrides(workspace.borrow().run_dir(), search_dirs, &mapped_recipe);
     let build_command = |run_id: &str| -> Result<Command> {
         // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
         // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
@@ -1061,9 +1079,21 @@ pub(super) fn execute_recipe_via_rust_fresh(
         // still override the pinned value until the runner refuses that
         // namespace too (rysweet/amplihack-recipe-runner#146).
         let mut command = Command::new(&binary);
+        // Issue #1619: a `-R` directory is searched for a name, and the
+        // top-level recipe is passed as a path, so `-R` alone never reaches
+        // it. When staging patched that recipe, the positional argument is
+        // its staged copy instead — the only route by which a single-step
+        // override covers a step of the recipe named on the command line.
+        let staged_top_level = staged_recipes
+            .as_ref()
+            .and_then(|staged| staged.top_level.as_ref());
+        let recipe_arg = match staged_top_level {
+            Some(path) => checkout.map_path(path)?,
+            None => mapped_recipe.clone(),
+        };
         command
             .current_dir(&exec_dir)
-            .arg(&mapped_recipe)
+            .arg(&recipe_arg)
             .arg("--output-format")
             .arg("json")
             .arg("-C")
@@ -1080,6 +1110,14 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 .arg("--recovery-descriptor")
                 .arg(admission.descriptor_path());
         }
+        // Issue #1619: the staged copies go ahead of every other -R. The
+        // runner resolves a sub-recipe name from its -R list first, in the
+        // order given, and amplihack forwards the bundle below, so anything
+        // offered after it is outranked by the recipe it was patched from.
+        let mut recipe_dir_args: Vec<PathBuf> = Vec::new();
+        if let Some(staged) = &staged_recipes {
+            recipe_dir_args.push(checkout.map_path(&staged.dir)?);
+        }
         // Issue #494: forward sub-recipe search dirs as -R flags so
         // recipe-runner-rs can resolve sub-recipes the same way amplihack
         // resolves top-level recipes. One -R per non-empty entry, in order.
@@ -1087,8 +1125,27 @@ pub(super) fn execute_recipe_via_rust_fresh(
             if dir.as_os_str().is_empty() {
                 continue;
             }
-            command.arg("-R").arg(checkout.map_path(dir)?);
+            recipe_dir_args.push(checkout.map_path(dir)?);
             tracing::debug!(dir = %dir.display(), "forwarding -R to recipe-runner-rs");
+        }
+        // Issue #1619: substituting the positional argument moves the
+        // runner's anchored search — its `recipe_origin_dir` — to the staging
+        // directory, so a recipe that resolves a sibling sub-recipe by name
+        // would stop finding it. The original recipe's own directory goes
+        // back on the end of the list rather than the front: appended, it
+        // cannot shadow anything that already ranked above it, so a
+        // repository-local file still does not displace a bundled one.
+        if staged_top_level.is_some()
+            && let Some(parent) = mapped_recipe.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let parent = checkout.map_path(parent)?;
+            if !recipe_dir_args.contains(&parent) {
+                recipe_dir_args.push(parent);
+            }
+        }
+        for dir in &recipe_dir_args {
+            command.arg("-R").arg(dir);
         }
 
         if dry_run {
@@ -2675,4 +2732,57 @@ pub(crate) fn new_tree_id() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0) as u64;
     format!("{:016x}{:08x}", nanos, std::process::id())
+}
+
+/// Issue #1619: write this run's patched recipe copies, or `None` when no
+/// per-step tier override is configured, the run has no durable directory, or
+/// no recipe declares a named step.
+///
+/// Reported and never fatal: a tier is a preference about which model runs a
+/// step, so a staging failure leaves the run on the recipes as written rather
+/// than stopping a hundred agent steps.
+fn stage_step_tier_overrides(
+    run_dir: Option<&Path>,
+    search_dirs: &[PathBuf],
+    recipe: &Path,
+) -> Option<super::step_tiers::Staged> {
+    let (overrides, file_notices) = crate::commands::launch::model_tiers::step_tier_overrides();
+    // Once per run, before anything is staged: this process is the only
+    // reader of `[step_tiers]`, so a line it does not print is a line nobody
+    // sees. The file's own diagnostics come first — they explain why a
+    // mapping is not what the operator wrote.
+    for notice in file_notices {
+        eprintln!("{}", notice.render());
+    }
+    if overrides.is_empty() {
+        return None;
+    }
+    // Not `run_dir?` above the emptiness check: an operator who configured
+    // `[step_tiers]` and got nothing must be told why. Without this line a
+    // run with no durable directory — a dry run — discards the whole table
+    // with no `BadStepId`, no `StepTierUnmatched` and no line at all, which
+    // is the silence `step_tiers` says a mistyped step id must never have.
+    let Some(run_dir) = run_dir else {
+        eprintln!(
+            "amplihack: model tiers: per-step tier overrides are configured, but this \
+             run has no durable directory to stage them in; the recipes run with the \
+             tiers they declare."
+        );
+        return None;
+    };
+    match super::step_tiers::stage(run_dir, search_dirs, recipe, overrides) {
+        Ok(outcome) => {
+            for notice in &outcome.notices {
+                eprintln!("{}", notice.render());
+            }
+            outcome.staged
+        }
+        Err(reason) => {
+            eprintln!(
+                "amplihack: model tiers: the per-step tier override could not be staged \
+                 ({reason}); the recipes run with the tiers they declare."
+            );
+            None
+        }
+    }
 }

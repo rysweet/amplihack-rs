@@ -28,6 +28,7 @@ steps:
   - id: "hand-off"
     type: "agent"
     agent: "amplihack:core:builder"
+    model: "fast"
     working_dir: "{{review_dir}}"
     parse_json: false
     prompt: |

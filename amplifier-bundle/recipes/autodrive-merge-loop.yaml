@@ -44,6 +44,7 @@ steps:
     parse_json: true
     output: "merge_loop_preflight"
     agent: "amplihack:core:builder"
+    model: "fast"
     prompt: |
       Use noninteractive command execution with GIT_PAGER=cat, GH_PAGER=cat and PAGER=cat.
       Establish the PR identity and the worktree before continuing. Explicit operator PR {{autodrive_pr_input}} takes precedence over {{pr_number}} and branch discovery. Reuse the exact open PR rather than creating a duplicate; observe already-merged state instead of rebuilding it. Resolve platform, host, target repository, source repository, number, URL, head branch/SHA, base branch/SHA and merge-base together. Use available hosting access (for example gh pr view/list); evaluate failure and recover with an authenticated alternative. If lookup is incomplete or ambiguous, report a named blocker rather than guessing main or the current checkout.
@@ -126,6 +127,10 @@ steps:
     condition: "merge_loop_preflight.should_run == 'true'"
     type: "agent"
     agent: "amplihack:core:builder"
+    # Reconciles findings against a read-back issue and emits blockers, which
+    # is judgement rather than the read-back and summary work `fast` covers.
+    # A too-weak model here degrades an auto-drive quietly.
+    model: "standard"
     parse_json: true
     prompt: |
       Reconcile every minor crusty finding, including re-reviews, against a read-back follow-up issue and plan task {{plan_task_id}}. Use stable identifiers and preserve mappings in state {{merge_loop_preflight.state_dir}}. Suggested tools: trusted autodrive_followups.sh collect/file/check. They are optional: recover through another authenticated interface, recording equivalent complete evidence. Dry-run {{autodrive_dry_run}} suppresses all issue creation and leaves followup-missing blockers. Return JSON with mappings, blockers, attempts.
@@ -188,6 +193,7 @@ steps:
     condition: "merge_loop_outcome.finalise == 'true' and finalize_merge.result == 'base-behind'"
     type: "agent"
     agent: "amplihack:core:builder"
+    model: "strong"
     parse_json: true
     working_dir: "{{merge_loop_preflight.repo}}"
     output: "base_sync"

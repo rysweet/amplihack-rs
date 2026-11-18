@@ -4147,7 +4147,10 @@ fn issue_2033_step_04_test_runs_load_the_helper_in_the_same_shell_call() {
 #[test]
 fn issue_2033_step_00_tools_dir_requires_the_helper() {
     let recipe = recipe_yaml("autodrive-merge-round");
-    let cmd = field(step(&recipe, "step-00-tools-dir"), "command");
+    // Issue #1619: this body was extracted into amplifier-bundle/tools/ for
+    // the brick budget, so the NEED list is read from there.
+    let cmd =
+        crate::recipe_step_body::resolved(field(step(&recipe, "step-00-tools-dir"), "command"));
     let need: String = cmd
         .lines()
         .filter(|l| l.trim_start().starts_with("NEED="))

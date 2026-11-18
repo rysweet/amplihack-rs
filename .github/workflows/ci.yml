@@ -750,6 +750,13 @@ jobs:
       - name: "Outside-in - Crusty loop under umask 0002 (issue #2778)"
         shell: bash
         run: AMPLIHACK_2778_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2778-umask-crusty-scenario.sh
+      # Issue #1619: outside-in check of the model and reasoning effort each
+      # harness receives when a recipe agent step declares a tier, through the
+      # pinned runner installed above. REQUIRE_ALL turns a case that could not
+      # run into a failure.
+      - name: "Outside-in: model tiers per harness (issue #1619)"
+        shell: bash
+        run: AMPLIHACK_1619_QA_REQUIRE_ALL=1 AMPLIHACK_1619_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1619-tier-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing

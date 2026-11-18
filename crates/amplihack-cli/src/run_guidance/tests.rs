@@ -152,6 +152,14 @@ fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
     // Do not call `test_support::host_path()` from inside this block: its
     // `OnceLock` initializer takes this same non-reentrant lock and would
     // deadlock. `CHILD_PATH` below is a constant and takes no lock.
+    //
+    // The same lock also covers the two spawns below. `git` and `bash` are
+    // resolved through `PATH`, and several install tests set the process-wide
+    // `PATH` to one temp directory for the length of their own assertion;
+    // without the lock both spawns would fail with ENOENT, reported against
+    // this test rather than against the interleaving. One acquisition serves
+    // both reasons — the lock is not reentrant, so taking it twice here
+    // deadlocks the test.
     let _env = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

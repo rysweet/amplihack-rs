@@ -2,6 +2,7 @@
 //! handling, Docker launcher args, and Claude-specific env augmentation.
 
 use super::codex_agent_step;
+use super::model_tiers::table::validate_model_id;
 use super::system_prompt_append;
 use crate::binary_finder::BinaryInfo;
 use crate::commands::uvx_help::is_uvx_deployment;
@@ -137,6 +138,13 @@ pub(super) fn build_command_for_dir(
         pin_profile_for_descendants(&mut cmd, dir);
     }
 
+    // Issue #1619: by here every model tier on `extra_args` has already been
+    // resolved into a model this harness actually has, or removed so the
+    // chain below decides. `run_launch` does that once, before anything reads
+    // the tail, so the LiteLLM routing check, the passthrough rewrite,
+    // `model_args`, the contract-injection gate, the Copilot allow-all checks
+    // and `codex_agent_step_args` all read one consistent argv. See
+    // [`model_tiers::resolve_passthrough`].
     inject_uvx_plugin_args(&mut cmd, &binary.name, extra_args, add_dir_override);
 
     // Issues #1421, #1527: every decision about `--model`, and every stderr
@@ -400,7 +408,7 @@ pub(super) fn model_args(binary_name: &str, extra_args: &[String]) -> ModelArgs 
             normalised_from: None,
         })
     } else {
-        configured_default_model()
+        configured_default_model().map(|selection| validated_default(selection, &mut out.stderr))
     };
     if let Some(selection) = selection {
         out.stderr
@@ -408,6 +416,33 @@ pub(super) fn model_args(binary_name: &str, extra_args: &[String]) -> ModelArgs 
         out.argv = vec!["--model".to_string(), selection.model];
     }
     out
+}
+
+/// `selection` if amplihack is willing to write its model, or [`DEFAULT_MODEL`].
+///
+/// The value becomes the argv token straight after `--model`, and both Codex
+/// and Claude carry single-token sandbox-bypass flags. Issue #1619 holds
+/// `AMPLIHACK_DEFAULT_MODEL` to [`validate_model_id`] when it replaces a
+/// step's tier; this is the same check on the same value where no tier is
+/// involved, so one path cannot write a token the other refuses. The line
+/// names the rule broken and never the refused value: it lands in run logs
+/// that get pasted into issues.
+fn validated_default(selection: ModelSelection, stderr: &mut Vec<String>) -> ModelSelection {
+    match validate_model_id(&selection.model) {
+        Ok(()) => selection,
+        Err(reason) => {
+            stderr.push(format!(
+                "amplihack: {} is ignored: the model {reason}. Launching with \
+                 amplihack's own default model instead.",
+                selection.source.label()
+            ));
+            ModelSelection {
+                model: DEFAULT_MODEL.to_string(),
+                source: ModelSource::BuiltInDefault,
+                normalised_from: None,
+            }
+        }
+    }
 }
 
 /// The model amplihack requests when the operator has not chosen one.

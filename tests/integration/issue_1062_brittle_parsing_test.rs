@@ -81,9 +81,14 @@ fn read_recipe(name: &str) -> String {
 }
 
 /// Return the raw `command:` block string of a step by id, from `<recipe>.yaml`.
+/// The shell a step runs. Issue #1619: a body extracted into
+/// `amplifier-bundle/tools/` for the brick budget is followed, so these
+/// assertions read the step's real shell rather than its lookup block.
 fn step_command(recipe: &str, step_id: &str) -> String {
-    step_field(recipe, step_id, "command")
-        .unwrap_or_else(|| panic!("{recipe}: step `{step_id}` has no `command:` block"))
+    crate::recipe_step_body::resolved(
+        &step_field(recipe, step_id, "command")
+            .unwrap_or_else(|| panic!("{recipe}: step `{step_id}` has no `command:` block")),
+    )
 }
 
 /// Return the raw string value of a scalar/block field of a step by id.

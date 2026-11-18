@@ -706,6 +706,7 @@ A recipe is a YAML file. The top-level document must be a mapping.
 | `parse_json`  | bool    | no       | Parse step output as JSON |
 | `timeout`     | integer | no       | Step timeout in seconds. **Discouraged on `agent` steps** — agent reasoning is variable and per-step timeouts cause spurious mid-thought aborts (see [issue #439](https://github.com/rysweet/amplihack-rs/issues/439)). Permitted on `bash` steps that perform external network I/O (`gh`, `curl`, `git fetch`); use a generous floor of **1800s** to guard against stuck sockets, not to bound work. Omit otherwise. |
 | `working_dir` | string  | no       | Working directory override for this step |
+| `model`       | string  | no       | For an `agent` step, the [model tier](./model-tiers.md) the step needs (`fast`, `standard` or `strong`), which amplihack turns into a model, and on Codex a reasoning effort, for the CLI it launches. A value that is not one of the three words is treated as a concrete model id and passed through as typed. |
 | `recipe`      | string  | no       | Sub-recipe path (for `recipe` steps) |
 | `context`     | map     | no       | Context overrides for a sub-recipe step |
 | `mode`        | string  | no       | Step execution mode |
@@ -915,6 +916,7 @@ For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../how
 - [Capacity Governor](./capacity-governor.md): When `recipe run` may start, waits or exits with 80
 - [Environment Variables](./environment-variables.md) — `AMPLIHACK_CONTEXT_*`, `AMPLIHACK_TASK_DESCRIPTION`, `RECIPE_RUNNER_RS_PATH`
 - [Recipe Runner Logging](./recipe-runner-logging.md) — stderr progress, heartbeats, snippets, and JSONL logs
+- [Model Tiers](./model-tiers.md): The `model` step field, the per-harness mapping, and the `Model tiers:` section of the run summary
 - [Parity Test Scenarios](./parity-test-scenarios.md) — `tier4-recipe-run.yaml` test cases
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How `AMPLIHACK_AGENT_BINARY` affects recipe step execution
 - [Recipe Runner Architecture](../concepts/recipe-runner-architecture.md) — Why the runner is an external binary

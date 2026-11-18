@@ -331,6 +331,9 @@ fn env_reason(kind: ValueKind, var: &str, raw: &str) -> String {
         ValueKind::AgentBinary => {
             format!("{var} is not one of amplifier, claude, codex or copilot")
         }
+        // Never quotes the value: it is the token that would have gone on a
+        // command line right after `--model` (issue #1619).
+        ValueKind::ModelId => format!("{var} is not a model id amplihack will ask for"),
     }
 }
 

@@ -72,7 +72,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_COPILOT_NO_ALLOW_ALL` | user preference |  | Stops `amplihack copilot` from passing `--allow-all-*`. |
 | `AMPLIHACK_DATABASE_PASSWORD` | internal |  | Example secret the Docker launcher must not forward; named in its test. |
 | `AMPLIHACK_DEBUG` | internal |  | Not read: example name in `amplihack-state` `EnvVar` docs. |
-| `AMPLIHACK_DEFAULT_MODEL` | user preference |  | Default model for launched agents. |
+| `AMPLIHACK_DEFAULT_MODEL` | user preference |  | Default model for Claude-compatible launches. Set to a non-blank value it also replaces the model a [model tier](./model-tiers.md) maps to on the `claude` column, below `AMPLIHACK_FORCE_MODEL` and below a concrete `--model` the command line carries. Codex and Copilot CLI do not read it; give them a model with a `[codex.<tier>] model` or `[copilot.<tier>] model` cell. |
 | `AMPLIHACK_DELEGATE` | user preference |  | Delegate command for multitask workstreams. |
 | `AMPLIHACK_DELIVERY_WORKER` | test-only |  | Re-exec switch for the freshness delivery test worker. |
 | `AMPLIHACK_DEPTH` | internal |  | Launch nesting depth exported to children. |
@@ -83,6 +83,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_EXTERNAL_OTLP_AUTHORIZATION` | internal |  | OTLP header the Docker launcher must not forward; named in its filter. |
 | `AMPLIHACK_FLEET_EXISTING_VMS` | user preference |  | Existing VMs for `amplihack fleet` to use. |
 | `AMPLIHACK_FLEET_REASONER_BINARY_PATH` | user preference |  | Path to the fleet reasoner's CLI. |
+| `AMPLIHACK_FORCE_MODEL` | user preference | `model.force` | One model id for every launch, whatever [tier](./model-tiers.md) a step declared. The one setting that replaces a concrete `--model` already on the command line. Ignored on a LiteLLM gateway launch. |
 | `AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE` | user preference |  | Allows installing an older recipe runner. |
 | `AMPLIHACK_GIT_1278_CHILD` | test-only |  | Re-exec switch for the #1278 git test. |
 | `AMPLIHACK_GIT_1278_PLAIN` | test-only |  | Re-exec switch for the #1278 git test. |
@@ -306,3 +307,4 @@ environment is not changed.
 
 - [User Configuration](./user-config.md) — The config files, their keys and the `amplihack config` command
 - [Environment Variables](./environment-variables.md) — Detailed behaviour of the variables amplihack sets and reads
+- [Model Tiers](./model-tiers.md): `AMPLIHACK_FORCE_MODEL`, where `AMPLIHACK_DEFAULT_MODEL` and `AMPLIHACK_LITELLM_MODEL` sit relative to a step's tier, and the `model-tiers.jsonl` record written under `AMPLIHACK_RUN_DIR`

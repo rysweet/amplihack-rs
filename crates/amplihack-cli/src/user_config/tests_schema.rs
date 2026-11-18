@@ -26,6 +26,13 @@ fn keys_are_in_documented_order() {
             "recipe.usage_limit_max_wait_secs",
             "policy.deny_commands",
             "orchestrator.max_depth",
+            // Issue #1619: per-step model tiers and the small-diff combined
+            // review. Documented in this position in
+            // docs/reference/user-config.md#keys.
+            "model.force",
+            "model.tier_map",
+            "review.combined_small_diff",
+            "review.combined_diff_threshold",
             "governor.enabled",
             "governor.max_concurrency",
             "governor.reserve_points",
@@ -57,7 +64,7 @@ fn no_project_scoped_key_names_a_path() {
 }
 
 #[test]
-fn user_only_keys_are_agent_home_node_log_dir_policy_governor_and_sessions() {
+fn user_only_keys_are_agent_home_node_log_dir_policy_model_review_governor_and_sessions() {
     let user_only: Vec<&str> = KEYS
         .iter()
         .filter(|k| k.scope == Scope::UserOnly)
@@ -74,6 +81,19 @@ fn user_only_keys_are_agent_home_node_log_dir_policy_governor_and_sessions() {
             // Issue #2589: a cloned repository must not change what any
             // harness denies, so the instance additions are user-only.
             "policy.deny_commands",
+            // Issue #1619: `model.force` names the model every launch asks
+            // for, and `model.tier_map` names the file that drives
+            // amplihack's rewriting of recipe YAML, whose steps run shell
+            // commands. A cloned repository must not choose either (the
+            // reason the review of #1647 gave for `agent.binary`).
+            "model.force",
+            "model.tier_map",
+            // Issue #1619: the review step reads these two from inside the
+            // worktree under review, so a project value would let a cloned
+            // repository decide that its own security and philosophy passes
+            // do not run. Same reason as the two `model.*` keys above.
+            "review.combined_small_diff",
+            "review.combined_diff_threshold",
             "governor.enabled",
             "governor.max_concurrency",
             "governor.reserve_points",
@@ -233,6 +253,142 @@ fn governor_keys_are_user_only_with_documented_ranges_and_defaults() {
     }
     assert!(parse_cli("governor.wait_secs", "0").is_ok());
     assert!(parse_cli("governor.reserve_points", "100").is_ok());
+}
+
+// =========================================================================
+// Issue #1619 (TDD): the model-tier and combined-review settings.
+//
+// Every key here has a live consumer, which is the no-dead-config rule of
+// issue #1606: `model.force` is read on every launch, the two path keys are
+// read when the tier mapping is loaded, and the two `review.*` keys are read
+// by the refactor-review phase's mode step.
+// =========================================================================
+
+#[test]
+fn the_model_tier_keys_exist_with_the_documented_scope_and_variable() {
+    let force = key_def("model.force").expect("model.force is a schema key");
+    assert_eq!(force.scope, Scope::UserOnly);
+    assert_eq!(force.env, Some("AMPLIHACK_FORCE_MODEL"));
+    assert_eq!(force.default, None, "forcing a model is opt-in");
+
+    let map = key_def("model.tier_map").expect("model.tier_map is a schema key");
+    assert_eq!(map.scope, Scope::UserOnly);
+    assert_eq!(map.kind, ValueKind::AbsPath);
+    assert_eq!(
+        map.env, None,
+        "model.tier_map names a file that drives recipe rewriting; it is set deliberately \
+         in the user's own config, not picked up from an inherited environment"
+    );
+}
+
+#[test]
+fn the_combined_review_keys_default_to_todays_behaviour() {
+    let switch = key_def("review.combined_small_diff").expect("a schema key");
+    assert_eq!(
+        switch.scope,
+        Scope::UserOnly,
+        "the review step reads this from inside the worktree under review, so a project \
+         value would let a cloned repository collapse its own security and philosophy \
+         passes into one generalist pass"
+    );
+    assert_eq!(switch.kind, ValueKind::Bool);
+    assert_eq!(
+        switch.default_value(),
+        Some(Value::Bool(false)),
+        "off by default, so the three separate review passes run exactly as they did \
+         before this feature"
+    );
+
+    let threshold = key_def("review.combined_diff_threshold").expect("a schema key");
+    assert_eq!(
+        threshold.scope,
+        Scope::UserOnly,
+        "a project-settable threshold of 100000 makes every diff small, which is the \
+         switch above under another name"
+    );
+    assert_eq!(
+        threshold.default_value(),
+        Some(Value::Int(200)),
+        "changed lines at or below which a diff counts as small"
+    );
+    assert!(
+        matches!(threshold.kind, ValueKind::Int { min: 1, .. }),
+        "a threshold of zero would mean no diff is ever small, which is what turning \
+         the switch off already does: {:?}",
+        threshold.kind
+    );
+}
+
+#[test]
+fn model_force_accepts_a_model_id_and_rejects_anything_that_could_act_as_an_argument() {
+    // The value lands as the argv token right after `--model`, and both codex
+    // and claude carry single-token sandbox-bypass flags
+    // (`--yolo`, `--dangerously-bypass-approvals-and-sandbox`,
+    // `--dangerously-skip-permissions`). It is validated on the raw input,
+    // before any trimming.
+    for good in [
+        "claude-opus-5[1m]",
+        "claude-sonnet-5-5",
+        "claude-sonnet-5.5",
+        "gpt-6.1-sol",
+        "gpt-6.1-sol:high",
+    ] {
+        assert!(
+            parse_cli("model.force", good).is_ok(),
+            "`{good}` must be accepted"
+        );
+    }
+    for bad in [
+        "",
+        " ",
+        " claude-opus-5[1m]",
+        "-s",
+        "--yolo",
+        "--dangerously-skip-permissions",
+        "a b",
+        "a\tb",
+        "a\nb",
+        "a/b",
+        "a\\b",
+        "a;b",
+        "a$b",
+        "a`b",
+        "a'b",
+        "a\"b",
+        "a|b",
+        &"x".repeat(129),
+    ] {
+        assert!(
+            parse_cli("model.force", bad).is_err(),
+            "`{bad:?}` must be rejected as a model id"
+        );
+    }
+}
+
+#[test]
+fn the_model_tier_map_is_held_to_the_same_path_rules_as_every_other_path_key() {
+    assert!(parse_cli("model.tier_map", "/home/x/.amplihack/model-tiers.toml").is_ok());
+    for bad in ["relative/path.toml", "/a/../b", "", "/a\0b"] {
+        assert!(
+            parse_cli("model.tier_map", bad).is_err(),
+            "model.tier_map: `{bad:?}`"
+        );
+    }
+}
+
+#[test]
+fn no_project_file_can_name_the_file_that_rewrites_recipes() {
+    // Stated separately from `no_project_scoped_key_names_a_path` because the
+    // consequence is specific: a project-scoped path key here would let a
+    // cloned repository choose the file that drives amplihack's rewriting of
+    // recipe YAML, whose bash step bodies execute.
+    for name in ["model.force", "model.tier_map"] {
+        assert_eq!(
+            key_def(name).unwrap().scope,
+            Scope::UserOnly,
+            "{name} must never be project-scoped"
+        );
+    }
 }
 
 // --- issue #2589: policy.deny_commands, a list-valued key -------------------

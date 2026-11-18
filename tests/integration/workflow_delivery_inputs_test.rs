@@ -33,14 +33,17 @@ fn step_command(recipe: &str, step_id: &str) -> String {
     let path = workspace_root().join(format!("amplifier-bundle/recipes/{recipe}.yaml"));
     let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let doc: Value = serde_yaml::from_str(&text).expect("recipe parses");
-    doc["steps"]
-        .as_sequence()
-        .expect("steps")
-        .iter()
-        .find(|s| s["id"].as_str() == Some(step_id))
-        .and_then(|s| s["command"].as_str())
-        .unwrap_or_else(|| panic!("{recipe}: no bash step {step_id}"))
-        .to_owned()
+    // Issue #1619: a body extracted into amplifier-bundle/tools/ for the
+    // brick budget is followed, so this reads the step's real shell.
+    crate::recipe_step_body::resolved(
+        doc["steps"]
+            .as_sequence()
+            .expect("steps")
+            .iter()
+            .find(|s| s["id"].as_str() == Some(step_id))
+            .and_then(|s| s["command"].as_str())
+            .unwrap_or_else(|| panic!("{recipe}: no bash step {step_id}")),
+    )
 }
 
 fn bash(script: &str, cwd: &Path, env: &[(&str, &str)]) -> Output {
