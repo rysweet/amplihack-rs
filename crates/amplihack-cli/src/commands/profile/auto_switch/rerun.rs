@@ -410,15 +410,13 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // rerun can read the same bytes. The copier runs beside attempt 1 and
     // this thread still reads nothing, so a pipe nobody closes cannot hold
     // the supervisor up before the signals are caught.
-    if matches!(stdin, RerunStdin::Pipe)
-        && !waiter.prompt_in_args()
-        && let Some(captured) = scratch::capture_own_prompt(&rerun_dir)
-    {
+    let prompt_on_stdin = matches!(stdin, RerunStdin::Pipe) && !waiter.prompt_in_args();
+    if prompt_on_stdin && let Some(captured) = scratch::capture_own_prompt(&rerun_dir) {
         stdin = captured;
     }
     // No copy was made: as before #2815, neither an auto-switch rerun nor
     // the wait could give the prompt to another attempt.
-    let no_capture = matches!(stdin, RerunStdin::Pipe) && !waiter.prompt_in_args();
+    let no_capture = prompt_on_stdin && !matches!(stdin, RerunStdin::Captured(_));
     if no_capture {
         waiter.block(NoWait::PipedPrompt);
     }

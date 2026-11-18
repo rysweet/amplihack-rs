@@ -107,15 +107,11 @@ impl RerunStdin {
 
     /// The stdin for attempt `n` (from 1).
     pub(crate) fn for_attempt(&mut self, n: u32) -> io::Result<Stdio> {
-        // A captured prompt is the only kind every attempt reads, so it is
-        // decided before the `n == 1` shortcut.
-        if let RerunStdin::Captured(c) = self {
-            return c.for_attempt(n);
-        }
-        if n == 1 {
-            return Ok(Stdio::inherit());
-        }
         match self {
+            // A captured prompt is the only kind every attempt reads, so
+            // it comes before the `n == 1` arm below.
+            RerunStdin::Captured(c) => c.for_attempt(n),
+            _ if n == 1 => Ok(Stdio::inherit()),
             RerunStdin::Inherit => Ok(Stdio::inherit()),
             RerunStdin::File { file, start } => {
                 let mut f = reopen(file).map_or_else(|| file.try_clone(), Ok)?;
@@ -123,7 +119,6 @@ impl RerunStdin {
                 Ok(Stdio::from(f))
             }
             RerunStdin::Pipe | RerunStdin::Null => Ok(Stdio::null()),
-            RerunStdin::Captured(_) => unreachable!("handled above"),
         }
     }
 }
@@ -267,7 +262,7 @@ pub(crate) fn capture_prompt(dir: &Path, source: fs::File) -> RerunStdin {
     }
 }
 
-fn start_capture(dir: &Path, mut source: fs::File) -> io::Result<Capture> {
+fn start_capture(dir: &Path, source: fs::File) -> io::Result<Capture> {
     let path = dir.join(format!("{}-0.in", std::process::id()));
     // As `profile::attempt` creates a step's output buffer: private at
     // creation under the umask, never a symlink, never inherited by a
@@ -278,43 +273,30 @@ fn start_capture(dir: &Path, mut source: fs::File) -> io::Result<Capture> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&path)?;
+    // Anything that fails from here on takes the file away again, so a
+    // half-made capture is never left for the sweep to find.
+    start_copier(&path, writer, source).inspect_err(|_| {
+        let _ = fs::remove_file(&path);
+    })
+}
+
+/// The rest of [`start_capture`], once the file at `path` exists: open the
+/// reader, make the first attempt's pipe, and start the copier.
+fn start_copier(path: &Path, writer: fs::File, mut source: fs::File) -> io::Result<Capture> {
     // Opened before a byte is written and matched to the writer's inode,
     // so later attempts never re-open the path: a same-user replacement of
     // it cannot change what they read.
-    let reader = match read_back(&path, &writer) {
-        Ok(r) => r,
-        Err(e) => {
-            drop(writer);
-            let _ = fs::remove_file(&path);
-            return Err(e);
-        }
-    };
+    let reader = read_back(path, &writer)?;
     // `std::io::pipe` is `O_CLOEXEC` on both ends, so only the descriptor
     // `Command` puts on fd 0 reaches the child.
-    let (child_read, child_write) = match std::io::pipe() {
-        Ok(p) => p,
-        Err(e) => {
-            drop(writer);
-            drop(reader);
-            let _ = fs::remove_file(&path);
-            return Err(e);
-        }
-    };
+    let (child_read, child_write) = std::io::pipe()?;
     let complete = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&complete);
     let copier = std::thread::Builder::new()
         .name("amplihack-prompt-capture".to_string())
-        .spawn(move || copy_prompt(&mut source, writer, child_write, &flag));
-    let copier = match copier {
-        Ok(h) => h,
-        Err(e) => {
-            drop(reader);
-            let _ = fs::remove_file(&path);
-            return Err(e);
-        }
-    };
+        .spawn(move || copy_prompt(&mut source, writer, child_write, &flag))?;
     Ok(Capture {
-        path,
+        path: path.to_path_buf(),
         reader,
         first: Some(fs::File::from(std::os::fd::OwnedFd::from(child_read))),
         copier: Some(copier),

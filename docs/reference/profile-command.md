@@ -10861,9 +10861,8 @@ The capture file is `<pid>-0.in` in the supervisor's rerun directory (see
 above). It is created at `0600` with `O_EXCL`, `O_NOFOLLOW` and
 `O_CLOEXEC`, so a planted file or symlink is never written through, and the
 only descriptor for it Claude ever holds is the rerun's own stdin, which is
-read-only. It holds the prompt as opaque bytes, with
-no size cap, and is removed when the step ends, whether it succeeded or
-failed. A supervisor killed with `SIGKILL` leaves its file behind; the next
+read-only. It holds the prompt as opaque bytes, with no size cap, and is
+removed when the step ends, whether it succeeded or failed. A supervisor killed with `SIGKILL` leaves its file behind; the next
 supervised launch removes it once the owning process is gone.
 
 Before a rerun the supervisor joins the copier and checks that the whole
