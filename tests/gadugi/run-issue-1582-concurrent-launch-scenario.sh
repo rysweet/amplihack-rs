@@ -342,7 +342,7 @@ if [ -z "$missing" ]; then
   pass assets-complete "every path staged by the install exists again"
 else
   flunk assets-complete "$(printf '%s\n' "$missing" | wc -l) staged path(s) are missing"
-  printf '%s\n' "$missing" | head -20 | sed 's/^/    missing: /'
+  printf '%s\n' "$missing" | awk 'NR <= 20 { print "    missing: " $0 }'
 fi
 
 if [ "$fail" -ne 0 ]; then
