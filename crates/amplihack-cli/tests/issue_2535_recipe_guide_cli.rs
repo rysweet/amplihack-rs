@@ -442,7 +442,6 @@ fn s6_malformed_pr_urls_are_exit_2_and_create_nothing() {
         "https://github.com:443/o/r/pull/7",
         "https://github.com/../r/pull/7",
         "https://github.com/o/r/pull/0",
-        "https://github.com/o/r/issues/7",
         "https://github.com/o/r/pull/7/files",
     ] {
         let o = f.guide_text(&[url], "text");
@@ -453,6 +452,17 @@ fn s6_malformed_pr_urls_are_exit_2_and_create_nothing() {
             "{url}: {line}"
         );
     }
+    assert!(!f.state.exists(), "nothing created under the state folder");
+}
+
+#[test]
+fn s6_an_unmatched_issue_url_is_exit_1_and_creates_nothing() {
+    let f = GuideFixture::new();
+    let o = f.guide_text(&["https://github.com/o/r/issues/7"], "text");
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    let line = one_line_error(&o);
+    assert!(line.starts_with("recipe guide: "), "{line}");
+    assert!(line.contains("https://github.com/o/r/issues/7"), "{line}");
     assert!(!f.state.exists(), "nothing created under the state folder");
 }
 

@@ -369,3 +369,309 @@ fn a_real_run_records_its_run_dir_in_the_pointer_and_guide_finds_it() {
     let o = f.guide_without_work_root(&[SESSION], "after the fact");
     assert_lands_in(&o, run_dir);
 }
+
+// ---------------------------------------------------------------------------
+// Security: the index of records is untrusted input
+// ---------------------------------------------------------------------------
+
+use std::os::unix::fs::PermissionsExt;
+
+const ISSUE_URL: &str = "https://github.com/rysweet/amplihack-rs/issues/2783";
+
+fn assert_no_bidi_or_separators(text: &str) {
+    for c in [
+        '\u{202a}', '\u{202b}', '\u{202c}', '\u{202d}', '\u{202e}', '\u{2066}', '\u{2067}',
+        '\u{2068}', '\u{2069}', '\u{2028}', '\u{2029}', '\u{1b}', '\u{9b}',
+    ] {
+        assert!(
+            !text.contains(c),
+            "U+{:04X} reached stderr: {text:?}",
+            c as u32
+        );
+    }
+}
+
+#[test]
+fn a_run_dir_with_empty_or_dot_segments_in_the_raw_string_is_not_used() {
+    // `Path::components()` drops these segments, so only the raw string shows them.
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    let base = run.display().to_string();
+    let runs = f.alt_work.join("runs").display().to_string();
+    for sneaky in [
+        format!("{runs}//{RUN_FOLDER}"),
+        format!("{runs}/./{RUN_FOLDER}"),
+        format!("{base}/"),
+    ] {
+        let mut p = GuideFixture::pointer(CORRELATION, None);
+        p["run_dir"] = sneaky.clone().into();
+        f.session_log_from_pointer(SESSION, &p);
+        let o = f.guide_without_work_root(&[SESSION], "text");
+        assert_eq!(o.status.code(), Some(1), "{sneaky}: {}", show(&o));
+        one_line_error(&o);
+        assert!(!run.join("guidance").exists(), "{sneaky}");
+    }
+}
+
+#[test]
+fn a_run_dir_containing_the_replacement_character_is_not_used() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    let mut p = GuideFixture::pointer(CORRELATION, None);
+    p["run_dir"] = run
+        .display()
+        .to_string()
+        .replace("elsewhere", "else\u{fffd}here")
+        .into();
+    f.session_log_from_pointer(SESSION, &p);
+    let o = f.guide_without_work_root(&[SESSION], "text");
+    assert_refused_and_nothing_written(&o, &run);
+}
+
+#[test]
+fn a_run_dir_whose_runs_folder_is_a_symbolic_link_is_not_used() {
+    let f = GuideFixture::new();
+    let real = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    let linked_work = f.root.join("linked-work");
+    private_dir(&linked_work);
+    symlink(f.alt_work.join("runs"), linked_work.join("runs")).unwrap();
+    let via = linked_work.join("runs").join(RUN_FOLDER);
+    f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&via)));
+    let o = f.guide_without_work_root(&[SESSION], "text");
+    assert_refused_and_nothing_written(&o, &real);
+}
+
+#[test]
+fn a_run_dir_that_others_can_write_to_is_not_used() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    fs::set_permissions(&run, fs::Permissions::from_mode(0o777)).unwrap();
+    f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&run)));
+    let o = f.guide_without_work_root(&[SESSION], "text");
+    assert_refused_and_nothing_written(&o, &run);
+}
+
+#[test]
+fn a_record_whose_run_id_disagrees_with_the_folder_run_json_is_not_used() {
+    // A shadow log naming a real folder with another run's correlation id.
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    let other = "0e9d8c7b-6a5f-4e3d-8c2b-1a0f9e8d7c6b";
+    f.session_log_from_pointer(SESSION, &GuideFixture::pointer(other, Some(&run)));
+    let o = f.guide_without_work_root(&[SESSION], "text");
+    assert_refused_and_nothing_written(&o, &run);
+}
+
+#[test]
+fn a_note_about_one_record_does_not_stop_a_later_record_from_matching() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    let mut bad = GuideFixture::pointer("1b2c3d4e-0000-4000-8000-000000000001", None);
+    bad["run_dir"] = "relative/runs/x".into();
+    bad["issue_number"] = "2783".into();
+    f.session_log_from_pointer("amp-bad-20261118-000001", &bad);
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    let o = f.guide_without_work_root(&["2783"], "still found");
+    assert_lands_in(&o, &run);
+}
+
+#[test]
+fn a_log_directory_others_can_write_to_is_not_scanned_and_says_so() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    fs::set_permissions(&f.recipe_logs, fs::Permissions::from_mode(0o777)).unwrap();
+    let o = f.guide_without_work_root(&[ISSUE_URL], "text");
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    let line = one_line_error(&o);
+    assert!(
+        line.contains(&f.recipe_logs.display().to_string()),
+        "{line}"
+    );
+    assert!(!run.join("guidance").exists());
+    fs::set_permissions(&f.recipe_logs, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[test]
+fn a_fifo_named_like_a_log_does_not_block_or_fail_the_lookup() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    let fifo = f.recipe_logs.join("amp-fifo-20261118-000002.log");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    // The harness fails the test if this blocks; there is no timer here.
+    let o = f.guide_without_work_root(&["2783"], "past the fifo");
+    assert_lands_in(&o, &run);
+}
+
+#[test]
+fn a_symbolic_link_named_like_a_log_is_skipped_by_the_scan() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    let elsewhere = f.root.join("outside.log");
+    crate::support::recipe_guide::private_file(
+        &elsewhere,
+        format!("amplihack.recipe.log_pointer {}\n", issue_pointer(&f, &run)),
+    );
+    private_dir(&f.recipe_logs);
+    symlink(
+        &elsewhere,
+        f.recipe_logs.join("amp-link-20261118-000003.log"),
+    )
+    .unwrap();
+    let o = f.guide_without_work_root(&["2783"], "text");
+    assert_refused_and_nothing_written(&o, &run);
+}
+
+#[test]
+fn a_deeply_nested_pointer_line_is_skipped_not_fatal() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    let depth = 5000;
+    let nested = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+    private_dir(&f.recipe_logs);
+    crate::support::recipe_guide::private_file(
+        &f.recipe_logs.join("amp-deep-20261118-000004.log"),
+        format!("amplihack.recipe.log_pointer {nested}\n"),
+    );
+    let o = f.guide_without_work_root(&["2783"], "past the nesting");
+    assert_lands_in(&o, &run);
+}
+
+#[test]
+fn an_oversize_pointer_line_is_skipped_not_fatal() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    let mut big = GuideFixture::pointer(CORRELATION, Some(&run));
+    big["issue_number"] = "2783".into();
+    big["cwd"] = "x".repeat(200_000).into();
+    private_dir(&f.recipe_logs);
+    crate::support::recipe_guide::private_file(
+        &f.recipe_logs.join("amp-big-20261118-000005.log"),
+        format!("amplihack.recipe.log_pointer {big}\n"),
+    );
+    let o = f.guide_without_work_root(&["2783"], "past the big line");
+    assert_lands_in(&o, &run);
+}
+
+#[test]
+fn a_long_recorded_field_does_not_prevent_a_match_on_another_field() {
+    // Per-field caps: a 20 KiB pr_url must not be held or matched, yet the
+    // 20 KiB-bearing line (under the 32 KiB line limit) still yields its run_dir.
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    let mut p = issue_pointer(&f, &run);
+    p["pr_url"] = "y".repeat(20 * 1024).into();
+    f.session_log_from_pointer(SESSION, &p);
+    let o = f.guide_without_work_root(&["2783"], "text");
+    assert_lands_in(&o, &run);
+}
+
+#[test]
+fn a_leading_plus_or_non_digits_in_a_recorded_issue_number_do_not_match() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    let mut p = GuideFixture::pointer(CORRELATION, Some(&run));
+    p["issue_number"] = "+2783".into();
+    f.session_log_from_pointer(SESSION, &p);
+    let o = f.guide_without_work_root(&["2783"], "text");
+    assert_refused_and_nothing_written(&o, &run);
+}
+
+#[test]
+fn issue_urls_match_owner_and_repository_case_insensitively_and_never_by_substring() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    let o = f.guide_without_work_root(
+        &["https://github.com/RySweet/Amplihack-RS/issues/2783"],
+        "case",
+    );
+    assert_lands_in(&o, &run);
+    let o = f.guide_without_work_root(
+        &["https://github.com/rysweet/amplihack-rs-fork/issues/2783"],
+        "other repo",
+    );
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert_eq!(f.entries(&guidance_of(&run)).len(), 1);
+}
+
+#[test]
+fn bidirectional_and_line_separator_characters_never_reach_stderr() {
+    let f = GuideFixture::new();
+    // In the operator's target.
+    let target = "a\u{202e}b\u{2066}c\u{2069}d\u{2028}e\u{2029}f";
+    let o = f.guide_without_work_root(&[target], "text");
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    one_line_error(&o);
+    assert_no_bidi_or_separators(&String::from_utf8_lossy(&o.stderr));
+    // In a recorded value that a validator message embeds.
+    let mut p = GuideFixture::pointer(CORRELATION, None);
+    p["run_dir"] = "/tmp/\u{202e}x\u{2028}y\u{2029}z\u{2066}/runs/q".into();
+    f.session_log_from_pointer(SESSION, &p);
+    let o = f.guide_without_work_root(&[SESSION], "text");
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    one_line_error(&o);
+    assert_no_bidi_or_separators(&String::from_utf8_lossy(&o.stderr));
+}
+
+#[test]
+fn a_guidance_folder_swapped_for_a_symlink_after_acceptance_is_not_followed() {
+    // The recorded run is accepted, then `guidance` is a symlink to a folder
+    // outside the run: the write must be refused by the descriptor-relative
+    // open, whichever check saw the path first.
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    let victim = f.root.join("victim-after-acceptance");
+    private_dir(&victim);
+    symlink(&victim, run.join("guidance")).unwrap();
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    for target in [SESSION, "2783", ISSUE_URL] {
+        let o = f.guide_without_work_root(&[target], "text");
+        assert_eq!(o.status.code(), Some(1), "{target}: {}", show(&o));
+    }
+    assert_eq!(fs::read_dir(&victim).unwrap().count(), 0);
+}
+
+#[test]
+fn a_bare_number_matching_several_runs_warns_on_stderr_and_keeps_stdout_unchanged() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    let second_folder = "9c8b7a65-4d3e-4f21-a0b9-8c7d6e5f4a3b";
+    let second_corr = "5e4d3c2b-1a09-4876-b5a4-c3d2e1f00a9b";
+    let second = f.make_run_in_alt_work(second_folder, second_corr);
+    let mut p = GuideFixture::pointer(second_corr, Some(&second));
+    p["issue_number"] = "2783".into();
+    p["issue_url"] = "https://github.com/someone/else/issues/2783".into();
+    f.session_log_from_pointer("amp-other-20261118-205100", &p);
+    let o = f.guide_without_work_root(&["2783"], "ambiguous");
+    assert!(o.status.success(), "{}", show(&o));
+    let (path, _, source) = parse_appended(&o);
+    assert_eq!(source, "run");
+    assert!(path.starts_with(f.alt_work.join("runs")), "{path:?}");
+    let err = String::from_utf8_lossy(&o.stderr).into_owned();
+    assert!(
+        err.contains(RUN_FOLDER) || err.contains(second_folder),
+        "warning should name the chosen run: {err}"
+    );
+}
+
+#[test]
+fn an_unset_home_is_reported_in_the_not_found_line_not_refused() {
+    let f = GuideFixture::new();
+    let mut c = f.amplihack(&["recipe", "guide", "nightly-fix", "-"]);
+    c.env_remove("HOME")
+        .env_remove("AMPLIHACK_WORK_ROOT")
+        .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT");
+    let o = f.run_with_stdin(c, Some(b"text"));
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    let line = one_line_error(&o);
+    assert!(line.to_lowercase().contains("home"), "{line}");
+}
