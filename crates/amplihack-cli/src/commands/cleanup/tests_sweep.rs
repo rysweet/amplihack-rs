@@ -1340,3 +1340,165 @@ fn owned_worktree_apply_preserves_new_work_in_an_ignored_nested_clone() {
         "backing metadata remains usable"
     );
 }
+
+#[test]
+fn end_of_run_reports_a_nested_repository_inspection_error_without_claiming_dirty_state() {
+    let fx = Fx::new();
+    let (origin, _) = origin_and_clone(&fx.root.join("source"));
+    let (_, runtime) = stopped_run(&fx, true);
+    let tree = clone_of(&origin, &runtime.join("tmp/work"));
+    let sha = git(&tree, &["rev-parse", "HEAD"]);
+    let index = tree.join(".git/index");
+    let original = fs::read(&index).unwrap();
+    fs::write(&index, b"invalid index\n").unwrap();
+
+    let result = end_of_run_inner(&fx.work).unwrap();
+    let kept = entry(&result.entries, &runtime);
+    assert_eq!(kept.action, Action::Skipped, "{kept:?}");
+    assert!(kept.preserved, "{kept:?}");
+    assert!(
+        kept.reason.contains("cannot")
+            && kept.reason.contains("index")
+            && kept.reason.contains(&format!("{tree:?}")),
+        "the report must distinguish inspection failure from dirty state: {kept:?}"
+    );
+    assert!(!kept.reason.contains("has uncommitted changes"), "{kept:?}");
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|line| { line.contains(&format!("{runtime:?}")) && line.contains(&kept.reason) }),
+        "preservation reason must be visible: {:?}",
+        result.warnings
+    );
+    assert!(has_object(&tree, &sha));
+
+    // Repairing the failed inspection makes this same clean, pushed tree removable.
+    fs::write(&index, original).unwrap();
+    first_sweep_lock_released(&fx);
+    let result = end_of_run_inner(&fx.work).unwrap();
+    assert_eq!(entry(&result.entries, &runtime).action, Action::Removed);
+    assert!(!runtime.exists());
+}
+
+/// Enter a single deletion operation after planning, with its inspection budget
+/// exhausted. Calling the operation directly models expiry after the sweep's
+/// scheduling check without waiting for time to pass, sleeps, or retries.
+/// The final repository inspection must share that budget, rather than start an
+/// unbounded inspection. Once no budget is supplied, the same plan can complete.
+fn assert_deletion_boundary_honors_inspection_deadline(
+    settings: &mut Settings,
+    path: &Path,
+    tree: &Path,
+) {
+    let sha = git(tree, &["rev-parse", "HEAD"]);
+    assert!(git(tree, &["status", "--porcelain"]).is_empty());
+    let items = collect(settings).unwrap();
+    let item = items
+        .into_iter()
+        .find(|item| item.path == path)
+        .expect("the clean, pushed boundary must be collected");
+    assert!(
+        !matches!(item.op, Op::Skip | Op::Preserve | Op::Fail),
+        "the boundary must be eligible before its inspection budget expires: {item:?}"
+    );
+    let roots = ManagedRoots::new(settings);
+    let links = LinkRoots::from_env(&roots);
+    let procs = ProcScan::take();
+    let mut follow_on = Vec::new();
+    settings.deadline = Some(Instant::now());
+
+    let result = execute(&item, settings, &roots, &links, &procs, &mut follow_on);
+    assert!(
+        result.is_err(),
+        "the destructive operation ignored the inspection deadline for {}",
+        path.display()
+    );
+    let error = result.unwrap_err();
+    let skipped = error
+        .downcast_ref::<Refusal>()
+        .expect("incomplete inspection is a skipped operation, not a removal failure");
+    assert!(skipped.preserved, "{error:#}");
+    assert!(
+        error.to_string().contains("deadline"),
+        "the preservation reason must explain the exhausted inspection budget: {error:#}"
+    );
+    assert!(fs::symlink_metadata(path).is_ok());
+    assert_eq!(git(tree, &["rev-parse", "HEAD"]), sha);
+    assert!(has_object(tree, &sha));
+    assert_eq!(git(tree, &["show", "HEAD:base.txt"]), "base");
+    assert!(follow_on.is_empty());
+
+    settings.deadline = None;
+    let entries = apply_items(vec![item], settings, true);
+    assert_eq!(entry(&entries, path).action, Action::Removed, "{entries:?}");
+    assert!(fs::symlink_metadata(path).is_err());
+    assert!(!tree.exists());
+}
+
+fn target_with_expired_inspection_budget(linked: bool) {
+    let fx = Fx::new();
+    let (origin, _) = origin_and_clone(&fx.root.join("source"));
+    let path = fx.work.targets_dir().join(T1);
+    let dest = if linked {
+        let dest = cargo_target(&fx.hook_base.join(T1));
+        symlink(&dest, &path).unwrap();
+        dest
+    } else {
+        cargo_target(&path)
+    };
+    let tree = clone_of(&origin, &dest.join("debug/fixture"));
+    seed(
+        &fx,
+        RUN_A,
+        false,
+        &new_line(&path, "created", &fx.root.join("gone")),
+    );
+    let mut settings = fx.settings(&[Category::RunTarget]);
+
+    assert_deletion_boundary_honors_inspection_deadline(&mut settings, &path, &tree);
+    assert!(!dest.exists());
+}
+
+#[test]
+fn target_deletion_shares_the_callers_repository_inspection_deadline() {
+    target_with_expired_inspection_budget(false);
+}
+
+#[test]
+fn linked_target_deletion_shares_the_callers_repository_inspection_deadline() {
+    target_with_expired_inspection_budget(true);
+}
+
+#[test]
+fn execution_storage_reclamation_shares_the_callers_repository_inspection_deadline() {
+    let fx = Fx::new();
+    let (origin, _) = origin_and_clone(&fx.root.join("source"));
+    let owner = fx.run(&[]);
+    let stable = fx.work.exec_dir().join("stopped-run");
+    fs::create_dir_all(&stable).unwrap();
+    fs::write(
+        stable.join(exec_storage::CLAIM),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "run_dir": owner,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let tree = clone_of(&origin, &stable.join("checkout"));
+    let mut settings = fx.settings(&[Category::RunExec]);
+
+    assert_deletion_boundary_honors_inspection_deadline(&mut settings, &stable, &tree);
+}
+
+#[test]
+fn older_tombstone_removal_shares_the_callers_repository_inspection_deadline() {
+    let fx = Fx::new();
+    let (origin, _) = origin_and_clone(&fx.root.join("source"));
+    let tombstone = fx.work.exec_dir().join(".reclaim-interrupted");
+    let tree = clone_of(&origin, &tombstone.join("tmp/independent-repository"));
+    let mut settings = fx.settings(&[Category::RunExec]);
+
+    assert_deletion_boundary_honors_inspection_deadline(&mut settings, &tombstone, &tree);
+}

@@ -458,7 +458,47 @@ fn an_unreadable_index_preserves_the_repository_with_an_explanation() {
     let reason =
         work_inside(&folder, None).expect("Git cannot establish disposability without its index");
     assert!(reason.contains(&format!("{work:?}")), "{reason}");
+    assert!(
+        reason.contains("cannot") && reason.contains("index"),
+        "an inspection failure must explain the failed operation: {reason}"
+    );
+    assert!(
+        !reason.contains(DIRTY),
+        "an unreadable index does not establish uncommitted changes: {reason}"
+    );
     assert!(work.is_dir());
+}
+
+#[test]
+fn a_corrupt_index_reports_inspection_failure_instead_of_uncommitted_changes() {
+    let (_tmp, root) = scratch();
+    let (origin, _, folder) = outside_and_folder(&root);
+    let work = clone_of(&origin, &folder.join("work"));
+    let index = work.join(".git/index");
+    let original = fs::read(&index).unwrap();
+    fs::write(&index, b"invalid index\n").unwrap();
+
+    // The existing Boolean API must remain conservative for its other callers.
+    assert!(crate::commands::hygiene::cleanup::git_has_dirty_state(
+        &work
+    ));
+    let reason = tree_work(&work).expect("failed status inspection must preserve the tree");
+    assert!(
+        reason.contains("cannot") && reason.contains("index"),
+        "preservation must identify the Git inspection failure: {reason}"
+    );
+    assert!(
+        !reason.contains(DIRTY),
+        "failed inspection cannot claim the tree is dirty: {reason}"
+    );
+    assert_eq!(
+        work_inside(&folder, None),
+        Some(tree_reason(&work, &reason))
+    );
+
+    fs::write(&index, original).unwrap();
+    assert_eq!(work_inside(&folder, None), None);
+    assert!(git(&work, &["status", "--porcelain"]).is_empty());
 }
 
 #[test]
