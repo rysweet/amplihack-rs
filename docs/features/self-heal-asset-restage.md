@@ -205,8 +205,18 @@ on demand, mode `0o600`) for the duration of the decision-and-install window.
   take the same lock, so self-heal never re-stages while another install
   runs. The re-stage creates a new release and switches links like any
   install; see [Versioned Install Layout](../concepts/versioned-install-layout.md).
-- The lock is advisory (`fs2::FileExt::lock_exclusive`); processes that do
-  not honour it (e.g. a manual `rm -rf ~/.amplihack`) can still race, but
+- The launch bootstrap (`ensure_framework_installed`) re-stages missing
+  framework assets through the same helper as self-heal,
+  `restage_under_install_lock` (issue #1582). Under the lock it re-reads
+  the stamp, applies the #1526 downgrade check and checks
+  the assets again before it stages anything. Two launches started together
+  therefore re-stage once, and a launch that waited behind a newer install
+  stages nothing. When the assets are complete, the bootstrap does not take
+  the lock; self-heal, which runs first, still takes it when it has a
+  re-stage of its own to do. See
+  [The launch bootstrap's re-stage](../concepts/versioned-install-layout.md#the-launch-bootstraps-re-stage).
+- The lock is advisory (`std::fs::File::lock`, an `flock` on Linux);
+  processes that do not honour it (e.g. a manual `rm -rf ~/.amplihack`) can still race, but
   no normal `amplihack` invocation will.
 
 ## Bypass: `AMPLIHACK_SKIP_AUTO_INSTALL`
@@ -225,6 +235,11 @@ amplihack copilot --print 'run tests'
 
 An empty value (`AMPLIHACK_SKIP_AUTO_INSTALL=""`) is **not** treated as a
 bypass — the check still runs.
+
+The bypass applies to self-heal only. Under it, the launch bootstrap still
+re-stages missing framework files before an interactive launch and only
+suppresses its downgrade warning; see
+[The launch bootstrap's re-stage](../concepts/versioned-install-layout.md#the-launch-bootstraps-re-stage).
 
 ### Bypass diagnostic
 
@@ -431,9 +446,9 @@ always prints a warning. It is called out explicitly so reviewers do not mistake
 
 | File | Role |
 |------|------|
-| `crates/amplihack-cli/src/self_heal.rs` | Decision logic, advisory lock acquisition, bypass diagnostic, the #1526 downgrade guards and once-per-process warning, and public entrypoint `ensure_assets_match_binary_version(args)`. Uses closure injection (mirroring `update::post_install::run_post_update_install`) so unit tests can verify the decision tree without running a real install. |
+| `crates/amplihack-cli/src/self_heal.rs` | Decision logic, bypass diagnostic, the #1526 downgrade guards and once-per-process warning, and public entrypoint `ensure_assets_match_binary_version(args)`. `restage_under_install_lock` is the one copy of the lock-and-recheck sequence: it takes the install lock, re-reads the stamp, applies Guard #2, asks the caller whether a re-stage is still needed and only then runs the caller's installer. It returns `LockedRestage::{NewerInstalled, NotNeeded, Installed}`. Self-heal and the launch bootstrap both call it (#1582). Uses closure injection (mirroring `update::post_install::run_post_update_install`) so unit tests can verify the decision tree without running a real install. |
 | `crates/amplihack-cli/src/commands/install/version_stamp.rs` | Atomic stamp read/write helpers (`read_installed_version`, `read_binaries_version`, `write_installed_version`, `write_installed_versions`, `installed_version_path`) and the #1526 semver comparison (`relation`). Performs symlink refusal via `symlink_metadata`, semver-regex validation of contents, and `0o600` permission enforcement on write. |
-| `crates/amplihack-cli/src/commands/install/mod.rs` | `local_install` writes the stamp on every successful install (from a local source or a release tag fetch); an implicit one that kept an installed binary also records the binaries' version, or `unknown`. `InstallMode::{Explicit, Implicit}` selects whether settings are written and binaries may be replaced; `ensure_framework_installed` applies the downgrade check before the launch bootstrap changes anything. |
+| `crates/amplihack-cli/src/commands/install/mod.rs` | `local_install` writes the stamp on every successful install (from a local source or a release tag fetch); an implicit one that kept an installed binary also records the binaries' version, or `unknown`. `InstallMode::{Explicit, Implicit}` selects whether settings are written and binaries may be replaced; `ensure_framework_installed` applies the downgrade check before the launch bootstrap changes anything, and runs its framework re-stage only through `restage_under_install_lock` (#1582). |
 | `crates/amplihack-cli/src/commands/install/binary.rs` | `deploy_binaries` keeps an existing destination in implicit mode unless the running binary is strictly newer than the stamp's binaries version (`implicit_deploy_allowed`) and the source is this build's own copy, and returns the binaries it kept. |
 | `crates/amplihack-cli/src/commands/install/framework_source.rs`, `tag_fetch.rs` | Choose the source and fetch the release tag. See [Framework source selection](../reference/framework-source-selection.md#contributor-api). `SourceFetchFailed` is the only error self-heal may continue past. |
 | `bins/amplihack/src/main.rs` | Calls `self_heal::ensure_assets_match_binary_version(&args)` after the existing update notice and before `Cli::parse_from`. |
