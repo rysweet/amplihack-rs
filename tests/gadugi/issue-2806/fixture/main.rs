@@ -26,12 +26,28 @@ fn execute() -> Result<()> {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    if matches!(name, "gh" | "claude" | "codex") {
+    if matches!(name, "gh" | "claude" | "codex" | "git-remote-issue2806") {
         return fixture(name, &args[1..]);
     }
     match args.get(1).map(String::as_str) {
         Some("run-all") => driver::run_all(&args[2..]),
         Some("hold-work") => driver::hold_work(&args[2..]),
+        Some("hold-directory") => {
+            ensure!(args.len() == 2, "hold-directory takes no arguments");
+            println!(
+                "{}",
+                serde_json::to_string(&lifecycle::Event::ProcessReady {
+                    pid: std::process::id()
+                })?
+            );
+            std::io::stdout().flush()?;
+            let mut release = String::new();
+            ensure!(
+                std::io::stdin().read_line(&mut release)? > 0 && release.trim() == "finish",
+                "directory holder release missing"
+            );
+            Ok(())
+        }
         Some("finalize-boundary") => driver::finalize_boundary(&args[2..]),
         _ => bail!(
             "usage: issue-2806-build-drive run-all --evidence <directory> --assets <checkout> --amplihack <absolute binary> --runner <absolute binary> --cargo <absolute binary> --rustc <absolute binary> --precommit <absolute binary> --tested-sha <sha>"
@@ -41,9 +57,17 @@ fn execute() -> Result<()> {
 fn fixture(name: &str, arguments: &[String]) -> Result<()> {
     let root = std::path::PathBuf::from(std::env::var("AMPLIHACK_2806_ROOT")?);
     let case = IsolatedCase::open(&root)?;
+    if name == "git-remote-issue2806" {
+        return hosting::local_transport(&case, arguments);
+    }
     let args: Vec<&str> = arguments.iter().map(String::as_str).collect();
     if args == ["--version"] {
-        println!("{name} 0.166.0 (issue-2806 fixture)");
+        let version = if name == "claude" {
+            "2.1.319"
+        } else {
+            "0.166.0"
+        };
+        println!("{name} {version} (issue-2806 fixture)");
         return Ok(());
     }
     if name == "codex" && args.first() == Some(&"plugin") {

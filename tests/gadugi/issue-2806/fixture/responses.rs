@@ -190,7 +190,16 @@ fn preflight(case: &IsolatedCase, task: &str) -> Result<String> {
         current == pr.head_sha,
         "preflight local and hosting head differ"
     );
-    let state = case.root.join("autodrive-state");
+    let provided = text_context("autodrive_state_dir")?;
+    let state = if provided.is_empty() {
+        case.root.join("autodrive-state")
+    } else {
+        PathBuf::from(provided)
+    };
+    ensure!(
+        state.starts_with(&case.root),
+        "autodrive state escapes isolated case"
+    );
     let out = case
         .command(&case.root.join("bin/amplihack"))?
         .args(["orch", "helper", "autodrive", "state", "--directory"])
@@ -232,7 +241,19 @@ fn preflight(case: &IsolatedCase, task: &str) -> Result<String> {
     }
     let mut result = json!({"pr_found":"true","should_run":"true","skip_reason":"","pr":"1","pr_url":"https://github.com/fixture/project/pull/1","pr_state":"OPEN","branch":pr.branch,"head_sha":pr.head_sha,"base_branch":"main","base_sha":observe_git(&driver::origin(case)?,&["rev-parse","main"] )?,"state_dir":state,"repo":repo,"review_dir":cwd,"reason":"observed linked worktree and current local origin","blockers":[],"attempts":[],"merged_before_run":false,"handed_off":false,"terminal_state":"IMPLEMENTED_VERIFIED"});
     if task.contains("complete schema-1 Binding") {
-        result["entry_evidence"] = json!({"pr_state":"OPEN","head_sha":pr.head_sha});
+        let authorization = context("autodrive_authorization")?;
+        let run_id = authorization["run_id"]
+            .as_str()
+            .context("runner authorization has no run identity")?;
+        let policy = authorization["policy_provenance"]
+            .as_str()
+            .context("runner authorization has no captured policy provenance")?;
+        result["schema_version"] = json!(1);
+        result["binding"] = json!({"run_id":run_id,"round_id":"entry","platform":"github","host":"github.com","repository":"fixture/project","source_repository":"fixture/project","pr_number":1,"pr_url":"https://github.com/fixture/project/pull/1","head_branch":pr.branch,"base_branch":"main","head_sha":pr.head_sha,"base_sha":observe_git(&driver::origin(case)?,&["rev-parse","main"] )?,"merge_base_sha":observe_git(&repo,&["merge-base",&pr.head_sha,"origin/main"] )?,"policy_provenance":policy});
+        result["entry_evidence"] = json!(format!(
+            "Observed OPEN fixture/project PR 1 at {}; verified linked worktree and captured runner state",
+            pr.head_sha
+        ));
     }
     Ok(result.to_string())
 }

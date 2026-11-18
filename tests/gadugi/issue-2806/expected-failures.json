@@ -1,1 +1,44 @@
-[]
+[
+  {
+    "assertion_id": "finalization-valid.classification",
+    "issue": 2343,
+    "base_sha": "5b834d309ba2efcf464824dc8c89dcb3c5ac7982",
+    "evidence_path": "baseline/e7/finalization-valid.classification.json",
+    "failure_fingerprint": "FAILED_IMPLEMENTATION with valid context"
+  },
+  {
+    "assertion_id": "finalization-missing.classification",
+    "issue": 2343,
+    "base_sha": "5b834d309ba2efcf464824dc8c89dcb3c5ac7982",
+    "evidence_path": "baseline/e7/finalization-missing.classification.json",
+    "failure_fingerprint": "FAILED_INVALID_EVIDENCE with missing context"
+  },
+  {
+    "assertion_id": "finalization-unreadable.classification",
+    "issue": 2343,
+    "base_sha": "5b834d309ba2efcf464824dc8c89dcb3c5ac7982",
+    "evidence_path": "baseline/e7/finalization-unreadable.classification.json",
+    "failure_fingerprint": "FAILED_INVALID_EVIDENCE with unreadable context"
+  },
+  {
+    "assertion_id": "cleanup-interrupted.commit",
+    "issue": 2785,
+    "base_sha": "5b834d309ba2efcf464824dc8c89dcb3c5ac7982",
+    "evidence_path": "baseline/e7/cleanup-interrupted.commit.json",
+    "failure_fingerprint": "cleanup lost unpushed work"
+  },
+  {
+    "assertion_id": "cleanup-interrupted.dirty",
+    "issue": 2785,
+    "base_sha": "5b834d309ba2efcf464824dc8c89dcb3c5ac7982",
+    "evidence_path": "baseline/e7/cleanup-interrupted.dirty.json",
+    "failure_fingerprint": "cleanup lost uncommitted work"
+  },
+  {
+    "assertion_id": "cleanup-interrupted.explanation",
+    "issue": 2785,
+    "base_sha": "5b834d309ba2efcf464824dc8c89dcb3c5ac7982",
+    "evidence_path": "baseline/e7/cleanup-interrupted.explanation.json",
+    "failure_fingerprint": "cleanup did not explain preservation"
+  }
+]

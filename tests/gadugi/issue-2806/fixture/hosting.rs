@@ -422,3 +422,81 @@ pub fn option<'a>(args: &'a [&str], key: &str) -> Option<&'a str> {
         .find(|pair| pair[0] == key)
         .map(|pair| pair[1])
 }
+
+/// Git's documented remote-helper `connect` protocol, backed by real local
+/// upload-pack/receive-pack. The logical hosting URL stays visible to provider
+/// discovery; the wire connection never opens a socket or forwards to a client.
+pub fn local_transport(case: &super::environment::IsolatedCase, args: &[String]) -> Result<()> {
+    use std::io::{Read, Write};
+    use std::os::unix::process::CommandExt;
+    ensure!(
+        args.len() == 2,
+        "local hosting transport requires remote name and URL"
+    );
+    let origin = case.root.join("origin.git");
+    let local = origin.to_str().context("local origin path is not UTF-8")?;
+    ensure!(
+        [
+            "https://github.com/fixture/project.git",
+            local,
+            &format!("file://{local}")
+        ]
+        .contains(&args[1].as_str()),
+        "hosting transport refuses unknown URL"
+    );
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(case.evidence.join("transport.jsonl"))?;
+    writeln!(
+        log,
+        "{}",
+        json!({"remote":args[0],"url":args[1],"origin":origin,"pid":std::process::id()})
+    )?;
+    let mut input = std::io::stdin().lock();
+    loop {
+        // Read exactly through one line. A buffered reader must not consume
+        // bytes belonging to the pack protocol before replacing this process.
+        let mut line = Vec::new();
+        loop {
+            let mut byte = [0u8; 1];
+            input
+                .read_exact(&mut byte)
+                .context("hosting transport closed before connect")?;
+            if byte[0] == b'\n' {
+                break;
+            }
+            ensure!(line.len() < 4096, "hosting transport command too long");
+            line.push(byte[0]);
+        }
+        let command = String::from_utf8(line)?;
+        match command.as_str() {
+            "capabilities" => {
+                print!("*connect\n\n");
+                std::io::stdout().flush()?;
+            }
+            "connect git-upload-pack" | "connect git-receive-pack" => {
+                let executable = if command.ends_with("git-upload-pack") {
+                    "/usr/bin/git-upload-pack"
+                } else {
+                    "/usr/bin/git-receive-pack"
+                };
+                println!();
+                std::io::stdout().flush()?;
+                let mut process = case.command(Path::new("/usr/bin/env"))?;
+                if let Ok(protocol) = std::env::var("GIT_PROTOCOL") {
+                    ensure!(
+                        protocol == "version=2"
+                            || protocol == "version=1"
+                            || protocol == "version=0",
+                        "unsupported Git protocol request"
+                    );
+                    process.arg(format!("GIT_PROTOCOL={protocol}"));
+                }
+                process.arg(executable).arg(&origin);
+                return Err(process.exec().into());
+            }
+            _ => bail!("unsupported hosting transport command: {command}"),
+        }
+    }
+}

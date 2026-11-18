@@ -1,0 +1,28 @@
+{
+  "tested_sha": "5b834d309ba2efcf464824dc8c89dcb3c5ac7982",
+  "implementation_base": "3af9633bd9244169c16434a5fc59a88af3c9bb24",
+  "assertion_id": "finalization-unreadable.classification",
+  "issue": 2343,
+  "executed": true,
+  "prerequisites_satisfied": true,
+  "failure_kind": "regression",
+  "failure_fingerprint": "FAILED_INVALID_EVIDENCE with unreadable context",
+  "observations": {
+    "context": "unreadable",
+    "context_read_error": "PermissionDenied",
+    "fault_before_consumption": true,
+    "origin_head": "b96d09a3e25dcd393d38a9cb5df13143fd280eba",
+    "pr_head": "b96d09a3e25dcd393d38a9cb5df13143fd280eba",
+    "pr_state": "OPEN",
+    "checks": "pending",
+    "terminal_state": "FAILED_INVALID_EVIDENCE",
+    "terminal_success": false,
+    "exit_code": 1
+  },
+  "ci_run": "https://github.com/rysweet/amplihack-rs/actions/runs/44372174792",
+  "artifact_id": 14461490286,
+  "production_diff_from_base": [
+    "crates/amplihack-cli/Cargo.toml",
+    "crates/amplihack-cli/tests/main.rs"
+  ]
+}

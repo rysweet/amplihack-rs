@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "run_id": "250fef67-ef3a-4e2f-9564-afc6e6be84b0",
+  "recipe": "issue-2806-cleanup",
+  "pid": 22421,
+  "pid_start_ticks": 38472,
+  "cwd": "/home/runner/work/_temp/issue-2806.AEiGIf/tmp/qa2806-GFWtqL/cleanup-interrupted/project-drive-pr1/worktrees/pr-1",
+  "started_at": "2026-11-18T18:45:10Z",
+  "ended_at": "2026-11-18T18:45:10Z",
+  "outcome": "interrupted",
+  "attempts": [
+    {
+      "correlation_id": "b1ac7238-485d-433a-8f43-3c9c4b4a5c85"
+    }
+  ],
+  "steps": [],
+  "log_path": null
+}

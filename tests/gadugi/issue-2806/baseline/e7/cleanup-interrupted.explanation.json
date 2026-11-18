@@ -1,0 +1,38 @@
+{
+  "tested_sha": "5b834d309ba2efcf464824dc8c89dcb3c5ac7982",
+  "implementation_base": "3af9633bd9244169c16434a5fc59a88af3c9bb24",
+  "assertion_id": "cleanup-interrupted.explanation",
+  "issue": 2785,
+  "executed": true,
+  "prerequisites_satisfied": true,
+  "failure_kind": "regression",
+  "failure_fingerprint": "cleanup did not explain preservation",
+  "observations": {
+    "before": {
+      "commit_reachable": true,
+      "dirty_content_intact": true,
+      "branch_usable": true,
+      "unpushed": true
+    },
+    "after": null,
+    "ready": {
+      "event": "work_ready",
+      "run_id": "250fef67-ef3a-4e2f-9564-afc6e6be84b0",
+      "pid": 22481,
+      "commit": "341382c063763bf714dc58a7b595261d30062bd0",
+      "dirty_path": "continue.txt"
+    },
+    "location": {
+      "commit": "341382c063763bf714dc58a7b595261d30062bd0",
+      "repo": "/home/runner/work/_temp/issue-2806.AEiGIf/tmp/qa2806-GFWtqL/cleanup-interrupted/work/r/250fef67ef3a/retained-repository",
+      "run_id": "250fef67-ef3a-4e2f-9564-afc6e6be84b0",
+      "runtime": "/home/runner/work/_temp/issue-2806.AEiGIf/tmp/qa2806-GFWtqL/cleanup-interrupted/work/r/250fef67ef3a"
+    }
+  },
+  "ci_run": "https://github.com/rysweet/amplihack-rs/actions/runs/44372174792",
+  "artifact_id": 14461490286,
+  "production_diff_from_base": [
+    "crates/amplihack-cli/Cargo.toml",
+    "crates/amplihack-cli/tests/main.rs"
+  ]
+}

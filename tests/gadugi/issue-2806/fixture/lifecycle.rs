@@ -167,3 +167,12 @@ impl TrackedChild {
         Ok(status)
     }
 }
+
+impl TrackedChild {
+    pub fn take_stdin(&mut self) -> Result<std::process::ChildStdin> {
+        self.child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("child stdin is not piped or was already taken"))
+    }
+}

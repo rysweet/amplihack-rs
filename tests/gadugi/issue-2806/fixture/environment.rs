@@ -136,8 +136,14 @@ impl IsolatedCase {
             {
                 ensure!(
                     key.starts_with("AMPLIHACK_")
-                        || ["RECIPE_RUNNER_RS_PATH", "CARGO_HOME", "PRE_COMMIT_HOME"]
-                            .contains(&key.as_str()),
+                        || [
+                            "RECIPE_RUNNER_RS_PATH",
+                            "CARGO_HOME",
+                            "PRE_COMMIT_HOME",
+                            "GIT_ALLOW_PROTOCOL",
+                            "GIT_ALLOW_PROTOCOL"
+                        ]
+                        .contains(&key.as_str()),
                     "unsupported fixture environment key {key}"
                 );
                 command.arg(format!(

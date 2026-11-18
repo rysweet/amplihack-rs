@@ -161,14 +161,22 @@ fn stage(case: &IsolatedCase, args: &[String], name: &str) -> Result<()> {
         ("pre-commit", argument(args, "--precommit")?),
         ("gh", fixture.clone()),
         ("claude", fixture.clone()),
-        ("codex", fixture),
+        ("codex", fixture.clone()),
+        ("git-remote-issue2806", fixture),
     ] {
         ensure!(
             source.is_absolute() && source.is_file(),
             "executable missing: {}",
             source.display()
         );
-        symlink(source, case.root.join("bin").join(key))?;
+        let target = case.root.join("bin").join(key);
+        if ["gh", "claude", "codex", "git-remote-issue2806"].contains(&key) {
+            // Launchers canonicalize executable paths. Preserve the fixture's
+            // invocation name even after that canonicalization.
+            fs::copy(source, target)?;
+        } else {
+            symlink(source, target)?;
+        }
     }
     let toolchain = argument(args, "--cargo")?;
     let toolchain = toolchain
@@ -207,10 +215,11 @@ fn stage(case: &IsolatedCase, args: &[String], name: &str) -> Result<()> {
     )?;
     fs::write(
         case.root.join("gitconfig"),
-        format!(
-            "[url \"file://{}\"]\n\tinsteadOf = https://github.com/fixture/project.git\n[commit]\n\tgpgsign = false\n",
-            origin.display()
-        ),
+        r#"[remote "origin"]
+vcs = issue2806
+[commit]
+gpgsign = false
+"#,
     )?;
     case.git(
         &checkout,
@@ -258,7 +267,7 @@ fn stage(case: &IsolatedCase, args: &[String], name: &str) -> Result<()> {
         "AMPLIHACK_GOVERNOR":"off","AMPLIHACK_USAGE_LIMIT_WAIT":"0",
         "AMPLIHACK_CODEX_BINARY_PATH":case.root.join("bin/codex"),"AMPLIHACK_CLAUDE_BINARY_PATH":case.root.join("bin/claude"),
         "AMPLIHACK_LAUNCHER_BINARY":case.root.join("bin/amplihack"),
-            "CARGO_HOME":case.home.join(".cargo"),"PRE_COMMIT_HOME":case.home.join(".cache/pre-commit")
+            "GIT_ALLOW_PROTOCOL":"file:issue2806","CARGO_HOME":case.home.join(".cargo"),"PRE_COMMIT_HOME":case.home.join(".cache/pre-commit")
         }}),
     )?;
     save(
@@ -441,6 +450,14 @@ fn build(case: &IsolatedCase, report: &mut Report) -> Result<()> {
                 "answer.txt",
             )?;
             save(&case.evidence.join("build-observation.json"), &observed)?;
+            let exact_content = observe_git(&worktree, &["show", "HEAD:answer.txt"])? == "42";
+            assert_value(
+                report,
+                "build",
+                "content",
+                exact_content,
+                "committed answer does not satisfy issue 7",
+            )?;
             assert_value(
                 report,
                 "build",
@@ -467,6 +484,7 @@ fn build(case: &IsolatedCase, report: &mut Report) -> Result<()> {
                 "build",
                 "complete",
                 terminal_success
+                    && exact_content
                     && observed.local_committed
                     && observed.remote_matches
                     && observed.open_pr_matches,
@@ -925,10 +943,14 @@ fn cleanup(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
         // unprivileged identity. No fault relies on elapsed age or a race.
         fs::remove_file(repo.join("continue.txt"))?;
         case.git(&repo, &["push", "-q", "origin", "feat/answer"])?;
-        let protected = runtime.join("protected");
-        private_dir(&protected)?;
-        fs::write(protected.join("file"), "retain for removal failure")?;
-        fs::set_permissions(&protected, fs::Permissions::from_mode(0o500))?;
+        // RuntimeGuard repairs modes inside its candidate. Protect its
+        // parent instead, so the directory's final unlink actually fails.
+        let protected = runtime.parent().context("runtime has no parent")?;
+        ensure!(
+            protected == case.work.join("r"),
+            "removal fault requires the observed short-runtime layout"
+        );
+        fs::set_permissions(protected, fs::Permissions::from_mode(0o500))?;
         writeln!(pipe, "finish")?;
         child.wait()?;
         let first = sweep(case, "cleanup-first")?;
@@ -944,6 +966,7 @@ fn cleanup(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
             observed,
             "removal-failure fixture did not cause an actual access error"
         );
+        fs::set_permissions(protected, fs::Permissions::from_mode(0o700))?;
         return assert_value(
             report,
             name,
@@ -953,10 +976,44 @@ fn cleanup(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
             "same removal failure reported by repeated cleanup",
         );
     }
+    let mut holder = if name == "cleanup-other-stopped" {
+        let mut command = case.command(&exe)?;
+        command
+            .arg("hold-directory")
+            .current_dir(&repo)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        let mut holder =
+            TrackedChild::spawn(&mut command, &case.evidence.join("directory-holder.pid"))?;
+        let ready = read_event(&mut BufReader::new(holder.take_stdout()?))?;
+        ensure!(
+            ready == Event::ProcessReady { pid: holder.id() },
+            "directory holder readiness belongs to another process"
+        );
+        Some(holder)
+    } else {
+        None
+    };
     child.interrupt_and_wait()?;
     drop(pipe);
     // The second run's ordinary end-of-run sweep must preserve the earlier
     // stopped runtime with exactly the same rules as its owner's cleanup.
+    if let Some(holder) = holder.as_mut() {
+        let held = evidence::observe_retention(
+            &repo,
+            &origin(case)?,
+            &commit,
+            "continue.txt",
+            b"unfinished work\n",
+        )?;
+        ensure!(
+            held.commit_reachable && held.dirty_content_intact && held.unpushed,
+            "active directory holder failed to retain sweep preconditions"
+        );
+        save(&case.evidence.join("held-after-interruption.json"), &held)?;
+        writeln!(holder.take_stdin()?, "finish")?;
+        ensure!(holder.wait()?.success(), "directory holder failed to exit");
+    }
     if name == "cleanup-other-stopped" {
         let other = case.root.join("other-run.yaml");
         fs::write(

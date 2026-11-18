@@ -204,6 +204,7 @@ impl Report {
             "build.terminal",
             "build.open-pr",
             "build.commit",
+            "build.content",
             "build.origin",
             "build.pr-head",
             "build.complete",

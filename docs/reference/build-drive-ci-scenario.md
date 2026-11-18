@@ -145,6 +145,11 @@ uncommitted file, then emits a structured readiness event. The controller stops
 only its recorded child PID and waits for process completion before inspection.
 
 End-of-run cleanup and the supported cleanup command are both exercised.
+For the other-stopped-run case, a separately recorded child holds the runtime
+as its cwd during interruption. After the recipe exits, an explicit pipe release
+and child completion remove that in-use protection. The next recorded run's sweep
+then encounters an existing stopped runtime containing the original work. No
+repository is copied back and no run record is fabricated.
 Acceptance covers these distinct cases:
 
 | Case | Required observation |
@@ -198,8 +203,13 @@ resolved executables. `gh`, `claude`, and `codex` resolve exclusively to fixture
 Required workflow assets are staged into the private environment.
 
 The environment excludes hosting tokens, model credentials, SSH agents, inherited
-Git configuration, and credential helpers. Git transport is restricted to local
-files. CI network isolation is established and verified before orchestration;
+Git configuration, and credential helpers. Git permits only local files and the fixture hosting transport. Git's standard
+remote-helper `connect` protocol binds the logical GitHub URL to real local
+`git-upload-pack` and `git-receive-pack` processes; it opens no network socket.
+This preserves provider discovery through `git remote get-url`: a URL rewrite
+would make that command report a local path and select the non-GitHub workflow.
+The helper accepts only this case's configured repository identity and local
+bare origin, records every connection, and refuses other commands and URLs. CI network isolation is established and verified before orchestration;
 environment scrubbing alone is insufficient. An unavailable isolation prerequisite
 is a harness failure. Real user configuration, including `~/.claude` and
 `~/.amplihack`, is never accessed by scenario execution.
@@ -252,3 +262,18 @@ on that exact SHA. A green run for an older commit cannot admit a different tree
 The [release stamp commit](ci-pipeline.md#release-tags-point-at-a-stamp-commit)
 is the documented version-stamping child of that tested source commit. No
 separate scenario release bypass or live-model credentials are required.
+
+## Recorded baseline allowances
+
+CI [run 44372174792](https://github.com/rysweet/amplihack-rs/actions/runs/44372174792)
+at tested merge commit `5b834d309ba2efcf464824dc8c89dcb3c5ac7982` supplies the
+records in `tests/gadugi/issue-2806/baseline/e7/`:
+
+| Issue | Allowed assertions | Observed behavior |
+| --- | --- | --- |
+| #2343 | The three `finalization-*.classification` assertions | Valid pending context returns `FAILED_IMPLEMENTATION`; missing/unreadable context returns `FAILED_INVALID_EVIDENCE` despite matching pushed/open PR heads. |
+| #2785 | `cleanup-interrupted.commit`, `.dirty`, `.explanation` | Both kinds of unpublished work disappear after interruption; cleanup does not explain preservation. |
+
+The remaining assertions have no allowance from this run. Its build and drive
+launch failures are harness errors, its other-stopped sweep lacked the required
+existing candidate, and its removal-failure setup did not produce an access error.

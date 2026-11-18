@@ -87,3 +87,38 @@ This is a harness failure, not evidence for any regression allowance. The
 correct namespace observation is /proc/self/net/dev. Persist the initial report
 and prerequisite observations before enforcing network isolation so early
 failures retain artifacts too. The expected-failure file remains empty.
+
+## First complete case collection
+
+CI run 44372174792 tested merge commit 5b834d309ba2efcf464824dc8c89dcb3c5ac7982
+and uploaded artifact 14461490286. All ten independent cases executed. Valid
+pending context produced FAILED_IMPLEMENTATION; missing and unreadable context
+produced FAILED_INVALID_EVIDENCE, with matching pushed/open PR heads and actual
+NotFound/PermissionDenied reads. Interrupted cleanup lost both committed and
+dirty work; the clean control was removed. Build and drive failed at their first
+Codex launch, before worktree resolution, so neither supplies #2802 evidence.
+
+The launcher canonicalizes executable paths, so client fixtures must be copied
+under their invocation names, not symlinked to the differently named driver.
+Global URL rewrites also affect `git remote get-url`, making provider discovery
+see a local path. The test hosting adapter therefore uses Git's documented
+remote-helper connect protocol to real local upload-pack/receive-pack processes.
+Only file and issue2806 transports are permitted, only the configured fixture
+URL/local origin is accepted, and the network namespace still has no external
+interface. This is test hosting transport support, not a Git command replacement.
+
+RuntimeGuard restores permissions within a removal candidate. The removal-error
+fixture must protect the short-runtime parent instead. Another stopped-run sweep
+also needs a process holder through the initial interruption; otherwise the
+owner's cleanup already removes the fixture before the second sweep encounters it.
+Both synchronization boundaries use pipe events and child completion.
+
+The baseline expected-failure records under tests/gadugi/issue-2806/baseline/e7
+are derived from that uploaded artifact. Only the three finalization classification
+assertions (#2343) and interrupted-run commit, dirty-file and explanation
+assertions (#2785) receive allowances. The baseline commit differs from 3af9633b
+under crates/, bins/, amplifier-bundle/ and scripts/ only in the example target
+manifest and integration-test registration; production implementation is unchanged.
+The original before-cleanup bundle and recorded run metadata are retained. No
+allowance is granted for the earlier other-stopped case (its own cleanup had
+already removed the candidate), removal-error setup, or either drive launch.
