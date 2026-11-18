@@ -7,6 +7,7 @@
 pub(crate) mod fixture;
 use fixture::{BRANCH, Fixture, PR_URL, PUBLISH, READY, executable, show, success};
 use std::fs;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
 pub fn unpushed_commit(f: &Fixture) {
@@ -448,7 +449,7 @@ fn readiness_rejection(f: &Fixture, discovery: bool) -> String {
     // Each case needs a fresh recovery decision and evidence, even in a loop.
     let recovery = f.root.join("recovery");
     fs::remove_dir_all(&recovery).unwrap();
-    fs::create_dir(&recovery).unwrap();
+    fs::DirBuilder::new().mode(0o700).create(&recovery).unwrap();
     let evidence_path = f.root.join("recovery-evidence.json");
     let _ = fs::remove_file(&evidence_path);
     fs::write(f.root.join("events"), "").unwrap();
