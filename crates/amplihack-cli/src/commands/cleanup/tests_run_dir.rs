@@ -1089,7 +1089,7 @@ fn runtime_guard_removes_a_folder_whose_worktree_is_clean_and_pushed() {
 }
 
 #[test]
-fn runtime_guard_removes_a_self_contained_repository_with_the_folder() {
+fn runtime_guard_keeps_a_self_contained_repository_with_the_folder() {
     let _procs = fake_proc_scope();
     let (_tmp, rt, _) = runtime_and_repository();
     let fixture = rt.join("tmp/fixture");
@@ -1100,9 +1100,9 @@ fn runtime_guard_removes_a_self_contained_repository_with_the_folder() {
 
     assert_eq!(
         RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
-        RuntimeRemoval::Removed
+        RuntimeRemoval::KeptForWork
     );
-    assert!(!rt.exists());
+    assert!(fixture.join("uncommitted.txt").is_file());
 }
 
 /// Owner access is restored before the search: a worktree below a folder a
@@ -1184,4 +1184,26 @@ fn finish_keeps_a_runtime_folder_with_work_and_reports_the_runs_outcome() {
     );
     assert!(report.ended_at.is_some());
     assert!(file.is_file(), "the runtime folder and its work are kept");
+}
+
+#[test]
+fn interrupted_finalization_keeps_a_no_remote_repository_and_reports_interrupted() {
+    let _procs = fake_proc_scope();
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = scoped_workspace(tmp.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    let run_dir = ws.run_dir().unwrap().to_path_buf();
+    let tree = rt.join("tmp/only-copy");
+    std::fs::create_dir_all(&tree).unwrap();
+    git(&tree, &["init", "-q", "-b", "main"]);
+    let sha = commit(&tree, "local.txt");
+    let file = make_dirty(&tree);
+
+    ws.finish_checked(Outcome::Interrupted, Vec::new(), None, false)
+        .expect("keeping work must not turn interruption into a work failure");
+    let report = RunReport::read(&run_dir).unwrap();
+    assert_eq!(report.outcome, "interrupted");
+    assert!(report.ended_at.is_some());
+    assert!(file.is_file());
+    assert!(has_object(&tree, &sha));
 }

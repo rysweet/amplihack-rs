@@ -588,20 +588,24 @@ escaped. The full list is written to the debug log only, which is off by
 default. To see every path, run with `RUST_LOG=amplihack_cli=debug` (or
 `RUST_LOG=debug`); the entries then appear on stderr.
 
-These warnings never change the run's exit status. The runner then removes
-`runtime/` as usual. If an entry it left alone stops the removal, the folder
-stays in place and the run fails with `release owned runtime directory`
-and the underlying error. A later sweep tries again, but it fails for as long as the
-entry still belongs to another user or a folder in it is still locked, so fix
-the folder by hand as shown below.
+These warnings never change the run's exit status. The runner next inspects
+`runtime/` for repository work. If a locked or unreadable entry prevents complete
+inspection, it keeps the whole runtime folder and explains why. This is
+successful preservation: no removal is attempted, and the run's exit status
+does not change. Only after complete inspection finds no work to preserve can
+removal proceed. If that removal fails, the folder remains and the run fails
+with `release owned runtime directory` and the underlying error.
 
 This applies to the runner's own removal of `runtime/` at the end of a run.
-The sweep and `amplihack cleanup` do not change permissions: a `run-tmp`
-folder that still holds a locked folder is reported as failed and kept, and
-`amplihack cleanup` exits with a non-zero status. Give the owner access back on
-the folders only, then run the sweep again. Point `find` at the runtime folder
-itself, which is `<work root>/runs/<run id>/runtime` or, when that path is too
-long, `<work root>/r/<short id>`:
+The sweep and `amplihack cleanup` do not change permissions. If a locked entry
+prevents complete inspection, the `run-tmp` candidate is kept and reported as
+`skipped` with an inspection reason; that skip does not cause a non-zero exit.
+A removal failure after complete inspection is reported as `failed`, and
+`amplihack cleanup` exits with a non-zero status. Later sweeps inspect the
+candidate again. To allow inspection and eligible removal, give the owner
+access back on the folders only, then run the sweep again. Point `find` at the
+runtime folder itself, which is `<work root>/runs/<run id>/runtime` or, when
+that path is too long, `<work root>/r/<short id>`:
 
 ```bash
 RUNTIME="$HOME/.amplihack/work/r/3f0c9a526d1e"   # or .../runs/<run id>/runtime

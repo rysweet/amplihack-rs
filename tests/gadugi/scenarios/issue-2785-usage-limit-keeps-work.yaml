@@ -1,22 +1,16 @@
 name: issue-2785-usage-limit-keeps-work
 description: >
-  Outside-in QA for issue #2785. On 1.2.177 runs that stopped on a usage
-  limit lost the git work in their runtime folder under the work root's r/,
-  because the end of the run removed that folder whatever it held. The
-  scenario (via tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh)
-  runs `amplihack recipe run` through the pinned recipe runner, with no stub
-  runner, under env -i with a temporary HOME, TMPDIR, git configuration and
-  work root. A two-step bash recipe clones a local bare origin into
-  $TMPDIR/work, which is inside r/<id>, commits, and then stops the way a
-  usage limit stops a run, with usage-limit waiting off. With the commit
-  unpushed, the run is classified usage_limit, the runner says the runtime
-  folder is kept and why, the commit is on disk after the stop, and
-  `amplihack cleanup --apply` skips the folder with the same reason and leaves
-  the commit in place. With the commit pushed, the runtime folder is removed
-  and the commit is in the origin. Nothing reaches the network. CI's Install
-  Smoke Test job runs the driver script directly against the binary it
-  installs; CI does not run gadugi-test, so this file is for running the same
-  cases through gadugi-test by hand.
+  CI-only outside-in QA for issue #2785 using the installed CLI and pinned
+  recipe runner under a temporary HOME and work root. A recipe commits under
+  runtime storage and ends through production usage-limit finalization. The
+  same recipe relaunches with compatible inputs and work identity. It must
+  restore the repository path and commit outputs, identify the immediate
+  predecessor, reuse the completed steps, and execute a continuation that
+  reads the retained commit and file contents. A pushed, clean counterpart
+  removes its runtime folder. Missing prerequisites fail. CI's Install Smoke
+  Test job already runs the driver; this file describes it for gadugi-test.
+  Execute only in CI, never on a development host. The historical deletion
+  path remains unverified; CI results provide evidence for the tested build.
 version: "1.0"
 config:
   timeout: 900000
@@ -63,16 +57,21 @@ assertions:
     params:
       target: stdout
       expected: "PASS: unpushed: the runner said the runtime folder is kept, and why"
-  - name: cleanup-skips-the-folder
+  - name: continuation-recovers-the-interrupted-predecessor
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: unpushed: cleanup --apply skips "
-  - name: commit-on-disk-after-cleanup
+      expected: "PASS: unpushed: continuation recovered the immediate usage-limit predecessor"
+  - name: completed-commit-step-is-reused
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: unpushed: after cleanup the commit is still on disk"
+      expected: "PASS: unpushed: continuation reused the completed commit step"
+  - name: continuation-reads-retained-work
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unpushed: executed continuation read the original commit and retained contents"
   - name: pushed-folder-is-removed
     type: output_contains
     params:

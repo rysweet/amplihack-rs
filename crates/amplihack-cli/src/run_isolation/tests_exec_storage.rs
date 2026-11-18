@@ -10,13 +10,12 @@
 //!   or `None`:
 //!   - a registered worktree outside `stable` that still exists gives
 //!     `durable worktree <path> still uses its repository`, as before;
-//!   - one inside `stable`, other than `<stable>/checkout`, gives
+//!   - one inside `stable`, including `<stable>/checkout`, gives
 //!     `worktree "<path>" inside it <reason>` when `holds_work` returns
 //!     `Some(reason)`;
 //!   - past `limit` calls of `holds_work` the storage is kept with
 //!     `more than <limit> worktrees inside it to check`;
-//!   - `<stable>/checkout` is left out by an exact comparison of canonical
-//!     paths, so a worktree nested below it is still checked.
+//!   - the primary checkout and a worktree nested below it are both checked.
 //!
 //! The registrations are written by hand, as `git worktree add` writes them,
 //! so no git runs here.
@@ -73,11 +72,17 @@ fn a_worktree_inside_the_storage_that_holds_work_keeps_it() {
 }
 
 #[test]
-fn the_private_checkout_is_not_checked() {
+fn the_private_checkout_is_checked() {
     let (_tmp, stable) = storage();
     register(&stable, "checkout", &stable.join("checkout"));
 
-    assert_eq!(live_dependant_with(&stable, always, 64).unwrap(), None);
+    let checkout = stable.join("checkout");
+    assert_eq!(
+        live_dependant_with(&stable, always, 64).unwrap(),
+        Some(format!(
+            "worktree {checkout:?} inside it has uncommitted changes"
+        ))
+    );
 }
 
 #[test]
@@ -88,7 +93,14 @@ fn a_worktree_nested_below_the_checkout_is_checked() {
     register(&stable, "nested", &nested);
 
     assert_eq!(
-        live_dependant_with(&stable, always, 64).unwrap(),
+        live_dependant_with(
+            &stable,
+            |path| {
+                (path.file_name().unwrap() == "nested").then(|| "has uncommitted changes".into())
+            },
+            64
+        )
+        .unwrap(),
         Some(format!(
             "worktree {nested:?} inside it has uncommitted changes"
         ))

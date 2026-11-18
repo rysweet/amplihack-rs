@@ -72,3 +72,219 @@ fn no_trace_target_is_set_in_place_of_the_callers() {
         );
     }
 }
+
+// Issue #2785: release must inspect every repository that its recursive
+// deletion or forced worktree removal would destroy, including the primary
+// checkout. Use the same real Git checks production supplies.
+#[test]
+fn checkout_release_keeps_primary_work_and_its_backing_metadata() {
+    use crate::commands::cleanup::{
+        git_fixture::{commit, git, make_dirty, origin_and_clone},
+        git_work::tree_work,
+    };
+    use std::fs;
+    for state in ["clean", "dirty", "unpushed", "both"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, caller) = origin_and_clone(&tmp.path().join("source"));
+        let scratch = tmp.path().join("runtime");
+        fs::create_dir(&scratch).unwrap();
+        let mut checkout =
+            RunCheckout::prepare_with_inputs(&caller, &scratch, false, &[], None, tree_work)
+                .unwrap();
+        let root = checkout.exec_dir().to_path_buf();
+        let sha = if state == "unpushed" || state == "both" {
+            commit(&root, "local.txt")
+        } else {
+            git(&root, &["rev-parse", "HEAD"])
+        };
+        if state == "dirty" || state == "both" {
+            make_dirty(&root);
+        }
+        checkout
+            .remove()
+            .expect("intentional preservation succeeds");
+        drop(checkout);
+        if state == "clean" {
+            assert!(!root.exists(), "clean, pushed checkout is removable");
+        } else {
+            assert!(root.is_dir(), "{state}: release or Drop removed local work");
+            assert_eq!(git(&root, &["rev-parse", "HEAD"]), sha);
+            assert!(
+                !git(&root, &["show", "HEAD:base.txt"]).is_empty(),
+                "backing objects must survive"
+            );
+            if state != "unpushed" {
+                assert!(root.join("uncommitted.txt").is_file());
+            }
+        }
+    }
+}
+
+#[test]
+fn checkout_release_keeps_ignored_nested_work_and_supporting_repository() {
+    use crate::commands::cleanup::{
+        git_fixture::{clone_of, commit, git, origin_and_clone},
+        git_work::tree_work,
+    };
+    use std::fs;
+    for beneath_checkout in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (origin, caller) = origin_and_clone(&tmp.path().join("source"));
+        let scratch = tmp.path().join("runtime");
+        fs::create_dir(&scratch).unwrap();
+        let mut checkout =
+            RunCheckout::prepare_with_inputs(&caller, &scratch, false, &[], None, tree_work)
+                .unwrap();
+        let root = checkout.exec_dir().to_path_buf();
+        let common = std::path::PathBuf::from(git(
+            &root,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        ));
+        fs::create_dir_all(common.join("info")).unwrap();
+        fs::write(common.join("info/exclude"), "nested/\n").unwrap();
+        let parent = if beneath_checkout {
+            root.clone()
+        } else {
+            root.parent().unwrap().to_path_buf()
+        };
+        let nested = clone_of(&origin, &parent.join("nested"));
+        let sha = commit(&nested, "only-copy.txt");
+        assert!(git(&root, &["status", "--porcelain"]).is_empty());
+
+        checkout
+            .remove()
+            .expect("keeping work must not fail finalization");
+        drop(checkout);
+        assert!(
+            nested.is_dir(),
+            "nested repository lost, beneath_checkout={beneath_checkout}"
+        );
+        assert_eq!(git(&nested, &["rev-parse", "HEAD"]), sha);
+    }
+}
+
+#[test]
+fn storage_reclaim_preserves_real_primary_and_unregistered_nested_work() {
+    use super::run_checkout::exec_storage::{self, Claim, Verdict};
+    use crate::commands::cleanup::{
+        git_fixture::{clone_of, commit, git, make_dirty, origin_and_clone},
+        git_work::tree_work,
+    };
+    use std::fs;
+    for nested in [false, true] {
+        for state in ["clean", "dirty", "unpushed"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let (origin, _) = origin_and_clone(&tmp.path().join("source"));
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            let stable = tmp.path().join("identity");
+            let owner = tmp.path().join("ended-run");
+            fs::create_dir(&owner).unwrap();
+            assert!(matches!(
+                exec_storage::claim(&stable, &owner, |_| Ok(true), tree_work).unwrap(),
+                Claim::Claimed(_)
+            ));
+            let repository = stable.join("repository.git");
+            git(
+                tmp.path(),
+                &[
+                    "clone",
+                    "-q",
+                    "--bare",
+                    origin.to_str().unwrap(),
+                    repository.to_str().unwrap(),
+                ],
+            );
+            git(
+                &repository,
+                &["update-ref", "refs/remotes/origin/main", "HEAD"],
+            );
+            let checkout = stable.join("checkout");
+            git(
+                &repository,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "--detach",
+                    checkout.to_str().unwrap(),
+                    "HEAD",
+                ],
+            );
+            let tree = if nested {
+                clone_of(&origin, &stable.join("unregistered/work"))
+            } else {
+                checkout.clone()
+            };
+            let sha = if state == "unpushed" {
+                commit(&tree, "local.txt")
+            } else {
+                git(&tree, &["rev-parse", "HEAD"])
+            };
+            if state == "dirty" {
+                make_dirty(&tree);
+            }
+
+            let verdict = exec_storage::reclaim(&stable, |_| Ok(true), tree_work).unwrap();
+            if state == "clean" {
+                assert!(matches!(verdict, Verdict::Reclaimable(_)), "{verdict:?}");
+                assert!(!stable.exists());
+            } else {
+                let Verdict::Kept(reason) = verdict else {
+                    panic!("nested={nested}, {state}: {verdict:?}");
+                };
+                assert!(
+                    reason.contains(if state == "dirty" {
+                        "uncommitted"
+                    } else {
+                        "unpushed"
+                    }) || reason.contains("no remote branch"),
+                    "{reason}"
+                );
+                assert_eq!(git(&tree, &["rev-parse", "HEAD"]), sha);
+                if state == "dirty" {
+                    assert!(tree.join("uncommitted.txt").is_file());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn tombstone_removal_keeps_work_created_before_reclamation_was_interrupted() {
+    use super::run_checkout::exec_storage;
+    use crate::commands::cleanup::git_fixture::{
+        clone_of, commit, git, make_dirty, origin_and_clone,
+    };
+    use std::fs;
+    for state in ["clean", "dirty", "unpushed"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (origin, _) = origin_and_clone(&tmp.path().join("source"));
+        let tombstone = tmp.path().join(".reclaim-2785");
+        fs::create_dir(&tombstone).unwrap();
+        let tree = clone_of(&origin, &tombstone.join("work"));
+        let sha = if state == "unpushed" {
+            commit(&tree, "local.txt")
+        } else {
+            git(&tree, &["rev-parse", "HEAD"])
+        };
+        if state == "dirty" {
+            make_dirty(&tree);
+        }
+
+        let result = exec_storage::remove_tombstone(&tombstone, None);
+        if state == "clean" {
+            result.unwrap();
+            assert!(!tombstone.exists());
+        } else {
+            assert!(
+                tree.is_dir(),
+                "{state}: tombstone removal destroyed work: {result:?}"
+            );
+            assert_eq!(git(&tree, &["rev-parse", "HEAD"]), sha);
+            if state == "dirty" {
+                assert!(tree.join("uncommitted.txt").is_file());
+            }
+        }
+    }
+}

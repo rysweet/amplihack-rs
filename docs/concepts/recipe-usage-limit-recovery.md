@@ -202,7 +202,8 @@ The checkout-location evidence is narrower than the reported loss:
 A step can create an independent clone or worktree beneath its runtime
 `TMPDIR`. Deleting that runtime directory therefore risks deleting repository
 work regardless of where the primary execution checkout lives. Behavioral
-fixtures and the CI continuation scenario exercise that boundary.
+fixtures exercise that boundary; the CI continuation acceptance criteria below
+require exercising it across a relaunch as well.
 
 The issue reports runtime loss for `r/975c30488cc0`, `r/38e7ac3816f1` and
 `r/8814ce575634`. Their original checkout paths, contents immediately before
@@ -220,32 +221,40 @@ run. The incident discussion remains in issue #2785.
 
 ## CI continuation contract
 
-The release evidence is the passing CI-only scenario driven by
+**[CI verification pending]** The required release evidence is a
+passing CI-only continuation scenario driven by
 `tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh` and described
 by `tests/gadugi/scenarios/issue-2785-usage-limit-keeps-work.yaml`.
-CI's `install-smoke` job uses the installed Amplihack binary and pinned recipe
-runner. Missing prerequisites fail the scenario. It is never executed on a
-development host.
+The driver declares recovery outputs for the repository path and commit,
+relaunches the unpushed case with the same identity, and requires an executed
+continuation to read the retained repository. The pushed counterpart checks
+clean removal. These assertions require verification in CI; local component
+tests and static validation of the driver do not supply release evidence.
 
-The scenario executes a real recipe under a temporary HOME and work root,
-with an isolated Git configuration and local bare origin. A completed step
-creates a commit in a repository beneath runtime storage and records its path
+Run the scenario only in CI's `install-smoke` job using the installed Amplihack
+binary and pinned recipe runner. Missing prerequisites must fail the scenario.
+Do not execute it on a development host, directly or through `gadugi-test`;
+the driver's build fallback does not authorize local execution.
+
+The scenario must execute a real recipe under a temporary HOME and work root,
+with an isolated Git configuration and local bare origin. A completed step must
+create a commit in a repository beneath runtime storage and record its path
 and commit output using supported recovery declarations. A subsequent step
-exercises the production usage-limit interruption lifecycle. Normal
-finalization runs, retains the work and reports why.
+must exercise the production usage-limit interruption lifecycle. Normal
+finalization must run, retain the work and report why.
 
-A second launch uses the same recipe, compatible inputs, repository and issue
-identity, and work root. It verifies predecessor and recovery evidence and
-executes a continuation step that reads the retained repository, checks the
-original commit and verifies its contents. The test does not equate finding a
-SHA with executing continuation. Synthetic inactive metadata, a classification
-check alone, and manual cleanup after interruption do not demonstrate this
-contract. A clean, fully pushed counterpart confirms eligible removal.
+A second launch must use the same recipe, compatible inputs, repository and
+issue identity, and work root. It must verify predecessor and recovery evidence
+and execute a continuation step that reads the retained repository, checks the
+original commit and verifies its contents. Finding a SHA alone is insufficient.
+Synthetic inactive metadata, a classification check alone, and manual cleanup
+after interruption do not demonstrate this contract. A clean, fully pushed
+counterpart must confirm eligible removal.
 
 The driver uses Bash to exercise installed commands through the existing QA
-harness; implementation remains Rust. Fixtures never touch the real
-`~/.claude` or `~/.amplihack`. Tests neither read source text nor depend on
-timers or retries.
+harness; implementation remains Rust. Fixtures must never touch the real
+`~/.claude` or `~/.amplihack`. Tests must neither read source text nor depend
+on timers or retries.
 
 ## Durability and trust
 

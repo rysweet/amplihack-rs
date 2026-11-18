@@ -733,7 +733,7 @@ fn remove_target_refuses_a_shape_change_at_apply() {
 // Contract:
 // - `end_of_run_inner(work_root: &WorkRoot) -> Result<EndOfRun>`, with
 //   `EndOfRun { entries: Vec<Entry>, warnings: Vec<String> }`, is the code
-//   `end_of_run` runs; `end_of_run` prints `warnings` and nothing else;
+//   `end_of_run` runs; `end_of_run` prints preservation reasons and failures;
 // - `run-tmp` keeps a folder with git work as a `skipped` entry whose reason
 //   is `git_work::work_inside`'s, at plan time and again at apply time;
 // - a kept-for-work skip alone writes no `cleanup-record.json`;
@@ -800,7 +800,7 @@ fn first_sweep_lock_released(fx: &Fx) {
 
 /// R10: a worktree inside the stopped run's folder, of a repository outside
 /// it, holds an uncommitted file and an unpushed commit. The end-of-run sweep
-/// keeps the folder, says why, prints nothing about it and writes no record.
+/// keeps the folder and exposes why through its normal output.
 #[test]
 fn end_of_run_keeps_a_stopped_runs_folder_whose_worktree_holds_work() {
     for ended in [true, false] {
@@ -827,8 +827,13 @@ fn end_of_run_keeps_a_stopped_runs_folder_whose_worktree_holds_work() {
         );
         assert!(has_object(&wt, &sha), "ended={ended}: the commit is kept");
         assert!(
-            outcome.warnings.is_empty(),
-            "ended={ended}: a folder kept for work is not printed: {:?}",
+            outcome
+                .warnings
+                .iter()
+                .any(|line| line.contains(&format!("{runtime:?}"))
+                    && line.contains(&format!("{wt:?}"))
+                    && line.contains("uncommitted")),
+            "ended={ended}: preservation must be visible: {:?}",
             outcome.warnings
         );
         assert!(
@@ -882,10 +887,9 @@ fn end_of_run_keeps_a_clone_inside_the_folder_with_an_unpushed_commit() {
     assert!(has_object(&work, &sha));
 }
 
-/// R8: a repository made inside the folder, with nothing outside referring to
-/// it, does not keep the folder.
+/// A repository's lack of a remote must never authorize losing its work.
 #[test]
-fn end_of_run_removes_a_self_contained_repository_with_the_folder() {
+fn end_of_run_keeps_a_self_contained_repository_with_the_folder() {
     let fx = Fx::new();
     let (_, runtime) = stopped_run(&fx, true);
     let fixture = runtime.join("tmp/fixture");
@@ -896,8 +900,16 @@ fn end_of_run_removes_a_self_contained_repository_with_the_folder() {
 
     let outcome = end_of_run_inner(&fx.work).unwrap();
 
-    assert_eq!(entry(&outcome.entries, &runtime).action, Action::Removed);
-    assert!(!runtime.exists());
+    assert_eq!(entry(&outcome.entries, &runtime).action, Action::Skipped);
+    assert!(fixture.join("uncommitted.txt").is_file());
+    assert!(
+        outcome
+            .warnings
+            .iter()
+            .any(|line| line.contains(&format!("{fixture:?}")) && line.contains("uncommitted")),
+        "{:?}",
+        outcome.warnings
+    );
 }
 
 /// `--apply` searches again just before removal: work made after the plan
@@ -1041,5 +1053,198 @@ fn a_failure_recorded_by_a_manual_sweep_is_not_warned_about_at_end_of_run() {
             .any(|w| w.contains(&format!("{runtime:?}"))),
         "{:?}",
         end.warnings
+    );
+}
+
+/// Either kind of local work keeps an older run while unrelated eligible
+/// runtime storage is still removed by the same end-of-run sweep.
+#[test]
+fn end_of_run_keeps_each_kind_of_work_and_cleans_another_run() {
+    for state in ["clean", "dirty", "unpushed", "both"] {
+        let fx = Fx::new();
+        let (origin, _) = origin_and_clone(&fx.root.join("src"));
+        let (_, runtime) = stopped_run(&fx, false);
+        let tree = clone_of(&origin, &runtime.join("tmp/work"));
+        let sha = if state == "unpushed" || state == "both" {
+            commit(&tree, "local.txt")
+        } else {
+            git(&tree, &["rev-parse", "HEAD"])
+        };
+        if state == "dirty" || state == "both" {
+            make_dirty(&tree);
+        }
+        let other = fx.run(&[]).join("runtime");
+
+        let result = end_of_run_inner(&fx.work).unwrap();
+        assert_eq!(
+            entry(&result.entries, &other).action,
+            Action::Removed,
+            "{state}: {result:?}"
+        );
+        assert!(!other.exists());
+        if state == "clean" {
+            assert_eq!(entry(&result.entries, &runtime).action, Action::Removed);
+            assert!(!runtime.exists());
+        } else {
+            let kept = entry(&result.entries, &runtime);
+            assert_eq!(kept.action, Action::Skipped, "{state}: {kept:?}");
+            assert!(
+                has_object(&tree, &sha),
+                "{state}: the retained repository remains usable"
+            );
+            if state != "unpushed" {
+                assert!(tree.join("uncommitted.txt").is_file());
+            }
+            assert!(
+                result
+                    .warnings
+                    .iter()
+                    .any(|line| line.contains(&format!("{runtime:?}"))
+                        && line.contains(&format!("{tree:?}"))
+                        && line.contains(if state == "unpushed" {
+                            "unpushed"
+                        } else {
+                            "uncommitted"
+                        })),
+                "{state}: preservation must reach normal end-of-run output: {:?}",
+                result.warnings
+            );
+        }
+    }
+}
+
+/// Legacy run targets also need the recursive check, including changes made
+/// after a clean plan was collected.
+#[test]
+fn run_target_apply_keeps_new_work_in_a_nested_repository() {
+    let fx = Fx::new();
+    let (origin, _) = origin_and_clone(&fx.root.join("src"));
+    let target = cargo_target(&fx.work.targets_dir().join("target-with-work"));
+    let tree = clone_of(&origin, &target.join("debug/fixture"));
+    fx.run(&[&target]);
+    let settings = fx.settings(&[Category::RunTarget]);
+    let items = collect(&settings).unwrap();
+    assert!(
+        items
+            .iter()
+            .any(|item| item.path == target && !matches!(item.op, Op::Skip)),
+        "{items:#?}"
+    );
+    let sha = commit(&tree, "after-plan.txt");
+
+    let entries = apply_items(items, &settings, true);
+    let kept = entry(&entries, &target);
+    assert_eq!(kept.action, Action::Skipped, "{kept:?}");
+    assert!(kept.reason.contains("unpushed"), "{kept:?}");
+    assert!(has_object(&tree, &sha));
+}
+
+#[test]
+fn end_of_run_removal_warning_survives_a_missing_or_unwritable_run_record() {
+    assert!(
+        !running_as_root(),
+        "run permission coverage as an unprivileged user"
+    );
+    for unwritable in [false, true] {
+        let fx = Fx::new();
+        let (run_dir, runtime) = stopped_run(&fx, true);
+        let locked = runtime.join("artifacts/locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(locked.join("only-copy"), "data").unwrap();
+        chmod(&locked, 0o500);
+        let _restore = Unlock(locked.clone());
+        let quoted = format!("{runtime:?}");
+        let first = end_of_run_inner(&fx.work).unwrap();
+        assert_eq!(entry(&first.entries, &runtime).action, Action::Failed);
+        assert_eq!(
+            first
+                .warnings
+                .iter()
+                .filter(|line| line.contains(&quoted))
+                .count(),
+            1
+        );
+        let persisted = fx.work.path.join("cleanup-failures.json");
+        assert!(
+            persisted.is_file(),
+            "warning state must live outside the failed folder and its run record"
+        );
+        // Simulate a lost record; a read-only run folder additionally prevents
+        // the next sweep from replacing it. The runtime is stored separately.
+        if run_dir.join(CLEANUP_RECORD).exists() {
+            fs::remove_file(run_dir.join(CLEANUP_RECORD)).unwrap();
+        }
+        let _restore_run = Unlock(run_dir.clone());
+        if unwritable {
+            chmod(&run_dir, 0o500);
+        }
+        let other = fx.run(&[]).join("runtime");
+        first_sweep_lock_released(&fx);
+        let second =
+            end_of_run_inner(&fx.work).expect("record persistence cannot block unrelated cleanup");
+        assert_eq!(entry(&second.entries, &runtime).action, Action::Failed);
+        assert_eq!(entry(&second.entries, &other).action, Action::Removed);
+        assert!(!other.exists());
+        assert!(
+            !second
+                .warnings
+                .iter()
+                .any(|line| line.contains("could not remove") && line.contains(&quoted)),
+            "same path was warned about twice: {:?}",
+            second.warnings
+        );
+        // Successful removal clears obsolete suppression state.
+        chmod(&run_dir, 0o700);
+        chmod(&locked, 0o700);
+        first_sweep_lock_released(&fx);
+        let third = end_of_run_inner(&fx.work).unwrap();
+        assert_eq!(entry(&third.entries, &runtime).action, Action::Removed);
+        if persisted.exists() {
+            let record = fs::read_to_string(&persisted).unwrap();
+            assert!(!record.contains(runtime.to_str().unwrap()), "{record}");
+        }
+    }
+}
+
+#[test]
+fn owned_worktree_apply_preserves_new_work_in_an_ignored_nested_clone() {
+    let fx = Fx::new();
+    let (origin, main) = origin_and_clone(&fx.root.join("src"));
+    let wt = clean_pushed_worktree(&main, &fx.work.worktrees_dir().join("repo/task"), "task");
+    let common = PathBuf::from(git(
+        &wt,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    ));
+    fs::write(common.join("info/exclude"), "nested/\n").unwrap();
+    let nested = clone_of(&origin, &wt.join("nested"));
+    let owned = format_owned_line(&OwnedPath {
+        kind: OwnedKind::Worktree,
+        path: wt.clone(),
+        branch: Some("task".into()),
+        target: None,
+    });
+    seed(&fx, STOPPED_RUN, false, &owned);
+    let settings = fx.settings(&[Category::RunWorktree]);
+    let items = collect(&settings).unwrap();
+    assert!(
+        items
+            .iter()
+            .any(|item| item.path == wt && matches!(item.op, Op::RemoveWorktree { .. })),
+        "{items:#?}"
+    );
+    let sha = commit(&nested, "after-plan.txt");
+    assert!(git(&wt, &["status", "--porcelain"]).is_empty());
+
+    let entries = apply_items(items, &settings, true);
+    let kept = entry(&entries, &wt);
+    assert_eq!(kept.action, Action::Skipped, "{kept:?}");
+    assert!(
+        kept.reason.contains(&format!("{nested:?}")) && kept.reason.contains("unpushed"),
+        "{kept:?}"
+    );
+    assert!(has_object(&nested, &sha));
+    assert!(
+        !git(&wt, &["rev-parse", "HEAD"]).is_empty(),
+        "backing metadata remains usable"
     );
 }

@@ -278,18 +278,49 @@ fn a_step_that_stages_and_commits_leaves_caller_index_head_files_and_config_unch
 }
 
 #[test]
-fn the_run_checkout_is_removed_when_the_run_ends() {
+fn the_clean_pushed_run_checkout_is_removed_when_the_run_ends() {
     let f = Fixture::new();
+    let origin = f.root.join("origin.git");
+    f.git(&[
+        "clone",
+        "-q",
+        "--bare",
+        f.repo.to_str().unwrap(),
+        origin.to_str().unwrap(),
+    ]);
+    f.git(&["remote", "add", "origin", origin.to_str().unwrap()]);
+    f.git(&["push", "-qu", "origin", "HEAD"]);
     let before = f.worktrees();
-    succeeds(
-        &f.command("gone")
-            .env("ISSUE_2096_STAGE", "1")
-            .output()
-            .unwrap(),
-    );
+    succeeds(&f.command("gone").output().unwrap());
     let cwd = String::from_utf8(f.observed("gone", "cwd")).unwrap();
     assert!(!Path::new(&cwd).exists(), "{cwd} was left behind");
     assert_eq!(f.worktrees(), before, "the worktree record was left behind");
+}
+
+#[test]
+fn the_run_checkout_with_an_unpushed_commit_is_kept_and_reported() {
+    let f = Fixture::new();
+    let output = f
+        .command("kept")
+        .env("ISSUE_2096_STAGE", "1")
+        .output()
+        .unwrap();
+    succeeds(&output);
+    let cwd = PathBuf::from(String::from_utf8(f.observed("kept", "cwd")).unwrap());
+    assert!(
+        cwd.is_dir(),
+        "the run's only copy of its commit was deleted"
+    );
+    assert_eq!(
+        f.git_in(&cwd, &["show", "HEAD:run-output"]),
+        b"private output\n"
+    );
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        text.contains(cwd.to_str().unwrap())
+            && (text.contains("unpushed") || text.contains("no remote branch")),
+        "checkout preservation must be visible in normal output: {text}"
+    );
 }
 
 #[test]

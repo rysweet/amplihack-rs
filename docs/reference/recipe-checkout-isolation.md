@@ -741,7 +741,7 @@ isolation test cannot pass on empty data.
 | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` | Review generation checks, `REVIEW_DIR_CHANGED` and `REVIEW_DIR_UNSTAMPED`. |
 | `tests/issue_1437_autodrive_loop.sh` | The #1437 loop contract with review generations in place; the default case (`NOT_READY`, then `MERGE_READY`, ending `DONE`) also checks that `review-release` runs exactly once and that no round starts in the PR worktree or the main checkout. Failure cases are listed below. |
 | `tests/gadugi/run-issue-2778-umask-crusty-scenario.sh`, scenario `tests/gadugi/scenarios/issue-2778-crusty-loop-under-umask-0002.yaml` | The two calls of step-02 of `autodrive-crusty-loop.yaml`, in that order, under umask `002`: the binary's own `internal review-allocate`, then the shipped `autodrive_loop.sh`. `gh` and the agent CLIs are stubs, and the `amplihack recipe` entry point is a stub that runs a stand-in round; that round runs the shipped `autodrive_crusty_record.sh` and the binary's own `orch helper autodrive-completion-write`. Every scenario command runs under `env -i` with a temporary `HOME`. It prints `PASS:` or `FAIL:` for each of five cases (the allocation directory is `0700`; no `untrusted-*` folder in the state dir; the round saw the review checkout; the loop exits 0 with `crusty-latest.json` written; no unexpected command was called), then `ALL_CASES_PASSED` or `SCENARIO_FAILED`. It uses the binary named by `AMPLIHACK_2778_QA_BIN` when that is set; otherwise it builds the checkout's binary with `cargo build`, in the caller's environment, before the scenario starts. CI runs it in the `install-smoke` job with `AMPLIHACK_2778_QA_BIN="$(command -v amplihack)"`, the binary that job has just installed. |
-| `tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh`, scenario `tests/gadugi/scenarios/issue-2785-usage-limit-keeps-work.yaml` | CI-only recipe execution and continuation using installed Amplihack and the pinned runner, isolated temporary HOME and work root, and a local bare origin. A production usage-limit interruption finalizes normally; the continuation executes and reads the retained repository and original commit. A clean-pushed counterpart is removed. Missing prerequisites fail CI. See [the continuation contract](../concepts/recipe-usage-limit-recovery.md#ci-continuation-contract). |
+| `tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh`, scenario `tests/gadugi/scenarios/issue-2785-usage-limit-keeps-work.yaml` | Installed Amplihack and the pinned runner, isolated temporary HOME and work root, and a local bare origin. Declares recovery outputs, stops through usage-limit finalization, and relaunches the unpushed case to require predecessor evidence, reused steps and an executed continuation reading the retained commit and contents. A clean, pushed counterpart checks removal. Missing prerequisites fail. **[CI verification pending]** These assertions are not release evidence until CI passes. See [the continuation contract](../concepts/recipe-usage-limit-recovery.md#ci-continuation-contract). |
 
 Every file under `crates/amplihack-cli/tests/` is a module of one test
 binary. The crate sets `autotests = false`, so a test file is compiled only
@@ -767,10 +767,12 @@ cargo test -p amplihack-cli --lib commands::hygiene::cleanup::
 cargo test -p amplihack-cli --lib commands::recipe::run::run_checkout::exec_storage::
 ```
 
-The issue 2785 recipe scenario runs only in CI's `install-smoke` job, against
-the installed binary and pinned runner. Do not run it on a development host.
-Its passing continuation result supplies release evidence; local unit tests
-alone do not establish continuation.
+Run the issue 2785 recipe scenario only in CI's `install-smoke` job, against
+the installed binary and pinned runner. Do not run it on a development host,
+directly or through `gadugi-test`, even though the driver retains a build
+fallback. Continuation release evidence requires the acceptance criteria above
+to pass in CI. Local component tests and static driver checks do not establish
+continuation.
 
 Behavioral coverage also checks target destinations and edits made between
 planning and removal. Tests assert retained files, commit usability, structured

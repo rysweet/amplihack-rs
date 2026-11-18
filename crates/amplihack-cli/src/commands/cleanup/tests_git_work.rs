@@ -16,8 +16,7 @@
 //!   tree_limit: usize, uid: u32, gid: u32 }` and
 //!   `fn work_inside_with(folder: &Path, policy: &Policy) -> Option<String>`;
 //! - `pub(crate) fn tree_work(tree: &Path) -> Option<String>`: the bare reason
-//!   for one tree (`has uncommitted changes`, ...), with the same owner and
-//!   mode rules for the effective uid and gid;
+//!   for one tree (`has uncommitted changes`, ...);
 //! - `pub(crate) fn printable(text: &str) -> String`: C0, C1 and DEL escaped;
 //! - a reason about a tree is `git tree {tree:?} {reason}`.
 //!
@@ -32,7 +31,7 @@
 
 use super::*;
 use std::fs;
-use std::os::unix::fs::{MetadataExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -46,7 +45,6 @@ use crate::commands::cleanup::git_fixture::{
 const DIRTY: &str = "has uncommitted changes";
 const AHEAD: &str = "has unpushed commits";
 const NO_UPSTREAM: &str = "has no upstream and commits on no remote branch";
-const NOT_INSPECTED: &str = "is writable by other users and was not inspected";
 
 /// A canonical temporary root, so paths in reasons compare equal.
 fn scratch() -> (tempfile::TempDir, PathBuf) {
@@ -144,10 +142,10 @@ fn the_first_tree_with_work_in_path_order_gives_the_reason() {
     assert_eq!(work_inside(&folder, None), Some(tree_reason(&dirty, DIRTY)));
 }
 
-// ----- trees that go with the folder ------------------------------------------
+// ----- self-contained repositories ------------------------------------------
 
 #[test]
-fn a_self_contained_repository_goes_with_the_folder() {
+fn a_self_contained_dirty_repository_keeps_the_folder() {
     let (_tmp, root) = scratch();
     let folder = root.join("folder");
     let fixture = folder.join("tmp/fixture");
@@ -158,31 +156,31 @@ fn a_self_contained_repository_goes_with_the_folder() {
 
     assert_eq!(
         work_inside(&folder, None),
-        None,
-        "a `git init` with no remote is not checked, however much work it holds"
+        Some(tree_reason(&fixture, DIRTY)),
+        "no remote does not make uncommitted work disposable"
     );
 }
 
 #[test]
-fn a_clone_of_an_origin_in_the_same_folder_goes_with_the_folder() {
+fn a_clone_of_an_origin_in_the_same_folder_keeps_uncommitted_work() {
     let (_tmp, root) = scratch();
     let folder = root.join("folder");
     let (origin, clone) = origin_and_clone(&folder.join("tmp/fixture"));
     commit(&clone, "ahead.txt");
     make_dirty(&clone);
-    assert_eq!(work_inside(&folder, None), None, "absolute path inside");
+    assert_eq!(work_inside(&folder, None), Some(tree_reason(&clone, DIRTY)));
 
     let url = format!("file://{}", origin.display());
     git(&clone, &["remote", "set-url", "origin", &url]);
     assert_eq!(
         work_inside(&folder, None),
-        None,
-        "a file:// URL with no host inside the folder is inside too"
+        Some(tree_reason(&clone, DIRTY)),
+        "a file URL does not change the preservation decision"
     );
 }
 
 #[test]
-fn a_stray_git_folder_inside_a_dirty_repository_is_not_a_tree() {
+fn a_stray_git_folder_preserves_the_candidate_when_inspection_is_incomplete() {
     let (_tmp, root) = scratch();
     // The folder lies inside a dirty repository with a remote outside it.
     let outer = root.join("outer");
@@ -197,15 +195,14 @@ fn a_stray_git_folder_inside_a_dirty_repository_is_not_a_tree() {
     let folder = outer.join("inside");
     fs::create_dir_all(folder.join("sub/.git")).unwrap();
 
-    assert_eq!(
-        work_inside(&folder, None),
-        None,
-        "git finds the outer repository from sub, whose own .git is not a repository"
+    assert!(
+        work_inside(&folder, None).is_some(),
+        "invalid metadata cannot establish disposability"
     );
 }
 
 #[test]
-fn an_invalid_git_file_is_not_a_tree() {
+fn an_invalid_git_file_keeps_the_folder_with_an_explanation() {
     let (_tmp, root) = scratch();
     let folder = root.join("folder");
     let tree = folder.join("t");
@@ -213,11 +210,12 @@ fn an_invalid_git_file_is_not_a_tree() {
     fs::write(tree.join(".git"), "this is not a gitdir line\n").unwrap();
     make_dirty(&tree);
 
-    assert_eq!(work_inside(&folder, None), None);
+    let reason = work_inside(&folder, None).expect("invalid metadata keeps the folder");
+    assert!(reason.contains(&format!("{tree:?}")), "{reason}");
 }
 
 #[test]
-fn a_dangling_git_link_is_not_a_tree() {
+fn a_dangling_git_link_keeps_the_folder_with_an_explanation() {
     let (_tmp, root) = scratch();
     let folder = root.join("folder");
     let tree = folder.join("t");
@@ -225,7 +223,8 @@ fn a_dangling_git_link_is_not_a_tree() {
     symlink(root.join("nowhere/.git"), tree.join(".git")).unwrap();
     make_dirty(&tree);
 
-    assert_eq!(work_inside(&folder, None), None);
+    let reason = work_inside(&folder, None).expect("unavailable metadata keeps the folder");
+    assert!(reason.contains(&format!("{tree:?}")), "{reason}");
 }
 
 #[test]
@@ -426,93 +425,47 @@ fn the_tree_limit_keeps_the_folder() {
     assert_eq!(work_inside_with(&folder, &policy()), None);
 }
 
-// ----- owner and mode rules ---------------------------------------------------
+// ----- incomplete inspection and repository contents --------------------------
 
 #[test]
-fn a_tree_of_another_user_is_not_inspected_and_does_not_keep_the_folder() {
-    let (_tmp, root) = scratch();
-    let (_, clone, folder) = outside_and_folder(&root);
-    let wt = linked_worktree(&clone, &folder.join("tmp/wt"), "feat");
-    make_dirty(&wt);
-    let other = Policy {
-        uid: euid().wrapping_add(1),
-        ..policy()
-    };
+fn git_configuration_mode_does_not_override_repository_contents() {
+    for mode in [0o664, 0o666] {
+        let (_tmp, root) = scratch();
+        let (origin, _, folder) = outside_and_folder(&root);
+        let work = clone_of(&origin, &folder.join("work"));
+        chmod(&work.join(".git/config"), mode);
 
-    assert_eq!(work_inside_with(&folder, &other), None);
-    assert_eq!(
-        work_inside_with(&folder, &policy()),
-        Some(tree_reason(&wt, DIRTY)),
-        "the same tree is checked for its owner"
-    );
+        assert_eq!(
+            work_inside(&folder, None),
+            None,
+            "a clean, pushed repository remains disposable"
+        );
+        make_dirty(&work);
+        assert_eq!(work_inside(&folder, None), Some(tree_reason(&work, DIRTY)));
+    }
 }
 
 #[test]
-fn a_git_config_writable_by_others_keeps_the_folder_uninspected() {
-    let (_tmp, root) = scratch();
-    let (origin, _, folder) = outside_and_folder(&root);
-    let work = clone_of(&origin, &folder.join("work"));
-    chmod(&work.join(".git/config"), 0o666);
-
-    assert_eq!(
-        work_inside(&folder, None),
-        Some(tree_reason(&work, NOT_INSPECTED)),
-        "a clean tree is still kept: git is not run where others can write"
+fn an_unreadable_index_preserves_the_repository_with_an_explanation() {
+    assert!(
+        !running_as_root(),
+        "run permission coverage as an unprivileged user"
     );
-}
-
-#[test]
-fn a_group_writable_git_config_is_inspected_only_in_the_own_group() {
     let (_tmp, root) = scratch();
     let (origin, _, folder) = outside_and_folder(&root);
     let work = clone_of(&origin, &folder.join("work"));
-    let config = work.join(".git/config");
-    chmod(&config, 0o664);
-    let group = fs::metadata(&config).unwrap().gid();
-    let own = Policy {
-        gid: group,
-        ..policy()
-    };
-    let foreign = Policy {
-        gid: group.wrapping_add(1),
-        ..policy()
-    };
+    let index = work.join(".git/index");
+    chmod(&index, 0o000);
+    let _restore = Unlock(index);
 
-    assert_eq!(
-        work_inside_with(&folder, &own),
-        None,
-        "0664 in the own group, as umask 002 leaves it, is inspected and clean"
-    );
-    make_dirty(&work);
-    assert_eq!(
-        work_inside_with(&folder, &own),
-        Some(tree_reason(&work, DIRTY))
-    );
-    assert_eq!(
-        work_inside_with(&folder, &foreign),
-        Some(tree_reason(&work, NOT_INSPECTED)),
-        "group write by a group that is not the effective one is unsafe"
-    );
+    let reason =
+        work_inside(&folder, None).expect("Git cannot establish disposability without its index");
+    assert!(reason.contains(&format!("{work:?}")), "{reason}");
+    assert!(work.is_dir());
 }
 
 #[test]
-fn a_git_file_naming_a_folder_others_can_write_keeps_the_folder_uninspected() {
-    let (_tmp, root) = scratch();
-    let (_, clone, folder) = outside_and_folder(&root);
-    let wt = clean_pushed_worktree(&clone, &folder.join("tmp/wt"), "feat");
-    let admin = admin_dir_of(&wt);
-    chmod(&admin, 0o777);
-    let _restore = Unlock(admin);
-
-    assert_eq!(
-        work_inside(&folder, None),
-        Some(tree_reason(&wt, NOT_INSPECTED))
-    );
-    assert_eq!(tree_work(&wt), Some(NOT_INSPECTED.to_string()));
-}
-
-#[test]
-fn an_unreadable_folder_inside_is_passed_over() {
+fn an_unreadable_folder_inside_keeps_the_candidate() {
     if running_as_root() {
         return;
     }
@@ -521,9 +474,38 @@ fn an_unreadable_folder_inside_is_passed_over() {
     let locked = folder.join("locked");
     fs::create_dir_all(locked.join("inner")).unwrap();
     chmod(&locked, 0o000);
-    let _restore = Unlock(locked);
+    let _restore = Unlock(locked.clone());
 
-    assert_eq!(work_inside(&folder, None), None);
+    let reason = work_inside(&folder, None).expect("an unreadable subtree may contain work");
+    assert!(reason.contains(&format!("{locked:?}")), "{reason}");
+}
+
+#[test]
+fn a_no_remote_repository_with_only_committed_work_keeps_the_folder() {
+    let (_tmp, root) = scratch();
+    let tree = root.join("folder/work");
+    fs::create_dir_all(&tree).unwrap();
+    git(&tree, &["init", "-q", "-b", "main"]);
+    commit(&tree, "only-copy.txt");
+
+    assert_eq!(
+        work_inside(&root.join("folder"), None),
+        Some(tree_reason(&tree, NO_UPSTREAM))
+    );
+}
+
+#[test]
+fn a_clean_parent_repository_does_not_hide_an_ignored_nested_repository() {
+    let (_tmp, root) = scratch();
+    let (origin, _) = origin_and_clone(&root.join("outside"));
+    let outer = clone_of(&origin, &root.join("folder"));
+    fs::write(outer.join(".git/info/exclude"), "nested/\n").unwrap();
+    let nested = clone_of(&origin, &outer.join("nested"));
+    let sha = commit(&nested, "local.txt");
+    assert!(git(&outer, &["status", "--porcelain"]).is_empty());
+
+    assert_eq!(work_inside(&outer, None), Some(tree_reason(&nested, AHEAD)));
+    assert_eq!(git(&nested, &["rev-parse", "HEAD"]), sha);
 }
 
 // ----- trivial folders --------------------------------------------------------

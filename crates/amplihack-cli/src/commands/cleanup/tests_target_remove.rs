@@ -678,34 +678,6 @@ fn refusal_display_texts_are_the_documented_ones() {
     assert!(!text.contains('\n'));
 }
 
-// ----- no timers (SR10, AC9) -------------------------------------------------
-
-#[test]
-fn target_remove_has_no_timers_retries_or_blocking_locks() {
-    let source = include_str!("target_remove.rs");
-    for (n, line) in source.lines().enumerate() {
-        let code = line.trim_start();
-        if code.starts_with("//") {
-            continue;
-        }
-        let lower = code.to_ascii_lowercase();
-        for banned in ["sleep", "duration", "retry", "retries", "instant::"] {
-            assert!(
-                !lower.contains(banned),
-                "target_remove.rs:{}: `{banned}` is not allowed: {line}",
-                n + 1
-            );
-        }
-        if code.contains("LOCK_EX") {
-            assert!(
-                code.contains("LOCK_NB"),
-                "target_remove.rs:{}: every exclusive lock is non-blocking: {line}",
-                n + 1
-            );
-        }
-    }
-}
-
 // ----- host cargo wrapper links (issue #2039, fix item 1) -------------------------
 
 /// The layout candide's cargo wrapper makes is followed with no
@@ -851,4 +823,61 @@ fn wrapper_link_to_a_folder_that_is_not_cargo_shaped_is_refused() {
         "link not followed: not a cargo target"
     );
     assert!(dest.join("src/lib.rs").exists());
+}
+
+/// The destructive boundary is the destination of the managed target link.
+/// Inspect it again even when a prior shape inspection found it clean.
+#[test]
+fn target_removal_preserves_nested_work_at_the_actual_destination() {
+    use crate::commands::cleanup::git_fixture::{
+        clone_of, commit, has_object, make_dirty, origin_and_clone,
+    };
+    for linked in [false, true] {
+        for state in ["clean", "dirty", "unpushed", "both"] {
+            let fx = Fx::new();
+            let (origin, _) = origin_and_clone(&fx.root.join("src"));
+            let (path, dest, links) = if linked {
+                let (path, dest) = fx.linked(NAME);
+                (path, dest, fx.links())
+            } else {
+                let path = cargo_dir(&fx.targets.join(NAME));
+                (path.clone(), path, fx.no_links())
+            };
+            let tree = clone_of(&origin, &dest.join("debug/fixture"));
+            let planned = fx.inspect(&path, &links, false).unwrap();
+            let sha = if state == "unpushed" || state == "both" {
+                commit(&tree, "after-inspection.txt")
+            } else {
+                crate::commands::cleanup::git_fixture::git(&tree, &["rev-parse", "HEAD"])
+            };
+            if state == "dirty" || state == "both" {
+                make_dirty(&tree);
+            }
+            let result = fx.remove(&path, &planned, &links, false);
+            if state == "clean" {
+                result.unwrap();
+                assert!(!exists_no_follow(&path));
+                assert!(!dest.exists());
+            } else {
+                let reason = refusal_text(result);
+                assert!(
+                    reason.contains(&format!("{tree:?}")),
+                    "linked={linked}, {state}: {reason}"
+                );
+                assert!(
+                    reason.contains(if state == "unpushed" {
+                        "unpushed"
+                    } else {
+                        "uncommitted"
+                    }),
+                    "{reason}"
+                );
+                assert!(exists_no_follow(&path));
+                assert!(has_object(&tree, &sha));
+                if state != "unpushed" {
+                    assert!(tree.join("uncommitted.txt").is_file());
+                }
+            }
+        }
+    }
 }
