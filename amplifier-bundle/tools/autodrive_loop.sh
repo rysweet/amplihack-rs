@@ -205,7 +205,9 @@ while :; do
     fi
   fi
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
-  REVIEWED_SHA="$(git -C "$REPO" rev-parse HEAD)" || exit 1
+  # --verify resolves to a commit or fails, so the value interpolated into the
+  # round's context is always a full lowercase hex SHA (#2808 SR-6).
+  REVIEWED_SHA="$(git -C "$REPO" rev-parse --verify --quiet 'HEAD^{commit}')" || exit 1
   COMPLETION_CTX=(); unset AUTODRIVE_COMPLETION_STATE
   [ "$LOOP_NAME" != crusty ] || . "${LOOP_HOME}/autodrive_completion_context.sh" || exit 2
   # #2575: the merge-ready round reads the previous round's write-up (none in round one) from a private file, never argv.
@@ -218,6 +220,13 @@ while :; do
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
       ${COMPLETION_CTX[@]+"${COMPLETION_CTX[@]}"} ${PRIOR_CTX[@]+"${PRIOR_CTX[@]}"} "${ROUND_CTX[@]}" -c "repo_path=${REPO}" -c "reviewed_head_sha=${REVIEWED_SHA}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
+  # #2808 SR-10: the round's pre-review baseline holds the contents of the
+  # worktree's untracked files. Every round takes its own and nothing outside
+  # the round reads one, so reclaim them here, as soon as the round that took
+  # them has returned. Best effort: this never changes the round's outcome.
+  for BASELINE_DIR in "$STATE_DIR"/pre-review.*; do
+    [ -d "$BASELINE_DIR" ] && [ ! -L "$BASELINE_DIR" ] && rm -rf -- "$BASELINE_DIR"
+  done 2>/dev/null || :
   tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 
   if terminal_refusal "$ROUND_RC" "$LOG"; then

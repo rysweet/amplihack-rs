@@ -161,6 +161,10 @@ crusty_covers() {
 
 # Ordinary workflow evidence, not a checkout, manifest or mutation gate. The
 # recipe checkpoint retains this output across an interrupted reviewer resume.
+# The directory holds the contents of the worktree's untracked files and may
+# hold secrets, so nothing outside the round reads it and autodrive_loop.sh
+# removes every pre-review.* in the state directory once the round returns
+# (#2808 SR-10).
 review_baseline() (
   umask 077
   export GIT_OPTIONAL_LOCKS=0

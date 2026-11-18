@@ -230,6 +230,24 @@ ok NO-HELPER "rc=${RC}: without autodrive_refusal.sh the loop must exit 2" test 
 ok NO-HELPER-SAYS "the error must name the missing file: ${ERR}" has "$ERR" autodrive_refusal.sh
 ok NO-HELPER-NO-ROUND "no round may run without the refusal check" test "$(calls autodrive-merge-round)" -eq 0
 
+# --- 9. the round's pre-review baseline is reclaimed (#2808 SR-10) ----------
+# step-01c saves the worktree's untracked file contents beside the round
+# record so step-02b can tell a reviewer edit from existing work. Nothing
+# outside the round reads it, and it may hold secrets, so the loop removes it
+# as soon as the round that took it has returned -- including when the round
+# failed.
+stub STUB_LEAVE_BASELINE=1
+run baseline-reclaimed
+ok BASELINE-GONE "the loop must remove every pre-review.* the round left: $(ls -d "${CASE}"/state/pre-review.* 2>/dev/null | tr '\n' ' ')" \
+  bash -c 'test -z "$(find "$1" -maxdepth 1 -name "pre-review.*" -print -quit 2>/dev/null)"' _ "${CASE}/state"
+ok BASELINE-KEEPS-STATE "the rest of the state directory is untouched" test -f "${CASE}/state/merge-ready-round-1.json"
+ok BASELINE-DONE "reclaiming the baseline must not change the outcome: rc=${RC}" has "$OUT" '"loop_result":"DONE"'
+
+stub STUB_LEAVE_BASELINE=1 STUB_RC_1=1 "STUB_OUT_1=${QUOTE}"
+run baseline-reclaimed-after-failure
+ok BASELINE-GONE-ON-FAILURE "a failed round's baseline must be reclaimed too" \
+  bash -c 'test -z "$(find "$1" -maxdepth 1 -name "pre-review.*" -print -quit 2>/dev/null)"' _ "${CASE}/state"
+
 # --- 11. the guard and record scripts use $AMPLIHACK_BIN (#2096 finding 8) ---------
 # `amplihack` first on PATH refuses and logs; $AMPLIHACK_BIN, under another
 # name, logs and answers. Every call must reach $AMPLIHACK_BIN.

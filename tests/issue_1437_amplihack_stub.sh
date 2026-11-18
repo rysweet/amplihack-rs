@@ -44,10 +44,10 @@
 #                 writes $STUB_RECORD_n to the autodrive_round_record file
 #                 (default NOT_READY for n=1, MERGE_READY after), prints $STUB_OUT_n
 #                 and exits $STUB_RC_n (default 0).
-
-#                 stub-dirt.txt into the review_dir given as
-#                 `-c review_dir=...` and stages it there. The file name is
-#                 never printed, so it reaches stderr only through the loop.
+#                 With STUB_LEAVE_BASELINE set, it also creates a
+#                 pre-review.stub directory beside the round record, standing
+#                 in for the round's pre-review evidence, so a test can see
+#                 whether the loop reclaims it (#2808).
 #     every recipe run that names --working-dir logs one line
 #                 `round-workdir <path>` to $STUB_STATE/round-workdirs.
 set -u
@@ -197,6 +197,12 @@ if [ "${1:-} ${2:-}" = "recipe run" ]; then
   n="$(count rounds)"
   if [ "$n" = 1 ]; then d='{"merge_ready_verdict":"NOT_READY"}'; else d='{"merge_ready_verdict":"MERGE_READY"}'; fi
   [ -n "$RECORD" ] && { knob STUB_RECORD_ "$n" "$d" > "$RECORD"; : > "${RECORD}.findings"; }
+  # #2808: stand in for step-01c's pre-review evidence, which the round writes
+  # into the state directory beside the round record.
+  if [ -n "${STUB_LEAVE_BASELINE:-}" ] && [ -n "$RECORD" ]; then
+    mkdir -p "${RECORD%/*}/pre-review.stub" \
+      && printf 'untracked secret\n' > "${RECORD%/*}/pre-review.stub/contents.tar"
+  fi
   printf '%s\n' "$(knob STUB_OUT_ "$n" "round ran")"
   exit "$(knob STUB_RC_ "$n" 0)"
 fi
