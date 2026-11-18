@@ -657,15 +657,8 @@ pub(crate) fn sanitized_stderr_short(stderr: &[u8]) -> String {
 
 pub(crate) fn sanitized_stderr(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr).replace(['\n', '\r'], " ");
-    let sanitized = text
+    let sanitized = redact_url_userinfo(&text)
         .split_whitespace()
-        .map(|part| {
-            if part.starts_with("https://") && part.contains('@') {
-                "https://REDACTED@"
-            } else {
-                part
-            }
-        })
         .collect::<Vec<_>>()
         .join(" ");
     if sanitized.is_empty() {
@@ -673,6 +666,42 @@ pub(crate) fn sanitized_stderr(stderr: &[u8]) -> String {
     } else {
         truncate_chars_with_notice(&sanitized, 500)
     }
+}
+
+/// Redact URL authorities wherever they occur in diagnostics, including inside
+/// quotes and punctuation. Accept any URI scheme so Git transports and helpers
+/// cannot expose credentials through a scheme-specific allowlist.
+fn redact_url_userinfo(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut search = 0;
+    while let Some(relative) = text[search..].find("://") {
+        let marker = search + relative;
+        let scheme_start = text[..marker]
+            .char_indices()
+            .rfind(|(_, c)| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.')))
+            .map_or(0, |(index, c)| index + c.len_utf8());
+        let valid_scheme = text[scheme_start..marker]
+            .chars()
+            // Leading punctuation may itself be legal in the rest of a
+            // scheme (for example `.https://...` in a diagnostic). Any
+            // alphabetic suffix can start a URI scheme; redact it as well.
+            .any(|c| c.is_ascii_alphabetic());
+        let start = marker + 3;
+        let end = text[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '<' | '>' | '`'))
+            .map_or(text.len(), |index| start + index);
+        search = start;
+        if valid_scheme && let Some(at) = text[start..end].rfind('@') {
+            let after_userinfo = start + at + 1;
+            out.push_str(&text[copied..start]);
+            out.push_str("REDACTED@");
+            copied = after_userinfo;
+            search = after_userinfo;
+        }
+    }
+    out.push_str(&text[copied..]);
+    out
 }
 
 pub(crate) fn git_has_dirty_state(path: &Path) -> bool {
@@ -943,6 +972,61 @@ fn is_current_repo_protected_path(path: &Path, config: &CleanupConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stderr_redacts_url_userinfo_inside_quotes_and_punctuation_for_all_schemes() {
+        for scheme in [
+            "https",
+            "http",
+            "ssh",
+            "git",
+            "git+ssh",
+            "ftp",
+            "ftps",
+            "custom-helper",
+            "HTTPS",
+        ] {
+            for (left, right) in [
+                ("'", "'"),
+                ("(\"", "\"),"),
+                ("é", "."),
+                ("[", "]"),
+                (".", "."),
+                ("-", "+"),
+                ("+", "."),
+            ] {
+                let text = format!(
+                    "failed {left}{scheme}://user:secret%40value@example.invalid/path{right} again"
+                );
+                let expected =
+                    format!("failed {left}{scheme}://REDACTED@example.invalid/path{right} again");
+                assert_eq!(sanitized_stderr(text.as_bytes()), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn stderr_redacts_multiple_authorities_before_truncation() {
+        let text = "first ssh://user:secret@host:22/a, then 'https://token@other/a'";
+        assert_eq!(
+            sanitized_stderr(text.as_bytes()),
+            "first ssh://REDACTED@host:22/a, then 'https://REDACTED@other/a'"
+        );
+        let long = format!("'https://{}:secret@example.invalid/repo'", "x".repeat(600));
+        assert_eq!(
+            sanitized_stderr_short(long.as_bytes()),
+            "'https://REDACTED@example.invalid/repo'"
+        );
+        assert_eq!(
+            sanitized_stderr(b"https://example.invalid/path@revision"),
+            "https://example.invalid/path@revision"
+        );
+        assert_eq!(sanitized_stderr(b" \n "), "no stderr");
+        assert_eq!(
+            sanitized_stderr(b"'ssh://user:sec'ret@example.invalid'"),
+            "'ssh://REDACTED@example.invalid'"
+        );
+    }
 
     #[test]
     fn worktree_scanner_only_returns_git_worktree_leaves() {

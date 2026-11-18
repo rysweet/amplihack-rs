@@ -837,18 +837,27 @@ does not change a successful cleanup exit status.
 
 The search includes the candidate itself and recursively visits working
 directories beneath it. It recognizes ordinary `.git` directories, linked
-worktrees with `.git` files, and bare repositories by their `HEAD`, `objects`
-and `refs` entries. It continues below repository roots to discover
-independently nested repositories. It skips Git object storage and does not
-follow directory symlinks into unrelated paths.
+worktrees with `.git` files or symlinks, and plausible repository metadata
+from combinations of `HEAD`, `objects`, `refs` and `config` entries. Metadata
+symlinks and incomplete layouts (including a missing `HEAD`) reach inspection;
+their presence never establishes that a repository is safe or bare.
+The search continues below repository roots to discover
+independently nested repositories. It skips Git object storage and reflogs,
+and does not follow directory symlinks into unrelated paths.
 
 Every discovered repository uses the fallible result of the existing dirty-state
 command and the `unpushed_reason` check, with their existing hardened Git
 settings. Dirty
 state is checked first; an unpushed check follows when needed. Status failures
-remain distinguishable from reported changes without adding another Git probe.
-Bare repositories have no working tree, so only the existing unpushed
-check applies to them; inspection errors preserve them. Cleanup does not fetch,
+remain distinguishable from reported changes.
+Git classifies discovered metadata using an explicitly selected Git directory.
+Only confirmed bare repositories skip dirty-state inspection. Separate Git
+directories require an explicit `core.worktree` identifying a usable checkout
+of the same repository; relative values resolve against the metadata directory,
+as Git specifies. Both dirty-state and unpushed checks apply to that checkout.
+Absent, broken or ambiguous checkout information preserves the candidate with
+an inspection-failure reason. Bare repositories use the existing unpushed
+check; inspection errors preserve them. Cleanup does not fetch,
 introduce a second definition of Git state, or decide preservation from the
 location of a remote.
 
@@ -869,7 +878,10 @@ clean merely because it belongs to another user or Git cannot recognize it.
 | Clean and fully pushed, with complete inspection | Remove only if all existing eligibility and locking requirements also pass. |
 
 Reasons contain paths and Git-state explanations, never file contents,
-credentials or remote secrets. Control characters in diagnostics are escaped.
+credentials or remote secrets. URL user information is redacted across URI
+schemes, including URLs within quoted or punctuation-wrapped Git diagnostics,
+before diagnostics enter reports. Human-readable cleanup paths and reasons
+escape control characters; JSON retains actual path values with JSON encoding.
 
 ### Limits on the search
 

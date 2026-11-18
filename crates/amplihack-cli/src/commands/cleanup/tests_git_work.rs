@@ -199,6 +199,60 @@ fn a_stray_git_folder_preserves_the_candidate_when_inspection_is_incomplete() {
 }
 
 #[test]
+fn incomplete_metadata_cannot_fall_back_to_a_clean_enclosing_repository() {
+    let (_tmp, root) = scratch();
+    let (origin, clone) = origin_and_clone(&root.join("outside"));
+    let folder = clone.join("runtime");
+    let metadata = folder.join("metadata");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(clone.join(".git/info/exclude"), "runtime/\n").unwrap();
+    git(
+        &clone,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            origin.to_str().unwrap(),
+            metadata.to_str().unwrap(),
+        ],
+    );
+    let head = fs::read(metadata.join("HEAD")).unwrap();
+    fs::remove_file(metadata.join("HEAD")).unwrap();
+    assert!(git(&clone, &["status", "--porcelain"]).is_empty());
+
+    let reason = work_inside(&folder, None).expect("broken metadata must be inspected explicitly");
+    assert!(
+        reason.contains("cannot inspect repository metadata"),
+        "{reason}"
+    );
+    assert!(metadata.join("objects").is_dir());
+    fs::write(metadata.join("HEAD"), head).unwrap();
+    assert_eq!(
+        git(&metadata, &["rev-parse", "HEAD"]),
+        git(&clone, &["rev-parse", "HEAD"])
+    );
+}
+
+#[test]
+fn metadata_with_only_head_and_config_still_requires_inspection() {
+    let (_tmp, root) = scratch();
+    let folder = root.join("folder");
+    fs::create_dir_all(&folder).unwrap();
+    git(&folder, &["init", "-q", "--bare", "metadata"]);
+    let metadata = folder.join("metadata");
+    for name in ["objects", "refs"] {
+        fs::remove_dir_all(metadata.join(name)).unwrap();
+    }
+    let reason = work_inside(&folder, None).expect("incomplete metadata is not safe to delete");
+    assert!(
+        reason.contains("cannot inspect repository metadata"),
+        "{reason}"
+    );
+    assert!(metadata.join("HEAD").is_file());
+    assert!(metadata.join("config").is_file());
+}
+
+#[test]
 fn an_invalid_git_file_keeps_the_folder_with_an_explanation() {
     let (_tmp, root) = scratch();
     let folder = root.join("folder");

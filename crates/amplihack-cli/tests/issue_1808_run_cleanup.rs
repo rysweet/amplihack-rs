@@ -16,6 +16,8 @@ mod command;
 pub(crate) mod fixture;
 #[path = "issue_1808_run_cleanup/logs.rs"]
 mod logs;
+#[path = "issue_1808_run_cleanup/review_feedback.rs"]
+mod review_feedback;
 #[path = "issue_1808_run_cleanup/run_targets.rs"]
 mod run_targets;
 #[path = "issue_1808_run_cleanup/runner.rs"]

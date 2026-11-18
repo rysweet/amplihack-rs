@@ -146,7 +146,10 @@ pub fn run(args: CleanupArgs) -> Result<()> {
         Ok(true) => Ok(()),
         Ok(false) => Err(exit_error(1)),
         Err(error) => {
-            eprintln!("amplihack cleanup: {error:#}");
+            eprintln!(
+                "amplihack cleanup: {}",
+                git_work::printable(&format!("{error:#}"))
+            );
             Err(exit_error(1))
         }
     }
@@ -306,7 +309,7 @@ fn run_cleanup(args: &CleanupArgs) -> Result<bool> {
     if args.apply && lock.is_none() {
         eprintln!(
             "amplihack cleanup: another cleanup holds {}; every item is skipped",
-            work_root.lock_path().display()
+            git_work::printable(&work_root.lock_path().to_string_lossy())
         );
     }
     let entries = sweep::run_sweep(&settings, lock.is_some())?;
@@ -427,9 +430,9 @@ fn print_text(entries: &[Entry]) {
             e.category.as_str(),
             e.action.as_str(),
             size,
-            e.path.display()
+            git_work::printable(&e.path.to_string_lossy())
         );
-        println!("{:<15} reason: {}", "", e.reason);
+        println!("{:<15} reason: {}", "", git_work::printable(&e.reason));
     }
 }
 
@@ -437,10 +440,13 @@ fn run_restore(path: &Path, dest: Option<&Path>) -> Result<bool> {
     let roots = log_roots().all();
     let outcome = archive::restore(path, dest, &roots).context("restore failed")?;
     for restored in &outcome.restored {
-        println!("restored {}", restored.display());
+        println!(
+            "restored {}",
+            git_work::printable(&restored.to_string_lossy())
+        );
     }
     for error in &outcome.errors {
-        eprintln!("amplihack cleanup: {error}");
+        eprintln!("amplihack cleanup: {}", git_work::printable(error));
     }
     Ok(outcome.errors.is_empty())
 }

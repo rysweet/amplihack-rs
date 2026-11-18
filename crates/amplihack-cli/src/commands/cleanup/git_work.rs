@@ -12,7 +12,7 @@
 )]
 
 use crate::commands::hygiene::cleanup::{git_dirty_state, hardened_git, sanitized_stderr_short};
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -76,28 +76,25 @@ pub(crate) fn git_common_dir(dir: &Path) -> Option<PathBuf> {
 /// it count. When the upstream is gone (the branch was deleted after merge and
 /// pruned), commits reachable from any remote-tracking ref count as pushed, so
 /// a merged worktree is not kept for ever under a false "unpushed" reason.
-fn unpushed_reason(worktree: &Path, deadline: Option<Instant>) -> Option<String> {
+fn unpushed_reason(
+    worktree: &Path,
+    git_dir: Option<&Path>,
+    deadline: Option<Instant>,
+) -> Option<String> {
     if past_deadline(deadline) {
         return Some(DEADLINE_REASON.to_string());
     }
     let count = |range: &[&str]| -> Result<u64> {
-        let mut command = hardened_git();
-        command
-            .arg("-C")
-            .arg(worktree)
-            .args(["rev-list", "--count"])
-            .args(range);
+        let mut command = repository_git(worktree, git_dir);
+        command.args(["rev-list", "--count"]).args(range);
         let output = crate::util::run_output_with_timeout(command, GIT_TIMEOUT)?;
         if !output.status.success() {
             bail!("{}", sanitized_stderr_short(&output.stderr));
         }
         Ok(String::from_utf8_lossy(&output.stdout).trim().parse()?)
     };
-    let mut upstream = hardened_git();
-    upstream
-        .arg("-C")
-        .arg(worktree)
-        .args(["rev-parse", "--verify", "--quiet", "@{upstream}"]);
+    let mut upstream = repository_git(worktree, git_dir);
+    upstream.args(["rev-parse", "--verify", "--quiet", "@{upstream}"]);
     let has_upstream = crate::util::run_output_with_timeout(upstream, GIT_TIMEOUT)
         .is_ok_and(|output| output.status.success());
     if past_deadline(deadline) {
@@ -151,7 +148,61 @@ pub(crate) fn tree_work(tree: &Path, deadline: Option<Instant>) -> Option<String
         Ok(false) => {}
         Err(error) => return Some(printable(&format!("cannot inspect dirty state: {error:#}"))),
     }
-    unpushed_reason(tree, deadline).map(|reason| printable(&reason))
+    unpushed_reason(tree, None, deadline).map(|reason| printable(&reason))
+}
+
+/// Select metadata explicitly when inspecting a discovered metadata directory;
+/// Git must never fall back to a repository surrounding the cleanup process.
+fn repository_git(dir: &Path, git_dir: Option<&Path>) -> std::process::Command {
+    let mut command = hardened_git();
+    command.arg("-C").arg(dir);
+    if let Some(git_dir) = git_dir {
+        command.arg("--git-dir").arg(git_dir);
+    }
+    command
+}
+
+/// Classify metadata with Git. Non-bare metadata needs an explicit, usable
+/// checkout: without core.worktree Git defaults to its caller's directory.
+fn metadata_checkout(metadata: &Path, deadline: Option<Instant>) -> Result<Option<PathBuf>> {
+    let query = |args: &[&str]| -> Result<String> {
+        if past_deadline(deadline) {
+            bail!(DEADLINE_REASON);
+        }
+        let mut command = repository_git(metadata, Some(metadata));
+        command.args(args);
+        let output = crate::util::run_output_with_timeout(command, GIT_TIMEOUT)?;
+        if past_deadline(deadline) {
+            bail!(DEADLINE_REASON);
+        }
+        if !output.status.success() {
+            bail!("{}", sanitized_stderr_short(&output.stderr));
+        }
+        Ok(String::from_utf8(output.stdout)?
+            .trim_end_matches('\n')
+            .to_string())
+    };
+    match query(&["rev-parse", "--is-bare-repository"])?.as_str() {
+        "true" => Ok(None),
+        "false" => {
+            let configured = query(&["config", "--path", "--get", "core.worktree"])
+                .map_err(|error| anyhow::anyhow!("cannot resolve core.worktree: {error:#}"))?;
+            if configured.is_empty() {
+                bail!("non-bare metadata has no explicit core.worktree");
+            }
+            // Git resolves relative core.worktree values against the Git dir.
+            let checkout = fs::canonicalize(metadata.join(configured))
+                .context("cannot resolve checkout configured by core.worktree")?;
+            let common =
+                fs::canonicalize(metadata.join(query(&["rev-parse", "--git-common-dir"])?))
+                    .context("cannot resolve metadata's common directory")?;
+            if git_common_dir(&checkout).as_ref() != Some(&common) {
+                bail!("core.worktree does not identify a checkout of this repository");
+            }
+            Ok(Some(checkout))
+        }
+        _ => bail!("Git did not establish whether the repository is bare"),
+    }
 }
 
 /// Callback for callers that remove an entire storage boundary.
@@ -200,14 +251,17 @@ fn work_inside_with(folder: &Path, policy: &Policy) -> Option<String> {
             policy.tree_limit
         ));
     }
-    for (tree, bare) in candidates {
+    for (tree, metadata) in candidates {
         if policy.past_deadline() {
             return Some(DEADLINE_REASON.to_string());
         }
-        // Bare repositories have no working tree to dirty. Their commits
-        // still go through the existing unpushed check, including its errors.
-        let reason = if bare {
-            unpushed_reason(&tree, policy.deadline)
+        let reason = if metadata {
+            match metadata_checkout(&tree, policy.deadline) {
+                // Only a Git-confirmed bare repository skips dirty inspection.
+                Ok(None) => unpushed_reason(&tree, Some(&tree), policy.deadline),
+                Ok(Some(checkout)) => tree_work(&checkout, policy.deadline),
+                Err(error) => Some(format!("cannot inspect repository metadata: {error:#}")),
+            }
         } else {
             tree_work(&tree, policy.deadline)
         };
@@ -243,7 +297,7 @@ fn work_inside_with(folder: &Path, policy: &Policy) -> Option<String> {
 }
 
 /// Every folder under `root`, `root` included, that holds a `.git` entry or
-/// bare repository layout, sorted. Links are not followed and repository
+/// plausible repository metadata, sorted. Links are not followed and repository
 /// metadata is not entered.
 /// `Err` is the reason the folder is kept.
 fn candidates(root: &Path, policy: &Policy) -> Result<Vec<(PathBuf, bool)>, String> {
@@ -262,7 +316,7 @@ fn candidates(root: &Path, policy: &Policy) -> Result<Vec<(PathBuf, bool)>, Stri
             Err(error) => return Err(cannot(&dir, error)),
         };
         let mut children = Vec::new();
-        let (mut head, mut objects, mut refs) = (false, false, false);
+        let (mut head, mut objects, mut refs, mut config) = (false, false, false, false);
         for entry in entries {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -283,14 +337,17 @@ fn candidates(root: &Path, policy: &Policy) -> Result<Vec<(PathBuf, bool)>, Stri
                 out.push((dir.clone(), false));
                 continue;
             }
+            // Names identify candidates, including broken metadata links and
+            // incomplete repositories. Types never authorize deletion.
+            head |= name == "HEAD";
+            objects |= name == "objects";
+            refs |= name == "refs";
+            config |= name == "config";
             // The type the folder listing already gives, so no entry costs a
             // stat of its own; like `symlink_metadata`, it does not follow a
             // link.
             match entry.file_type() {
                 Ok(kind) => {
-                    head |= name == "HEAD" && kind.is_file();
-                    objects |= name == "objects" && kind.is_dir();
-                    refs |= name == "refs" && kind.is_dir();
                     if kind.is_dir() {
                         children.push(entry.path());
                     }
@@ -298,14 +355,19 @@ fn candidates(root: &Path, policy: &Policy) -> Result<Vec<(PathBuf, bool)>, Stri
                 Err(error) => return Err(cannot(&entry.path(), error)),
             }
         }
-        if head && objects && refs {
-            // A bare clone has no `.git` entry. Pass it to the same Git
-            // checks without walking its object database.
+        if [head, objects, refs, config]
+            .into_iter()
+            .filter(|present| *present)
+            .count()
+            >= 2
+        {
+            // No classification here: Git must inspect even incomplete
+            // metadata. Never walk object storage or linked directories.
             out.push((dir, true));
             children.retain(|path| {
                 !path
                     .file_name()
-                    .is_some_and(|name| name == "objects" || name == "refs")
+                    .is_some_and(|name| name == "objects" || name == "refs" || name == "logs")
             });
         }
         stack.extend(children);
