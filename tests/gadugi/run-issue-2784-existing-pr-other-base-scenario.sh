@@ -26,9 +26,10 @@
 # step-16 reaches the clone through worktree_setup.
 #
 # Stand-in: `gh`, first on PATH, logs every call, answers `pr list --head` from
-# the case fixture, other `pr list` calls with [], and `issue view` with a
-# fixed title; `pr create` is recorded and answered with a URL; any other call
-# is recorded as unexpected and exits 96. Nothing reaches GitHub.
+# the case fixture, other `pr list` calls with [], `issue view` with a fixed
+# title and `repo view` (the claim check's default-branch lookup) with `main`;
+# `pr create` is recorded and answered with a URL; any other call is recorded
+# as unexpected and exits 96. Nothing reaches GitHub.
 #
 # Cases:
 #   existing_pr_on_other_base_adopted   open PR #615 into dev: the run records
@@ -126,6 +127,7 @@ case "${1-} ${2-}" in
       *) printf '[]\n' ;;
     esac ;;
   'issue view') printf '{"title":"Publish opens a duplicate pull request"}\n' ;;
+  'repo view') printf 'main\n' ;;
   'pr create')
     for a in "$@"; do printf '%s\000' "$a"; done >> "$QA_CASE_DIR/create.argv"
     printf 'https://github.com/owner/repo/pull/700\n' ;;
