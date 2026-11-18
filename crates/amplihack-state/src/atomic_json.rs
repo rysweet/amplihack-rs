@@ -361,9 +361,19 @@ mod tests {
         assert_eq!(file.path(), expected);
     }
 
+    fn private_tempdir() -> tempfile::TempDir {
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o700));
+        }
+        builder.tempdir().unwrap()
+    }
+
     #[test]
     fn large_documents_are_fully_published_by_write_and_update() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         for private in [false, true] {
             let path = dir.path().join(format!("{private}/state.json"));
             let file = if private {
@@ -403,7 +413,7 @@ mod tests {
                 Err(S::Error::custom("serialization failed"))
             }
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let path = dir.path().join("state.json");
         let file = AtomicJsonFile::new_private(&path);
         file.write(&TestData::default()).unwrap();
