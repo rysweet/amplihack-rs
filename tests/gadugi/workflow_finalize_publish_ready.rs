@@ -72,6 +72,10 @@ fn main() {
             contracts::finalization_evidence_retains_operation_outcomes,
         ),
         (
+            "unresolved_operations_reach_completion",
+            contracts::unresolved_operations_reach_completion,
+        ),
+        (
             "recovery_summary_continues_with_unresolved_operations",
             contracts::recovery_summary_continues_with_unresolved_operations,
         ),

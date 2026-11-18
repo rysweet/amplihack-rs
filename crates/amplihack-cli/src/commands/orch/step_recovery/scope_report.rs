@@ -41,7 +41,15 @@ pub fn run() -> Result<()> {
     .iter()
     .find_map(|key| std::env::var_os(key).filter(|v| !v.is_empty()))
     .map(PathBuf::from)
-    .unwrap_or_else(std::env::temp_dir);
+    .or_else(|| std::env::var_os("XDG_STATE_HOME").map(PathBuf::from))
+    .or_else(|| {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join(".local/state"))
+    })
+    .context("PR diagnostics require a runtime directory, XDG_STATE_HOME or HOME")?;
+    // Reports are durable evidence, not operation-owned temporary captures.
+    // Never default to TMPDIR, whose caller removes captures after a command.
     anyhow::ensure!(
         root.is_absolute(),
         "PR diagnostic runtime path must be absolute"

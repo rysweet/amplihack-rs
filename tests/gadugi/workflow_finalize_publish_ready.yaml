@@ -78,6 +78,11 @@ assertions:
     params:
       target: stdout
       expected: "PASS: finalization_evidence_retains_operation_outcomes"
+  - name: unresolved-operations-reach-completion
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unresolved_operations_reach_completion"
   - name: recovery-summary-continues
     type: output_contains
     params:

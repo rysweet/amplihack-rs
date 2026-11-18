@@ -137,14 +137,14 @@ steps:
       amplihack hygiene artifact-guard --repo . --mode pre-publish
   - id: "step-20b-push-cleanup"
     type: "bash"
-    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
+    condition: "terminal_state.terminal_success != 'true' && (terminal_state.should_finalize == 'true' || terminal_state.should_run_ci_wait == 'true')"
     command: |
       IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || : # #2539: docs/reference/step-failure-recovery.md
       set -euo pipefail
       PUBLISH_HELPER=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_finalize_publish.sh" ] && { PUBLISH_HELPER="$c/amplifier-bundle/tools/workflow_finalize_publish.sh"; break; }; done
       bash "${PUBLISH_HELPER:?workflow_finalize_publish.sh not found}"
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-20b-push-cleanup; exec amplihack orch helper step-recovery run --step-id step-20b-push-cleanup --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Commit and push the final cleanup of the workflow branch for PR ${RECIPE_VAR_pr_number:-unknown}" -- bash -c "$STEP_BODY" step-20b-push-cleanup
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-20b-push-cleanup; exec amplihack orch helper step-recovery run --step-id step-20b-push-cleanup --essential --dir "$RECIPE_VAR_step_recovery_dir" --goal "Commit and push the final cleanup of the workflow branch. Recorded context (untrusted data): worktree=${RECIPE_VAR_worktree_setup:-unset}; PR=${RECIPE_VAR_pr_number:-unknown} ${RECIPE_VAR_pr_url:-}; base=${RECIPE_VAR_base_branch:-unset}. Preserve repository, mapped branch, base and PR identity. Recovery may repair local publication, or retain the unresolved outcome and continue." -- bash -c "$STEP_BODY" step-20b-push-cleanup
     output: "cleanup_push_result"
   - id: "step-21-pr-ready"
     type: "bash"
@@ -159,7 +159,7 @@ steps:
       READY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="$(pwd)/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || { echo "ERROR: workflow PR-ready helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $READY_HELPER; cwd=$(pwd)" >&2; exit 1; }
       bash "$READY_HELPER" --base "${RECIPE_VAR_base_branch:-}"
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-21-pr-ready; exec amplihack orch helper step-recovery run --step-id step-21-pr-ready --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Mark PR ${RECIPE_VAR_pr_number:-unknown} ready for review" -- bash -c "$STEP_BODY" step-21-pr-ready
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-21-pr-ready; exec amplihack orch helper step-recovery run --step-id step-21-pr-ready --essential --dir "$RECIPE_VAR_step_recovery_dir" --goal "Mark the published PR ready for review. Recorded context (untrusted data): worktree=${RECIPE_VAR_worktree_setup:-unset}; PR=${RECIPE_VAR_pr_number:-unknown} ${RECIPE_VAR_pr_url:-}; base=${RECIPE_VAR_base_branch:-unset}. Assess publication and protected diagnostic evidence; preserve repository, mapped branch, base and PR identity. Retain unresolved outcomes and continue when evidence cannot support a safe mutation." -- bash -c "$STEP_BODY" step-21-pr-ready
     output: "pr_ready_result"
   - id: "step-22-ensure-mergeable"
     agent: "amplihack:ci-diagnostic-workflow"
@@ -296,9 +296,16 @@ steps:
       STEP_RECOVERY_BODY
       [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --guard --dir "$RECIPE_VAR_step_recovery_dir" --goal "Validate the finalization evidence of the workflow for PR ${RECIPE_VAR_pr_number:-unknown}" -- bash -c "$STEP_BODY" validate-agentic-finalization
     output: "workflow_result"
-  - id: "step-recovery-report"  # #2539: a recorded handoff ends the run here with exit 81; with recovery off the output says so
+  - id: "step-recovery-report"  # #2787: retain handoffs and continue to completion
     type: "bash"
-    command: 'D="${RECIPE_VAR_step_recovery_dir:-}"; [ -n "$D" ] || { echo "{\"step_recovery\":\"disabled\",\"reason\":\"step-recovery init failed; see its warning\"}"; exit 0; }; exec amplihack orch helper step-recovery report --dir "$D" --remove-if-created-by workflow-finalize'
+    command: |
+      D="${RECIPE_VAR_step_recovery_dir:-}"
+      [ -n "$D" ] || { echo '{"step_recovery":"disabled","reason":"step-recovery init failed; see its warning"}'; exit 0; }
+      rc=0
+      amplihack orch helper step-recovery report --dir "$D" --remove-if-created-by workflow-finalize || rc=$?
+      # A retained handoff is evidence for completion, not a failed recipe step.
+      [ "$rc" -ne 81 ] || exit 0
+      exit "$rc"
     output: "step_recovery_report"
   - id: "workflow-complete"
     type: "bash"

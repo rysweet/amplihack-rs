@@ -31,11 +31,21 @@ complete_workflow() {
       result="$(printf '%s' "$result" | jq -c --arg key "$key" --arg value "$value" '. + {($key):$value}')"
     fi
   done
+  # Preserve the operation evidence even when an earlier result omitted it.
+  local operations
+  operations="$(workflow_finalization_operations)"
+  result="$(printf '{"result":%s,"operations":%s}' "$result" "$operations" | jq -c '
+    .operations as $operations | .result |
+    if any($operations[]; .recovery != null) then
+      . + {terminal_success:"false", terminal_state:"INCOMPLETE", terminal_failure:"false",
+           terminal_reason:"publication or readiness remains unresolved after recovery",
+           required_next_action:"Assess the retained operation evidence and complete the unresolved operation within the recorded PR scope."}
+    else . end')"
   # --rawfile preserves UTF-8 across jq raw-parser chunk boundaries.
   # Preserve every validated field and its genuine type; metadata is added to
   # the envelope, never flattened into exported success aliases.
   {
-    printf '{"workflow_result":%s,"task":' "$result"
+    printf '{"workflow_result":%s,"operations":%s,"task":' "$result" "$operations"
     { workflow_finalization_metadata task_description || :; } | jq -n --rawfile value /dev/stdin '$value'
     printf ',"issue_number":'
     { workflow_finalization_metadata issue_number || :; } | jq -n --rawfile value /dev/stdin '$value'
@@ -44,7 +54,7 @@ complete_workflow() {
     .workflow_result as $result | {
       workflow:"default-workflow", version:"2.0.0", task:.task, issue_number:.issue_number,
       pr_url:$result.pr_url, terminal_outcome:$result.terminal_state,
-      workflow_result:$result
+      workflow_result:$result, operations:.operations
     } + ($result | {terminal_state, terminal_success, terminal_reason,
       required_next_action, hollow_success_detected, evidence_used,
       finalizer_schema_version, finalizer_confidence, finalizer_output_valid,

@@ -35,6 +35,15 @@ fi
 
 command -v jq >/dev/null 2>&1 || { echo "ERROR: workflow_final_status.sh requires jq to read step outputs" >&2; exit 2; }
 
+# Retain unresolved operation evidence before the ordinary success summary.
+. "$(dirname "${BASH_SOURCE[0]}")/workflow_finalization_context.sh"
+operations="$(workflow_finalization_operations)"
+if printf '%s' "$operations" | jq -e 'any(.[]; .recovery != null)' >/dev/null; then
+  printf '%s' "$operations" | jq '{terminal_verdict:"UNCERTAIN", terminal_success:"false", operations:.}'
+  echo "Publication or readiness remains unresolved; see the retained recovery evidence." >&2
+  exit 0
+fi
+
 # rv_field <key> <field>: this run's own field from the base RECIPE_VAR_<key> (#1561).
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recipe_var.sh" \
   || { echo "ERROR: workflow_final_status.sh: recipe_var.sh not found beside it" >&2; exit 2; }

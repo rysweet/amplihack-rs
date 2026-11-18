@@ -74,6 +74,9 @@ FIELDS
   evidence_used="implementation_completed=$implementation_completed,verification_completed=$verification_completed"
   terminal_failure="true"
 
+  # Keep publication/readiness evidence through classification and completion.
+  operations="$(printf '%s' "$finalization_evidence" | jq -Rsc '(fromjson? // {}) | .operations // {}')"
+
   emit_result() {
     local field separator publish_state_reached observed_phases missing_evidence
     publish_state_reached="${publish_state_override:-$(resolve_publish_state_reached)}"
@@ -159,6 +162,20 @@ FIELDS
   fi
 
   [ -n "$prior_terminal_state" ] || prior_terminal_state="$evidence_prior_terminal_state"
+
+  # A safely declined operation remains incomplete, while the workflow keeps
+  # running to its evidence report. Do not turn a recovery wrapper's exit 0
+  # into a publication or readiness claim.
+  if printf '%s' "$operations" | jq -e 'any(.[]; .recovery != null)' >/dev/null; then
+    terminal_state="INCOMPLETE"
+    terminal_reason="publication or readiness remains unresolved after recovery"
+    required_next_action="Assess the retained operation evidence and complete the unresolved operation within the recorded PR scope."
+    evidence_used="finalization_evidence.operations"
+    terminal_failure="false"
+    finalizer_output_valid="true"
+    emit_result
+    exit 0
+  fi
 
   # 2. Hard blockers. These cannot be masked by completion state and are checked
   #    before any success classification.

@@ -2,6 +2,7 @@
 set -euo pipefail
 
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Usage: workflow_pr_ready.sh [--base BRANCH]
@@ -49,6 +50,16 @@ fi
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 wt="$(bash "$SCRIPT_DIR/worktree_setup_path.sh" step-21-pr-ready)"
 cd -P "$wt"
+
+# A nonterminal recovery result does not establish publication. Preserve that
+# outcome for the readiness recovery agent instead of readying older work.
+. "$SCRIPT_DIR/workflow_finalization_context.sh"
+publication="$(workflow_finalization_operation cleanup_push_result)"
+if printf '%s' "$publication" | jq -e '.recovery != null' >/dev/null; then
+  echo "ERROR: PR publication remains unresolved; readiness requires published audit work" >&2
+  printf '%s\n' "$publication" >&2
+  exit 1
+fi
 
 # rv_field <key> <field>: this run's own field from the base RECIPE_VAR_<key> (#1561).
 . "$SCRIPT_DIR/recipe_var.sh" \

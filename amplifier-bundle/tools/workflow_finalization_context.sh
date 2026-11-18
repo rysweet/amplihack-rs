@@ -55,3 +55,28 @@ resolve_allow_no_op() {
   workflow_context_capture value allow_no_op
   boolish "$value"
 }
+
+# The recovery driver emits its established outcome object after a text line.
+# Successful command output remains evidence too; absence means unobserved.
+# Stream reports through the existing sanitizer before retaining any content.
+workflow_finalization_operation() {
+  local raw status
+  status=0
+  raw="$(workflow_context_read "$1")" || status=$?
+  case "$status" in
+    0) ;;
+    2) printf 'null\n'; return 0 ;;
+    *) echo "ERROR: unable to read finalization operation $1" >&2; return "$status" ;;
+  esac
+  printf '%s' "$raw" | amplihack orch helper sanitize-output | jq -Rsc '
+    . as $output |
+    [split("\n")[] | fromjson? | objects | .step_recovery? | objects] |
+    {output:$output, recovery:(last // null)}'
+}
+
+workflow_finalization_operations() {
+  local publication readiness
+  publication="$(workflow_finalization_operation cleanup_push_result)" || return "$?"
+  readiness="$(workflow_finalization_operation pr_ready_result)" || return "$?"
+  printf '{"publication":%s,"readiness":%s}\n' "$publication" "$readiness"
+}

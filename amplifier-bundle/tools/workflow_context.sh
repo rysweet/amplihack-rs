@@ -36,7 +36,7 @@ _workflow_context_get() {
   done
   return 2
 }
-_workflow_context_roots='verdict_json implementation allow_no_op doc_review_feedback precommit_results local_testing_gate agentic_finalizer_narrative implementation_terminal_evidence verification_terminal_evidence finalizer_step_status finalization_evidence workflow_result repo_path worktree_setup branch_name base_ref remote_host_type terminal_state pr_publish_result pr_url pr_number task_description issue_number publish_state_reached publish_terminal_evidence'
+_workflow_context_roots='cleanup_push_result pr_ready_result verdict_json implementation allow_no_op doc_review_feedback precommit_results local_testing_gate agentic_finalizer_narrative implementation_terminal_evidence verification_terminal_evidence finalizer_step_status finalization_evidence workflow_result repo_path worktree_setup branch_name base_ref remote_host_type terminal_state pr_publish_result pr_url pr_number task_description issue_number publish_state_reached publish_terminal_evidence'
 for _wc_key in $_workflow_context_roots; do
   _wc_name="$(_workflow_context_upper "$_wc_key")"
   if [[ ${!_wc_name+x} ]]; then _workflow_context_store "$_wc_name" "${!_wc_name}"; fi
@@ -62,6 +62,7 @@ _workflow_context_contract() {
     implementation) _wc_cohort=implementation; _wc_type=string; _wc_legacy=IMPLEMENTATION ;;
     allow_no_op) _wc_cohort=${WORKFLOW_CONTEXT_COHORT:-implementation}; _wc_type=bool; _wc_legacy=ALLOW_NO_OP ;;
     doc_review_feedback) _wc_cohort=documentation; _wc_type=object; _wc_legacy=DOC_REVIEW_FEEDBACK ;;
+    cleanup_push_result|pr_ready_result) _wc_cohort=publication; _wc_type=report; _wc_legacy=$(_workflow_context_upper "$1") ;;
     precommit_results) _wc_cohort=verification; _wc_type=report; _wc_legacy=PRECOMMIT_RESULTS ;;
     local_testing_gate) _wc_cohort=verification; _wc_type=report; _wc_legacy=LOCAL_TESTING_GATE ;;
     agentic_finalizer_narrative) _wc_cohort=reporting; _wc_type=string; _wc_legacy=AGENTIC_FINALIZER_NARRATIVE ;;
@@ -82,6 +83,7 @@ _workflow_context_tier() {
   if [[ $_workflow_context_has_file ]]; then printf 'file'; return; fi
   local keys
   case "$1" in
+    publication) keys='cleanup_push_result pr_ready_result' ;;
     implementation) keys='verdict_json implementation allow_no_op' ;;
     documentation) keys='doc_review_feedback' ;;
     verification) keys='precommit_results local_testing_gate allow_no_op' ;;

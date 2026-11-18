@@ -262,6 +262,53 @@ pub fn finalization_evidence_retains_operation_outcomes(f: &Fixture) {
     f.assert_no_mutation();
 }
 
+/// A continued recovery must reach status, classification and completion
+/// without claiming that unpublished audit work or readiness succeeded.
+pub fn unresolved_operations_reach_completion(f: &Fixture) {
+    f.audit(true);
+    let outcomes = [PUBLISH, READY].map(|id| declined_operation(f, id));
+    let run = |id: &str| {
+        let mut command = f.step(id);
+        command
+            .env("RECIPE_VAR_cleanup_push_result", &outcomes[0])
+            .env("RECIPE_VAR_pr_ready_result", &outcomes[1]);
+        command
+    };
+    let status = success(run("step-22b-final-status").output().unwrap());
+    assert!(status.contains("UNCERTAIN"), "{status}");
+    assert!(!status.contains("All 23 workflow steps completed successfully"));
+    let evidence = success(run("collect-finalization-evidence").output().unwrap());
+    let result = success(
+        run("validate-agentic-finalization")
+            .env("RECIPE_VAR_finalization_evidence", &evidence)
+            .env(
+                "RECIPE_VAR_implementation_terminal_evidence",
+                r#"{"implementation_completed":"true"}"#,
+            )
+            .env(
+                "RECIPE_VAR_verification_terminal_evidence",
+                r#"{"verification_completed":"true"}"#,
+            )
+            .output()
+            .unwrap(),
+    );
+    let completion = success(
+        run("workflow-complete")
+            .env("RECIPE_VAR_workflow_result", result)
+            .output()
+            .unwrap(),
+    );
+    let report = f.root.join("completed.json");
+    fs::write(&report, completion).unwrap();
+    success(f.command("jq", &f.main).args(["-e", r#"
+        .terminal_success == "false" and .terminal_state == "INCOMPLETE" and
+        .terminal_failure == "false" and
+        (.operations.publication.recovery | .step_id == "step-20b-push-cleanup" and .choice == "handoff") and
+        (.operations.readiness.recovery | .step_id == "step-21-pr-ready" and .choice == "handoff")
+    "#]).arg(report).output().unwrap());
+    f.assert_no_mutation();
+}
+
 pub fn recovery_summary_continues_with_unresolved_operations(f: &Fixture) {
     declined_operation(f, PUBLISH);
     declined_operation(f, READY);
@@ -1439,6 +1486,7 @@ mod tests {
         publication_and_readiness_ignore_ambient_git_overrides,
         publication_handoff_continues_without_readying_audit_edits,
         finalization_evidence_retains_operation_outcomes,
+        unresolved_operations_reach_completion,
         recovery_summary_continues_with_unresolved_operations,
         publication_resolves_installed_runtime_helper,
         publication_missing_runtime_helper_prevents_push,

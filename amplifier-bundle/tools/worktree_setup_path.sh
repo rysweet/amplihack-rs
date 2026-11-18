@@ -52,6 +52,8 @@
 #              launch directory does not hold the change (#2190).
 
 set -u
+# Caller Git overrides must not redirect validation of the recorded worktree.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
 
 label="${1:-}"
 if [ "$#" -ne 1 ] || [ -z "$label" ]; then
