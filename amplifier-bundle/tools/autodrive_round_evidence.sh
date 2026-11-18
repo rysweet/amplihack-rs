@@ -165,6 +165,13 @@ crusty_covers() {
 # hold secrets, so nothing outside the round reads it and autodrive_loop.sh
 # removes every pre-review.* in the state directory once the round returns
 # (#2808 SR-10).
+#
+# Evidence only, and deliberately so. Collection failure is non-fatal: the
+# function writes 'incomplete' to collection-status, warns on stderr and still
+# returns the directory and exit 0, leaving the assessor to preserve uncertain
+# work. Do not add a hash comparison against this baseline, and do not exit
+# non-zero when the worktree differs from it. Either change turns the round's
+# observation back into the must-match refusal that #2808 removed.
 review_baseline() (
   umask 077
   export GIT_OPTIONAL_LOCKS=0
