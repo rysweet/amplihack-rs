@@ -2,7 +2,7 @@
 title: Resume a recipe after a usage limit
 description: Relaunch identified work, inspect the restart decision, or deliberately start fresh.
 doc_type: howto
-last_updated: 2026-11-11
+last_updated: 2026-11-18
 ---
 
 # Resume a recipe after a usage limit
@@ -22,6 +22,7 @@ completed steps when that run durably stopped on a usage limit.
 - [Start fresh deliberately](#start-fresh-deliberately)
 - [Resolve a fresh fallback](#resolve-a-fresh-fallback)
 - [Keep recovery state available](#keep-recovery-state-available)
+- [Use retained repository work](#use-retained-repository-work)
 
 ## Relaunch the same work
 
@@ -127,10 +128,11 @@ state. Unexplained changes require affected work to run again.
 ## Keep recovery state available
 
 Keep the run's private `recovery/` directory and identity-index metadata
-alongside the durable work root. `runtime/` remains disposable. Required
-runtime artifacts are copied into durable storage before their completion
-is published; missing unrecorded artifacts cannot be reconstructed from a
-path alone.
+alongside the durable work root. Ordinary runtime files remain temporary,
+but cleanup retains a runtime folder containing a repository with uncommitted
+changes or unpushed commits. Required replay artifacts still need declared
+recovery resources and are copied into durable storage before completion is
+published; a surviving path alone does not make a step reusable.
 
 Treat recovery state as sensitive: permitted context, prompts, outputs,
 and artifact bytes may be stored there. Read
@@ -142,3 +144,32 @@ with `--fresh` flag will not erase sensitive durable copies.
 
 For the behavior model, read
 [Recovery after a recipe usage limit](../concepts/recipe-usage-limit-recovery.md).
+
+## Use retained repository work
+
+Read the preservation message in the original run's stderr or detached log.
+It names the cleanup candidate, the repository holding work, and the reason
+it remains. Either uncommitted changes or unpushed commits independently
+keeps it, including the primary execution checkout and repositories nested
+inside `r/<id>`, runtime or target storage. A later run's sweep applies the
+same checks to older runs.
+
+Relaunch your original command with compatible inputs, repository and issue
+identity, branch selection, and the same work root. Check the recovery
+metadata and the resumed step's execution output to verify that it accesses
+the retained work. Recipes carrying repository paths and commit outputs
+across launches must declare them through the supported recovery contract;
+see [recipe recovery resources](../reference/recipe-recovery.md).
+
+Preservation keeps files and required backing Git metadata on disk. It does
+not make an unrelated fresh launch use that checkout, or mark an interrupted
+step as complete. Do not reset local edits to force compatibility. If recovery
+falls back fresh, inspect and save the retained work before allowing new work
+to replace it. See
+[Recover or discard kept work](clean-up-after-recipe-runs.md#recover-or-discard-kept-work).
+
+Leave cleanup enabled for ordinary use. `AMPLIHACK_CLEANUP_ON_EXIT=0` skips
+only the final sweep; repository-content checks also protect the earlier
+checkout and runtime release. No preservation option is required. Cleanup
+removes a clean, fully pushed repository only when the existing ownership,
+activity, dependency and locking requirements also permit it.

@@ -2,7 +2,7 @@
 title: Recovery after a recipe usage limit
 description: How relaunched recipe trees reuse verified work after a usage-limit stop.
 doc_type: explanation
-last_updated: 2026-11-11
+last_updated: 2026-11-18
 ---
 
 # Recovery after a recipe usage limit
@@ -26,6 +26,9 @@ its partial output is never treated as a completed result.
 - [How a recipe tree resumes](#how-a-recipe-tree-resumes)
 - [Why workflow changes can remain compatible](#why-workflow-changes-can-remain-compatible)
 - [What survives another stop](#what-survives-another-stop)
+- [Repository preservation during finalization](#repository-preservation-during-finalization)
+- [Checkout storage and historical evidence](#checkout-storage-and-historical-evidence)
+- [CI continuation contract](#ci-continuation-contract)
 - [Durability and trust](#durability-and-trust)
 - [Limits of recovery](#limits-of-recovery)
 
@@ -150,6 +153,99 @@ recovers B, C can reuse both preparation and design. Deleting A's detailed
 history does not break B's self-contained copy. Paths into disposable
 runtime storage must be rebound through a declared artifact contract or
 invalidate the affected output.
+
+## Repository preservation during finalization
+
+Step recovery and repository preservation solve different parts of continuation.
+Recovery records establish which results can be reused; repository checks keep
+local edits and commits from disappearing during finalization. A repository
+path in a saved result cannot replace the repository itself.
+
+Before checkout release, runtime removal, storage reclamation or the final
+sweep deletes a directory, cleanup searches the entire deletion boundary for
+repositories. Uncommitted changes or unpushed commits independently preserve
+the candidate and the backing metadata needed to use it. The same rule covers
+nested clones, linked worktrees, the primary execution checkout and target
+destinations. No remote, an internal origin, a temporary location or an
+inactive owner makes repository work disposable. Incomplete inspection also
+preserves the candidate with an explanation.
+
+Preservation is successful cleanup, so it does not turn a usage-limit stop into
+a work failure. Normal output names the retained candidate and repository and
+explains why it remains. The sweep applies these rules to older runs as well
+as the ending run, and rechecks contents immediately before deletion. Existing
+eligibility, ownership, locking and dependency requirements still apply.
+
+Clean, fully pushed repositories remain removable when eligible. Ordinary
+runtime artifacts still require declared recovery resources. Retention alone
+does not make an incompatible completion replayable.
+
+## Checkout storage and historical evidence
+
+The checkout-location evidence is narrower than the reported loss:
+
+- The private-clone work in #2290 introduced per-run `repository.git` and
+  `checkout` storage. In both tags `v1.2.163` and `v1.2.177`,
+  `RunCheckout::prepare_with_inputs` creates random `execution-<id>` storage
+  under the runtime directory's **parent**. With short runtime storage at
+  `r/<id>`, this is a sibling `r/execution-<id>/checkout`, rather than a child
+  of `r/<id>`. Runs with a recovery identity instead claim `exec/<identity>`;
+  an unavailable claim falls back to random storage.
+- #2738 removed Git-command tracing and retained the private clone. It does
+  not establish a relocation of the primary checkout inside `r/<id>`.
+- In `v1.2.177`, `collect_runs` treats an inactive, unused runtime directory
+  as `RunTmp` without checking its repositories for dirty or unpushed work.
+  Checkout release also forcibly removes the primary checkout before the final
+  sweep. These are confirmed deletion behaviors, distinct from the location
+  evidence.
+
+A step can create an independent clone or worktree beneath its runtime
+`TMPDIR`. Deleting that runtime directory therefore risks deleting repository
+work regardless of where the primary execution checkout lives. Behavioral
+fixtures and the CI continuation scenario exercise that boundary.
+
+The issue reports runtime loss for `r/975c30488cc0`, `r/38e7ac3816f1` and
+`r/8814ce575634`. Their original checkout paths, contents immediately before
+cleanup, and complete removal records are unavailable here. The source
+establishes a deletion risk; it does not prove which path deleted each reported
+run's work.
+
+For the contrast run `r/609c83e7f30b`, the owner reports a usage-limit stop
+after a push and that the folder survived. Its contemporaneous dirty-state
+evidence, cleanup-lock holder evidence and `run.json` are unavailable here.
+A push does not establish a clean working tree; survival does not establish
+whether a lock prevented a sweep or why the other folders disappeared. The
+same limit applies to inferring a cause from the reported surviving v1.2.162
+run. The incident discussion remains in issue #2785.
+
+## CI continuation contract
+
+The release evidence is the passing CI-only scenario driven by
+`tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh` and described
+by `tests/gadugi/scenarios/issue-2785-usage-limit-keeps-work.yaml`.
+CI's `install-smoke` job uses the installed Amplihack binary and pinned recipe
+runner. Missing prerequisites fail the scenario. It is never executed on a
+development host.
+
+The scenario executes a real recipe under a temporary HOME and work root,
+with an isolated Git configuration and local bare origin. A completed step
+creates a commit in a repository beneath runtime storage and records its path
+and commit output using supported recovery declarations. A subsequent step
+exercises the production usage-limit interruption lifecycle. Normal
+finalization runs, retains the work and reports why.
+
+A second launch uses the same recipe, compatible inputs, repository and issue
+identity, and work root. It verifies predecessor and recovery evidence and
+executes a continuation step that reads the retained repository, checks the
+original commit and verifies its contents. The test does not equate finding a
+SHA with executing continuation. Synthetic inactive metadata, a classification
+check alone, and manual cleanup after interruption do not demonstrate this
+contract. A clean, fully pushed counterpart confirms eligible removal.
+
+The driver uses Bash to exercise installed commands through the existing QA
+harness; implementation remains Rust. Fixtures never touch the real
+`~/.claude` or `~/.amplihack`. Tests neither read source text nor depend on
+timers or retries.
 
 ## Durability and trust
 

@@ -156,7 +156,7 @@ amplihack copilot
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
 - [Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Keep generated workflow runtime output outside commit worktrees
-- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, end-of-run cleanup, when a checkout's build target is removed, linked targets, how uncommitted and unpushed git work is kept, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
+- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, end-of-run cleanup, when a checkout's build target is removed, linked targets, repository preservation across release and sweeps, removal-warning history, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
 - [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection
 - [Verify .claude/ Staging](howto/verify-claude-staging.md) - Check that framework files are properly staged
 - [Verify Runtime Asset Resolution](howto/verify-runtime-asset-resolution.md) - Check helper, session, hooks, and multitask asset parity
@@ -320,8 +320,8 @@ Document-Driven Development is a systematic methodology where documentation come
 
 Code-enforced workflow execution engine with declarative YAML recipes.
 
-- [Resume After a Usage Limit](howto/resume-recipe-after-usage-limit.md) - **Planned:** relaunch the same issue, inspect the restart step, or use `--fresh`
-- [Recovery after a Recipe Usage Limit](concepts/recipe-usage-limit-recovery.md) - **Planned:** latest-attempt eligibility, nested replay, and compatibility
+- [Resume After a Usage Limit](howto/resume-recipe-after-usage-limit.md) - Relaunch the same issue, inspect the restart step, and access retained repository work
+- [Recovery after a Recipe Usage Limit](concepts/recipe-usage-limit-recovery.md) - Latest-attempt eligibility, nested replay, repository preservation, historical evidence and the CI continuation contract
 - [Recipe Recovery Reference](reference/recipe-recovery.md) - **Planned:** persistence policies, resources, durable storage, and runner contracts
 - [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
 - [Why a Recipe Run Does Not Trace Git Commands](concepts/no-git-command-tracing.md) - Why the ptrace observer and the Git-command journal were removed, what the private clone does instead, and what a tamper-resistant record would require (#2738)
