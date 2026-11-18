@@ -171,8 +171,12 @@ pub fn validate(args: &[&str], repository: &str) -> Result<Vec<String>> {
                 .chars()
                 .filter(|c| !c.is_whitespace())
                 .collect();
+            let threads: String = THREADS_QUERY
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
             ensure!(
-                compact == identity || compact == THREADS_QUERY,
+                compact == identity || compact == threads,
                 "unsupported GraphQL operation"
             );
             ensure!(
