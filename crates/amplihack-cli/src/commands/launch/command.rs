@@ -277,7 +277,14 @@ pub(super) fn build_command_for_dir(
         if let Some(line) = codex_agent_step::codex_agent_step_notice(extra_args) {
             eprintln!("{line}");
         }
-        cmd.args(codex_agent_step::codex_agent_step_args(extra_args));
+        // The caller supplies the child's execution directory. Only existing
+        // live review ownership grants the Git-check bypass (#2788).
+        let owned_review_launch =
+            add_dir_override.is_some_and(crate::runner_validation::is_owned_review_launch_dir);
+        cmd.args(codex_agent_step::codex_agent_step_args(
+            extra_args,
+            owned_review_launch,
+        ));
     } else {
         cmd.args(extra_args);
     }

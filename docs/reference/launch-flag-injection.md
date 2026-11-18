@@ -1,3 +1,10 @@
+---
+title: Launch Flag Injection — Reference
+description: Automatically injected agent CLI flags, ownership requirements, and caller overrides.
+doc_type: reference
+last_updated: 2026-11-18
+---
+
 # Launch Flag Injection — Reference
 
 When `amplihack` starts `claude`, `copilot`, `codex`, or `amplifier`, it builds
@@ -14,6 +21,7 @@ can override the defaults.
 - [--resume and --continue](#-resume-and-continue)
 - [--deny-tool (Copilot CLI)](#-deny-tool)
 - [Codex agent-step flags](#codex-agent-step-flags)
+  - [Owned review launch directories](#owned-review-launch-directories)
 - [Extra args passthrough](#extra-args-passthrough)
 - [Complete command-line assembly](#complete-command-line-assembly)
 - [Python launcher parity](#python-launcher-parity)
@@ -32,6 +40,7 @@ can override the defaults.
 | `--deny-tool shell(<prefix>:*)` | always, once per entry in the [dangerous-command policy](./dangerous-command-policy.md); nothing in your own arguments suppresses one | `copilot` | none for a shipped prefix. `policy.deny_commands` only adds, and `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` leaves these flags in place. See [--deny-tool](#-deny-tool) |
 | `--sandbox danger-full-access` | argv after `--` contains an `exec`/`e` subcommand AND the caller chose no sandbox | `codex` | pass your own sandbox (`--sandbox`, `--sandbox=`, `-s`, `-s<mode>`, `-s=<mode>`, `-c sandbox_mode=…`); see [Codex agent-step flags](#codex-agent-step-flags) |
 | `--dangerously-bypass-hook-trust` | argv after `--` contains an `exec`/`e` subcommand AND the flag is not already present | `codex` | none; it is added once on every Codex `exec` launch |
+| `--skip-git-repo-check` | `exec`/`e` runs in a validated, amplihack-owned review launch directory AND the flag is not already present | `codex` | automatic from existing ownership evidence; caller-supplied flags are preserved |
 
 ---
 
@@ -264,7 +273,11 @@ The `claude`, `copilot`, `codex`, and `amplifier` subcommands do not support
 
 Recipe agent steps on Codex run `amplihack codex -- exec …`.
 When the arguments after `--` contain an `exec` subcommand (or its alias `e`),
-amplihack inserts two flags immediately after that token:
+amplihack inserts the following baseline flags immediately after that token.
+An [owned review launch directory](#owned-review-launch-directories) also
+receives `--skip-git-repo-check`:
+
+The command examples below assume execution in a Git checkout.
 
 ```sh
 amplihack codex -- exec --output-last-message /d0/run/final-message -
@@ -308,6 +321,9 @@ which is kept in
 a unit test fails if the list and that copy disagree. `--full-auto` is not
 on the list because codex-cli 0.140.0 to 0.166.0 reject it.
 
+The following table describes sandbox and hook-trust injection. The separate
+ownership rule below determines whether `--skip-git-repo-check` is also added.
+
 | Caller argv (after `--`) | What amplihack adds |
 |---|---|
 | `exec --output-last-message F -` | both flags after `exec` |
@@ -327,8 +343,8 @@ on the list because codex-cli 0.140.0 to 0.166.0 reject it.
 | `-c exec`, `-m exec`, `-- exec` | nothing; `exec` here is a value or a positional, not the subcommand |
 
 **Notice (issue #2010).** When amplihack adds `--sandbox danger-full-access`,
-it writes one line to stderr before Codex starts. The line lists what was
-added, in the order it appears in the argv. The two possible lines are:
+it writes one line to stderr before Codex starts. The line lists the sandbox
+and hook-trust flags added, in the order they appear in the argv. The two possible lines are:
 
 | Caller already set | Line written to stderr |
 |---|---|
@@ -392,8 +408,66 @@ untrusted hooks without saying so, which would turn off the command-check hook
 (software-factory #149), so hook trust is bypassed. Full access means a step
 can write `.codex/hooks.json`, `~/.codex/`, `.git/hooks` and credential
 stores, and a hook planted by one step runs in later steps without a trust
-prompt. The preconditions, including the trusted-checkout requirement, are in
+prompt. The execution-directory preconditions are in
 [Sandbox and hook trust for agent steps](../howto/install-codex-plugin.md#sandbox-and-hook-trust-for-agent-steps).
+
+### Owned review launch directories
+
+Codex normally requires a Git checkout or a trusted project for unattended
+execution. Auto-drive's Crusty context and review steps, and merge-ready
+review steps, run in a separate, amplihack-created launch directory that
+contains no Git checkout. For these invocations amplihack automatically adds
+`--skip-git-repo-check` immediately after `exec` or its alias `e`.
+
+Eligibility comes from the existing review ownership manifest and live
+ownership validation. The normalized child execution directory must equal
+the validated generation's recorded launch path exactly. The launcher's
+own working directory does not determine eligibility. Any agent step using
+that same owned launch directory receives the same treatment, independently
+of its recipe name.
+
+| Child execution directory | Automatically add `--skip-git-repo-check`? |
+| --- | --- |
+| Recorded launch directory of a live, validated review generation | Yes, for `exec`/`e` |
+| Ordinary Git checkout | No |
+| Linked Git worktree or the review generation's checkout | No |
+| Unowned directory outside Git | No |
+| Directory with missing, unreadable, malformed, stale, retired or unrelated ownership evidence | No |
+| A parent, child or sibling of the recorded launch directory | No |
+
+A directory name such as `launch`, an instruction file, or the absence of
+Git metadata does not establish ownership. Missing or invalid evidence
+withholds automatic injection; the lookup introduces no additional launch
+error. Codex then applies its normal directory check unless the caller
+explicitly supplied the flag.
+
+Flag detection uses parsed options. A caller-supplied
+`--skip-git-repo-check` is forwarded without adding a duplicate. The same
+text used as another option's value or as prompt text does not count as an
+explicit flag. Invocations without an `exec`/`e` subcommand receive no
+automatic directory-check bypass.
+
+This behavior requires no new configuration key or environment variable.
+It writes no project trust entries or other settings to
+`$CODEX_HOME/config.toml`. Existing sandbox selection, hook handling,
+stdin prompt delivery and final-message capture retain their existing
+behavior. The review launch directory remains separate from the checkout;
+PR instruction files remain review data. See
+[private review generations](recipe-checkout-isolation.md#private-review-generations).
+
+#### Internal ownership interface
+
+The crate-private `runner_validation::is_owned_review_launch_dir(&Path) -> bool`
+provides the shared launcher with a read-only ownership result. It examines
+candidate manifests only in the immediate review allocation directory,
+derives their checkout paths internally, and reuses
+`review_generation::read_live(checkout)` validation. Exact normalized launch
+path equality is required; invalid candidates yield no eligibility.
+
+`build_command_for_dir` resolves ownership for the explicit child execution
+directory in its Codex branch. The Codex argument transformer receives that
+Boolean and remains pure. This interface adds no public API, ownership
+registry or manifest schema.
 
 ---
 
