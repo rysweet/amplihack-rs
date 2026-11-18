@@ -1,4 +1,5 @@
 //! Action adapter for the explicitly supported recipe tasks. No call-count dispatch.
+use super::agent::{task_field, task_json};
 use super::{
     agent, driver,
     environment::{IsolatedCase, checked, observe_git, private_dir},
@@ -10,23 +11,12 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub fn context(key: &str) -> Result<Value> {
-    if let Ok(path) = std::env::var("AMPLIHACK_CONTEXT_FILE") {
-        let data: Value = serde_json::from_slice(&fs::read(path)?)?;
-        let value = data.get(key).cloned().unwrap_or(Value::Null);
-        return Ok(match value {
-            Value::String(text) => serde_json::from_str(&text).unwrap_or(Value::String(text)),
-            other => other,
-        });
-    }
-    match std::env::var(format!("RECIPE_VAR_{key}")) {
-        Ok(value) => Ok(serde_json::from_str(&value).unwrap_or(Value::String(value))),
-        Err(std::env::VarError::NotPresent) => Ok(Value::Null),
-        Err(error) => Err(error.into()),
-    }
-}
-fn text_context(key: &str) -> Result<String> {
-    Ok(context(key)?.as_str().unwrap_or("").into())
+fn task_path(case: &IsolatedCase, task: &str, prefix: &str, suffix: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(task_field(task, prefix, suffix)?.trim());
+    let relative = path
+        .strip_prefix(&case.root)
+        .context("rendered path escapes case")?;
+    super::environment::confined_path(&case.root, relative)
 }
 pub fn find_worktree(repo: &Path, branch: &str) -> Result<Option<PathBuf>> {
     let list = observe_git(repo, &["worktree", "list", "--porcelain"])?;
@@ -59,15 +49,18 @@ pub fn implement(case: &IsolatedCase, repo: &Path) -> Result<()> {
     Ok(())
 }
 fn worktree(case: &IsolatedCase) -> Result<PathBuf> {
-    let setup = context("worktree_setup")?;
-    if let Some(path) = setup["worktree_path"].as_str() {
-        return Ok(PathBuf::from(path));
+    let location = case.evidence.join("drive-location.json");
+    if location.is_file() {
+        let observed: super::evidence::DriveObservation =
+            serde_json::from_slice(&fs::read(location)?)?;
+        super::evidence::validate_drive_location(&observed)?;
+        return Ok(observed.resolved_worktree);
     }
-    let path = text_context("repo_path")?;
-    if !path.is_empty() {
-        return Ok(PathBuf::from(path));
-    }
-    driver::checkout(case)
+    // The runner resolves working_dir before invoking the client. Use the
+    // actual invocation directory, never a caller checkout fallback.
+    let cwd = std::env::current_dir()?.canonicalize()?;
+    ensure!(cwd.starts_with(&case.root), "agent cwd escapes case");
+    Ok(cwd)
 }
 pub fn check(case: &IsolatedCase, repo: &Path, tool: &str, args: &[&str]) -> Result<Value> {
     let executable = case.root.join("bin").join(tool);
@@ -190,7 +183,7 @@ fn preflight(case: &IsolatedCase, task: &str) -> Result<String> {
         current == pr.head_sha,
         "preflight local and hosting head differ"
     );
-    let provided = text_context("autodrive_state_dir")?;
+    let provided = task_field(task, "Prefer the provided state dir ", ";")?.trim();
     let state = if provided.is_empty() {
         case.root.join("autodrive-state")
     } else {
@@ -241,7 +234,7 @@ fn preflight(case: &IsolatedCase, task: &str) -> Result<String> {
     }
     let mut result = json!({"pr_found":"true","should_run":"true","skip_reason":"","pr":"1","pr_url":"https://github.com/fixture/project/pull/1","pr_state":"OPEN","branch":pr.branch,"head_sha":pr.head_sha,"base_branch":"main","base_sha":observe_git(&driver::origin(case)?,&["rev-parse","main"] )?,"state_dir":state,"repo":repo,"review_dir":cwd,"reason":"observed linked worktree and current local origin","blockers":[],"attempts":[],"merged_before_run":false,"handed_off":false,"terminal_state":"IMPLEMENTED_VERIFIED"});
     if task.contains("complete schema-1 Binding") {
-        let authorization = context("autodrive_authorization")?;
+        let authorization = task_json(task, "Runner-captured invocation: ")?;
         let run_id = authorization["run_id"]
             .as_str()
             .context("runner authorization has no run identity")?;
@@ -348,7 +341,8 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
             );
         }
         json!({"prerequisites":["cargo","rustc","gh"],"blockers":[],"attempts":[]}).to_string()
-    } else if task.starts_with("Use noninteractive command execution")
+    } else if (task.starts_with("Use noninteractive command execution")
+        || task.starts_with("Establish the PR identity and the worktree before continuing."))
         && task.contains("Establish the PR identity")
     {
         preflight(case, task)?
@@ -360,10 +354,10 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         json!({"platform_state":"OPEN","action":"continue","blockers":[],"attempts":[]}).to_string()
     } else if task.starts_with("Read PR #") && task.contains("resolved_concerns") {
         let pr = host(case)?.pr(1)?;
-        json!({"pr":"1","head_sha":pr.head_sha,"resolved_concerns":"","round_label":text_context("autodrive_round_label")?,"blockers":[],"attempts":[]}).to_string()
+        json!({"pr":"1","head_sha":pr.head_sha,"resolved_concerns":"","round_label":task_json(task, "Return JSON ")?["round_label"],"blockers":[],"attempts":[]}).to_string()
     } else if task.starts_with("# Crusty review") {
-        let reviewed = text_context("reviewed_head_sha")?;
-        let review_dir = PathBuf::from(text_context("review_dir")?);
+        let reviewed = task_field(task, "Read the exact commit `", "`")?.to_string();
+        let review_dir = task_path(case, task, "git -C \"", "\"")?;
         ensure!(
             observe_git(&review_dir, &["show", &format!("{reviewed}:answer.txt")])? == "42",
             "reviewed commit does not implement answer"
@@ -386,7 +380,7 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         )?;
         json!({"verdict_posted":"true","head_sha":pr.head_sha}).to_string()
     } else if task.starts_with("Assess whether this Crusty review objective is complete") {
-        let record = PathBuf::from(text_context("autodrive_round_record")?);
+        let record = task_path(case, task, "Read the round record at\n", " and its")?;
         let result = fs::read(&record).and_then(|bytes| {
             serde_json::from_slice::<Value>(&bytes).map_err(std::io::Error::other)
         });
@@ -395,7 +389,7 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
                 && v["reviewed_head_sha"] == v["head_sha"]
                 && v["commits_this_round"] == 0
         });
-        let state = text_context("autodrive_completion_state")?;
+        let state = task_path(case, task, "--private-state \"", "\"")?;
         checked(
             case.command(&case.root.join("bin/amplihack"))?
                 .args([
@@ -403,7 +397,7 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
                     "helper",
                     "autodrive-completion-write",
                     "--private-state",
-                    &state,
+                    state.to_str().context("private state path")?,
                     "--action",
                     if complete { "complete" } else { "evaluate" },
                     "--reason",
@@ -416,6 +410,66 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
                 .output()?,
             "Crusty completion writer",
         )?
+    } else if task.starts_with("Verify the loop result ") {
+        let result = task_json(task, "Verify the loop result ")?;
+        ensure!(
+            result["loop_result"] == "DONE" && result["round_verdict"] == "CLEAN",
+            "phase recording requires a completed clean loop"
+        );
+        let state = task_path(
+            case,
+            task,
+            "existing state ",
+            ". Preserve stable identifiers",
+        )?;
+        let tools = case.home.join(".amplihack/amplifier-bundle/tools");
+        for operation in ["collect", "check"] {
+            let mut command = case.command(Path::new("/bin/bash"))?;
+            command
+                .arg("-p")
+                .arg(tools.join("autodrive_followups.sh"))
+                .args([operation, "--state-dir"])
+                .arg(&state);
+            if operation == "check" {
+                command.args(["--pr", "1"]);
+            }
+            checked(command.output()?, "clean-review followups")?;
+        }
+        checked(
+            case.command(Path::new("/bin/bash"))?
+                .args([
+                    "-p",
+                    "-c",
+                    ". \"$1\" && autodrive_record_crusty_loop_done \"$2\"",
+                    "phase-recorder",
+                ])
+                .arg(tools.join("autodrive_state.sh"))
+                .arg(&state)
+                .output()?,
+            "record crusty phase",
+        )?;
+        json!({"recorded":true,"reviewed_head_sha":host(case)?.pr(1)?.head_sha,"followups":[],"blockers":[],"attempts":[]}).to_string()
+    } else if task.starts_with("Reconcile every minor crusty finding") {
+        let state = task_path(
+            case,
+            task,
+            "preserve mappings in state ",
+            ". Suggested tools",
+        )?;
+        let tools = case.home.join(".amplihack/amplifier-bundle/tools");
+        for operation in ["collect", "check"] {
+            let mut command = case.command(Path::new("/bin/bash"))?;
+            command
+                .arg("-p")
+                .arg(tools.join("autodrive_followups.sh"))
+                .args([operation, "--state-dir"])
+                .arg(&state);
+            if operation == "check" {
+                command.args(["--pr", "1"]);
+            }
+            checked(command.output()?, "final followups")?;
+        }
+        json!({"mappings":[],"blockers":[],"attempts":[]}).to_string()
     } else if task.starts_with("Clear inherited git state first")
         && task.contains("Synchronize only the linked worktree")
     {
@@ -428,16 +482,17 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         let helper = case
             .home
             .join(".amplihack/amplifier-bundle/tools/autodrive_qa_evidence.sh");
-        let path = text_context("autodrive_qa_evidence")?;
+        let path = task_path(
+            case,
+            task,
+            "Save the actual measured qa-evidence.json to ",
+            " with private permissions",
+        )?;
         let mut command = case.command(Path::new("/usr/bin/env"))?;
         command
             .arg(format!("REPO_PATH={}", repo.display()))
             .arg("AUTODRIVE_QA_BASE=main")
-            .arg(format!(
-                "AUTODRIVE_ROUND_LABEL={}",
-                text_context("autodrive_round_label")?
-            ))
-            .arg(format!("AUTODRIVE_QA_EVIDENCE={path}"))
+            .arg(format!("AUTODRIVE_QA_EVIDENCE={}", path.display()))
             .arg("/bin/bash")
             .arg(helper)
             .current_dir(&repo);
@@ -449,6 +504,38 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         let mut hosting = host(case)?;
         hosting.set_checks(1, Checks::Green)?;
         let pr = hosting.pr(1)?;
+        let helper = case
+            .home
+            .join(".amplihack/amplifier-bundle/tools/autodrive_expected_checks.sh");
+        let measured = case
+            .command(Path::new("/bin/bash"))?
+            .arg("-p")
+            .arg(helper)
+            .args([&pr.head_sha, "main"])
+            .current_dir(&repo)
+            .output()?;
+        fs::write(
+            case.evidence.join("expected-checks.stdout"),
+            &measured.stdout,
+        )?;
+        fs::write(
+            case.evidence.join("expected-checks.stderr"),
+            &measured.stderr,
+        )?;
+        ensure!(
+            measured.status.success(),
+            "expected checks did not measure GREEN"
+        );
+        let line = String::from_utf8(measured.stdout)?;
+        let result: Value = serde_json::from_str(
+            line.lines()
+                .last()
+                .context("expected checks emitted no outcome")?,
+        )?;
+        ensure!(
+            result["ci_status"] == "GREEN",
+            "expected checks returned an incomplete outcome"
+        );
         driver::save(
             &case.evidence.join("green-transition.json"),
             &json!({"head":pr.head_sha,"cause":"explicit controller transition after local verification"}),
@@ -472,17 +559,19 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         json!({"platform":"github","host":"github.com","repository":"fixture/project","pr":1,"head_sha":pr.head_sha,"pr_state":pr.state,"merge_state":"CLEAN","approval_status":"MET","approval_source":"local hosting fixture configuration","approval_blocker":"","blockers":[],"attempts":[]}).to_string()
     } else if task.starts_with("# merge-ready assessment") {
         let pr = host(case)?.pr(1)?;
-        let evidence = context("qa_evidence")?;
+        let evidence = task_json(task, "- qa-team scenarios: `")?;
         ensure!(
-            pr.checks == Checks::Green && evidence["qa_status"] == "PASS",
+            pr.checks == Checks::Green
+                && evidence["qa_status"] == "PASS"
+                && evidence["head_sha"] == pr.head_sha,
             "readiness lacks passing measured evidence"
         );
-        let reviewed = text_context("reviewed_head_sha")?;
+        let reviewed = task_field(task, "Read the exact commit `", "`")?.to_string();
         ensure!(
             reviewed == pr.head_sha,
             "readiness head differs from reviewed commit"
         );
-        let review = PathBuf::from(text_context("review_dir")?);
+        let review = task_path(case, task, "git -C \"", "\"")?;
         ensure!(
             observe_git(&review, &["show", &format!("{reviewed}:README.md")])?.contains("42"),
             "readiness lacks user documentation at the assessed commit"
@@ -494,7 +583,7 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
                 .all(|path| ["src/lib.rs", "answer.txt", "README.md"].contains(&path)),
             "readiness found unrelated changes"
         );
-        let crusty = context("crusty_evidence")?;
+        let crusty = task_json(task, "- Crusty loop: `")?;
         ensure!(
             crusty["crusty_status"] == "DONE_CLEAN"
                 && crusty["crusty_reviewed_head_sha"] == pr.head_sha,
@@ -536,7 +625,42 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         )?;
         ensure!(edited.exit_code == 0, "readiness description update failed");
         post(case, &body)?;
+        driver::save(
+            &case.evidence.join("ready-observation.json"),
+            &json!({"head":pr.head_sha,"qa_status":evidence["qa_status"],"ci_status":"GREEN","crusty":crusty}),
+        )?;
         body
+    } else if task.starts_with("# Loop-health evaluation") {
+        let own = task_field(task, "round's own verdict `", "`")?;
+        let clean = task_field(task, "` equals `", "`")?;
+        let measured = task_json(task, "```json\n")?;
+        let pr = host(case)?.pr(1)?;
+        let ready: Value =
+            serde_json::from_slice(&fs::read(case.evidence.join("ready-observation.json"))?)?;
+        ensure!(
+            own == "MERGE_READY"
+                && clean == own
+                && pr.checks == Checks::Green
+                && ready["head"] == pr.head_sha
+                && ready["qa_status"] == "PASS",
+            "loop completion lacks clean current-round readiness"
+        );
+        driver::save(
+            &case.evidence.join("loop-evaluation.json"),
+            &json!({"measured":measured,"head":pr.head_sha,"verdict":own}),
+        )?;
+        json!({"loop_verdict":"DONE","not_converging":[],"reason":"current round is MERGE_READY after measured QA, expected checks and authorized review at observed head"}).to_string()
+    } else if task.starts_with("State in two or three plain sentences how finalisation") {
+        let result = task_json(task, "written by a tool, is: ")?;
+        let pr = host(case)?.pr(1)?;
+        ensure!(
+            result["result"] == "merged" && pr.state == "MERGED",
+            "finalization did not merge"
+        );
+        format!(
+            "PR #1 is merged at {}. The production finalizer returned merged and hosting readback agrees.",
+            pr.head_sha
+        )
     } else if task.starts_with("Observe PR #") && task.contains("before finalisation") {
         let pr = host(case)?.pr(1)?;
         format!("PR #1 is {}, not draft, at {}.", pr.state, pr.head_sha)

@@ -40,5 +40,33 @@
     "base_sha": "5b834d309ba2efcf464824dc8c89dcb3c5ac7982",
     "evidence_path": "baseline/e7/cleanup-interrupted.explanation.json",
     "failure_fingerprint": "cleanup did not explain preservation"
+  },
+  {
+    "assertion_id": "cleanup-other-stopped.commit",
+    "issue": 2785,
+    "base_sha": "adb27f70a7cd7fcd1ebb4fec4696d1b541c6810d",
+    "evidence_path": "baseline/0b26/cleanup-other-stopped.commit.json",
+    "failure_fingerprint": "cleanup lost unpushed work"
+  },
+  {
+    "assertion_id": "cleanup-other-stopped.dirty",
+    "issue": 2785,
+    "base_sha": "adb27f70a7cd7fcd1ebb4fec4696d1b541c6810d",
+    "evidence_path": "baseline/0b26/cleanup-other-stopped.dirty.json",
+    "failure_fingerprint": "cleanup lost uncommitted work"
+  },
+  {
+    "assertion_id": "cleanup-other-stopped.explanation",
+    "issue": 2785,
+    "base_sha": "adb27f70a7cd7fcd1ebb4fec4696d1b541c6810d",
+    "evidence_path": "baseline/0b26/cleanup-other-stopped.explanation.json",
+    "failure_fingerprint": "cleanup did not explain preservation"
+  },
+  {
+    "assertion_id": "cleanup-removal-failure.reported-once",
+    "issue": 2785,
+    "base_sha": "adb27f70a7cd7fcd1ebb4fec4696d1b541c6810d",
+    "evidence_path": "baseline/0b26/cleanup-removal-failure.reported-once.json",
+    "failure_fingerprint": "same removal failure reported by repeated cleanup"
   }
 ]

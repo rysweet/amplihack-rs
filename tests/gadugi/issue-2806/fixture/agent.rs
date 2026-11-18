@@ -1,6 +1,6 @@
 //! Deterministic actions and observation-backed model receipts.
 use super::environment::{IsolatedCase, confined_path, observe_git, private_dir};
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -161,4 +161,26 @@ pub fn write_codex_final(case: &IsolatedCase, path: &Path, response: &str) -> Re
     }
     fs::write(target, response)?;
     Ok(())
+}
+
+/// Read only a declared, rendered prompt field. Agent steps do not receive
+/// the shell-step RECIPE_VAR aliases from the supported runner.
+pub fn task_field<'a>(task: &'a str, prefix: &str, suffix: &str) -> Result<&'a str> {
+    let (_, tail) = task
+        .split_once(prefix)
+        .with_context(|| format!("rendered task field absent: {prefix}"))?;
+    let (value, _) = tail
+        .split_once(suffix)
+        .with_context(|| format!("rendered task field unterminated: {prefix}"))?;
+    Ok(value)
+}
+pub fn task_json(task: &str, prefix: &str) -> Result<Value> {
+    let (_, tail) = task
+        .split_once(prefix)
+        .with_context(|| format!("rendered task JSON absent: {prefix}"))?;
+    serde_json::Deserializer::from_str(tail)
+        .into_iter::<Value>()
+        .next()
+        .context("rendered task JSON empty")?
+        .map_err(Into::into)
 }

@@ -1,0 +1,52 @@
+{
+  "tested_sha": "adb27f70a7cd7fcd1ebb4fec4696d1b541c6810d",
+  "implementation_base": "3af9633bd9244169c16434a5fc59a88af3c9bb24",
+  "assertion_id": "cleanup-other-stopped.explanation",
+  "issue": 2785,
+  "executed": true,
+  "prerequisites_satisfied": true,
+  "failure_kind": "regression",
+  "failure_fingerprint": "cleanup did not explain preservation",
+  "observations": {
+    "before-retention.json": {
+      "commit_reachable": true,
+      "dirty_content_intact": true,
+      "branch_usable": true,
+      "unpushed": true
+    },
+    "interrupted-location.json": {
+      "commit": "0c3ed08f3e11f4f1ce79ab1602543de79a33d205",
+      "repo": "/home/runner/work/_temp/issue-2806.eBfWmz/tmp/qa2806-5I97Ky/cleanup-other-stopped/work/r/2a0432199715/retained-repository",
+      "run_id": "2a043219-9715-455e-a8a9-08d0f10ab46a",
+      "runtime": "/home/runner/work/_temp/issue-2806.eBfWmz/tmp/qa2806-5I97Ky/cleanup-other-stopped/work/r/2a0432199715"
+    },
+    "ready.json": {
+      "event": "work_ready",
+      "run_id": "2a043219-9715-455e-a8a9-08d0f10ab46a",
+      "pid": 23160,
+      "commit": "0c3ed08f3e11f4f1ce79ab1602543de79a33d205",
+      "dirty_path": "continue.txt"
+    },
+    "held-after-interruption.json": {
+      "commit_reachable": true,
+      "dirty_content_intact": true,
+      "branch_usable": true,
+      "unpushed": true
+    },
+    "other-run.exit.json": {
+      "exit_code": 0
+    },
+    "retention.json": null,
+    "cleanup.json": {
+      "dry_run": false,
+      "entries": [],
+      "work_root": "/home/runner/work/_temp/issue-2806.eBfWmz/tmp/qa2806-5I97Ky/cleanup-other-stopped/work"
+    }
+  },
+  "ci_run": "https://github.com/rysweet/amplihack-rs/actions/runs/44379660947",
+  "artifact_id": 14464141605,
+  "production_diff_from_base": [
+    "crates/amplihack-cli/Cargo.toml",
+    "crates/amplihack-cli/tests/main.rs"
+  ]
+}

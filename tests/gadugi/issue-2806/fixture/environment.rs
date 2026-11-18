@@ -121,7 +121,7 @@ impl IsolatedCase {
         for (key, value) in self.environment() {
             command.arg(format!("{key}={value}"));
         }
-        // CI stages a private global config containing only a local URL rewrite.
+        // CI stages a private global config containing only the local hosting transport and signing setting.
         // Ordinary unit fixtures retain /dev/null and do not receive extra state.
         let config = self.root.join("gitconfig");
         if config.exists() {
@@ -140,7 +140,6 @@ impl IsolatedCase {
                             "RECIPE_RUNNER_RS_PATH",
                             "CARGO_HOME",
                             "PRE_COMMIT_HOME",
-                            "GIT_ALLOW_PROTOCOL",
                             "GIT_ALLOW_PROTOCOL"
                         ]
                         .contains(&key.as_str()),

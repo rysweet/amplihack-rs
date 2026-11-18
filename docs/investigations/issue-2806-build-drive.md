@@ -138,3 +138,22 @@ final-message transport instead; keep the production installation check intact.
 A transparent model-launch wrapper executes the real CLI and retains its stderr.
 The removal-error fixture must accept cleanup's documented nonzero exit when its
 JSON reports the exact injected removal failure, then perform the second sweep.
+
+Run 44379660947 (tested merge `adb27f70a7cd7fcd1ebb4fec4696d1b541c6810d`,
+artifact 14464141605) reached the real model clients. The build fixture exposed
+missing rustdoc and selected the caller checkout because agent invocations do
+not receive shell-step context aliases. Resolve rendered prompt fields and the
+runner's actual working directory; stage rustdoc. PR resolution also has its
+own rendered task heading. These are harness defects and receive no allowance.
+The hosting API now provides real creation timestamps, head-bound check runs,
+required checks, and documented repository placeholders and pagination so the
+trusted expected-check helper can measure them itself.
+
+The independent other-stopped case retained all four work observations after
+its owner's interruption, then a second successful recorded run removed it.
+Both explicit cleanup invocations also reported the identical injected
+permission-denied removal failure. Four additional assertion-specific #2785
+allowances retain that behavior in baseline/0b26. Production implementation
+files are unchanged from the initial base; only test registration differs.
+The missing-worktree observation is not allowed yet because a subsequent
+unsupported task in that same case was still a harness failure.

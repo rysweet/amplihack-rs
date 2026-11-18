@@ -26,6 +26,8 @@ pub struct PullRequest {
     pub body: String,
     pub checks: Checks,
     pub comments: Vec<Value>,
+    pub created_at: String,
+    pub merged_at: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Invocation {
@@ -170,8 +172,8 @@ impl HostingStore {
             "headRepository":{"nameWithOwner":self.state.repository},"headRepositoryOwner":{"login":"fixture"},
             "baseRepository":{"nameWithOwner":self.state.repository},"author":{"login":"fixture"},
             "mergeStateStatus":"CLEAN","mergeable":"MERGEABLE","reviewDecision":"APPROVED",
-            "createdAt":"2026-11-18T00:00:00Z","mergedAt":if pr.state == "MERGED" { json!("2026-11-18T00:01:00Z") } else { Value::Null },
-            "closedAt":Value::Null,"comments":pr.comments,"reviews":[],
+            "createdAt":pr.created_at,"mergedAt":pr.merged_at,
+            "closedAt":pr.merged_at,"comments":pr.comments,"reviews":[],
             "statusCheckRollup":[{"name":"fixture-verification","status":if pr.checks == Checks::Pending {"IN_PROGRESS"} else {"COMPLETED"},"conclusion":conclusion,"state":state}]}),
         )
     }
@@ -214,6 +216,26 @@ impl HostingStore {
                 "wrong hosting repository: {repo}"
             );
         }
+        // gh expands these documented repository placeholders and accepts its
+        // pagination flag before or after the endpoint. Keep the original call
+        // in the invocation log; normalize only for this fixture's dispatch.
+        let mut effective: Vec<String> = args.iter().map(|arg| (*arg).into()).collect();
+        if effective.first().is_some_and(|arg| arg == "api") {
+            effective.retain(|arg| arg != "--paginate");
+            if effective.len() > 1 {
+                effective[1] = effective[1].replace(
+                    "repos/{owner}/{repo}/",
+                    &format!("repos/{}/", self.state.repository),
+                );
+                effective[1] = effective[1]
+                    .split('?')
+                    .next()
+                    .context("API endpoint missing")?
+                    .into();
+            }
+        }
+        let borrowed: Vec<&str> = effective.iter().map(String::as_str).collect();
+        let args = borrowed.as_slice();
         let response = match args {
             ["auth", "status", ..] => Response::text("fixture: authenticated locally"),
             ["api", "user", ..] => Response::json(json!({"login":"fixture"}))?,
@@ -239,9 +261,31 @@ impl HostingStore {
                     Response::json(json!([]))?
                 } else if endpoint.contains("/check-runs") {
                     let pr = self.state.prs.first().context("check run has no PR")?;
-                    let green = pr.checks == Checks::Green;
+                    let requested = endpoint
+                        .split('/')
+                        .nth(4)
+                        .context("check run head missing")?;
+                    if requested != pr.head_sha {
+                        Response::json(json!({"total_count":0,"check_runs":[]}))?
+                    } else {
+                        let conclusion = match pr.checks {
+                            Checks::Green => json!("success"),
+                            Checks::Failed => json!("failure"),
+                            Checks::Pending => Value::Null,
+                        };
+                        Response::json(
+                            json!({"total_count":1,"check_runs":[{"id":1,"name":"fixture-verification","head_sha":pr.head_sha,"status":if pr.checks==Checks::Pending {"in_progress"} else {"completed"},"conclusion":conclusion,"check_suite":{"id":1},"app":{"slug":"fixture"}}]}),
+                        )?
+                    }
+                } else if endpoint.ends_with("/status") {
+                    Response::json(json!({"statuses":[]}))?
+                } else if endpoint.ends_with("/actions/workflows") {
+                    Response::json(json!({"total_count":0,"workflows":[]}))?
+                } else if endpoint.ends_with("/contents/.github/workflows") {
+                    Response::refused("gh: Not Found (HTTP 404)")
+                } else if endpoint.ends_with("/branches/main") {
                     Response::json(
-                        json!({"total_count":1,"check_runs":[{"name":"fixture-verification","head_sha":pr.head_sha,"status":if green {"completed"} else {"in_progress"},"conclusion":if green {json!("success")} else {Value::Null},"app":{"slug":"fixture"}}]}),
+                        json!({"name":"main","protected":true,"commit":{"sha":self.origin_head("main")?},"protection":{"required_status_checks":{"contexts":["fixture-verification"]}}}),
                     )?
                 } else if endpoint.contains("/actions/runs") {
                     Response::json(json!({"total_count":0,"workflow_runs":[]}))?
@@ -282,6 +326,9 @@ impl HostingStore {
                     body,
                     checks: Checks::Pending,
                     comments: vec![],
+                    created_at: chrono::Utc::now()
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    merged_at: None,
                 });
                 self.persist()?;
                 Response::text(&format!(
@@ -364,6 +411,10 @@ impl HostingStore {
                             )
                         } else {
                             self.state.prs[index].state = "MERGED".into();
+                            self.state.prs[index].merged_at = Some(
+                                chrono::Utc::now()
+                                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                            );
                             self.persist()?;
                             Response::text("merged")
                         }
@@ -372,7 +423,10 @@ impl HostingStore {
                         let body = self
                             .read_body(cwd, args)?
                             .context("comment requires body")?;
-                        self.state.prs[index].comments.push(json!({"body":body,"author":{"login":"fixture"},"createdAt":"2026-11-18T00:00:00Z"}));
+                        let at =
+                            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+                        let id = self.state.prs[index].comments.len() + 1;
+                        self.state.prs[index].comments.push(json!({"id":id,"body":body,"author":{"login":"fixture"},"user":{"login":"fixture"},"author_association":"OWNER","createdAt":at,"created_at":at,"updatedAt":at,"updated_at":at}));
                         self.persist()?;
                         Response::text("comment recorded")
                     }

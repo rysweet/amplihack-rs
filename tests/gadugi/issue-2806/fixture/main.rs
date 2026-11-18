@@ -16,6 +16,17 @@ use std::io::{Read, Write};
 
 fn main() {
     if let Err(error) = execute() {
+        if let Ok(root) = std::env::var("AMPLIHACK_2806_ROOT") {
+            let path = std::path::Path::new(&root)
+                .join("evidence")
+                .join(format!("fixture-error-{}.txt", uuid::Uuid::new_v4()));
+            if let Err(record_error) = std::fs::write(&path, format!("{error:#}\n")) {
+                eprintln!(
+                    "cannot retain fixture error at {}: {record_error}",
+                    path.display()
+                );
+            }
+        }
         eprintln!("issue-2806 harness error: {error:#}");
         std::process::exit(1);
     }

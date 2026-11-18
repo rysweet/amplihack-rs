@@ -1,0 +1,71 @@
+{
+  "tested_sha": "adb27f70a7cd7fcd1ebb4fec4696d1b541c6810d",
+  "implementation_base": "3af9633bd9244169c16434a5fc59a88af3c9bb24",
+  "assertion_id": "cleanup-removal-failure.reported-once",
+  "issue": 2785,
+  "executed": true,
+  "prerequisites_satisfied": true,
+  "failure_kind": "regression",
+  "failure_fingerprint": "same removal failure reported by repeated cleanup",
+  "observations": {
+    "before-retention.json": {
+      "commit_reachable": true,
+      "dirty_content_intact": true,
+      "branch_usable": true,
+      "unpushed": true
+    },
+    "interrupted-location.json": {
+      "commit": "693ebe9a02a203b78dd531f08e72686fdc8e4cd7",
+      "repo": "/home/runner/work/_temp/issue-2806.eBfWmz/tmp/qa2806-5I97Ky/cleanup-removal-failure/work/r/b10ca4354f95/retained-repository",
+      "run_id": "b10ca435-4f95-4816-b460-97a037b58538",
+      "runtime": "/home/runner/work/_temp/issue-2806.eBfWmz/tmp/qa2806-5I97Ky/cleanup-removal-failure/work/r/b10ca4354f95"
+    },
+    "ready.json": {
+      "event": "work_ready",
+      "run_id": "b10ca435-4f95-4816-b460-97a037b58538",
+      "pid": 23512,
+      "commit": "693ebe9a02a203b78dd531f08e72686fdc8e4cd7",
+      "dirty_path": "continue.txt"
+    },
+    "cleanup-first.json": {
+      "dry_run": false,
+      "entries": [
+        {
+          "action": "failed",
+          "category": "run-tmp",
+          "path": "/home/runner/work/_temp/issue-2806.eBfWmz/tmp/qa2806-5I97Ky/cleanup-removal-failure/work/r/b10ca4354f95",
+          "reason": "cannot remove /home/runner/work/_temp/issue-2806.eBfWmz/tmp/qa2806-5I97Ky/cleanup-removal-failure/work/r/b10ca4354f95: Permission denied (os error 13)",
+          "run_id": "b10ca435-4f95-4816-b460-97a037b58538",
+          "size_bytes": 4096
+        }
+      ],
+      "work_root": "/home/runner/work/_temp/issue-2806.eBfWmz/tmp/qa2806-5I97Ky/cleanup-removal-failure/work"
+    },
+    "cleanup-second.json": {
+      "dry_run": false,
+      "entries": [
+        {
+          "action": "failed",
+          "category": "run-tmp",
+          "path": "/home/runner/work/_temp/issue-2806.eBfWmz/tmp/qa2806-5I97Ky/cleanup-removal-failure/work/r/b10ca4354f95",
+          "reason": "cannot remove /home/runner/work/_temp/issue-2806.eBfWmz/tmp/qa2806-5I97Ky/cleanup-removal-failure/work/r/b10ca4354f95: Permission denied (os error 13)",
+          "run_id": "b10ca435-4f95-4816-b460-97a037b58538",
+          "size_bytes": 4096
+        }
+      ],
+      "work_root": "/home/runner/work/_temp/issue-2806.eBfWmz/tmp/qa2806-5I97Ky/cleanup-removal-failure/work"
+    },
+    "cleanup-first.exit.json": {
+      "exit_code": 1
+    },
+    "cleanup-second.exit.json": {
+      "exit_code": 1
+    }
+  },
+  "ci_run": "https://github.com/rysweet/amplihack-rs/actions/runs/44379660947",
+  "artifact_id": 14464141605,
+  "production_diff_from_base": [
+    "crates/amplihack-cli/Cargo.toml",
+    "crates/amplihack-cli/tests/main.rs"
+  ]
+}

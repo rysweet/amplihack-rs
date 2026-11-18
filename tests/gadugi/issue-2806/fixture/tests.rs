@@ -995,3 +995,71 @@ fn recovered_pending_finalization_can_pass_with_a_consistent_build_success() {
         assert!(evidence::validate_pending_finalization(&observed).is_ok());
     }
 }
+
+#[test]
+fn agent_reads_rendered_fields_and_json_without_shell_context_aliases() {
+    let prompt = "Prefer the provided state dir ; otherwise create one.\nRunner-captured invocation: {\"run_id\":\"real-run\",\"selected_pr\":1}\nMore instructions";
+    assert_eq!(
+        agent::task_field(prompt, "Prefer the provided state dir ", ";").unwrap(),
+        ""
+    );
+    assert_eq!(
+        agent::task_json(prompt, "Runner-captured invocation: ").unwrap()["run_id"],
+        "real-run"
+    );
+    assert!(agent::task_json("Return invalid", "Return ").is_err());
+    assert!(agent::task_field(prompt, "absent", ";").is_err());
+    assert!(agent::task_field("path is unterminated", "path is ", ";").is_err());
+}
+
+#[test]
+fn required_checks_api_is_head_bound_and_keeps_pending_until_explicit_transition() {
+    let repo = Repository::published();
+    let mut hosting = repo.hosting();
+    let number = repo.open_pr(&mut hosting);
+    let endpoint = format!(
+        "repos/{{owner}}/{{repo}}/commits/{}/check-runs?filter=all",
+        repo.head
+    );
+    let response = hosting
+        .invoke(&repo.checkout, &["api", "--paginate", &endpoint])
+        .unwrap();
+    let pending: Value = serde_json::from_slice(&response.stdout).unwrap();
+    assert_eq!(pending["check_runs"][0]["head_sha"], repo.head);
+    assert_eq!(pending["check_runs"][0]["status"], "in_progress");
+    assert!(pending["check_runs"][0]["conclusion"].is_null());
+    let stale = format!(
+        "repos/fixture/project/commits/{}/check-runs",
+        "0".repeat(40)
+    );
+    let response = hosting.invoke(&repo.checkout, &["api", &stale]).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&response.stdout).unwrap()["total_count"],
+        0
+    );
+    hosting.set_checks(number, Checks::Green).unwrap();
+    let response = hosting
+        .invoke(&repo.checkout, &["api", &endpoint, "--paginate"])
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&response.stdout).unwrap()["check_runs"][0]["conclusion"],
+        "success"
+    );
+    let response = hosting
+        .invoke(
+            &repo.checkout,
+            &["api", "repos/{owner}/{repo}/branches/main"],
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&response.stdout).unwrap()["protection"]["required_status_checks"]
+            ["contexts"],
+        json!(["fixture-verification"])
+    );
+    let readback = hosting
+        .invoke(&repo.checkout, &["pr", "view", "1", "--json", "createdAt"])
+        .unwrap();
+    let readback: Value = serde_json::from_slice(&readback.stdout).unwrap();
+    assert!(chrono::DateTime::parse_from_rfc3339(readback["createdAt"].as_str().unwrap()).is_ok());
+    assert!(readback["mergedAt"].is_null());
+}

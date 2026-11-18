@@ -105,6 +105,24 @@ pub fn run_all(args: &[String]) -> Result<()> {
                 _ => cleanup(&case, &mut report, name),
             }
         })();
+        let result = result.and_then(|()| {
+            let errors: Vec<_> = fs::read_dir(&case.evidence)?
+                .collect::<std::io::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("fixture-error-")
+                })
+                .map(|entry| entry.path())
+                .collect();
+            ensure!(
+                errors.is_empty(),
+                "client fixture errors cannot receive regression allowances: {errors:?}"
+            );
+            Ok(())
+        });
         if let Err(error) = result {
             fs::write(
                 case.evidence.join("harness-error.txt"),
@@ -191,7 +209,7 @@ fn stage(case: &IsolatedCase, args: &[String], name: &str) -> Result<()> {
     let toolchain = toolchain
         .parent()
         .context("cargo has no toolchain directory")?;
-    for tool in ["rustfmt", "cargo-fmt"] {
+    for tool in ["rustfmt", "cargo-fmt", "rustdoc"] {
         let source = toolchain.join(tool);
         ensure!(
             source.is_file(),
