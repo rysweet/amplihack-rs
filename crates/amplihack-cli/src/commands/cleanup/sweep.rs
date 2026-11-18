@@ -1464,12 +1464,13 @@ fn collect(settings: &Settings) -> Result<Vec<Item>> {
     c.collect_exec_storage();
     c.collect_tmp_leftovers();
     c.collect_logs();
-    // Classifications establish eligibility; inspect the full removal boundary
-    // for every eligible directory, including target destinations and tombstones.
+    // Classifications establish eligibility; inspect the full removal boundary,
+    // including target destinations and tombstones. Runtime collection already
+    // inspected its full boundary; removal still checks it again at apply time.
     for item in &mut c.items {
         if matches!(
             item.op,
-            Op::Skip | Op::Preserve | Op::Fail | Op::Archive { .. }
+            Op::Skip | Op::Preserve | Op::Fail | Op::Archive { .. } | Op::RemoveRunTmp { .. }
         ) {
             continue;
         }
