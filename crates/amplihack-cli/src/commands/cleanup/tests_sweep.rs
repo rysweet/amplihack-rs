@@ -1211,6 +1211,9 @@ fn owned_worktree_apply_preserves_new_work_in_an_ignored_nested_clone() {
     let fx = Fx::new();
     let (origin, main) = origin_and_clone(&fx.root.join("src"));
     let wt = clean_pushed_worktree(&main, &fx.work.worktrees_dir().join("repo/task"), "task");
+    // A detached, remotely backed checkout uses the existing no-PR rule;
+    // this filesystem test must never invoke the host's GitHub CLI.
+    git(&wt, &["checkout", "--detach", "-q"]);
     let common = PathBuf::from(git(
         &wt,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -1220,7 +1223,7 @@ fn owned_worktree_apply_preserves_new_work_in_an_ignored_nested_clone() {
     let owned = format_owned_line(&OwnedPath {
         kind: OwnedKind::Worktree,
         path: wt.clone(),
-        branch: Some("task".into()),
+        branch: None,
         target: None,
     });
     seed(&fx, STOPPED_RUN, false, &owned);
