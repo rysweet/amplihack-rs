@@ -1,0 +1,80 @@
+name: issue-2785-usage-limit-keeps-work
+description: >
+  Outside-in QA for issue #2785. On 1.2.177 runs that stopped on a usage
+  limit lost the git work in their runtime folder under the work root's r/,
+  because the end of the run removed that folder whatever it held. The
+  scenario (via tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh)
+  runs `amplihack recipe run` through the pinned recipe runner, with no stub
+  runner, under env -i with a temporary HOME, TMPDIR, git configuration and
+  work root. A two-step bash recipe clones a local bare origin into
+  $TMPDIR/work, which is inside r/<id>, commits, and then stops the way a
+  usage limit stops a run, with usage-limit waiting off. With the commit
+  unpushed, the run is classified usage_limit, the runner says the runtime
+  folder is kept and why, the commit is on disk after the stop, and
+  `amplihack cleanup --apply` skips the folder with the same reason and leaves
+  the commit in place. With the commit pushed, the runtime folder is removed
+  and the commit is in the origin. Nothing reaches the network. CI's Install
+  Smoke Test job runs the driver script directly against the binary it
+  installs; CI does not run gadugi-test, so this file is for running the same
+  cases through gadugi-test by hand.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, cleanup, usage-limit, recipe-run, regression]
+  priority: high
+  issues: ["2785"]
+steps:
+  - name: run-issue-2785-usage-limit-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh
+    timeout: 880000
+  - name: all-usage-limit-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: unpushed-run-classified-usage-limit
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unpushed: classified usage_limit and stopped"
+  - name: commit-on-disk-after-the-stop
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unpushed: after the stop the commit is on disk in "
+  - name: runner-says-the-folder-is-kept
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unpushed: the runner said the runtime folder is kept, and why"
+  - name: cleanup-skips-the-folder
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unpushed: cleanup --apply skips "
+  - name: commit-on-disk-after-cleanup
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unpushed: after cleanup the commit is still on disk"
+  - name: pushed-folder-is-removed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: pushed: the runtime folder is removed once its work is on the remote"
