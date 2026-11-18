@@ -243,3 +243,9 @@ The drive must also match baseline/97's exit 81 and structured report failure;
 only private paths and timestamps in that diagnostic are normalized. Missing,
 malformed or additional terminal errors fail the harness even when downstream
 worktree-dependent assertions remain unexecuted.
+
+Runtime destinations are validated as absolute descendants of their designated
+root before cloning, preparing worktrees, changing permissions or writing files.
+Validation rejects traversal, sibling prefixes and symlinks in existing ancestors,
+including the root itself; nonexistent suffixes undergo the same component checks.
+The same boundary covers rendered autodrive state and observed repository paths.

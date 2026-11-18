@@ -91,10 +91,7 @@ pub fn execute_plan(case: &IsolatedCase, cwd: &Path, plan: &Plan) -> Result<Rece
         !plan.files.is_empty() && !plan.checks.is_empty(),
         "implementation requires files and checks"
     );
-    ensure!(
-        cwd.canonicalize()?.starts_with(&case.root),
-        "action cwd escapes case"
-    );
+    super::environment::runtime_path(&case.root, cwd)?;
     let mut receipt = Receipt {
         files: vec![],
         checks: vec![],

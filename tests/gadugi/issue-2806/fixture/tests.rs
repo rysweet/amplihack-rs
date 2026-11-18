@@ -1242,3 +1242,49 @@ fn missing_worktree_never_hides_unrelated_or_malformed_terminal_failures() {
         evidence::validate_missing_drive_terminal(&format!("{marker}{record}"), Some(81)).is_err()
     );
 }
+
+#[test]
+fn runtime_destinations_reject_traversal_sibling_prefix_and_symlink_escapes_before_writes() {
+    let (temp, fixture) = case();
+    let outside = temp.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("sentinel"), b"untouched").unwrap();
+    symlink(&outside, fixture.work.join("escape")).unwrap();
+    symlink(
+        temp.path().join("missing-outside"),
+        fixture.work.join("dangling"),
+    )
+    .unwrap();
+    let sibling = fixture.root.join("work-sibling");
+    for path in [
+        fixture.work.join("../../outside/new"),
+        sibling.join("new"),
+        fixture.work.join("escape/new"),
+        fixture.work.join("dangling/new"),
+        fixture.work.join("new/../../outside"),
+        fixture.work.clone(),
+    ] {
+        assert!(
+            environment::runtime_path(&fixture.work, &path).is_err(),
+            "{}",
+            path.display()
+        );
+    }
+    // Even a symlink used as the designated root must be rejected.
+    assert!(
+        environment::runtime_path(
+            &fixture.work.join("escape"),
+            &fixture.work.join("escape/new")
+        )
+        .is_err()
+    );
+    let valid = fixture.work.join("new/nested/runtime");
+    let validated = environment::runtime_path(&fixture.work, &valid).unwrap();
+    fs::create_dir_all(&validated).unwrap();
+    fs::write(validated.join("local"), b"fixture").unwrap();
+    assert!(environment::runtime_path(&fixture.work, &valid).is_ok());
+    assert_eq!(fs::read(outside.join("sentinel")).unwrap(), b"untouched");
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 1);
+    assert!(!sibling.exists());
+    assert!(!temp.path().join("missing-outside").exists());
+}

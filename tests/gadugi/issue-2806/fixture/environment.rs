@@ -173,22 +173,40 @@ pub fn confined_path(root: &Path, path: &Path) -> Result<PathBuf> {
         "absolute path is outside relative contract: {}",
         path.display()
     );
-    let mut result = root.to_path_buf();
+    runtime_path(root, &root.join(path))
+}
+
+/// Validate an absolute runtime destination, including every existing ancestor.
+/// Nonexistent suffixes are permitted only after their full lexical validation.
+pub fn runtime_path(root: &Path, path: &Path) -> Result<PathBuf> {
+    ensure!(
+        root.is_absolute() && path.is_absolute(),
+        "runtime paths must be absolute"
+    );
+    let relative = path
+        .strip_prefix(root)
+        .context("runtime escapes designated root")?;
+    ensure!(
+        !relative.as_os_str().is_empty(),
+        "runtime must be beneath root"
+    );
+    let mut result = PathBuf::new();
     for component in path.components() {
         match component {
+            Component::RootDir => result.push(component.as_os_str()),
             Component::Normal(part) => {
                 result.push(part);
                 match fs::symlink_metadata(&result) {
                     Ok(meta) => ensure!(
                         !meta.file_type().is_symlink(),
-                        "symlink in confined path: {}",
+                        "symlink in runtime path: {}",
                         result.display()
                     ),
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(error).context("inspect confined path"),
+                    Err(error) => return Err(error).context("inspect runtime path"),
                 }
             }
-            _ => bail!("invalid confined path: {}", path.display()),
+            _ => bail!("invalid runtime path: {}", path.display()),
         }
     }
     Ok(result)

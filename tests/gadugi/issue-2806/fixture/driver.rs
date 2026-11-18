@@ -1,5 +1,5 @@
 //! CI case controller. Independent cases run even when a preceding case fails.
-use super::environment::{IsolatedCase, observe_git, private_dir};
+use super::environment::{IsolatedCase, observe_git, private_dir, runtime_path};
 use super::evidence::{self, Assertion, FailureKind, Report};
 use super::hosting::{HostingStore, option};
 use super::lifecycle::{Event, TrackedChild, read_event};
@@ -489,6 +489,7 @@ fn build(case: &IsolatedCase, report: &mut Report) -> Result<()> {
             None
         };
         if let Some(worktree) = worktree {
+            let worktree = runtime_path(&case.work, &worktree)?;
             let observed = evidence::observe_build(
                 &worktree,
                 &origin(case)?,
@@ -796,8 +797,9 @@ fn drive(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
     )?;
     let observed: evidence::DriveObservation =
         serde_json::from_slice(&fs::read(case.evidence.join("drive-location.json"))?)?;
+    let resolved_worktree = runtime_path(&case.work, &observed.resolved_worktree)?;
     let retained = observe_git(
-        &observed.resolved_worktree,
+        &resolved_worktree,
         &["show", &format!("{}:answer.txt", observed.observed_head)],
     )? == "42";
     assert_value(
@@ -808,7 +810,7 @@ fn drive(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
         "drive did not retain committed implementation",
     )?;
     case.git(
-        &observed.resolved_worktree,
+        &resolved_worktree,
         &[
             "bundle",
             "create",
@@ -849,8 +851,8 @@ pub fn hold_work(args: &[String]) -> Result<()> {
     );
     let case = IsolatedCase::open(Path::new(&std::env::var("AMPLIHACK_2806_ROOT")?))?;
     let runtime = PathBuf::from(std::env::var("AMPLIHACK_WORKFLOW_RUNTIME_DIR")?);
-    ensure!(runtime.starts_with(&case.work), "runtime escapes work root");
-    let repo = runtime.join("retained-repository");
+    let runtime = runtime_path(&case.work, &runtime)?;
+    let repo = runtime_path(&case.work, &runtime.join("retained-repository"))?;
     case.git(
         &runtime,
         &[
@@ -984,7 +986,11 @@ fn cleanup(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<()> {
             .as_str()
             .context("interrupted repo absent")?,
     );
-    let runtime = PathBuf::from(location["runtime"].as_str().context("runtime absent")?);
+    let runtime = runtime_path(
+        &case.work,
+        Path::new(location["runtime"].as_str().context("runtime absent")?),
+    )?;
+    let repo = runtime_path(&runtime, &repo)?;
     let before = evidence::observe_retention(
         &repo,
         &origin(case)?,

@@ -2,7 +2,7 @@
 use super::agent::{task_field, task_json};
 use super::{
     agent, driver,
-    environment::{IsolatedCase, checked, observe_git, private_dir},
+    environment::{IsolatedCase, checked, observe_git, private_dir, runtime_path},
     hosting::{Checks, HostingStore},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -54,7 +54,7 @@ fn worktree(case: &IsolatedCase) -> Result<PathBuf> {
         let observed: super::evidence::DriveObservation =
             serde_json::from_slice(&fs::read(location)?)?;
         super::evidence::validate_drive_location(&observed)?;
-        return Ok(observed.resolved_worktree);
+        return runtime_path(&case.work, &observed.resolved_worktree);
     }
     let implementation = case.evidence.join("implementation-worktree.json");
     if driver::config(case)?["case"] == "build" && implementation.is_file() {
@@ -210,6 +210,7 @@ fn preflight(case: &IsolatedCase, task: &str) -> Result<String> {
             .parent()
             .context("private checkout has no parent")?
             .join("worktrees/pr-1");
+        let target = runtime_path(&case.work, &target)?;
         private_dir(target.parent().context("worktree parent missing")?)?;
         // Explicit control preparation is recorded independently and is never
         // allowed in drive-missing. It does not stand in for production resolution.
@@ -243,6 +244,7 @@ fn preflight(case: &IsolatedCase, task: &str) -> Result<String> {
         )?;
         return Ok(json!({"pr_found":"true","pr":"1","pr_url":"https://github.com/fixture/project/pull/1","pr_state":"OPEN","branch":pr.branch,"head_sha":pr.head_sha,"should_run":"false","skip_reason":"no-worktree","base_branch":"main","base_sha":observe_git(&driver::origin(case)?,&["rev-parse","main"] )?,"state_dir":"","repo":"","review_dir":cwd,"reason":"no-worktree","blockers":["no-worktree"],"attempts":[]}).to_string());
     };
+    let repo = runtime_path(&case.work, &repo)?;
     let current = observe_git(&repo, &["rev-parse", "HEAD"])?;
     ensure!(
         current == pr.head_sha,
@@ -254,10 +256,7 @@ fn preflight(case: &IsolatedCase, task: &str) -> Result<String> {
     } else {
         PathBuf::from(provided)
     };
-    ensure!(
-        state.starts_with(&case.root),
-        "autodrive state escapes isolated case"
-    );
+    let state = runtime_path(&case.root, &state)?;
     let out = case
         .command(&case.root.join("bin/amplihack"))?
         .args(["orch", "helper", "autodrive", "state", "--directory"])
