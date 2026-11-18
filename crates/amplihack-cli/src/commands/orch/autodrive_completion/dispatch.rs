@@ -32,11 +32,17 @@ pub fn run(args: Dispatch) -> Result<i32> {
             && decision.round_record_hash == snapshot.record_hash,
         "decision identity or record hash mismatch"
     );
-    let record = evidence::validate(&state, &snapshot)?;
+    let record = evidence::validate(
+        &state,
+        &snapshot,
+        matches!(decision.action, Action::Complete),
+    )?;
     let complete = matches!(
         record["crusty_verdict"].as_str(),
         Some("CLEAN" | "MINOR_ONLY")
-    );
+    ) && record["reviewed_head_sha"] == record["head_sha"]
+        && record["commits_this_round"].as_u64() == Some(0)
+        && args.child_exit_code == 0;
     let (result, code) = match decision.action {
         Action::Complete => {
             // #2769: `--child-exit-code` is `ROUND_RC` in `autodrive_loop.sh`,

@@ -1,8 +1,8 @@
 ---
 title: Run a Recipe End-to-End
-description: Launch a recipe, inspect its result, and distinguish current checkout behavior from planned isolation.
+description: Launch a recipe in a named checkout and inspect its result.
 doc_type: howto
-last_updated: 2026-11-17
+last_updated: 2026-11-18
 ---
 
 # Run a Recipe End-to-End
@@ -145,37 +145,37 @@ amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b606
 
 ## Know where the run works
 
-A recipe run never runs steps in your checkout. Before the first step,
-`amplihack recipe run` copies your committed, staged, unstaged and untracked
-changes into a private repository and a detached checkout under the run
-folder. Steps, agents and hooks run there, and the checkout is removed when
-the run ends. Your index, `HEAD`, branches and Git configuration do not
-change, even when a step runs `git add` or `git commit`.
+Run in the checkout you select. `-w` / `--working-dir` sets the runner's
+working directory; `repo_path` supplies the repository to recipe steps.
+Use matching paths when both refer to the same checkout:
 
-- `-w` picks the source checkout and the subdirectory steps start in.
-- A context value that is exactly a path in your checkout, such as
-  `-c repo_path=$PWD`, is mapped to the same path in the run's checkout.
-  A path buried inside longer text is refused; pass it as its own value.
-- Ignored files are not copied, except the recipe file itself.
-- Steps read your own Git configuration, so your credential helper,
-  `safe.directory` entries, aliases and filters apply inside the run. An https
-  push or fetch from a step authenticates the same way one in your own shell
-  does, and fails the same way if no helper can answer without a terminal.
-  Your global `user.name` does not change who a workflow commit is attributed
-  to: commit-producing recipes set an explicit identity first, which
-  [Configure workflow commit identity](./configure-workflow-commit-identity.md)
-  covers.
-- `--dry-run` prepares no checkout and writes no run folder.
-- A resumed run gets a fresh checkout.
-- Real runs work the same on every platform. A run starts no tracer and needs
-  no `ptrace` privilege, so it also runs where `ptrace` is denied, such as a
-  container with `CAP_SYS_PTRACE` dropped. No record of the Git commands a run
-  makes is kept.
+```sh
+amplihack recipe run default-workflow -w "$PWD" \
+  -c repo_path="$PWD" \
+  -c task_description="Document named-checkout recipe execution" \
+  -c base_branch=main -c no_merge=true --detach
+```
 
-Commits you want to keep belong in a durable task or PR worktree. Try it in
-[Inspect a local-input snapshot](../tutorials/recipe-checkout-isolation.md);
-the full rules are in the
-[checkout isolation reference](../reference/recipe-checkout-isolation.md).
+The command prints the detached session and log path. The default workflow
+creates or recovers its task worktree in the named repository. Auto-drive
+resolves the PR's registered linked worktree there. An explicitly selected
+linked worktree is preserved; no private repository or detached execution
+copy is inserted between the caller and its workflow.
+
+Steps can modify files and the index in their selected checkout. Paths are
+used directly rather than translated into a private copy. Ignored files
+remain available in that checkout. Credentials and user/system Git
+configuration remain available; inherited Git repository and index routing
+is scrubbed after environment construction. See
+[workflow commit identity](configure-workflow-commit-identity.md).
+
+A resumed run continues in the retained checkout/worktree, including local
+uncommitted or unpushed work. A dry run executes no steps. Runs need no
+`ptrace` privilege and keep no Git-command journal.
+
+Try [Run a recipe in a selected worktree](../tutorials/recipe-checkout-isolation.md).
+The [execution reference](../reference/recipe-checkout-isolation.md) covers
+review evidence, assessment, and retention.
 
 ---
 
@@ -495,4 +495,4 @@ amplihack recipe run recipe.yaml -c task_description="..." --verbose
 - [Environment Variables](../reference/environment-variables.md) — `AMPLIHACK_CONTEXT_*` and `RECIPE_RUNNER_RS_PATH`
 - [Run amplihack in Non-interactive Mode](./run-in-noninteractive-mode.md) — CI configuration
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How agents are located during recipe execution
-- [Recipe Run and Auto-Drive Checkout Isolation](../reference/recipe-checkout-isolation.md) — The run's own checkout, nested runs and what a run leaves behind
+- [Recipe Execution in Named Checkouts](../reference/recipe-checkout-isolation.md) — Execution directories, review, and retained work

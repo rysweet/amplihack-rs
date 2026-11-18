@@ -384,13 +384,7 @@ fn inherited_git_dir_and_index_file_still_cannot_reroute_a_run() {
     succeeds(&out);
 
     let cwd = PathBuf::from(f.observed_text("routing", "cwd"));
-    let checkout = PathBuf::from(f.observed_text("routing", "run_checkout"));
-    assert!(
-        !checkout.as_os_str().is_empty(),
-        "the run reported no private checkout"
-    );
-    assert_eq!(cwd, checkout, "the runner did not start in its checkout");
-    assert_ne!(cwd, f.repo, "the run used the caller's checkout");
+    assert_eq!(cwd, f.repo, "the runner uses the named checkout");
     assert!(
         !cwd.starts_with(&f.other),
         "the run was rerouted into the inherited repository: {}",

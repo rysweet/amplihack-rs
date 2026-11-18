@@ -1,7 +1,7 @@
 //! Issue #2738: a caller's Git Trace2 settings do not follow a run.
 //!
 //! The Git-command tracer removed in #2738 cleared these variables as a side
-//! effect of owning its own trace target. `RunCheckout::apply_to` now owns
+//! effect of owning its own trace target. command construction now owns
 //! them for their own reason, so this asserts the behaviour directly rather
 //! than through whatever happens to clear them.
 //!
@@ -11,7 +11,7 @@
 //! otherwise write this run's auth headers to a sink of the caller's
 //! choosing.
 
-use super::run_checkout::{CALLER_TRACE_VARS, RunCheckout};
+use super::execute::{CALLER_TRACE_VARS, scrub_runner_git_environment};
 use std::ffi::{OsStr, OsString};
 use std::process::Command;
 
@@ -49,7 +49,7 @@ fn a_caller_checkout_clears_the_callers_trace_settings() {
     for var in CALLER_TRACE_VARS {
         command.env(var, "/caller/chosen/target");
     }
-    RunCheckout::Caller(std::path::PathBuf::from("/caller")).apply_to(&mut command);
+    scrub_runner_git_environment(&mut command);
     for var in CALLER_TRACE_VARS {
         assert_eq!(
             env_of(&command, var),
@@ -63,7 +63,7 @@ fn a_caller_checkout_clears_the_callers_trace_settings() {
 #[test]
 fn no_trace_target_is_set_in_place_of_the_callers() {
     let mut command = Command::new("runner");
-    RunCheckout::Caller(std::path::PathBuf::from("/caller")).apply_to(&mut command);
+    scrub_runner_git_environment(&mut command);
     for var in CALLER_TRACE_VARS {
         assert_eq!(
             env_of(&command, var),

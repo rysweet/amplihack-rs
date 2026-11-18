@@ -621,10 +621,10 @@ fn crusty_round_has_no_light_branch_in_any_step() {
     assert_eq!(
         ids,
         [
-            "step-00-review-dir-guard",
             "step-01-round-context",
+            "step-01c-pre-review-evidence",
             "step-02-crusty-review",
-            "step-02b-review-dir-unchanged",
+            "step-02b-assess-review-changes",
             "step-03-extract-crusty-verdict",
             "step-03c-post-verdict",
             "step-04-address-concerns",
@@ -669,11 +669,6 @@ fn crusty_round_has_no_light_branch_in_any_step() {
     assert!(
         !s6.contains("SUFFIX"),
         "#1982: the record has no light suffix"
-    );
-    assert_eq!(
-        round["context"].as_mapping().unwrap().len(),
-        17,
-        "completion state, shared authorization and dry-run context, the review generation's launch dir and commit (#2096), the step-recovery directory (#2539) and the verdict-posted line (#2575) reach the crusty round"
     );
 }
 

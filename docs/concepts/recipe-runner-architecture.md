@@ -2,7 +2,7 @@
 title: Recipe runner architecture
 description: Execution, supervision, and durable recovery ownership across Amplihack and the Rust runner.
 doc_type: explanation
-last_updated: 2026-11-12
+last_updated: 2026-11-18
 ---
 
 # Recipe Runner Architecture
@@ -15,7 +15,7 @@ it, and how recipe execution stays predictable.
 - [Why external](#why-external)
 - [Binary resolution](#binary-resolution)
 - [Invocation contract](#invocation-contract)
-- [The run's own checkout](#the-runs-own-checkout)
+- [The selected checkout](#the-selected-checkout)
 - [Data flow](#data-flow)
 - [Logging responsibility split](#logging-responsibility-split)
 - [Durable recovery ownership](#durable-recovery-ownership)
@@ -68,44 +68,33 @@ The runner:
 5. Writes the final structured result to stdout
 6. Returns exit code 0 on success, 1 on failure
 
-## The run's own checkout
+## The selected checkout
 
-A recipe step is often a full-tool agent. If it ran in your checkout, one
-`git add -A` or a pre-commit hook could change your index while you work.
-So the CLI, not the runner, owns where steps run.
+The CLI launches the runner in the caller-selected working directory. Recipe
+`repo_path` and step `working_dir` select the appropriate repository and task
+or PR worktree. The default workflow creates or recovers its own task worktree;
+auto-drive works in the registered PR worktree. Nested runs use their selected
+directory too. The runner introduces no private execution copy or path mapping.
 
-For a Git working directory, Rust copies `HEAD`, the index and the working
-tree separately into a private repository and a detached checkout before the
-runner starts. The runner gets `-C <exec dir>`. Every independent launch,
-including one nested inside another run, gets its own checkout and index.
-Nothing registers a worktree in your repository, and no step writes to your
-work tree, index, `HEAD`, refs or configuration. That is why the old
-`CallerGitState` repair of `core.bare` (#964) is gone: there is nothing in
-the caller's checkout to repair.
+This keeps Git operations attached to the repository the caller named. Steps
+can modify that checkout, so development uses the workflow's task worktree,
+and review uses the PR worktree with instructions to leave it unchanged.
+Read-only pre-review evidence and a following agent distinguish reviewer edits
+from existing work. Differences alone do not stop the run.
 
-Identity and execution are kept apart. Recovery admission keys on your
-`--working-dir`, because that is the run you asked for. The `exec dir` belongs
-to one attempt: a resumed run prepares a fresh one.
+Command construction retains useful launch environment handling, then applies
+`amplihack_git::scrub` last to remove inherited Git routing. Trusted workflow
+assets are selected independently of cwd. Neither worktrees nor agent guidance
+provide an OS sandbox.
 
-The runner still owns step order and context evaluation. The CLI owns what
-surrounds it, in this order: prepare the checkout, launch the runner, then
-remove the checkout, finish the recovery admission and finish the workspace.
-Each step's error is kept and joined to the others, so a failed release cannot
-hide a failed admission. The run's status follows the runner's own exit.
+Recovery admission, child outcomes, runtime finalization, and error propagation
+retain their responsibilities. Interrupted runs keep uncommitted and unpushed
+work in the selected checkout/worktree. Removing execution-copy release does
+not authorize deleting legacy repository data. A dry run executes no steps.
 
-Nothing traces the runner while it runs. The CLI starts it, waits for it and
-tears its process group down at the end; it does not trace, journal or
-attribute the Git commands the tree makes, and it needs no `ptrace` privilege
-to supervise it. Teardown still walks the tree, but it reads the process table
-like any other program would.
-
-A dry run plans only. It uses the caller's directory, prepares no checkout and
-writes no run folder.
-
-Private Git state is not an OS sandbox. See the
-[checkout isolation reference](../reference/recipe-checkout-isolation.md)
-and the
-[recipe runner logging reference](../reference/recipe-runner-logging.md#git-commands-a-run-makes).
+The CLI does not trace or journal Git commands and requires no `ptrace`
+privilege. See the [execution reference](../reference/recipe-checkout-isolation.md)
+and [logging reference](../reference/recipe-runner-logging.md#git-commands-a-run-makes).
 
 ---
 

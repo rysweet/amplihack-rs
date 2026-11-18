@@ -19,7 +19,7 @@ The public CLI is `amplihack orch helper autodrive-completion-{prepare,seal,writ
   version-1 decision. It cannot replace an existing output.
 - `dispatch` takes driver-owned state and the child's actual exit status. It
   independently validates identity, the manifest-bound record, latest copy,
-  sidecars, review-directory stamp and current head. Valid successful `CLEAN` or
+  sidecars and current PR head. Review mutations are assessed agentically in the PR worktree. Valid successful `CLEAN` or
   `MINOR_ONLY` completion returns `DONE`, `source=objective-completion` and
   `evaluator_invoked=false`. An atomic receipt prevents repeat dispatch.
 

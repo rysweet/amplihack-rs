@@ -51,10 +51,8 @@ jq -cn --arg pr "${PR_NUMBER:-}" --arg head "$head" --arg resolved "$resolved" \
 "#;
 
 pub const ROUND_SCRIPT: &str = r#"set -euo pipefail
-export RECIPE_VAR_review_index="$(bash "$FIXTURE/guard.sh")"
 export RECIPE_VAR_crusty_round_context="$(bash "$FIXTURE/context.sh")"
 export RECIPE_VAR_crusty_review="$(cat "$FIXTURE/review.json")"
-bash "$FIXTURE/guard-check.sh"
 export RECIPE_VAR_crusty_verdict="$(bash "$FIXTURE/classify.sh")"
 bash "$FIXTURE/record.sh"
 if [ -n "${AUTODRIVE_COMPLETION_STATE:-}" ]; then

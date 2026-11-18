@@ -23,8 +23,6 @@ set -u
 S="$STUB_STATE"
 case "${1:-} ${2:-}" in
   "recipe show") exit 0 ;;
-  # #2096: the loop owns private review generations; the real binary makes them.
-  internal\ review-*) exec "$REAL_AMPLIHACK" "$@" ;;
   "orch helper")
     case "${3:-}" in step-recovery|autodrive-completion-*) exec "$REAL_AMPLIHACK" "$@" ;; esac
     in="$(cat)"

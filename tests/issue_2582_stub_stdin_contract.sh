@@ -243,7 +243,6 @@ IT="${WORK}/it"; mkdir -p "${IT}/state"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "BIN %s\n" "$*" >> "$AB_LOG"' \
   'case "${1:-} ${2:-}" in' \
   '  "orch helper") STUB_STATE="$AB_STATE" exec "$AB_STUB" "$@" ;;' \
-  '  "internal review-bind-record") cat -- "$4"; exit 0 ;;' \
   'esac' 'exit 0' > "${IT}/alt"
 chmod 0755 "${IT}/alt"
 : > "${IT}/log"

@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Crusty Completion Contract
 description: Completion-first dispatch, decision integrity, and follow-up finalization for Crusty reviews.
-last_updated: 2026-11-17
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -84,22 +84,24 @@ After the round record is written, an agent reads the record and its
 
 | Current review state | Action | Next step |
 | --- | --- | --- |
-| `CLEAN`, and `reviewed_head_sha` equals `head_sha` | `complete` | Finalize required follow-ups, then record phase completion. |
-| `MINOR_ONLY`, and `reviewed_head_sha` equals `head_sha` | `complete` | File or verify every minor follow-up before recording phase completion. |
+| `CLEAN`, matching reviewed/resulting heads, and no round commits | `complete` | Finalize required follow-ups, then record phase completion. |
+| `MINOR_ONLY`, matching reviewed/resulting heads, and no round commits | `complete` | File or verify every minor follow-up before recording phase completion. |
 | `CONCERNS` (blocking or major concerns open), including after a round with commits when the heads differ | `evaluate` | Retain remediation, progress and budget checks, then evaluate convergence where applicable. |
-| `CLEAN` or `MINOR_ONLY`, but `reviewed_head_sha` differs from `head_sha` | `evaluate`, with the head mismatch as the reason | The new head is not reviewed yet, so `complete` is not allowed. Dispatch currently refuses this decision too, so the round stops with a dispatch error. It fails closed and grants no merge authority; changing dispatch is a follow-up under #2472. |
+| `CLEAN` or `MINOR_ONLY`, but `reviewed_head_sha` differs from `head_sha` | `evaluate`, with the head mismatch as the reason | The new head is not reviewed yet. Record the reason and use existing evaluation and dispatch handling; this decision grants no merge authority. |
 | Invalid evidence: missing or unreadable record, no verdict, or a failed or refused round (rc not 0, exit `79`) | `evaluate`, with the fault as the reason | Never `complete`. Dispatch keeps its own failure handling: exits `79` and `75` return before the decision is read, a missing or unreadable record fails dispatch validation, and a record with no verdict goes to the evaluator as `MISSING`. |
 
-The PR head is the round record's `head_sha`. The agent compares
-`reviewed_head_sha` only with that field. Step-07 runs in the base checkout,
-so `git rev-parse HEAD` in its working directory gives the base branch, not
-the PR head, and must never be used for this comparison.
+The PR head is the round record's `head_sha`, or the verified PR worktree's
+`HEAD`. The agent compares `reviewed_head_sha` with that PR head. Step-07 may
+run in the base checkout; its own `git rev-parse HEAD` must never substitute
+for the PR head. Any round commits require `evaluate`, even if other evidence
+suggests completion.
 
 `CONCERNS` always means `evaluate`, whatever the head SHAs or sidecars say.
 After a round with commits, `reviewed_head_sha` differing from `head_sha` is
 expected and is not invalid evidence; it only means the new head has not been
-reviewed. The `.minor` sidecar is required only for `MINOR_ONLY`. Dispatch
-checks the sidecars itself: every round needs a `.findings` sidecar, `CLEAN`
+reviewed. A `CLEAN` verdict needs neither `.minor` nor `.severity`; their
+absence does not prevent completion. The `.minor` sidecar is required only
+for `MINOR_ONLY`. Dispatch checks the sidecars itself: every round needs a `.findings` sidecar, `CLEAN`
 and `MINOR_ONLY` need it empty, and `MINOR_ONLY` also needs a non-empty
 `.minor` and a `.severity` sidecar.
 
@@ -179,7 +181,7 @@ record, manifest and sidecar evidence remain valid; failed execution can
 never authorize `complete`. A no-progress exemption does not waive dispatch
 validation. Missing or unreadable required records, invalid decisions or
 evidence-integrity failures stop visibly before evaluation. Terminal
-refusals, orphaning, usage-limit and review-directory failures retain their
+refusals, orphaning, and usage-limit failures retain their
 own stop classifications and cannot use this recovery path.
 
 The child execution status dispatch reads is the round process's own exit

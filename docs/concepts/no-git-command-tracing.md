@@ -1,7 +1,7 @@
 ---
 title: "Why a Recipe Run Does Not Trace Git Commands"
-description: "Why recipe runs no longer attach a ptrace observer or journal the Git commands they make, what the private clone does instead, and what a tamper-resistant record would require."
-last_updated: 2026-11-17
+description: "Why recipe runs no longer attach a ptrace observer or journal the Git commands they make, how named checkouts are selected, and what a tamper-resistant record would require."
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: rysweet
 doc_type: explanation
@@ -16,8 +16,9 @@ related:
 
 A recipe run starts no tracer. Nothing traces, journals or attributes the Git
 commands a run's runner, steps, agents and hooks launch, and a run needs no
-`ptrace` privilege on any platform. What keeps a run out of the caller's
-checkout is the private clone, not observation of what the run does afterwards.
+`ptrace` privilege on any platform. Steps execute in the named checkout and
+its legitimate task or PR worktree. Git-command observation does not select
+or protect that checkout.
 
 Between issues
 [#2290](https://github.com/rysweet/amplihack-rs/issues/2290) and
@@ -25,7 +26,7 @@ Between issues
 case. This page explains what was added, why it was removed rather than
 repaired, and what would have to be true before anything like it returned. For
 the behaviour as it stands, see the
-[checkout isolation reference](../reference/recipe-checkout-isolation.md).
+[named-checkout execution reference](../reference/recipe-checkout-isolation.md).
 
 ## What was asked for
 
@@ -34,11 +35,13 @@ one thing: that recipe runs stop sharing the caller's checkout. A step that
 ran `git add` or `git commit` was acting on the index and working tree of
 whoever had started the run.
 
-That request is satisfied by giving each run a private repository and a
-detached worktree under its own run folder, preparing them from a snapshot of
-the caller's committed, staged, unstaged and untracked state, and starting
-every step inside them. A Git command a step makes then acts on the private
-repository because that is the only checkout it has been given.
+PR #2290 initially answered that request with a private repository and a
+detached execution copy. The owner decision in
+[#2808](https://github.com/rysweet/amplihack-rs/issues/2808) removes that
+mechanism. Builds use the default workflow's own task worktree; drives use
+the PR's worktree in the named repository. A recipe command can change its
+selected checkout. Agents resolve their location and requirements through
+the existing workflow rather than a runner-created copy.
 
 ## What was added alongside it
 
@@ -79,7 +82,9 @@ journal recorded that its evidence
 A run's steps execute as the same user as the CLI that observes them. Anything
 that mechanism recorded, that user could also have altered, and anything it
 did not name as a Git executable it did not see at all. Removing it therefore
-removed no control: the containment was the private clone throughout.
+removed no OS security boundary. The separate private execution-copy
+mechanism was subsequently removed too; worktree selection is now the
+responsibility of the caller and workflow.
 
 ### Its failures were availability failures
 
@@ -117,7 +122,7 @@ because the required path set none: it removed both variables before spawning
 the runner. The scrubbing of the caller's own trace variables is not part of
 what went away either. The tracer happened to own it, but it is a credential
 boundary in its own right — `GIT_TRACE2_REDACT=0` disables Git's redaction of
-`Authorization:` headers — so `RunCheckout::apply_to` now clears the whole
+`Authorization:` headers — so runner command construction clears the whole
 `GIT_TRACE2*` namespace for its own reason, with its own test. See
 [what a run folder holds](../reference/recipe-runner-logging.md#git-commands-a-run-makes).
 
@@ -138,44 +143,30 @@ which are configured not to allow it. With it gone, a run works under a Yama
 under a `seccomp` profile that blocks the call, under a debugger, and inside a
 step of another recipe run.
 
-## What stays
+## Checkout selection and environment handling
 
-The private clone, which was the actual subject of #2096, is unchanged. So is
-everything that keeps a caller's state out of it:
+The runner executes in the named checkout; the default workflow creates or
+recovers its task worktree, and auto-drive uses the actual PR worktree.
+There is no private execution repository, path translation, or refusal of
+prose merely because it includes a checkout path.
 
-- `amplihack_git::scrub` on every command the run prepares, so that an
-  inherited repository selection cannot redirect the run and an inherited
-  environment-based setting cannot inject configuration into it. It removes
-  every name in `amplihack_git::REPOSITORY_ENV_VARS`, among them `GIT_DIR`,
-  `GIT_INDEX_FILE`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and the
-  object-directory overrides, together with `GIT_CONFIG`, `GIT_CONFIG_COUNT`,
-  `GIT_CONFIG_PARAMETERS`, every `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`
-  pair, `GIT_EXEC_PATH` and `GIT_TEMPLATE_DIR`. The runner command sets none
-  of `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_SYSTEM` and `GIT_CONFIG_GLOBAL`:
-  steps read the user's own global and system configuration, including a
-  credential helper, as they did before #2290. See
-  [paths and Git configuration](../reference/recipe-checkout-isolation.md#paths-and-git-configuration).
-- Parent-directory checking on both mapping paths, so a context value cannot
-  point outside the tree it is mapped into.
-- The error raised when a context value embeds the caller's checkout path
-  inside other text rather than being a path in its own right. This reports
-  `context <key> embeds a caller-checkout path in opaque text` and asks for
-  the path as a separate context value.
+Useful command environment handling remains. `amplihack_git::scrub` runs
+last so inherited repository/index routing and environment-injected Git
+configuration cannot redirect operations. Credentials, ordinary user/system
+Git configuration, profiles, guidance, context transport, and session metadata
+retain their existing handling. Existing Git trace-environment clearing also
+remains; see [Git trace variables](../reference/recipe-runner-logging.md#caller-git-trace-variables-are-cleared).
 
-That last one is easy to mistake for part of the removed mechanism, because it
-is an error about paths and it was added in the same change. It is not. It
-sits in the branch of context mapping that handles values which are not
-absolute caller-rooted paths, and without it a value such as
-`"see /home/user/checkout/src for the failing case"` would reach the run with
-the caller's path still inside it, pointing a step back at the checkout the
-run is supposed to stay out of. That is the defect #2096 was filed about, so
-the error stays.
+Reviewers run directly in the PR worktree and are told to leave it unchanged.
+An agent after review compares status, the index, and file contents against
+ordinary pre-review evidence. It preserves existing and uncertain work and
+handles reviewer edits without failing merely because a difference exists.
+See [review assessment](../reference/recipe-checkout-isolation.md#assessment-after-review).
 
-Step recovery
-([#2570](https://github.com/rysweet/amplihack-rs/issues/2570)) and agentic
-merge readiness
-([#2637](https://github.com/rysweet/amplihack-rs/issues/2637)) never referred
-to the observer or the journal and are unaffected.
+Recovery, runtime finalization, authorization, and completion evidence retain
+their roles. Interrupted runs keep uncommitted and unpushed work. Removing
+retired execution/review machinery does not authorize deleting legacy
+repository data.
 
 ## How a run's status is decided
 
@@ -187,24 +178,18 @@ and an auto-drive merge run is a success only when it merged
 ([#2663](https://github.com/rysweet/amplihack-rs/issues/2663)). None of those
 is tracer residue; all three predate the removal and are untouched by it. What
 changed is the absence: nothing observes the runner while it runs, and no
-outcome is derived from what its subprocesses did. The CLI prepares the
-checkout, launches the runner, waits for it, then removes the checkout and
-finishes the recovery admission and the workspace. Teardown still walks the
-process tree, but it reads the process table as any other program would.
+outcome is derived from a Git-command observer. The CLI launches the runner
+in the selected directory, waits for it, and finishes recovery admission and
+runtime finalization. It does not release a private execution checkout.
+Teardown still walks the process tree, but it reads the process table as any
+other program would.
 
-## Evidence on each platform
+## Platform boundaries
 
-On Linux, `crates/amplihack-cli/tests/issue_2738_no_ptrace.rs` runs the real
-CLI and checks that the runner and every process in its tree report
-`TracerPid: 0` in `/proc/<pid>/status` while the run is in flight, and that a
-run whose release succeeds reports the runner's own exit status.
-
-macOS has no equivalent of that file, and no comparable check was added for
-it. The evidence there is that the crate contains no tracing code to run:
-a search of `crates/amplihack-cli/src/` for `ptrace` matches only the sentence
-in `run_isolation/README.md` saying that none is needed. The test reads
-`Name:`, `PPid:` and `TracerPid:` and nothing else, so neither the arguments
-nor the environment of a run's subprocesses reach a log.
+Runs require no tracing privilege on Linux or macOS. Git discovery and
+worktree selection are separate from process supervision. Behavioral launch
+checks establish the effective cwd, repository identity, and destination of
+writes; a search of implementation text is not execution evidence.
 
 ## If a record were wanted again
 
@@ -223,7 +208,7 @@ part of it is implemented.
 
 ## Related
 
-- [Recipe Run and Auto-Drive Checkout Isolation](../reference/recipe-checkout-isolation.md) - What a run copies, where steps run, platform support and the tests
+- [Recipe Execution in Named Checkouts](../reference/recipe-checkout-isolation.md) - Where steps run and how review preserves existing work
 - [Recipe Runner Logging Reference](../reference/recipe-runner-logging.md#git-commands-a-run-makes) - What a run folder holds, `GIT_TRACE2*` clearing, and older run folders
 - [Recipe Runner Architecture](./recipe-runner-architecture.md) - Which of the CLI and the runner owns each part of a run
 - [Run a Recipe](../howto/run-a-recipe.md) - Launching a run and knowing where it works

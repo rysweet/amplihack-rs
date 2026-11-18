@@ -396,30 +396,16 @@ fn each_round_passes_the_task_by_file_and_never_in_argv() {
             "round {}: the task text must not appear in argv",
             i + 1
         );
-        // The round starts in the review generation's trusted launch dir
-        // (#2096), never in --repo (the PR worktree, #1528) or the launch
-        // checkout, and commits in --repo through repo_path. The task still
-        // reaches it through the state-dir copy (#1570).
+        // The round uses the PR worktree; task transport remains file-backed.
         let wd = argv
             .iter()
             .position(|a| a == "--working-dir")
             .and_then(|at| argv.get(at + 1))
             .unwrap_or_else(|| panic!("round {}: missing --working-dir: {argv:?}", i + 1));
-        let launch = argv
-            .iter()
-            .rev()
-            .find_map(|a| a.strip_prefix("review_launch_dir="))
-            .unwrap_or_else(|| panic!("round {}: missing review_launch_dir: {argv:?}", i + 1));
         assert_eq!(
-            wd,
-            launch,
-            "round {}: the round starts in the launch dir",
-            i + 1
-        );
-        assert_ne!(
             Path::new(wd).canonicalize().ok(),
             run.repo.canonicalize().ok(),
-            "round {}: the round must not start in the PR worktree",
+            "round {}: the round starts in the actual PR worktree",
             i + 1
         );
         let repo_path = argv

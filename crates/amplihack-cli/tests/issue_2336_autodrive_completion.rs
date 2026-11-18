@@ -205,8 +205,8 @@ fn unresolved_major_and_blocking_concerns_still_reach_evaluator_at_sibling_depth
         assert_eq!(calls[0]["ceiling"], "6");
         let argv = calls[0]["argv"].as_array().unwrap();
         assert!(
-            argv.iter().any(|v| v == &json!(d.review)),
-            "evaluator works in trusted review directory"
+            argv.iter().any(|v| v == &json!(d.repo)),
+            "evaluator works in the actual PR worktree"
         );
         assert!(argv.iter().any(|v| v == "loop_round_verdict=CONCERNS"));
         assert!(!d.marked());

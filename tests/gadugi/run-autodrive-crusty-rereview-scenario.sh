@@ -178,7 +178,7 @@ merge_loop() {
     AMPLIHACK_BIN="$WORK/bin/amplihack" REAL_AMPLIHACK="$REAL" FIXTURE="$FX" CALLS="$3" \
     AMPLIHACK_SESSION_DEPTH=2 AMPLIHACK_MAX_DEPTH=3 AMPLIHACK_TREE_ID=scenario \
     bash "$TOOLS/autodrive_loop.sh" --loop-name merge-ready --round-recipe autodrive-merge-round \
-      --clean-token MERGE_READY --verdict-field merge_ready_verdict --repo "$FX" --review-dir "$FX_MAIN" --state-dir "$2" --task-file "$WORK/task.txt" \
+      --clean-token MERGE_READY --verdict-field merge_ready_verdict --repo "$FX" --state-dir "$2" --task-file "$WORK/task.txt" \
       --context "repo_path=$FX" --context "pr_number=42" --context "autodrive_state_dir=$2" \
       --before-round "$TOOLS/autodrive_crusty_rereview.sh"
 }

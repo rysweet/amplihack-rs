@@ -258,11 +258,8 @@ fn step03(e: &Env, tools: &Path, review: &str, env: &[(&str, &str)]) -> Output {
     run_step(e, STEP03, tools, &v)
 }
 
-/// Step-06 binds its record to the drive's private review generation (#2096),
-/// so each call gets a real generation of the fixture worktree at its head.
+/// Step-06 writes ordinary round evidence directly from the PR worktree.
 fn step06(e: &Env, tools: &Path, verdict: &str, fix: &str) -> Output {
-    let review = review_generation(e);
-    let review = review.to_str().unwrap();
     run_step(
         e,
         STEP06,
@@ -270,40 +267,18 @@ fn step06(e: &Env, tools: &Path, verdict: &str, fix: &str) -> Output {
         &[
             ("RECIPE_VAR_crusty_verdict", verdict),
             ("RECIPE_VAR_crusty_fix_evidence", fix),
-            ("REVIEW_DIR", review),
         ],
     )
 }
 
-/// A private review generation of the fixture worktree at `e.head`, made by
-/// the real `amplihack internal review-checkout`, outside the state dir.
-fn review_generation(e: &Env) -> PathBuf {
-    let parent = e.repo.tmp.path().join("review-generations");
-    std::fs::create_dir_all(&parent).unwrap();
-    let dest = parent.join(format!("g{}", std::fs::read_dir(&parent).unwrap().count()));
-    let out = crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin())
-        .args(["internal", "review-checkout"])
-        .arg(&e.repo.wt)
-        .arg(&dest)
-        .arg(&e.head)
-        .env("HOME", &e.repo.home)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .expect("run amplihack internal review-checkout");
-    assert!(out.status.success(), "review-checkout: {}", show(&out));
-    PathBuf::from(String::from_utf8(out.stdout).unwrap().trim())
-}
-
-/// Step-06's record and stdout: `golden` (the record as written before
-/// binding) plus a non-empty `review_generation`, verdict tag still first.
+/// Step-06 prints its ordinary round record, with the verdict tag first.
 fn assert_bound(e: &Env, o: &Output, golden: &str) {
     let rec = std::fs::read_to_string(&e.record).unwrap();
     assert_eq!(stdout(o), rec, "stdout is the bound record: {}", show(o));
     assert_bound_record(&rec, golden);
 }
 
-/// A bound record: `golden` plus a non-empty `review_generation`, with the
-/// verdict tag first and the record on one line.
+/// An ordinary round record with the verdict first, on one line.
 fn assert_bound_record(rec: &str, golden: &str) {
     let golden: Value = serde_json::from_str(golden).unwrap();
     let first = golden
@@ -318,13 +293,7 @@ fn assert_bound_record(rec: &str, golden: &str) {
         "the verdict tag stays first: {rec}"
     );
     assert_eq!(rec.lines().count(), 1, "one line: {rec}");
-    let mut bound: Value = serde_json::from_str(rec).unwrap();
-    let generation = bound
-        .as_object_mut()
-        .unwrap()
-        .remove("review_generation")
-        .unwrap_or_else(|| panic!("no review_generation: {rec}"));
-    assert!(generation.as_str().is_some_and(|g| !g.is_empty()), "{rec}");
+    let bound: Value = serde_json::from_str(rec).unwrap();
     assert_eq!(bound, golden, "{rec}");
 }
 

@@ -159,7 +159,57 @@ crusty_covers() {
   esac
 }
 
+# Ordinary workflow evidence, not a checkout, manifest or mutation gate. The
+# recipe checkpoint retains this output across an interrupted reviewer resume.
+review_baseline() (
+  umask 077
+  export GIT_OPTIONAL_LOCKS=0
+  . "$HERE/git-repo-env.sh"
+  amplihack_clear_git_repo_env
+  cd -- "${REPO_PATH:-.}" || return 1
+  local dir index shared
+  dir="$(mktemp -d "${AUTODRIVE_STATE_DIR:-${AUTODRIVE_ROUND_RECORD%/*}}/pre-review.XXXXXX")" || return 1
+  collect() {
+    git rev-parse --show-toplevel --absolute-git-dir --git-common-dir > "$dir/repository" || return 1
+    git rev-parse HEAD > "$dir/head" || return 1
+    git symbolic-ref -q HEAD > "$dir/branch"
+    local branch_rc=$?
+    # A detached HEAD has no symbolic branch and is a valid observation.
+    [ "$branch_rc" -eq 0 ] || [ "$branch_rc" -eq 1 ] || return "$branch_rc"
+    index="$(git rev-parse --path-format=absolute --git-path index)" || return 1
+    if [ -f "$index" ]; then cp -- "$index" "$dir/index" || return 1; fi
+    shared="$(git rev-parse --path-format=absolute --shared-index-path)" || return 1
+    if [ -n "$shared" ]; then cp -- "$shared" "$dir/$(basename -- "$shared")" || return 1; fi
+    git -c core.fsmonitor=false status --porcelain=v1 -z --untracked-files=all > "$dir/status" &&
+    git ls-files --stage -z > "$dir/entries" &&
+    git -c core.fsmonitor=false diff --binary --no-ext-diff --no-textconv --ignore-submodules=all --cached > "$dir/staged.diff" &&
+    git -c core.fsmonitor=false diff --binary --no-ext-diff --no-textconv --ignore-submodules=all > "$dir/unstaged.diff" &&
+    git ls-files --cached --others --exclude-standard -z > "$dir/paths" || return 1
+    # Use NUL names, retain symlink targets and modes, never follow links. Save
+    # only paths still present: deleted files remain represented by Git evidence.
+    local path parent safe incomplete=0
+    while IFS= read -r -d '' path; do
+      parent="$path"; safe=1
+      while [[ "$parent" == */* ]]; do
+        parent="${parent%/*}"
+        if [ -L "$parent" ]; then safe=0; incomplete=1; break; fi
+      done
+      if [ "$safe" = 1 ] && { [ -e "$path" ] || [ -L "$path" ]; }; then printf '%s\0' "$path" || return 1; fi
+    done < "$dir/paths" > "$dir/present-paths"
+    tar --create --file "$dir/contents.tar" --no-recursion --null --files-from "$dir/present-paths" || return 1
+    [ "$incomplete" = 0 ] || { echo "A path has a symlink parent; external contents were not collected" >&2; return 1; }
+  }
+  if collect 2> "$dir/collection-errors"; then
+    printf 'complete\n' > "$dir/collection-status"
+  else
+    printf 'incomplete; inspect collection-errors and preserve existing work\n' > "$dir/collection-status"
+    echo "WARNING: pre-review evidence is incomplete; the assessor must preserve uncertain work" >&2
+  fi
+  printf '%s\n' "$dir"
+)
+
 case "${1:-}" in
+  review-baseline) review_baseline ;;
   crusty-range) crusty_range ;;
   qa-evidence-sha) qa_evidence_sha "${2:-}" ;;
   qa-evidence-hash) qa_evidence_hash "${2:-}" ;;
