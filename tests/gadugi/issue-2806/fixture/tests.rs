@@ -64,7 +64,7 @@ fn git(case: &IsolatedCase, cwd: &Path, args: &[&str]) -> String {
             "-c",
             "user.name=Issue 2806",
             "-c",
-            "user.email=qa@example.invalid",
+            "user.email=qa@example.com",
             "-c",
             "commit.gpgsign=false",
             "-c",
@@ -1099,4 +1099,37 @@ fn native_publish_arguments_use_current_branch_equals_options_and_real_draft_tra
     assert!(!hosting.pr(1).unwrap().is_draft);
     assert_eq!(hosting.invoke(&repo.checkout, &args).unwrap().exit_code, 0);
     assert_eq!(hosting::option(&["--base=main"], "--base"), Some("main"));
+}
+
+#[test]
+fn isolated_commit_identity_is_accepted_by_the_real_workflow_resolver() {
+    let repo = Repository::published();
+    let helper = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../amplifier-bundle/tools/git-identity.sh")
+        .canonicalize()
+        .unwrap();
+    let output = repo
+        .case
+        .command(Path::new("/bin/bash"))
+        .unwrap()
+        .args([
+            "-p",
+            "-c",
+            ". \"$1\" && amplihack_prepare_git_commit_identity && git var GIT_AUTHOR_IDENT",
+            "identity-contract",
+        ])
+        .arg(helper)
+        .current_dir(&repo.checkout)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .starts_with("Issue 2806 <qa@example.com>")
+    );
 }

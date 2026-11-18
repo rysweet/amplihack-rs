@@ -192,3 +192,11 @@ the PR description, then explicitly completes the fixture check. Reads never
 advance pending checks. Later build agents without a declared working_dir use
 the implementation worktree actually recorded by the implementation action;
 they cannot accidentally validate the detached launch checkout.
+
+The build's first commit-producing step correctly rejected the fixture's
+example.invalid author as a private-domain identity. Use reserved example.com
+addresses instead, and verify them through the actual Git identity resolver in
+a local fixture-integration test under env -i. Keep the production identity
+policy unchanged; no push-recovery response or retry is needed for this setup
+error. The same CI run completed every control drive assertion, including the
+production merge and fresh MERGED readback.
