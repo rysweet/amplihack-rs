@@ -148,7 +148,13 @@ fn preflight(case: &IsolatedCase, task: &str) -> Result<String> {
         json!({"contract":contract,"cwd":cwd,"head":pr.head_sha,"common_dir":observe_git(&cwd,&["rev-parse","--path-format=absolute","--git-common-dir"] )?})
     )?;
     let mut found = find_worktree(&cwd, &pr.branch)?;
-    if found.is_none() && driver::config(case)?["case"] == "drive-control" {
+    let plan: Value = serde_json::from_slice(&fs::read(case.root.join("responses/drive.json"))?)?;
+    if found.is_none()
+        && driver::config(case)?["case"] == "drive-control"
+        && plan["control_prepare_worktree"]
+            .as_bool()
+            .context("drive control preparation is not declared")?
+    {
         let target = cwd
             .parent()
             .context("private checkout has no parent")?

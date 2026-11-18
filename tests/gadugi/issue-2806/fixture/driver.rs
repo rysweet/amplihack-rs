@@ -855,13 +855,26 @@ pub fn hold_work(args: &[String]) -> Result<()> {
         ],
     )?;
     case.git(&repo, &["checkout", "-q", "feat/answer"])?;
+    let plan: Value = serde_json::from_slice(&fs::read(case.root.join("responses/cleanup.json"))?)?;
+    let subject = plan["commit_subject"]
+        .as_str()
+        .context("cleanup commit subject absent")?;
+    let dirty_path = plan["dirty_path"]
+        .as_str()
+        .context("cleanup dirty path absent")?;
+    let dirty_content = plan["dirty_content"]
+        .as_str()
+        .context("cleanup dirty content absent")?;
     fs::write(
         repo.join("unpublished.txt"),
         "committed work not on origin\n",
     )?;
     case.git(&repo, &["add", "unpublished.txt"])?;
-    case.git(&repo, &["commit", "-qm", "Unpublished interrupted work"])?;
-    fs::write(repo.join("continue.txt"), "unfinished work\n")?;
+    case.git(&repo, &["commit", "-qm", subject])?;
+    fs::write(
+        super::environment::confined_path(&repo, Path::new(dirty_path))?,
+        dirty_content,
+    )?;
     let commit = observe_git(&repo, &["rev-parse", "HEAD"])?;
     save(
         &case.evidence.join("interrupted-location.json"),
@@ -875,7 +888,7 @@ pub fn hold_work(args: &[String]) -> Result<()> {
             run_id: std::env::var("AMPLIHACK_RUN_ID")?,
             pid: std::process::id(),
             commit,
-            dirty_path: "continue.txt".into()
+            dirty_path: dirty_path.into()
         })?
     )?;
     let mut release = String::new();
