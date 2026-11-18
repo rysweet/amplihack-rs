@@ -18,20 +18,28 @@
 #   1. Fetches origin refs/heads/<branch> into refs/remotes/origin/<branch>,
 #      with the same no-prompt, bounded options as workflow_pr_head_fetch.sh.
 #   2. If the branch has no upstream and origin/<branch> exists, sets the
-#      upstream to origin/<branch>, so step-20b pulls before it pushes.
+#      upstream to origin/<branch>, before publication pushes.
 #   3. If origin/<branch> is a strict descendant of HEAD, runs
 #      `git merge --ff-only origin/<branch>`. HEAD is an ancestor by
 #      construction, so this cannot conflict with history; it can only be
 #      refused by uncommitted changes to the same files.
 # A local HEAD that is equal to, ahead of or diverged from origin/<branch> is
-# left alone: step-20b's `git pull --rebase` handles it, as before.
+# left alone in advisory mode; --strict fails on divergence.
 #
-# Exit status is always 0. A failed fetch, a detached HEAD, a branch that was
+# With --strict, synchronization failures return nonzero for recovery.
+# Without --strict, exit status is always 0. A failed fetch, a detached HEAD, a branch that was
 # never pushed, or a refused fast-forward prints one WARNING or INFO line on
 # stderr and changes nothing more; step-20b then fails or succeeds on its own
 # terms, exactly as without this tool.
 
 set -uo pipefail
+strict=false
+case "${1:-}" in
+  --strict) strict=true ;;
+  "") ;;
+  *) echo "ERROR: workflow_pr_head_sync: usage: $0 [--strict]" >&2; exit 2 ;;
+esac
+sync_failure() { if [ "$strict" = true ]; then exit 1; else exit 0; fi; }
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=workflow_pr_head_fetch.sh
@@ -41,11 +49,11 @@ local_branch="$(git branch --show-current 2>/dev/null || :)"
 # #1762: an alias (<B>--wt-<n> tracking origin/<B>) syncs with origin/<B>.
 if [ -z "$local_branch" ]; then
   echo "WARNING: workflow_pr_head_sync: detached HEAD; nothing to sync (#1714)" >&2
-  exit 0
+  sync_failure
 fi
 branch="$(bash "$here/workflow_remote_branch.sh" .)" || {
   echo "WARNING: workflow_pr_head_sync: workflow_remote_branch.sh is missing or failed; nothing to sync (#1762)" >&2
-  exit 0
+  sync_failure
 }
 
 bound=""
@@ -57,14 +65,14 @@ if ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh_cmd" $bound git \
     fetch --quiet --no-tags --no-write-fetch-head \
     origin "+refs/heads/$branch:refs/remotes/origin/$branch" </dev/null >/dev/null 2>&1; then
   echo "WARNING: workflow_pr_head_sync: could not fetch origin/$branch; worktree left as it is (#1714)" >&2
-  exit 0
+  sync_failure
 fi
 
 remote_ref="refs/remotes/origin/$branch"
 remote_oid="$(git rev-parse --verify -q "$remote_ref^{commit}" 2>/dev/null || :)"
 if [ -z "$remote_oid" ]; then
   echo "INFO: workflow_pr_head_sync: origin/$branch does not exist; nothing to sync (#1714)" >&2
-  exit 0
+  sync_failure
 fi
 
 if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
@@ -72,18 +80,24 @@ if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; the
     echo "INFO: workflow_pr_head_sync: set the upstream of $local_branch to origin/$branch (#1714)" >&2
   else
     echo "WARNING: workflow_pr_head_sync: could not set the upstream of $local_branch to origin/$branch (#1714)" >&2
+    sync_failure
   fi
 fi
 
 local_oid="$(git rev-parse HEAD)"
-if [ "$local_oid" = "$remote_oid" ] || ! git merge-base --is-ancestor "$local_oid" "$remote_oid" 2>/dev/null; then
+if git merge-base --is-ancestor "$remote_oid" "$local_oid"; then
   exit 0
+fi
+if ! git merge-base --is-ancestor "$local_oid" "$remote_oid"; then
+  echo "ERROR: workflow_pr_head_sync: local HEAD $local_oid and origin/$branch $remote_oid diverged; restore additive history before publication" >&2
+  sync_failure
 fi
 
 count="$(git rev-list --count "$local_oid..$remote_oid")"
 if git merge --ff-only --quiet "$remote_oid" >/dev/null 2>&1; then
   echo "INFO: workflow_pr_head_sync: fast-forwarded $local_branch by $count commit(s) to the PR head $remote_oid (#1714)" >&2
 else
-  echo "WARNING: workflow_pr_head_sync: could not fast-forward $local_branch to $remote_oid (uncommitted changes in the way?); step-20b will pull --rebase (#1714)" >&2
+  echo "WARNING: workflow_pr_head_sync: could not fast-forward $local_branch to $remote_oid (uncommitted changes in the way?); publication must recover before committing (#1714)" >&2
+  sync_failure
 fi
 exit 0

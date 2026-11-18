@@ -45,6 +45,11 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 127
 fi
 
+# Resolve recorded context before any delivery or repository reads.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR
+wt="$(bash "$SCRIPT_DIR/worktree_setup_path.sh" step-21-pr-ready)"
+cd -P "$wt"
+
 # rv_field <key> <field>: this run's own field from the base RECIPE_VAR_<key> (#1561).
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recipe_var.sh" \
   || { echo "ERROR: workflow_pr_ready.sh: recipe_var.sh not found beside it" >&2; exit 2; }
@@ -128,6 +133,13 @@ validate_pr_identity_before_mutation() {
     return 1
   fi
 
+  if ! printf '%s' "$pr_json" | jq -e --arg number "$PR_NUMBER" --arg url "$PR_URL" '
+      (.state == "OPEN" or .state == "MERGED" or .state == "CLOSED") and ((.isDraft | type) == "boolean") and
+      ($number == "" or (.number | tostring) == $number) and
+      ($url == "" or .url == $url)' >/dev/null; then
+    echo "ERROR: PR state, draft flag, or explicit identity is invalid before readiness mutation" >&2
+    return 1
+  fi
   pr_head_ref=$(printf '%s' "$pr_json" | jq -r '.headRefName // ""')
   pr_base_ref=$(printf '%s' "$pr_json" | jq -r '.baseRefName // ""')
   pr_head_oid=$(printf '%s' "$pr_json" | jq -r '.headRefOid // ""')
@@ -171,8 +183,8 @@ add_pr_target() {
 
 scoped_pr_json=""
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "INFO: [skip] not a git repo — skipping gh pr ready" >&2
-  exit 0
+  echo "ERROR: canonical PR worktree is not a git repository" >&2
+  exit 1
 fi
 current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || { echo "ERROR: workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR; refusing PR readiness mutation" >&2; exit 1; }
 local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
@@ -213,11 +225,8 @@ if [[ "${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}" =~ [^
 fi
 if ! scoped_pr_json="$("$PR_SCOPE_HELPER" "${scope_args[@]}")"; then
   reason="$(printf '%s' "$scoped_pr_json" | jq -r '.reason // ""' 2>/dev/null || true)"
-  if [ "$reason" = "no_scoped_pr" ] && [ -z "$PR_URL" ] && [ -z "$PR_NUMBER" ]; then
-    echo "INFO: [skip] no scoped PR matched current workflow identity — skipping gh pr ready" >&2
-    exit 0
-  fi
-  echo "ERROR: scoped PR validation failed before ready mutation: ${reason:-unknown}" >&2
+  report="$(printf '%s' "$scoped_pr_json" | jq -r '.diagnostic_report // ""' 2>/dev/null || true)"
+  echo "ERROR: scoped PR validation failed before ready mutation: ${reason:-unknown}; diagnostic report: ${report:-unavailable}" >&2
   exit 1
 fi
 pr_target="$(printf '%s' "$scoped_pr_json" | jq -r '.url // .number // empty')"
@@ -233,6 +242,8 @@ pr_url=$(printf '%s' "$pr_json" | jq -r '.url // ""')
 pr_state=$(printf '%s' "$pr_json" | jq -r '.state // ""')
 pr_is_draft=$(printf '%s' "$pr_json" | jq -r '.isDraft // false')
 pr_merged_at=$(printf '%s' "$pr_json" | jq -r '.mergedAt // ""')
+
+validate_pr_identity_before_mutation "$pr_json" "$pr_url" || exit 1
 
 if [ "$pr_state" = "MERGED" ] || [ -n "$pr_merged_at" ]; then
   terminal_status="already-merged"
@@ -250,8 +261,6 @@ fi
 if [ "$closed_unmerged_seen" = "true" ]; then
   exit 1
 fi
-
-validate_pr_identity_before_mutation "$pr_json" "$pr_url" || exit 1
 
 if [ "$pr_is_draft" = "true" ]; then
   if ready_output="$(gh_with_retry "pr ready" pr ready "$pr_url")"; then

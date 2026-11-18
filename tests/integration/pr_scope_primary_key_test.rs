@@ -76,16 +76,44 @@ fn write_list_stub_gh(bin_dir: &Path, list_json: &Path) {
     make_executable(&gh);
 }
 
+// Scope failures now persist evidence through the built binary. Keep that
+// process and every helper away from the operator's configuration.
+fn private_bash(dir: &Path, bin_dir: &Path) -> Command {
+    let home = dir.join("private-home");
+    let runtime = dir.join("private-runtime");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&runtime).unwrap();
+    let binary_dir = Path::new(env!("CARGO_BIN_EXE_amplihack")).parent().unwrap();
+    let mut cmd = Command::new("bash");
+    cmd.env_clear()
+        .env(
+            "PATH",
+            format!(
+                "{}:{}:/usr/bin:/bin",
+                bin_dir.display(),
+                binary_dir.display()
+            ),
+        )
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env("GH_CONFIG_DIR", home.join("gh"))
+        .env("AMPLIHACK_RUNTIME_ROOT", &runtime)
+        .env("TMPDIR", &runtime)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    cmd
+}
+
 /// Run `workflow_pr_scope.sh` with the stub `gh` on PATH. Returns (stdout,
 /// success). No git repo is required: `--repo/--head/--base/--head-sha` are all
 /// passed explicitly.
 fn run_scope(dir: &Path, bin_dir: &Path, args: &[&str]) -> (String, bool) {
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = Command::new("bash")
+    let output = private_bash(dir, bin_dir)
         .arg(helper_path("workflow_pr_scope.sh"))
         .args(args)
         .current_dir(dir)
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
         .output()
         .expect("run workflow_pr_scope.sh");
     (
@@ -497,11 +525,9 @@ fn publish_adopts_existing_open_pr_on_create_collision_instead_of_failing() {
     let state_dir = tmp.path().join("gh-state");
     write_collision_stub_gh(&bin_dir, &state_dir, &open_pr);
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = Command::new("bash")
+    let output = private_bash(tmp.path(), &bin_dir)
         .arg(helper_path("workflow_publish_pr.sh"))
         .current_dir(&repo)
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
         .env("REMOTE_HOST_TYPE", "github")
         .env("ISSUE_NUMBER", "1014")
         .env(

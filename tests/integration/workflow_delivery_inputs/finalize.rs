@@ -147,9 +147,12 @@ impl FinalizeFixture {
         let tools = workspace_root().join("amplifier-bundle/tools");
         let tool = |name: &str| tools.join(name).to_str().unwrap().to_owned();
         let path = format!(
-            "{}:{}",
+            "{}:{}:/usr/bin:/bin",
             self.bin.display(),
-            std::env::var("PATH").unwrap_or_default()
+            std::path::Path::new(env!("CARGO_BIN_EXE_amplihack"))
+                .parent()
+                .unwrap()
+                .display()
         );
         let setup = json!({ "worktree_path": worktree, "branch_name": "feat/x" }).to_string();
         let mut env = BTreeMap::new();
@@ -546,15 +549,15 @@ fn step21_rejects_a_pr_url_for_another_repository() {
 }
 
 #[test]
-fn step21_without_a_recorded_pull_request_keeps_the_discovered_base() {
+fn step21_without_a_recorded_pull_request_reports_the_unmatched_base() {
     // No pull request recorded anywhere: origin/HEAD (main) is still the
     // last fallback, and the branch's pull request into dev is not one this
     // run can claim. Nothing is changed on GitHub.
     let fx = FinalizeFixture::new();
     let (out, log) = fx.run_with("workflow-finalize", "step-21-pr-ready", &[]);
-    assert_eq!(out.status.code(), Some(0), "{}\n{log}", describe(&out));
+    assert!(!out.status.success(), "{}\n{log}", describe(&out));
     assert!(
-        text(&out.stderr).contains("no scoped PR matched"),
+        text(&out.stderr).contains("no_scoped_pr"),
         "{}",
         describe(&out)
     );

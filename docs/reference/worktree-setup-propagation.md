@@ -130,19 +130,22 @@ tool's header and
 ### Directory access tiers
 
 Not all steps that consume the worktree path treat a missing
-directory the same way. Steps are classified into three tiers:
+directory the same way:
 
 | Tier | Steps | Guard pattern | Missing directory behavior |
 |------|-------|---------------|---------------------------|
 | **Hard-fail** | 15, 16, 18c | `cd "${WORKTREE_SETUP_WORKTREE_PATH:?…}"` | Recipe aborts (`:?` expansion errors on unset/null variable) |
-| **Resilient** | 19c, 21 | `if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd …; elif [ -d "${REPO_PATH:-}" ]; then cd …; fi` | Falls back to `REPO_PATH` then `$(pwd)`, emits WARNING to stderr |
-| **Skip** | 20a, 20b | `if [ -z "$wt" ] \|\| [ ! -d "$wt" ]; then echo "WARNING: …" >&2; exit 0; fi; cd "$wt"` | Also skips when the path is not the top of a linked worktree. Emits WARNING to stderr and exits `0`; never runs in `REPO_PATH` |
+| **Resilient** | 19c | Directory fallback with a warning | Falls back to `REPO_PATH` then `$(pwd)` for read-only verification |
+| **Skip** | 20a | Validate the linked task worktree before artifact preflight | Emits a warning and exits `0` when unusable; never runs in `REPO_PATH` |
+| **Essential recovery** | 20b, 21 | Resolve the recorded worktree through `worktree_setup_path.sh` | Fails into recovery on any resolution error; no launch-checkout fallback or successful skip |
 
 Hard-fail steps need worktree files to perform their work (review, verdict
-enforcement). Resilient steps perform read-only verification that functions
-from any directory inside the repository. Skip steps stage, commit, or clean
-up, and `REPO_PATH` is the launch checkout, so they run in the task worktree or
-not at all (issue #1528).
+enforcement). Read-only verification at step 19c can use another checkout.
+Publication and readiness require the run's canonical PR worktree. Step 20b
+publishes audit work before step 21 reads HEAD; both resolve the same recorded
+path, and an unusable path enters recovery. `REPO_PATH` remains the launch
+checkout and does not supply a replacement. See
+[Finalize Publication and PR Readiness](workflow-finalize-publication.md).
 
 See [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md)
 for the full rationale and fallback chain specification.

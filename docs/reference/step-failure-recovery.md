@@ -1,6 +1,6 @@
 ---
 title: Step Failure Recovery Reference
-last_updated: 2026-11-15
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -21,6 +21,7 @@ no attempt counter.
 
 - [Flow](#flow)
 - [Where it applies](#where-it-applies)
+- [Finalize publication and readiness](#finalize-publication-and-readiness)
 - [The four choices](#the-four-choices)
 - [Opting a step in](#opting-a-step-in)
 - [Commands](#commands)
@@ -68,7 +69,7 @@ record is an ordinary failure.
 | `autodrive-merge-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
 | `autodrive-merge-loop` | `step-02-merge-ready-loop` | `--essential --stop-on-handoff` |
 | `autodrive-merge-loop` | `step-03-finalize` (sub-recipe), recovered by `step-03r-finalize-recovery` only when the loop asked for finalisation | `--already-failed --essential` |
-| `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff --no-repair` |
+| `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff` |
 | `workflow-finalize` | `step-21-pr-ready` | `--essential --stop-on-handoff` |
 | `workflow-finalize` | `validate-agentic-finalization` | `--guard` |
 
@@ -111,6 +112,26 @@ table above), not to push failure recovery. The recovery call steps
 themselves (`step-15-push-recovery`, `step-18c-push-recovery`) are not
 wrapped by this driver either. See
 [Recipe Push Failure Recovery](./recipe-push-failure-recovery.md).
+
+### Finalize publication and readiness
+
+`step-20b-push-cleanup` allows supported local repairs and then re-executes
+`workflow_finalize_publish.sh`. The recovery agent does not push; the original
+publication operation owns staging, hook-enabled commits, and the push.
+`step-21-pr-ready` re-executes its original validation before any readiness
+mutation. Both are essential: `continue_recorded` is unavailable and a handoff
+stops the run with exit `81`.
+
+Worktree-resolution, publication, and scope failures include actionable context.
+Scope failures include the absolute path to the complete redacted candidate
+report, so a truncated recovery excerpt does not lose the exclusion details.
+Recovery treats candidate text as untrusted evidence.
+
+A child cannot repair a parent's recipe context by exporting variables. If the
+original command cannot obtain valid context, recovery hands off to an owner
+who can restore it. Missing publication must be resolved through the publication
+path; rerunning readiness cannot push work. See
+[Finalize Publication and PR Readiness](workflow-finalize-publication.md).
 
 To check that no step has two owners:
 
@@ -207,7 +228,7 @@ run --step-id <id> --dir <dir> --goal <text> [--owner <v>]
 | `--alternative` | Named alternative, repeatable; name `^[A-Za-z0-9_-]{1,64}$`; command split on whitespace, no shell |
 | `--essential` | `continue_recorded` not offered |
 | `--stop-on-handoff` | A handoff exits 81 |
-| `--no-repair` | `retry_after_repair` not offered (a step that publishes the worktree) |
+| `--no-repair` | `retry_after_repair` not offered; finalize publication does not set this flag |
 | `--guard` | Only `handoff` and declared alternatives; implies the three flags above |
 | `--already-failed` | Go straight to recovery; the record has `unavailable_reason` |
 | `--recipe-dir` | Run `<dir>/step-failure-recovery.yaml` (tests) |
@@ -310,7 +331,7 @@ going; each pass is a new, different failure.
 `<dir>/<step id with :alt: as __alt__>.jsonl`, one JSON object per line:
 
 ```json
-{"schema_version":1,"step_id":"step-21-pr-ready","failure":{"exit_code":1,"signature":"exit=1;tail=3f9a0c51d2e87b46","output_excerpt":"no_scoped_pr: …"},"choice":"continue_recorded","reason":"…","recurrence":false,"source":"agent","recorded_at":"2026-11-12T21:04:33Z"}
+{"schema_version":1,"step_id":"step-21-pr-ready","failure":{"exit_code":1,"signature":"exit=1;tail=3f9a0c51d2e87b46","output_excerpt":"no_scoped_pr: named PR head differs from published HEAD"},"choice":"handoff","reason":"The parent recipe's PR context needs correction","owner":"run-requester","needs":"Restore the recorded PR identity and rerun validation","recurrence":false,"source":"agent","recorded_at":"2026-11-18T09:00:00Z"}
 ```
 
 `failure` holds exactly one of `exit_code`, `signal`, `unavailable_reason`,
@@ -406,9 +427,10 @@ own. See
   attempt's full stdout is copied to stderr under
   `[step-recovery] stdout of failed attempt <id>:`, as the step log held it
   before.
-- The agent runs as the same user. Its limits outside the recovery
-  directory are prompt instructions; for that reason `step-20b-push-cleanup`
-  runs with `--no-repair`, so its retry never pushes an unreviewed repair.
+- The agent runs as the same user. Its limits outside the recovery directory
+  are prompt instructions. Finalize publication permits supported local repairs,
+  preserving additive history and hooks; the original publication command owns
+  the subsequent push. Recovery itself still performs no GitHub writes.
 - Evidence files hold redacted but raw output; do not attach them to pull
   requests.
 

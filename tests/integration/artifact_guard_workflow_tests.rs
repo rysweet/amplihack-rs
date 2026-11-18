@@ -114,33 +114,11 @@ fn finalize_runs_artifact_guard_before_cleanup_commit_or_final_push() {
 
 #[test]
 fn finalize_push_cleanup_guards_immediately_before_broad_staging() {
-    let recipe = load_recipe("workflow-finalize.yaml");
-    let command = step_text(&recipe, "step-20b-push-cleanup", "command");
-    let guard = command
-        .find("amplihack hygiene artifact-guard --repo . --mode pre-publish")
-        .expect("step-20b must guard the exact repo before broad staging");
-    let add = command
-        .find("git add -A")
-        .expect("step-20b currently performs broad staging");
-    let between = &command[guard..add];
-
-    assert!(
-        guard < add,
-        "step-20b must invoke Artifact Guard before git add -A"
+    let f = crate::workflow_finalize_publish_ready::fixture::Fixture::new(
+        &workspace_root(),
+        Path::new(env!("CARGO_BIN_EXE_amplihack")),
     );
-    assert!(
-        between
-            .lines()
-            .filter(|line| {
-                let trimmed = line.trim();
-                !trimmed.is_empty()
-                    && !trimmed.starts_with("amplihack hygiene artifact-guard")
-                    && !trimmed.starts_with("git add -A")
-            })
-            .count()
-            == 0,
-        "Artifact Guard must be the deterministic final gate immediately before git add -A; intervening lines:\n{between}"
-    );
+    crate::workflow_finalize_publish_ready::artifact_failure_prevents_publication(&f);
 }
 
 #[test]
@@ -711,36 +689,11 @@ fn bundle_recipes_and_tools_never_force_add() {
 
 #[test]
 fn finalize_push_cleanup_never_commits_in_repo_path_or_cwd() {
-    // AC9 / D8 / SEC-11 (static half).
-    let recipe = load_recipe("workflow-finalize.yaml");
-    let command = step_text(&recipe, "step-20b-push-cleanup", "command");
-
-    for forbidden in [
-        "cd \"$REPO_PATH\"",
-        "cd $REPO_PATH",
-        "falling back to REPO_PATH",
-        "using cwd",
-    ] {
-        assert!(
-            !command.contains(forbidden),
-            "step-20b must never commit in REPO_PATH or the cwd; found `{forbidden}`"
-        );
-    }
-    let warning = command
-        .find("never commits in REPO_PATH (#1528)")
-        .expect("step-20b must warn when it skips the cleanup commit");
-    let skip = command[warning..]
-        .find("exit 0")
-        .map(|offset| warning + offset)
-        .expect("step-20b must exit 0 (resilient, #414) when it skips");
-    let add = command.find("git add -A").expect("step-20b stages");
-    assert!(skip < add, "the skip must happen before anything is staged");
-    for linked_check in ["--absolute-git-dir", "--git-common-dir"] {
-        let at = command
-            .find(linked_check)
-            .unwrap_or_else(|| panic!("step-20b must verify a linked worktree ({linked_check})"));
-        assert!(at < add, "{linked_check} check must precede staging");
-    }
+    let f = crate::workflow_finalize_publish_ready::fixture::Fixture::new(
+        &workspace_root(),
+        Path::new(env!("CARGO_BIN_EXE_amplihack")),
+    );
+    crate::workflow_finalize_publish_ready::invalid_worktree_never_falls_back(&f);
 }
 
 #[cfg(unix)]
@@ -791,7 +744,7 @@ mod finalize_runtime {
     }
 
     #[test]
-    fn finalize_push_cleanup_skips_without_a_linked_task_worktree() {
+    fn finalize_push_cleanup_fails_without_a_linked_task_worktree() {
         let command = step_text(
             &load_recipe("workflow-finalize.yaml"),
             "step-20b-push-cleanup",
@@ -846,14 +799,13 @@ mod finalize_runtime {
             let output = run.output().expect("run step-20b");
             let stderr = String::from_utf8_lossy(&output.stderr);
 
-            assert_eq!(
-                output.status.code(),
-                Some(0),
-                "{label}: step-20b stays resilient (#414)\nstderr:\n{stderr}"
+            assert!(
+                !output.status.success(),
+                "{label}: invalid publication context must fail: {stderr}"
             );
             assert!(
-                stderr.contains("WARNING") && stderr.contains("#1528"),
-                "{label}: must say why it skipped\nstderr:\n{stderr}"
+                stderr.contains("worktree"),
+                "{label}: must explain invalid publication context\nstderr:\n{stderr}"
             );
             assert_eq!(
                 (state(&launch), state(&cwd)),
@@ -862,7 +814,7 @@ mod finalize_runtime {
             );
             assert!(
                 !tmp.path().join("amplihack.log").exists(),
-                "{label}: the skip happens before the guard or any staging"
+                "{label}: invalid context stops before the artifact check or any staging"
             );
         }
     }
@@ -1098,71 +1050,14 @@ fn recipes_touched_by_issue_1528_stay_under_the_brick_budget() {
     }
 }
 
-// #1561: the worktree path comes from worktree_setup_path.sh, which reads only
-// the JSON in RECIPE_VAR_worktree_setup and checks it, so neither an inherited
-// WORKTREE_SETUP_WORKTREE_PATH nor a nested RECIPE_VAR_worktree_setup__worktree_path
-// can outrank the recipe's own worktree. A rejected or unset path skips the step
-// ("worktree path gone"); a missing tool skips with "worktree_setup_path.sh not found".
-const STEP_20B_CONTEXT_DEFAULT: &str = r#"wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20b-push-cleanup)" || skip "${WT_TOOL:+worktree path gone}"; cd -P "$wt""#;
-
 /// `worktree_setup` as the runner hands it back: JSON in the base key (#1561).
 pub(crate) fn worktree_setup_json(worktree: &Path) -> String {
     serde_json::json!({ "worktree_path": worktree.to_string_lossy() }).to_string()
 }
 
-fn step_20b_warning(reason: &str) -> String {
-    format!(
-        "WARNING: step-20b {reason}; skipping cleanup commit/push — never commits in REPO_PATH (#1528)"
-    )
-}
-
-#[test]
-fn finalize_push_cleanup_skips_before_the_runtime_preflight() {
-    // D2: the preflight can `rm -rf` a main checkout's `worktrees/`, so the
-    // location check runs first. The context default line is untouched (AC12,
-    // owned by fix/autodrive-step-output-plumbing).
-    let recipe = load_recipe("workflow-finalize.yaml");
-    let command = step_text(&recipe, "step-20b-push-cleanup", "command");
-    assert!(
-        command
-            .lines()
-            .any(|line| line.trim().starts_with(STEP_20B_CONTEXT_DEFAULT)),
-        "step-20b reads its worktree with `{STEP_20B_CONTEXT_DEFAULT}`:\n{command}"
-    );
-    for reason in [
-        "worktree path gone",
-        "worktree path is not a linked worktree",
-    ] {
-        assert!(
-            command.contains(reason),
-            "step-20b must name the skip reason `{reason}`"
-        );
-    }
-    assert!(
-        command.contains("--path-format=absolute --git-common-dir"),
-        "the common dir is read as an absolute path"
-    );
-    let last_skip = command
-        .rfind("never commits in REPO_PATH (#1528)")
-        .expect("skip warning");
-    for later in [
-        "preflight_known_workflow_runtime_artifacts",
-        "cleanup_known_workflow_runtime_artifacts",
-        GUARD,
-        "git add -A",
-    ] {
-        if let Some(at) = command.find(later) {
-            assert!(
-                last_skip < at,
-                "every skip must come before `{later}` in step-20b"
-            );
-        }
-    }
-}
-
 #[cfg(unix)]
 mod finalize_skip_reasons {
-    //! D2 runtime: each skip names its reason, exits 0, and never reaches the
+    //! D2 runtime: each context failure names its reason and never reaches the
     //! runtime preflight, which would delete a main checkout's `worktrees/`.
 
     use super::*;
@@ -1244,8 +1139,8 @@ mod finalize_skip_reasons {
         .expect("write stub");
         fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod");
 
-        let gone = "worktree path gone";
-        let not_linked = "worktree path is not a linked worktree";
+        let gone = "worktree-setup-";
+        let not_linked = "linked PR worktree";
         let cases: [(&str, Option<&Path>, &str); 5] = [
             ("unset", None, gone),
             ("missing", Some(&root.join("missing")), gone),
@@ -1279,7 +1174,10 @@ mod finalize_skip_reasons {
             let output = run.output().expect("run step-20b");
             let stderr = String::from_utf8_lossy(&output.stderr);
 
-            assert_eq!(output.status.code(), Some(0), "{label}\nstderr:\n{stderr}");
+            assert!(
+                !output.status.success(),
+                "{label}: invalid publication context must fail: {stderr}"
+            );
             if label == "not a git directory" {
                 assert!(
                     stderr.contains("worktree-setup-rejected: "),
@@ -1287,9 +1185,8 @@ mod finalize_skip_reasons {
                 );
             }
             assert!(
-                stderr.lines().any(|line| line == step_20b_warning(reason)),
-                "{label}: expected `{}`\nstderr:\n{stderr}",
-                step_20b_warning(reason)
+                stderr.contains(reason),
+                "{label}: expected {reason:?}; stderr: {stderr}"
             );
             assert!(
                 other_wip.exists() && launch.join(".claude/runtime/state.json").exists(),
@@ -1302,7 +1199,7 @@ mod finalize_skip_reasons {
             );
             assert!(
                 !root.join("amplihack.log").exists(),
-                "{label}: the skip happens before the guard"
+                "{label}: invalid context stops before the artifact check"
             );
         }
     }
@@ -1311,7 +1208,7 @@ mod finalize_skip_reasons {
 // ---------------------------------------------------------------------------
 // Issue #1528: the phase-1 commit sites (tdd checkpoint, refactor-review
 // checkpoint, publish step-15) commit only at the top of the linked task
-// worktree. Unlike 20a/20b they hard-fail rather than skip: a skipped
+// worktree. Like publication in 20b, they fail on missing context: a skipped
 // checkpoint or publish commit would lose work silently.
 // ---------------------------------------------------------------------------
 

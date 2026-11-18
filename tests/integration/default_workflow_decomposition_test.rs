@@ -731,33 +731,13 @@ fn workflow_pr_review_fails_loud_for_required_worktree_context() {
 
 #[test]
 fn workflow_finalize_late_steps_are_resilient_to_missing_worktree() {
-    // Issue #647: steps 20b and 21 are late-stage — the worktree may have
-    // been cleaned up by the agent or a prior step. They must fall back to
-    // REPO_PATH or cwd instead of aborting the recipe.
-    let push_cleanup = step_command("workflow-finalize", "step-20b-push-cleanup");
-    let pr_ready = step_command("workflow-finalize", "step-21-pr-ready");
-
-    for (step, command) in [
-        ("step-20b-push-cleanup", push_cleanup),
-        ("step-21-pr-ready", pr_ready),
-    ] {
-        assert!(
-            command.contains("set -euo pipefail"),
-            "{step} must still fail loudly on shell errors (only cd target is resilient)"
-        );
-        assert!(
-            command.contains("WARNING"),
-            "{step} must emit WARNING on stderr when falling back from missing worktree"
-        );
-        assert!(
-            command.contains("REPO_PATH"),
-            "{step} must fall back to REPO_PATH when worktree is unavailable"
-        );
-        assert!(
-            !command.contains("cd \"${WORKTREE_SETUP_WORKTREE_PATH:?"),
-            "{step} must NOT hard-fail on cd into missing worktree (issue #647)"
-        );
-    }
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let f = crate::workflow_finalize_publish_ready::fixture::Fixture::new(
+        &source,
+        std::path::Path::new(env!("CARGO_BIN_EXE_amplihack")),
+    );
+    crate::workflow_finalize_publish_ready::missing_worktree_reaches_publication_recovery(&f);
+    crate::workflow_finalize_publish_ready::missing_worktree_reaches_readiness_recovery(&f);
 }
 
 #[test]

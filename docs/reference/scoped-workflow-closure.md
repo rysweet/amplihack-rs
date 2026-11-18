@@ -36,7 +36,7 @@ publish, readiness, final-status, and multitask monitor steps.
 | `issue_number` | integer or numeric string | Required when the workflow is issue-backed | GitHub issue expected in PR metadata or closing references. |
 | `work_item_id` | string | Required when the workflow is work-item-backed | Non-GitHub work item expected in PR metadata. |
 | `expected_pr_title_prefix` | string | Required for title-based candidate lookup | Prefix that newly created workflow PRs must use. |
-| `created_after` | RFC 3339 timestamp | Recorded for tie-breaking | Workflow start time. Discards older candidates only when disambiguating multiple primary-key matches; never rejects the sole primary-key PR. |
+| `created_after` | RFC 3339 timestamp | Recorded workflow start | A hard filter for an explicitly named PR; a tie-breaker when discovery has multiple primary-key matches. |
 | `head_sha` | full Git SHA | Required for readiness, final status, and exact-head no-op paths | PR head SHA that must match before scoped success is reported. |
 | `recipe_run_id` | string | Required for multitask monitor authority | Unique recipe run id. |
 | `tree_id` | string | Required for nested recipe authority | Recipe execution tree id. |
@@ -53,13 +53,19 @@ workflow's own PR. When the primary key yields exactly one candidate, it is
 adopted as current work without requiring any additional discriminator.
 
 `issue_number`, `work_item_id`, `expected_pr_title_prefix`, `created_after`, and
-`head_sha` are **tie-breakers**. They are applied only when the primary key
-returns more than one candidate (for example, when open and closed PRs share the
-same head and base). A tie-breaker narrows an ambiguous candidate set; it never
-hard-rejects the sole primary-key candidate. If tie-breakers eliminate every
-candidate but exactly one OPEN candidate exists, that OPEN candidate is adopted
-rather than returning `no_scoped_pr`. OPEN candidates are always preferred over
-closed candidates when state varies at any resolution step.
+`head_sha` have mode-dependent roles. In authoritative mode (`pr_number` or
+`pr_url` supplied), every configured discriminator is a hard filter, even for a
+single candidate. Recipe-run, tree, and workstream tokens follow the same rule.
+In discovery mode they are **tie-breakers** when the primary key returns more
+than one candidate, such as open and closed PRs on the same head and base. If
+discovery tie-breakers eliminate every candidate but exactly one OPEN candidate
+exists, that OPEN candidate is adopted. OPEN candidates are preferred over
+closed candidates when state varies at a discovery resolution step.
+
+Readiness separately validates the exact published HEAD before mutation.
+Publication resolves local-only work before readiness runs; unresolved identity
+or metadata mismatches enter recovery without relaxing these checks. See
+[Finalize Publication and PR Readiness](workflow-finalize-publication.md).
 
 ## Environment Inputs
 
@@ -87,12 +93,13 @@ validation.
 | Validate a workstream process | `repo_path`, `workdir`, `branch`, `base_ref`, `recipe_run_id`, `tree_id`, `workstream_id`, `started_at`, `pid`, and process start metadata. |
 
 The primary-key lookup (`repository + head_ref + base_ref`, same-repository) is
-sufficient to identify the workflow's own PR because GitHub allows only one OPEN
+sufficient for discovery of the workflow's own PR because GitHub allows only one OPEN
 PR per `head → base`. Tracking discriminators (`issue_number`, `work_item_id`,
 `expected_pr_title_prefix`) and `head_sha` are tie-breakers for the rare case of
 multiple candidates on the same head and base; they are not required to adopt a
 unique candidate, and a stale or mismatched discriminator never rejects the sole
-primary-key candidate.
+primary-key candidate in discovery mode. A named PR must satisfy all configured
+discriminators; readiness also requires the exact published HEAD.
 
 ## PR Scope Persistence
 
@@ -119,18 +126,18 @@ recipes validate a persisted `pr_number` or `pr_url` first when either exists.
 
 Precedence:
 
-1. Validate persisted `number` and `url` when either exists (authoritative
-   override — this short-circuits above the primary key).
+1. Validate persisted `number` and `url` when either exists. This authoritative
+   lookup inspects the named PR directly and still enforces the primary key
+   and every configured discriminator.
 2. If no concrete PR identity exists, resolve the primary key
    `repository + head_ref + base_ref` (same-repository, non-cross-repository).
    A single primary-key candidate is adopted directly.
 3. If more than one primary-key candidate exists, apply tracking discriminators
    and `head_sha` as tie-breakers, preferring OPEN over closed. If tie-breakers
    eliminate all candidates but one OPEN candidate remains, adopt it.
-4. Reject only genuine mismatches (different head branch, cross-repository, or an
-   authoritative `pr_number`/`pr_url` that disagrees). Do not reject the sole
-   primary-key candidate because a stale `issue_number` or `head_sha` no longer
-   matches.
+4. In authoritative mode, reject any configured discriminator mismatch as well
+   as repository, explicit identity, head, or base mismatches. Discovery's
+   single-candidate behavior does not authorize bypassing readiness validation.
 5. Persist the concrete PR identity immediately after publish succeeds.
 
 ## PR Scope Helper
@@ -166,20 +173,21 @@ Rules:
 
 1. `--repo`, `--head`, and `--base` form the **primary key**. Combined with the
    same-repository / non-cross-repository guard, they are exact-match fields.
-2. `--pr-number` and `--pr-url` are an authoritative override: when supplied they
-   identify the PR directly and short-circuit the primary-key and tie-breaker
-   passes. They must identify the same repository and PR.
-3. When the primary key returns exactly one candidate, the helper returns it
-   without consulting any tie-breaker.
+2. `--pr-number` and `--pr-url` select authoritative mode. They must identify the
+   same repository and PR, which must still satisfy the primary key and every
+   configured secondary discriminator.
+3. In discovery mode, when the primary key returns exactly one candidate, the
+   helper returns it without consulting any tie-breaker.
 4. `--issue`, `--work-item`, `--expected-pr-title-prefix`, `--created-after`, and
-   `--head-sha` are **tie-breakers**. They are consulted only when the primary
-   key returns more than one candidate. `--expected-pr-title-prefix` is a prefix
-   check; `--issue` and `--work-item` match structured closing/reference fields
-   or exact workflow metadata (never a broad text grep); `--head-sha` compares
-   the PR head SHA; `--created-after` rejects candidates created before the run.
-5. A stale or mismatched tie-breaker never rejects the sole primary-key
-   candidate. When tie-breakers eliminate every candidate but exactly one OPEN
-   candidate exists, that OPEN candidate is returned. OPEN candidates are
+   `--head-sha` are hard filters in authoritative mode and tie-breakers for
+   multiple discovery candidates. `--expected-pr-title-prefix` checks the title
+   prefix; issue and work-item checks use the helper's existing reference-token
+   predicates; `--head-sha` compares the PR head SHA; `--created-after` checks
+   the creation-time threshold. Configured run, tree, and workstream tokens use
+   the same mode-dependent filtering.
+5. In discovery mode, a stale or mismatched tie-breaker never rejects the sole
+   primary-key candidate. When tie-breakers eliminate every candidate but
+   exactly one OPEN candidate exists, that OPEN candidate is returned. OPEN candidates are
    preferred over closed candidates at every step.
 6. The PR base repository and head repository must match `--repo` by default;
    fork and cross-repository PRs are rejected during the primary-key pass.
@@ -218,6 +226,15 @@ Invalid validation prints JSON and exits non-zero:
 
 The `reason` value is stable and intended for recipes, shell tests, and monitor
 checks. Human-readable `message` text is diagnostic only.
+
+For `no_scoped_pr`, stderr identifies every examined candidate and all applicable
+failed discriminators, including expected and observed values where available.
+An empty lookup is distinguished from excluded candidates. Complete redacted
+diagnostics are retained in a private runtime report; its absolute path reaches
+the final error and recovery evidence. Candidate text is untrusted and terminal
+control characters are escaped. Selection predicates, success JSON, and reason
+codes remain compatible. See
+[candidate diagnostics](workflow-finalize-publication.md#candidate-diagnostics).
 
 ## PR Scope Resolution Passes
 
@@ -393,8 +410,7 @@ These bundled tools and recipes use scoped validation:
 
 ## Failure Semantics
 
-Scoped closure fails closed, but a stale tracking discriminator is not a
-failure:
+Scoped closure preserves both authoritative filtering and discovery semantics:
 
 - missing primary-key scope (repository, head, base) blocks
   publish/readiness/final-status current-work claims
@@ -403,9 +419,12 @@ failure:
 - cross-repository and fork PRs are rejected by default
 - two or more OPEN candidates on the same head and base block with
   `multiple_scoped_prs` until scope is made more specific
-- a stale `issue_number` or `head_sha` does **not** reject the unique
-  primary-key PR; those fields only break ties among multiple candidates
-- `no_scoped_pr` is reserved for a genuinely empty primary-key result
+- in discovery mode, a stale `issue_number` or `head_sha` does **not** reject
+  the unique primary-key PR; those fields break ties among multiple candidates
+- in authoritative mode, configured secondary discriminator mismatches reject
+  the named PR and enter recovery before readiness mutation
+- `no_scoped_pr` distinguishes an empty lookup from candidates excluded by
+  primary or authoritative secondary checks, with every failed check reported
 - stale process records are display-only
 - PID reuse is rejected when runtime start metadata differs
 - missing runtime start metadata is rejected as incomplete process scope
@@ -431,8 +450,10 @@ Representative checks:
 
 | Check | Expected result |
 | --- | --- |
-| unique branch/base PR with a stale `--issue` and `--head-sha` | helper adopts it with `ok: true` |
-| PR body references a different upstream issue than the branch tracking issue | helper still adopts it (`ok: true`) |
+| unique branch/base PR in discovery mode with a stale `--issue` and `--head-sha` | helper adopts it with `ok: true`; readiness still validates the exact published HEAD |
+| discovery candidate body references a different upstream issue than the branch tracking issue | helper still adopts the unique primary-key candidate (`ok: true`) |
+| explicitly named PR fails issue, creation-time, or title-prefix checks | helper reports all failed configured discriminators; readiness enters recovery |
+| explicitly named PR remains one commit behind after publication | readiness enters recovery without an ancestor allowance |
 | newer unrelated PR exists for same author | scoped helper rejects it |
 | PR on a different head branch | helper never matches it |
 | zero primary-key candidates | helper exits non-zero with `no_scoped_pr` |

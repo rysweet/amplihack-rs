@@ -747,12 +747,13 @@ so `workflow-finalize` acts on it in two places:
   `step-20c-quality-audit` therefore edit the PR's own tree. The tool always
   exits `0`; a failed fetch or a refused fast-forward prints one warning and
   leaves the worktree as it was.
-- `step-20b-push-cleanup` runs the same tool after its cleanup commit, so it
-  fetches `origin/<branch>` again and sets a missing upstream, then runs
-  `git pull --rebase` before it pushes. It falls back to
-  `git push -u origin <branch>` only when the branch has no upstream after
-  that, which means origin has no such branch, or the fetch failed and this
-  checkout never saw one.
+- `step-20b-push-cleanup` invokes `workflow_finalize_publish.sh` in the same
+  recorded task worktree. Publication synchronizes before creating cleanup
+  commits and preserves fast-forward behavior. It stages and commits audit
+  edits, then pushes HEAD to the mapped remote PR branch even when no new
+  cleanup commit was needed. It preserves existing commits without rebasing
+  or force-pushing. Unresolved synchronization or publication errors enter
+  essential step recovery.
 
 `tests/integration/issue_1714_finalization_handoff/step20b.rs` runs both steps
 from the YAML against a bare remote whose branch is a merge of main on top of
@@ -763,8 +764,12 @@ or rewritten), a rewound remote, a merged or closed PR, or a PR head commit
 that cannot be fetched, still fails as `stale PR metadata` or `no_scoped_pr`.
 
 In workflow-finalize, `step-20c-quality-audit` runs before `step-20a-artifact-guard`
-and `step-20b-push-cleanup`, so the audit's commits are checked and pushed
-before `step-21-pr-ready` validates the PR.
+and `step-20b-push-cleanup`, so audit edits and local commits are checked and
+published before `step-21-pr-ready` reads HEAD. Readiness uses the same canonical
+worktree and requires the exact published SHA. An ancestor response still
+present after publication enters recovery with candidate exclusions, without
+polling or accepting an unpublished head. See
+[Finalize Publication and PR Readiness](workflow-finalize-publication.md).
 
 ### The three-verdict contract
 

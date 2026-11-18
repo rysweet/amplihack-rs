@@ -1034,7 +1034,7 @@ set is every recipe that invokes `git add -A`:
 
 | Recipe | Guard placement |
 | --- | --- |
-| `workflow-finalize.yaml` | Before and after final broad staging in `step-20b-push-cleanup`, which runs only at the top of the linked task worktree and skips with a warning otherwise. See [Workflow Runtime Artifacts: lifecycle integration](reference/workflow-runtime-artifacts.md#lifecycle-integration). |
+| `workflow-finalize.yaml` | Before and after final broad staging through `workflow_finalize_publish.sh` in `step-20b-push-cleanup`. Publication requires the linked task worktree; resolution or publication failures enter essential recovery. See [Workflow Runtime Artifacts: lifecycle integration](reference/workflow-runtime-artifacts.md#lifecycle-integration). |
 | `workflow-publish.yaml` | Before and after publication staging, and before and after broad staging in the outside-in fix loop (one chained line ending in `\|\| { …; exit 1; }`) |
 | `workflow-refactor-review.yaml` | Before and after broad staging |
 | `workflow-tdd.yaml` | Before and after broad staging |

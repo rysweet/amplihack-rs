@@ -88,6 +88,8 @@ pub enum OrchHelperCommands {
         #[command(subcommand)]
         command: step_recovery::StepRecoveryCommands,
     },
+    /// Persist and render untrusted PR exclusion evidence (bundle internal).
+    PrScopeReport,
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -548,6 +550,7 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
             autodrive_completion::dispatch(args)
         }
         OrchHelperCommands::StepRecovery { command } => step_recovery::run(command),
+        OrchHelperCommands::PrScopeReport => step_recovery::scope_report::run(),
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
             let found = match require_field.as_deref() {

@@ -14,6 +14,7 @@ mod invoke;
 mod record;
 mod recover;
 mod report;
+pub(super) mod scope_report;
 mod signature;
 mod text;
 

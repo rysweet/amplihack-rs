@@ -1,208 +1,86 @@
-# Resilient Worktree Cleanup in Default Workflow (Issue #647)
-
-Late-stage workflow steps (19c, 20b, 21) no longer hard-fail when the worktree
-directory has been cleaned up before the finalize phase completes.
-
+---
+title: Resilient Worktree Cleanup in Default Workflow
+description: Why read-only verification can use a fallback checkout while publication and readiness require the recorded worktree.
+last_updated: 2026-11-18
+review_schedule: as-needed
+owner: workflow-team
+doc_type: explanation
 ---
 
-## Problem
+# Resilient Worktree Cleanup in Default Workflow (Issue #647)
 
-Steps 19c (zero-BS verification), 20b (push-cleanup), and 21 (pr-ready) each
-`cd` into `WORKTREE_SETUP_WORKTREE_PATH` using a `${VAR:?}` guard. When the
-worktree directory no longer exists — because the agent, a prior step, or an
-external process already removed it — the `cd` fails and aborts the recipe with
-exit code 1.
+Late-stage resilience depends on the operation. Read-only verification can use
+another checkout when the task worktree has been removed. Publication and PR
+readiness need the recorded task worktree: an open PR may still lack changes
+made during the quality audit.
 
-This is a false failure. By the time these steps run, the actual work (coding,
-testing, committing, pushing, PR creation) is complete. The remaining steps
-perform read-only verification and cleanup that can function from the repository
-root.
+## Directory access by operation
 
-```
-# Typical error before this fix:
-bash: line 3: cd: /tmp/worktrees/feat-auth-1234: No such file or directory
-# Recipe aborts — PR already open, branch already pushed
-```
+| Step | Recipe | Missing or unusable worktree |
+| --- | --- | --- |
+| 15 (design), 16 (review), 18c (enforce-verdict) | `workflow-pr-review` | Stop: worktree files are required. |
+| 19c (zero-BS verification) | `workflow-pr-review` | Warn and use the read-only fallback chain. |
+| `checkpoint-after-implementation` | `workflow-tdd` | Stop before staging or committing. |
+| `checkpoint-after-review-feedback` | `workflow-refactor-review` | Stop before staging or committing. |
+| 15 (commit-push) | `workflow-publish` | Stop before staging or committing. |
+| 20a (artifact-guard) | `workflow-finalize` | Warn and skip; never run preflight in the launch checkout. |
+| 20b (push-cleanup) | `workflow-finalize` | Enter essential recovery; publication cannot succeed by skipping. |
+| 21 (pr-ready) | `workflow-finalize` | Enter essential recovery before reading delivery inputs or Git identity. |
 
-## Solution: Resilient `cd` Fallback Chain
+## Steps that commit never fall back (issue #1528)
 
-Steps 19c and 21 use a three-tier directory resolution instead of a hard-fail
-`cd`. Step 20b, which commits, skips instead; see
-[Steps that commit never fall back](#steps-that-commit-never-fall-back-issue-1528).
+`REPO_PATH` is the launch checkout, often on `main`. Staging there could include
+unrelated work or the run's worktrees. Commit operations therefore require the
+top of the recorded linked task worktree and never substitute the launch path.
 
-```
-WORKTREE_SETUP_WORKTREE_PATH  (preferred — run in the worktree)
-        │ not found
-        ▼
-    REPO_PATH                  (fallback — run from repo root)
-        │ not found
-        ▼
-      $(pwd)                   (final — run from current directory)
-```
+Final publication uses `workflow_finalize_publish.sh` to stage and commit audit
+edits, then push all local commits. It performs its own runtime preflight and
+artifact checks, even if step 20a skipped. A publication failure enters recovery
+before readiness runs. Existing commits are preserved without rebasing or
+force-pushing.
 
-Each fallback emits a `WARNING` to stderr so the behavior is visible in logs:
+Readiness also needs the task worktree, even though it does not commit. Its
+branch, repository, delivery inputs, and exact published HEAD determine which
+PR it may mark ready. Reading these from a checkout on `main` would validate
+the wrong context. See
+[Finalize Publication and PR Readiness](../reference/workflow-finalize-publication.md).
 
-```
-WARNING: WORKTREE_SETUP_WORKTREE_PATH=/tmp/worktrees/feat-auth-1234 not found, falling back to REPO_PATH
-```
+## Fallback pattern
 
-### Which Steps Are Resilient
+The read-only step 19c uses the task worktree when available, then `REPO_PATH`,
+then the current directory. Each fallback prints a warning. This pattern does
+not apply to final publication or readiness.
 
-| Step | Recipe | Behavior | Rationale |
-|------|--------|----------|-----------|
-| 15 (design) | workflow-pr-review | **Hard-fail** | Needs worktree files to review |
-| 16 (review) | workflow-pr-review | **Hard-fail** | Needs worktree files to review |
-| 18c (enforce-verdict) | workflow-pr-review | **Hard-fail** | Verifies work artifacts in worktree |
-| **19c (zero-BS)** | workflow-pr-review | **Resilient** | Read-only checks; can use repo root |
-| checkpoint-after-implementation | workflow-tdd | **Hard-fail** | Stages and commits; only at the top of the linked task worktree (issue #1528) |
-| checkpoint-after-review-feedback | workflow-refactor-review | **Hard-fail** | Stages and commits; only at the top of the linked task worktree (issue #1528) |
-| 15 (commit-push) | workflow-publish | **Hard-fail** | Stages, commits and pushes; only at the top of the linked task worktree (issue #1528) |
-| **20a (artifact-guard)** | workflow-finalize | **Skips** | Runs the runtime preflight; never in `REPO_PATH` (issue #1528) |
-| **20b (push-cleanup)** | workflow-finalize | **Skips** | Stages, commits and pushes; never in `REPO_PATH` (issue #1528) |
-| **21 (pr-ready)** | workflow-finalize | **Resilient** | Final status check; reads git remote |
-
-Early-stage steps (15, 16, 18c) retain their `${WORKTREE_SETUP_WORKTREE_PATH:?}`
-hard-fail guards. These steps genuinely require the worktree to be present — the
-files under review live there.
-
-### Steps that commit never fall back (issue #1528)
-
-`REPO_PATH` is the checkout the run was launched from, often a repository's
-main checkout. A step that stages or commits there can stage the run worktrees
-under its `worktrees/` directory. Steps 20a and 20b therefore run only in the
-task worktree. When `WORKTREE_SETUP_WORKTREE_PATH` is empty or not a directory,
-or is a directory that is not the top of a linked worktree (for example the
-main checkout), each prints one warning on stderr and exits `0`:
-
-```
-WARNING: step-20a worktree path gone; skipping the artifact guard — never runs in REPO_PATH (#1528)
-WARNING: step-20a worktree path is not a linked worktree; skipping the artifact guard — never runs in REPO_PATH (#1528)
-WARNING: step-20b worktree path gone; skipping cleanup commit/push — never commits in REPO_PATH (#1528)
-WARNING: step-20b worktree path is not a linked worktree; skipping cleanup commit/push — never commits in REPO_PATH (#1528)
-```
-
-The recipe still completes, as #647 requires. See
-[Workflow Runtime Artifacts: lifecycle integration](../reference/workflow-runtime-artifacts.md#lifecycle-integration).
-
-The phase-1 commit sites apply the same check but stop the recipe instead of
-skipping, because a skipped checkpoint or publish commit would lose work
-without notice. These are `checkpoint-after-implementation` in
-`workflow-tdd.yaml`, `checkpoint-after-review-feedback` in
-`workflow-refactor-review.yaml` and `step-15-commit-push` in
-`workflow-publish.yaml`. None of them falls back to `REPO_PATH`. When
-`WORKTREE_SETUP_WORKTREE_PATH` is empty the `${WORKTREE_SETUP_WORKTREE_PATH:?}`
-expansion stops the step; when the `cd` fails the step stops; and when the
-directory is not the top of a linked worktree (the main checkout, or a
-subdirectory of a worktree) the step prints one error and exits `1` before it
-stages anything:
-
-```
-ERROR: checkpoint-after-implementation: <dir> is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)
-ERROR: checkpoint-after-review-feedback: <dir> is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)
-ERROR: step-15-commit-push: <dir> is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)
-```
-
-`workflow-worktree` always produces a linked worktree (issue #858), so a
-correctly propagated worktree path passes the check. Step 15 additionally keeps
-its refusal to commit on `main` or `master`.
-
-### Fallback Pattern
-
-Each step sets the local `WORKTREE_SETUP_WORKTREE_PATH` from
-[`worktree_setup_path.sh`](../../amplifier-bundle/tools/worktree_setup_path.sh),
-which reads only `RECIPE_VAR_worktree_setup` and checks the path, so an
-inherited `WORKTREE_SETUP_WORKTREE_PATH` is never used (issue #1561). Step 21
-in `workflow-finalize.yaml`:
-
-```bash
-if WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-21-pr-ready)"; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-21 worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
-```
-
-The forms below show the original #647 shape of the same fallback.
-
-**Compact form** (used in `workflow-pr-review.yaml` which is at 399/400 LOC brick limit):
-
-```bash
-if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: WORKTREE_SETUP_WORKTREE_PATH=${WORKTREE_SETUP_WORKTREE_PATH:-unset} not found, falling back to REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: WORKTREE_SETUP_WORKTREE_PATH=${WORKTREE_SETUP_WORKTREE_PATH:-unset} not found, falling back to cwd ($(pwd))" >&2; fi
-```
-
-**Multi-line form** (for recipes with line headroom):
-
-```bash
-if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then
-  cd "$WORKTREE_SETUP_WORKTREE_PATH"
-elif [ -d "${REPO_PATH:-}" ]; then
-  echo "WARNING: WORKTREE_SETUP_WORKTREE_PATH=${WORKTREE_SETUP_WORKTREE_PATH:-unset} not found, falling back to REPO_PATH" >&2
-  cd "$REPO_PATH"
-else
-  echo "WARNING: WORKTREE_SETUP_WORKTREE_PATH=${WORKTREE_SETUP_WORKTREE_PATH:-unset} not found, falling back to cwd ($(pwd))" >&2
-fi
-```
-
-Both forms are semantically identical. The compact form is required because
-`workflow-pr-review.yaml` is at 399 of its 400-line brick limit. Neither form
-belongs in a step that stages or commits; see
-[Steps that commit never fall back](#steps-that-commit-never-fall-back-issue-1528).
+Those operations resolve `worktree_setup.worktree_path` through
+`worktree_setup_path.sh`, which reads the complete `RECIPE_VAR_worktree_setup`
+object. An inherited bare `WORKTREE_SETUP_WORKTREE_PATH` cannot replace the
+recorded output. Missing or malformed context enters recovery; it is not a
+successful no-op.
 
 ## Configuration
 
-No configuration required. The resilient fallback is always active for steps
-19c and 21, and steps 20a and 20b always skip when the worktree is gone. There
-is no way to force a hard-fail on these steps — the old behavior was a bug, not
-a feature.
+No setting enables a directory fallback for final publication or readiness.
+The caller must propagate the recorded `worktree_setup` object. Both operations
+use essential recovery with stop-on-handoff; a supported local repair is followed
+by validated re-execution, or a recorded handoff stops the run with exit `81`.
 
 ## Security
 
-- All variables remain double-quoted — no shell injection risk.
-- `set -euo pipefail` is preserved in all steps. Only the `cd` target selection
-  is resilient; git operations still fail-closed on errors.
-- WARNING output goes to stderr only — no information disclosure beyond local
-  paths that are already in the recipe log.
-- No `|| true`, `>/dev/null 2>&1`, `set +e`, or other error-suppression
-  patterns are used. The fallback is explicit conditional logic.
-- `REPO_PATH` is typically available via implicit context propagation from the
-  parent recipe — no new inputs are added to `workflow-pr-review.yaml`. The
-  `$(pwd)` final fallback covers cases where `REPO_PATH` is not set.
+Worktree selection precedes staging and readiness identity reads. Recovery
+performs no GitHub writes; the original publication command owns pushes and the
+readiness command owns the validated readiness mutation. A recovery child cannot
+repair parent recipe context merely by exporting environment variables.
 
 ## Validation
 
-### Integration Tests
-
-`default_workflow_decomposition_test.rs` validates the hard-fail vs. resilient
-split:
-
-| Test target | Assertion |
-|-------------|-----------|
-| step-18c | Contains `WORKTREE_SETUP_WORKTREE_PATH:?` (hard-fail preserved) |
-| step-18c | Contains `set -euo pipefail` |
-| step-19c | Contains `set -euo pipefail` |
-| step-19c | Contains `WARNING` (resilient fallback emits warning) |
-| step-19c | Contains `REPO_PATH` (fallback target) |
-| step-19c | Does NOT contain `WORKTREE_SETUP_WORKTREE_PATH:?` with `cd` (no hard-fail) |
-
-### Shell Tests
-
-| Test file | What changed |
-|-----------|-------------|
-| `tests/issue_412_fail_loud_other_recipes.sh` | `:?` count assertions updated: finalize `2→0`, pr-review `2→1` |
-| `tests/issue_414_fail_loud_phase_bricks.sh` | Section B counts, Section C loop membership, Section F resilience assertions updated |
-
-### Running the Tests
-
-```sh
-# Rust integration tests
-cargo test default_workflow_decomposition -- --nocapture
-
-# Shell assertion tests
-bash tests/issue_412_fail_loud_other_recipes.sh
-bash tests/issue_414_fail_loud_phase_bricks.sh
-```
-
----
+Behavioral fixtures use linked worktrees, local remotes, and isolated configuration
+to invoke finalization from a checkout on `main`. They verify that audit changes
+reach the PR branch before readiness and that unusable context enters recovery
+without changing the launch checkout. See the
+[behavioral verification contract](../reference/workflow-finalize-publication.md#behavioral-verification).
 
 ## Related
 
-- [Recipe Resilience](../concepts/recipe-resilience.md) — Branch sanitization, worktree bases, and late-stage resilience
-- [worktree_setup Propagation](../reference/worktree-setup-propagation.md) — How `WORKTREE_SETUP_WORKTREE_PATH` flows through recipes
-- [Troubleshoot Worktree](../howto/troubleshoot-worktree.md) — Includes entry for recipe abort after early cleanup
-- [P1 Workflow Reliability Fixes](./P1_WORKFLOW_RELIABILITY_FIXES.md) — Prior reliability improvements
+- [Worktree Setup Propagation](../reference/worktree-setup-propagation.md) — Recorded context across recipe boundaries.
+- [Workflow Runtime Artifacts](../reference/workflow-runtime-artifacts.md#lifecycle-integration) — Preflight and artifact handling during publication.
+- [Step Failure Recovery](../reference/step-failure-recovery.md) — Supported repairs, validated re-execution, and handoff records.

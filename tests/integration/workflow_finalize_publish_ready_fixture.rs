@@ -78,7 +78,7 @@ impl Fixture {
         );
         f.git(&f.root, &["init", "-q", "-b", "main", "main"]);
         f.git(&f.main, &["config", "user.name", "Publication Test"]);
-        f.git(&f.main, &["config", "user.email", "test@example.invalid"]);
+        f.git(&f.main, &["config", "user.email", "test@example.com"]);
         f.git(&f.main, &["config", "commit.gpgsign", "false"]);
         f.git(
             &f.main,

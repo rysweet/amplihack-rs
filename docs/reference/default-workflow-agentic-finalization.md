@@ -90,6 +90,14 @@ amplihack recipe run workflow-finalize \
 
 ## Finalization Pipeline
 
+Before terminal evidence collection, cleanup and quality audit are followed by
+publication in `step-20b-push-cleanup`, then readiness in `step-21-pr-ready`.
+Both use the recorded PR worktree. Publication includes uncommitted audit edits
+and unpushed commits; readiness requires the exact published HEAD. Unresolved
+context, publication, or scope failures enter essential recovery. See
+[Finalize Publication and PR Readiness](workflow-finalize-publication.md) for
+the helper inputs, candidate diagnostics, and recovery contract.
+
 Finalization is a recipe of explicit steps. Each step has one responsibility,
 typed inputs, and typed outputs. Control flow moves through recipe state and
 step status, not through an agent's stdout.

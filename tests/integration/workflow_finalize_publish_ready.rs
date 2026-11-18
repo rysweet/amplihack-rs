@@ -168,6 +168,54 @@ pub fn missing_worktree_reaches_publication_recovery(f: &Fixture) {
     f.assert_no_mutation();
 }
 
+pub fn missing_worktree_reaches_readiness_recovery(f: &Fixture) {
+    let o = f
+        .step(READY)
+        .env("RECIPE_VAR_worktree_setup", "{}")
+        .env("RECIPE_VAR_step_recovery_dir", f.root.join("recovery"))
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    let evidence = fs::read_to_string(f.root.join("recovery-evidence.json")).unwrap();
+    assert!(evidence.contains("worktree"), "{evidence}");
+    f.assert_no_mutation();
+}
+
+pub fn push_output_redacts_credentials(f: &Fixture) {
+    f.audit(true);
+    executable(
+        &f.remote.join("hooks/pre-receive"),
+        "#!/bin/sh\necho 'http://secret-user:secret-pass@example.invalid/ https://secret-user:secret-pass@example.invalid/' >&2\nexit 1\n",
+    );
+    let o = f.publish();
+    assert!(!o.status.success(), "{}", show(&o));
+    let log = show(&o);
+    assert!(log.contains("REDACTED"), "{log}");
+    assert!(
+        !log.contains("secret-user") && !log.contains("secret-pass"),
+        "{log}"
+    );
+    f.assert_no_mutation();
+}
+
+pub fn artifact_failure_prevents_publication(f: &Fixture) {
+    f.audit(false);
+    let before = f.head(&f.pr);
+    executable(
+        &f.root.join("bin/amplihack"),
+        "#!/bin/sh\necho 'artifact check failed' >&2\nexit 42\n",
+    );
+    let o = f.publish();
+    assert!(!o.status.success(), "{}", show(&o));
+    assert_eq!(f.head(&f.pr), before);
+    assert_eq!(f.remote_head(), before);
+    assert!(
+        f.git(&f.pr, &["diff", "--cached", "--name-only"])
+            .is_empty()
+    );
+    f.assert_no_mutation();
+}
+
 pub fn rejected_push_is_not_success(f: &Fixture) {
     // Prove the operation is runnable; a missing helper is not a push rejection.
     success(f.publish());
@@ -435,7 +483,7 @@ pub fn diagnostics_report_all_exclusions(f: &Fixture) {
                 s.contains("wrong-head") && s.contains("wrong-base") && s.contains("run-2787")
             })
         })
-        .expect("complete candidate exclusions must be persisted under runtime root");
+        .unwrap_or_else(|| panic!("complete candidate exclusions must be persisted under runtime root; files={reports:?}; stderr={stderr}"));
     assert!(
         stderr.contains(report.to_str().unwrap()),
         "diagnostic artifact path missing: {stderr}"
@@ -528,6 +576,9 @@ mod tests {
         ($($name:ident),+ $(,)?) => { $(#[test] fn $name() { super::$name(&fixture()); })+ };
     }
     contract!(
+        missing_worktree_reaches_readiness_recovery,
+        push_output_redacts_credentials,
+        artifact_failure_prevents_publication,
         unpushed_commit,
         uncommitted_audit,
         main_checkout_uses_pr_worktree,

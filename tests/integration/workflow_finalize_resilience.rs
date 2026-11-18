@@ -66,6 +66,12 @@ fn private_scope_command(tmp: &Path, repo: &Path, helper: &str) -> Command {
     let mut command = Command::new("bash");
     isolate_scope_child(&mut command, tmp, repo);
     command.arg(workspace_helper_path(helper));
+    if helper == "workflow_pr_ready.sh" {
+        command.env(
+            "RECIPE_VAR_worktree_setup",
+            serde_json::json!({"worktree_path":repo.canonicalize().unwrap()}).to_string(),
+        );
+    }
     command
 }
 
@@ -1543,25 +1549,11 @@ fn agentic_finalization_validate_and_complete_emit_canonical_success_json() {
 
 #[test]
 fn cleanup_push_logging_redacts_embedded_remote_credentials() {
-    let command = step_command(&load_finalize_recipe(), "step-20b-push-cleanup");
-
-    assert!(
-        command.contains("redact_sensitive_output"),
-        "cleanup push step must route remote output through a redaction boundary"
+    let f = crate::workflow_finalize_publish_ready::fixture::Fixture::new(
+        &workspace_root(),
+        Path::new(env!("CARGO_BIN_EXE_amplihack")),
     );
-    assert!(
-        command.contains("https?://"),
-        "cleanup redaction must cover both http:// and https:// credential-bearing URLs"
-    );
-    assert!(
-        command.contains("pull_output_file")
-            && command.contains("git --no-pager pull --rebase >\"$pull_output_file\" 2>&1"),
-        "cleanup push step must capture git pull output before logging it"
-    );
-    assert!(
-        !command.contains("cat \"$push_output_file\""),
-        "cleanup push step must not print raw git push output"
-    );
+    crate::workflow_finalize_publish_ready::push_output_redacts_credentials(&f);
 }
 
 // Missing logs mean no call; corrupt or unreadable logs must fail the assertion.

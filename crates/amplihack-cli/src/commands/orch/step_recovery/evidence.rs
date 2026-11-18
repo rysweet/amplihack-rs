@@ -26,6 +26,9 @@ const REDACTED: &str = "[REDACTED]";
 
 static RULES: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
     [
+        // Remove URL credentials before a secret-like username or password can
+        // consume the @ delimiter and prevent URL redaction.
+        (r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@", "${1}[REDACTED]@"),
         (r"\bgh[pousr]_[A-Za-z0-9]{16,}", REDACTED),
         (r"\bgithub_pat_[A-Za-z0-9_]{16,}", REDACTED),
         (r"\bsk-ant-[A-Za-z0-9_-]{8,}", REDACTED),
@@ -49,7 +52,6 @@ static RULES: LazyLock<Vec<(regex::Regex, &'static str)>> = LazyLock::new(|| {
         (r"\bAIza[0-9A-Za-z_-]{35}", REDACTED),
         (r"(?i)(\bAccountKey=)[^;\s\x22']+", "${1}[REDACTED]"),
         (r"(?i)([?&;]sig=)[^&\s\x22']+", "${1}[REDACTED]"),
-        (r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@]+@", "${1}[REDACTED]@"),
     ]
     .into_iter()
     .map(|(pattern, with)| (regex::Regex::new(pattern).expect("constant regex"), with))

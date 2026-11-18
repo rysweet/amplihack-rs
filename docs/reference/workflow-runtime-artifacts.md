@@ -4,7 +4,7 @@ This reference defines the runtime-root, cleanup, and guard-point contracts used
 by `default-workflow`, recovery flows, launchers, provenance logging, publish
 helpers, and finalization helpers.
 
-Updated: 2026-10-06
+Updated: 2026-11-18
 
 ## Contents
 
@@ -278,36 +278,22 @@ requires a clean worktree must run the same preflight immediately before the
 operation.
 
 In `workflow-finalize.yaml`, `step-20a-artifact-guard` and
-`step-20b-push-cleanup` run only in the task worktree
-(`worktree_setup.worktree_path`). Before the preflight runs, each step checks
-that path and skips when either check fails. A skip prints one warning on
-stderr and exits `0`:
+`step-20b-push-cleanup` run only at the top of the linked task worktree
+(`worktree_setup.worktree_path`). The linked-worktree check compares
+`git rev-parse --absolute-git-dir` with
+`git rev-parse --path-format=absolute --git-common-dir`; they differ in a linked
+worktree. Neither step substitutes `REPO_PATH` or the launch directory.
 
-| Condition | Reason in the warning |
-| --- | --- |
-| The path is empty, missing, or not a directory | `worktree path gone` |
-| The path is a directory but not the top of a linked worktree: a plain directory, the main checkout, or a subdirectory of a checkout | `worktree path is not a linked worktree` |
+Step 20a prints a warning and skips when the task worktree is missing or
+unusable. Publication at step 20b is essential: `workflow_finalize_publish.sh`
+reports an unusable worktree to recovery instead of completing with a skip.
+It repeats runtime preflight and artifact checks before and after broad staging,
+so a step-20a skip cannot make publication bypass those checks.
 
-The linked-worktree check compares `git rev-parse --absolute-git-dir` with
-`git rev-parse --path-format=absolute --git-common-dir`; they differ only in a
-linked worktree. The full warning lines are:
-
-```text
-WARNING: step-20a worktree path gone; skipping the artifact guard — never runs in REPO_PATH (#1528)
-WARNING: step-20a worktree path is not a linked worktree; skipping the artifact guard — never runs in REPO_PATH (#1528)
-WARNING: step-20b worktree path gone; skipping cleanup commit/push — never commits in REPO_PATH (#1528)
-WARNING: step-20b worktree path is not a linked worktree; skipping cleanup commit/push — never commits in REPO_PATH (#1528)
-```
-
-The step-20b lines are tested exactly
-(`tests/integration/artifact_guard_workflow_tests.rs`), and every skip must come
-before the preflight, the guard and `git add -A`. The step-20a lines are the
-intended text but no test checks them.
-
-Neither step falls back to `REPO_PATH` or the current directory. That fallback
-is the launch checkout, where the preflight would act on live run worktrees
-and step-20b would stage, commit and push (issue #1528). `step-21-pr-ready`
-keeps its fallback because it does not commit.
+Step 20b commits remaining audit edits and pushes all local commits. Step 21
+resolves the same recorded worktree before reading HEAD and also enters recovery
+if the path is unusable. It has no launch-checkout fallback. See
+[Finalize Publication and PR Readiness](workflow-finalize-publication.md).
 
 ## Artifact Guard interaction
 
@@ -357,6 +343,6 @@ Regression coverage for workflow runtime isolation verifies:
 10. Runtime cleanup pointed at a main checkout keeps a `worktrees/` directory
     that holds a registered worktree, including that worktree's uncommitted
     files and registration, and keeps it when `git worktree list` fails. Each
-    case prints its warning and the preflight still succeeds. Finalize steps 20a and 20b skip with a warning
-    instead of running in `REPO_PATH` when the task worktree is gone
-    (issue #1528).
+    case prints its warning and the preflight still succeeds. When the task
+    worktree is gone, finalize step 20a skips with a warning; essential
+    publication at step 20b enters recovery. Neither runs in `REPO_PATH`.

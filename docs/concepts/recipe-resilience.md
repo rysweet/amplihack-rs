@@ -1,3 +1,12 @@
+---
+title: Recipe Resilience
+description: Branch sanitization, worktree selection, publication safety, and recovery.
+last_updated: 2026-11-18
+review_schedule: as-needed
+owner: workflow-team
+doc_type: explanation
+---
+
 # Recipe Resilience: Branch Sanitization, Worktree Bases & Publish Safety
 
 **Type**: Explanation (Understanding-Oriented)
@@ -178,52 +187,63 @@ Any other non-empty response is treated as successful recovery.
 
 ## Late-Stage Worktree Cleanup Resilience
 
-### Problem
+### Why publication needs the recorded worktree
 
-Steps 19c (zero-BS verification), 20b (push-cleanup), and 21 (pr-ready) in the
-default workflow `cd` into `WORKTREE_SETUP_WORKTREE_PATH` using `${VAR:?}`
-guards. When the worktree directory has already been removed — by the agent, a
-prior cleanup step, or an external process — the `cd` fails with exit code 1,
-aborting the recipe after work is complete and pushed.
+A removed worktree does not prove that all work reached the PR. Quality-audit
+edits may still be uncommitted, or local commits may remain unpushed. Final
+publication and readiness therefore need the run's recorded task worktree.
+Using the launch checkout, often on `main`, could stage unrelated files or
+validate a different branch's HEAD.
 
-### Solution: Resilient Fallback Chain
+### Directory access by operation
 
-Late-stage steps use a three-tier directory resolution:
+The planned finalization contract distinguishes read-only verification from
+publication and readiness:
 
-1. The run's worktree path — preferred (worktree still exists). The step
-   gets it from
-   [`worktree_setup_path.sh`](../../amplifier-bundle/tools/worktree_setup_path.sh),
-   which reads `worktree_setup` from `RECIPE_VAR_worktree_setup` only and checks
-   it, so a value inherited from the launching shell is never used
-2. `REPO_PATH` — fallback (repo root, available via context propagation)
-3. `$(pwd)` — final (current directory)
+| Step | Phase | Missing or unusable worktree |
+| --- | --- | --- |
+| 15, 16, 18c | review | Stop: worktree files are required. |
+| 19c | verification | Warn and use the read-only fallback chain. |
+| 20a | artifact guard | Warn and skip; never stage in the launch checkout. |
+| 20b | publication | Enter essential recovery; skipping cannot count as publication. |
+| 21 | readiness | Enter essential recovery before reading delivery inputs or Git identity. |
 
-Each fallback emits a `WARNING` to stderr. Early-stage steps (15, 16, 18c) that
-genuinely require worktree files keep their hard-fail `${VAR:?}` guards.
+Only step 19c uses the read-only fallback chain: recorded worktree →
+`REPO_PATH` → current directory, with a warning on fallback. Steps 20b and 21
+must resolve the same canonical worktree through
+[`worktree_setup_path.sh`](../../amplifier-bundle/tools/worktree_setup_path.sh),
+which reads the complete `RECIPE_VAR_worktree_setup` JSON object. Exporting a
+bare `WORKTREE_SETUP_WORKTREE_PATH` cannot replace that recorded context.
 
-| Step | Phase | Behavior |
-|------|-------|----------|
-| 15, 16, 18c | review | Hard-fail (`:?` guard) |
-| 19c | verification | Resilient (fallback chain) |
-| 20a, 20b | finalize | Skip with a `WARNING`; never run in `REPO_PATH`, because they stage or commit (issue #1528) |
-| 21 | finalize | Resilient (fallback chain) |
+### Recovery preserves publication and identity checks
 
-No `|| true`, `set +e`, or `>/dev/null` suppression is used. The fallback is
-explicit `if [ -d ]` conditional logic with `set -euo pipefail` preserved.
+Under the planned contract, publication and readiness use essential recovery
+with stop-on-handoff. Supported local repairs are followed by re-execution of
+the original operation. Recovery performs no GitHub writes: publication owns
+the push, and readiness owns the validated readiness mutation.
 
-See [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md)
-for the full specification and test coverage.
+If the worktree or parent recipe context cannot be restored, recovery records
+the required owner action and stops with exit `81`. A child process cannot
+repair its parent's recipe context merely by exporting a variable. Worktree
+removal cannot turn unresolved publication or readiness into successful
+completion.
+
+See [Finalize Publication and PR Readiness](../reference/workflow-finalize-publication.md)
+for the planned contract and verification requirements, and
+[Troubleshoot Worktree Behavior](../howto/troubleshoot-worktree.md#symptom-finalization-cannot-resolve-the-recorded-worktree)
+for context-restoration and handoff guidance.
 
 ## Configuration
 
 These features introduce no new configuration knobs. Branch sanitization,
 worktree base resolution, publish timeout-wrapper removal, optional design-spec
-handling, sub-recipe recovery, and late-stage worktree cleanup resilience are
-always active.
+handling, and sub-recipe recovery require no opt-in. The planned finalization
+contract also provides no setting to bypass worktree validation or essential
+recovery.
 
 ## Related
 
 - [Auto Mode](../concepts/auto-mode.md) — autonomous agentic loop documentation
 - [Recipe Execution Flow](../concepts/recipe-execution-flow.md) — how recipes execute
 - [Run a Recipe](../howto/run-a-recipe.md) — step-by-step recipe usage
-- [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md) — full detail on late-stage fallback
+- [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md) — directory requirements by operation

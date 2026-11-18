@@ -1,8 +1,13 @@
-# Troubleshoot Worktree Behavior
+---
+title: Troubleshoot Worktree Behavior
+description: Diagnose worktree state and restore finalization context or hand off.
+last_updated: 2026-11-18
+review_schedule: as-needed
+owner: workflow-team
+doc_type: howto
+---
 
-> **Status: Shipped.** This guide uses only commands that exist today —
-> standard `git` plus `amplihack doctor`. There is no `amplihack worktree`
-> subcommand and this page does not pretend otherwise.
+# Troubleshoot Worktree Behavior
 
 Use this guide when amplihack appears to "lose state" between a main
 checkout and one of its git worktrees, or when power-steering settings
@@ -79,37 +84,48 @@ still resolves different runtime directories, that is a bug in
 `crates/amplihack-utils/src/worktree.rs`. Capture the output of
 `amplihack doctor` from each worktree and file an issue.
 
-### Symptom: recipe fails at step 19c/20b/21 after worktree removed
+### Symptom: finalization cannot resolve the recorded worktree
 
-**Cause (pre-#647):** Late-stage finalize steps used `${WORKTREE_SETUP_WORKTREE_PATH:?}`
-to `cd` into the worktree. If the worktree was already cleaned up (by the agent,
-a prior step, or manually), the `cd` failed and the recipe aborted — even though
-all actual work was pushed.
+**Cause:** The run's `worktree_setup` output is missing or malformed, or its
+recorded worktree is removed or unusable. An open PR does not prove that audit
+edits and local commits were published.
 
-**Current behavior:** Steps 19c and 21 use a resilient fallback chain:
-worktree path → `REPO_PATH` → `$(pwd)`. A `WARNING` is emitted to stderr on
-each fallback. Steps 20a and 20b stage or commit, so they never fall back to
-`REPO_PATH`: each prints a `WARNING` and skips (issue #1528). The recipe
-completes.
+**Diagnose:** Read the failing step's log and recovery record. Compare the
+recorded `worktree_setup.worktree_path` with `git worktree list` from a surviving
+checkout. Retain publication errors, scope exclusions, and any diagnostic report
+path for recovery.
 
-If you still see a hard-fail on these steps, verify you are running the latest
-recipe files:
+**Restore or hand off:**
 
-```sh
-grep -n 'WORKTREE_SETUP_WORKTREE_PATH:?' \
-  amplifier-bundle/recipes/workflow-pr-review.yaml \
-  amplifier-bundle/recipes/workflow-finalize.yaml
-```
+1. Restore the recorded task worktree and its intended branch, preserving audit
+   edits and local commits. If the JSON context was lost, have the parent recipe
+   owner restore the complete `worktree_setup` output for the run.
+2. Re-execute publication before readiness so missing commits can reach the
+   remote branch. Readiness must then validate the exact published HEAD from
+   that same worktree.
+3. If the worktree, audit work, or parent context cannot be restored, hand off
+   with the failing operation, recorded path, publication or scope errors, and
+   required owner action. Do not report successful finalization.
 
-Steps 15, 16, and 18c should still contain `:?` guards (they need the worktree).
-Steps 19c, 20a, 20b, and 21 should contain `-d` directory checks instead.
-Each of these steps gets the path from
-[`worktree_setup_path.sh`](../../amplifier-bundle/tools/worktree_setup_path.sh),
-which reads only `RECIPE_VAR_worktree_setup`, so exporting
-`WORKTREE_SETUP_WORKTREE_PATH` in your shell has no effect on where they run.
+Under the [planned finalization contract](../reference/workflow-finalize-publication.md),
+steps 20b and 21 enter essential recovery with stop-on-handoff; an unresolved
+handoff stops the run with exit `81`. Recovery performs no GitHub writes. It
+repairs supported local state and re-executes the original operation, which owns
+the push or validated readiness mutation.
 
-See [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md)
-for full detail.
+Exporting `WORKTREE_SETUP_WORKTREE_PATH` in a shell does not restore recipe
+context: [`worktree_setup_path.sh`](../../amplifier-bundle/tools/worktree_setup_path.sh)
+reads only the complete `RECIPE_VAR_worktree_setup` JSON object. An export in a
+recovery child cannot update its parent's context.
+
+Only read-only verification (step 19c) can warn and use `REPO_PATH` or the current
+directory. Step 20a may warn and skip, but publication must still run its own
+artifact checks. Publication cannot succeed by skipping, and readiness must
+not substitute another checkout. A failure here calls for context restoration
+or handoff, rather than assuming the recipe files are outdated.
+
+See [Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md)
+for directory requirements by operation.
 
 ## See also
 

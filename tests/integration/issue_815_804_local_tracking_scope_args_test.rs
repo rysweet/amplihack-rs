@@ -135,6 +135,10 @@ fn run_pr_ready(repo: &Path, bin_dir: &Path, stub: &Path, issue_env: &[(&str, &s
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
         .env("WORKFLOW_PR_SCOPE_HELPER", stub);
     clear_inherited_issue_env(&mut cmd);
+    cmd.env(
+        "RECIPE_VAR_worktree_setup",
+        serde_json::json!({"worktree_path":repo.canonicalize().unwrap()}).to_string(),
+    );
     for (k, v) in issue_env {
         cmd.env(k, v);
     }
