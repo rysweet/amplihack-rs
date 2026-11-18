@@ -1458,7 +1458,6 @@ fn run_loop_step_02_from(
            *'extract-field --field state_dir'*) printf '%s' /stub/state ;;\n\
            *'extract-field --field pr'*) printf '%s' 7 ;;\n\
            *'extract-field --field repo'*) printf '%s' \"$STUB_PRE_REPO\" ;;\n\
-           *'extract-field --field review_dir'*) printf '%s' \"$STUB_REVIEW_DIR\" ;;\n\
            *'extract-field --field base_branch'*) printf '%s' main ;;\n\
            *) printf 'stub amplihack: unexpected: %s\\n' \"$*\" >&2; exit 97 ;;\n\
          esac\n",
@@ -1489,7 +1488,6 @@ fn run_loop_step_02_from(
                 std::path::Path::new("/stub/wt")
             },
         )
-        .env("STUB_REVIEW_DIR", &launch)
         .env(
             preflight_var,
             r#"{"state_dir":"/stub/state","pr":"7","repo":"<stub>"}"#,
@@ -1524,19 +1522,17 @@ fn loop_step_02_refuses_before_the_loop_when_resolution_fails() {
     }
 }
 
-// Crusty round 1 on PR #1586: with `repo_path` set to the PR's linked
-// worktree, step-02 used to take the review dir from `pwd` after entering
-// `repo_path`, so the review dir WAS the PR worktree and the loop preflight
-// refused UNTRUSTED_REVIEW_DIR before round 1. The review dir is now a private
-// generation allocated from the PR worktree (#2096), never the PR worktree
-// itself and never the launch checkout.
+// Crusty round 1 on PR #1586: `repo_path` is the PR's linked worktree, and
+// since #2808 the reviewer runs there. The loop preflight no longer resolves a
+// separate directory for it; what it still refuses is a round recipe that
+// resolves inside the reviewed tree, and a loop-owned context key arriving
+// through `--context`.
 
 // A main checkout with one commit and a linked worktree of it, under `root`.
 
-// Crusty round 3 on PR #1586, item 1: `review-dir` must not take its answer
-// from an inherited `GIT_DIR` (a git hook runs with one set, githooks(5)),
-// and the loop preflight must refuse a review dir in another repository,
-// whose `gh pr diff N` would read that repository's pull request N.
+// Crusty round 3 on PR #1586, item 1: the guard must not take its answer from
+// an inherited `GIT_DIR` (a git hook runs with one set, githooks(5)), whose
+// `gh pr diff N` would read another repository's pull request N.
 
 // Crusty round 3 on PR #1586, item 2: for a bare repository the resolver
 // answers the directory beside the bare git dir, which is no checkout.
@@ -1547,11 +1543,11 @@ fn loop_step_02_refuses_before_the_loop_when_resolution_fails() {
 // ---------------------------------------------------------------------------
 
 // The agent CLI loads AGENTS.md, CLAUDE.md and .claude hooks from its
-// working directory. Only the commit step (step-04) may start in the PR
-// worktree; the review, merge-ready assessment and next-action agents start
-// in the review generation's trusted launch dir (#2096), so the branch under
-// review never instructs the agent that decides whether it passes or when the
-// loop stops.
+// working directory. Since #2808 every round step starts in the PR worktree,
+// including the review and the merge-ready assessment. What keeps the branch
+// under review from instructing the agent that decides whether it passes is
+// the prompt's data-not-instructions rule and the guard's refusal of a round
+// recipe that resolves inside the reviewed tree, not a separate directory.
 
 /// The launch-side tools dir autodrive_loop.sh hands each round
 /// (`autodrive_launch_tools`): this checkout's amplifier-bundle/tools.

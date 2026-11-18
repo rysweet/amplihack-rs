@@ -1341,13 +1341,11 @@ fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
     if let Some(p) = &case.printed {
         fx.set("loop_stdout", p);
     }
-    let review = fx.root.join("review");
-    std::fs::create_dir_all(&review).unwrap();
     let preflight = json!({
         "should_run": "true", "pr": PR, "pr_url": "", "pr_state": "OPEN",
         "branch": "feat/issue-2575", "head_sha": SHA_A, "base_branch": "main",
         "base_sha": SHA_B, "state_dir": fx.state, "repo": fx.repo,
-        "review_dir": review, "reason": "fixture", "blockers": [], "attempts": []
+        "reason": "fixture", "blockers": [], "attempts": []
     })
     .to_string();
     let env = |c: &mut Command| {

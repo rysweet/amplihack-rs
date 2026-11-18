@@ -157,7 +157,6 @@ fn run_step(recipe: &str, step_id: &str, preflight_var: &str, context: &str) -> 
         "pr": "1570",
         // #1543: every preflight names the tree the loop measures.
         "repo": pr_worktree,
-        "review_dir": repo,
     })
     .to_string();
 

@@ -290,10 +290,9 @@ impl Drive {
             .env("REPO_PATH", &self.review)
             .env(
                 "RECIPE_VAR_crusty_loop_preflight",
-                // The #2329 preflight agent's contract includes the review dir.
+                // #2808: the preflight names the PR worktree the loop measures.
                 json!({
-                    "should_run":"true", "repo":self.repo, "pr":"7", "state_dir":self.state,
-                    "review_dir":self.review
+                    "should_run":"true", "repo":self.repo, "pr":"7", "state_dir":self.state
                 })
                 .to_string(),
             )

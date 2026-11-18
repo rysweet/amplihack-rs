@@ -21,7 +21,7 @@ const STAGED: &[u8] = b"prior staged content 2808\n";
 const UNTRACKED: &[u8] = b"prior untracked content 2808\n";
 const BINARY: &[u8] = b"\0\xff\x01binary working content 2808\0";
 const OUTSIDE: &[u8] = b"external symlink content must never be collected 2808\n";
-const ROUNDS: [(&str, &str, &str); 2] = [
+pub(super) const ROUNDS: [(&str, &str, &str); 2] = [
     (
         "autodrive-crusty-round",
         "step-02-crusty-review",
@@ -35,7 +35,7 @@ const ROUNDS: [(&str, &str, &str); 2] = [
 ];
 
 #[derive(Clone, Copy, Debug)]
-enum Mutation {
+pub(super) enum Mutation {
     None,
     Unstaged,
     Staged,
@@ -43,16 +43,20 @@ enum Mutation {
     Untracked,
     Head,
     Interrupted,
+    /// Edit a tracked file and add an untracked one.
+    TrackedAndUntracked,
+    /// Replace a tracked file with a symlink to a file outside the tree.
+    SymlinkOutside,
 }
 
 #[derive(Default)]
-struct Calls {
+pub(super) struct Calls {
     active: String,
-    reviewed: bool,
-    assessed: bool,
+    pub(super) reviewed: bool,
+    pub(super) assessed: bool,
     // Ordinary artifacts captured by the real pre-review steps, before the
     // reviewer runs. No fixture-defined manifest or new production API.
-    baseline: Vec<(PathBuf, Vec<u8>)>,
+    pub(super) baseline: Vec<(PathBuf, Vec<u8>)>,
 }
 
 struct Listener(Arc<Mutex<Calls>>);
@@ -147,6 +151,14 @@ impl Adapter for Agents<'_> {
                             "reviewer moved head",
                         ],
                     );
+                }
+                Mutation::TrackedAndUntracked => {
+                    fs::write(f.pr.join("pr-only"), b"reviewer tracked edit\n")?;
+                    fs::write(f.pr.join("reviewer-created"), b"reviewer secret-ish body\n")?;
+                }
+                Mutation::SymlinkOutside => {
+                    fs::remove_file(f.pr.join("pr-only"))?;
+                    symlink(f.temp.path().join("outside-target"), f.pr.join("pr-only"))?;
                 }
                 Mutation::Interrupted => {
                     fs::write(f.pr.join("tracked"), b"interrupted reviewer edit\n")?;
@@ -249,7 +261,7 @@ fn round_prefix(name: &str, stop: &str) -> Recipe {
     recipe
 }
 
-fn run(
+pub(super) fn run(
     f: &Fixture,
     spec: (&str, &str, &str),
     mutation: Mutation,

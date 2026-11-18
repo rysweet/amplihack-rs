@@ -11,6 +11,8 @@ mod fixture;
 mod real_runner;
 #[path = "issue_2808/review_rounds.rs"]
 mod review_rounds;
+#[path = "issue_2808/reviewer_side_effects.rs"]
+mod reviewer_side_effects;
 #[path = "issue_2808/round_records.rs"]
 mod round_records;
 

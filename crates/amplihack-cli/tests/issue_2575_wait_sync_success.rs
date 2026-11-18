@@ -608,13 +608,11 @@ fn failing_ci_at_an_unchanged_head_is_still_stuck() {
 // ===========================================================================
 
 fn loop_env(fx: &Fx, c: &mut Command) {
-    let review = fx.root.join("review");
-    std::fs::create_dir_all(&review).unwrap();
     let preflight = json!({
         "should_run": "true", "pr": PR, "pr_url": "", "pr_state": "OPEN",
         "branch": "feat/issue-2575", "head_sha": SHA_A, "base_branch": "main",
         "base_sha": SHA_B, "state_dir": fx.state, "repo": fx.repo,
-        "review_dir": review, "reason": "fixture", "blockers": [], "attempts": []
+        "reason": "fixture", "blockers": [], "attempts": []
     })
     .to_string();
     c.env("RECIPE_VAR_merge_loop_preflight", preflight)

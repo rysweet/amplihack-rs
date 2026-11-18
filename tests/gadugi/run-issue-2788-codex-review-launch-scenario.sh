@@ -221,7 +221,7 @@ jq -se --arg launch "$LAUNCH" '
 echo 'PASS: codex_context_review_assessor_and_decision_in_pr_worktree'
 jq -e --arg head "$HEAD_SHA" '
   .crusty_verdict == "CLEAN" and .reviewed_head_sha == $head and .head_sha == $head and
-  .commits_this_round == 0 and .concern_count == 0 and (has("review_generation") | not)
+  .commits_this_round == 0 and .concern_count == 0
 ' "$RECORD" >/dev/null || fail "clean_verdict_matches_reviewed_head (head $HEAD_SHA)"
 [ ! -s "$RECORD.findings" ] && [ ! -e "$RECORD.minor" ] && [ ! -e "$RECORD.severity" ] ||
   fail 'clean_verdict_matches_reviewed_head: unexpected findings, minor or severity sidecar'

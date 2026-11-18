@@ -42,7 +42,6 @@ fn round_records_keep_reviewed_and_resulting_heads_without_generation_binding() 
         assert_eq!(value["head_sha"], resulting_head);
         assert_eq!(value["commits_this_round"], u8::from(made_commit));
         assert_eq!(value["crusty_verdict"], verdict);
-        assert!(value.get("review_generation").is_none());
         // Neither optional sidecar is needed to record a CLEAN review or a
         // fix round with a different resulting head. Existing completion tests
         // remain responsible for the writer's sealed complete/evaluate policy.
