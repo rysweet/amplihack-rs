@@ -13,6 +13,11 @@ pub(super) const LOG_POINTER_PREFIX: &str = "amplihack.recipe.log_pointer ";
 
 const SCHEMA_VERSION: u8 = 1;
 const MAX_POINTER_VALUE_BYTES: usize = 1024;
+/// Issue #2783: the longest `run_dir` a pointer line carries. A path is
+/// recorded whole or left out: a truncated path would name another folder,
+/// and `recipe guide` resolves a run by this value, so [`bounded_value`],
+/// which truncates at [`MAX_POINTER_VALUE_BYTES`], is never used for it.
+const MAX_POINTER_PATH_BYTES: usize = 4096;
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone)]
@@ -21,6 +26,11 @@ pub(super) struct RecipeRunCorrelation {
     recipe_name: String,
     cwd: String,
     worktree: Option<String>,
+    /// Issue #2783: the absolute path of this run's folder
+    /// (`<work root>/runs/<run folder>`), so `amplihack recipe guide` finds
+    /// the run from what it recorded at start, whatever the caller's
+    /// environment. Absent for a run that has no folder yet.
+    run_dir: Option<String>,
     branch: Option<String>,
     task_description: Option<String>,
     issue_number: Option<String>,
@@ -98,6 +108,7 @@ impl RecipeRunCorrelation {
             recipe_name,
             cwd,
             worktree,
+            run_dir: None,
             branch,
             task_description: first_context_value(context, &["task_description"]),
             issue_number: first_context_value(
@@ -126,6 +137,17 @@ impl RecipeRunCorrelation {
         self
     }
 
+    /// Record the run's own folder in every pointer (issue #2783). A path
+    /// over [`MAX_POINTER_PATH_BYTES`] bytes, or one that is not valid
+    /// UTF-8, is left out rather than shortened.
+    pub(super) fn with_run_location(mut self, dir: Option<&Path>) -> Self {
+        self.run_dir = dir
+            .and_then(Path::to_str)
+            .filter(|value| !value.is_empty() && value.len() <= MAX_POINTER_PATH_BYTES)
+            .map(str::to_string);
+        self
+    }
+
     pub(super) fn run_id(&self) -> &str {
         &self.run_id
     }
@@ -135,13 +157,25 @@ impl RecipeRunCorrelation {
     }
 
     pub(super) fn emit_early(&self) {
-        self.emit(LogPointerEvent {
+        self.emit(self.early_event())
+    }
+
+    /// The line [`Self::emit_early`] writes, without its newline. Factored
+    /// out so the record can be read without capturing stderr.
+    #[cfg(test)]
+    fn early_pointer_line(&self) -> String {
+        event_line(&self.early_event()).expect("the early pointer event serializes")
+    }
+
+    fn early_event(&self) -> LogPointerEvent<'_> {
+        LogPointerEvent {
             schema_version: SCHEMA_VERSION,
             event: "early",
             run_id: &self.run_id,
             recipe_name: &self.recipe_name,
             cwd: &self.cwd,
             worktree: self.worktree.as_deref(),
+            run_dir: self.run_dir.as_deref(),
             branch: self.branch.as_deref(),
             task_description: self.task_description.as_deref(),
             issue_number: self.issue_number.as_deref(),
@@ -162,7 +196,7 @@ impl RecipeRunCorrelation {
             tree_id: None,
             reason: None,
             timestamp: timestamp(),
-        })
+        }
     }
 
     pub(super) fn emit_final(
@@ -212,6 +246,7 @@ impl RecipeRunCorrelation {
             recipe_name: &self.recipe_name,
             cwd: &self.cwd,
             worktree: self.worktree.as_deref(),
+            run_dir: self.run_dir.as_deref(),
             branch: self.branch.as_deref(),
             task_description: self.task_description.as_deref(),
             issue_number: self.issue_number.as_deref(),
@@ -258,13 +293,25 @@ impl RecipeRunCorrelation {
     }
 
     fn emit(&self, event: LogPointerEvent<'_>) {
-        match serde_json::to_string(&event) {
-            Ok(payload) => {
-                let _ = writeln!(io::stderr(), "{LOG_POINTER_PREFIX}{payload}");
+        match event_line(&event) {
+            Some(line) => {
+                let _ = writeln!(io::stderr(), "{line}");
             }
-            Err(error) => {
-                tracing::warn!(%error, "failed to serialize recipe log pointer");
+            None => {
+                tracing::warn!("failed to serialize recipe log pointer");
             }
+        }
+    }
+}
+
+/// One `amplihack.recipe.log_pointer` line, without its newline. `None` when
+/// the event cannot be serialized, which is reported by the caller.
+fn event_line(event: &LogPointerEvent<'_>) -> Option<String> {
+    match serde_json::to_string(event) {
+        Ok(payload) => Some(format!("{LOG_POINTER_PREFIX}{payload}")),
+        Err(error) => {
+            tracing::warn!(%error, "failed to serialize recipe log pointer");
+            None
         }
     }
 }
@@ -323,6 +370,9 @@ struct LogPointerEvent<'a> {
     cwd: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     worktree: Option<&'a str>,
+    /// Issue #2783: `<work root>/runs/<run folder>` of this run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_dir: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     branch: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
