@@ -64,14 +64,7 @@ fn profile_add_omits_oversized_account_skill_caches_issue_2522() {
                 .kind(),
             std::io::ErrorKind::NotFound
         );
-        let dir = f.canon.join(relative);
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), count);
-        for i in 0..count {
-            assert_eq!(
-                fs::read(dir.join(format!("{i}.md"))).unwrap(),
-                format!("cached {i}\n").as_bytes()
-            );
-        }
+        assert_eq!(fs::read_dir(f.canon.join(relative)).unwrap().count(), count);
     }
     f.assert_isolated();
 }

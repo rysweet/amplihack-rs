@@ -573,6 +573,58 @@ fn is_excluded_shared_path(relative: &Path) -> bool {
     relative == Path::new("skills/synced") || relative == Path::new("skills/.trash")
 }
 
+/// The copy budget is aggregate across the allowlisted shared directories, so
+/// the directory holding the entry that overruns it is usually not the
+/// directory that spent it, and within one directory it is decided by
+/// `readdir` order. The budget therefore charges each entry to the top-level
+/// shared folder being walked and reports every folder's own count.
+#[derive(Default)]
+struct CopyBudget {
+    counted: usize,
+    /// `(folder, entries charged)`, in `SHARED_ASSET_DIRS` order.
+    folders: Vec<(&'static str, usize)>,
+}
+
+impl CopyBudget {
+    /// Starts charging to one of the allowlisted shared directories.
+    fn enter(&mut self, folder: &'static str) {
+        self.folders.push((folder, 0));
+    }
+
+    /// Charges one directory entry; fails once the aggregate budget is spent.
+    fn charge(&mut self) -> Result<(), ProfileError> {
+        self.counted += 1;
+        if let Some((_, count)) = self.folders.last_mut() {
+            *count += 1;
+        }
+        if self.counted > MAX_COPY_ENTRIES {
+            return Err(self.exceeded());
+        }
+        Ok(())
+    }
+
+    /// Names every shared folder that charged entries, with its count. The
+    /// walk stops at the limit, so the folder being walked when it stopped may
+    /// hold more than its count; folders already walked hold exactly theirs.
+    /// The names come from `SHARED_ASSET_DIRS`, never from the source tree, so
+    /// no source-controlled text reaches the diagnostic.
+    fn exceeded(&self) -> ProfileError {
+        let counts: Vec<String> = self
+            .folders
+            .iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(folder, count)| format!("{folder:?} {count}"))
+            .collect();
+        if counts.is_empty() {
+            return ProfileError::SharedAssetLimit(format!("more than {MAX_COPY_ENTRIES} entries"));
+        }
+        ProfileError::SharedAssetLimit(format!(
+            "more than {MAX_COPY_ENTRIES} entries; per folder: {}",
+            counts.join(", ")
+        ))
+    }
+}
+
 /// Unix: the source root is opened once with no-follow and every later open is
 /// relative to that descriptor, so a root swapped for a symlink afterwards is
 /// never followed. Only the final component of `source` is no-follow; symlinked
@@ -585,9 +637,10 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
     #[cfg(test)]
     test_hook::fire_after_root_anchor(source);
 
-    let mut entries = 0usize;
+    let mut budget = CopyBudget::default();
     for name in SHARED_ASSET_DIRS {
-        copy_allowlisted_tree(&root, name, &destination.join(name), 0, &mut entries)?;
+        budget.enter(name);
+        copy_allowlisted_tree(&root, name, &destination.join(name), 0, &mut budget)?;
     }
     let dst = fdwalk::open_dir(libc::AT_FDCWD, destination)?
         .ok_or_else(|| ProfileError::SymlinkRefused(destination.display().to_string()))?;
@@ -602,6 +655,18 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
 
 #[cfg(not(unix))]
 fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileError> {
+    portable_seed_shared_assets(source, destination)
+}
+
+/// Non-Unix targets seed with this path-based walker instead of the
+/// descriptor-relative one above. No CI target builds for a non-Unix platform,
+/// so it is also compiled under `cfg(test)` on Unix and exercised there by
+/// `tests_seed`; otherwise nothing in the project would compile it at all.
+#[cfg(any(not(unix), test))]
+pub(super) fn portable_seed_shared_assets(
+    source: &Path,
+    destination: &Path,
+) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
         Ok(meta) if meta.file_type().is_symlink() => {
             return Err(ProfileError::SymlinkRefused(source.display().to_string()));
@@ -616,14 +681,15 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
         Err(error) => return Err(error.into()),
     }
 
-    let mut entries = 0usize;
+    let mut budget = CopyBudget::default();
     for name in SHARED_ASSET_DIRS {
-        copy_allowlisted_tree(
+        budget.enter(name);
+        portable_copy_allowlisted_tree(
             &source.join(name),
             &destination.join(name),
             Path::new(name),
             0,
-            &mut entries,
+            &mut budget,
         )?;
     }
     for name in SHARED_ASSET_FILES {
@@ -637,13 +703,13 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
 
 /// Copies only regular files and directories. Symlinks and special files are
 /// skipped so shared assets cannot pull credentials or arbitrary paths in.
-#[cfg(not(unix))]
-fn copy_allowlisted_tree(
+#[cfg(any(not(unix), test))]
+fn portable_copy_allowlisted_tree(
     source: &Path,
     destination: &Path,
     shown: &Path,
     depth: usize,
-    entries: &mut usize,
+    budget: &mut CopyBudget,
 ) -> Result<(), ProfileError> {
     if depth > MAX_COPY_DEPTH {
         return Err(ProfileError::SharedAssetLimit(format!(
@@ -664,17 +730,18 @@ fn copy_allowlisted_tree(
         if is_excluded_shared_path(&path) {
             continue;
         }
-        *entries += 1;
-        if *entries > MAX_COPY_ENTRIES {
-            return Err(ProfileError::SharedAssetLimit(format!(
-                "more than {MAX_COPY_ENTRIES} entries while copying shared folder {shown:?}"
-            )));
-        }
+        budget.charge()?;
         let source_path = entry.path();
         let destination_path = destination.join(&name);
         let kind = entry.file_type()?;
         if kind.is_dir() {
-            copy_allowlisted_tree(&source_path, &destination_path, &path, depth + 1, entries)?;
+            portable_copy_allowlisted_tree(
+                &source_path,
+                &destination_path,
+                &path,
+                depth + 1,
+                budget,
+            )?;
         } else if kind.is_file() {
             copy_regular_file(&source_path, &destination_path)?;
         }
@@ -691,7 +758,7 @@ fn copy_allowlisted_tree(
     name: &str,
     destination: &Path,
     depth: usize,
-    entries: &mut usize,
+    budget: &mut CopyBudget,
 ) -> Result<(), ProfileError> {
     use std::os::fd::AsRawFd;
     let Some(src) = fdwalk::open_dir(root.as_raw_fd(), Path::new(name))? else {
@@ -700,7 +767,7 @@ fn copy_allowlisted_tree(
     private_dir_builder().create(destination)?;
     let dst = fdwalk::open_dir(libc::AT_FDCWD, destination)?
         .ok_or_else(|| ProfileError::SymlinkRefused(destination.display().to_string()))?;
-    fdwalk::copy_dir(&src, &dst, Path::new(name), depth, entries)
+    fdwalk::copy_dir(&src, &dst, Path::new(name), depth, budget)
 }
 
 #[cfg(all(unix, test))]
@@ -757,7 +824,7 @@ pub(super) mod test_hook {
 
 #[cfg(unix)]
 pub(super) mod fdwalk {
-    use super::{MAX_COPY_DEPTH, MAX_COPY_ENTRIES, ProfileError};
+    use super::{CopyBudget, MAX_COPY_DEPTH, ProfileError};
     use std::ffi::{CString, OsStr, OsString};
     use std::fs::File;
     use std::io::Read;
@@ -936,7 +1003,7 @@ pub(super) mod fdwalk {
         dst: &OwnedFd,
         shown: &Path,
         depth: usize,
-        entries: &mut usize,
+        budget: &mut CopyBudget,
     ) -> Result<(), ProfileError> {
         if depth > MAX_COPY_DEPTH {
             return Err(ProfileError::SharedAssetLimit(format!(
@@ -948,12 +1015,7 @@ pub(super) mod fdwalk {
             if super::is_excluded_shared_path(&path) {
                 continue;
             }
-            *entries += 1;
-            if *entries > MAX_COPY_ENTRIES {
-                return Err(ProfileError::SharedAssetLimit(format!(
-                    "more than {MAX_COPY_ENTRIES} entries while copying shared folder {shown:?}"
-                )));
-            }
+            budget.charge()?;
             let kind = match file_type(src.as_raw_fd(), &name) {
                 Ok(k) => k,
                 Err(e) if skippable(&e) => continue,
@@ -965,7 +1027,7 @@ pub(super) mod fdwalk {
             #[cfg(test)]
             super::test_hook::fire(&path);
             if kind == libc::S_IFDIR {
-                copy_subdir(src, dst, &name, &path, depth, entries)?;
+                copy_subdir(src, dst, &name, &path, depth, budget)?;
             } else {
                 copy_file(src, dst, &name)?;
             }
@@ -979,7 +1041,7 @@ pub(super) mod fdwalk {
         name: &OsStr,
         path: &Path,
         depth: usize,
-        entries: &mut usize,
+        budget: &mut CopyBudget,
     ) -> Result<(), ProfileError> {
         let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_DIRECTORY;
         let child = match openat(src.as_raw_fd(), name, flags, 0) {
@@ -993,7 +1055,7 @@ pub(super) mod fdwalk {
             return Err(std::io::Error::last_os_error().into());
         }
         let out = openat(dst.as_raw_fd(), name, flags, 0)?;
-        copy_dir(&child, &out, path, depth + 1, entries)
+        copy_dir(&child, &out, path, depth + 1, budget)
     }
 
     fn copy_file(src: &OwnedFd, dst: &OwnedFd, name: &OsStr) -> Result<(), ProfileError> {
@@ -1031,7 +1093,7 @@ pub(super) mod fdwalk {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(any(not(unix), test))]
 fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
@@ -1039,7 +1101,7 @@ fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileErr
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     }
-    let mut input = open_source_nofollow(source)?;
+    let input = open_source_nofollow(source)?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -1052,7 +1114,7 @@ fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileErr
 }
 
 /// Best-effort on non-Unix: no descriptor-relative open is available.
-#[cfg(not(unix))]
+#[cfg(any(not(unix), test))]
 fn open_source_nofollow(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -1076,7 +1138,7 @@ fn open_source_nofollow(path: &Path) -> std::io::Result<fs::File> {
     options.open(path)
 }
 
-#[cfg(not(unix))]
+#[cfg(any(not(unix), test))]
 fn copy_filtered_settings(source: &Path, destination: &Path) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}

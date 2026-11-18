@@ -3654,11 +3654,11 @@ Rules:
 
 - `add` omits exactly `skills/synced` (Claude Code's per-account skill cache)
   and `skills/.trash` (deleted skill state), relative to `$HOME/.claude`.
-  These paths are excluded on every platform before inspecting their entries,
+  Both walkers skip these paths before examining their type, opening them,
   creating destination entries, descending or counting towards the copy limit,
-  regardless of their filesystem type. Neither excluded entry nor any of its
-  descendants consumes the budget. Their source contents remain intact.
-  Claude Code syncs account skills again for each login.
+  so neither an excluded entry nor any of its descendants consumes the budget.
+  Their source contents remain intact; Claude Code syncs account skills again
+  for each login.
 - Exclusions use exact, case-sensitive path components. User-owned skills
   continue to be copied, with their file contents preserved. Names elsewhere,
   including `agents/synced`, `skills/custom/.trash` and `skills/custom/synced`,
@@ -3757,12 +3757,19 @@ Rules:
   budget is shared across directories, rather than reset for each directory,
   and counts directory entries as well as files. More than 5,000 entries beneath
   `skills/synced` alone therefore do not prevent profile creation; more than
-  5,000 included entries still do. An entry-limit error names the containing
-  folder where the excess entry was encountered, relative to `$HOME/.claude`,
-  for example `more than 5000 entries while copying shared folder "skills/custom"`.
-  Folder names are quoted and control characters are escaped so they cannot
-  inject diagnostic lines or terminal control sequences.
-  Special files are skipped without being opened, so a FIFO cannot block the copy.
+  5,000 included entries still do.
+- An entry-limit error reports what each allowlisted directory charged against
+  the budget, for example
+  `more than 5000 entries; per folder: "agents" 2501, "commands" 2500`.
+  Because the budget is aggregate, the directory holding the entry that
+  overruns it is usually not the directory that spent it, so the error names
+  every directory that contributed rather than that one. The copy stops at the
+  limit, so the last directory listed may hold more entries than it was
+  charged; the earlier ones hold exactly their count. The names come from the
+  allowlist, never from the source tree, so no name out of `$HOME/.claude`
+  reaches the message.
+- Special files are skipped without being opened, so a FIFO cannot block the
+  copy.
 - Excluded entirely: `.credentials.json`, `.claude.json`, `history*`,
   `sessions`, `todos`, `statsig`, `shell-snapshots`, `ide`,
   and every other entry not on the allowlists (so plugins and MCP server
