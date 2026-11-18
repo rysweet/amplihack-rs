@@ -427,9 +427,11 @@ Repository discovery and inspection carry the caller's deadline through nested
 repositories, backing dependencies, execution-storage callbacks and target
 removal. Checks during traversal and between inspection operations preserve the
 candidate if the remaining budget expires. Target inspection examines the
-actual destination while its existing Cargo locks are held. No callback starts
-a fresh budget. An already-running Git command or filesystem operation can run
-past the deadline; it is not a wall-clock upper bound.
+actual destination while its existing Cargo locks are held. Reclamation accepts
+closures that capture the caller's deadline; stored checkout callbacks retain
+their function-pointer interface. No callback starts a fresh budget. An
+already-running Git command or filesystem operation can run past the deadline;
+it is not a wall-clock upper bound.
 
 Execution storage uses a separate exclusive, blocking lock on the `exec/`
 directory when claiming or reclaiming stable storage. Preparation can reach

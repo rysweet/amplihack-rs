@@ -146,7 +146,7 @@ impl Fx {
         links: &LinkRoots,
         allow_dangling: bool,
     ) -> Result<(), RemoveError> {
-        remove(path, expected, &self.roots(), links, allow_dangling)
+        remove(path, expected, &self.roots(), links, allow_dangling, None)
     }
 
     /// `<parent>/<name>` linked the way the host cargo wrapper links it: to

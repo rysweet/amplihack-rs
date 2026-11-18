@@ -3,10 +3,9 @@
 //! while it holds work.
 //!
 //! Contract:
-//! - `pub(crate) type HoldsWork = fn(&Path) -> Option<String>`, passed in by
-//!   the caller as `OwnerEnded` is; this module does not depend on cleanup;
-//! - `fn live_dependant_with(stable: &Path, holds_work: HoldsWork, limit:
-//!   usize) -> Result<Option<String>>` gives the reason the storage is kept,
+//! - Inspection accepts callbacks, including closures carrying the caller's
+//!   inspection budget; this module does not depend on cleanup;
+//! - `live_dependant_with` gives the reason the storage is kept,
 //!   or `None`:
 //!   - a registered worktree outside `stable` that still exists gives
 //!     `durable worktree <path> still uses its repository`, as before;
@@ -68,6 +67,31 @@ fn a_worktree_inside_the_storage_that_holds_work_keeps_it() {
         live_dependant_with(&stable, never, 64).unwrap(),
         None,
         "a worktree inside the storage with no work does not keep it"
+    );
+}
+
+#[test]
+fn dependency_inspection_preserves_when_the_callers_budget_is_exhausted() {
+    let (_tmp, stable) = storage();
+    let tree = stable.join("checkout");
+    register(&stable, "primary", &tree);
+    let error = repository_dependant(
+        &stable,
+        &stable.join("repository.git"),
+        never,
+        Some(Instant::now()),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("deadline"), "{error:#}");
+    assert!(tree.join(".git").is_file());
+
+    let reason = "caller inspection could not finish".to_string();
+    let kept = live_dependant_with(&stable, |_| Some(reason.clone()), 64).unwrap();
+    assert_eq!(kept, Some(format!("worktree {tree:?} inside it {reason}")));
+    assert_eq!(
+        repository_dependant(&stable, &stable.join("repository.git"), never, None).unwrap(),
+        None,
+        "complete inspection can establish disposability without a deadline"
     );
 }
 
@@ -134,7 +158,7 @@ fn a_worktree_outside_the_storage_keeps_it_whatever_it_holds() {
         ))
     );
     assert_eq!(
-        repository_dependant(&stable, &stable.join("repository.git"), never).unwrap(),
+        repository_dependant(&stable, &stable.join("repository.git"), never, None).unwrap(),
         Some(format!(
             "durable worktree {} still uses its repository",
             durable.display()

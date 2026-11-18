@@ -12,8 +12,7 @@ use super::eligibility::{
     run_has_ended, run_is_active,
 };
 use super::git_work::{
-    END_OF_RUN_DEADLINE, GIT_TIMEOUT, WALK_LIMIT, folder_work, git_common_dir, printable,
-    work_inside,
+    END_OF_RUN_DEADLINE, GIT_TIMEOUT, WALK_LIMIT, git_common_dir, printable, work_inside,
 };
 use super::run_dir::{
     CLEANUP_RECORD, OWNED_PATHS, OwnedKind, OwnedPath, RUN_JSON, RUN_SCHEMA_VERSION, RunReport,
@@ -1172,7 +1171,9 @@ impl Collector<'_> {
                     )
                 })
             } else {
-                exec_storage::inspect(&path, run_has_ended, folder_work)
+                exec_storage::inspect(&path, run_has_ended, |path| {
+                    work_inside(path, self.s.deadline)
+                })
             };
             match verdict {
                 Ok(exec_storage::Verdict::Absent) => {}
@@ -1672,7 +1673,7 @@ fn worktree_target_entries(
             continue;
         }
         out.push(
-            match target_remove::remove(&path, &shape, roots, links, true) {
+            match target_remove::remove(&path, &shape, roots, links, true, settings.deadline) {
                 Ok(()) => {
                     tracing::info!(
                         path = %path.display(),

@@ -14,7 +14,7 @@
 //! - `struct Policy { deadline: Option<Instant>, walk_limit: usize,
 //!   tree_limit: usize }` and
 //!   `fn work_inside_with(folder: &Path, policy: &Policy) -> Option<String>`;
-//! - `pub(crate) fn tree_work(tree: &Path) -> Option<String>`: the bare reason
+//! - `pub(crate) fn tree_work(tree: &Path, deadline: Option<Instant>) -> Option<String>`: the bare reason
 //!   for one tree (`has uncommitted changes`, ...);
 //! - `pub(crate) fn printable(text: &str) -> String`: C0, C1 and DEL escaped;
 //! - a reason about a tree is `git tree {tree:?} {reason}`.
@@ -482,7 +482,7 @@ fn a_corrupt_index_reports_inspection_failure_instead_of_uncommitted_changes() {
     assert!(crate::commands::hygiene::cleanup::git_has_dirty_state(
         &work
     ));
-    let reason = tree_work(&work).expect("failed status inspection must preserve the tree");
+    let reason = tree_work(&work, None).expect("failed status inspection must preserve the tree");
     assert!(
         reason.contains("cannot") && reason.contains("index"),
         "preservation must identify the Git inspection failure: {reason}"
@@ -594,17 +594,17 @@ fn tree_work_gives_the_bare_reason_for_one_tree() {
     let (origin, clone, folder) = outside_and_folder(&root);
 
     let clean = clean_pushed_worktree(&clone, &folder.join("clean"), "clean");
-    assert_eq!(tree_work(&clean), None);
+    assert_eq!(tree_work(&clean, None), None);
 
     let dirty = linked_worktree(&clone, &folder.join("dirty"), "dirty");
     make_dirty(&dirty);
-    assert_eq!(tree_work(&dirty), Some(DIRTY.to_string()));
+    assert_eq!(tree_work(&dirty, None), Some(DIRTY.to_string()));
 
     let no_upstream = linked_worktree(&clone, &folder.join("local"), "local");
     commit(&no_upstream, "local.txt");
-    assert_eq!(tree_work(&no_upstream), Some(NO_UPSTREAM.to_string()));
+    assert_eq!(tree_work(&no_upstream, None), Some(NO_UPSTREAM.to_string()));
 
     let ahead = clone_of(&origin, &folder.join("ahead"));
     commit(&ahead, "ahead.txt");
-    assert_eq!(tree_work(&ahead), Some(AHEAD.to_string()));
+    assert_eq!(tree_work(&ahead, None), Some(AHEAD.to_string()));
 }

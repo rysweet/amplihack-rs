@@ -534,6 +534,7 @@ pub(super) fn remove(
     roots: &ManagedRoots,
     links: &LinkRoots,
     allow_dangling: bool,
+    deadline: Option<std::time::Instant>,
 ) -> Result<(), RemoveError> {
     let now = inspect(path, roots, links, true)?;
     if now != *expected {
@@ -552,7 +553,7 @@ pub(super) fn remove(
         Shape::Link { dest } => dest.clone(),
     };
     let held = lock_cargo_tree(&dir)?;
-    if let Some(reason) = crate::commands::cleanup::git_work::work_inside(&dir, None) {
+    if let Some(reason) = crate::commands::cleanup::git_work::work_inside(&dir, deadline) {
         return Err(Refusal::Preserved(reason).into());
     }
     // std::fs::remove_dir_all does not follow links inside the tree

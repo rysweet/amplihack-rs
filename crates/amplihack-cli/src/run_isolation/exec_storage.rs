@@ -31,6 +31,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 pub(crate) const CLAIM: &str = "claim.json";
 const TOMBSTONE_PREFIX: &str = ".reclaim-";
@@ -44,7 +45,9 @@ const INSIDE_WORKTREE_LIMIT: usize = 64;
 pub(crate) type OwnerEnded = fn(&Path) -> Result<bool>;
 
 /// Why repositories within a removal boundary hold work, or `None`
-/// (issue #2785). `Some` keeps the storage it lies in.
+/// (issue #2785). `Some` keeps the storage it lies in. Stored checkout callbacks
+/// use this function pointer; reclamation accepts closures so callers can carry
+/// their existing inspection deadline without depending on cleanup policy.
 pub(crate) type HoldsWork = fn(&Path) -> Option<String>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,7 +79,7 @@ pub(crate) fn is_tombstone(name: &OsStr) -> bool {
 pub(crate) fn inspect(
     stable: &Path,
     owner_ended: OwnerEnded,
-    holds_work: HoldsWork,
+    holds_work: impl Fn(&Path) -> Option<String> + Copy,
 ) -> Result<Verdict> {
     Ok(inspect_identity(stable, owner_ended, holds_work)?.0)
 }
@@ -90,7 +93,7 @@ pub(crate) fn claim(
     stable: &Path,
     owner_run_dir: &Path,
     owner_ended: OwnerEnded,
-    holds_work: HoldsWork,
+    holds_work: impl Fn(&Path) -> Option<String> + Copy,
 ) -> Result<Claim> {
     let parent = private_parent(stable)?;
     let tombstone = {
@@ -119,7 +122,7 @@ pub(crate) fn claim(
 pub(crate) fn reclaim(
     stable: &Path,
     owner_ended: OwnerEnded,
-    holds_work: HoldsWork,
+    holds_work: impl Fn(&Path) -> Option<String> + Copy,
 ) -> Result<Verdict> {
     let parent = stable
         .parent()
@@ -139,7 +142,7 @@ pub(crate) fn reclaim(
 pub(crate) fn remove_tombstone(
     tombstone: &Path,
     identity: Option<(u64, u64)>,
-    holds_work: HoldsWork,
+    holds_work: impl Fn(&Path) -> Option<String> + Copy,
 ) -> Result<Verdict> {
     check_tombstone(tombstone, identity)?;
     if let Some(reason) = holds_work(tombstone) {
@@ -181,7 +184,7 @@ fn check_tombstone(tombstone: &Path, identity: Option<(u64, u64)>) -> Result<()>
 fn inspect_identity(
     stable: &Path,
     owner_ended: OwnerEnded,
-    holds_work: HoldsWork,
+    holds_work: impl Fn(&Path) -> Option<String> + Copy,
 ) -> Result<(Verdict, Option<(u64, u64)>)> {
     let metadata = match fs::symlink_metadata(stable) {
         Ok(metadata) => metadata,
@@ -269,7 +272,7 @@ fn inspect_identity(
 fn move_aside(
     stable: &Path,
     owner_ended: OwnerEnded,
-    holds_work: HoldsWork,
+    holds_work: impl Fn(&Path) -> Option<String> + Copy,
 ) -> Result<(Verdict, Option<(PathBuf, (u64, u64))>)> {
     let (verdict, identity) = inspect_identity(stable, owner_ended, holds_work)?;
     let (Verdict::Reclaimable(_), Some(identity)) = (&verdict, identity) else {
@@ -283,7 +286,10 @@ fn move_aside(
 
 /// Why a worktree registered in `<stable>/repository.git` keeps `stable`, or
 /// `None`. See [`live_dependant_with`].
-fn live_dependant(stable: &Path, holds_work: HoldsWork) -> Result<Option<String>> {
+fn live_dependant(
+    stable: &Path,
+    holds_work: impl Fn(&Path) -> Option<String> + Copy,
+) -> Result<Option<String>> {
     live_dependant_with(stable, holds_work, INSIDE_WORKTREE_LIMIT)
 }
 
@@ -296,10 +302,16 @@ fn live_dependant(stable: &Path, holds_work: HoldsWork) -> Result<Option<String>
 /// prune.
 fn live_dependant_with(
     stable: &Path,
-    holds_work: HoldsWork,
+    holds_work: impl Fn(&Path) -> Option<String> + Copy,
     limit: usize,
 ) -> Result<Option<String>> {
-    dependant_at(stable, &stable.join("repository.git"), holds_work, limit)
+    dependant_at(
+        stable,
+        &stable.join("repository.git"),
+        holds_work,
+        limit,
+        None,
+    )
 }
 
 /// The existing dependency check for any repository metadata a directory
@@ -307,17 +319,32 @@ fn live_dependant_with(
 pub(crate) fn repository_dependant(
     folder: &Path,
     repository: &Path,
-    holds_work: HoldsWork,
+    holds_work: impl Fn(&Path) -> Option<String> + Copy,
+    deadline: Option<Instant>,
 ) -> Result<Option<String>> {
-    dependant_at(folder, repository, holds_work, INSIDE_WORKTREE_LIMIT)
+    dependant_at(
+        folder,
+        repository,
+        holds_work,
+        INSIDE_WORKTREE_LIMIT,
+        deadline,
+    )
 }
 
 fn dependant_at(
     stable: &Path,
     repository: &Path,
-    holds_work: HoldsWork,
+    holds_work: impl Fn(&Path) -> Option<String> + Copy,
     limit: usize,
+    deadline: Option<Instant>,
 ) -> Result<Option<String>> {
+    let check_deadline = || -> Result<()> {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            bail!("repository dependency inspection did not finish before the end-of-run deadline");
+        }
+        Ok(())
+    };
+    check_deadline()?;
     let admin = repository.join("worktrees");
     let entries = match fs::read_dir(&admin) {
         Ok(entries) => entries,
@@ -331,6 +358,7 @@ fn dependant_at(
         .with_context(|| format!("cannot resolve {}", stable.display()))?;
     let mut inside = Vec::new();
     for entry in entries {
+        check_deadline()?;
         let entry = entry.with_context(|| format!("cannot list {}", admin.display()))?;
         let record = entry.path().join("gitdir");
         let bytes = match read_record(&record) {
@@ -364,6 +392,7 @@ fn dependant_at(
         }
         inside.push(worktree);
     }
+    check_deadline()?;
     if inside.len() > limit {
         return Ok(Some(format!(
             "more than {limit} worktrees inside it to check"

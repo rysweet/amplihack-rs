@@ -11,9 +11,7 @@
     clippy::indexing_slicing
 )]
 
-use crate::commands::hygiene::cleanup::{
-    git_has_dirty_state, hardened_git, sanitized_stderr_short,
-};
+use crate::commands::hygiene::cleanup::{git_dirty_state, hardened_git, sanitized_stderr_short};
 use anyhow::{Result, bail};
 use std::fs;
 use std::io::ErrorKind;
@@ -42,8 +40,12 @@ struct Policy {
 
 impl Policy {
     fn past_deadline(&self) -> bool {
-        self.deadline.is_some_and(|d| Instant::now() >= d)
+        past_deadline(self.deadline)
     }
+}
+
+fn past_deadline(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|d| Instant::now() >= d)
 }
 
 // ----- the existing checks, moved from sweep.rs unchanged ----------------------
@@ -74,7 +76,10 @@ pub(crate) fn git_common_dir(dir: &Path) -> Option<PathBuf> {
 /// it count. When the upstream is gone (the branch was deleted after merge and
 /// pruned), commits reachable from any remote-tracking ref count as pushed, so
 /// a merged worktree is not kept for ever under a false "unpushed" reason.
-pub(crate) fn unpushed_reason(worktree: &Path) -> Option<String> {
+fn unpushed_reason(worktree: &Path, deadline: Option<Instant>) -> Option<String> {
+    if past_deadline(deadline) {
+        return Some(DEADLINE_REASON.to_string());
+    }
     let count = |range: &[&str]| -> Result<u64> {
         let mut command = hardened_git();
         command
@@ -95,6 +100,9 @@ pub(crate) fn unpushed_reason(worktree: &Path) -> Option<String> {
         .args(["rev-parse", "--verify", "--quiet", "@{upstream}"]);
     let has_upstream = crate::util::run_output_with_timeout(upstream, GIT_TIMEOUT)
         .is_ok_and(|output| output.status.success());
+    if past_deadline(deadline) {
+        return Some(DEADLINE_REASON.to_string());
+    }
     let (result, label) = if has_upstream {
         (count(&["@{upstream}..HEAD"]), "has unpushed commits")
     } else {
@@ -103,6 +111,9 @@ pub(crate) fn unpushed_reason(worktree: &Path) -> Option<String> {
             "has no upstream and commits on no remote branch",
         )
     };
+    if past_deadline(deadline) {
+        return Some(DEADLINE_REASON.to_string());
+    }
     match result {
         Ok(0) => None,
         Ok(_) => Some(label.to_string()),
@@ -130,12 +141,17 @@ pub(crate) fn printable(text: &str) -> String {
 // ----- one tree ----------------------------------------------------------------
 
 /// Why one repository must stay, with the reason made printable. Dirty-state
-/// inspection also preserves on Git errors, using the existing conservative helper.
-pub(crate) fn tree_work(tree: &Path) -> Option<String> {
-    if git_has_dirty_state(tree) {
-        return Some("has uncommitted changes".to_string());
+/// inspection also preserves on Git errors, without claiming files changed.
+pub(crate) fn tree_work(tree: &Path, deadline: Option<Instant>) -> Option<String> {
+    if past_deadline(deadline) {
+        return Some(DEADLINE_REASON.to_string());
     }
-    unpushed_reason(tree).map(|reason| printable(&reason))
+    match git_dirty_state(tree) {
+        Ok(true) => return Some("has uncommitted changes".to_string()),
+        Ok(false) => {}
+        Err(error) => return Some(printable(&format!("cannot inspect dirty state: {error:#}"))),
+    }
+    unpushed_reason(tree, deadline).map(|reason| printable(&reason))
 }
 
 /// Callback for callers that remove an entire storage boundary.
@@ -191,9 +207,9 @@ fn work_inside_with(folder: &Path, policy: &Policy) -> Option<String> {
         // Bare repositories have no working tree to dirty. Their commits
         // still go through the existing unpushed check, including its errors.
         let reason = if bare {
-            unpushed_reason(&tree)
+            unpushed_reason(&tree, policy.deadline)
         } else {
-            tree_work(&tree)
+            tree_work(&tree, policy.deadline)
         };
         if let Some(reason) = reason {
             return Some(format!("git tree {tree:?} {reason}"));
@@ -203,11 +219,17 @@ fn work_inside_with(folder: &Path, policy: &Policy) -> Option<String> {
                 "cannot inspect the backing repository of git tree {tree:?}"
             ));
         };
+        if policy.past_deadline() {
+            return Some(DEADLINE_REASON.to_string());
+        }
         if common.starts_with(&root) {
             // Removing metadata also affects registered worktrees outside the
             // directory. Reuse execution storage's existing dependency rule.
             match crate::commands::recipe::run::run_checkout::exec_storage::repository_dependant(
-                &root, &common, tree_work,
+                &root,
+                &common,
+                |tree| tree_work(tree, policy.deadline),
+                policy.deadline,
             ) {
                 Ok(Some(reason)) => return Some(reason),
                 Ok(None) => {}
@@ -217,7 +239,7 @@ fn work_inside_with(folder: &Path, policy: &Policy) -> Option<String> {
             }
         }
     }
-    None
+    policy.past_deadline().then(|| DEADLINE_REASON.to_string())
 }
 
 /// Every folder under `root`, `root` included, that holds a `.git` entry or
@@ -232,6 +254,9 @@ fn candidates(root: &Path, policy: &Policy) -> Result<Vec<(PathBuf, bool)>, Stri
     let mut seen = 0usize;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
+        if policy.past_deadline() {
+            return Err(DEADLINE_REASON.to_string());
+        }
         let entries = match fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(error) => return Err(cannot(&dir, error)),

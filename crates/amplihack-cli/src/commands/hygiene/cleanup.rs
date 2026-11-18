@@ -676,13 +676,22 @@ pub(crate) fn sanitized_stderr(stderr: &[u8]) -> String {
 }
 
 pub(crate) fn git_has_dirty_state(path: &Path) -> bool {
+    git_dirty_state(path).unwrap_or(true)
+}
+
+/// The existing status probe, with failures kept distinct from changed files.
+pub(crate) fn git_dirty_state(path: &Path) -> Result<bool> {
     let mut command = hardened_git();
     command.arg("-C").arg(path).arg("status").arg("--porcelain");
-    let output = run_output_with_timeout(command, GIT_COMMAND_TIMEOUT);
-    match output {
-        Ok(output) if output.status.success() => !output.stdout.is_empty(),
-        _ => true,
+    let output = run_output_with_timeout(command, GIT_COMMAND_TIMEOUT)
+        .context("git status could not complete")?;
+    if !output.status.success() {
+        bail!(
+            "git status failed: {}",
+            sanitized_stderr_short(&output.stderr)
+        );
     }
+    Ok(!output.stdout.is_empty())
 }
 
 pub(crate) fn git_has_unpushed_commits(path: &Path) -> bool {

@@ -148,15 +148,19 @@ pub(super) fn execute(
             if procs.in_use(target) {
                 refuse!("in use by a running process");
             }
+            let holds_work = |path: &Path| work_inside(path, settings.deadline);
             let verdict = if *tombstone {
-                exec_storage::remove_tombstone(target, None, folder_work)?
+                exec_storage::remove_tombstone(target, None, holds_work)?
             } else {
-                exec_storage::reclaim(target, run_has_ended, folder_work)?
+                exec_storage::reclaim(target, run_has_ended, holds_work)?
             };
             match verdict {
                 exec_storage::Verdict::Reclaimable(_) => Ok(()),
                 exec_storage::Verdict::Absent => refuse!("{} is already gone", target.display()),
-                exec_storage::Verdict::Kept(reason) => refuse!("{reason}"),
+                exec_storage::Verdict::Kept(reason) => Err(anyhow::Error::new(Refusal {
+                    reason,
+                    preserved: true,
+                })),
             }
         }
         Op::RemoveRunTmp { run_dir } => {
@@ -311,7 +315,7 @@ fn remove_run_target(
     if in_use_at.is_some_and(|p| procs.in_use(p)) {
         refuse!("in use by a running process");
     }
-    match target_remove::remove(&item.path, shape, roots, links, true) {
+    match target_remove::remove(&item.path, shape, roots, links, true, settings.deadline) {
         Ok(()) => {
             // (a) the run removed this worktree; (b) the checkout was gone.
             let event = if after_checkout_gone.is_some() {

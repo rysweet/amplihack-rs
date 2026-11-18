@@ -643,12 +643,13 @@ The folder itself stays at mode `0700`. The only change to modes is the
 owner access given back to its subfolders in the previous step. The run's exit
 status does not change.
 
-The search has a cooperative 120-second budget. The deadline is checked during
-discovery and between repository-inspection operations. An operation already
-started can run past it; Git commands retain their existing individual time
-limits. A folder whose search has not finished by the deadline is
+The search receives a cooperative 120-second budget. The deadline is checked
+during discovery and between repository-inspection operations. An operation
+already started can run past it; Git commands retain their existing individual
+time limits. When a deadline check finds that the budget has expired, the folder is
 kept, with the reason
 `search for git trees did not finish before the end-of-run deadline`.
+See [Limits on the search](#limits-on-the-search) for the cooperative deadline limits.
 
 When no tree holds work, the runner checks once more that the path is still
 the folder it holds open, as described in
@@ -801,7 +802,7 @@ In a reason each is preceded by `git tree "<path>"`:
 | Reason | What git reports |
 | --- | --- |
 | `has uncommitted changes` | `git status --porcelain` succeeds and prints changes, including untracked files. Untracked files are always listed, whatever `status.showUntrackedFiles` the repository sets. Ignored files are not listed and do not count. |
-| Dirty-state inspection error | The existing status command cannot complete successfully. The candidate is kept with the inspection failure; this does not establish that its contents are dirty. |
+| `cannot inspect dirty state: <git error>` | The existing status command fails. The candidate is kept with the inspection failure; this does not establish that its contents are dirty. |
 | `has unpushed commits` | The checked-out branch has commits its upstream does not have. |
 | `has no upstream and commits on no remote branch` | There is no upstream, as on a detached `HEAD`, and `HEAD` has commits that no remote-tracking branch has. |
 | `cannot check for unpushed commits: <git error>` | git could not count the commits. Control characters in the error are escaped. |
@@ -840,11 +841,12 @@ and `refs` entries. It continues below repository roots to discover
 independently nested repositories. It skips Git object storage and does not
 follow directory symlinks into unrelated paths.
 
-Every discovered repository uses the existing dirty-state command and
-`unpushed_reason` check, with their existing hardened Git settings. Dirty
+Every discovered repository uses the fallible result of the existing dirty-state
+command and the `unpushed_reason` check, with their existing hardened Git
+settings. Dirty
 state is checked first; an unpushed check follows when needed. Status failures
-remain distinguishable from reported changes without adding a second Git
-probe. Bare repositories have no working tree, so only the existing unpushed
+remain distinguishable from reported changes without adding another Git probe.
+Bare repositories have no working tree, so only the existing unpushed
 check applies to them; inspection errors preserve them. Cleanup does not fetch,
 introduce a second definition of Git state, or decide preservation from the
 location of a remote.
@@ -874,14 +876,14 @@ credentials or remote secrets. Control characters in diagnostics are escaped.
 | --- | --- | --- |
 | Entries walked per folder | 1,000,000 | The folder is kept: `search for git trees stopped after 1000000 entries`. |
 | Trees checked per folder | 64 | The folder is kept: `more than 64 git trees to check`. |
-| Time at the end of a run | About 120 seconds; in the sweep, what is left of the sweep's 120 seconds | The folder is kept for now: `search for git trees did not finish before the end-of-run deadline`. |
+| Deadline-aware searches at the end of a run | 120-second budget for runtime release; in the sweep, what is left of the sweep's 120 seconds | When a deadline check detects expiry, the folder is kept: `search for git trees did not finish before the end-of-run deadline`. An operation already started may finish past the deadline. |
 | Overall deadline in `amplihack cleanup` | None | Traversal, repository-count and individual Git-command limits still apply. |
 
 The caller's deadline is carried through discovery, Git-state inspection,
-backing-repository dependency checks, execution-storage inspection and target
+backing-repository dependency checks, execution-storage callbacks and target
 removal. Target inspection uses the actual destination while its Cargo locks
-remain held. Each operation uses the remaining budget rather than starting
-another 120-second budget.
+remain held. Each callback uses the caller's remaining budget rather than
+starting another 120-second budget.
 
 The deadline is cooperative, not a wall-clock upper bound. Checks during
 traversal and between inspection operations stop further inspection when the
