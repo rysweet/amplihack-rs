@@ -432,6 +432,34 @@ Each loop's generations live in one allocation directory,
 The manifest sits beside the checkout, not inside the storage, so it survives
 when the storage is removed.
 
+Every allocation directory, `review-<random>/`, and every storage directory,
+`review-generation-<random>/`, is created with mode `0700`, whatever the
+umask and whichever command makes it: `review-allocate`; `review-next`,
+including its legacy path, which allocates a new directory when it is given
+the main checkout; or `review-checkout`, which
+`autodrive_worktree_guard.sh private-review-dir` calls and which puts the
+storage beside the destination it is given. The mode is given when the
+directory is made, with no later `chmod`. The allocation directory sits
+directly in the drive's state dir, whose trust scan
+(`autodrive_untrusted_entries` in `autodrive_state.sh`) moves any entry there
+with a group or other write bit into an `untrusted-<time>` folder. A `0775`
+allocation directory made under umask `002` would be moved there, and the
+round would lose its review checkout (#2778). The checkouts and
+`repository.git` keep the modes the umask gives them: the trust scan reads
+only the state dir's direct entries, `repository.git` is always inside a
+`0700` storage directory, and within an allocation the `0700` allocation
+directory keeps other users out of the checkouts. A checkout that
+`review-checkout` makes at a destination outside an allocation has no such
+directory around it: its storage directory is still `0700`, but the checkout
+is protected only by the mode of the folder the caller chose.
+
+Folders that already exist are not changed, and no migration runs. A
+`review-<random>/` directory left at `0775` by a drive that stopped before
+this change is moved into an `untrusted-<time>` folder, with
+`WARNING: state-dir-untrusted-entries-set-aside`, by the next drive that uses
+the same state dir. It is not repaired. That drive's own allocation is made
+by `review-allocate` before the scan runs, at `0700`, so it stays in place.
+
 When `review-next` finds that the PR head has moved, it provisions the next
 generation, records it in the current generation's `children` and writes the
 manifest. It then retires the generation it replaced:
@@ -643,11 +671,12 @@ isolation test cannot pass on empty data.
 | `crates/amplihack-cli/tests/issue_2738_drive_shaped_layout.rs` | A clone holding a `worktrees/pr-N` worktree runs to a terminal outcome, and `git -C <main root> worktree list` still shows the worktree. |
 | `crates/amplihack-cli/tests/issue_2738_private_clone.rs` | A step that writes to the index works in a private clone whose path differs from the caller's checkout; the caller's index and working tree are unchanged. |
 | `crates/amplihack-cli/tests/issue_2677_private_main_root.rs`, module `private_main_root` of `issue_2096_execution_isolation` | A new-branch run launched from the caller's main checkout with `-c repo_path=.` and an issue number: `workflow_worktree_root.sh root` names the run's storage folder, `base` resolves from it to the same worktree path as from the checkout, and a folder that is not a work tree and not that answer still fails. |
-| `crates/amplihack-cli/tests/issue_2096_review_isolation.rs` | Review generations and both call sites of the three-pair storage check. `advance_retires_superseded_generation` covers the retirement call site: after `advance` the old checkout and storage are gone and the manifest says `retired`. `release_frees_storage_left_by_failed_retirement` covers the release call site, where a retirement that did not reach the removal leaves storage behind. `advance_destroys_nothing_when_the_recorded_launch_directory_is_replaced` covers the fourth recorded pair on the retirement path: a generation whose recorded `launch` directory was replaced keeps its checkout, its storage and `retired: false`, because the read that precedes retirement compares all four pairs and refuses first. `retired_generation_is_refused` covers the commands that refuse a retired generation, and `release_root_after_retirement_removes_everything` the release of the whole chain. On the release path, `retired_release_refuses_symlinked_storage` and `retired_release_refuses_substituted_storage` cover the storage directory's own identity, and five tests cover the recorded children: storage whose recorded children are absent, whose recorded children were replaced by a tree of the same shape, whose recorded child is a symlink, and whose `launch` alone is gone while the other two pairs still match (`retired_release_refuses_storage_whose_launch_child_is_gone`), are each refused with nothing deleted, while `retired_release_frees_storage_the_removal_never_reached` holds the opposite side, that a whole recorded tree a failed retirement left behind is still freed. The substitution tests do not wait for the kernel to reuse an inode: they give the substitute the recorded top-level pair outright, which is the most inode reuse can hand it. |
+| `crates/amplihack-cli/tests/issue_2096_review_isolation.rs` | Review generations and both call sites of the three-pair storage check. `advance_retires_superseded_generation` covers the retirement call site: after `advance` the old checkout and storage are gone and the manifest says `retired`. `release_frees_storage_left_by_failed_retirement` covers the release call site, where a retirement that did not reach the removal leaves storage behind. `advance_destroys_nothing_when_the_recorded_launch_directory_is_replaced` covers the fourth recorded pair on the retirement path: a generation whose recorded `launch` directory was replaced keeps its checkout, its storage and `retired: false`, because the read that precedes retirement compares all four pairs and refuses first. `retired_generation_is_refused` covers the commands that refuse a retired generation, and `release_root_after_retirement_removes_everything` the release of the whole chain. On the release path, `retired_release_refuses_symlinked_storage` and `retired_release_refuses_substituted_storage` cover the storage directory's own identity, and five tests cover the recorded children: storage whose recorded children are absent, whose recorded children were replaced by a tree of the same shape, whose recorded child is a symlink, and whose `launch` alone is gone while the other two pairs still match (`retired_release_refuses_storage_whose_launch_child_is_gone`), are each refused with nothing deleted, while `retired_release_frees_storage_the_removal_never_reached` holds the opposite side, that a whole recorded tree a failed retirement left behind is still freed. The substitution tests do not wait for the kernel to reuse an inode: they give the substitute the recorded top-level pair outright, which is the most inode reuse can hand it. `review_allocate_under_umask_0002_makes_folders_the_trust_scan_keeps` runs `internal review-allocate` in a child process under umask `002`: the allocation directory and its `review-generation-*` storage are both `0700`, and the shipped `autodrive_untrusted_entries <state> "$(id -u)" -print` prints nothing. |
 | `crates/amplihack-cli/tests/issue_2096_real_hooks.rs` | Pre-commit and push hooks run in the execution checkout. |
 | `crates/amplihack-git/tests/issue_2096_git_policy.rs` | Git environment and configuration policy. |
 | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` | Review generation checks, `REVIEW_DIR_CHANGED` and `REVIEW_DIR_UNSTAMPED`. |
 | `tests/issue_1437_autodrive_loop.sh` | The #1437 loop contract with review generations in place; the default case (`NOT_READY`, then `MERGE_READY`, ending `DONE`) also checks that `review-release` runs exactly once and that no round starts in the PR worktree or the main checkout. Failure cases are listed below. |
+| `tests/gadugi/run-issue-2778-umask-crusty-scenario.sh`, scenario `tests/gadugi/scenarios/issue-2778-crusty-loop-under-umask-0002.yaml` | The two calls of step-02 of `autodrive-crusty-loop.yaml`, in that order, under umask `002`: the binary's own `internal review-allocate`, then the shipped `autodrive_loop.sh`. `gh` and the agent CLIs are stubs, and the `amplihack recipe` entry point is a stub that runs a stand-in round; that round runs the shipped `autodrive_crusty_record.sh` and the binary's own `orch helper autodrive-completion-write`. Every scenario command runs under `env -i` with a temporary `HOME`. It prints `PASS:` or `FAIL:` for each of five cases (the allocation directory is `0700`; no `untrusted-*` folder in the state dir; the round saw the review checkout; the loop exits 0 with `crusty-latest.json` written; no unexpected command was called), then `ALL_CASES_PASSED` or `SCENARIO_FAILED`. It uses the binary named by `AMPLIHACK_2778_QA_BIN` when that is set; otherwise it builds the checkout's binary with `cargo build`, in the caller's environment, before the scenario starts. CI runs it in the `install-smoke` job with `AMPLIHACK_2778_QA_BIN="$(command -v amplihack)"`, the binary that job has just installed. |
 
 Every file under `crates/amplihack-cli/tests/` is a module of one test
 binary. The crate sets `autotests = false`, so a test file is compiled only
@@ -665,6 +694,7 @@ cargo test -p amplihack-cli --test cli_integration issue_2756_user_git_config::
 cargo test -p amplihack-git --test issue_2096_git_policy
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 bash tests/issue_1437_autodrive_loop.sh
+bash tests/gadugi/run-issue-2778-umask-crusty-scenario.sh
 ```
 
 ### Review commands in the loop test double

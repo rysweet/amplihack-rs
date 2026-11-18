@@ -1268,3 +1268,114 @@ fn retired_release_refuses_storage_whose_launch_child_is_gone() {
         "the record is retained for recovery"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2778: under umask 0002, `review-allocate` made its `review-*` folder
+// 0775. The drive's state-dir trust scan (`autodrive_untrusted_entries` in
+// autodrive_state.sh) rightly sets a group-writable entry aside, so the
+// Crusty loop's review checkout disappeared and the round failed. Every
+// folder allocate makes is 0700, whatever the umask.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn review_allocate_under_umask_0002_makes_folders_the_trust_scan_keeps() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
+    let f = Fixture::new();
+    let pr = pr_worktree(&f);
+    let state = private_state(&f);
+    let mut command =
+        crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
+    f.environment(&mut command);
+    command
+        .args(["internal", "review-allocate"])
+        .arg(&pr)
+        .arg(&state);
+    // SAFETY: the closure runs in the forked child before exec. It calls only
+    // umask(2), which is async-signal-safe, cannot fail, takes no lock and
+    // allocates nothing; it changes the child's umask and nothing else, so
+    // this test process keeps its own.
+    unsafe {
+        command.pre_exec(|| {
+            libc::umask(0o002);
+            Ok(())
+        });
+    }
+    let out = command.output().unwrap();
+    succeeds(&out);
+    let printed = String::from_utf8(out.stdout).unwrap();
+    let checkout = PathBuf::from(printed.trim());
+    assert!(
+        printed.lines().count() == 1 && checkout.is_dir(),
+        "review-allocate prints one checkout path: {printed:?}"
+    );
+
+    // Octal text, so a failure reads `0775`, not `509`.
+    let mode = |path: &Path| {
+        format!(
+            "{:04o}",
+            fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777
+        )
+    };
+    let allocations: Vec<PathBuf> = fs::read_dir(&state)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("review-"))
+        })
+        .collect();
+    assert_eq!(
+        allocations.len(),
+        1,
+        "one allocation folder directly in the state dir: {allocations:?}"
+    );
+    assert!(
+        checkout.starts_with(&allocations[0]),
+        "the checkout {} is inside the allocation {}",
+        checkout.display(),
+        allocations[0].display()
+    );
+    assert_eq!(
+        mode(&allocations[0]),
+        "0700",
+        "{} under umask 0002",
+        allocations[0].display()
+    );
+    let storage = storage_of(&checkout);
+    assert!(
+        storage
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("review-generation-")),
+        "{}",
+        storage.display()
+    );
+    assert_eq!(
+        mode(&storage),
+        "0700",
+        "{} under umask 0002",
+        storage.display()
+    );
+
+    // The shipped trust scan, as the loop runs it on its state dir, finds
+    // nothing to set aside: not the allocation, and nothing else allocate
+    // left directly in the state dir.
+    let scan = Command::new("bash")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .arg("-c")
+        .arg(r#". "$1/autodrive_state.sh" && autodrive_untrusted_entries "$2" "$(id -u)" -print"#)
+        .arg("_")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/tools"))
+        .arg(&state)
+        .output()
+        .unwrap();
+    succeeds(&scan);
+    assert_eq!(
+        String::from_utf8_lossy(&scan.stdout),
+        "",
+        "the trust scan sets these entries aside"
+    );
+}

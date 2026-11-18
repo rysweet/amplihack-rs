@@ -77,6 +77,12 @@ pub(crate) struct Spec {
     pub log: PathBuf,
     /// The private context file the run reads; removed when the run ends.
     pub context_file: PathBuf,
+    /// Issue #2778: the launching process's file-creation mask, which the
+    /// pane applies before it starts the run, so the run does not keep the
+    /// tmux server's. `None` (a spec from an older launcher) leaves the
+    /// pane's own mask in place.
+    #[serde(default)]
+    pub umask: Option<libc::mode_t>,
 }
 
 /// The line a pane writes to the log when the run cannot start.
@@ -96,8 +102,24 @@ pub(crate) struct Launch<'a> {
     pub agent_binary: &'a Resolution,
 }
 
+/// The process's file-creation mask. umask(2) can only be read by setting
+/// it, so this sets the strict 0o077 and puts the old value straight back.
+fn current_umask() -> libc::mode_t {
+    // SAFETY: umask(2) cannot fail and touches no memory. The mask is
+    // process-wide, but `launch` calls this before it starts any thread, and
+    // the value set for that moment is only ever stricter than the old one.
+    unsafe {
+        let old = libc::umask(0o077);
+        libc::umask(old);
+        old
+    }
+}
+
 /// Start the run in a new tmux session and print where it is.
 pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
+    // Issue #2778: read before anything else, while this process has a
+    // single thread; the pane applies it to the run.
+    let umask = current_umask();
     let tmux_ok = Command::new("tmux")
         .arg("-V")
         .stdin(Stdio::null())
@@ -139,6 +161,7 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
         env: child_env(request.agent_binary, &log),
         log: log.clone(),
         context_file: secrets.context.clone(),
+        umask: Some(umask),
     };
     create_private(&secrets.spec)?.write_all(&serde_json::to_vec(&spec)?)?;
 
@@ -496,6 +519,16 @@ pub(crate) fn run_detached_child(spec_path: &Path, log_path: &Path) -> Result<i3
         let _ = signal_hook::flag::register(signal, Arc::clone(&ignored));
     }
 
+    // Issue #2778: the run takes the launching shell's file-creation mask,
+    // not the one this pane inherited from the tmux server.
+    if let Some(mask) = spec.umask {
+        // SAFETY: umask(2) cannot fail and touches no memory. This process
+        // has no other thread yet (the output copier starts after the run),
+        // and from here on it only appends to its open log and removes
+        // files, so the new mask reaches nothing but the run it starts.
+        unsafe { libc::umask(mask & 0o777) };
+    }
+
     let (mut child, mut reader) = match start_run(&spec) {
         Ok(started) => started,
         Err(error) => {
@@ -760,12 +793,32 @@ mod tests {
             env: BTreeMap::new(),
             log: dir.path().join("log"),
             context_file: dir.path().join("context.json"),
+            umask: Some(0o022),
         };
         fs::write(&path, serde_json::to_vec(&spec).unwrap()).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(read_spec(&path).is_err());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(read_spec(&path).unwrap(), spec);
+    }
+
+    /// Issue #2778: a spec with no umask, as a launcher from before the field
+    /// existed writes it, is still read, and asks the pane for no umask, so
+    /// the pane keeps the one it has.
+    #[test]
+    fn a_spec_without_a_umask_is_read_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("spec.json");
+        let older = serde_json::json!({
+            "args": ["recipe"],
+            "cwd": dir.path(),
+            "env": {},
+            "log": dir.path().join("log"),
+            "context_file": dir.path().join("context.json"),
+        });
+        fs::write(&path, serde_json::to_vec(&older).unwrap()).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_spec(&path).unwrap().umask, None);
     }
 
     /// Issue #2582 (D9): the arguments a detached launch repeats in the pane
