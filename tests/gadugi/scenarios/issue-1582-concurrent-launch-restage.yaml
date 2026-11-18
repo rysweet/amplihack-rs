@@ -19,7 +19,8 @@ version: "1.0"
 config:
   timeout: 900000
 environment:
-  requires: []
+  requires:
+    - AMPLIHACK_1582_QA_BIN
 agents:
   - name: cli-agent
     type: cli
