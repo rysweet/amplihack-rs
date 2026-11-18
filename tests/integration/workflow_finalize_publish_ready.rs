@@ -1,6 +1,7 @@
 //! Issue #2787 TDD contracts. These execute Git, shipped tools and recipe
 //! commands; the fake gh accepts ready only after inspecting the bare remote.
 //! Shared with the standalone CI driver, with no new crate dependencies.
+#![cfg(unix)]
 
 #[path = "workflow_finalize_publish_ready_fixture.rs"]
 pub(crate) mod fixture;
@@ -43,8 +44,35 @@ pub fn unpushed_commit(f: &Fixture) {
 
 pub fn uncommitted_audit(f: &Fixture) {
     f.audit(false);
+    let runtime = f.pr.join(".claude/runtime");
+    fs::create_dir_all(runtime.join("logs")).unwrap();
+    fs::write(
+        runtime.join("logs/session.log"),
+        "workflow runtime output\n",
+    )
+    .unwrap();
     let before = f.head(&f.pr);
     success(f.publish());
+    assert!(
+        !runtime.exists(),
+        "publication must remove runtime artifacts"
+    );
+    assert!(f.git(&f.pr, &["ls-files", ".claude/runtime"]).is_empty());
+    assert!(
+        f.git(
+            &f.remote,
+            &[
+                "ls-tree",
+                "-r",
+                "--name-only",
+                &format!("refs/heads/{BRANCH}"),
+                "--",
+                ".claude/runtime",
+            ],
+        )
+        .is_empty(),
+        "runtime artifacts must not reach the remote branch"
+    );
     assert_ne!(f.head(&f.pr), before, "audit edits need a cleanup commit");
     assert_eq!(
         f.git(&f.pr, &["log", "-1", "--format=%s"]).trim(),
@@ -237,6 +265,47 @@ pub fn rejected_push_is_not_success(f: &Fixture) {
     let o = f.publish();
     assert!(!o.status.success(), "{}", show(&o));
     assert_eq!(f.remote_head(), prior);
+    f.assert_no_mutation();
+}
+
+pub fn rejected_commit_is_not_success(f: &Fixture) {
+    f.audit(false);
+    let local = f.head(&f.pr);
+    let remote = f.remote_head();
+    let hook = f.git(
+        &f.pr,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "hooks/pre-commit",
+        ],
+    );
+    executable(
+        Path::new(hook.trim()),
+        "#!/bin/sh\necho 'fixture commit rejected' >&2\nexit 42\n",
+    );
+    let o = f.publish();
+    assert!(!o.status.success(), "{}", show(&o));
+    let diagnostic = show(&o);
+    assert!(
+        diagnostic.contains("fixture commit rejected"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("ERROR: git commit failed"),
+        "{diagnostic}"
+    );
+    assert_eq!(f.head(&f.pr), local);
+    assert_eq!(f.remote_head(), remote);
+    assert_eq!(
+        fs::read_to_string(f.pr.join("audit.txt")).unwrap(),
+        "audit fix included\n"
+    );
+    assert_eq!(
+        f.git(&f.pr, &["diff", "--cached", "--name-only"]).trim(),
+        "audit.txt"
+    );
     f.assert_no_mutation();
 }
 
@@ -596,6 +665,7 @@ mod tests {
         invalid_worktree_never_falls_back,
         missing_worktree_reaches_publication_recovery,
         rejected_push_is_not_success,
+        rejected_commit_is_not_success,
         publication_recovery_reexecutes_after_local_repair,
         divergence_preserves_history,
         remote_fast_forward_keeps_audit,

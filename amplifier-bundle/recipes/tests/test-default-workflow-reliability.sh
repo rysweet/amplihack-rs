@@ -152,7 +152,7 @@ extract_step_command() {
 
 configure_identity() {
     local repo="$1"
-    git -C "${repo}" config user.email "test@example.invalid"
+    git -C "${repo}" config user.email "test@example.com"
     git -C "${repo}" config user.name "Recipe Reliability Test"
 }
 
@@ -1227,7 +1227,8 @@ cat "${STEP_TDD_CHECKPOINT}" "${REPO_ROOT}/amplifier-bundle/tools/workflow_check
 assert_commit_guard_static "workflow-tdd checkpoint-after-implementation" "${STEP_TDD_CHECKPOINT_WITH_HELPER}"
 assert_commit_guard_static "workflow-refactor-review checkpoint-after-review-feedback" "${STEP_REFACTOR_REVIEW_CHECKPOINT}"
 assert_commit_guard_static "workflow-pr-review step-18c review feedback commit" "${STEP_PR_REVIEW_FEEDBACK}"
-assert_commit_guard_static "workflow-finalize final cleanup commit" "${STEP_FINALIZE_CLEANUP}"
+# Finalize delegates publication to workflow_finalize_publish.sh; its dynamic
+# cases below verify the guard without requiring it to be inline in the YAML.
 
 assert_commit_guard_dynamic "workflow-tdd" "${STEP_TDD_CHECKPOINT}"
 assert_commit_guard_dynamic "workflow-refactor-review" "${STEP_REFACTOR_REVIEW_CHECKPOINT}"

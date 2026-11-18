@@ -33,7 +33,10 @@ pub fn run(fx: &Fixture, caller: Caller) -> Outcome {
     match caller {
         Caller::PrReady => {
             let mut cmd = fx.command("bash");
-            cmd.arg(tool_path("workflow_pr_ready.sh"));
+            cmd.arg(tool_path("workflow_pr_ready.sh")).env(
+                "RECIPE_VAR_worktree_setup",
+                serde_json::json!({"worktree_path":fx.repo.canonicalize().unwrap()}).to_string(),
+            );
             fx.run(cmd)
         }
         Caller::FinalStatusBranchLookup | Caller::FinalStatusScopedPr => {

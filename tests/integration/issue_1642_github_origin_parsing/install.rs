@@ -76,7 +76,10 @@ fn install_ships_the_helper_and_installed_callers_use_it() {
 
     let fx = Fixture::with_origin("https://evil.example#@github.com/o/r");
     let mut cmd = fx.command("bash");
-    cmd.arg(tools.join("workflow_pr_ready.sh"));
+    cmd.arg(tools.join("workflow_pr_ready.sh")).env(
+        "RECIPE_VAR_worktree_setup",
+        serde_json::json!({"worktree_path":fx.repo.canonicalize().unwrap()}).to_string(),
+    );
     let outcome = fx.run(cmd);
     assert!(
         !outcome.success() && fx.repo_gh_calls().is_empty(),

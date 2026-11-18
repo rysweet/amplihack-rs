@@ -354,6 +354,10 @@ fn default_workflow_chain_has_no_yaml_timeout_fields() {
     );
 }
 
+// Final publication is exercised through its extracted helper by the
+// workflow_finalize_publish_ready integration contracts (including hook
+// failures and aliases) and issue_1714_finalization_handoff (missing upstreams).
+// These checks retain coverage of the remaining inline commit paths.
 const SAFE_COMMIT_STEPS: &[(&str, &str)] = &[
     ("workflow-tdd.yaml", "checkpoint-after-implementation"),
     (
@@ -361,13 +365,10 @@ const SAFE_COMMIT_STEPS: &[(&str, &str)] = &[
         "checkpoint-after-review-feedback",
     ),
     ("workflow-pr-review.yaml", "step-18c-push-feedback-changes"),
-    ("workflow-finalize.yaml", "step-20b-push-cleanup"),
 ];
 
-const PUSHING_SAFE_COMMIT_STEPS: &[(&str, &str)] = &[
-    ("workflow-pr-review.yaml", "step-18c-push-feedback-changes"),
-    ("workflow-finalize.yaml", "step-20b-push-cleanup"),
-];
+const PUSHING_SAFE_COMMIT_STEPS: &[(&str, &str)] =
+    &[("workflow-pr-review.yaml", "step-18c-push-feedback-changes")];
 
 /// Issue #573: all remaining direct commit paths in the default workflow must
 /// use explicit, visible pre-commit handling rather than a bare `git commit`.

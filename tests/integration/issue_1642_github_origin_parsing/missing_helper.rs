@@ -88,6 +88,15 @@ fn run_script(
 ) -> Outcome {
     let mut cmd = fx.command("bash");
     cmd.arg(script).args(args);
+    if script
+        .file_name()
+        .is_some_and(|name| name == "workflow_pr_ready.sh")
+    {
+        cmd.env(
+            "RECIPE_VAR_worktree_setup",
+            serde_json::json!({"worktree_path":fx.repo.canonicalize().unwrap()}).to_string(),
+        );
+    }
     for (k, v) in envs {
         cmd.env(k, v);
     }

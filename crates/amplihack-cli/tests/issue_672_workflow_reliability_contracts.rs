@@ -677,6 +677,9 @@ fn issue_780_workflow_worktree_exports_one_runtime_root_to_child_flows() {
 
 #[test]
 fn issue_780_lifecycle_recipes_preflight_runtime_artifacts_before_sensitive_operations() {
+    // Final publication's extracted helper is covered behaviorally by
+    // workflow_finalize_publish_ready::uncommitted_audit: runtime artifacts
+    // must be removed before its cleanup commit reaches the remote.
     for (recipe_rel, step_id, sensitive_operation) in [
         (
             "amplifier-bundle/recipes/workflow-tdd.yaml",
@@ -707,11 +710,6 @@ fn issue_780_lifecycle_recipes_preflight_runtime_artifacts_before_sensitive_oper
             "amplifier-bundle/recipes/workflow-finalize.yaml",
             "step-20a-artifact-guard",
             "amplihack hygiene artifact-guard",
-        ),
-        (
-            "amplifier-bundle/recipes/workflow-finalize.yaml",
-            "step-20b-push-cleanup",
-            "git add",
         ),
         (
             "amplifier-bundle/recipes/workflow-finalize.yaml",

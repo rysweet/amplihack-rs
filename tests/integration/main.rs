@@ -26,7 +26,6 @@ mod investigation_workflow_decomposition;
 mod isolated_amplihack;
 #[path = "isolated_amplihack_scan.rs"]
 mod isolated_amplihack_scan;
-#[cfg(unix)]
 #[path = "workflow_finalize_publish_ready.rs"]
 mod workflow_finalize_publish_ready;
 // Issue #2658: the real-runner tests build or reuse recipe-runner-rs at the
