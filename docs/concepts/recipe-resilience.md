@@ -197,7 +197,7 @@ validate a different branch's HEAD.
 
 ### Directory access by operation
 
-The planned finalization contract distinguishes read-only verification from
+The finalization contract distinguishes read-only verification from
 publication and readiness:
 
 | Step | Phase | Missing or unusable worktree |
@@ -217,7 +217,7 @@ bare `WORKTREE_SETUP_WORKTREE_PATH` cannot replace that recorded context.
 
 ### Recovery preserves publication and identity checks
 
-Under the planned contract, publication and readiness use essential recovery
+Under the contract, publication and readiness use essential recovery
 with stop-on-handoff. Supported local repairs are followed by re-execution of
 the original operation. Recovery performs no GitHub writes: publication owns
 the push, and readiness owns the validated readiness mutation.
@@ -229,7 +229,7 @@ removal cannot turn unresolved publication or readiness into successful
 completion.
 
 See [Finalize Publication and PR Readiness](../reference/workflow-finalize-publication.md)
-for the planned contract and verification requirements, and
+for the contract and verification requirements, and
 [Troubleshoot Worktree Behavior](../howto/troubleshoot-worktree.md#symptom-finalization-cannot-resolve-the-recorded-worktree)
 for context-restoration and handoff guidance.
 
@@ -237,7 +237,7 @@ for context-restoration and handoff guidance.
 
 These features introduce no new configuration knobs. Branch sanitization,
 worktree base resolution, publish timeout-wrapper removal, optional design-spec
-handling, and sub-recipe recovery require no opt-in. The planned finalization
+handling, and sub-recipe recovery require no opt-in. The finalization
 contract also provides no setting to bypass worktree validation or essential
 recovery.
 

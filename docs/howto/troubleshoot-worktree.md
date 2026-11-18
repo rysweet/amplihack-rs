@@ -107,7 +107,7 @@ path for recovery.
    with the failing operation, recorded path, publication or scope errors, and
    required owner action. Do not report successful finalization.
 
-Under the [planned finalization contract](../reference/workflow-finalize-publication.md),
+Under the [finalization contract](../reference/workflow-finalize-publication.md),
 steps 20b and 21 enter essential recovery with stop-on-handoff; an unresolved
 handoff stops the run with exit `81`. Recovery performs no GitHub writes. It
 repairs supported local state and re-executes the original operation, which owns

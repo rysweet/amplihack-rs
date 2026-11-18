@@ -51,13 +51,12 @@ wt="$(bash "$SCRIPT_DIR/worktree_setup_path.sh" step-21-pr-ready)"
 cd -P "$wt"
 
 # rv_field <key> <field>: this run's own field from the base RECIPE_VAR_<key> (#1561).
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recipe_var.sh" \
+. "$SCRIPT_DIR/recipe_var.sh" \
   || { echo "ERROR: workflow_pr_ready.sh: recipe_var.sh not found beside it" >&2; exit 2; }
 
 PR_URL="${RECIPE_VAR_pr_url:-$(rv_field pr_publish_result pr_url)}"
 PR_NUMBER="${RECIPE_VAR_pr_number:-$(rv_field pr_publish_result pr_number)}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}"
 if [ ! -f "$GH_RETRY_HELPER" ]; then
   echo "ERROR: workflow_pr_ready.sh requires the shared retry helper at $GH_RETRY_HELPER" >&2
@@ -173,14 +172,6 @@ validate_pr_identity_before_mutation() {
   fi
 }
 
-pr_targets=()
-add_pr_target() {
-  local target="$1" existing
-  [[ "$target" =~ [^[:space:]] ]] || return 0
-  for existing in "${pr_targets[@]}"; do [ "$existing" = "$target" ] && return 0; done
-  pr_targets+=("$target")
-}
-
 scoped_pr_json=""
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "ERROR: canonical PR worktree is not a git repository" >&2
@@ -233,7 +224,6 @@ pr_target="$(printf '%s' "$scoped_pr_json" | jq -r '.url // .number // empty')"
 [ -n "$pr_target" ] || { echo "ERROR: scoped PR validation returned no PR target" >&2; exit 1; }
 
 terminal_status="active-pr"
-closed_unmerged_seen="false"
 if ! pr_json="$(gh_with_retry "pr view" pr view "$pr_target" --json number,state,isDraft,mergedAt,url,headRefName,baseRefName,headRefOid,headRepositoryOwner,headRepository,isCrossRepository)"; then
   echo "ERROR: unable to inspect PR '$pr_target' with gh; refusing to mutate ambiguous PR state" >&2
   exit 1
@@ -253,12 +243,7 @@ if [ "$pr_state" = "MERGED" ] || [ -n "$pr_merged_at" ]; then
   exit 0
 fi
 if [ "$pr_state" = "CLOSED" ]; then
-  terminal_status="closed-unmerged"
-  closed_unmerged_seen="true"
   echo "ERROR: terminal_status=closed-unmerged; PR is closed without merge — reopen it or create a new branch intentionally" >&2
-fi
-
-if [ "$closed_unmerged_seen" = "true" ]; then
   exit 1
 fi
 
@@ -285,7 +270,4 @@ else
   echo "WARNING: gh pr comment failed for '$pr_url'; PR ready state was still evaluated" >&2
 fi
 
-if [ "$closed_unmerged_seen" = "true" ]; then
-  exit 1
-fi
 echo "=== PR Ready Step Complete (terminal_status=$terminal_status) ==="

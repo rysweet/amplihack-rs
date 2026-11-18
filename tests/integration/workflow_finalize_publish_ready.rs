@@ -60,7 +60,16 @@ pub fn uncommitted_audit(f: &Fixture) {
         events.contains("artifact-check"),
         "existing artifact checks must execute: {events}"
     );
-    success(f.ready());
+    success(
+        f.command("bash", &f.source)
+            .args([
+                "amplifier-bundle/tools/workflow_pr_ready.sh",
+                "--base",
+                "main",
+            ])
+            .output()
+            .unwrap(),
+    );
     f.assert_ready();
 }
 
