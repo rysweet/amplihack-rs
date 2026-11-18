@@ -142,6 +142,14 @@ impl Fixture {
         f
     }
 
+    /// Make the unchanged base disposable without inventing remote refs.
+    fn push_base(&self) {
+        let origin = self.root.join("pushed-base.git");
+        self.git(&["init", "--bare", "-q", origin.to_str().unwrap()]);
+        self.git(&["remote", "add", "origin", origin.to_str().unwrap()]);
+        self.git(&["push", "-qu", "origin", "HEAD"]);
+    }
+
     /// A disposable home and no global or system git configuration; the
     /// test's own `PATH`.
     pub(crate) fn environment(&self, c: &mut Command) {
@@ -408,7 +416,7 @@ fn a_directory_outside_git_is_used_as_given() {
 }
 
 #[test]
-fn a_failed_run_still_removes_its_checkout() {
+fn a_failed_run_keeps_its_unpushed_checkout() {
     let f = Fixture::new();
     let before = f.worktrees();
     let out = f
@@ -421,13 +429,17 @@ fn a_failed_run_still_removes_its_checkout() {
     let cwd = String::from_utf8(f.observed("failed", "cwd")).unwrap();
     assert_ne!(cwd.as_bytes(), f.repo.as_os_str().as_encoded_bytes());
     assert!(
-        !Path::new(&cwd).exists(),
-        "{cwd} was left behind by a failed run"
+        Path::new(&cwd).exists(),
+        "{cwd} lost its unpushed work after a failed run"
+    );
+    assert_eq!(
+        f.git_in(Path::new(&cwd), &["show", "HEAD:run-output"]),
+        b"private output\n"
     );
     assert_eq!(
         f.worktrees(),
         before,
-        "a failed run left its worktree record"
+        "the caller's registrations are unchanged"
     );
 }
 
@@ -667,6 +679,7 @@ fn an_unborn_head_finishes_the_recovery_admission_as_failure() {
 #[test]
 fn a_failed_run_finishes_checkout_admission_and_workspace() {
     let f = Fixture::new();
+    f.push_base();
     let before = f.run_folders();
     let out = f
         .command("released")
@@ -684,16 +697,13 @@ fn a_failed_run_finishes_checkout_admission_and_workspace() {
     assert!(report["ended_at"].is_string(), "{report:#}");
 }
 
-/// A relaunch with the same identity after a failure gets a freshly prepared
-/// private checkout: the first one is removed when its attempt ends, and the
-/// relaunch starts at the caller's HEAD, not at the commit the first attempt
-/// made. Both attempts use the path derived from the recovery identity, so
-/// replay sees the same repository path (#2493). The recovery descriptor lives
-/// in the run folder, never inside the checkout, and the caller's checkout is
-/// unchanged by either launch.
+/// A failed attempt's unpushed work stays on its stable path. The relaunch
+/// uses fresh storage and the caller's HEAD; recovery identity and durable
+/// admission records remain shared while the original commit stays usable.
 #[test]
 fn a_relaunch_after_a_failure_gets_a_fresh_checkout_and_leaves_the_caller_unchanged() {
     let f = Fixture::new();
+    f.push_base();
     let caller = f.snapshot();
     let worktrees = f.worktrees();
 
@@ -709,8 +719,8 @@ fn a_relaunch_after_a_failure_gets_a_fresh_checkout_and_leaves_the_caller_unchan
     let first_run = f.new_run_folder(&before);
     let first_cwd = PathBuf::from(String::from_utf8(f.observed("first", "cwd")).unwrap());
     assert!(
-        !first_cwd.exists(),
-        "{} was left behind",
+        first_cwd.exists(),
+        "{} lost unpushed work",
         first_cwd.display()
     );
 
@@ -724,9 +734,13 @@ fn a_relaunch_after_a_failure_gets_a_fresh_checkout_and_leaves_the_caller_unchan
     let second_run = f.new_run_folder(&before);
     let second_cwd = PathBuf::from(String::from_utf8(f.observed("second", "cwd")).unwrap());
 
-    assert_eq!(
+    assert_ne!(
         first_cwd, second_cwd,
-        "both attempts of one recovery identity use its stable execution path"
+        "preserved work keeps its original path"
+    );
+    assert_eq!(
+        f.git_in(&first_cwd, &["show", "HEAD:run-output"]),
+        b"private output\n"
     );
     assert_ne!(
         second_cwd, f.repo,

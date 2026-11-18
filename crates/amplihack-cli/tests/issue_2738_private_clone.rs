@@ -57,9 +57,10 @@ fn the_run_works_in_a_private_clone_and_a_step_that_commits_leaves_the_caller_al
         !f.repo.join("run-output").exists(),
         "the step's file reached the caller's checkout"
     );
-    assert!(
-        !checkout.exists(),
-        "the run's checkout {cwd} was left behind"
+    assert!(checkout.is_dir(), "the run's unpushed commit must survive");
+    assert_eq!(
+        f.git_in(checkout, &["show", "HEAD:run-output"]),
+        b"private output\n"
     );
 }
 

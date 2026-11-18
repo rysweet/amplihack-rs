@@ -188,6 +188,15 @@ exit "$status"
         fs::write(f.repo.join("input.txt"), "initial\n").unwrap();
         f.git(&["add", "input.txt"]);
         f.git(&["commit", "-m", "fixture"]);
+        // Recovery tests need a disposable, fully pushed starting checkout.
+        // Keep origin's identity for admission tests, but push the real commit
+        // to an isolated local bare remote so preservation does not retain the
+        // primary checkout as the only copy of that commit (issue #2785).
+        let pushed = f.root.join("pushed-fixture.git");
+        let pushed = pushed.to_str().unwrap();
+        f.git(&["init", "--bare", "--initial-branch=main", pushed]);
+        f.git(&["config", "remote.origin.pushurl", pushed]);
+        f.git(&["push", "-u", "origin", "main"]);
         let script = format!(
             r#"#!/bin/sh
 set -eu
@@ -210,9 +219,13 @@ printf '%s\n' '{{"label":"saved-output","enabled":true,"count":7,"empty":null,"i
     }
 
     pub fn git(&self, args: &[&str]) -> String {
+        self.git_in(&self.repo, args)
+    }
+
+    pub fn git_in(&self, dir: &Path, args: &[&str]) -> String {
         let out = amplihack_git::command()
             .args(args)
-            .current_dir(&self.repo)
+            .current_dir(dir)
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &self.home)

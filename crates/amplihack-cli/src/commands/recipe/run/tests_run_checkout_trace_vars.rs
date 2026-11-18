@@ -80,7 +80,7 @@ fn no_trace_target_is_set_in_place_of_the_callers() {
 fn checkout_release_keeps_primary_work_and_its_backing_metadata() {
     use crate::commands::cleanup::{
         git_fixture::{commit, git, make_dirty, origin_and_clone},
-        git_work::tree_work,
+        git_work::folder_work,
     };
     use std::fs;
     for state in ["clean", "dirty", "unpushed", "both"] {
@@ -89,7 +89,7 @@ fn checkout_release_keeps_primary_work_and_its_backing_metadata() {
         let scratch = tmp.path().join("runtime");
         fs::create_dir(&scratch).unwrap();
         let mut checkout =
-            RunCheckout::prepare_with_inputs(&caller, &scratch, false, &[], None, tree_work)
+            RunCheckout::prepare_with_inputs(&caller, &scratch, false, &[], None, folder_work)
                 .unwrap();
         let root = checkout.exec_dir().to_path_buf();
         let sha = if state == "unpushed" || state == "both" {
@@ -124,7 +124,7 @@ fn checkout_release_keeps_primary_work_and_its_backing_metadata() {
 fn checkout_release_keeps_ignored_nested_work_and_supporting_repository() {
     use crate::commands::cleanup::{
         git_fixture::{clone_of, commit, git, origin_and_clone},
-        git_work::tree_work,
+        git_work::folder_work,
     };
     use std::fs;
     for beneath_checkout in [false, true] {
@@ -133,7 +133,7 @@ fn checkout_release_keeps_ignored_nested_work_and_supporting_repository() {
         let scratch = tmp.path().join("runtime");
         fs::create_dir(&scratch).unwrap();
         let mut checkout =
-            RunCheckout::prepare_with_inputs(&caller, &scratch, false, &[], None, tree_work)
+            RunCheckout::prepare_with_inputs(&caller, &scratch, false, &[], None, folder_work)
                 .unwrap();
         let root = checkout.exec_dir().to_path_buf();
         let common = std::path::PathBuf::from(git(
@@ -168,7 +168,7 @@ fn storage_reclaim_preserves_real_primary_and_unregistered_nested_work() {
     use super::run_checkout::exec_storage::{self, Claim, Verdict};
     use crate::commands::cleanup::{
         git_fixture::{clone_of, commit, git, make_dirty, origin_and_clone},
-        git_work::tree_work,
+        git_work::folder_work,
     };
     use std::fs;
     for nested in [false, true] {
@@ -181,7 +181,7 @@ fn storage_reclaim_preserves_real_primary_and_unregistered_nested_work() {
             let owner = tmp.path().join("ended-run");
             fs::create_dir(&owner).unwrap();
             assert!(matches!(
-                exec_storage::claim(&stable, &owner, |_| Ok(true), tree_work).unwrap(),
+                exec_storage::claim(&stable, &owner, |_| Ok(true), folder_work).unwrap(),
                 Claim::Claimed(_)
             ));
             let repository = stable.join("repository.git");
@@ -225,7 +225,7 @@ fn storage_reclaim_preserves_real_primary_and_unregistered_nested_work() {
                 make_dirty(&tree);
             }
 
-            let verdict = exec_storage::reclaim(&stable, |_| Ok(true), tree_work).unwrap();
+            let verdict = exec_storage::reclaim(&stable, |_| Ok(true), folder_work).unwrap();
             if state == "clean" {
                 assert!(matches!(verdict, Verdict::Reclaimable(_)), "{verdict:?}");
                 assert!(!stable.exists());
@@ -272,7 +272,11 @@ fn tombstone_removal_keeps_work_created_before_reclamation_was_interrupted() {
             make_dirty(&tree);
         }
 
-        let result = exec_storage::remove_tombstone(&tombstone, None);
+        let result = exec_storage::remove_tombstone(
+            &tombstone,
+            None,
+            crate::commands::cleanup::git_work::folder_work,
+        );
         if state == "clean" {
             result.unwrap();
             assert!(!tombstone.exists());

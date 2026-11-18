@@ -471,6 +471,13 @@ impl RunCheckout {
         {
             bail!("execution ownership manifest changed; resources retained");
         }
+        if let Some(reason) = holds_work(storage) {
+            eprintln!(
+                "amplihack: execution checkout {root:?} is kept with storage {storage:?}: {reason}"
+            );
+            *released = true;
+            return Ok(());
+        }
         let output = preparation_command(repository)
             .args(["worktree", "remove", "--force"])
             .arg(&*root)

@@ -196,7 +196,7 @@ impl Fixture {
         self.git_in(&self.repo, args)
     }
 
-    fn git_in(&self, dir: &Path, args: &[&str]) -> Vec<u8> {
+    pub(crate) fn git_in(&self, dir: &Path, args: &[&str]) -> Vec<u8> {
         let mut c = amplihack_git::command();
         self.environment(&mut c);
         let out = c.current_dir(dir).args(args).output().unwrap();

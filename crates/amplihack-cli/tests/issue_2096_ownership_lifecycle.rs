@@ -83,6 +83,7 @@ fn execution_uses_private_repository_metadata_and_object_storage() {
 #[test]
 fn finishing_one_live_run_cannot_remove_another_runs_checkout_or_index() {
     let f = Fixture::new();
+    f.push_base();
     let one = boundary::Running::start(&f, "owner-one");
     let two = boundary::Running::start(&f, "owner-two");
     let second = boundary::path(&f, "owner-two", "cwd");
@@ -123,6 +124,7 @@ fn replaced_checkout_directory_is_preserved_and_release_failure_fails_the_run() 
 #[test]
 fn a_durable_worktree_keeps_its_repository_after_execution_checkout_release() {
     let f = Fixture::new();
+    f.push_base();
     let run = boundary::Running::start(&f, "durable");
     let execution = boundary::path(&f, "durable", "cwd");
     let durable = f.root.join("durable-task");

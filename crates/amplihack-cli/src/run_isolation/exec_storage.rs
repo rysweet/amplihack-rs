@@ -13,10 +13,9 @@
 //! - no worktree registered in its private `repository.git` lies outside it
 //!   and still exists. In default-workflow, step 04 creates such worktrees,
 //!   and removing their repository would break them;
-//! - no worktree registered there that lies inside it, other than its own
-//!   `checkout`, holds uncommitted changes or commits that are not on a
-//!   remote (issue #2785). The checkout is installed from the caller's
-//!   snapshot, whose originals the caller keeps, so it is not asked. At most
+//! - no repository inside it, including its own `checkout`, holds
+//!   uncommitted changes or commits that are not on a remote (issue #2785).
+//!   The caller supplies recursive repository inspection. At most
 //!   [`INSIDE_WORKTREE_LIMIT`] worktrees are asked; past that the path is
 //!   kept.
 //!
@@ -44,7 +43,7 @@ const INSIDE_WORKTREE_LIMIT: usize = 64;
 /// which never permits a removal.
 pub(crate) type OwnerEnded = fn(&Path) -> Result<bool>;
 
-/// Why the worktree at a path holds work that is not on a remote, or `None`
+/// Why repositories within a removal boundary hold work, or `None`
 /// (issue #2785). `Some` keeps the storage it lies in.
 pub(crate) type HoldsWork = fn(&Path) -> Option<String>;
 
@@ -110,7 +109,7 @@ pub(crate) fn claim(
         tombstone
     };
     if let Some((tombstone, identity)) = tombstone {
-        remove_tombstone(&tombstone, Some(identity))?;
+        remove_inspected_tombstone(&tombstone, Some(identity))?;
     }
     Ok(Claim::Claimed(stable.to_path_buf()))
 }
@@ -130,14 +129,40 @@ pub(crate) fn reclaim(
         move_aside(stable, owner_ended, holds_work)?
     };
     if let Some((tombstone, identity)) = tombstone {
-        remove_tombstone(&tombstone, Some(identity))?;
+        remove_inspected_tombstone(&tombstone, Some(identity))?;
     }
     Ok(verdict)
 }
 
 /// Removes a folder an interrupted reclaim moved aside: only a real
 /// directory, and, when `identity` is given, only that directory.
-pub(crate) fn remove_tombstone(tombstone: &Path, identity: Option<(u64, u64)>) -> Result<()> {
+pub(crate) fn remove_tombstone(
+    tombstone: &Path,
+    identity: Option<(u64, u64)>,
+    holds_work: HoldsWork,
+) -> Result<Verdict> {
+    check_tombstone(tombstone, identity)?;
+    if let Some(reason) = holds_work(tombstone) {
+        return Ok(Verdict::Kept(reason));
+    }
+    remove_inspected_tombstone(tombstone, identity)?;
+    Ok(Verdict::Reclaimable(
+        "removed execution storage".to_string(),
+    ))
+}
+
+/// Removal after complete inspection, preserving the existing inode check.
+/// Fresh tombstones are inspected at their original location immediately before
+/// `move_aside` under the claim lock. Git's absolute administrative paths still
+/// name that location after relocation, so re-running Git there cannot establish
+/// disposability. Older tombstones go through `remove_tombstone` and inspection.
+fn remove_inspected_tombstone(tombstone: &Path, identity: Option<(u64, u64)>) -> Result<()> {
+    check_tombstone(tombstone, identity)?;
+    // `remove_dir_all` removes a symlink inside rather than following it.
+    fs::remove_dir_all(tombstone).with_context(|| format!("cannot remove {}", tombstone.display()))
+}
+
+fn check_tombstone(tombstone: &Path, identity: Option<(u64, u64)>) -> Result<()> {
     let metadata = fs::symlink_metadata(tombstone)
         .with_context(|| format!("cannot inspect {}", tombstone.display()))?;
     if metadata.file_type().is_symlink()
@@ -149,8 +174,7 @@ pub(crate) fn remove_tombstone(tombstone: &Path, identity: Option<(u64, u64)>) -
             tombstone.display()
         );
     }
-    // `remove_dir_all` removes a symlink inside rather than following it.
-    fs::remove_dir_all(tombstone).with_context(|| format!("cannot remove {}", tombstone.display()))
+    Ok(())
 }
 
 /// The verdict for `stable` and, when it is reclaimable, its identity.
@@ -224,6 +248,9 @@ fn inspect_identity(
             None,
         ));
     }
+    if let Some(reason) = holds_work(stable) {
+        return Ok((Verdict::Kept(reason), None));
+    }
     if let Some(reason) = live_dependant(stable, holds_work)? {
         return Ok((Verdict::Kept(reason), None));
     }
@@ -261,8 +288,8 @@ fn live_dependant(stable: &Path, holds_work: HoldsWork) -> Result<Option<String>
 }
 
 /// Why a worktree registered in `<stable>/repository.git` that still exists
-/// keeps `stable`: one outside it does, whatever it holds; one inside it,
-/// other than `<stable>/checkout`, does when `holds_work` finds work in it,
+/// keeps `stable`: one outside it does, whatever it holds; one inside it
+/// does when `holds_work` finds work in it,
 /// asked in path order; more than `limit` inside it do, unasked. Git records
 /// each one's `.git` file in `worktrees/<name>/gitdir`, as an absolute path or
 /// one relative to that folder; an entry without it is one Git itself would
@@ -272,7 +299,26 @@ fn live_dependant_with(
     holds_work: HoldsWork,
     limit: usize,
 ) -> Result<Option<String>> {
-    let admin = stable.join("repository.git").join("worktrees");
+    dependant_at(stable, &stable.join("repository.git"), holds_work, limit)
+}
+
+/// The existing dependency check for any repository metadata a directory
+/// removal would destroy, including an ordinary clone's `.git` directory.
+pub(crate) fn repository_dependant(
+    folder: &Path,
+    repository: &Path,
+    holds_work: HoldsWork,
+) -> Result<Option<String>> {
+    dependant_at(folder, repository, holds_work, INSIDE_WORKTREE_LIMIT)
+}
+
+fn dependant_at(
+    stable: &Path,
+    repository: &Path,
+    holds_work: HoldsWork,
+    limit: usize,
+) -> Result<Option<String>> {
+    let admin = repository.join("worktrees");
     let entries = match fs::read_dir(&admin) {
         Ok(entries) => entries,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
@@ -283,9 +329,6 @@ fn live_dependant_with(
     let own = stable
         .canonicalize()
         .with_context(|| format!("cannot resolve {}", stable.display()))?;
-    // An exact comparison of canonical paths: a worktree nested below the
-    // checkout is still asked.
-    let own_checkout = own.join("checkout");
     let mut inside = Vec::new();
     for entry in entries {
         let entry = entry.with_context(|| format!("cannot list {}", admin.display()))?;
@@ -319,9 +362,7 @@ fn live_dependant_with(
                 worktree.display()
             )));
         }
-        if worktree != own_checkout {
-            inside.push(worktree);
-        }
+        inside.push(worktree);
     }
     if inside.len() > limit {
         return Ok(Some(format!(

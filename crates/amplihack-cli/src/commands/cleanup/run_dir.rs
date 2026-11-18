@@ -193,7 +193,7 @@ impl RuntimeGuard {
             tracing::warn!(path = ?path, reason = %reason, "runtime folder kept for git work");
             eprintln!(
                 "amplihack: runtime folder {path:?} is kept: {reason}; \
-                 `amplihack cleanup --apply` removes it once that work is committed and on a remote"
+                 `amplihack cleanup --apply` can remove it after inspection confirms its work is clean and on a remote"
             );
             return Ok(RuntimeRemoval::KeptForWork);
         }

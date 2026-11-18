@@ -133,6 +133,13 @@ fn a_worktree_outside_the_storage_keeps_it_whatever_it_holds() {
             durable.display()
         ))
     );
+    assert_eq!(
+        repository_dependant(&stable, &stable.join("repository.git"), never).unwrap(),
+        Some(format!(
+            "durable worktree {} still uses its repository",
+            durable.display()
+        ))
+    );
 }
 
 #[test]

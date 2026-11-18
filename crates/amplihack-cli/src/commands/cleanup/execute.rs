@@ -10,11 +10,14 @@ use super::*;
 /// A safety re-check at apply time said no. Reported as `skipped`, unlike a
 /// removal that was attempted and failed.
 #[derive(Debug)]
-pub(super) struct Refusal(String);
+pub(super) struct Refusal {
+    reason: String,
+    pub(super) preserved: bool,
+}
 
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.reason)
     }
 }
 
@@ -22,7 +25,7 @@ impl std::error::Error for Refusal {}
 
 macro_rules! refuse {
     ($($arg:tt)*) => {
-        return Err(anyhow::Error::new(Refusal(format!($($arg)*))))
+        return Err(anyhow::Error::new(Refusal { reason: format!($($arg)*), preserved: false }))
     };
 }
 
@@ -30,7 +33,7 @@ macro_rules! refuse {
 fn is_managed(item: &Item, roots: &ManagedRoots) -> bool {
     let c = item.canonical.as_path();
     match &item.op {
-        Op::Skip | Op::Fail | Op::Archive { .. } => true,
+        Op::Skip | Op::Preserve | Op::Fail | Op::Archive { .. } => true,
         Op::RemoveRunTmp { .. } => item.run_id.as_deref().is_some_and(|id| {
             c == roots.runs.join(id).join("runtime") || c == roots.short_runtime.join(short_id(id))
         }),
@@ -49,12 +52,25 @@ fn is_managed(item: &Item, roots: &ManagedRoots) -> bool {
 
 /// Removes the folder at the canonical `path`, refusing a symlink or a
 /// non-folder there.
-fn remove_real_dir(path: &Path) -> Result<()> {
+fn remove_real_dir(path: &Path, deadline: Option<Instant>) -> Result<()> {
     let meta = fs::symlink_metadata(path).with_context(|| format!("{} is gone", path.display()))?;
     if meta.file_type().is_symlink() || !meta.file_type().is_dir() {
         refuse!("{} is no longer a real folder", path.display());
     }
+    preserve_work(path, deadline)?;
     fs::remove_dir_all(path).with_context(|| format!("cannot remove {}", path.display()))
+}
+
+/// Inspect the complete destructive boundary after eligibility checks and as
+/// close to removal as possible. Retention is a successful skipped operation.
+fn preserve_work(path: &Path, deadline: Option<Instant>) -> Result<()> {
+    if let Some(reason) = work_inside(path, deadline) {
+        return Err(anyhow::Error::new(Refusal {
+            reason,
+            preserved: true,
+        }));
+    }
+    Ok(())
 }
 
 /// `Ok` only when the run's `run.json` can still be read and the run is not
@@ -85,7 +101,7 @@ pub(super) fn execute(
     follow_on: &mut Vec<Entry>,
 ) -> Result<()> {
     match &item.op {
-        Op::Skip | Op::Fail => return Ok(()),
+        Op::Skip | Op::Preserve | Op::Fail => return Ok(()),
         Op::Archive { relative } => {
             return archive_file(&item.path, &settings.archive_dir, relative).map(|_| ());
         }
@@ -127,15 +143,17 @@ pub(super) fn execute(
     }
     let target = item.canonical.as_path();
     match &item.op {
-        Op::Skip | Op::Fail | Op::Archive { .. } | Op::RemoveTarget { .. } => Ok(()),
+        Op::Skip | Op::Preserve | Op::Fail | Op::Archive { .. } | Op::RemoveTarget { .. } => Ok(()),
         Op::ReclaimExec { tombstone } => {
             if procs.in_use(target) {
                 refuse!("in use by a running process");
             }
-            if *tombstone {
-                return exec_storage::remove_tombstone(target, None);
-            }
-            match exec_storage::reclaim(target, run_has_ended, tree_work)? {
+            let verdict = if *tombstone {
+                exec_storage::remove_tombstone(target, None, folder_work)?
+            } else {
+                exec_storage::reclaim(target, run_has_ended, folder_work)?
+            };
+            match verdict {
                 exec_storage::Verdict::Reclaimable(_) => Ok(()),
                 exec_storage::Verdict::Absent => refuse!("{} is already gone", target.display()),
                 exec_storage::Verdict::Kept(reason) => refuse!("{reason}"),
@@ -143,18 +161,12 @@ pub(super) fn execute(
         }
         Op::RemoveRunTmp { run_dir } => {
             run_still_inactive(run_dir)?;
-            // Issue #2785: work committed or changed since the plan. Searched
-            // before the quick liveness checks, so they stay closest to the
-            // removal.
-            if let Some(reason) = work_inside(target, settings.deadline) {
-                refuse!("{reason}");
-            }
             // A child of a killed runner (an agent, cargo) may outlive it and
             // still use its TMPDIR.
             if procs.in_use(target) {
                 refuse!("in use by a running process");
             }
-            remove_real_dir(target)
+            remove_real_dir(target, settings.deadline)
         }
         Op::RemoveDir {
             run_dir,
@@ -164,13 +176,8 @@ pub(super) fn execute(
                 run_still_inactive(run_dir)?;
                 refuse_if_other_live_owner(item, settings)?;
             }
-            if item.category == Category::TmpLeftover {
-                if let Some(reason) = work_inside(target, settings.deadline) {
-                    refuse!("{reason}");
-                }
-                if has_live_pid_marker(target) {
-                    refuse!("in use: a pid marker names a running process");
-                }
+            if item.category == Category::TmpLeftover && has_live_pid_marker(target) {
+                refuse!("in use: a pid marker names a running process");
             }
             if procs.in_use(target) {
                 refuse!("in use by a running process");
@@ -186,7 +193,7 @@ pub(super) fn execute(
             } else {
                 Vec::new()
             };
-            remove_real_dir(target)
+            remove_real_dir(target, settings.deadline)
         }
         Op::RemoveWorktree {
             main,
@@ -206,15 +213,10 @@ pub(super) fn execute(
                     main.display()
                 );
             }
-            if git_has_dirty_state(target) {
-                refuse!("has uncommitted changes");
-            }
-            if let Some(reason) = unpushed_reason(target) {
-                refuse!("{reason}");
-            }
             if procs.in_use(target) {
                 refuse!("in use by a running process");
             }
+            preserve_work(target, settings.deadline)?;
             let mut command = hardened_git();
             command
                 .arg("-C")
@@ -325,6 +327,12 @@ fn remove_run_target(
                 "removed pre-commit target"
             );
             Ok(())
+        }
+        Err(target_remove::RemoveError::Refused(target_remove::Refusal::Preserved(reason))) => {
+            Err(anyhow::Error::new(Refusal {
+                reason,
+                preserved: true,
+            }))
         }
         Err(target_remove::RemoveError::Refused(refusal)) => refuse!("{refusal}"),
         Err(target_remove::RemoveError::Io(error)) => {

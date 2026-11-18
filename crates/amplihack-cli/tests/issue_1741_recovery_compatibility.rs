@@ -209,17 +209,16 @@ fn external_revision_change_invalidates_repository_dependent_work() {
     );
 }
 
-/// Since #2096 a step's branch and commit are made in the attempt's private
-/// repository, never the caller's checkout, and that repository is released
-/// when the attempt ends. The resumed attempt starts from the caller's
-/// unchanged HEAD, so the step that made the commit is invalidated as
-/// `repository_changed` and runs again; the caller's HEAD never moves.
+/// A step's unpushed private branch keeps its original storage. A fresh
+/// execution checkout changes the mapped inputs, so the completed step runs
+/// again while the earlier commit remains accessible and the caller stays put.
 #[test]
-fn a_completed_steps_private_branch_and_commit_are_replayed_after_release() {
+fn a_completed_steps_private_branch_and_commit_survive_a_fresh_relaunch() {
     let f = Fixture::new();
     let mut recipe = f.workflow();
     recipe["steps"][0]["command"] = json!(format!(
-        "git switch -c workflow-1741 && printf 'workflow progress\\n' > input.txt && git add input.txt && git commit -m progress && {} classify",
+        "pwd -P >> {} && git switch -c workflow-1741 && printf 'workflow progress\\n' > input.txt && git add input.txt && git commit -m progress && {} classify",
+        quote(&f.root.join("private-checkouts")),
         quote(&f.root.join("step-tool"))
     ));
     // Git prints non-JSON progress; preserve it as a string for this step.
@@ -246,12 +245,24 @@ fn a_completed_steps_private_branch_and_commit_are_replayed_after_release() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|s| s["step_id"] == "classify" && s["reason"] == "repository_changed"),
+            .any(|s| s["step_id"] == "classify" && s["reason"] == "input_changed"),
         "{resumed:#}"
     );
     assert_eq!(
         f.events(),
         ["classify", "design", "classify", "design", "implement"]
+    );
+    let paths = fs::read_to_string(f.root.join("private-checkouts")).unwrap();
+    let paths: Vec<_> = paths.lines().map(std::path::PathBuf::from).collect();
+    assert_eq!(paths.len(), 2);
+    assert_ne!(paths[0], paths[1], "retained storage cannot be reclaimed");
+    assert_eq!(
+        f.git_in(&paths[0], &["show", "HEAD:input.txt"]),
+        "workflow progress"
+    );
+    assert_eq!(
+        f.git_in(&paths[0], &["branch", "--show-current"]),
+        "workflow-1741"
     );
     assert_eq!(head, before, "the first attempt moved the caller's HEAD");
     assert_eq!(f.git(&["rev-parse", "HEAD"]), before);

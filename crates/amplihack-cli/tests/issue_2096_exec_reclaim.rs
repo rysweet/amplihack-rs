@@ -9,6 +9,7 @@ use std::os::unix::fs::PermissionsExt;
 /// One successful attempt: its run folder and the stable path it used,
 /// which it removed again at release.
 fn first_attempt(f: &Fixture) -> (PathBuf, PathBuf) {
+    f.push_base();
     let before = f.run_folders();
     succeeds(
         &f.command("first")
@@ -254,6 +255,7 @@ fn a_symlink_at_the_stable_path_is_refused_and_its_target_is_left_untouched() {
 #[test]
 fn a_launch_refused_after_preparation_finishes_the_admission_as_failure() {
     let f = Fixture::new();
+    f.push_base();
     let before = f.run_folders();
     let out = f
         .command("refused")
@@ -284,9 +286,9 @@ fn a_launch_refused_after_preparation_finishes_the_admission_as_failure() {
 // ----- issue #2785: worktrees that hold work ----------------------------------
 //
 // A worktree registered in the storage's `repository.git` that lies inside
-// the storage, other than its own `checkout`, keeps the storage while it
+// the storage, including its own `checkout`, keeps the storage while it
 // holds uncommitted changes or commits that are not on a remote. The reason
-// is `worktree "<path>" inside it <what git found>`.
+// names the discovered Git tree and what the existing checks found.
 
 /// `git <args>` in `dir`, with the fixture's environment and an identity.
 fn git_ok(f: &Fixture, dir: &Path, args: &[&str]) -> String {
@@ -362,7 +364,7 @@ fn a_worktree_inside_the_storage_with_work_keeps_it_until_the_work_is_pushed() {
     );
     let work = feat.join("step-07-tests.rs");
     fs::write(&work, "// written before the stop\n").unwrap();
-    let dirty = format!("worktree {feat:?} inside it has uncommitted changes");
+    let dirty = format!("git tree {feat:?} has uncommitted changes");
 
     let out = relaunch(&f, "second");
     assert_ne!(cwd(&f, "second"), stable.join("checkout"));
@@ -387,7 +389,7 @@ fn a_worktree_inside_the_storage_with_work_keeps_it_until_the_work_is_pushed() {
     assert_eq!(kept["action"], "skipped", "{kept:#}");
     assert!(
         kept["reason"].as_str().unwrap().contains(&format!(
-            "worktree {feat:?} inside it has no upstream and commits on no remote branch"
+            "git tree {feat:?} has no upstream and commits on no remote branch"
         )),
         "a commit on no remote still keeps it: {kept:#}"
     );
@@ -398,11 +400,10 @@ fn a_worktree_inside_the_storage_with_work_keeps_it_until_the_work_is_pushed() {
     assert!(!stable.exists());
 }
 
-/// The run's own checkout is built from the caller's snapshot and is not
-/// checked: a dirty checkout with a commit on no remote does not hold the
-/// storage.
+/// The primary checkout keeps storage while either its dirty file or its
+/// unpushed commit remains. Cleaning and pushing makes storage removable.
 #[test]
-fn a_dirty_private_checkout_alone_does_not_keep_the_storage() {
+fn a_dirty_private_checkout_keeps_the_storage_until_clean_and_pushed() {
     let f = Fixture::new();
     let (first_run, stable) = first_attempt(&f);
     stale_claim(&stable, &first_run);
@@ -426,6 +427,31 @@ fn a_dirty_private_checkout_alone_does_not_keep_the_storage() {
     );
     fs::write(checkout.join("copied-from-the-caller"), "dirty\n").unwrap();
 
+    let sha = git_ok(&f, &checkout, &["rev-parse", "HEAD"]);
+    let kept = entry(&cleanup(&f, true), &stable);
+    assert_eq!(kept["action"], "skipped", "{kept:#}");
+    assert!(
+        kept["reason"].as_str().unwrap().contains("uncommitted"),
+        "{kept:#}"
+    );
+    assert_eq!(git_ok(&f, &checkout, &["rev-parse", "HEAD"]), sha);
+    assert!(checkout.join("copied-from-the-caller").is_file());
+    git_ok(&f, &checkout, &["add", "copied-from-the-caller"]);
+    git_ok(&f, &checkout, &["commit", "-qm", "saved checkout work"]);
+    let kept = entry(&cleanup(&f, true), &stable);
+    assert_eq!(kept["action"], "skipped", "{kept:#}");
+    assert!(
+        kept["reason"]
+            .as_str()
+            .unwrap()
+            .contains("no remote branch"),
+        "{kept:#}"
+    );
+    git_ok(
+        &f,
+        &checkout,
+        &["push", "-q", "origin", "HEAD:refs/heads/saved-checkout"],
+    );
     let removed = entry(&cleanup(&f, true), &stable);
     assert_eq!(removed["action"], "removed", "{removed:#}");
     assert!(!stable.exists());
@@ -437,6 +463,7 @@ fn a_dirty_private_checkout_alone_does_not_keep_the_storage() {
 #[test]
 fn the_end_of_a_run_names_a_linked_worktree_that_holds_work() {
     let f = Fixture::new();
+    f.push_base();
     let task = f.root.join("task-worktree");
     let out = f
         .command("task")

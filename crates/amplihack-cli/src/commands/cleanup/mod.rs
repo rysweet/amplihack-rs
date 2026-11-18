@@ -382,6 +382,7 @@ fn print_json(entries: &[Entry], settings: &Settings) -> Result<()> {
                 "reason": e.reason,
                 "action": e.action.as_str(),
                 "run_id": e.run_id,
+                "preserved": e.preserved,
             })
         })
         .collect();

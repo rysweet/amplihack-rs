@@ -55,6 +55,7 @@ impl LinkReason {
 /// Why a target is left alone. One `Display` holds every report text.
 #[derive(Debug)]
 pub(super) enum Refusal {
+    Preserved(String),
     /// A build holds a `.cargo-lock`.
     InUse,
     /// A `.cargo-lock` could not be checked. The text names the reason and
@@ -82,6 +83,7 @@ pub(super) enum Refusal {
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Preserved(reason) => f.write_str(reason),
             Self::InUse => f.write_str("in use: .cargo-lock is held"),
             Self::LockCheck(text) => f.write_str(text),
             Self::ChangedSincePlan => f.write_str("changed since plan"),
@@ -550,6 +552,9 @@ pub(super) fn remove(
         Shape::Link { dest } => dest.clone(),
     };
     let held = lock_cargo_tree(&dir)?;
+    if let Some(reason) = crate::commands::cleanup::git_work::work_inside(&dir, None) {
+        return Err(Refusal::Preserved(reason).into());
+    }
     // std::fs::remove_dir_all does not follow links inside the tree
     // (CVE-2022-21658 is fixed in the pinned toolchain).
     let removed = fs::remove_dir_all(&dir).map_err(RemoveError::Io);

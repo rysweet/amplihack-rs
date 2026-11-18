@@ -12,8 +12,8 @@ use super::eligibility::{
     run_has_ended, run_is_active,
 };
 use super::git_work::{
-    END_OF_RUN_DEADLINE, GIT_TIMEOUT, WALK_LIMIT, git_common_dir, printable, tree_work,
-    unpushed_reason, work_inside,
+    END_OF_RUN_DEADLINE, GIT_TIMEOUT, WALK_LIMIT, folder_work, git_common_dir, printable,
+    work_inside,
 };
 use super::run_dir::{
     CLEANUP_RECORD, OWNED_PATHS, OwnedKind, OwnedPath, RUN_JSON, RUN_SCHEMA_VERSION, RunReport,
@@ -23,7 +23,7 @@ use super::run_dir::{
 use super::targets::{HOOK_TARGET_PREFIX, is_cargo_target, target_name};
 use super::work_root::WorkRoot;
 use crate::commands::hygiene::cleanup::{
-    git_has_dirty_state, hardened_git, has_live_pid_marker, sanitized_stderr_short,
+    hardened_git, has_live_pid_marker, sanitized_stderr_short,
 };
 use crate::commands::recipe::run::run_checkout::exec_storage;
 use anyhow::{Context, Result, bail};
@@ -105,6 +105,7 @@ pub(crate) struct Entry {
     pub reason: String,
     pub action: Action,
     pub run_id: Option<String>,
+    pub preserved: bool,
 }
 
 /// What to do with an item. Every removal names the run folder whose
@@ -112,6 +113,7 @@ pub(crate) struct Entry {
 #[derive(Debug, Clone)]
 enum Op {
     Skip,
+    Preserve,
     /// Nothing to act on, but the sweep could not finish this part; reported
     /// as `failed` so the command does not claim success.
     Fail,
@@ -166,6 +168,12 @@ struct Item {
 }
 
 impl Item {
+    fn preserve(category: Category, path: &Path, reason: String, run_id: Option<&str>) -> Self {
+        let mut item = Self::skip(category, path, reason, run_id);
+        item.op = Op::Preserve;
+        item
+    }
+
     fn skip(
         category: Category,
         path: &Path,
@@ -801,7 +809,7 @@ impl Collector<'_> {
                         // Issue #2785: a stopped run's only copy of its work.
                         tracing::info!(path = ?dir, reason = %reason, "run-tmp folder kept for git work");
                         self.items
-                            .push(Item::skip(Category::RunTmp, dir, reason, Some(id)));
+                            .push(Item::preserve(Category::RunTmp, dir, reason, Some(id)));
                     } else {
                         let reason = if report.ended_at.is_some() {
                             "run has ended"
@@ -966,11 +974,8 @@ impl Collector<'_> {
         let Some(main) = c.main.clone() else {
             return Item::skip(category, path, "repository has no main checkout", Some(id));
         };
-        if git_has_dirty_state(&c.canonical) {
-            return Item::skip(category, path, "has uncommitted changes", Some(id));
-        }
-        if let Some(reason) = unpushed_reason(&c.canonical) {
-            return Item::skip(category, path, reason, Some(id));
+        if let Some(reason) = work_inside(&c.canonical, self.s.deadline) {
+            return Item::preserve(category, path, reason, Some(id));
         }
         if self.in_use(&c.canonical) {
             return Item::skip(category, path, "in use by a running process", Some(id));
@@ -1167,7 +1172,7 @@ impl Collector<'_> {
                     )
                 })
             } else {
-                exec_storage::inspect(&path, run_has_ended, tree_work)
+                exec_storage::inspect(&path, run_has_ended, folder_work)
             };
             match verdict {
                 Ok(exec_storage::Verdict::Absent) => {}
@@ -1236,7 +1241,7 @@ impl Collector<'_> {
             if let Some(reason) = work_inside(&path, self.s.deadline) {
                 tracing::info!(path = ?path, reason = %reason, "tmp-leftover folder kept for git work");
                 self.items
-                    .push(Item::skip(Category::TmpLeftover, &path, reason, None));
+                    .push(Item::preserve(Category::TmpLeftover, &path, reason, None));
                 continue;
             }
             self.items.push(Item {
@@ -1459,6 +1464,20 @@ fn collect(settings: &Settings) -> Result<Vec<Item>> {
     c.collect_exec_storage();
     c.collect_tmp_leftovers();
     c.collect_logs();
+    // Classifications establish eligibility; inspect the full removal boundary
+    // for every eligible directory, including target destinations and tombstones.
+    for item in &mut c.items {
+        if matches!(
+            item.op,
+            Op::Skip | Op::Preserve | Op::Fail | Op::Archive { .. }
+        ) {
+            continue;
+        }
+        if let Some(reason) = work_inside(&item.canonical, settings.deadline) {
+            item.reason = reason;
+            item.op = Op::Preserve;
+        }
+    }
     Ok(c.items)
 }
 
@@ -1485,8 +1504,9 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
         }
         let mut follow_on = Vec::new();
         let archive = matches!(item.op, Op::Archive { .. });
+        let mut preserved = matches!(item.op, Op::Preserve);
         let (action, reason) = match (&item.op, settings.apply) {
-            (Op::Skip, _) => (Action::Skipped, item.reason.clone()),
+            (Op::Skip | Op::Preserve, _) => (Action::Skipped, item.reason.clone()),
             (Op::Fail, _) => (Action::Failed, item.reason.clone()),
             (_, false) if archive => (Action::WouldArchive, item.reason.clone()),
             (_, false) => (Action::WouldRemove, item.reason.clone()),
@@ -1504,7 +1524,10 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
             ) {
                 Ok(()) if archive => (Action::Archived, item.reason.clone()),
                 Ok(()) => (Action::Removed, item.reason.clone()),
-                Err(error) if error.is::<Refusal>() => (Action::Skipped, format!("{error:#}")),
+                Err(error) if error.is::<Refusal>() => {
+                    preserved = error.downcast_ref::<Refusal>().is_some_and(|e| e.preserved);
+                    (Action::Skipped, format!("{error:#}"))
+                }
                 Err(error) => {
                     tracing::warn!(path = %item.path.display(), error = %format!("{error:#}"), "cleanup action failed");
                     (Action::Failed, format!("{error:#}"))
@@ -1518,6 +1541,7 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
             reason,
             action,
             run_id: item.run_id,
+            preserved,
         });
         // Rule (c) of #2039: the target of a worktree removed just now. Every
         // result is reported, a kept target with its reason; it never changes
@@ -1589,6 +1613,7 @@ fn worktree_target_entries(
             continue;
         }
         let entry = |action: Action, reason: String, size: Option<u64>| Entry {
+            preserved: false,
             category: Category::RunTarget,
             path: path.clone(),
             size_bytes: size,
@@ -1626,6 +1651,12 @@ fn worktree_target_entries(
             out.push(entry(Action::Skipped, reason, None));
             continue;
         }
+        if let Some(reason) = dir.and_then(|dir| work_inside(dir, settings.deadline)) {
+            let mut kept = entry(Action::Skipped, reason, None);
+            kept.preserved = true;
+            out.push(kept);
+            continue;
+        }
         let size = dir.and_then(tree_size);
         if !settings.apply {
             out.push(entry(Action::WouldRemove, REASON.into(), size));
@@ -1650,6 +1681,13 @@ fn worktree_target_entries(
                         "removed pre-commit target"
                     );
                     entry(Action::Removed, REASON.into(), size)
+                }
+                Err(target_remove::RemoveError::Refused(target_remove::Refusal::Preserved(
+                    reason,
+                ))) => {
+                    let mut kept = entry(Action::Skipped, reason, size);
+                    kept.preserved = true;
+                    kept
                 }
                 Err(target_remove::RemoveError::Refused(refusal)) => {
                     entry(Action::Skipped, refusal.to_string(), size)
@@ -1860,6 +1898,33 @@ fn prune_owned_paths(run_dir: &Path) -> Result<()> {
 
 // ----- entry points ---------------------------------------------------------
 
+/// Warning identities live outside removable run folders. Called under the
+/// existing cleanup lock; this record changes reporting only, never eligibility.
+fn record_failures(entries: &[Entry], root: &WorkRoot) -> Result<HashSet<PathBuf>> {
+    let path = root.path.join("cleanup-failures.json");
+    let mut recorded: BTreeMap<PathBuf, String> =
+        match read_capped_nofollow(&path, RECORD_MAX_BYTES) {
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).context("cannot parse cleanup-failures.json")?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+            Err(error) => return Err(error).context("cannot read cleanup-failures.json"),
+        };
+    let mut new = HashSet::new();
+    for entry in entries {
+        if entry.action == Action::Removed {
+            recorded.remove(&entry.path);
+        } else if entry.action == Action::Failed && !recorded.contains_key(&entry.path) {
+            new.insert(entry.path.clone());
+            recorded.insert(entry.path.clone(), entry.reason.clone());
+        }
+    }
+    let mut bytes = serde_json::to_vec_pretty(&recorded)?;
+    bytes.push(b'\n');
+    write_atomic_0600(&path, &bytes).context("cannot persist cleanup failure reporting")?;
+    Ok(new)
+}
+
 /// Collects, applies (when `settings.apply` and `locked`) and records.
 pub(crate) fn run_sweep(settings: &Settings, locked: bool) -> Result<Vec<Entry>> {
     sweep_recorded(settings, locked).map(|(entries, _)| entries)
@@ -1870,7 +1935,18 @@ fn sweep_recorded(settings: &Settings, locked: bool) -> Result<(Vec<Entry>, Hash
     let items = collect(settings)?;
     let entries = apply_items(items, settings, locked);
     let new_failures = if settings.apply && locked {
-        write_records(&entries, &settings.work_root)
+        write_records(&entries, &settings.work_root);
+        match record_failures(&entries, &settings.work_root) {
+            Ok(new) => new,
+            Err(error) => {
+                eprintln!("amplihack: warning: {error:#}");
+                entries
+                    .iter()
+                    .filter(|e| e.action == Action::Failed)
+                    .map(|e| e.path.clone())
+                    .collect()
+            }
+        }
     } else {
         HashSet::new()
     };
@@ -1908,10 +1984,9 @@ pub(crate) fn end_of_run(work_root: &WorkRoot) {
     }
 }
 
-/// The sweep [`end_of_run`] runs. A folder it cannot remove is warned about
-/// only while no sweep has recorded that failure (issue #2785); a failure
-/// already recorded goes to the log. A failure that belongs to no run is
-/// warned about every time.
+/// The sweep [`end_of_run`] runs. Preservation reasons reach normal output.
+/// Removal failures are warned about once per path across sweeps, independently
+/// of the availability of the per-run history.
 pub(crate) fn end_of_run_inner(work_root: &WorkRoot) -> Result<EndOfRun> {
     let mut warnings = Vec::new();
     let keep = match super::keep_hours_from_env() {
@@ -1952,7 +2027,7 @@ pub(crate) fn end_of_run_inner(work_root: &WorkRoot) -> Result<EndOfRun> {
             Action::Removed => {
                 tracing::info!(path = %e.path.display(), category = e.category.as_str(), "end-of-run cleanup removed")
             }
-            Action::Failed if e.run_id.is_none() || new_failures.contains(&e.path) => {
+            Action::Failed if new_failures.contains(&e.path) => {
                 warnings.push(format!(
                     "amplihack: warning: end-of-run cleanup could not remove {:?}: {}",
                     e.path,
@@ -1967,6 +2042,11 @@ pub(crate) fn end_of_run_inner(work_root: &WorkRoot) -> Result<EndOfRun> {
                     "end-of-run cleanup could not remove a folder again; an earlier sweep recorded it"
                 );
             }
+            Action::Skipped if e.preserved => warnings.push(format!(
+                "amplihack: end-of-run cleanup kept {:?}: {}",
+                e.path,
+                printable(&e.reason)
+            )),
             _ => {}
         }
     }

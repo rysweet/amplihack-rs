@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 pub(crate) fn git(dir: &Path, args: &[&str]) -> String {
     let out = amplihack_git::command_in(dir)
         .env("PATH", crate::test_support::host_path())
+        .env("HOME", dir)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_AUTHOR_NAME", "t")
@@ -107,6 +108,7 @@ pub(crate) fn clean_pushed_worktree(clone: &Path, at: &Path, branch: &str) -> Pa
 pub(crate) fn has_object(dir: &Path, sha: &str) -> bool {
     amplihack_git::command_in(dir)
         .env("PATH", crate::test_support::host_path())
+        .env("HOME", dir)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .args(["cat-file", "-e", sha])
@@ -123,12 +125,6 @@ pub(crate) fn admin_dir_of(tree: &Path) -> PathBuf {
 pub(crate) fn euid() -> u32 {
     // SAFETY: geteuid has no preconditions and cannot fail.
     unsafe { libc::geteuid() }
-}
-
-/// This process's effective gid.
-pub(crate) fn egid() -> u32 {
-    // SAFETY: getegid has no preconditions and cannot fail.
-    unsafe { libc::getegid() }
 }
 
 /// True when the test runs as root, for which file modes do not stop

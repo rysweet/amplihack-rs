@@ -1549,13 +1549,10 @@ can still name clean and smudge filters, and those can run during
 you, so such a filter has no more rights than whoever could already write
 that configuration.
 
-The search for git work runs `git status` in trees under runtime folders,
-temporary leftovers and execution storage, as well as in recorded worktrees.
-The search, and the check made for each worktree at release and at reclaim,
-run git only in trees you own whose `.git` other users cannot write; see rules
-3 and 4 in [Which git trees are checked](#which-git-trees-are-checked). The
-`run-worktree` checks and `amplihack hygiene cleanup` do not make that owner
-and mode check, as before.
+The search for git work runs `git status` in every discovered repository,
+including repositories beneath runtime, target and execution storage. The same
+existing checks apply regardless of configuration-file permissions; established
+ownership and managed-path requirements still control deletion eligibility.
 
 A partial clone that would need to fetch missing objects for `git status`
 fails the check and is kept, with the folder that holds it.

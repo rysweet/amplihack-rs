@@ -13,7 +13,7 @@
 //!   it is kept. It is `work_inside_with` with `WALK_LIMIT`, `TREE_LIMIT` and
 //!   this process's effective uid and gid;
 //! - `struct Policy { deadline: Option<Instant>, walk_limit: usize,
-//!   tree_limit: usize, uid: u32, gid: u32 }` and
+//!   tree_limit: usize }` and
 //!   `fn work_inside_with(folder: &Path, policy: &Policy) -> Option<String>`;
 //! - `pub(crate) fn tree_work(tree: &Path) -> Option<String>`: the bare reason
 //!   for one tree (`has uncommitted changes`, ...);
@@ -38,8 +38,8 @@ use std::time::Instant;
 // Named, not a glob, so these win over any helper of the same name in
 // `git_work.rs`.
 use crate::commands::cleanup::git_fixture::{
-    Unlock, admin_dir_of, chmod, clean_pushed_worktree, clone_of, commit, egid, euid, git,
-    linked_worktree, make_dirty, origin_and_clone, push, running_as_root,
+    Unlock, admin_dir_of, chmod, clean_pushed_worktree, clone_of, commit, git, linked_worktree,
+    make_dirty, origin_and_clone, push, running_as_root,
 };
 
 const DIRTY: &str = "has uncommitted changes";
@@ -59,8 +59,6 @@ fn policy() -> Policy {
         deadline: None,
         walk_limit: WALK_LIMIT,
         tree_limit: TREE_LIMIT,
-        uid: euid(),
-        gid: egid(),
     }
 }
 
@@ -506,6 +504,29 @@ fn a_clean_parent_repository_does_not_hide_an_ignored_nested_repository() {
 
     assert_eq!(work_inside(&outer, None), Some(tree_reason(&nested, AHEAD)));
     assert_eq!(git(&nested, &["rev-parse", "HEAD"]), sha);
+}
+
+#[test]
+fn removing_a_clone_cannot_break_a_registered_worktree_outside_the_candidate() {
+    let (_tmp, root) = scratch();
+    let (origin, _) = origin_and_clone(&root.join("source"));
+    let folder = root.join("folder");
+    let clone = clone_of(&origin, &folder.join("clone"));
+    let external = linked_worktree(&clone, &root.join("external"), "durable");
+    make_dirty(&external);
+    let reason = work_inside(&folder, None).expect("backing metadata must survive");
+    assert!(reason.contains(external.to_str().unwrap()), "{reason}");
+    assert!(reason.contains("still uses its repository"), "{reason}");
+    assert!(external.join("uncommitted.txt").is_file());
+    git(&external, &["add", "uncommitted.txt"]);
+    git(&external, &["commit", "-qm", "saved external work"]);
+    push(&external);
+    assert!(
+        work_inside(&folder, None).is_some(),
+        "existing dependency still applies"
+    );
+    git(&clone, &["worktree", "remove", external.to_str().unwrap()]);
+    assert_eq!(work_inside(&folder, None), None);
 }
 
 // ----- trivial folders --------------------------------------------------------

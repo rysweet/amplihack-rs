@@ -6,14 +6,22 @@ use super::*;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 struct Fx {
+    _env: crate::test_support::EnvGuard,
     _tmp: tempfile::TempDir,
     root: PathBuf,
     work: WorkRoot,
     hook_base: PathBuf,
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 impl Fx {
     fn new() -> Self {
+        // Initialize the subprocess PATH before taking the shared environment
+        // lock. End-of-run cleanup must see only this fixture's home and cache.
+        crate::test_support::host_path();
+        let lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let root = fs::canonicalize(tmp.path()).unwrap();
         let work = WorkRoot {
@@ -24,11 +32,20 @@ impl Fx {
         for dir in [work.runs_dir(), work.targets_dir(), hook_base.clone()] {
             fs::create_dir_all(&dir).unwrap();
         }
+        let home = root.join("home");
+        fs::create_dir(&home).unwrap();
+        let env = crate::test_support::env_paths(&[
+            ("HOME", Some(&home)),
+            ("XDG_CACHE_HOME", Some(&root.join("cache"))),
+            ("AMPLIHACK_TARGET_LINK_ROOTS", None),
+        ]);
         Self {
+            _env: env,
             _tmp: tmp,
             root,
             work,
             hook_base,
+            _lock: lock,
         }
     }
 
@@ -816,6 +833,7 @@ fn end_of_run_keeps_a_stopped_runs_folder_whose_worktree_holds_work() {
         let e = entry(&outcome.entries, &runtime);
         assert_eq!(e.category, Category::RunTmp, "ended={ended}: {e:?}");
         assert_eq!(e.action, Action::Skipped, "ended={ended}: {e:?}");
+        assert!(e.preserved, "preservation is a structured outcome: {e:?}");
         assert_eq!(
             e.reason,
             format!("git tree {wt:?} has uncommitted changes"),
@@ -1136,6 +1154,10 @@ fn run_target_apply_keeps_new_work_in_a_nested_repository() {
     let kept = entry(&entries, &target);
     assert_eq!(kept.action, Action::Skipped, "{kept:?}");
     assert!(kept.reason.contains("unpushed"), "{kept:?}");
+    assert!(
+        kept.preserved,
+        "apply-time preservation is structured: {kept:?}"
+    );
     assert!(has_object(&tree, &sha));
 }
 
