@@ -175,6 +175,16 @@ step-21 and step-22b read the recorded base and pass it through
 the run there. A caller that needs the pull request on a fixed base sets
 `base_branch`.
 
+When the adopted pull request's base differs from the resolved base, step-16
+applies `WORKFLOW_PR_LABELS` only if that base passes
+`delivery_base_ref`, including `forbidden_base_branches`. Otherwise it logs a
+`WARNING:` line with the reason and leaves the pull request unlabelled; the
+publish result is unchanged.
+
+The pull request's author is not checked, so whoever can open a pull
+request from the branch chooses the base the run records
+([#2789](https://github.com/rysweet/amplihack-rs/issues/2789)).
+
 When the pull request's base differs from the resolved base, the publish
 result's `message` names both:
 
@@ -189,10 +199,9 @@ When `gh pr create` fails, for example because a pull request appeared after
 the lookup, step-16 runs the collision lookup with the same option. One open
 pull request on another base is used, and the message starts with
 `adopted existing open PR after create collision; ` followed by the clause
-above. Any failure of the
-collision lookup itself, including `multiple_scoped_prs` and `invalid_arg`,
-ends as it did before: the publish result's `state` is `FAILED_PR_CREATE`, its
-`message` is the create error followed by
+above. Any failure of the collision lookup itself, including
+`multiple_scoped_prs`, ends as it did before: the publish result's `state` is
+`FAILED_PR_CREATE`, its `message` is the create error followed by
 `; scoped collision lookup failed (exit 1)`, and step-16 exits with the status
 of `gh pr create`. Stderr also carries the lookup's own `FAILED_PR_IDENTITY`
 line.
@@ -231,13 +240,6 @@ takes `dev` from the publish result (rule 2 of
 #615 with `workflow_pr_scope.sh --base dev` and marks it ready. The same run
 started with `-c base_branch=main` does not look for #615: step-16 runs
 `gh pr create --base=main`.
-
-`WORKFLOW_PR_SCOPE_HELPER` can point step-16 at another scope helper. An older
-copy of `workflow_pr_scope.sh`, which does not know `--any-base-open`, answers
-`invalid_arg`. Step-16 then stops as under rule 3: exit 1 before any create, no
-publish result, and
-`ERROR: FAILED_PR_IDENTITY (exit 1): scoped PR lookup failed: invalid_arg` on
-stderr.
 
 ## How finalize finds the base
 
@@ -760,42 +762,16 @@ cargo test -p amplihack --test integration pr_scope_primary_key::
 bash tests/issue_1596_final_status_branch_pr_lookup.sh
 ```
 
-The `existing_pr_other_base` tests run `workflow_publish_pr.sh` with a stub
-`gh` against a local repository whose `origin/HEAD` is `main` and which has an
-`origin/dev`. They check that, with `base_branch` empty, an open pull request
-into `dev` is used with the message and `base_branch` shown in
+The outside-in scenario for
 [An open pull request on another base](#an-open-pull-request-on-another-base)
-and no `gh pr create` call. They also cover: a fork's pull request into `dev`,
-which is not used; open pull requests into both `dev` and `release`, which
-fail with `multiple_scoped_prs`; an open pull request into `dev` beside a
-closed one into `main`, where the pull request into `dev` is used and the
-result is `existing-open-pr` with `base_branch` `dev`, not
-`FAILED_CLOSED_UNMERGED`; an open pull request into `main`, which wins over one
-into `dev`; `base_branch=main`, which still creates with `--base=main`; and
-a create collision followed by a pull request into `dev`.
-The `pr_scope_primary_key` tests check `--any-base-open` on the scope helper
-itself, including that an `ANY_BASE_OPEN` environment variable has no effect.
-
-The same case runs end to end against the built binary in CI's install-smoke
-job, as the step "Outside-in - Existing pull request on another base (issue
-#2784)":
+runs the shipped step-16 through `amplihack recipe run` with a stub `gh`; CI's
+install-smoke job runs it against the installed binary. It needs
+`recipe-runner-rs` on `PATH` or in `RECIPE_RUNNER_RS_PATH`:
 
 ```bash
 AMPLIHACK_2784_QA_BIN="$(command -v amplihack)" \
   bash tests/gadugi/run-issue-2784-existing-pr-other-base-scenario.sh
 ```
-
-The runner extracts the shipped step-16 from `workflow-publish.yaml`, runs it
-with `amplihack recipe run` in a temporary folder with its own `HOME`, and puts
-a stub `gh` first on `PATH`. It needs `recipe-runner-rs` on `PATH` or in
-`RECIPE_RUNNER_RS_PATH`, and fails without it. Case A has an open pull request
-#615 into `dev` and expects `state` `existing-open-pr`, `base_branch` `dev`,
-the message `existing open PR #615 targets dev; the resolved base was main; kept dev`
-and no `pr create` call. Case B has no pull request and expects one
-`pr create` call without `--base` and `base_branch` `""`.
-The runner prints one `PASS:` line per case and then `ALL_CASES_PASSED`, or
-`SCENARIO_FAILED` with exit 1. The gadugi wrapper is
-`tests/gadugi/scenarios/issue-2784-existing-pr-on-other-base.yaml`.
 
 The shell test runs step-22b with a fake `gh` whose `gh pr view` returns
 `number`, `url`, `title`, `baseRefName`, `headRefName`, `createdAt`,

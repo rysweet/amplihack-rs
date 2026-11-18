@@ -6,7 +6,7 @@ flow. It is implemented by `apply_pr_labels_best_effort()` in
 `amplifier-bundle/tools/workflow_publish_pr.sh` and driven entirely by the
 `WORKFLOW_PR_LABELS` environment variable.
 
-Updated: 2026-07-23
+Updated: 2026-11-18
 
 ## Contents
 
@@ -81,6 +81,12 @@ apply_pr_labels_best_effort() {
   [ "${HOST_TYPE:-}" = "github" ] || return 0
   case "${PR_NUMBER_RESULT:-}" in '' | *[!0-9]*) return 0 ;; esac
   case "${PR_STATE:-}" in MERGED | CLOSED) return 0 ;; esac
+  local refusal
+  if [ "${PR_STATE:-}" = "OPEN" ] && [ "${BASE_BRANCH_RESULT:-}" != "${BASE_BRANCH:-}" ] \
+    && ! refusal="$({ delivery_base_ref "${BASE_BRANCH_RESULT:-}" "${CURRENT_BRANCH:-}" "${RECIPE_VAR_forbidden_base_branches:-}" >/dev/null; } 2>&1)"; then
+    echo "WARNING: workflow_publish_pr.sh: labels '${WORKFLOW_PR_LABELS}' not applied to adopted PR #${PR_NUMBER_RESULT}: ${refusal#ERROR: }" >&2
+    return 0
+  fi
   command -v gh >/dev/null 2>&1 || return 0
   if ! timeout 60 gh pr edit "$PR_NUMBER_RESULT" \
       --add-label "$WORKFLOW_PR_LABELS" >/dev/null 2>&1; then
@@ -102,6 +108,7 @@ Reads (as environment/shell state set by the enclosing publish flow):
 | `HOST_TYPE` | Must equal `github` for any labeling to occur. |
 | `PR_NUMBER_RESULT` | Numeric PR number resolved by the publish flow. |
 | `PR_STATE` | PR state; `MERGED` and `CLOSED` are skipped. Empty on the create-new path. |
+| `BASE_BRANCH_RESULT`, `BASE_BRANCH`, `CURRENT_BRANCH`, `RECIPE_VAR_forbidden_base_branches` | The adopted pull request's base, the resolved base, the delivered branch and the deny list, read only by guard 5. |
 
 Behavior:
 
@@ -125,7 +132,12 @@ the following hold, checked in this order:
    success — there is nothing to gate for the merge queue, and labeling a
    closed PR would be pointless churn. `PR_STATE` is empty on the create-new
    path, so freshly created PRs are still labeled.
-5. `gh` is present on `PATH` (`command -v gh`).
+5. An adopted open PR whose base differs from the resolved base (#2784) passes
+   `delivery_base_ref`, including `forbidden_base_branches`, the check finalize
+   applies to a recorded base. When it does not, the helper writes one
+   `WARNING:` line with the reason and labels nothing. See
+   [An open pull request on another base](workflow-delivery-inputs.md#an-open-pull-request-on-another-base).
+6. `gh` is present on `PATH` (`command -v gh`).
 
 Only when every guard passes does the single `gh pr edit --add-label` call run.
 
@@ -272,6 +284,10 @@ Contract verified by the test:
 The obsolete cases that exercised the removed shell-side parser — multi-label
 whitespace-trimming and per-label fan-out call counts — are gone, because there
 is no longer a shell parser to test; `gh` owns the splitting.
+
+Guard 5 is covered by the `labels_*` cases in
+`tests/integration/issue_2306_publish/existing_pr_other_base.rs`, which run the
+shipped step-16 with an adopted pull request into `dev`.
 
 Run it locally:
 

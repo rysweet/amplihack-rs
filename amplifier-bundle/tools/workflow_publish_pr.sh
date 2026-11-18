@@ -71,14 +71,15 @@ DELIVERY_INPUTS_HELPER="${WORKFLOW_DELIVERY_INPUTS_HELPER:-${SCRIPT_DIR}/workflo
 # shellcheck source=workflow_delivery_inputs.sh
 . "$DELIVERY_INPUTS_HELPER"
 
-# base_branch in the publish result (#2520): the base this step checked and
-# gave the pull request, so finalize can find a pull request on a base other
-# than origin/HEAD. Set only from a checked value: the --base given to
-# gh pr create, or the base of a matched pull request that passed the scoped
-# lookup. Every other exit, and a create that let GitHub choose, records "".
-# With base_branch empty, that matched pull request can be the one open pull
-# request from this branch into another base (#2784), and its own base is
-# recorded; finalize checks a recorded base with delivery_base_ref.
+# base_branch in the publish result (#2520): the base of this run's pull
+# request, so finalize can find a pull request on a base other than
+# origin/HEAD. Set from the --base given to gh pr create, or from the base of
+# the pull request the scoped lookup matched. Every other exit, and a create
+# that let GitHub choose, records "". With base_branch empty, that matched
+# pull request can be the one open pull request from this branch into another
+# base (#2784), and its own base is recorded. Step-16 does not check that
+# base; finalize checks it with delivery_base_ref, and labels are applied only
+# when it passes.
 BASE_BRANCH_RESULT=""
 # The resolved base, set from resolve_pr_base_ref; never taken from the caller's
 # environment, which the label guard below compares against.
