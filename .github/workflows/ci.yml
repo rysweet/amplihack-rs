@@ -752,7 +752,7 @@ jobs:
         run: AMPLIHACK_2778_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2778-umask-crusty-scenario.sh
       # Issue #2346: a recipe run's recovery store under umask 0002, with a
       # fresh HOME, a group-writable folder above the work root and an owned
-      # 0755 work root, against the binary and pinned recipe runner installed
+      # 0755, 0750 and 0775 work roots, against the binary and pinned runner installed
       # above. CI's own umask (0022) never exercises it.
       - name: "Outside-in - Recovery store under umask 0002 (issue #2346)"
         shell: bash

@@ -317,4 +317,169 @@ mod tests {
         let file = AtomicJsonFile::new(expected.clone());
         assert_eq!(file.path(), expected);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_write_and_update_create_private_parents_documents_and_locks() {
+        use crate::permission_tests::{mode, under_umask_0002};
+        under_umask_0002(
+            "atomic_json::tests::private_write_and_update_create_private_parents_documents_and_locks",
+            || {
+                let dir = tempfile::tempdir().unwrap();
+                for operation in ["write", "update"] {
+                    let parent = dir.path().join(operation).join("nested");
+                    let path = parent.join("state.json");
+                    let file = AtomicJsonFile::new_private(&path);
+                    if operation == "write" {
+                        file.write(&TestData {
+                            count: 1,
+                            name: "private".into(),
+                        })
+                        .unwrap();
+                    } else {
+                        file.update::<TestData, _>(|data| data.count += 1).unwrap();
+                    }
+                    assert_eq!(mode(&dir.path().join(operation)), 0o700);
+                    assert_eq!(mode(&parent), 0o700);
+                    assert_eq!(mode(&path), 0o600);
+                    assert_eq!(mode(&path.with_extension("json.lock")), 0o600);
+                    assert_eq!(file.read::<TestData>().unwrap().unwrap().count, 1);
+                    assert_eq!(
+                        fs::read_dir(&parent).unwrap().count(),
+                        2,
+                        "no publication temp remains"
+                    );
+                }
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_storage_preserves_existing_parents_and_generic_storage_modes() {
+        use crate::permission_tests::{mode, under_umask_0002};
+        use std::os::unix::fs::PermissionsExt;
+        under_umask_0002(
+            "atomic_json::tests::private_storage_preserves_existing_parents_and_generic_storage_modes",
+            || {
+                let dir = tempfile::tempdir().unwrap();
+                let existing = dir.path().join("existing");
+                fs::create_dir(&existing).unwrap();
+                fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
+                AtomicJsonFile::new_private(existing.join("state.json"))
+                    .write(&TestData::default())
+                    .unwrap();
+                assert_eq!(
+                    mode(&existing),
+                    0o755,
+                    "private construction must not chmod an existing parent"
+                );
+                let path = dir.path().join("generic/nested/state.json");
+                AtomicJsonFile::new(&path)
+                    .write(&TestData::default())
+                    .unwrap();
+                assert_eq!(
+                    mode(path.parent().unwrap()),
+                    0o775,
+                    "generic parent contract changed"
+                );
+                assert_eq!(
+                    mode(&path.with_extension("json.lock")),
+                    0o664,
+                    "generic lock contract changed"
+                );
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_private_update_preserves_the_document_and_cleans_up() {
+        use crate::permission_tests::under_umask_0002;
+        under_umask_0002(
+            "atomic_json::tests::a_failed_private_update_preserves_the_document_and_cleans_up",
+            || {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("state.json");
+                let file = AtomicJsonFile::new_private(&path);
+                file.write(&TestData {
+                    count: 9,
+                    name: "keep".into(),
+                })
+                .unwrap();
+                let before = fs::read(&path).unwrap();
+                let panic = std::panic::catch_unwind(|| {
+                    let _ = file.update::<TestData, _>(|_| panic!("abort before publication"));
+                });
+                assert!(panic.is_err());
+                assert_eq!(fs::read(&path).unwrap(), before);
+                file.update::<TestData, _>(|data| data.count += 1).unwrap();
+                assert_eq!(
+                    file.read::<TestData>().unwrap().unwrap().count,
+                    10,
+                    "a later update must still work after a panic"
+                );
+                assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_update_acquires_the_lock_before_reading_or_calling_the_mutator() {
+        use crate::permission_tests::under_umask_0002;
+        const NAME: &str = "atomic_json::tests::private_update_acquires_the_lock_before_reading_or_calling_the_mutator";
+        const PROBE: &str = "AMPLIHACK_STATE_PRIVATE_UPDATE_PROBE";
+        if let Some(path) = std::env::var_os(PROBE) {
+            let path = PathBuf::from(path);
+            let file = AtomicJsonFile::new_private(&path).with_lock_timeout(Duration::ZERO);
+            let result = file.update::<TestData, _>(|data| {
+                fs::write(path.with_extension("mutator-called"), b"called").unwrap();
+                data.count += 1;
+            });
+            assert!(
+                matches!(
+                    result,
+                    Err(AtomicJsonError::Lock(
+                        crate::file_lock::FileLockError::Timeout { .. }
+                    ))
+                ),
+                "a busy lock must be returned before parsing the intentionally invalid document: {result:?}"
+            );
+            return;
+        }
+        under_umask_0002(NAME, || {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.json");
+            let file = AtomicJsonFile::new_private(&path);
+            file.write(&TestData::default()).unwrap();
+            let lock =
+                FileLock::exclusive_private(&path.with_extension("json.lock"), Duration::ZERO)
+                    .unwrap();
+            fs::write(&path, b"invalid JSON to detect a read before locking").unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--test-threads=1", "--nocapture"])
+                .env(PROBE, &path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!path.with_extension("mutator-called").exists());
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                b"invalid JSON to detect a read before locking"
+            );
+            drop(lock);
+            file.write(&TestData {
+                count: 42,
+                name: "recovered".into(),
+            })
+            .unwrap();
+            assert_eq!(file.read::<TestData>().unwrap().unwrap().count, 42);
+        });
+    }
 }

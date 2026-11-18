@@ -140,4 +140,71 @@ mod tests {
             drop(lock);
         }
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_lock_is_0600_and_exclusive_across_processes() {
+        use crate::permission_tests::{mode, under_umask_0002};
+        const NAME: &str = "file_lock::tests::private_lock_is_0600_and_exclusive_across_processes";
+        const PROBE: &str = "AMPLIHACK_STATE_PRIVATE_LOCK_PROBE";
+        const BLOCKED: &str = "AMPLIHACK_STATE_PRIVATE_LOCK_EXPECT_BLOCKED";
+        if let Some(path) = std::env::var_os(PROBE) {
+            let result = FileLock::exclusive_private(Path::new(&path), Duration::ZERO);
+            if std::env::var_os(BLOCKED).is_some() {
+                assert!(
+                    matches!(result, Err(FileLockError::Timeout { .. })),
+                    "{result:?}"
+                );
+            } else {
+                result.unwrap();
+            }
+            return;
+        }
+        under_umask_0002(NAME, || {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("private.lock");
+            let lock = FileLock::exclusive_private(&path, Duration::ZERO).unwrap();
+            assert_eq!(mode(&path), 0o600);
+            let probe = |blocked: bool| {
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .args(["--exact", NAME, "--test-threads=1", "--nocapture"])
+                    .env(PROBE, &path);
+                if blocked {
+                    command.env(BLOCKED, "1");
+                } else {
+                    command.env_remove(BLOCKED);
+                }
+                let output = command.output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            };
+            probe(true);
+            drop(lock);
+            probe(false);
+            let generic = dir.path().join("generic.lock");
+            let _generic = FileLock::exclusive(&generic, Duration::ZERO).unwrap();
+            assert_eq!(
+                mode(&generic),
+                0o664,
+                "generic construction keeps its existing contract"
+            );
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_lock_does_not_create_missing_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing/owner.lock");
+        let error = FileLock::exclusive_private(&path, Duration::ZERO).unwrap_err();
+        assert!(
+            matches!(error, FileLockError::Open { source, .. } if source.kind() == io::ErrorKind::NotFound)
+        );
+        assert!(!path.parent().unwrap().exists());
+    }
 }

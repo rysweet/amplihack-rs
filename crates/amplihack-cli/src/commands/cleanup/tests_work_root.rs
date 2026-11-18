@@ -100,30 +100,88 @@ fn missing_absolute_root_is_valid_and_created_0700() {
     assert_eq!(mode, 0o700);
 }
 
-/// Issue #2346: the message keeps "writable by group or others", which other
-/// tests and users search for, and adds the octal mode. The root is printed as
-/// given and the path in `chmod 700` is not quoted, as before.
+/// Issue #2346: both validation entry points must reject existing nonprivate
+/// roots, including readable roots with no group/world write bit.
 #[test]
 fn group_or_world_writable_root_message_names_the_mode_and_the_fix() {
     let tmp = tempfile::tempdir().unwrap();
     let home = home_in(tmp.path());
-    for mode in [0o775, 0o757, 0o2770] {
+    for mode in [0o755, 0o750, 0o775, 0o757, 0o2770] {
         let root = tmp.path().join(format!("work{mode:o}"));
         fs::create_dir(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(mode)).unwrap();
         let err = validate(&root, &home).unwrap_err().to_string();
-        assert_eq!(
-            err,
+        for part in [
+            root.display().to_string(),
+            format!("mode {mode:04o}"),
             format!(
-                "work root {root} is writable by group or others (mode {mode:04o}); fix it \
-                 with `chmod 700 {root}`",
-                root = root.display()
-            )
-        );
+                "chmod 700 {}",
+                super::super::recovery_path::shell_word(&root).unwrap()
+            ),
+        ] {
+            assert!(err.contains(&part), "missing {part:?}: {err}");
+        }
         assert_eq!(
             fs::metadata(&root).unwrap().permissions().mode() & 0o7777,
             mode,
             "validate never changes the root"
+        );
+    }
+}
+
+#[test]
+fn a_work_root_with_shell_metacharacters_has_a_usable_correction() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = home_in(tmp.path());
+    let root = tmp.path().join("work 'quoted' $(false)");
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o775)).unwrap();
+    let err = validate(&root, &home).unwrap_err().to_string();
+    let command = format!(
+        "chmod 700 {}",
+        super::super::recovery_path::shell_word(&root).unwrap()
+    );
+    assert!(err.contains(&command), "{err}");
+    // Execute only the correction the diagnostic supplies, against this fixture.
+    assert!(
+        std::process::Command::new("/bin/sh")
+            .args(["-c", &command])
+            .status()
+            .unwrap()
+            .success()
+    );
+    validate(&root, &home).unwrap();
+    assert_eq!(
+        fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+}
+
+#[test]
+fn work_root_errors_escape_unprintable_names_without_suggesting_an_unusable_command() {
+    use std::os::unix::ffi::OsStrExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let home = home_in(tmp.path());
+    for name in [b"work\x1b\nbroken".as_slice(), b"work\xffbroken".as_slice()] {
+        let root = tmp.path().join(OsStr::from_bytes(name));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o775)).unwrap();
+        let err = validate(&root, &home).unwrap_err().to_string();
+        assert!(
+            !err.contains(['\x1b', '\n']),
+            "unsafe path rendering: {err:?}"
+        );
+        assert!(
+            !err.contains("chmod 700"),
+            "the rendered path cannot be pasted back: {err:?}"
+        );
+        assert!(
+            err.contains("0700"),
+            "the mode correction must still be given in words: {err}"
+        );
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o775
         );
     }
 }

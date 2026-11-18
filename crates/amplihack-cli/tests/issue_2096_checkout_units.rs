@@ -197,14 +197,31 @@ fn prepare_distinguishes_corrupt_metadata_from_absent_repository() {
 fn fresh_execution_storage_is_0700() {
     isolated_body("fresh_execution_storage_is_0700", |f| {
         use std::os::unix::fs::PermissionsExt;
+        // SAFETY: isolated_body runs this as the only test in its child process.
+        unsafe {
+            libc::umask(0o002);
+        }
         let scratch = f.root.join("scratch");
         fs::create_dir(&scratch).unwrap();
         let mut checkout = implementation::RunCheckout::prepare(&f.repo, &scratch, false).unwrap();
-        let implementation::RunCheckout::Private { storage, .. } = &checkout else {
+        let implementation::RunCheckout::Private { storage, root, .. } = &checkout else {
             panic!("a repository gets a private checkout");
         };
         let mode = fs::metadata(storage).unwrap().permissions().mode() & 0o7777;
         assert_eq!(format!("{mode:04o}"), "0700", "{}", storage.display());
+        assert_eq!(
+            fs::metadata(root).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "the allocated checkout directory is private; tracked Git contents keep normal modes"
+        );
+        assert_eq!(
+            fs::metadata(storage.join("owner.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
         checkout.remove().unwrap();
     });
 }
@@ -216,6 +233,10 @@ fn fresh_execution_storage_is_0700() {
 fn a_durable_dependency_record_is_0600() {
     isolated_body("a_durable_dependency_record_is_0600", |f| {
         use std::os::unix::fs::PermissionsExt;
+        // SAFETY: isolated_body runs this as the only test in its child process.
+        unsafe {
+            libc::umask(0o002);
+        }
         let scratch = f.root.join("scratch");
         fs::create_dir(&scratch).unwrap();
         let mut checkout = implementation::RunCheckout::prepare(&f.repo, &scratch, false).unwrap();

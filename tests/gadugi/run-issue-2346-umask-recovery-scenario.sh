@@ -28,8 +28,10 @@
 #                                        names the folder, group-writable, 0775
 #                                        and `chmod g-w <folder>`; the work root
 #                                        is not created
-#   owned_0755_work_root_set_to_0700     an owned 0755 work root: the run sets it
-#                                        to 0700, says so on stderr, and succeeds
+#   owned_nonprivate_work_roots_unchanged  owned 0755, 0750 and 0775 roots:
+#                                        each run stops with path, mode and
+#                                        chmod 700 correction; the root stays
+#                                        unchanged and no step runs
 #
 # Every scenario command runs under `env -i` with an explicit allowlist (see
 # scenario_env below): no token, key or setting from the caller's environment
@@ -261,22 +263,34 @@ else
   fl group_writable_ancestor_is_named "rc=$RC2 missing from stderr:${missing2:- none} work root created: $([ -e "$C2/shared/work" ] && echo yes || echo no) stderr: $(tail_of "$C2/err")"
 fi
 
-# --- case 3: an owned 0755 work root is set to 0700 ----------------------------
+# --- case 3: existing nonprivate work roots are left unchanged ----------------
 C3="$WORK/c3"
-make_dir 700 "$C3"; make_dir 700 "$C3/home"; make_dir 700 "$C3/project"; make_dir 755 "$C3/work"
-write_recipe "$C3/recipe.yaml" "$WORK/records/c3"
-(
-  umask 0002
-  cd -- "$C3/project" || exit 11
-  scenario_env "$C3/home" AMPLIHACK_WORK_ROOT="$C3/work" \
-    "$BIN" recipe run "$C3/recipe.yaml" -w "$C3/project" --no-detach </dev/null
-) >"$C3/out" 2>"$C3/err"; RC3=$?
-NOTICE3="amplihack: work root $C3/work had mode 0755; set it to 0700, the mode the recovery store requires"
-if [ "$RC3" -eq 0 ] && [ "$(mode_of "$C3/work")" = 700 ] && grep -qxF -- "$NOTICE3" "$C3/err" \
-   && [ "$(cat "$WORK/records/c3" 2>/dev/null)" = QA_2346_STEP_RAN ]; then
-  pass owned_0755_work_root_set_to_0700 "the run set the work root to 0700, printed the notice, and succeeded"
-else
-  fl owned_0755_work_root_set_to_0700 "rc=$RC3 work root mode '$(mode_of "$C3/work")' stderr: $(tail_of "$C3/err")"
+make_dir 700 "$C3"
+roots_ok=1
+for mode3 in 755 750 775; do
+  case3="$C3/$mode3"
+  make_dir 700 "$case3"; make_dir 700 "$case3/home"; make_dir 700 "$case3/project"
+  make_dir "$mode3" "$case3/work"
+  write_recipe "$case3/recipe.yaml" "$WORK/records/c3-$mode3"
+  (
+    umask 0002
+    cd -- "$case3/project" || exit 11
+    scenario_env "$case3/home" AMPLIHACK_WORK_ROOT="$case3/work" \
+      "$BIN" recipe run "$case3/recipe.yaml" -w "$case3/project" --no-detach </dev/null
+  ) >"$case3/out" 2>"$case3/err"; RC3=$?
+  missing3=""
+  for part in "$case3/work" "0$mode3" "chmod 700 $case3/work"; do
+    grep -qF -- "$part" "$case3/err" || missing3="$missing3 [$part]"
+  done
+  if [ "$RC3" -eq 0 ] || [ "$(mode_of "$case3/work")" != "$mode3" ] \
+     || [ -n "$missing3" ] || [ -e "$WORK/records/c3-$mode3" ] \
+     || [ -n "$(find "$case3/work" -mindepth 1 -print -quit)" ]; then
+    roots_ok=0
+    fl owned_nonprivate_work_roots_unchanged "mode=$mode3 rc=$RC3 actual mode '$(mode_of "$case3/work")' missing:${missing3:- none} stderr: $(tail_of "$case3/err")"
+  fi
+done
+if [ "$roots_ok" -eq 1 ]; then
+  pass owned_nonprivate_work_roots_unchanged "0755, 0750 and 0775 roots stopped each run unchanged with path, mode and chmod 700 correction"
 fi
 
 # --- no agent started in any case ----------------------------------------------

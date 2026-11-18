@@ -9,9 +9,9 @@
 #![cfg(unix)]
 
 use amplihack_utils::secure_files::{
-    check_private_dir, ensure_private_dir, euid, lock_exclusive_timeout, open_private_nofollow,
-    owned_by_euid, read_bounded, read_bounded_nofollow, writable_by_others, write_private_atomic,
-    write_private_atomic_nosync,
+    check_private_dir, ensure_private_dir, ensure_private_directory, euid, lock_exclusive_timeout,
+    open_private_append, open_private_nofollow, owned_by_euid, read_bounded, read_bounded_nofollow,
+    writable_by_others, write_private_atomic, write_private_atomic_nosync,
 };
 use std::fs;
 use std::io::{self, Read, Write};
@@ -118,6 +118,119 @@ fn ensure_private_dir_does_not_create_parents() {
     let nested = tmp.path().join("a").join("b");
     assert!(ensure_private_dir(&nested).is_err());
     assert!(!tmp.path().join("a").exists());
+}
+
+/// Only this re-executed test receives the mask; sibling tests stay parallel.
+fn under_umask_0002(name: &str, body: impl FnOnce()) {
+    use std::os::unix::process::CommandExt;
+    const CHILD: &str = "AMPLIHACK_UTILS_PERMISSION_TEST_CHILD";
+    let parent = std::os::unix::process::parent_id().to_string();
+    if std::env::var(CHILD).as_deref() == Ok(parent.as_str()) {
+        body();
+        return;
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", name, "--test-threads=1", "--nocapture"])
+        .env(CHILD, std::process::id().to_string());
+    // SAFETY: only umask(2) runs between fork and exec, in the child.
+    unsafe {
+        command.pre_exec(|| {
+            libc::umask(0o002);
+            Ok(())
+        });
+    }
+    let output = command.output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{name}: {}\n{stdout}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn recursive_private_directory_creates_every_missing_component_0700() {
+    under_umask_0002(
+        "recursive_private_directory_creates_every_missing_component_0700",
+        || {
+            let tmp = tempfile::tempdir().unwrap();
+            let first = tmp.path().join("state");
+            let target = first.join("sessions/current");
+            ensure_private_directory(&target).unwrap();
+            for path in [&first, &first.join("sessions"), &target] {
+                assert_eq!(mode(path), 0o700, "{}", path.display());
+            }
+        },
+    );
+}
+
+#[test]
+fn private_append_creates_every_missing_parent_0700_and_preserves_contents() {
+    under_umask_0002(
+        "private_append_creates_every_missing_parent_0700_and_preserves_contents",
+        || {
+            let tmp = tempfile::tempdir().unwrap();
+            let first = tmp.path().join("state");
+            let parent = first.join("sessions/current");
+            let target = parent.join("events.log");
+            open_private_append(&target)
+                .unwrap()
+                .write_all(b"one\n")
+                .unwrap();
+            open_private_append(&target)
+                .unwrap()
+                .write_all(b"two\n")
+                .unwrap();
+            for path in [&first, &first.join("sessions"), &parent] {
+                assert_eq!(mode(path), 0o700, "{}", path.display());
+            }
+            assert_eq!(mode(&target), 0o600);
+            assert_eq!(fs::read(&target).unwrap(), b"one\ntwo\n");
+        },
+    );
+}
+
+#[test]
+fn recursive_helpers_preserve_existing_parents_and_legacy_leaf_contracts() {
+    under_umask_0002(
+        "recursive_helpers_preserve_existing_parents_and_legacy_leaf_contracts",
+        || {
+            let tmp = tempfile::tempdir().unwrap();
+            let existing = tmp.path().join("existing");
+            fs::create_dir(&existing).unwrap();
+            fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
+            let leaf = existing.join("leaf");
+            fs::create_dir(&leaf).unwrap();
+            fs::set_permissions(&leaf, fs::Permissions::from_mode(0o775)).unwrap();
+            ensure_private_directory(&leaf).unwrap();
+            assert_eq!(
+                mode(&existing),
+                0o755,
+                "existing parents must not be chmod-ed"
+            );
+            assert_eq!(
+                mode(&leaf),
+                0o700,
+                "the legacy helper still tightens its existing leaf"
+            );
+            let log = existing.join("existing.log");
+            fs::write(&log, b"keep").unwrap();
+            fs::set_permissions(&log, fs::Permissions::from_mode(0o644)).unwrap();
+            open_private_append(&log)
+                .unwrap()
+                .write_all(b" append")
+                .unwrap();
+            assert_eq!(mode(&existing), 0o755);
+            assert_eq!(
+                mode(&log),
+                0o644,
+                "append retains its existing-file contract"
+            );
+            assert_eq!(fs::read(&log).unwrap(), b"keep append");
+        },
+    );
 }
 
 #[test]

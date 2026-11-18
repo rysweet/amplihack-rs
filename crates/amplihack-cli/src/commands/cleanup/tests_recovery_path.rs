@@ -20,11 +20,10 @@
 //! }
 //! pub(crate) fn ancestor_mode_ok(mode: u32) -> bool
 //! pub(crate) fn path_faults(dir: &Path) -> Vec<Fault>
-//! pub(crate) enum RootMode { NotOwned, Writable, Private, Tighten }
+//! pub(crate) enum RootMode { NotOwned, /* nonprivate modes */, Private }
 //! pub(crate) fn root_mode(uid: u32, euid: u32, mode: u32) -> RootMode
 //! pub(crate) fn prepare_work_root(root: &Path) -> anyhow::Result<()>
 //! pub(crate) fn shell_word(path: &Path) -> Option<String>
-//! fn tighten_root(root: &Path, expected: (u64, u64)) -> anyhow::Result<()>
 //! ```
 //!
 //! Paths in messages go through `commands::install::paths::sanitize_path`
@@ -164,15 +163,6 @@ fn kinds(faults: &[Fault]) -> Vec<(&'static str, PathBuf)> {
     faults.iter().map(fault).collect()
 }
 
-fn root_mode_name(mode: RootMode) -> &'static str {
-    match mode {
-        RootMode::NotOwned => "not-owned",
-        RootMode::Writable => "writable",
-        RootMode::Private => "private",
-        RootMode::Tighten => "tighten",
-    }
-}
-
 // ------------------------------------------------------------ pure rules
 
 #[test]
@@ -207,33 +197,20 @@ fn ancestor_rule_is_no_group_or_other_write_or_the_sticky_bit() {
 #[test]
 fn root_mode_sorts_owner_and_mode_bits() {
     let me = 1000;
-    for (mode, expected) in [
-        (0o700, "private"),
-        (0o2700, "private"),
-        (0o1700, "private"),
-        (0o40700, "private"),
-        (0o755, "tighten"),
-        (0o750, "tighten"),
-        (0o711, "tighten"),
-        (0o500, "tighten"),
-        (0o2755, "tighten"),
-        (0o40755, "tighten"),
-        (0o775, "writable"),
-        (0o770, "writable"),
-        (0o757, "writable"),
-        (0o777, "writable"),
-        (0o1777, "writable"),
-    ] {
+    for mode in [0o700, 0o2700, 0o1700, 0o40700] {
         assert_eq!(
-            root_mode_name(root_mode(me, me, mode)),
-            expected,
+            root_mode(me, me, mode),
+            RootMode::Private,
             "an owned root with mode {mode:o}"
         );
     }
-    for mode in [0o700, 0o755, 0o775] {
+    for mode in [0o755, 0o750, 0o711, 0o500, 0o2755, 0o775, 0o777] {
+        assert_ne!(root_mode(me, me, mode), RootMode::Private);
+    }
+    for mode in [0o700, 0o755, 0o775, 0o777] {
         assert_eq!(
-            root_mode_name(root_mode(me + 1, me, mode)),
-            "not-owned",
+            root_mode(me + 1, me, mode),
+            RootMode::NotOwned,
             "a root owned by another uid, mode {mode:o}"
         );
     }
@@ -408,17 +385,24 @@ fn path_faults_names_a_folder_it_cannot_inspect() {
 // ----------------------------------------------------- the work root itself
 
 #[test]
-fn an_owned_root_without_group_or_other_write_is_set_to_0700() {
+fn an_owned_nonprivate_root_is_named_with_chmod_700_and_left_unchanged() {
     let (_tmp, t) = private_root();
     for mode in [0o755, 0o750, 0o711, 0o500, 0o2755] {
         let root = dir(&t.join(format!("w{mode:o}")), mode);
-        prepare_work_root(&root)
-            .unwrap_or_else(|e| panic!("a {mode:04o} root must be accepted: {e:#}"));
+        let result = prepare_work_root(&root);
         assert_eq!(
             mode_of(&root),
-            octal(0o700),
-            "a {mode:04o} root must end 0700, setgid and sticky cleared"
+            octal(mode),
+            "an existing {mode:04o} root must never be changed"
         );
+        let text = message(result);
+        for part in [
+            root.display().to_string(),
+            format!("mode {mode:04o}"),
+            format!("chmod 700 {}", word(&root)),
+        ] {
+            assert!(text.contains(&part), "missing {part:?}: {text}");
+        }
     }
 }
 
@@ -526,16 +510,16 @@ fn an_unreadable_root_stops_with_chmod_700_and_is_unchanged() {
 }
 
 #[test]
-fn a_root_replaced_after_inspection_is_not_changed() {
+fn repeated_validation_never_changes_an_existing_root() {
     let (_tmp, t) = private_root();
     let root = dir(&t.join("work"), 0o755);
-    let meta = fs::symlink_metadata(&root).unwrap();
-    let inspected = (meta.dev(), meta.ino());
     let parked = t.join("parked");
+    let first = prepare_work_root(&root);
+    assert_eq!(mode_of(&root), "0755", "the first check changed the root");
+    assert!(first.is_err());
     fs::rename(&root, &parked).unwrap();
     dir(&root, 0o755);
-
-    let text = message(tighten_root(&root, inspected));
+    let text = message(prepare_work_root(&root));
     assert!(text.contains(&root.display().to_string()), "{text}");
     assert_eq!(
         mode_of(&root),
@@ -547,13 +531,34 @@ fn a_root_replaced_after_inspection_is_not_changed() {
         octal(0o755),
         "the inspected folder is not reached"
     );
+}
 
-    let meta = fs::symlink_metadata(&root).unwrap();
-    tighten_root(&root, (meta.dev(), meta.ino())).unwrap();
-    assert_eq!(
-        mode_of(&root),
-        octal(0o700),
-        "the same folder is set to 0700"
+#[test]
+fn ownership_diagnostic_names_both_uids_and_requires_a_correctly_owned_location() {
+    let (_tmp, t) = private_root();
+    let root = t.join("work");
+    let owner = euid().wrapping_add(1);
+    let text = describe(
+        &root,
+        &[Fault::NotOwned {
+            path: root.clone(),
+            uid: owner,
+        }],
+    );
+    for part in [
+        root.display().to_string(),
+        owner.to_string(),
+        euid().to_string(),
+    ] {
+        assert!(text.contains(&part), "missing {part:?}: {text}");
+    }
+    assert!(
+        text.contains("correctly owned") || text.contains("owned by"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("chmod"),
+        "mode advice cannot fix ownership: {text}"
     );
 }
 
@@ -623,7 +628,7 @@ fn no_mode_changes_when_runs_stops_the_run() {
     assert_eq!(
         mode_of(&root),
         octal(0o755),
-        "every check runs before the root's mode is changed"
+        "an existing root is never changed"
     );
     assert!(
         !text.contains("set it to 0700"),

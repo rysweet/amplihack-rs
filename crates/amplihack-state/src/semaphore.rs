@@ -98,4 +98,49 @@ mod tests {
         let flag = AtomicFlag::new(dir.path().join("gone.flag"));
         flag.clear().unwrap(); // should not error
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_flag_creates_0700_parents_and_a_0600_file_under_umask_0002() {
+        use crate::permission_tests::{mode, under_umask_0002};
+        under_umask_0002(
+            "semaphore::tests::private_flag_creates_0700_parents_and_a_0600_file_under_umask_0002",
+            || {
+                let dir = tempfile::tempdir().unwrap();
+                let parent = dir.path().join("session/nested");
+                let flag = AtomicFlag::new_private(parent.join("initialized"));
+                assert!(flag.set().unwrap());
+                assert_eq!(mode(&dir.path().join("session")), 0o700);
+                assert_eq!(mode(&parent), 0o700);
+                assert_eq!(mode(flag.path()), 0o600);
+                assert!(
+                    !flag.set().unwrap(),
+                    "private creation retains exclusive-create semantics"
+                );
+                flag.clear().unwrap();
+                assert!(!flag.is_set());
+            },
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_flag_preserves_existing_parents_and_generic_flag_modes() {
+        use crate::permission_tests::{mode, under_umask_0002};
+        use std::os::unix::fs::PermissionsExt;
+        under_umask_0002(
+            "semaphore::tests::private_flag_preserves_existing_parents_and_generic_flag_modes",
+            || {
+                let dir = tempfile::tempdir().unwrap();
+                fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+                let private = AtomicFlag::new_private(dir.path().join("private.flag"));
+                assert!(private.set().unwrap());
+                assert_eq!(mode(dir.path()), 0o755);
+                let generic = AtomicFlag::new(dir.path().join("generic/flag"));
+                assert!(generic.set().unwrap());
+                assert_eq!(mode(generic.path()), 0o664);
+                assert_eq!(mode(generic.path().parent().unwrap()), 0o775);
+            },
+        );
+    }
 }

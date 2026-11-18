@@ -22,11 +22,11 @@
 //! - T2: a `0775` folder above the work root, made by hand. The run stops,
 //!   the message names the folder, its mode and `chmod g-w`, and the work
 //!   root is not created.
-//! - T3: an owned work root at `0755`. The run sets it to `0700`, says so
-//!   on stderr, and succeeds.
+//! - T3: owned work roots at `0755`, `0750`, and `0775`. The run stops
+//!   without changing the root or executing a step, with a usable correction.
 //! - T4: the runner's own admission check fails on a `0755`
-//!   `<work root>/recovery-index`. The message names the work root and the
-//!   run folder and ends with the runner's reason.
+//!   `<work root>/recovery-index`. The message names that exact folder,
+//!   its mode and correction, and preserves the runner's reason.
 //!
 //! The auto-drive review allocation under umask 0002 is covered by
 //! `issue_2096_review_isolation::review_allocate_under_umask_0002_makes_folders_the_trust_scan_keeps`
@@ -365,36 +365,40 @@ fn a_group_writable_folder_above_the_work_root_is_named() {
 // ---------------------------------------------------------------------- T3
 
 #[test]
-fn an_owned_0755_work_root_is_set_to_0700() {
-    let f = Fixture::new(0o700, "{}");
-    let work = f.root.join("work");
-    dir_with_mode(&work, 0o755);
-    let out = f.run(f.command().env("AMPLIHACK_WORK_ROOT", &work));
-    let stderr = String::from_utf8_lossy(&out.stderr);
-
-    assert!(
-        out.status.success(),
-        "the run must succeed:\n{}",
-        text(&out)
-    );
-    assert!(f.step_ran(), "the step never ran:\n{}", text(&out));
-    assert_eq!(mode_of(&work), octal(0o700), "the work root ends 0700");
-    let notice = format!(
-        "amplihack: work root {} had mode 0755; set it to 0700, the mode the recovery store \
-         requires",
-        work.display()
-    );
-    assert!(
-        stderr.lines().any(|line| line == notice),
-        "stderr must hold the notice {notice:?}:\n{}",
-        text(&out)
-    );
+fn an_owned_nonprivate_work_root_stops_without_changing_permissions_or_running_steps() {
+    for mode in [0o755, 0o750, 0o775] {
+        let f = Fixture::new(0o700, "{}");
+        let work = f.root.join("work 'quoted'");
+        dir_with_mode(&work, mode);
+        let out = f.run(f.command().env("AMPLIHACK_WORK_ROOT", &work));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            mode_of(&work),
+            octal(mode),
+            "the root changed:\n{}",
+            text(&out)
+        );
+        assert!(!out.status.success(), "mode {mode:04o}:\n{}", text(&out));
+        assert!(!f.step_ran(), "no step may run:\n{}", text(&out));
+        for part in [
+            work.display().to_string(),
+            format!("mode {mode:04o}"),
+            format!("chmod 700 {}", word(&work)),
+        ] {
+            assert!(stderr.contains(&part), "missing {part:?}:\n{}", text(&out));
+        }
+        assert_eq!(
+            fs::read_dir(&work).unwrap().count(),
+            0,
+            "no private state is created"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------- T4
 
 #[test]
-fn a_failed_admission_names_the_work_root_the_run_folder_and_the_runners_reason() {
+fn a_failed_admission_names_the_actual_recovery_child_and_the_runners_reason() {
     let f = Fixture::new(0o700, "\n  issue_number: \"\"");
     crate::support::git_fixture::init_with_commit(&f.project);
     let work = f.root.join("work");
@@ -414,22 +418,32 @@ fn a_failed_admission_names_the_work_root_the_run_folder_and_the_runners_reason(
         text(&out)
     );
     assert!(!f.step_ran(), "no step may run:\n{}", text(&out));
-    let start = format!(
-        "Error: cannot durably admit recipe launch (work root {}, run folder {}/runs/",
-        work.display(),
-        work.display()
-    );
-    let end = "): recovery directory must be owned and mode 0700";
-    assert!(
-        stderr
-            .lines()
-            .any(|line| line.starts_with(&start) && line.ends_with(end)),
-        "stderr must hold one line starting {start:?} and ending {end:?}:\n{}",
-        text(&out)
-    );
+    for part in [
+        index.display().to_string(),
+        "0755".into(),
+        format!("chmod 700 {}", word(&index)),
+        "recovery directory must be owned and mode 0700".into(),
+    ] {
+        assert!(stderr.contains(&part), "missing {part:?}:\n{}", text(&out));
+    }
     assert_eq!(
         mode_of(&index),
         octal(0o755),
         "the runner's folders are never changed"
+    );
+}
+
+#[test]
+fn recipe_run_creates_missing_private_work_root_components_under_umask_0002() {
+    let f = Fixture::new(0o700, "{}");
+    let parent = f.root.join("new-state");
+    let work = parent.join("nested/work");
+    let out = f.run(f.command().env("AMPLIHACK_WORK_ROOT", &work));
+    assert!(out.status.success() && f.step_ran(), "{}", text(&out));
+    let open = not_private(&parent);
+    assert!(
+        open.is_empty(),
+        "nonprivate intermediate state:\n{}",
+        open.join("\n")
     );
 }

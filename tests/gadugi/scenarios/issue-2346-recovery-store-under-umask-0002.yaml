@@ -11,8 +11,9 @@ description: >
   ~/.amplihack at 700 and everything under the work root at 700 or 600; that
   a 0775 folder made by hand above the work root stops the run with the
   folder, group-writable, 0775 and `chmod g-w <folder>` named on stderr and
-  the work root not created; and that an owned 0755 work root is set to 0700
-  with a notice. No agent CLI is started. CI's Install Smoke Test job runs the
+  the work root not created; and that owned 0755, 0750 and 0775 work roots stop
+  the run unchanged with their exact path, mode and chmod 700 correction.
+  No agent CLI is started. CI's Install Smoke Test job runs the
   driver script directly against the binary it installs; CI does not run
   gadugi-test, so this file is for running the same cases through gadugi-test
   by hand.
@@ -57,8 +58,8 @@ assertions:
     params:
       target: stdout
       expected: "PASS: group_writable_ancestor_is_named - "
-  - name: owned-0755-work-root-set-to-0700
+  - name: owned-nonprivate-work-roots-unchanged
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: owned_0755_work_root_set_to_0700 - "
+      expected: "PASS: owned_nonprivate_work_roots_unchanged - "
