@@ -171,8 +171,10 @@ Configuration is test-only and stored under `tests/gadugi/issue-2806/`:
 
 | Path | Role |
 | --- | --- |
-| `fixture/main.rs` | Driver and explicit fixture entry points. |
-| `fixture/environment.rs` | Private environments, asset staging, and repository setup. |
+| `fixture/main.rs` | Explicit driver and fixture entry points, verified client transports. |
+| `fixture/driver.rs` | Isolated case setup and real workflow/lifecycle execution. |
+| `fixture/responses.rs` | Rendered-task adaptation and action-backed responses. |
+| `fixture/environment.rs` | Private environments, confined paths, and sanitized Git observations. |
 | `fixture/agent.rs` | Claude and Codex adapters and response-contract validation. |
 | `fixture/hosting.rs` | Typed persistent hosting state and invocation records. |
 | `fixture/lifecycle.rs` | Pipe events, tracked processes, interruption, and cleanup. |
@@ -277,3 +279,12 @@ records in `tests/gadugi/issue-2806/baseline/e7/`:
 The remaining assertions have no allowance from this run. Its build and drive
 launch failures are harness errors, its other-stopped sweep lacked the required
 existing candidate, and its removal-failure setup did not produce an access error.
+
+CI [run 44379660947](https://github.com/rysweet/amplihack-rs/actions/runs/44379660947)
+at `adb27f70a7cd7fcd1ebb4fec4696d1b541c6810d` supplies four further #2785
+records in `baseline/0b26/`: the other-stopped case's commit, dirty-content, and
+explanation assertions, plus repeated removal-failure reporting. The stopped
+runtime was observed intact after interruption and before the second recorded
+run's sweep. The removal case retains both real permission-denied reports and
+both exit codes. These allowances preserve each original assertion; passing
+behavior takes precedence over an allowance.

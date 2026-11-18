@@ -354,6 +354,10 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         json!({"platform_state":"OPEN","action":"continue","blockers":[],"attempts":[]}).to_string()
     } else if task.starts_with("Read PR #") && task.contains("resolved_concerns") {
         let pr = host(case)?.pr(1)?;
+        ensure!(
+            observe_git(&repo, &["rev-parse", "HEAD"])? == pr.head_sha,
+            "round context local worktree differs from hosted head"
+        );
         json!({"pr":"1","head_sha":pr.head_sha,"resolved_concerns":"","round_label":task_json(task, "Return JSON ")?["round_label"],"blockers":[],"attempts":[]}).to_string()
     } else if task.starts_with("# Crusty review") {
         let reviewed = task_field(task, "Read the exact commit `", "`")?.to_string();
@@ -371,13 +375,49 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         .starts_with("Use noninteractive command execution with GH_PAGER=cat. Post this Crusty")
     {
         let pr = host(case)?.pr(1)?;
-        post(
-            case,
-            &format!(
-                "Crusty verdict: CLEAN at {}\n\nObserved answer implementation and verified tests.",
-                pr.head_sha
-            ),
+        let line = format!("Crusty verdict: CLEAN at {}", pr.head_sha);
+        let mut hosting = host(case)?;
+        let comments = hosting.invoke(
+            &repo,
+            &[
+                "api",
+                "repos/{owner}/{repo}/issues/1/comments",
+                "--paginate",
+            ],
         )?;
+        ensure!(
+            comments.exit_code == 0,
+            "cannot read prior verdict comments"
+        );
+        let comments: Vec<Value> = serde_json::from_slice(&comments.stdout)?;
+        if !comments.iter().any(|comment| {
+            comment["user"]["login"] == "fixture"
+                && comment["body"]
+                    .as_str()
+                    .is_some_and(|body| body.lines().next() == Some(line.as_str()))
+        }) {
+            let body = case
+                .evidence
+                .join(format!("verdict-{}.txt", uuid::Uuid::new_v4()));
+            fs::write(
+                &body,
+                format!(
+                    "{line}\n\nObserved answer function and content in the exact reviewed commit.\n"
+                ),
+            )?;
+            let result = hosting.invoke(
+                &repo,
+                &[
+                    "pr",
+                    "comment",
+                    "1",
+                    "--body-file",
+                    body.to_str().context("verdict body path")?,
+                ],
+            )?;
+            fs::remove_file(body)?;
+            ensure!(result.exit_code == 0, "posting verdict failed");
+        }
         json!({"verdict_posted":"true","head_sha":pr.head_sha}).to_string()
     } else if task.starts_with("Assess whether this Crusty review objective is complete") {
         let record = task_path(case, task, "Read the round record at\n", " and its")?;

@@ -53,6 +53,23 @@ fn argument(args: &[String], key: &str) -> Result<PathBuf> {
     Ok(PathBuf::from(value))
 }
 
+fn executable_identity(path: &Path) -> Result<Value> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let resolved = path.canonicalize()?;
+    let mut file = fs::File::open(&resolved)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let length = file.read(&mut buffer)?;
+        if length == 0 {
+            break;
+        }
+        digest.update(&buffer[..length]);
+    }
+    Ok(json!({"path":path,"resolved":resolved,"sha256":format!("{:x}",digest.finalize())}))
+}
+
 pub fn run_all(args: &[String]) -> Result<()> {
     let evidence_root = argument(args, "--evidence")?;
     private_dir(&evidence_root)?;
@@ -90,7 +107,10 @@ pub fn run_all(args: &[String]) -> Result<()> {
     fs::set_permissions(&run_root, fs::Permissions::from_mode(0o700))?;
     save(
         &evidence_root.join("identity.json"),
-        &json!({"tested_sha":sha,"production_base":BASE,"runner_revision":fs::read_to_string(argument(args,"--assets")?.join("claude-plugin/recipe-runner.rev"))?.trim(),"private_root":run_root,"network_interfaces":network}),
+        &json!({"tested_sha":sha,"production_base":BASE,"runner_revision":fs::read_to_string(argument(args,"--assets")?.join("claude-plugin/recipe-runner.rev"))?.trim(),"private_root":run_root,"network_interfaces":network,
+            "executables":{"amplihack":executable_identity(&argument(args,"--amplihack")?)?,
+                "runner":executable_identity(&argument(args,"--runner")?)?,
+                "fixture":executable_identity(&std::env::current_exe()?)?}}),
     )?;
     for name in evidence::CASES {
         let case = IsolatedCase::create(&run_root.join(name))?;
@@ -299,7 +319,7 @@ gpgsign = false
     )?;
     save(
         &case.evidence.join("isolation.json"),
-        &json!({"root":case.root,"mode":"0700","home":case.home,"work_root":case.work,"origin":origin,"clients":[case.root.join("bin/gh"),case.root.join("bin/claude"),case.root.join("bin/codex")]}),
+        &json!({"root":case.root,"mode":format!("{:04o}",fs::metadata(&case.root)?.permissions().mode() & 0o777),"environment_keys":case.allowed_environment_keys(),"home":case.home,"work_root":case.work,"origin":origin,"clients":[case.root.join("bin/gh"),case.root.join("bin/claude"),case.root.join("bin/codex")]}),
     )?;
     if name != "build" {
         seed_published(case)?;
