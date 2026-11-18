@@ -2989,7 +2989,7 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
 // these scenarios with the real gadugi-test, so the harnesses read the
 // shipped step body with `tests/gadugi/recipe-step-command.sh` (awk) rather
 // than python3 and PyYAML.
-const HARNESS_STEPS: [(&str, &str, &str); 2] = [
+const HARNESS_STEPS: [(&str, &str, &str); 3] = [
     (
         "run-step-03b.sh",
         "workflow-prep",
@@ -2999,6 +2999,11 @@ const HARNESS_STEPS: [(&str, &str, &str); 2] = [
         "run-merge-validations.sh",
         "quality-audit-cycle",
         "merge-validations",
+    ),
+    (
+        "run-issue-2784-existing-pr-other-base-scenario.sh",
+        "workflow-publish",
+        "step-16-create-draft-pr",
     ),
 ];
 
