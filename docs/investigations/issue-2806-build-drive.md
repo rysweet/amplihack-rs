@@ -229,3 +229,11 @@ pushed checkpoint commits and hooks. Do not run this scenario on a factory host,
 access real user configuration, introduce waits/retries/timeout increases or
 production guards, change versions, rewrite contribution history, or merge this
 PR from the implementation step.
+
+## Review corrections
+
+Finalization outcome parsing requires a nonempty string state, a JSON boolean
+or the shell helper's exact `true`/`false` string, and a normal process exit.
+Malformed evidence is a harness failure before classification. The #2343
+fingerprints now include success and exit values already present in the original
+baseline observations; changed values cannot receive those allowances.

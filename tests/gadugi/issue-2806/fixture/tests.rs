@@ -1133,3 +1133,70 @@ fn isolated_commit_identity_is_accepted_by_the_real_workflow_resolver() {
             .starts_with("Issue 2806 <qa@example.com>")
     );
 }
+
+#[test]
+fn finalization_rejects_missing_or_mistyped_terminal_evidence() {
+    let valid = json!({"terminal_state":"BLOCKED_CI", "terminal_success":"false"});
+    assert_eq!(
+        evidence::finalization_outcome(&valid, Some(1)).unwrap(),
+        ("BLOCKED_CI".into(), false, 1)
+    );
+    assert!(evidence::finalization_outcome(&valid, None).is_err());
+    for field in ["terminal_state", "terminal_success"] {
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(evidence::finalization_outcome(&missing, Some(1)).is_err());
+        for bad in [
+            Value::Null,
+            json!(3),
+            json!([]),
+            json!({}),
+            json!("invalid"),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = bad;
+            assert!(evidence::finalization_outcome(&invalid, Some(1)).is_err());
+        }
+    }
+}
+
+#[test]
+fn finalization_allowances_match_baseline_state_success_and_exit() {
+    let (_temp, fixture) = case();
+    let mut report = Report::new(&fixture.evidence, BASE).unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/gadugi/issue-2806");
+    let allowances: Vec<Allowance> =
+        serde_json::from_slice(&fs::read(source.join("expected-failures.json")).unwrap()).unwrap();
+    for allowance in allowances
+        .into_iter()
+        .filter(|a| a.assertion_id.starts_with("finalization-"))
+    {
+        let baseline: Value =
+            serde_json::from_slice(&fs::read(source.join(&allowance.evidence_path)).unwrap())
+                .unwrap();
+        let mut observed: evidence::PendingFinalization =
+            serde_json::from_value(baseline["observations"].clone()).unwrap();
+        let target = fixture.evidence.join(&allowance.evidence_path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(source.join(&allowance.evidence_path), target).unwrap();
+        report.add_allowance(allowance.clone()).unwrap();
+        let classify = |observation: &evidence::PendingFinalization| {
+            report
+                .classify(Assertion::failed(
+                    &allowance.assertion_id.split('.').next().unwrap(),
+                    &allowance.assertion_id,
+                    FailureKind::Regression,
+                    &evidence::finalization_fingerprint(observation),
+                ))
+                .unwrap()
+        };
+        assert_eq!(classify(&observed), Outcome::Xfail { issue: 2343 });
+        observed.terminal_success = true;
+        assert_eq!(classify(&observed), Outcome::Fail);
+        observed.terminal_success = false;
+        for exit in [0, 2, 81] {
+            observed.exit_code = exit;
+            assert_eq!(classify(&observed), Outcome::Fail);
+        }
+    }
+}

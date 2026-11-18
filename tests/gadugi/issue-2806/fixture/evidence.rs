@@ -1,7 +1,7 @@
 //! Individual assertions retain failures and dependencies without inventing success.
 use super::environment::{confined_path, observe_git, private_dir};
 use super::hosting::HostingStore;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -291,6 +291,29 @@ pub struct PendingFinalization {
     pub terminal_success: bool,
     pub exit_code: i32,
 }
+/// The shell helper emits boolean strings; native JSON booleans are also accepted.
+/// Every other representation is malformed evidence, never an observed false.
+pub fn finalization_outcome(value: &Value, exit: Option<i32>) -> Result<(String, bool, i32)> {
+    let state = value["terminal_state"]
+        .as_str()
+        .filter(|state| !state.is_empty())
+        .context("typed terminal_state absent")?;
+    let success = match &value["terminal_success"] {
+        Value::Bool(value) => *value,
+        Value::String(value) if value == "true" => true,
+        Value::String(value) if value == "false" => false,
+        _ => anyhow::bail!("typed terminal_success absent or invalid"),
+    };
+    Ok((state.into(), success, exit.context("boundary signal exit")?))
+}
+
+pub fn finalization_fingerprint(observed: &PendingFinalization) -> String {
+    format!(
+        "{} with {} context; success={}; exit={}",
+        observed.terminal_state, observed.context, observed.terminal_success, observed.exit_code
+    )
+}
+
 pub fn validate_pending_prerequisites(observed: &PendingFinalization) -> Result<()> {
     ensure!(
         observed.origin_head == observed.pr_head

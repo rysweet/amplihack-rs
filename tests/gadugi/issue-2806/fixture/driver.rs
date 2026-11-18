@@ -622,6 +622,8 @@ fn finalization(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<
     fs::write(case.evidence.join("validate.stdout"), &output)?;
     fs::write(case.evidence.join("validate.stderr"), &completed.stderr)?;
     let terminal: Value = serde_json::from_str(&output)?;
+    let (terminal_state, terminal_success, exit_code) =
+        evidence::finalization_outcome(&terminal, completed.status.code())?;
     let fresh = HostingStore::open(&case.evidence.join("hosting.json"))?.pr(1)?;
     let observed = evidence::PendingFinalization {
         context: fault.into(),
@@ -636,13 +638,9 @@ fn finalization(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<
             super::hosting::Checks::Failed => "failed",
         }
         .into(),
-        terminal_state: terminal["terminal_state"]
-            .as_str()
-            .context("typed terminal_state absent")?
-            .into(),
-        terminal_success: terminal["terminal_success"] == "true"
-            || terminal["terminal_success"] == true,
-        exit_code: completed.status.code().context("boundary signal exit")?,
+        terminal_state,
+        terminal_success,
+        exit_code,
     };
     save(&case.evidence.join("pending-observation.json"), &observed)?;
     evidence::validate_pending_prerequisites(&observed).context(
@@ -653,7 +651,7 @@ fn finalization(case: &IsolatedCase, report: &mut Report, name: &str) -> Result<
         name,
         "classification",
         evidence::validate_pending_finalization(&observed).is_ok(),
-        &format!("{} with {fault} context", observed.terminal_state),
+        &evidence::finalization_fingerprint(&observed),
     )
 }
 

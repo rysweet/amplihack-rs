@@ -6,7 +6,7 @@
   "executed": true,
   "prerequisites_satisfied": true,
   "failure_kind": "regression",
-  "failure_fingerprint": "FAILED_INVALID_EVIDENCE with missing context",
+  "failure_fingerprint": "FAILED_INVALID_EVIDENCE with missing context; success=false; exit=1",
   "observations": {
     "context": "missing",
     "context_read_error": "NotFound",

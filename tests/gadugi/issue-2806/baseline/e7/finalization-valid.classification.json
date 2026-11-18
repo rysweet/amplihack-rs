@@ -6,7 +6,7 @@
   "executed": true,
   "prerequisites_satisfied": true,
   "failure_kind": "regression",
-  "failure_fingerprint": "FAILED_IMPLEMENTATION with valid context",
+  "failure_fingerprint": "FAILED_IMPLEMENTATION with valid context; success=false; exit=1",
   "observations": {
     "context": "valid",
     "context_read_error": null,

@@ -6,7 +6,7 @@
   "executed": true,
   "prerequisites_satisfied": true,
   "failure_kind": "regression",
-  "failure_fingerprint": "FAILED_INVALID_EVIDENCE with unreadable context",
+  "failure_fingerprint": "FAILED_INVALID_EVIDENCE with unreadable context; success=false; exit=1",
   "observations": {
     "context": "unreadable",
     "context_read_error": "PermissionDenied",
