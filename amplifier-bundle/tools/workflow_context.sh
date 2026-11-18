@@ -2,11 +2,21 @@
 # Private model-neutral context transport. Presence selects a whole cohort;
 # invalid authoritative data never falls back to a stale secondary source.
 # Source once in the caller before command substitutions to freeze the file.
+#
+# Absence and corruption are separate answers (#2343). A context file that is
+# missing, unreadable, a symlink, a directory or not one JSON object carries no
+# data at all, so every read of it reports absence (status 2) and says nothing
+# on stderr; the run's real outcome, not this file, then decides the result. A
+# value that IS present but unparseable, of the wrong type, or carrying a NUL
+# byte is corrupt data and keeps status 3 with its diagnostic, so a typo in a
+# key name can never read as absence. The file's state is decided once, here,
+# and every reader follows that one decision without re-checking the file.
 _workflow_context_has_file=${AMPLIHACK_CONTEXT_FILE+x}
+# 0 = one readable JSON object; 2 = nothing readable at that path.
 _workflow_context_file_status=2
 _workflow_context_file_snapshot=''
 if [[ ${AMPLIHACK_CONTEXT_FILE+x} ]]; then
-  _workflow_context_file_status=3
+  # A symlink's target is never opened, and a directory is never read (#1538).
   if [[ -n $AMPLIHACK_CONTEXT_FILE && -f $AMPLIHACK_CONTEXT_FILE && ! -L $AMPLIHACK_CONTEXT_FILE ]] && command -v jq >/dev/null 2>&1; then
     if _workflow_context_file_snapshot=$(jq -cs 'if length == 1 and (.[0]|type) == "object" then .[0] else error("context") end' 2>/dev/null < "$AMPLIHACK_CONTEXT_FILE"); then
       _workflow_context_file_status=0
@@ -116,7 +126,8 @@ workflow_context_read() {
     return 0
   fi
   if [[ $tier == file ]]; then
-    [[ $_workflow_context_file_status == 0 ]] || { _workflow_context_invalid; return 3; }
+    # No readable file means no data, not bad data: report absence (#2343).
+    [[ $_workflow_context_file_status == 0 ]] || return 2
     if ! raw=$(printf '%s' "$_workflow_context_file_snapshot" | jq -c --arg key "$1" 'if has($key) then .[$key] else empty end'); then
       _workflow_context_invalid; return 3
     fi
@@ -129,6 +140,11 @@ workflow_context_read() {
     if [[ $_wc_type == string || $_wc_type == bool || $_wc_type == number || $_wc_type == report ]]; then
       printf '%s' "$raw"; return 0
     fi
+    # #1726: an object-typed key the recipe declares with an empty default and
+    # no step has set yet holds no object. That is an unset key, not a corrupt
+    # one. The name is still present, so the cohort stays canonical and the
+    # stale legacy scalar remains suppressed exactly as #1538 requires.
+    [[ -n $raw ]] || return 2
   fi
   case "$_wc_type" in
     object)
