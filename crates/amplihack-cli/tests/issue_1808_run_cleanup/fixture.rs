@@ -145,14 +145,17 @@ fn resolve_tool(tool: &str) -> Option<PathBuf> {
     found.starts_with('/').then(|| PathBuf::from(found))
 }
 
+/// `path` and every missing parent at 0700 whatever the umask, and `path`
+/// itself set to 0700 when it already existed (#2346).
 pub fn mkdir_0700(path: &Path) {
-    fs::create_dir_all(path).unwrap();
+    crate::support::private_tempdir::private_dir_all(path);
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 impl Fx {
     pub fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        // 0700 whatever the umask: the work roots lie below it (#2346).
+        let tmp = crate::support::private_tempdir::private_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         mkdir_0700(&root.join("tmp"));
         let proc = FakeProc::new_in(root.join("tmp"));
