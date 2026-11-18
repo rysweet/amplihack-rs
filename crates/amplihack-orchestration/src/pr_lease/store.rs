@@ -120,13 +120,13 @@ impl FileLeaseStore {
     /// Create a store rooted at `dir`, creating it `0o700` if missing.
     pub fn new(dir: impl Into<PathBuf>) -> Result<Self, LeaseError> {
         let dir = dir.into();
-        std::fs::create_dir_all(&dir)?;
+        amplihack_utils::secure_files::create_private_directories(&dir)?;
         set_dir_permissions(&dir)?;
         Ok(Self { dir })
     }
 
     fn atomic_file(&self, key: &LeaseKey) -> AtomicJsonFile {
-        AtomicJsonFile::new(self.dir.join(key.file_slug()))
+        AtomicJsonFile::new_private(self.dir.join(key.file_slug()))
     }
 }
 

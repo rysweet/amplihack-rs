@@ -69,7 +69,7 @@ pub fn onboarding_declined(root: &Path) -> bool {
 pub fn mark_onboarding_declined(root: &Path) -> io::Result<()> {
     let path = onboarding_declined_path(root);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        crate::state_dir::create_private_dir_all(parent)?;
     }
-    std::fs::write(&path, b"declined\n")
+    amplihack_utils::secure_files::write_private_file(&path, b"declined\n")
 }

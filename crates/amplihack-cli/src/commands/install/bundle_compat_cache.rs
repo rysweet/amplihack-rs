@@ -217,14 +217,14 @@ fn write_cache(cache_path: &Path, entry: &CacheEntry) {
         );
         return;
     }
-    if fs::create_dir_all(parent).is_err() {
+    if amplihack_utils::secure_files::create_private_directories(parent).is_err() {
         return;
     }
     let Ok(encoded) = serde_json::to_string(entry) else {
         return;
     };
     let tmp = parent.join(CACHE_TMP);
-    if let Err(err) = fs::write(&tmp, encoded) {
+    if let Err(err) = amplihack_utils::secure_files::write_private_file(&tmp, encoded) {
         tracing::debug!("bundle_compat: could not write cache tempfile: {err}");
         return;
     }

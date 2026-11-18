@@ -58,10 +58,7 @@ pub(super) fn already_completed(dirs: &ProjectDirs, session_id: &str) -> bool {
 
 pub(super) fn mark_complete(dirs: &ProjectDirs, session_id: &str) -> anyhow::Result<()> {
     let semaphore = completion_semaphore(dirs, session_id);
-    if let Some(parent) = semaphore.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(semaphore, "")?;
+    amplihack_state::AtomicFlag::new_private(semaphore).set()?;
     Ok(())
 }
 
@@ -76,7 +73,7 @@ pub(super) fn write_summary(
     messages: &[TranscriptMessage],
 ) -> anyhow::Result<()> {
     let session_dir = dirs.session_power_steering(session_id);
-    fs::create_dir_all(&session_dir)?;
+    crate::state_dir::create_private_dir_all(&session_dir)?;
 
     let first_user = analysis::first_user_message(messages).unwrap_or("unknown task");
     let final_assistant =
@@ -91,6 +88,6 @@ pub(super) fn write_summary(
         final_assistant.trim()
     );
 
-    fs::write(session_dir.join("summary.md"), summary)?;
+    amplihack_utils::secure_files::write_private_file(session_dir.join("summary.md"), summary)?;
     Ok(())
 }

@@ -4,7 +4,7 @@
 use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Component, Path, PathBuf};
 
 /// The folder of stable execution storage under the work root.
@@ -134,19 +134,8 @@ pub(crate) fn validate(path: &Path, home: &Path) -> Result<()> {
             if !meta.is_dir() {
                 bail!("work root {} is not a folder", path.display());
             }
-            // SAFETY: geteuid has no preconditions and cannot fail.
-            let euid = unsafe { libc::geteuid() };
-            if meta.uid() != euid {
-                bail!("work root {} is not owned by you", path.display());
-            }
-            if meta.mode() & 0o022 != 0 {
-                bail!(
-                    "work root {} is writable by group or others (mode {:04o}); fix it with \
-                     `chmod 700 {}`",
-                    path.display(),
-                    meta.mode() & 0o7777,
-                    path.display()
-                );
+            if let Some(fault) = super::recovery_path::private_directory_fault(path, &meta) {
+                bail!(super::recovery_path::root_line(path, &fault));
             }
             Ok(())
         }
@@ -167,8 +156,6 @@ impl WorkRoot {
                 .mode(0o700)
                 .create(&self.path)
                 .with_context(|| format!("cannot create work root {}", self.path.display()))?;
-            fs::set_permissions(&self.path, fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("cannot set mode 0700 on {}", self.path.display()))?;
         }
         Ok(())
     }
@@ -210,8 +197,7 @@ pub(crate) fn create_private_dir_all(dir: &Path) -> Result<()> {
         .mode(0o700)
         .create(dir)
         .with_context(|| format!("cannot create {}", dir.display()))?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("cannot set mode 0700 on {}", dir.display()))
+    Ok(())
 }
 
 #[cfg(test)]

@@ -148,7 +148,7 @@ pub fn lock_exclusive_timeout_with(
 /// On Unix the directory mode is set to `0o700`. On non-Unix platforms
 /// the directory is created with default permissions.
 pub fn ensure_private_directory(path: &Path) -> io::Result<()> {
-    fs::create_dir_all(path)?;
+    create_private_directories(path)?;
 
     #[cfg(unix)]
     {
@@ -166,7 +166,7 @@ pub fn ensure_private_directory(path: &Path) -> io::Result<()> {
 /// On non-Unix platforms the file is created with default permissions.
 pub fn open_private_append(path: &Path) -> io::Result<fs::File> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        create_private_directories(parent)?;
     }
 
     #[cfg(unix)]
@@ -183,6 +183,41 @@ pub fn open_private_append(path: &Path) -> io::Result<fs::File> {
     {
         fs::OpenOptions::new().create(true).append(true).open(path)
     }
+}
+
+/// Write a state file, requesting mode 0600 for a new file on Unix.
+/// Existing permissions are preserved. Parent directories must exist.
+/// The final component is opened without following a symlink on Unix.
+pub fn write_private_file(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+    use std::io::Write;
+    open_private_write(path.as_ref())?.write_all(bytes.as_ref())
+}
+
+/// Open a state file for writing, requesting mode 0600 for a new file.
+/// Truncates an existing file while preserving its permissions. Parents must
+/// exist; on Unix the final component is opened without following symlinks.
+pub fn open_private_write(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
+}
+
+/// Create missing directory components with mode 0700 on Unix, leaving
+/// existing directories and their permissions unchanged.
+pub fn create_private_directories(path: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)
 }
 
 #[cfg(test)]

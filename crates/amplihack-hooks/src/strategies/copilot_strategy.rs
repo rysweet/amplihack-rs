@@ -52,9 +52,11 @@ impl CopilotStrategy {
     fn write_dynamic_context(&self, context: &str) -> Result<()> {
         let path = self.dynamic_context_path();
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+            crate::state_dir::create_private_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
         }
-        fs::write(&path, context).with_context(|| format!("writing {}", path.display()))?;
+        amplihack_utils::secure_files::write_private_file(&path, context)
+            .with_context(|| format!("writing {}", path.display()))?;
         debug!("wrote dynamic context to {}", path.display());
         Ok(())
     }

@@ -193,7 +193,7 @@ fn open_lock_file(path: &Path) -> Result<File> {
         // 0700 whatever the umask, and an existing one is left as it is.
         crate::private_dir::ensure_private_leaf_dir(parent)
             .with_context(|| format!("failed to create {} with mode 0700", parent.display()))?;
-        std::fs::create_dir_all(parent)
+        amplihack_utils::secure_files::create_private_directories(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let mut options = OpenOptions::new();

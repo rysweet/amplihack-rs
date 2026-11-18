@@ -91,13 +91,14 @@ The work root does not change where they are written.
 The work root must be an absolute path. It is refused if it is `/`, your home
 folder, an ancestor of your home folder, a system folder such as `/usr` or
 `/etc`, the system temporary folder, or the root of a git checkout. If the
-folder already exists it must be owned by you and must not be writable by
-group or others. An existing work root that you own and that has no group or
-other write bit, such as one at `0755`, is set to `0700` by the next
-`recipe run`, which prints one line saying so. Every folder above the work
-root must have no group or other write bit, or have the sticky bit, as `/tmp`
-does. New folders under the work root are created with mode `0700` and files
-with `0600`, whatever your umask. See
+folder already exists it must be owned by the effective user and have
+permission bits `0700`. Existing roots at `0755`, `0750` and `0775` stop
+`recipe run` with their exact path, actual mode and a `chmod 700` correction;
+permissions are left unchanged. Every folder above the work root must have
+no group or other write bit, or have the sticky bit, as `/tmp` does. Private
+directory creation requests `0700` and private file creation requests `0600`,
+including under umask `0002`. Ordinary Git checkout contents retain repository
+permissions. See
 [Work root permissions](../reference/recipe-command.md#work-root-permissions)
 for the full rules and the messages.
 
@@ -1400,11 +1401,11 @@ export TMPDIR=/tmp
 amplihack recipe run default-workflow --dry-run -c task_description="Check plan"
 ```
 
-**`work root ... is writable by group or others (mode 0775)`.** The work
-root was created under umask `0002`, or changed by hand, so group members can
-write to it. amplihack does not change it, because entries another user made
-there would stay. Check what is inside, then run the command from the
-message:
+**An existing work root has mode `0755`, `0750` or `0775`.** Recovery requires
+an owned root with permission bits `0700`. amplihack names the actual path
+and mode and leaves them unchanged. Inspect the folder, especially if it was
+previously writable by other users, then run the correction from the message.
+For the default work root:
 
 ```bash
 ls -la ~/.amplihack/work
@@ -1443,34 +1444,31 @@ it, setting `AMPLIHACK_WORK_ROOT` makes `AMPLIHACK_WORK_ROOT_EXPLICIT` default
 to `1`, and new worktrees go under the work root instead (see
 [Worktree location](#worktree-location)). Leave it out if you want that.
 
-**`runs folder is not private`.** `<work root>/runs` was changed by hand
-from the `0700` amplihack gave it. Run the `chmod 700` from the message.
-
-**`amplihack: work root ... had mode 0755; set it to 0700`.** This is a
-notice, not an error. The work root had read or search bits for group or
-others but no write bit, so amplihack made it private and the run went on.
-Nothing needs to be done.
+**`runs folder is not private`.** `<work root>/runs` must be owned by the
+effective user with permission bits `0700`. For a mode failure, inspect the
+folder and run the printed `chmod 700` correction. For a foreign owner, use
+correctly owned storage; changing mode alone cannot fix ownership.
 
 **`cannot durably admit recipe launch (work root ..., run folder ...)`.**
-The runner's own check of the recovery store failed after the check in
-`recipe run` passed. The message ends with the runner's reason, for example
-`recovery directory must be owned and mode 0700`, but names no mode and
-prints no `chmod`. Check the owner and mode of the two folders named, of
-`recovery/` in the run folder and of `recovery-index/` in the work root. Each
-must be yours and `700`. Set `RUN` to the run folder from the message:
+The runner's check failed after initial validation. The message preserves the
+runner's reason and adds the observed failing path, such as
+`<work root>/recovery-index`, a current identity directory, recovery document
+or lock. Inspect that object and follow its correction: directories need
+`0700`, regular private files need `0600`. Ownership failures identify the
+actual and expected UIDs and require correctly owned storage. Links and
+wrong types need correction of the path or object, rather than chmod.
 
-```bash
-RUN="$HOME/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3"
-stat -c '%a %U %n' ~/.amplihack/work ~/.amplihack/work/runs \
-  ~/.amplihack/work/recovery-index "$RUN" "$RUN/recovery" 2>&1
-```
+If concurrent changes prevent identifying the object, the message explains
+what could not be inspected. Do not apply recursive permission changes to
+the work root: ordinary Git checkout contents retain repository permissions.
 
 **`cannot open the recovery store at work root ...: Permission denied`.**
 The runner could not create a missing folder on the path to the work root,
 or, with `unsafe recovery ancestor` as the reason, a folder changed after the
-check in `recipe run` passed. The message names no mode and prints no
-`chmod`. Choose a work root under a folder you can write, or have the owner of
-the parent folder create the work root for you, owned by you with mode
+check in `recipe run` passed. Read the additional path diagnostics for an
+observed ancestor or child problem. If creation failed because the parent
+does not allow access, choose a work root under a folder you can write, or
+have the parent folder's owner create the work root for you, owned by you with mode
 `0700`. Then run again, so that the check names any folder still at fault.
 
 **A worktree is always skipped with `not recorded in owned-paths`.** The

@@ -96,7 +96,8 @@ fn write_stamp(contents: &str) -> Result<()> {
     // existing one keeps its mode.
     crate::private_dir::ensure_private_leaf_dir(parent)
         .with_context(|| format!("failed to create {} with mode 0700", parent.display()))?;
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    amplihack_utils::secure_files::create_private_directories(parent)
+        .with_context(|| format!("failed to create {}", parent.display()))?;
 
     // R1: refuse to overwrite a symlink at the stamp path. We do this
     // BEFORE writing the tempfile so an attacker symlink cannot redirect
@@ -115,7 +116,7 @@ fn write_stamp(contents: &str) -> Result<()> {
     }
 
     let tmp_path = parent.join(STAMP_TMP);
-    fs::write(&tmp_path, contents.as_bytes())
+    amplihack_utils::secure_files::write_private_file(&tmp_path, contents.as_bytes())
         .with_context(|| format!("failed to write {}", tmp_path.display()))?;
     fs::rename(&tmp_path, &final_path).with_context(|| {
         format!(

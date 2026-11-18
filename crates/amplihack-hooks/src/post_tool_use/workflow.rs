@@ -93,7 +93,10 @@ pub(super) fn write_workflow_state(
     state: &WorkflowEnforcementState,
 ) -> anyhow::Result<()> {
     create_private_dir_all(session_dir)?;
-    fs::write(workflow_state_file(session_dir), serde_json::to_vec(state)?)?;
+    amplihack_utils::secure_files::write_private_file(
+        workflow_state_file(session_dir),
+        serde_json::to_vec(state)?,
+    )?;
     Ok(())
 }
 

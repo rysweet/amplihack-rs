@@ -36,7 +36,25 @@ impl FileLock {
     ///
     /// Retries every 10ms until the lock is acquired or timeout expires.
     pub fn exclusive(path: &Path, timeout: Duration) -> Result<Self, FileLockError> {
-        let file = OpenOptions::new()
+        Self::open_and_lock(path, timeout, false)
+    }
+
+    /// Acquire the same exclusive lock, creating its file with mode 0600.
+    /// Like `exclusive`, this does not create parent directories.
+    pub fn exclusive_private(path: &Path, timeout: Duration) -> Result<Self, FileLockError> {
+        Self::open_and_lock(path, timeout, true)
+    }
+
+    fn open_and_lock(path: &Path, timeout: Duration, private: bool) -> Result<Self, FileLockError> {
+        let mut options = OpenOptions::new();
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        #[cfg(not(unix))]
+        let _ = private;
+        let file = options
             .create(true)
             .truncate(false)
             .write(true)

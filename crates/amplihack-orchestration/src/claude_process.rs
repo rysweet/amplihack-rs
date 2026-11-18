@@ -1086,7 +1086,6 @@ impl ClaudeProcess {
 
     /// Append a per-process log line to `<log_dir>/<process_id>.log`.
     pub fn log(&self, msg: &str, level: &str) {
-        let _ = std::fs::create_dir_all(&self.log_dir);
         let line = format!(
             "[{}] [{}] [{}] {}\n",
             crate::time_utils::current_hms(),
@@ -1095,11 +1094,7 @@ impl ClaudeProcess {
             msg
         );
         let path = self.log_dir.join(format!("{}.log", self.process_id));
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
+        if let Ok(mut f) = amplihack_utils::secure_files::open_private_append(&path) {
             let _ = f.write_all(line.as_bytes());
         }
         tracing::info!(target: "amplihack_orchestration", process_id = %self.process_id, level, "{msg}");

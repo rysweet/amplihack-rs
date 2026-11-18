@@ -29,7 +29,7 @@ impl ReflectionLock {
     }
 
     pub fn with_stale_timeout(runtime_dir: &Path, stale_timeout: Duration) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(runtime_dir)?;
+        amplihack_utils::secure_files::create_private_directories(runtime_dir)?;
         Ok(Self {
             lock_file: runtime_dir.join(LOCK_FILE_NAME),
             stale_timeout,
@@ -55,7 +55,7 @@ impl ReflectionLock {
             purpose: purpose.to_string(),
         };
         let bytes = serde_json::to_vec_pretty(&data)?;
-        std::fs::write(&self.lock_file, bytes)?;
+        amplihack_utils::secure_files::write_private_file(&self.lock_file, bytes)?;
         Ok(true)
     }
 

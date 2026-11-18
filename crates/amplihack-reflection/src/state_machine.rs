@@ -63,7 +63,7 @@ impl ReflectionStateMachine {
     /// Create a state machine for `session_id` rooted at `runtime_dir`.
     /// `runtime_dir` is created if missing.
     pub fn new(session_id: impl Into<String>, runtime_dir: &Path) -> anyhow::Result<Self> {
-        std::fs::create_dir_all(runtime_dir)?;
+        amplihack_utils::secure_files::create_private_directories(runtime_dir)?;
         let session_id = session_id.into();
         let state_file = runtime_dir.join(format!("reflection_state_{session_id}.json"));
         Ok(Self {
@@ -97,7 +97,7 @@ impl ReflectionStateMachine {
 
     pub fn write_state(&self, data: &ReflectionStateData) -> anyhow::Result<()> {
         let bytes = serde_json::to_vec_pretty(data)?;
-        std::fs::write(&self.state_file, bytes)?;
+        amplihack_utils::secure_files::write_private_file(&self.state_file, bytes)?;
         Ok(())
     }
 

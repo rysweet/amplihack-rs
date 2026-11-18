@@ -1,5 +1,4 @@
 use crate::state_dir::create_private_dir_all;
-use std::fs;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -192,8 +191,11 @@ fn save_original_request(session_dir: &Path, request: &OriginalRequest) -> anyho
         format_markdown_section("Constraints", &request.constraints),
         format_markdown_section("Success Criteria", &request.success_criteria),
     );
-    fs::write(session_dir.join("ORIGINAL_REQUEST.md"), markdown)?;
-    fs::write(
+    amplihack_utils::secure_files::write_private_file(
+        session_dir.join("ORIGINAL_REQUEST.md"),
+        markdown,
+    )?;
+    amplihack_utils::secure_files::write_private_file(
         session_dir.join("original_request.json"),
         serde_json::to_string_pretty(&serde_json::json!({
             "session_id": request.session_id,

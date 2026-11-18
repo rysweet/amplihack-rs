@@ -79,6 +79,14 @@ impl AtomicCounter {
         }
     }
 
+    /// Create a counter using private parent, document and lock modes.
+    #[must_use]
+    pub fn new_private(path: impl Into<PathBuf>) -> Self {
+        Self {
+            file: AtomicJsonFile::new_private(path),
+        }
+    }
+
     /// Read the current counter value. Returns 0 if file doesn't exist.
     pub fn get(&self) -> Result<u64, CounterError> {
         let data: CounterData = self.file.read_or_default()?;

@@ -6,7 +6,6 @@
 use crate::state_dir::create_private_dir_all;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -166,7 +165,8 @@ pub(super) fn mark_blarify_stale_if_needed(state_root: &Path, tool_name: &str, t
         "timestamp": ts,
     });
 
-    if let Err(e) = fs::write(&marker, content.to_string()) {
+    if let Err(e) = amplihack_utils::secure_files::write_private_file(&marker, content.to_string())
+    {
         tracing::warn!(
             "blarify staleness: failed to write {}: {}",
             marker.display(),

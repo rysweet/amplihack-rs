@@ -137,11 +137,15 @@ pub(super) fn admit(
         settings,
     )
     .map_err(|error| {
-        anyhow::anyhow!(
-            "cannot durably admit recipe launch (work root {}, run folder {}): {error:#}",
+        let diagnostics = crate::commands::cleanup::recovery_path::recovery_diagnostics(
+            &scope.work_root.path, Some(&scope.run_dir), identity.as_deref(),
+        );
+        let message = format!(
+            "cannot durably admit recipe launch (work root {}, run folder {}): {diagnostics}; runner: {error:#}",
             sanitize_path(&scope.work_root.path),
             sanitize_path(&scope.run_dir)
-        )
+        );
+        error.context(message)
     })
 }
 

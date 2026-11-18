@@ -163,7 +163,8 @@ pub fn log_decision(
 
 /// Create a directory with 0o700 permissions on Unix.
 fn ensure_private_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).with_context(|| format!("creating {}", path.display()))?;
+    crate::state_dir::create_private_dir_all(path)
+        .with_context(|| format!("creating {}", path.display()))?;
 
     #[cfg(unix)]
     {

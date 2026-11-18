@@ -406,3 +406,19 @@ fn lock_exclusive_timeout_retries_until_holder_releases() {
     releaser.join().unwrap();
     assert!(got.is_ok(), "a lock freed within the timeout must be taken");
 }
+
+#[test]
+fn private_state_writer_creates_0600_files_under_umask_0002() {
+    under_umask_0002(
+        "private_state_writer_creates_0600_files_under_umask_0002",
+        || {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("state");
+            amplihack_utils::secure_files::write_private_file(&path, b"first").unwrap();
+            assert_eq!(mode(&path), 0o600);
+            amplihack_utils::secure_files::write_private_file(&path, b"new").unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"new");
+            assert_eq!(mode(&path), 0o600);
+        },
+    );
+}

@@ -123,10 +123,8 @@ impl OrchestratorSession {
             level,
             msg
         );
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.session_log_path())
+        if let Ok(mut f) =
+            amplihack_utils::secure_files::open_private_append(&self.session_log_path())
         {
             let _ = f.write_all(line.as_bytes());
         }
@@ -166,7 +164,7 @@ impl OrchestratorSession {
             started,
             "-".repeat(80),
         );
-        std::fs::write(self.session_log_path(), metadata)
+        amplihack_utils::secure_files::write_private_file(self.session_log_path(), metadata)
     }
 }
 
@@ -218,9 +216,11 @@ impl OrchestratorSessionBuilder {
             .base_log_dir
             .unwrap_or_else(|| working_dir.join(".claude").join("runtime").join("logs"));
         let log_dir = base_log_dir.join(&session_id);
-        std::fs::create_dir_all(&log_dir).map_err(|e| SessionError::LogDir {
-            path: log_dir.clone(),
-            source: e,
+        amplihack_utils::secure_files::create_private_directories(&log_dir).map_err(|e| {
+            SessionError::LogDir {
+                path: log_dir.clone(),
+                source: e,
+            }
         })?;
         let runner = self
             .runner

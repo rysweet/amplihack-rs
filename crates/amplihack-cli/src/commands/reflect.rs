@@ -24,7 +24,8 @@ fn resolve_runtime_dir(runtime_dir: Option<PathBuf>) -> PathBuf {
 }
 
 fn ensure_runtime_dir(p: &Path) -> Result<()> {
-    std::fs::create_dir_all(p).with_context(|| format!("create runtime dir {}", p.display()))?;
+    amplihack_utils::secure_files::create_private_directories(p)
+        .with_context(|| format!("create runtime dir {}", p.display()))?;
     Ok(())
 }
 

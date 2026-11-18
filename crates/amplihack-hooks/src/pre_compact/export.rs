@@ -2,7 +2,7 @@
 
 use crate::state_dir::create_private_dir_all;
 use serde_json::Value;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -35,7 +35,10 @@ pub(crate) fn export_transcript(
     }
 
     let export_path = export_dir.join("transcript_pre_compact.jsonl");
-    fs::copy(transcript_path, &export_path)?;
+    // Stream the transcript without copying the source's broader mode.
+    let mut source = fs::File::open(transcript_path)?;
+    let mut destination = amplihack_utils::secure_files::open_private_write(&export_path)?;
+    std::io::copy(&mut source, &mut destination)?;
     tracing::info!("Exported transcript to {}", export_path.display());
     Ok(Some(export_path))
 }
@@ -64,10 +67,7 @@ pub(crate) fn save_compaction_metadata(
 
     let metadata_file = session_dir.join("compaction_metadata.jsonl");
     let json = serde_json::to_string(&metadata)?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(metadata_file)?;
+    let mut file = amplihack_utils::secure_files::open_private_append(&metadata_file)?;
     writeln!(file, "{json}")?;
 
     Ok(metadata)
@@ -130,6 +130,15 @@ mod tests {
         let session_dir = tmp.path().join("sessions").join("export-test");
 
         let exported = export_transcript(&session_dir, &src).unwrap().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&exported).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+
         assert_eq!(
             exported,
             session_dir

@@ -315,7 +315,7 @@ pub(crate) fn ensure_contract_file_as(home: &Path, euid: u32) -> Result<PathBuf>
                     home.display()
                 )
             })?;
-            std::fs::create_dir_all(home)
+            amplihack_utils::secure_files::create_private_directories(home)
                 .with_context(|| format!("cannot create the amplihack home {}", home.display()))?;
             let mut builder = std::fs::DirBuilder::new();
             std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

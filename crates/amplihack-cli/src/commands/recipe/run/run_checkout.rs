@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -198,6 +198,8 @@ impl RunCheckout {
             );
         }
         let head = std::str::from_utf8(trim_lf(&before.head))?;
+        // Allocate the checkout privately; tracked contents retain Git modes.
+        fs::DirBuilder::new().mode(0o700).create(&root)?;
         let output = preparation_command(&repository)
             .args(["worktree", "add", "--detach", "--no-checkout", "--quiet"])
             .arg(&root)
@@ -475,9 +477,8 @@ impl RunCheckout {
         Ok(())
     }
 }
-/// Writes `bytes` to `path` as a private file: created 0600 whatever the
-/// umask, an existing file set to 0600 through its descriptor, and a
-/// symbolic link at `path` never followed (issue #2346).
+/// Writes `bytes` to `path`, requesting mode 0600 at creation and never
+/// following a symbolic link at `path` (issue #2346).
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     let mut file = fs::OpenOptions::new()
@@ -488,8 +489,6 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         .mode(0o600)
         .open(path)
         .with_context(|| format!("cannot open {}", path.display()))?;
-    file.set_permissions(fs::Permissions::from_mode(0o600))
-        .with_context(|| format!("cannot set mode 0600 on {}", path.display()))?;
     file.write_all(bytes)
         .with_context(|| format!("cannot write {}", path.display()))
 }

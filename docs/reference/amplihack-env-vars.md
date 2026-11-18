@@ -1,3 +1,10 @@
+---
+title: Amplihack environment variables
+description: Environment-variable purposes, configuration ownership and storage requirements.
+doc_type: reference
+last_updated: 2026-11-18
+---
+
 # AMPLIHACK_* Environment Variable Audit
 
 Every distinct `AMPLIHACK_*` name that appears in `crates/` and `bins/`, with
@@ -276,7 +283,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_WORKSTREAM_PROGRESS_FILE` | internal |  | Progress file handed to a multitask workstream. |
 | `AMPLIHACK_WORKSTREAM_STATE_FILE` | internal |  | State file handed to a multitask workstream. |
 | `AMPLIHACK_WORKTREE_PATH` | internal |  | Worktree path handed to a multitask workstream. |
-| `AMPLIHACK_WORK_ROOT` | user preference |  | Folder for run folders, targets, clones and the log archive; default `$HOME/.amplihack/work`. When set by the caller (see `AMPLIHACK_WORK_ROOT_EXPLICIT`), worktrees also go under it. Clones are never cleaned up. See [Clean Up After Recipe Runs](../howto/clean-up-after-recipe-runs.md#settings). |
+| `AMPLIHACK_WORK_ROOT` | user preference |  | Absolute folder for run folders, targets, clones and the log archive; default `$HOME/.amplihack/work`. New private directories use `0700`. An existing root must be owned by the effective user with permission bits `0700`; a nonprivate root stops recipe execution with its path, actual mode and correction, without changing permissions. Writable nonsticky ancestors also stop execution. When set by the caller (see `AMPLIHACK_WORK_ROOT_EXPLICIT`), worktrees also go under it. Clones are never cleaned up. See [work-root permissions](recipe-command.md#work-root-permissions) and [cleanup settings](../howto/clean-up-after-recipe-runs.md#settings). |
 | `AMPLIHACK_WORK_ROOT_EXPLICIT` | internal |  | Handed to recipe steps; decides whether worktrees move under the work root. Passed through unchanged when already set, so a nested run keeps its parent's value; otherwise `1` when `AMPLIHACK_WORK_ROOT` is set and `0` when not. |
 
 ### Variables outside the `AMPLIHACK_*` namespace

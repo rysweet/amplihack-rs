@@ -53,7 +53,7 @@ fn write_state(path: &Path, state: &ClassificationState) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         create_private_dir_all(parent)?;
     }
-    fs::write(path, serde_json::to_vec(state)?)?;
+    amplihack_utils::secure_files::write_private_file(path, serde_json::to_vec(state)?)?;
     Ok(())
 }
 

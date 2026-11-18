@@ -558,38 +558,60 @@ unsafe ownership, permissions, links, and object types. Artifact copying
 rejects devices, sockets, FIFOs, and unsafe links, confines destinations to
 the admitted attempt, and hashes copied bytes while preventing substitution.
 
-These modes are set explicitly when each folder and file is created, so they
-do not depend on the umask of the shell that started the run. Under umask
-`0002`, the default on Ubuntu for users with a private group, the store is
-still `0700` and `0600`.
+Creation explicitly requests `0700` for directories and `0600` for files.
+Masks that preserve owner permissions, including `0002`, leave these modes
+unchanged. A mask that removes owner permissions can leave new state
+unusable; explicit private creation does not restore those permissions.
 
 The store is reached through the work root, so the folders above it are
 checked too. The runner opens the path one component at a time from `/`,
 without following links, and creates any missing folder at `0700`. Each
 folder above the work root must be a folder, not a link, with no group or
 other write bit, or with the sticky bit set. The work root must be owned by
-you with mode `0700`; setgid and sticky bits are ignored. Before the runner
-opens the store, `recipe run` checks the same path and names every folder
-that fails, with its mode and the `chmod` that fixes it. An owned work root with no group or other write bit, such as `0755`, is
-set to `0700`, and stderr says so:
+the effective user with permission bits `0700`; special bits follow the
+runner's existing rules. Before the runner opens the store, `recipe run`
+checks the path and names inspectable failures. An existing root at `0755`,
+`0750` or `0775` stops execution without changing its permissions. A mode
+diagnostic includes the path, actual mode and correction:
 
 ```text
-amplihack: work root /data/amplihack-work had mode 0755; set it to 0700, the mode the recovery store requires
+work root /data/amplihack-work has mode 0755; fix it with `chmod 700 /data/amplihack-work`
 ```
 
-A work root or folder above it that other users can write is never changed;
-the run stops and names it. If the runner's own check fails after that, for
-example on `recovery-index/`, the message ends with the runner's reason but
-names no mode. See
+A root or ancestor is never automatically changed. Writable ancestors name
+their group/world write bits, actual mode and the appropriate `chmod g-w`,
+`chmod o-w` or `chmod go-w` correction. Ownership failures name the observed
+and expected UIDs and require correctly owned storage; chmod alone is not
+presented as a solution.
+
+If the runner fails later, read-only diagnostics inspect relevant current
+storage, including `recovery-index/`, the current identity directory,
+`<run dir>/recovery/`, documents and locks. A nonprivate child is identified
+by its own path and mode, with `chmod 700` for directories or `chmod 600` for
+regular private files. Inspection stops at links, wrong types and inaccessible
+components. It does not scan historical runs, read document contents, replace
+the runner's descriptor checks or discard its original error chain. If a
+concurrent change prevents attribution, the message states that uncertainty.
+See
 [Work root permissions](recipe-command.md#work-root-permissions) for the full
 rules and messages.
 
-Two limits apply. Setting a work root to `0700` stops other users reading it
-from then on, but cannot undo what they read before, such as the names of run
-folders already listed. The rule also checks only the mode bits of folders
+Changing a work root to `0700` yourself cannot undo earlier access or remove
+entries another user created. The rule checks only the mode bits of folders
 above the work root, not their owners: a folder above the work root that
 belongs to another user can be renamed or replaced by that user even at
 `0755`. Keep the work root under folders owned by you or by root.
+
+Private state callers explicitly select private construction for
+`AtomicJsonFile`, `FileLock` and `AtomicFlag`. Missing parent components use
+`0700`; data, flags, lock files and publication temporary files use `0600`.
+Generic constructors retain their existing storage contracts, and private
+construction does not change existing parent permissions. Shared helpers
+preserve their separate strict and legacy contracts; recovery roots and
+ancestors never use a helper that changes their existing permissions.
+Lock acquisition still precedes reading or modifying shared state; existing
+lock waits, synchronization, atomic publication and temporary-file cleanup
+are unchanged. Ordinary Git checkout contents retain repository permissions.
 
 A single writer creates an exclusive temporary file in the destination
 directory, serializes the complete bounded record, synchronizes it,

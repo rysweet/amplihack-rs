@@ -10,7 +10,9 @@
 use chrono::Utc;
 use regex::Regex;
 use serde_json::Value;
-use std::fs::{self, File, OpenOptions};
+#[cfg(test)]
+use std::fs;
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
@@ -152,10 +154,7 @@ fn default_trace_file() -> PathBuf {
 
 /// Open (or create) the log file in append mode, creating parent dirs.
 fn open_log_file(path: &Path) -> std::io::Result<File> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    OpenOptions::new().create(true).append(true).open(path)
+    crate::secure_files::open_private_append(path)
 }
 
 /// Recursively sanitize a JSON value, redacting sensitive-looking keys.

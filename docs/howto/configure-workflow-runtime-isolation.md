@@ -1,9 +1,14 @@
+---
+title: Configure workflow runtime isolation
+description: Choose a private work root and inspect workflow runtime storage.
+doc_type: howto
+last_updated: 2026-11-18
+---
+
 # Configure Workflow Runtime Isolation
 
 Use this guide to inspect, override, and troubleshoot where workflow runtime
 output is written.
-
-Updated: 2026-11-12
 
 ## Contents
 
@@ -64,9 +69,23 @@ amplihack recipe run default-workflow \
 Use an absolute, private path outside any repository checkout. The runner
 will not use a work root that is `/`, your home folder or one of its
 ancestors, a system folder, the system temporary folder, or a git checkout
-root, nor an existing folder that you do not own or that group or others can
-write to. In those cases the run stops with an error naming the work root
-before any step runs.
+root. An existing root must be owned by the effective user with permission
+bits `0700`. Roots at `0755`, `0750` and `0775` stop execution before any
+step; the message names the exact path, actual mode and `chmod 700`
+correction. amplihack leaves existing permissions unchanged.
+
+Every ancestor must have no group or world write bit, or have the sticky
+bit. A writable ancestor without it stops execution with its own path and
+the appropriate `chmod g-w`, `chmod o-w` or `chmod go-w` correction. Symbolic
+links and wrong object types also stop recovery traversal. Inspect the
+named object before applying a correction. Ownership failures require a
+correctly owned location; changing mode alone does not fix them. See
+[work-root permissions](../reference/recipe-command.md#work-root-permissions).
+
+New private directories, including missing intermediate components, use
+`0700`; private reports, metadata and locks use `0600` under umask `0002`.
+Ordinary Git checkout contents keep repository permissions, and files written
+by steps follow the step's policy. The process umask is unchanged.
 
 The runner always sets `AMPLIHACK_RUNTIME_ROOT` for its steps, so setting that
 variable before a run has no effect on where the runtime root goes. Setting

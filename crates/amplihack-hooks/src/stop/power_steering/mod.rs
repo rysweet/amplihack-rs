@@ -11,6 +11,7 @@ mod state;
 use amplihack_state::AtomicCounter;
 use amplihack_types::ProjectDirs;
 use serde_json::Value;
+#[cfg(test)]
 use std::fs;
 use std::path::Path;
 
@@ -72,10 +73,10 @@ pub fn check(
     transcript_path: Option<&Path>,
 ) -> anyhow::Result<Option<Value>> {
     let power_steering_dir = dirs.session_power_steering(session_id);
-    fs::create_dir_all(&power_steering_dir)?;
-    fs::create_dir_all(&dirs.power_steering)?;
+    crate::state_dir::create_private_dir_all(&power_steering_dir)?;
+    crate::state_dir::create_private_dir_all(&dirs.power_steering)?;
 
-    let counter = AtomicCounter::new(power_steering_dir.join("session_count"));
+    let counter = AtomicCounter::new_private(power_steering_dir.join("session_count"));
     let count = counter.increment()?;
 
     // First stop: let the agent end naturally, only enforce on repeated stop

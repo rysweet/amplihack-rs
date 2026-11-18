@@ -40,6 +40,7 @@ pub struct AtomicJsonFile {
     path: PathBuf,
     lock_path: PathBuf,
     lock_timeout: Duration,
+    private: bool,
 }
 
 impl AtomicJsonFile {
@@ -54,7 +55,36 @@ impl AtomicJsonFile {
             path,
             lock_path,
             lock_timeout: Duration::from_secs(5),
+            private: false,
         }
+    }
+
+    /// Use private creation modes for missing parents, documents and locks.
+    /// Existing parent directories retain their permissions.
+    #[must_use]
+    pub fn new_private(path: impl Into<PathBuf>) -> Self {
+        Self {
+            private: true,
+            ..Self::new(path)
+        }
+    }
+
+    fn lock(&self) -> Result<FileLock, crate::file_lock::FileLockError> {
+        if self.private {
+            FileLock::exclusive_private(&self.lock_path, self.lock_timeout)
+        } else {
+            FileLock::exclusive(&self.lock_path, self.lock_timeout)
+        }
+    }
+
+    fn temporary(&self, dir: &Path) -> io::Result<NamedTempFile> {
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        if self.private {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(fs::Permissions::from_mode(0o600));
+        }
+        builder.tempfile_in(dir)
     }
 
     /// Set the lock timeout (default: 5 seconds).
@@ -95,7 +125,12 @@ impl AtomicJsonFile {
             Some(p) if !p.as_os_str().is_empty() => p,
             _ => return Ok(()),
         };
-        fs::create_dir_all(parent).map_err(|e| AtomicJsonError::Io {
+        (if self.private {
+            amplihack_utils::secure_files::create_private_directories(parent)
+        } else {
+            fs::create_dir_all(parent)
+        })
+        .map_err(|e| AtomicJsonError::Io {
             path: parent.to_path_buf(),
             source: e,
         })
@@ -109,10 +144,10 @@ impl AtomicJsonFile {
         // fresh nested path (e.g. per-session Signal state/inbox dirs).
         self.ensure_parent_dir()?;
 
-        let _lock = FileLock::exclusive(&self.lock_path, self.lock_timeout)?;
+        let _lock = self.lock()?;
 
         let dir = self.path.parent().unwrap_or(Path::new("."));
-        let temp = NamedTempFile::new_in(dir).map_err(|e| AtomicJsonError::Io {
+        let temp = self.temporary(dir).map_err(|e| AtomicJsonError::Io {
             path: dir.to_path_buf(),
             source: e,
         })?;
@@ -146,7 +181,7 @@ impl AtomicJsonFile {
         // file, otherwise the first write to a fresh nested path fails.
         self.ensure_parent_dir()?;
 
-        let _lock = FileLock::exclusive(&self.lock_path, self.lock_timeout)?;
+        let _lock = self.lock()?;
 
         let mut data: T = match fs::read_to_string(&self.path) {
             Ok(content) => serde_json::from_str(&content).map_err(|e| AtomicJsonError::Parse {
@@ -165,7 +200,7 @@ impl AtomicJsonFile {
         f(&mut data);
 
         let dir = self.path.parent().unwrap_or(Path::new("."));
-        let temp = NamedTempFile::new_in(dir).map_err(|e| AtomicJsonError::Io {
+        let temp = self.temporary(dir).map_err(|e| AtomicJsonError::Io {
             path: dir.to_path_buf(),
             source: e,
         })?;

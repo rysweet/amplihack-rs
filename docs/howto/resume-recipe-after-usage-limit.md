@@ -119,7 +119,7 @@ will pass execution-time compatibility checks.
 | Input, revision, recipe, or relevant file changed | Review the change; affected work and its ordered suffix in that invocation execute again |
 | Required artifact missing or unsafe | Regenerate it through the workflow; an old path in saved output is insufficient |
 | Live admission or authorization unavailable | Resolve the current session, governor, or authorization refusal; historical receipts do not grant access |
-| Current recovery storage unsafe | If the message names a folder, its mode and a `chmod`, run the command and relaunch; see [Fix folder permissions that stop a relaunch](#fix-folder-permissions-that-stop-a-relaunch). If it begins `cannot durably admit recipe launch` or `cannot open the recovery store at work root`, it gives only the runner's reason, with no mode or command; see [Troubleshooting](clean-up-after-recipe-runs.md#troubleshooting) to find the folder at fault |
+| Current recovery storage unsafe | Inspect the exact object named and follow its correction, then relaunch; see [Fix folder permissions that stop a relaunch](#fix-folder-permissions-that-stop-a-relaunch). Ownership failures require correctly owned storage. Runner failures preserve the original reason and add relevant path diagnostics; if the object cannot be identified reliably, see [Troubleshooting](clean-up-after-recipe-runs.md#troubleshooting). |
 | Durable publication failed | Fix disk capacity or the configured work root, then relaunch; this error stops execution |
 
 Do not reset Git or delete local edits merely to match a saved record.
@@ -158,8 +158,13 @@ new worktrees under the work root unless `AMPLIHACK_WORK_ROOT_EXPLICIT=0` is
 set (see
 [Worktree location](clean-up-after-recipe-runs.md#worktree-location)).
 
-An owned work root with no group or other write bit, such as `0755`, needs no
-action. The relaunch sets it to `0700` and prints one line saying so.
+An existing root at `0755` or `0750` also stops the relaunch. Inspect it and
+run the printed `chmod 700` correction before retrying; amplihack never
+changes its permissions automatically. A later failure can name a nested
+recovery directory, document or lock instead of the work root. Apply the
+correction to that exact object. If ownership differs, use correctly owned
+storage; chmod alone does not fix it. See
+[recovery diagnostics](../reference/recipe-command.md#messages-from-the-runner).
 
 ## Keep recovery state available
 

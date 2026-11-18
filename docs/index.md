@@ -325,7 +325,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Recovery Reference](reference/recipe-recovery.md) - **Planned:** persistence policies, resources, durable storage, and runner contracts
 - [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
 - [Why a Recipe Run Does Not Trace Git Commands](concepts/no-git-command-tracing.md) - Why the ptrace observer and the Git-command journal were removed, what the private clone does instead, and what a tamper-resistant record would require (#2738)
-- [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, recovery decisions, and the [work root permissions](reference/recipe-command.md#work-root-permissions) a run checks before its first step (#2346)
+- [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, recovery decisions, and [work-root permissions](reference/recipe-command.md#work-root-permissions), including private creation and actionable storage diagnostics
 
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution
@@ -345,7 +345,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - Planned responsibilities, invocation-wide authorization, gate retirement, and target compatibility matrix
 - [Auto-drive Evidence and Outcomes](reference/auto-drive-evidence.md) - The 13 criteria, auto-drive's crusty convergence substitution, the PR write-up and reported outcomes
 - [Merge-ready Round, Merge and Hand-off](reference/autodrive-merge-ready-round.md) - The agentic merge-ready write-up, the one-word outcome, GitHub-only merge conditions, the hand-off recipe, the run report, and which invocations the "success means merged" rule judges (#2575, #2769)
-- [Auto-drive State Permissions](reference/auto-drive-state-permissions.md) - State folders 0700 and files 0600 under any umask; when the evidence check repairs an entry this user owns (slug folders directly under the auto-drive state root), when it refuses, and the `INFO`/`WARNING` repair log line (#2546)
+- [Auto-drive State Permissions](reference/auto-drive-state-permissions.md) - Requested creation modes (`0700` folders, `0600` files), preserved by masks including `0002` that retain owner permissions; owner-removing masks can leave state unusable; evidence repair and refusal rules and the `INFO`/`WARNING` repair log line (#2546)
 - [Auto-drive QA Selection](reference/auto-drive-qa.md) - QA selection requirements for the planned evidence workflow
 - [Verify a PR Without Merging](howto/verify-pr-with-auto-drive.md) - Planned guide; current no_merge=true does not protect final merging
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap

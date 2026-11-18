@@ -133,7 +133,7 @@ impl DistributeState {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
-            std::fs::create_dir_all(parent)
+            amplihack_utils::secure_files::create_private_directories(parent)
                 .with_context(|| format!("create state dir {}", parent.display()))?;
         }
         write_private(path, json.as_bytes())

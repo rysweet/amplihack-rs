@@ -22,29 +22,51 @@ pub enum AtomicFlagError {
 /// `clear()` removes the file.
 pub struct AtomicFlag {
     path: PathBuf,
+    private: bool,
 }
 
 impl AtomicFlag {
     #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+        Self {
+            path: path.into(),
+            private: false,
+        }
+    }
+
+    /// Create missing parents with mode 0700 and the flag with mode 0600.
+    /// Existing parent permissions and exclusive-create behavior are preserved.
+    #[must_use]
+    pub fn new_private(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            private: true,
+        }
     }
 
     /// Atomically set the flag. Returns `true` if newly created,
     /// `false` if already set (file existed).
     pub fn set(&self) -> Result<bool, AtomicFlagError> {
         if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|e| AtomicFlagError::Io {
+            (if self.private {
+                amplihack_utils::secure_files::create_private_directories(parent)
+            } else {
+                fs::create_dir_all(parent)
+            })
+            .map_err(|e| AtomicFlagError::Io {
                 path: parent.to_path_buf(),
                 source: e,
             })?;
         }
 
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&self.path)
-        {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if self.private {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&self.path) {
             Ok(_) => Ok(true),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
             Err(e) => Err(AtomicFlagError::Io {

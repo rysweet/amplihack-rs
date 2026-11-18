@@ -662,8 +662,6 @@ impl RunScope {
             .mode(0o700)
             .create(&run_dir)
             .with_context(|| format!("cannot create run folder {}", run_dir.display()))?;
-        fs::set_permissions(&run_dir, fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("cannot set mode 0700 on {}", run_dir.display()))?;
         let pid = std::process::id();
         let report = RunReport {
             schema_version: RUN_SCHEMA_VERSION,
@@ -779,10 +777,12 @@ impl RunWorkspace {
         super::recovery_path::prepare_work_root(&root.path)?;
         recipe_runner_rs::recovery::private_fs::Directory::open(&root.path, true).map_err(
             |error| {
-                anyhow::anyhow!(
-                    "cannot open the recovery store at work root {}: {error:#}",
+                let diagnostics = super::recovery_path::recovery_diagnostics(&root.path, None, None);
+                let message = format!(
+                    "cannot open the recovery store at work root {}: {diagnostics}; runner: {error:#}",
                     crate::commands::install::paths::sanitize_path(&root.path)
-                )
+                );
+                error.context(message)
             },
         )?;
         let (scope, guard) = RunScope::begin(root, recipe, cwd)?;

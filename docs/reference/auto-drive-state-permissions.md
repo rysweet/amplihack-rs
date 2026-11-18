@@ -1,6 +1,6 @@
 ---
 title: Auto-drive State Permissions
-description: How auto-drive writes its state and evidence 0700/0600 under any umask, and when the evidence check repairs or refuses an entry, decided by the state folder's location under the auto-drive state root or, for files, by the folder being private.
+description: Requested private creation modes, their umask limits, and when auto-drive repairs or refuses state and evidence entries.
 last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
@@ -32,16 +32,20 @@ for what the evidence itself must contain.
 
 ## The rule in one line
 
-Folders are `0700`, files are `0600`, whatever the process umask. An entry
-this user owns with extra group or other bits is set back to that mode and
+Writers request `0700` for folders and `0600` for files. Masks that preserve
+owner permissions, including `0002`, leave those modes unchanged. A mask
+that removes owner permissions can leave new state unusable. An entry
+this user owns with extra group or other bits has those extra bits removed and is
 logged when it lies in a state folder directly under the auto-drive state
 root, or when it is a file read from a private state folder. Anything else
 that is wrong is refused.
 
 ## Writers
 
-A umask can only remove bits, so a writer that asks for `0700` or `0600`
-when it creates an entry gets that mode even under umask `002`.
+A umask can only remove bits. A writer that requests `0700` or `0600`
+gets that mode under masks that preserve owner permissions, including
+`0002`. Explicit private creation does not restore owner permissions removed
+by the mask.
 
 | Writer | How the mode is set |
 | --- | --- |
@@ -71,15 +75,22 @@ command, not the tmux server's (#2778); see
 A drive runs inside `amplihack recipe run`, so its run folder, its recovery
 store and the `autodrive-state` folder in the run folder sit under the
 [work root](../howto/clean-up-after-recipe-runs.md#settings). amplihack
-creates those folders `0700` and its files there `0600` under any umask, as
-it does for the state folders above. Before the first step, `recipe run`
+requests `0700` for those folders and `0600` for its files there, as it does
+for the state folders above. Masks that preserve owner permissions,
+including `0002`, leave these modes unchanged; owner-removing masks can
+leave state unusable. Before the first step, `recipe run`
 checks the folders above the work root, the work root and `runs/`. A folder
-there that other users can write stops the run with the folder, its mode and
-the fix named; an owned work root such as `0755` is set to `0700` with a
-notice. See [Work root permissions](./recipe-command.md#work-root-permissions).
+above the root that other users can write without the sticky bit stops the
+run with its path, mode, offending write bits and correction. An existing
+work root must be owned by the effective user with permission bits `0700`.
+Roots at `0755`, `0750` and `0775` stop execution with their exact path,
+actual mode and a `chmod 700` correction; permissions are left unchanged.
+The auto-drive evidence repair rules do not change this recovery policy.
+See [Work root permissions](./recipe-command.md#work-root-permissions).
 
 The review allocation folders (`review-<random>`) and review storage folders
-(`review-generation-<random>`) are also created `0700` under any umask, so
+(`review-generation-<random>`) also request `0700` at creation. With a mask
+that preserves owner permissions, including `0002`, they have mode `0700`, so
 the shell finalization check described in
 [What stays strict](#what-stays-strict) keeps them rather than setting them
 aside (#2778, pull request #2781). The test

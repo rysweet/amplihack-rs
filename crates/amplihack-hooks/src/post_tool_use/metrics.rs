@@ -6,7 +6,6 @@
 
 use crate::state_dir::create_private_dir_all;
 use serde::Serialize;
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
 use std::time::SystemTime;
@@ -67,10 +66,7 @@ pub(super) fn save_tool_metric(
     };
 
     let json = serde_json::to_string(&metric)?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(metrics_file)?;
+    let mut file = amplihack_utils::secure_files::open_private_append(&metrics_file)?;
     writeln!(file, "{json}")?;
 
     Ok(())

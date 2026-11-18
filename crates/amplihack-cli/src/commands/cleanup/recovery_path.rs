@@ -8,20 +8,17 @@
 //! is not owned and `0700` ("recovery directory must be owned and mode
 //! 0700"). Neither message names the folder.
 //!
-//! [`prepare_work_root`] applies the same rules first, by path, and names
-//! every folder at fault with its mode and the command that fixes it. It is
-//! advisory: the runner remains the only enforcing check and runs after it
-//! whatever this module decides. The one change made here is to set an owned
-//! work root that has no group or other write bit (`0755`, `0750`, ...) to
-//! `0700`, through a descriptor, after every check has passed.
+//! [`prepare_work_root`] checks existing paths without changing them and
+//! supplies actionable diagnostics. The runner's descriptor-based checks
+//! remain authoritative when opening the store.
 //!
 //! The specification is `docs/reference/recipe-command.md#work-root-permissions`.
 
 use crate::commands::install::paths::sanitize_path;
 use anyhow::{Context, Result, bail};
-use std::fs::{self, OpenOptions, Permissions};
+use std::fs;
 use std::io::ErrorKind;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 
 /// One reason the runner would stop a work root.
@@ -30,10 +27,9 @@ pub(crate) enum Fault {
     /// A folder above the work root with a group or other write bit and no
     /// sticky bit.
     Writable { path: PathBuf, mode: u32 },
-    /// The work root with a group or other write bit, or `runs/` that is not
-    /// exactly `0700`.
+    /// A private directory whose permission bits are not exactly `0700`.
     NotPrivate { path: PathBuf, mode: u32 },
-    /// The work root or `runs/`, owned by another user.
+    /// A private directory owned by another user.
     NotOwned { path: PathBuf, uid: u32 },
     /// A symbolic link where the runner needs a folder. `target` is what the
     /// link holds, when it can be read.
@@ -86,26 +82,20 @@ pub(crate) fn ancestor_mode_ok(mode: u32) -> bool {
 pub(crate) enum RootMode {
     /// Owned by another user.
     NotOwned,
-    /// Owned, with a group or other write bit: others may already have
-    /// written into it, which a chmod would not undo.
-    Writable,
+    /// Owned, but not mode 0700.
+    NotPrivate,
     /// Owned and `0700` (the setgid and sticky bits are ignored, as the
     /// runner ignores them).
     Private,
-    /// Owned, no group or other write bit, but not `0700`: safe to set to
-    /// `0700`.
-    Tighten,
 }
 
 pub(crate) fn root_mode(uid: u32, euid: u32, mode: u32) -> RootMode {
     if uid != euid {
         RootMode::NotOwned
-    } else if mode & 0o022 != 0 {
-        RootMode::Writable
     } else if mode & 0o777 == 0o700 {
         RootMode::Private
     } else {
-        RootMode::Tighten
+        RootMode::NotPrivate
     }
 }
 
@@ -184,14 +174,8 @@ fn normal_shape(root: &Path) -> bool {
         && components.all(|c| matches!(c, Component::Normal(_)))
 }
 
-/// Checks the path to the work root, the work root and `<work root>/runs`
-/// against the runner's rules, and sets an owned work root without group or
-/// other write bits to `0700`.
-///
-/// Every check runs before any change. When one fails, the error names each
-/// folder at fault, its mode and the fix, and nothing has been changed or
-/// created. A missing work root is accepted and not created: the runner
-/// creates it, and any missing folder above it, at `0700`.
+/// Check existing roots and ancestors without changing or creating anything.
+/// Missing components are created privately by the runner on admission.
 pub(crate) fn prepare_work_root(root: &Path) -> Result<()> {
     if !normal_shape(root) {
         bail!(describe(
@@ -205,25 +189,17 @@ pub(crate) fn prepare_work_root(root: &Path) -> Result<()> {
         .parent()
         .context("a work root of normal shape has a parent folder")?;
     let mut faults = path_faults(parent);
-    let mut tighten = None;
     if !faults.last().is_some_and(Fault::ends_walk) {
         match inspect(root) {
             Ok(None) => {}
             Err(fault) => faults.push(fault),
             Ok(Some(meta)) => {
-                match root_mode(meta.uid(), euid(), meta.mode()) {
-                    RootMode::NotOwned => faults.push(Fault::NotOwned {
-                        path: root.to_path_buf(),
-                        uid: meta.uid(),
-                    }),
-                    RootMode::Writable => faults.push(Fault::NotPrivate {
-                        path: root.to_path_buf(),
-                        mode: meta.mode(),
-                    }),
-                    RootMode::Tighten => tighten = Some((meta.dev(), meta.ino())),
-                    RootMode::Private => {}
+                if let Some(fault) = private_directory_fault(root, &meta) {
+                    faults.push(fault);
                 }
-                if let Some(fault) = runs_fault(&root.join("runs")) {
+                if meta.uid() == euid()
+                    && let Some(fault) = runs_fault(&root.join("runs"))
+                {
                     faults.push(fault);
                 }
             }
@@ -232,9 +208,21 @@ pub(crate) fn prepare_work_root(root: &Path) -> Result<()> {
     if !faults.is_empty() {
         bail!(describe(root, &faults));
     }
-    match tighten {
-        Some(identity) => tighten_root(root, identity),
-        None => Ok(()),
+    Ok(())
+}
+
+/// Shared ownership-first classification using the runner's permission mask.
+pub(crate) fn private_directory_fault(path: &Path, meta: &fs::Metadata) -> Option<Fault> {
+    match root_mode(meta.uid(), euid(), meta.mode()) {
+        RootMode::NotOwned => Some(Fault::NotOwned {
+            path: path.to_path_buf(),
+            uid: meta.uid(),
+        }),
+        RootMode::NotPrivate => Some(Fault::NotPrivate {
+            path: path.to_path_buf(),
+            mode: meta.mode(),
+        }),
+        RootMode::Private => None,
     }
 }
 
@@ -244,62 +232,123 @@ fn runs_fault(runs: &Path) -> Option<Fault> {
     match inspect(runs) {
         Ok(None) => None,
         Err(fault) => Some(fault),
-        Ok(Some(meta)) if meta.uid() != euid() => Some(Fault::NotOwned {
-            path: runs.to_path_buf(),
-            uid: meta.uid(),
-        }),
-        Ok(Some(meta)) if meta.mode() & 0o777 != 0o700 => Some(Fault::NotPrivate {
-            path: runs.to_path_buf(),
-            mode: meta.mode(),
-        }),
-        Ok(Some(_)) => None,
+        Ok(Some(meta)) => private_directory_fault(runs, &meta),
     }
 }
 
-/// Sets the work root to `0700` through a descriptor opened without following
-/// a link, after confirming that it is the folder inspected as `expected`
-/// (`st_dev`, `st_ino`), that it is owned, and that it has no group or other
-/// write bit. Prints one notice on stderr after the change succeeds.
-fn tighten_root(root: &Path, expected: (u64, u64)) -> Result<()> {
-    let shown = sanitize_path(root);
-    let fix = command_or_words(
-        "chmod 700",
-        root,
-        "give it mode 0700 and remove its group and other access",
-    );
-    let folder = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(root)
-        .map_err(|error| {
-            anyhow::anyhow!("cannot set work root {shown} to mode 0700 ({error}); {fix}")
-        })?;
-    let meta = folder
-        .metadata()
-        .map_err(|error| anyhow::anyhow!("cannot inspect work root {shown} ({error}); {fix}"))?;
-    if !meta.is_dir() || (meta.dev(), meta.ino()) != expected {
-        bail!(
-            "work root {shown} was replaced while amplihack checked it, so its mode was not \
-             changed; check the folder and run again"
-        );
+/// Read-only evidence collected after a runner failure. Inspect only this
+/// launch's paths; historical runs and unrelated identities are not traversed.
+/// These observations can race filesystem changes and never authorize access.
+pub(crate) fn recovery_diagnostics(
+    root: &Path,
+    run: Option<&Path>,
+    identity: Option<&str>,
+) -> String {
+    let mut faults = root.parent().map(path_faults).unwrap_or_default();
+    let mut files = Vec::new();
+    if faults.last().is_some_and(Fault::ends_walk) {
+        return describe(root, &faults);
     }
-    if meta.uid() != euid() || meta.mode() & 0o022 != 0 {
-        bail!(
-            "work root {shown} changed owner or mode while amplihack checked it, so its mode \
-             was not changed; check the folder and run again"
-        );
+    if diagnostic_directory(root, &mut faults) {
+        let runs = root.join("runs");
+        if diagnostic_directory(&runs, &mut faults)
+            && let Some(run) = run.filter(|run| run.parent() == Some(runs.as_path()))
+            && diagnostic_directory(run, &mut faults)
+        {
+            let recovery = run.join("recovery");
+            if diagnostic_directory(&recovery, &mut faults) {
+                for name in ["owner.lock", "writer.lock", "tree.json", "descriptor.json"] {
+                    if let Some(problem) = diagnostic_file(&recovery.join(name)) {
+                        files.push(problem);
+                    }
+                }
+            }
+        }
+        if let Some(identity) = identity {
+            let index = root.join("recovery-index");
+            if diagnostic_directory(&index, &mut faults) {
+                let current = index.join(recipe_runner_rs::recovery::model::digest(
+                    identity.as_bytes(),
+                ));
+                if diagnostic_directory(&current, &mut faults) {
+                    for name in ["admission.lock", "latest.json", "ordering.json"] {
+                        if let Some(problem) = diagnostic_file(&current.join(name)) {
+                            files.push(problem);
+                        }
+                    }
+                }
+            }
+        }
     }
-    folder
-        .set_permissions(Permissions::from_mode(0o700))
-        .map_err(|error| {
-            anyhow::anyhow!("cannot set work root {shown} to mode 0700 ({error}); {fix}")
-        })?;
-    eprintln!(
-        "amplihack: work root {shown} had mode {:04o}; set it to 0700, the mode the recovery \
-         store requires",
-        meta.mode() & 0o7777
-    );
-    Ok(())
+    if !faults.is_empty() {
+        files.insert(0, describe(root, &faults));
+    }
+    if files.is_empty() {
+        "no path problem observed after the runner error; filesystem state may have changed".into()
+    } else {
+        files.join("\n")
+    }
+}
+
+fn diagnostic_directory(path: &Path, faults: &mut Vec<Fault>) -> bool {
+    match inspect(path) {
+        Ok(Some(meta)) => {
+            if let Some(fault) = private_directory_fault(path, &meta) {
+                faults.push(fault);
+                false
+            } else {
+                true
+            }
+        }
+        Ok(None) => false,
+        Err(fault) => {
+            faults.push(fault);
+            false
+        }
+    }
+}
+
+fn diagnostic_file(path: &Path) -> Option<String> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == ErrorKind::NotFound => return None,
+        Err(error) => {
+            return Some(format!(
+                "{} cannot be inspected ({error})",
+                sanitize_path(path)
+            ));
+        }
+    };
+    let shown = sanitize_path(path);
+    let problem = if meta.file_type().is_symlink() {
+        "is a symbolic link; use a regular private file".into()
+    } else if !meta.is_file() {
+        "is not a regular file".into()
+    } else if meta.uid() != euid() {
+        format!(
+            "has uid {}, expected uid {}; choose a correctly owned location",
+            meta.uid(),
+            euid()
+        )
+    } else if meta.mode() & 0o777 != 0o600 {
+        format!(
+            "has mode {:04o}{}; {}",
+            meta.mode() & 0o7777,
+            if meta.mode() & 0o022 != 0 {
+                format!(" ({})", writable_words(meta.mode()).0)
+            } else {
+                String::new()
+            },
+            command_or_words("chmod 600", path, "give this file mode 0600")
+        )
+    } else if meta.nlink() != 1 {
+        "has multiple hard links; use a file with one link".into()
+    } else if meta.len() > recipe_runner_rs::recovery::private_fs::MAX_DOCUMENT {
+        "exceeds the recovery document size limit".into()
+    } else {
+        return None;
+    };
+    Some(format!("{shown} {problem}"))
 }
 
 /// `path` as one shell word, for a suggested command or an
@@ -389,6 +438,7 @@ enum Place {
     Above,
     Root,
     Runs,
+    Recovery,
 }
 
 fn place(root: &Path, fault: &Fault) -> Place {
@@ -396,6 +446,8 @@ fn place(root: &Path, fault: &Fault) -> Place {
         Place::Root
     } else if fault.path() == root.join("runs") {
         Place::Runs
+    } else if fault.path().starts_with(root) {
+        Place::Recovery
     } else {
         Place::Above
     }
@@ -405,6 +457,7 @@ fn place(root: &Path, fault: &Fault) -> Place {
 fn reason(place: Place, fault: &Fault) -> &'static str {
     match (place, fault) {
         (Place::Runs, _) => "runs folder is not private",
+        (Place::Recovery, _) => "current recovery state cannot be opened",
         (Place::Root, _) => "the work root itself is not usable",
         (Place::Above, Fault::Writable { .. }) => "other users can change a folder above it",
         (Place::Above, Fault::Link { .. }) => "a folder above it is a symbolic link",
@@ -415,7 +468,7 @@ fn reason(place: Place, fault: &Fault) -> &'static str {
 
 /// One line about a fault on the work root itself, in the form of the work
 /// root validation's messages.
-fn root_line(root: &Path, fault: &Fault) -> String {
+pub(crate) fn root_line(root: &Path, fault: &Fault) -> String {
     let shown = sanitize_path(root);
     match fault {
         Fault::Link { target, .. } => format!(
@@ -426,11 +479,19 @@ fn root_line(root: &Path, fault: &Fault) -> String {
         ),
         Fault::NotFolder { .. } => format!("work root {shown} is not a folder"),
         Fault::NotOwned { uid, .. } => {
-            format!("work root {shown} is not owned by you (it belongs to uid {uid})")
+            format!(
+                "work root {shown} is not owned by you (observed uid {uid}, expected uid {}); choose a correctly owned location",
+                euid()
+            )
         }
         Fault::NotPrivate { mode, .. } => format!(
-            "work root {shown} is writable by group or others (mode {:04o}); {}",
+            "work root {shown} has mode {:04o}, requires 0700{}; {}",
             mode & 0o7777,
+            if mode & 0o022 != 0 {
+                "; writable by group or others"
+            } else {
+                ""
+            },
             command_or_words(
                 "chmod 700",
                 root,
@@ -466,9 +527,12 @@ fn detail_line(root: &Path, place: Place, fault: &Fault) -> String {
             command_or_words("chmod 700", path, "give it mode 0700")
         ),
         Fault::NotOwned { uid, .. } => {
-            format!("  {shown} is not owned by you (it belongs to uid {uid})")
+            format!(
+                "  {shown} is not owned by you (observed uid {uid}, expected uid {}); choose a correctly owned location",
+                euid()
+            )
         }
-        Fault::Link { target, .. } if place == Place::Runs => format!(
+        Fault::Link { target, .. } if matches!(place, Place::Runs | Place::Recovery) => format!(
             "  {shown} is a symbolic link to {}; the recovery store needs a folder, not a link; \
              replace it with a folder of mode 0700",
             target_text(target.as_deref())

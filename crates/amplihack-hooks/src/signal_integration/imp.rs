@@ -109,8 +109,11 @@ fn maybe_prompt_onboarding() {
     if notified.exists() {
         return;
     }
-    let _ = std::fs::create_dir_all(&root);
-    let _ = std::fs::write(&notified, b"1\n");
+    if let Err(error) = crate::state_dir::create_private_dir_all(&root)
+        .and_then(|()| amplihack_utils::secure_files::write_private_file(&notified, b"1\n"))
+    {
+        tracing::warn!("could not record Signal onboarding notice: {error}");
+    }
 
     eprintln!(
         "\n[amplihack] Signal session mirroring is available but not configured on \

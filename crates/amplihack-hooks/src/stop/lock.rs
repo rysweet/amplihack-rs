@@ -45,10 +45,10 @@ pub fn disable_lock_files(dirs: &ProjectDirs) {
 /// Handle lock mode: increment counter, check safety valve, block with prompt.
 pub fn handle_lock_mode(dirs: &ProjectDirs, session_id: &str) -> anyhow::Result<Value> {
     let locks_dir = dirs.session_locks(session_id);
-    fs::create_dir_all(&locks_dir)?;
+    crate::state_dir::create_private_dir_all(&locks_dir)?;
 
     // Use .txt for Python parity (Python lock counter is plain text).
-    let counter = AtomicCounter::new(locks_dir.join("lock_invocations.txt"));
+    let counter = AtomicCounter::new_private(locks_dir.join("lock_invocations.txt"));
     let count = counter.increment()?;
 
     let max_iterations = get_max_iterations();

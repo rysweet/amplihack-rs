@@ -545,7 +545,7 @@ fn write_config(path: &Path, endpoint: &str, account: &str) -> OpResult<()> {
     validate::validate_account(account).map_err(|e| SignalOpError::Usage(e.to_string()))?;
     let toml = config_writer::to_toml(endpoint, account);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
+        amplihack_utils::secure_files::create_private_directories(parent)
             .map_err(|e| SignalOpError::Usage(format!("create config dir: {e}")))?;
     }
     write_private(path, toml.as_bytes())

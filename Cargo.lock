@@ -410,6 +410,7 @@ dependencies = [
 name = "amplihack-reflection"
 version = "1.2.0"
 dependencies = [
+ "amplihack-utils",
  "anyhow",
  "chrono",
  "once_cell",
@@ -504,6 +505,7 @@ name = "amplihack-state"
 version = "1.2.0"
 dependencies = [
  "amplihack-types",
+ "amplihack-utils",
  "libc",
  "serde",
  "serde_json",

@@ -207,7 +207,7 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
             )
         })?;
     }
-    fs::create_dir_all(&runtimes_dir)
+    amplihack_utils::secure_files::create_private_directories(&runtimes_dir)
         .with_context(|| format!("failed to create {}", runtimes_dir.display()))?;
 
     let tmp_path = runtimes_dir.join(&filename);
@@ -239,7 +239,7 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
 
     // Clean up any stale temp dir from a prior crash
     let _ = fs::remove_dir_all(&temp_dir);
-    fs::create_dir_all(&temp_dir)
+    amplihack_utils::secure_files::create_private_directories(&temp_dir)
         .with_context(|| format!("failed to create temp dir {}", temp_dir.display()))?;
 
     let mut extract_cmd = Command::new("tar");

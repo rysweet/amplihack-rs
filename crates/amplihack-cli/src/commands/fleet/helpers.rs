@@ -206,7 +206,7 @@ pub(super) fn load_default_previous_scout()
 
 pub(super) fn write_json_file(path: &Path, payload: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
+        amplihack_utils::secure_files::create_private_directories(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let rendered = serde_json::to_vec_pretty(payload).context("failed to encode json payload")?;

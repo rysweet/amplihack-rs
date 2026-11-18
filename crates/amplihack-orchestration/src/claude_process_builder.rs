@@ -60,7 +60,7 @@ impl ClaudeProcessBuilder {
         let runner = self
             .runner
             .unwrap_or_else(|| Arc::new(TokioProcessRunner::new()) as Arc<dyn ProcessRunner>);
-        let _ = std::fs::create_dir_all(&log_dir);
+        let _ = amplihack_utils::secure_files::create_private_directories(&log_dir);
         Ok(ClaudeProcess::__from_builder_parts(
             prompt,
             process_id,
