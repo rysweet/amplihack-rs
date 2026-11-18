@@ -1014,3 +1014,177 @@ fn a_run_finishes_with_an_older_releases_recording_files_beside_its_report() {
         "the runtime folder outlived the run"
     );
 }
+
+// ----- issue #2785: a runtime folder that holds git work is kept --------------
+//
+// Contract:
+// - `RuntimeRemoval::KeptForWork`: the folder holds a git tree with
+//   uncommitted changes or unpushed commits by `git_work::work_inside`. The
+//   search runs after the in-use check and after owner access is restored,
+//   so a tree below a folder a step left locked is still found. The folder
+//   is left whole and the result is `Ok`, never an error;
+// - `fn release_with(&mut self, deadline: Instant) -> Result<RuntimeRemoval>`
+//   is `release` with the search's deadline given; `remove` and `Drop` use
+//   `Instant::now() + END_OF_RUN_DEADLINE`. A deadline already passed keeps
+//   the folder;
+// - `RunWorkspace::finish_checked` treats `KeptForWork` like `KeptInUse`:
+//   the run's own outcome is reported and nothing fails.
+
+#[path = "tests_git_fixture.rs"]
+#[allow(dead_code)]
+mod git_fixture;
+use git_fixture::{
+    Unlock, chmod, clean_pushed_worktree, commit, git, has_object, linked_worktree, make_dirty,
+    origin_and_clone, running_as_root,
+};
+use std::time::Instant;
+
+/// A runtime folder `<base>/runtime` with `tmp/`, and a clone at
+/// `<base>/src/clone` (with its origin) outside it.
+fn runtime_and_repository() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(tmp.path()).unwrap();
+    let rt = base.join("runtime");
+    std::fs::create_dir_all(rt.join("tmp")).unwrap();
+    let (_, clone) = origin_and_clone(&base.join("src"));
+    (tmp, rt, clone)
+}
+
+#[test]
+fn runtime_guard_keeps_a_folder_whose_worktree_holds_work() {
+    let _procs = fake_proc_scope();
+    let (_tmp, rt, clone) = runtime_and_repository();
+    let wt = linked_worktree(&clone, &rt.join("tmp/wt"), "feat");
+    let sha = commit(&wt, "step-08-implement.rs");
+    let file = make_dirty(&wt);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptForWork
+    );
+    assert!(file.is_file(), "the uncommitted file is kept");
+    assert!(has_object(&wt, &sha), "the unpushed commit is kept");
+    assert!(rt.join("tmp").is_dir(), "the whole folder is kept");
+}
+
+#[test]
+fn runtime_guard_drop_also_keeps_a_folder_whose_worktree_holds_work() {
+    let _procs = fake_proc_scope();
+    let (_tmp, rt, clone) = runtime_and_repository();
+    let wt = linked_worktree(&clone, &rt.join("tmp/wt"), "feat");
+    let file = make_dirty(&wt);
+
+    drop(RuntimeGuard::new(rt.clone()).unwrap());
+    assert!(file.is_file(), "Drop must search too");
+}
+
+#[test]
+fn runtime_guard_removes_a_folder_whose_worktree_is_clean_and_pushed() {
+    let _procs = fake_proc_scope();
+    let (_tmp, rt, clone) = runtime_and_repository();
+    clean_pushed_worktree(&clone, &rt.join("tmp/wt"), "feat");
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+}
+
+#[test]
+fn runtime_guard_removes_a_self_contained_repository_with_the_folder() {
+    let _procs = fake_proc_scope();
+    let (_tmp, rt, _) = runtime_and_repository();
+    let fixture = rt.join("tmp/fixture");
+    std::fs::create_dir_all(&fixture).unwrap();
+    git(&fixture, &["init", "-q", "-b", "main"]);
+    commit(&fixture, "fixture.txt");
+    make_dirty(&fixture);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+}
+
+/// Owner access is restored before the search: a worktree below a folder a
+/// step left at mode 000 is found, and the folder is kept.
+#[test]
+fn runtime_guard_finds_work_below_a_folder_left_at_mode_000() {
+    if running_as_root() {
+        return;
+    }
+    let _procs = fake_proc_scope();
+    let (_tmp, rt, clone) = runtime_and_repository();
+    let locked = rt.join("tmp/locked");
+    let wt = linked_worktree(&clone, &locked.join("wt"), "feat");
+    let file = make_dirty(&wt);
+    chmod(&locked, 0o000);
+    let _restore = Unlock(locked);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptForWork
+    );
+    assert!(file.is_file());
+}
+
+/// A search that has run out of time keeps the folder, even a clean one.
+#[test]
+fn runtime_guard_keeps_the_folder_when_the_search_deadline_has_passed() {
+    let _procs = fake_proc_scope();
+    let (_tmp, rt, clone) = runtime_and_repository();
+    clean_pushed_worktree(&clone, &rt.join("tmp/wt"), "feat");
+
+    let mut guard = RuntimeGuard::new(rt.clone()).unwrap();
+    assert_eq!(
+        guard.release_with(Instant::now()).unwrap(),
+        RuntimeRemoval::KeptForWork
+    );
+    drop(guard);
+    assert!(rt.join("tmp/wt").is_dir(), "released once, then left alone");
+}
+
+/// A process still using the folder decides first, as before.
+#[test]
+fn runtime_guard_in_use_is_reported_before_work() {
+    let procs = fake_proc_scope();
+    let (_tmp, rt, clone) = runtime_and_repository();
+    let wt = linked_worktree(&clone, &rt.join("tmp/wt"), "feat");
+    make_dirty(&wt);
+    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptInUse
+    );
+    holder.finish();
+}
+
+/// The end of a run whose runtime folder holds work: the run's own outcome
+/// is reported, nothing fails, and the folder stays.
+#[test]
+fn finish_keeps_a_runtime_folder_with_work_and_reports_the_runs_outcome() {
+    let _procs = fake_proc_scope();
+    let tmp = tempfile::tempdir().unwrap();
+    let base = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_, clone) = origin_and_clone(&base.join("src"));
+    let ws = scoped_workspace(&base);
+    let rt = ws.runtime_dir().to_path_buf();
+    let run_dir = ws.run_dir().unwrap().to_path_buf();
+    let wt = linked_worktree(&clone, &rt.join("tmp/wt"), "feat");
+    let file = make_dirty(&wt);
+
+    ws.finish_checked(Outcome::Success, Vec::new(), None, false)
+        .expect("a runtime folder kept for work does not fail the end of the run");
+
+    let report = RunReport::read(&run_dir).unwrap();
+    assert_eq!(
+        report.outcome, "success",
+        "the run's own outcome, not a release failure"
+    );
+    assert!(report.ended_at.is_some());
+    assert!(file.is_file(), "the runtime folder and its work are kept");
+}

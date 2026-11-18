@@ -35,6 +35,8 @@ mod review_isolation;
 
 /// The stub runner. It enters the runner's `-C`, records what it finds and,
 /// with `ISSUE_2096_STAGE` set, stages and commits a file there. With
+/// `ISSUE_2785_TASK_WORKTREE` set it adds a worktree of the private
+/// repository at that path and leaves an uncommitted file in it. With
 /// `ISSUE_2096_FAIL` set it then exits non-zero. It writes the
 /// `--recovery-descriptor` argument, when given, to `descriptor`.
 const STUB_RUNNER: &str = r#"#!/bin/sh
@@ -80,6 +82,12 @@ if [ -n "${ISSUE_2677_ROOT_HELPER:-}" ]; then
     || echo failed >> "$out/base_from_main.err"
   AMPLIHACK_WORK_ROOT_EXPLICIT=1 AMPLIHACK_WORK_ROOT="$ISSUE_2677_WORK_ROOT" \
     bash "$ISSUE_2677_ROOT_HELPER" base . > "$out/base_from_checkout"
+fi
+# Issue #2785: add a task worktree to the run's private repository, outside
+# its storage, as step 04 of default-workflow does, and leave work in it.
+if [ -n "${ISSUE_2785_TASK_WORKTREE:-}" ]; then
+  git worktree add -q -b issue-2785 "$ISSUE_2785_TASK_WORKTREE"
+  printf 'written before the stop\n' > "$ISSUE_2785_TASK_WORKTREE/uncommitted"
 fi
 if [ -n "${ISSUE_2096_STAGE:-}" ]; then
   printf 'private output\n' > run-output

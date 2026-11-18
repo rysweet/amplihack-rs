@@ -1145,4 +1145,76 @@ mod tests {
             "error must identify the protected boundary: {error}"
         );
     }
+
+    /// Issue #2785: cleanup now also runs git on what steps leave in TMPDIR
+    /// and in temporary leftovers, so the hardened command fetches nothing,
+    /// lazily or otherwise, and lists untracked files whatever a repository
+    /// sets for `status.showUntrackedFiles`.
+    #[test]
+    fn hardened_git_fetches_nothing_and_always_lists_untracked_files() {
+        let command = hardened_git();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        for setting in [
+            "core.fsmonitor=false",
+            "core.hooksPath=/dev/null",
+            "protocol.allow=never",
+            "status.showUntrackedFiles=normal",
+        ] {
+            assert!(
+                args.windows(2).any(|w| w[0] == "-c" && w[1] == setting),
+                "-c {setting} is missing from {args:?}"
+            );
+        }
+        let lazy = command
+            .get_envs()
+            .find(|(key, _)| *key == "GIT_NO_LAZY_FETCH")
+            .and_then(|(_, value)| value);
+        assert_eq!(lazy, Some(std::ffi::OsStr::new("1")));
+    }
+
+    /// With `protocol.allow=never` the hardened command cannot reach another
+    /// repository at all, not even one on the local disk.
+    #[test]
+    fn hardened_git_cannot_reach_a_local_repository() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bare = temp.path().join("origin.git");
+        let made = amplihack_git::command()
+            .env("PATH", crate::test_support::host_path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["init", "-q", "--bare"])
+            .arg(&bare)
+            .status()
+            .expect("git init");
+        assert!(made.success());
+        let mut plain = amplihack_git::command();
+        plain
+            .env("PATH", crate::test_support::host_path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .arg("ls-remote")
+            .arg(&bare);
+        let reached = run_output_with_timeout(plain, GIT_COMMAND_TIMEOUT).expect("git ls-remote");
+        assert!(
+            reached.status.success(),
+            "the control: plain git reaches it: {}",
+            String::from_utf8_lossy(&reached.stderr)
+        );
+
+        let mut hardened = hardened_git();
+        hardened
+            .env("PATH", crate::test_support::host_path())
+            .arg("ls-remote")
+            .arg(&bare);
+        let refused =
+            run_output_with_timeout(hardened, GIT_COMMAND_TIMEOUT).expect("git ls-remote");
+        assert!(
+            !refused.status.success(),
+            "hardened git reached {}",
+            bare.display()
+        );
+    }
 }

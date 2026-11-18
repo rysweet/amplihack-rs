@@ -722,3 +722,314 @@ fn remove_target_refuses_a_shape_change_at_apply() {
     assert!(moved.join("debug/keep-me").exists());
     assert!(fs::symlink_metadata(&t).unwrap().is_symlink());
 }
+
+// ----- issue #2785: git work in a stopped run's runtime folder ----------------
+//
+// A run stopped on a usage limit is not active: its pid is dead, and
+// `ended_at` is set with outcome `failure` (as the three stopped runs
+// recorded it) or left empty (interrupted). Its short runtime folder
+// `r/<id>` can hold a git tree with the run's only copy of its work.
+//
+// Contract:
+// - `end_of_run_inner(work_root: &WorkRoot) -> Result<EndOfRun>`, with
+//   `EndOfRun { entries: Vec<Entry>, warnings: Vec<String> }`, is the code
+//   `end_of_run` runs; `end_of_run` prints `warnings` and nothing else;
+// - `run-tmp` keeps a folder with git work as a `skipped` entry whose reason
+//   is `git_work::work_inside`'s, at plan time and again at apply time;
+// - a kept-for-work skip alone writes no `cleanup-record.json`;
+// - a folder the sweep cannot remove is warned about once: the record keeps
+//   the failure with `"failed": true`, and a later sweep that fails on the
+//   same path still reports it as `failed` but adds no warning.
+
+#[path = "tests_git_fixture.rs"]
+#[allow(dead_code)]
+mod git_fixture;
+use git_fixture::{
+    Unlock, chmod, clean_pushed_worktree, clone_of, commit, git, has_object, linked_worktree,
+    make_dirty, origin_and_clone, push, running_as_root,
+};
+
+const STOPPED_RUN: &str = "2785abcd-0000-4000-8000-000000000001";
+
+/// The pid of a process that has exited and been reaped.
+fn dead_pid() -> u32 {
+    let mut child = std::process::Command::new("sh")
+        .env("PATH", crate::test_support::host_path())
+        .args(["-c", "exit 0"])
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+/// A stopped run: its run folder and its short runtime folder `r/<id>`,
+/// which holds `tmp/` and `artifacts/` as a real run's does.
+fn stopped_run(fx: &Fx, ended: bool) -> (PathBuf, PathBuf) {
+    let dir = fx.work.runs_dir().join(STOPPED_RUN);
+    fs::create_dir_all(&dir).unwrap();
+    let report = RunReport {
+        schema_version: RUN_SCHEMA_VERSION,
+        run_id: STOPPED_RUN.into(),
+        recipe: "smart-orchestrator".into(),
+        pid: dead_pid(),
+        // Never a live process's start time, so a reused pid is not this run.
+        pid_start_ticks: Some(1),
+        cwd: String::new(),
+        started_at: now_rfc3339(),
+        ended_at: ended.then(now_rfc3339),
+        outcome: if ended { "failure" } else { "interrupted" }.into(),
+        attempts: Vec::new(),
+        steps: Vec::new(),
+        log_path: None,
+    };
+    fs::write(dir.join(RUN_JSON), serde_json::to_vec(&report).unwrap()).unwrap();
+    let runtime = fx.work.short_runtime_dir().join(short_id(STOPPED_RUN));
+    fs::create_dir_all(runtime.join("tmp")).unwrap();
+    fs::create_dir_all(runtime.join("artifacts")).unwrap();
+    (dir, runtime)
+}
+
+/// R10: a worktree inside the stopped run's folder, of a repository outside
+/// it, holds an uncommitted file and an unpushed commit. The end-of-run sweep
+/// keeps the folder, says why, prints nothing about it and writes no record.
+#[test]
+fn end_of_run_keeps_a_stopped_runs_folder_whose_worktree_holds_work() {
+    for ended in [true, false] {
+        let fx = Fx::new();
+        let (_, clone) = origin_and_clone(&fx.work.path.join("src"));
+        let (run_dir, runtime) = stopped_run(&fx, ended);
+        let wt = linked_worktree(&clone, &runtime.join("tmp/wt"), "feat");
+        let sha = commit(&wt, "step-07-tests.rs");
+        let file = make_dirty(&wt);
+
+        let outcome = end_of_run_inner(&fx.work).unwrap();
+
+        let e = entry(&outcome.entries, &runtime);
+        assert_eq!(e.category, Category::RunTmp, "ended={ended}: {e:?}");
+        assert_eq!(e.action, Action::Skipped, "ended={ended}: {e:?}");
+        assert_eq!(
+            e.reason,
+            format!("git tree {wt:?} has uncommitted changes"),
+            "ended={ended}"
+        );
+        assert!(
+            file.is_file(),
+            "ended={ended}: the uncommitted file is kept"
+        );
+        assert!(has_object(&wt, &sha), "ended={ended}: the commit is kept");
+        assert!(
+            outcome.warnings.is_empty(),
+            "ended={ended}: a folder kept for work is not printed: {:?}",
+            outcome.warnings
+        );
+        assert!(
+            !run_dir.join(CLEANUP_RECORD).exists(),
+            "ended={ended}: a kept-for-work skip alone writes no record"
+        );
+    }
+}
+
+/// R10, the same run once its work is committed and pushed: the next
+/// end-of-run sweep removes the folder.
+#[test]
+fn end_of_run_removes_the_folder_once_its_work_is_committed_and_pushed() {
+    let fx = Fx::new();
+    let (_, clone) = origin_and_clone(&fx.work.path.join("src"));
+    let (_, runtime) = stopped_run(&fx, true);
+    let wt = linked_worktree(&clone, &runtime.join("tmp/wt"), "feat");
+    commit(&wt, "step-07-tests.rs");
+    make_dirty(&wt);
+    let first = end_of_run_inner(&fx.work).unwrap();
+    assert_eq!(entry(&first.entries, &runtime).action, Action::Skipped);
+
+    git(&wt, &["add", "uncommitted.txt"]);
+    git(&wt, &["commit", "-q", "-m", "the rest of the work"]);
+    push(&wt);
+    let second = end_of_run_inner(&fx.work).unwrap();
+
+    let e = entry(&second.entries, &runtime);
+    assert_eq!(e.action, Action::Removed, "{e:?}");
+    assert!(!runtime.exists());
+    assert!(second.warnings.is_empty(), "{:?}", second.warnings);
+}
+
+/// A clone inside the runtime folder whose origin is outside it, with a
+/// commit made before the stop that is not on the origin: the layout of the
+/// usage-limit scenario. The commit stays on disk for a continue run.
+#[test]
+fn end_of_run_keeps_a_clone_inside_the_folder_with_an_unpushed_commit() {
+    let fx = Fx::new();
+    let (origin, _) = origin_and_clone(&fx.work.path.join("src"));
+    let (_, runtime) = stopped_run(&fx, true);
+    let work = clone_of(&origin, &runtime.join("tmp/work"));
+    let sha = commit(&work, "made-before-the-stop.txt");
+
+    let outcome = end_of_run_inner(&fx.work).unwrap();
+
+    let e = entry(&outcome.entries, &runtime);
+    assert_eq!(e.action, Action::Skipped, "{e:?}");
+    assert_eq!(e.reason, format!("git tree {work:?} has unpushed commits"));
+    assert!(has_object(&work, &sha));
+}
+
+/// R8: a repository made inside the folder, with nothing outside referring to
+/// it, does not keep the folder.
+#[test]
+fn end_of_run_removes_a_self_contained_repository_with_the_folder() {
+    let fx = Fx::new();
+    let (_, runtime) = stopped_run(&fx, true);
+    let fixture = runtime.join("tmp/fixture");
+    fs::create_dir_all(&fixture).unwrap();
+    git(&fixture, &["init", "-q", "-b", "main"]);
+    commit(&fixture, "fixture.txt");
+    make_dirty(&fixture);
+
+    let outcome = end_of_run_inner(&fx.work).unwrap();
+
+    assert_eq!(entry(&outcome.entries, &runtime).action, Action::Removed);
+    assert!(!runtime.exists());
+}
+
+/// `--apply` searches again just before removal: work made after the plan
+/// keeps the folder.
+#[test]
+fn run_tmp_apply_checks_for_git_work_again() {
+    let fx = Fx::new();
+    let (_, clone) = origin_and_clone(&fx.work.path.join("src"));
+    let (_, runtime) = stopped_run(&fx, true);
+    let wt = clean_pushed_worktree(&clone, &runtime.join("tmp/wt"), "feat");
+    let settings = fx.settings(&[Category::RunTmp]);
+
+    let items = collect(&settings).unwrap();
+    assert!(
+        items
+            .iter()
+            .any(|i| i.path == runtime && matches!(i.op, Op::RemoveRunTmp { .. })),
+        "a clean, pushed tree does not stop the plan: {items:#?}"
+    );
+    make_dirty(&wt);
+    let entries = apply_items(items, &settings, true);
+
+    let e = entry(&entries, &runtime);
+    assert_eq!(e.action, Action::Skipped, "{e:?}");
+    assert!(
+        e.reason
+            .contains(&format!("git tree {wt:?} has uncommitted changes")),
+        "{e:?}"
+    );
+    assert!(wt.join("uncommitted.txt").is_file());
+}
+
+/// A dry run of `amplihack cleanup` shows the same skip.
+#[test]
+fn run_tmp_dry_run_reports_the_folder_as_kept_for_work() {
+    let fx = Fx::new();
+    let (_, clone) = origin_and_clone(&fx.work.path.join("src"));
+    let (_, runtime) = stopped_run(&fx, false);
+    let wt = linked_worktree(&clone, &runtime.join("tmp/wt"), "feat");
+    commit(&wt, "local.txt");
+    let settings = Settings {
+        apply: false,
+        ..fx.settings(&[Category::RunTmp])
+    };
+
+    let entries = run_sweep(&settings, false).unwrap();
+
+    let e = entry(&entries, &runtime);
+    assert_eq!(e.action, Action::Skipped, "{e:?}");
+    assert_eq!(
+        e.reason,
+        format!("git tree {wt:?} has no upstream and commits on no remote branch")
+    );
+}
+
+/// R11: a folder the end-of-run sweep cannot remove is warned about once.
+/// Later sweeps still try it and report it as failed, without a warning, and
+/// the run's record holds the failure once.
+#[test]
+fn end_of_run_warns_once_about_a_folder_it_cannot_remove() {
+    if running_as_root() {
+        return;
+    }
+    let fx = Fx::new();
+    let (run_dir, runtime) = stopped_run(&fx, true);
+    let locked = runtime.join("artifacts/locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::write(locked.join("fixture.db"), "x").unwrap();
+    chmod(&locked, 0o500);
+    let _restore = Unlock(locked);
+    let quoted = format!("{runtime:?}");
+
+    let first = end_of_run_inner(&fx.work).unwrap();
+    assert_eq!(entry(&first.entries, &runtime).action, Action::Failed);
+    let named: Vec<&String> = first
+        .warnings
+        .iter()
+        .filter(|w| w.contains(&quoted))
+        .collect();
+    assert_eq!(named.len(), 1, "{:?}", first.warnings);
+    assert!(
+        named[0].starts_with("amplihack: warning: end-of-run cleanup could not remove "),
+        "{named:?}"
+    );
+
+    let second = end_of_run_inner(&fx.work).unwrap();
+    assert_eq!(
+        entry(&second.entries, &runtime).action,
+        Action::Failed,
+        "a later sweep still tries the folder, once"
+    );
+    assert!(
+        !second.warnings.iter().any(|w| w.contains(&quoted)),
+        "{:?}",
+        second.warnings
+    );
+
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(run_dir.join(CLEANUP_RECORD)).unwrap()).unwrap();
+    let failed: Vec<&serde_json::Value> = record["sweeps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|s| s["skipped"].as_array().unwrap().iter())
+        .filter(|i| i["failed"] == true)
+        .collect();
+    assert_eq!(failed.len(), 1, "{record:#}");
+    assert_eq!(failed[0]["kind"], "run-tmp", "{record:#}");
+    assert_eq!(
+        failed[0]["path"],
+        runtime.display().to_string(),
+        "{record:#}"
+    );
+}
+
+/// A failure recorded by `amplihack cleanup --apply` is not warned about by
+/// a later end-of-run sweep: every sweep with `--apply` records failures.
+#[test]
+fn a_failure_recorded_by_a_manual_sweep_is_not_warned_about_at_end_of_run() {
+    if running_as_root() {
+        return;
+    }
+    let fx = Fx::new();
+    let (run_dir, runtime) = stopped_run(&fx, true);
+    let locked = runtime.join("artifacts/locked");
+    fs::create_dir_all(&locked).unwrap();
+    fs::write(locked.join("fixture.db"), "x").unwrap();
+    chmod(&locked, 0o500);
+    let _restore = Unlock(locked);
+
+    let manual = run_sweep(&fx.settings(&[Category::RunTmp]), true).unwrap();
+    assert_eq!(entry(&manual, &runtime).action, Action::Failed);
+    assert!(run_dir.join(CLEANUP_RECORD).is_file());
+
+    let end = end_of_run_inner(&fx.work).unwrap();
+    assert_eq!(entry(&end.entries, &runtime).action, Action::Failed);
+    assert!(
+        !end.warnings
+            .iter()
+            .any(|w| w.contains(&format!("{runtime:?}"))),
+        "{:?}",
+        end.warnings
+    );
+}

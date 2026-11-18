@@ -280,3 +280,183 @@ fn a_launch_refused_after_preparation_finishes_the_admission_as_failure() {
     };
     assert!(left.is_empty(), "the stable path was released: {left:?}");
 }
+
+// ----- issue #2785: worktrees that hold work ----------------------------------
+//
+// A worktree registered in the storage's `repository.git` that lies inside
+// the storage, other than its own `checkout`, keeps the storage while it
+// holds uncommitted changes or commits that are not on a remote. The reason
+// is `worktree "<path>" inside it <what git found>`.
+
+/// `git <args>` in `dir`, with the fixture's environment and an identity.
+fn git_ok(f: &Fixture, dir: &Path, args: &[&str]) -> String {
+    let mut all = vec![
+        "-c",
+        "user.name=Isolation Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+    ];
+    all.extend_from_slice(args);
+    String::from_utf8(f.git_in(dir, &all))
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+fn path_str(path: &Path) -> &str {
+    path.to_str().unwrap()
+}
+
+/// A private repository at `<stable>/repository.git`, cloned from a bare
+/// origin outside the storage, with a fetch refspec so that a push updates
+/// `origin/*`, as preparation leaves it.
+fn private_repository(f: &Fixture, stable: &Path) -> PathBuf {
+    let origin = f.root.join("origin.git");
+    git_ok(
+        f,
+        &f.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            path_str(&f.repo),
+            path_str(&origin),
+        ],
+    );
+    let repository = stable.join("repository.git");
+    git_ok(
+        f,
+        &f.root,
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            path_str(&origin),
+            path_str(&repository),
+        ],
+    );
+    git_ok(
+        f,
+        &repository,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+    );
+    git_ok(f, &repository, &["fetch", "-q", "origin"]);
+    repository
+}
+
+#[test]
+fn a_worktree_inside_the_storage_with_work_keeps_it_until_the_work_is_pushed() {
+    let f = Fixture::new();
+    let (first_run, stable) = first_attempt(&f);
+    stale_claim(&stable, &first_run);
+    let repository = private_repository(&f, &stable);
+    let feat = stable.join("worktrees/feat");
+    git_ok(
+        &f,
+        &repository,
+        &["worktree", "add", "-q", "-b", "feat", path_str(&feat)],
+    );
+    let work = feat.join("step-07-tests.rs");
+    fs::write(&work, "// written before the stop\n").unwrap();
+    let dirty = format!("worktree {feat:?} inside it has uncommitted changes");
+
+    let out = relaunch(&f, "second");
+    assert_ne!(cwd(&f, "second"), stable.join("checkout"));
+    let text = stderr(&out);
+    assert!(
+        text.contains("still held") && text.contains(&dirty),
+        "the relaunch names the worktree and what it holds: {text}"
+    );
+    assert!(work.is_file(), "the relaunch removed nothing");
+
+    let kept = entry(&cleanup(&f, true), &stable);
+    assert_eq!(kept["action"], "skipped", "{kept:#}");
+    assert!(
+        kept["reason"].as_str().unwrap().contains(&dirty),
+        "{kept:#}"
+    );
+    assert!(work.is_file(), "cleanup removed nothing");
+
+    git_ok(&f, &feat, &["add", "step-07-tests.rs"]);
+    git_ok(&f, &feat, &["commit", "-qm", "step 07"]);
+    let kept = entry(&cleanup(&f, true), &stable);
+    assert_eq!(kept["action"], "skipped", "{kept:#}");
+    assert!(
+        kept["reason"].as_str().unwrap().contains(&format!(
+            "worktree {feat:?} inside it has no upstream and commits on no remote branch"
+        )),
+        "a commit on no remote still keeps it: {kept:#}"
+    );
+
+    git_ok(&f, &feat, &["push", "-q", "-u", "origin", "feat"]);
+    let removed = entry(&cleanup(&f, true), &stable);
+    assert_eq!(removed["action"], "removed", "{removed:#}");
+    assert!(!stable.exists());
+}
+
+/// The run's own checkout is built from the caller's snapshot and is not
+/// checked: a dirty checkout with a commit on no remote does not hold the
+/// storage.
+#[test]
+fn a_dirty_private_checkout_alone_does_not_keep_the_storage() {
+    let f = Fixture::new();
+    let (first_run, stable) = first_attempt(&f);
+    stale_claim(&stable, &first_run);
+    let repository = private_repository(&f, &stable);
+    let checkout = stable.join("checkout");
+    git_ok(
+        &f,
+        &repository,
+        &["worktree", "add", "-q", "--detach", path_str(&checkout)],
+    );
+    git_ok(
+        &f,
+        &checkout,
+        &[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "the caller's own commit",
+        ],
+    );
+    fs::write(checkout.join("copied-from-the-caller"), "dirty\n").unwrap();
+
+    let removed = entry(&cleanup(&f, true), &stable);
+    assert_eq!(removed["action"], "removed", "{removed:#}");
+    assert!(!stable.exists());
+}
+
+/// At the end of a run, release keeps the private repository for a task
+/// worktree linked to it, as before, and now names the worktree and the
+/// work it holds. The run still succeeds.
+#[test]
+fn the_end_of_a_run_names_a_linked_worktree_that_holds_work() {
+    let f = Fixture::new();
+    let task = f.root.join("task-worktree");
+    let out = f
+        .command("task")
+        .env("ISSUE_2785_TASK_WORKTREE", &task)
+        .output()
+        .unwrap();
+    succeeds(&out);
+
+    let text = stderr(&out);
+    let line = text
+        .lines()
+        .find(|l| l.starts_with(&format!("amplihack: worktree {task:?} ")))
+        .unwrap_or_else(|| panic!("no line names {}: {text}", task.display()));
+    assert!(
+        line.contains(" has uncommitted changes; it is linked to this run's private repository ")
+            && line.ends_with(", which is kept for it"),
+        "{line}"
+    );
+    assert!(
+        task.join("uncommitted").is_file(),
+        "the worktree and its work stay"
+    );
+}

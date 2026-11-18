@@ -506,6 +506,50 @@ fn tmp_leftovers_are_limited_to_known_prefixes_age_and_idleness() {
     );
 }
 
+/// Issue #2785: a `tmp-leftover` folder that holds a clone, of an origin
+/// outside it, with uncommitted work is kept, and the reason names the clone.
+/// A leftover with no git work beside it is still removed.
+#[test]
+fn tmp_leftover_holding_git_work_is_kept() {
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        // `tmp-leftover` is never collected as root.
+        return;
+    }
+    let fx = Fx::new();
+    let kept = fx.tmp.join("amplihack-workflow-kept");
+    fs::create_dir_all(&kept).unwrap();
+    let clone = kept.join("work");
+    fx.git_ok(
+        &fx.root,
+        &[
+            "clone",
+            "-q",
+            fx.origin.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ],
+    );
+    fs::write(clone.join("uncommitted.txt"), "work on no remote\n").unwrap();
+    let plain = fx.tmp.join("amplihack-workflow-plain");
+    fs::create_dir_all(&plain).unwrap();
+    fs::write(plain.join("f"), "x").unwrap();
+    age_tree(&kept, 72);
+    age_tree(&plain, 72);
+
+    let report = fx.cleanup_json(&["--apply", "--only", "tmp-leftover"]);
+
+    let e = entry_for(&report, &kept);
+    assert_eq!(e["category"], "tmp-leftover", "{e}");
+    assert_eq!(e["action"], "skipped", "{e}");
+    assert_eq!(
+        reason(&e),
+        format!("git tree {clone:?} has uncommitted changes"),
+        "{e}"
+    );
+    assert!(clone.join("uncommitted.txt").is_file());
+    assert!(!plain.exists(), "a leftover with no git work is removed");
+}
+
 /// The dry run (the default) writes nothing at all: same listing before and
 /// after, no lock file, no archive.
 #[test]

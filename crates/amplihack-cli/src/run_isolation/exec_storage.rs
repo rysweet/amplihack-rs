@@ -372,3 +372,7 @@ fn read_record(path: &Path) -> std::io::Result<Vec<u8>> {
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+#[path = "tests_exec_storage.rs"]
+mod tests;
