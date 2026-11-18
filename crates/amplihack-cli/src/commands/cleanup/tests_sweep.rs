@@ -1269,8 +1269,15 @@ fn end_of_run_removal_warning_survives_a_missing_or_unwritable_run_record() {
         }
         let other = fx.run(&[]).join("runtime");
         first_sweep_lock_released(&fx);
-        let second =
-            end_of_run_inner(&fx.work).expect("record persistence cannot block unrelated cleanup");
+        let trace = fx.root.join("cleanup-warning.log");
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(std::sync::Mutex::new(fs::File::create(&trace).unwrap()))
+            .finish();
+        let second = tracing::subscriber::with_default(subscriber, || end_of_run_inner(&fx.work))
+            .expect("record persistence cannot block unrelated cleanup");
         assert_eq!(entry(&second.entries, &runtime).action, Action::Failed);
         assert_eq!(entry(&second.entries, &other).action, Action::Removed);
         assert!(!other.exists());
@@ -1281,6 +1288,11 @@ fn end_of_run_removal_warning_survives_a_missing_or_unwritable_run_record() {
                 .any(|line| line.contains("could not remove") && line.contains(&quoted)),
             "same path was warned about twice: {:?}",
             second.warnings
+        );
+        let logged = fs::read_to_string(&trace).unwrap();
+        assert!(
+            !logged.contains(runtime.to_str().unwrap()),
+            "lower-level diagnostics repeated the suppressed warning: {logged}"
         );
         // Successful removal clears obsolete suppression state.
         chmod(&run_dir, 0o700);

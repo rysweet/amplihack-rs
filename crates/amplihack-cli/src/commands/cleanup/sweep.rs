@@ -1531,7 +1531,10 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
                     (Action::Skipped, format!("{error:#}"))
                 }
                 Err(error) => {
-                    tracing::warn!(path = %item.path.display(), error = %format!("{error:#}"), "cleanup action failed");
+                    // The structured result retains every failure. End-of-run
+                    // warnings are emitted only after durable suppression is
+                    // updated, so this diagnostic must not repeat a warning.
+                    tracing::debug!(path = %item.path.display(), error = %format!("{error:#}"), "cleanup action failed");
                     (Action::Failed, format!("{error:#}"))
                 }
             },
@@ -1550,7 +1553,7 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
         // the worktree's own result.
         for e in follow_on {
             if e.action != Action::Removed {
-                tracing::warn!(
+                tracing::debug!(
                     path = %e.path.display(),
                     action = e.action.as_str(),
                     reason = %e.reason,
@@ -1695,7 +1698,7 @@ fn worktree_target_entries(
                     entry(Action::Skipped, refusal.to_string(), size)
                 }
                 Err(target_remove::RemoveError::Io(error)) => {
-                    tracing::warn!(path = %path.display(), %error, "cannot remove target");
+                    tracing::debug!(path = %path.display(), %error, "cannot remove target");
                     entry(Action::Failed, format!("cannot remove: {error}"), size)
                 }
             },
