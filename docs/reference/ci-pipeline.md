@@ -565,6 +565,25 @@ test:
   `support/quiet_process.rs`. Feature-gated modules such as `signal_*` build
   only with their feature, so pass `--features signal` to run them locally.
 
+## Complete build and auto-drive release evidence
+
+`Install Smoke Test` unconditionally runs the CI-only qa-team scenario
+`tests/gadugi/scenarios/issue-2806-build-drive.yaml` after installing the tested
+binary and pinned recipe runner. The YAML entry point and CI use the same
+complete Rust driver. Missing prerequisites fail the job; scenario results and
+evidence are uploaded on success and failure without increasing job timeouts.
+
+Coverage includes a complete smart-orchestrator build, a complete private-copy
+auto-drive merge, independent missing-worktree and pending-check regressions,
+and preservation of interrupted work during cleanup. Only independently
+reproduced assertion failures attributed to #2802, #2785, or #2343 can receive
+expected-failure treatment. The existing exact-commit Auto Release dependency
+makes this scenario required release evidence.
+
+See [Build and Auto-drive CI Scenario](build-drive-ci-scenario.md) for case
+acceptance, fixture configuration, isolation, and evidence interpretation.
+Run this scenario only in CI, never on a factory host.
+
 ## Integration test binary convention
 
 Integration tests that shell out to a built binary resolve its path with the

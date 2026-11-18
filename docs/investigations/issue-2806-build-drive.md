@@ -26,7 +26,11 @@ No Gadugi scenario has been executed on this host.
   Claude's default transport is plain stdout, not a fabricated JSON envelope.
   The repository runner pin is claude-plugin/recipe-runner.rev; CI must install
   that pin before staging executables. Installed local runner source is newer;
-  transport differences must be treated as harness errors.
+  transport differences must be treated as harness errors. Follow-up inspection
+  of the actual pin (2833a0b) confirms Claude uses bare -p with task on stdin
+  and --system-prompt-file for the system turn; the adapter supports that
+  transport as well as the older inline transport. Codex remains stdin plus
+  --output-last-message.
 - `workflow_context.sh` snapshots AMPLIHACK_CONTEXT_FILE when sourced. If that
   variable exists, an unreadable or missing file does not fall back to aliases.
   Finalization collect and validate are separate operations on

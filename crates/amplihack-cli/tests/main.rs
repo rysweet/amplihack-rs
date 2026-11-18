@@ -29,6 +29,10 @@ mod isolated_amplihack;
 mod pinned_runner;
 mod support;
 
+// Local harness contracts only. Complete recipes and cleanup scenarios run in CI.
+#[path = "../../../tests/gadugi/issue-2806/fixture/tests.rs"]
+mod issue_2806_fixture;
+
 #[path = "issue_2096_execution_isolation.rs"]
 mod issue_2096_execution_isolation;
 #[path = "issue_2329_autodrive_outcomes.rs"]

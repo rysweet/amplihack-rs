@@ -282,6 +282,7 @@ Proven methodologies for consistent, high-quality results.
 
 ### Core Workflows
 
+- [Build and Auto-drive CI Scenario](reference/build-drive-ci-scenario.md) - CI-only full-workflow coverage, regression assertions, and exact-commit release evidence
 - [Default Workflow](claude/skills/default-workflow/SKILL.md) - Standard multi-step development process
 - [Investigation Workflow](claude/workflow/INVESTIGATION_WORKFLOW.md) - Deep codebase analysis and understanding
 - [PR Recovery Readiness](PR_RECOVERY_READINESS.md) - Entry point for existing-PR recovery docs and the canonical readiness contract

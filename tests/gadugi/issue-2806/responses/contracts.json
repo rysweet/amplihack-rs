@@ -1,0 +1,5 @@
+{
+  "transport": {"claude": "plain stdout, -p or --append-system-prompt-file", "codex": "exec, stdin task, --output-last-message"},
+  "selection": "Task heading or uniquely declared JSON fields; no invocation ordinal or invented step identifier",
+  "unsupported": "fatal harness error"
+}

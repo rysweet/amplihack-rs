@@ -1,0 +1,46 @@
+{
+  "task": "Issue #7: write answer.txt containing 42 followed by a newline, implement answer() returning 42, and leave the published PR open. Branch: feat/answer",
+  "branch": "feat/answer",
+  "implementation": {
+    "files": [
+      {
+        "path": "answer.txt",
+        "content": "42\n"
+      },
+      {
+        "path": "src/lib.rs",
+        "content": "pub fn answer() -> u32 {\n    42\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn answer_is_42() {\n        assert_eq!(super::answer(), 42);\n    }\n}\n"
+      }
+    ],
+    "checks": [
+      {
+        "executable": "/usr/bin/cmp",
+        "args": [
+          "answer.txt",
+          "expected.txt"
+        ]
+      }
+    ]
+  },
+  "requirements": {
+    "task_summary": "Implement answer 42",
+    "explicit_requirements": [
+      "answer.txt contains 42 and answer() returns 42",
+      "Publish an open PR; leave it open"
+    ],
+    "acceptance_criteria": [
+      "cargo test passes",
+      "implementation pushed and PR open"
+    ],
+    "out_of_scope": [
+      "Merging"
+    ],
+    "assumptions": [],
+    "questions_resolved": [],
+    "estimated_complexity": "low",
+    "classification": "feature",
+    "requires_api_design": "false",
+    "requires_database_design": "false",
+    "requires_integration_work": "false"
+  }
+}

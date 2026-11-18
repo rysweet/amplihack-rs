@@ -1,0 +1,88 @@
+name: issue-2806-build-drive
+description: >
+  CI-only release evidence for a complete smart-orchestrator build and a
+  complete auto-drive through the runner-created private execution copy.
+  Only hosting and model commands are fixtures. Independent cases exercise
+  pending-check finalization, missing worktrees, interrupted preservation,
+  another stopped run, clean removal and repeated removal-failure reporting.
+  Never execute this scenario or its driver on a factory host.
+version: "1.0"
+environment:
+  requires: [amplihack, recipe-runner-rs, issue-2806-build-drive, git]
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, smart-orchestrator, auto-drive, cleanup, release-evidence]
+  priority: high
+  issues: ["2806", "2802", "2785", "2343"]
+steps:
+  - name: run-all-independent-cases-and-retain-evidence
+    agent: cli-agent
+    action: execute
+    params:
+      # CI stages this test-only example on PATH. The CI job invokes precisely
+      # the same command; building/installing assets is outside the scenario.
+      command: issue-2806-build-drive run-all --evidence artifacts/issue-2806
+  - name: all-required-evidence-satisfies-acceptance
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: complete-evidence-with-only-substantiated-issue-allowances
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: successful-whole-build
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: build.complete"
+  - name: successful-private-copy-drive-and-observed-merge
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: drive-control.complete"
+  - name: valid-context-pending-checks-executed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "CASE_RECORDED: finalization-valid"
+  - name: missing-context-pending-checks-executed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "CASE_RECORDED: finalization-missing"
+  - name: unreadable-context-pending-checks-executed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "CASE_RECORDED: finalization-unreadable"
+  - name: missing-private-worktree-executed-without-fixture-repair
+    type: output_contains
+    params:
+      target: stdout
+      expected: "CASE_RECORDED: drive-missing"
+  - name: interrupted-run-preservation-executed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "CASE_RECORDED: cleanup-interrupted"
+  - name: other-stopped-run-preservation-executed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "CASE_RECORDED: cleanup-other-stopped"
+  - name: fully-pushed-clean-run-removal-executed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "CASE_RECORDED: cleanup-clean"
+  - name: repeated-removal-error-reporting-executed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "CASE_RECORDED: cleanup-removal-failure"

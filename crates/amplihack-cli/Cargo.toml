@@ -139,3 +139,8 @@ path = "tests/main.rs"
 # (see crates/amplihack-cli/src/commands/session_tree/proofs.rs). Ordinary cargo
 # builds never set it, so rustc would otherwise flag every `#[cfg(kani)]` as unknown.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
+# CI-only scenario support; never installed or shipped with the CLI.
+[[example]]
+name = "issue-2806-build-drive"
+path = "../../tests/gadugi/issue-2806/fixture/main.rs"
