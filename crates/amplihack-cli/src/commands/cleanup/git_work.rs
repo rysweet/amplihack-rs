@@ -129,18 +129,13 @@ pub(crate) fn printable(text: &str) -> String {
 
 // ----- one tree ----------------------------------------------------------------
 
-/// The existing checks on one tree, with the reason made printable.
-fn checks(tree: &Path) -> Option<String> {
+/// Why one repository must stay, with the reason made printable. Dirty-state
+/// inspection also preserves on Git errors, using the existing conservative helper.
+pub(crate) fn tree_work(tree: &Path) -> Option<String> {
     if git_has_dirty_state(tree) {
         return Some("has uncommitted changes".to_string());
     }
     unpushed_reason(tree).map(|reason| printable(&reason))
-}
-
-/// Why one repository must stay. Dirty-state inspection also preserves on
-/// Git errors, using the existing conservative helper.
-pub(crate) fn tree_work(tree: &Path) -> Option<String> {
-    checks(tree)
 }
 
 /// Callback for callers that remove an entire storage boundary.
@@ -189,11 +184,18 @@ fn work_inside_with(folder: &Path, policy: &Policy) -> Option<String> {
             policy.tree_limit
         ));
     }
-    for tree in candidates {
+    for (tree, bare) in candidates {
         if policy.past_deadline() {
             return Some(DEADLINE_REASON.to_string());
         }
-        if let Some(reason) = tree_work(&tree) {
+        // Bare repositories have no working tree to dirty. Their commits
+        // still go through the existing unpushed check, including its errors.
+        let reason = if bare {
+            unpushed_reason(&tree)
+        } else {
+            tree_work(&tree)
+        };
+        if let Some(reason) = reason {
             return Some(format!("git tree {tree:?} {reason}"));
         }
         let Some(common) = git_common_dir(&tree) else {
@@ -218,10 +220,11 @@ fn work_inside_with(folder: &Path, policy: &Policy) -> Option<String> {
     None
 }
 
-/// Every folder under `root`, `root` included, that holds a `.git` entry of
-/// any kind, sorted. Links are not followed and no `.git` folder is entered.
+/// Every folder under `root`, `root` included, that holds a `.git` entry or
+/// bare repository layout, sorted. Links are not followed and repository
+/// metadata is not entered.
 /// `Err` is the reason the folder is kept.
-fn candidates(root: &Path, policy: &Policy) -> Result<Vec<PathBuf>, String> {
+fn candidates(root: &Path, policy: &Policy) -> Result<Vec<(PathBuf, bool)>, String> {
     let cannot = |path: &Path, error: std::io::Error| {
         format!("cannot search for git trees: cannot read {path:?}: {error}")
     };
@@ -233,6 +236,8 @@ fn candidates(root: &Path, policy: &Policy) -> Result<Vec<PathBuf>, String> {
             Ok(entries) => entries,
             Err(error) => return Err(cannot(&dir, error)),
         };
+        let mut children = Vec::new();
+        let (mut head, mut objects, mut refs) = (false, false, false);
         for entry in entries {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -248,19 +253,37 @@ fn candidates(root: &Path, policy: &Policy) -> Result<Vec<PathBuf>, String> {
             if seen.is_multiple_of(DEADLINE_STRIDE) && policy.past_deadline() {
                 return Err(DEADLINE_REASON.to_string());
             }
-            if entry.file_name() == ".git" {
-                out.push(dir.clone());
+            let name = entry.file_name();
+            if name == ".git" {
+                out.push((dir.clone(), false));
                 continue;
             }
             // The type the folder listing already gives, so no entry costs a
             // stat of its own; like `symlink_metadata`, it does not follow a
             // link.
             match entry.file_type() {
-                Ok(kind) if kind.is_dir() => stack.push(entry.path()),
-                Ok(_) => {}
+                Ok(kind) => {
+                    head |= name == "HEAD" && kind.is_file();
+                    objects |= name == "objects" && kind.is_dir();
+                    refs |= name == "refs" && kind.is_dir();
+                    if kind.is_dir() {
+                        children.push(entry.path());
+                    }
+                }
                 Err(error) => return Err(cannot(&entry.path(), error)),
             }
         }
+        if head && objects && refs {
+            // A bare clone has no `.git` entry. Pass it to the same Git
+            // checks without walking its object database.
+            out.push((dir, true));
+            children.retain(|path| {
+                !path
+                    .file_name()
+                    .is_some_and(|name| name == "objects" || name == "refs")
+            });
+        }
+        stack.extend(children);
     }
     out.sort();
     out.dedup();

@@ -819,14 +819,17 @@ does not change a successful cleanup exit status.
 ### Which git trees are checked
 
 The search includes the candidate itself and recursively visits working
-directories beneath it. It recognizes ordinary `.git` directories and linked
-worktrees with `.git` files, and continues below repository roots to discover
+directories beneath it. It recognizes ordinary `.git` directories, linked
+worktrees with `.git` files, and bare repositories by their `HEAD`, `objects`
+and `refs` entries. It continues below repository roots to discover
 independently nested repositories. It skips Git object storage and does not
 follow directory symlinks into unrelated paths.
 
 Every discovered repository uses the existing `git_has_dirty_state` and
 `unpushed_reason` checks, with their existing hardened Git settings. Dirty
-state is checked first; an unpushed check follows when needed. Cleanup does
+state is checked first; an unpushed check follows when needed. Bare repositories
+have no working tree, so only the existing unpushed check applies to them;
+inspection errors preserve them. Cleanup does
 not fetch, introduce a second definition of Git state, or decide preservation
 from the location of a remote.
 

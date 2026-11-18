@@ -10,8 +10,7 @@
 //! Contract:
 //! - `pub(crate) fn work_inside(folder: &Path, deadline: Option<Instant>) ->
 //!   Option<String>`: `None` when nothing in `folder` needs keeping, else why
-//!   it is kept. It is `work_inside_with` with `WALK_LIMIT`, `TREE_LIMIT` and
-//!   this process's effective uid and gid;
+//!   it is kept. It is `work_inside_with` with `WALK_LIMIT` and `TREE_LIMIT`;
 //! - `struct Policy { deadline: Option<Instant>, walk_limit: usize,
 //!   tree_limit: usize }` and
 //!   `fn work_inside_with(folder: &Path, policy: &Policy) -> Option<String>`;

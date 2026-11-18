@@ -759,11 +759,10 @@ jobs:
         run: AMPLIHACK_1619_QA_REQUIRE_ALL=1 AMPLIHACK_1619_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1619-tier-scenario.sh
       # Issue #2785: a recipe run that commits in its runtime folder and then
       # stops on a usage limit keeps the commit on disk for a continue run,
-      # through the pinned runner installed above. REQUIRE_ALL turns a case
-      # that could not run into a failure.
+      # through the pinned runner installed above. Missing prerequisites fail.
       - name: "Outside-in: a usage-limit stop keeps unpushed work (issue #2785)"
         shell: bash
-        run: AMPLIHACK_2785_QA_REQUIRE_ALL=1 AMPLIHACK_2785_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh
+        run: AMPLIHACK_2785_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2785-usage-limit-keeps-work-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing

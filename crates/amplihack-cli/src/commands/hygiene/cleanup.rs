@@ -620,8 +620,7 @@ pub(crate) fn active_worktrees(repo: &Path) -> Result<BTreeSet<PathBuf>> {
 /// repository (`protocol.allow=never`, no lazy fetch of a partial clone),
 /// reads nothing from stdin, and lists untracked files whatever
 /// `status.showUntrackedFiles` a repository sets, so `status --porcelain`
-/// cannot hide them. Owner and mode checks before git runs on such a tree are
-/// in `cleanup::git_work`; filters a repository configures can still run.
+/// cannot hide them. Filters a repository configures can still run.
 pub(crate) fn hardened_git() -> std::process::Command {
     let mut command = amplihack_git::command();
     command

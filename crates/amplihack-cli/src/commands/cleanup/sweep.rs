@@ -1748,40 +1748,29 @@ struct CleanupRecord {
 
 /// Appends a sweep to `cleanup-record.json` of every run that lost something
 /// or met a failure no earlier sweep recorded, and drops removed paths from
-/// its `owned-paths`. Returns the failed paths no earlier sweep recorded: the
-/// ones the end-of-run sweep warns about (issue #2785). When a run's record
-/// cannot be written, or the run has no folder, all its failures count as new.
-fn write_records(entries: &[Entry], root: &WorkRoot) -> HashSet<PathBuf> {
+/// its `owned-paths`. Warning suppression uses the separate work-root record,
+/// so it does not depend on this per-run history being writable.
+fn write_records(entries: &[Entry], root: &WorkRoot) {
     let mut by_run: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
     for e in entries {
         if let Some(id) = e.run_id.as_deref() {
             by_run.entry(id).or_default().push(e);
         }
     }
-    let mut new_failures = HashSet::new();
     for (id, list) in by_run {
         let removed = list.iter().any(|e| e.action == Action::Removed);
-        let failures = || {
-            list.iter()
-                .filter(|e| e.action == Action::Failed)
-                .map(|e| e.path.clone())
-        };
-        if !removed && failures().next().is_none() {
+        let failed = list.iter().any(|e| e.action == Action::Failed);
+        if !removed && !failed {
             continue;
         }
         let run_dir = root.runs_dir().join(id);
         if !is_valid_id(id) || !is_real_dir(&run_dir) {
-            new_failures.extend(failures());
             continue;
         }
-        match write_record(&run_dir, id, &list) {
-            Ok(new) => new_failures.extend(new),
-            Err(error) => {
-                new_failures.extend(failures());
-                eprintln!(
-                    "amplihack cleanup: warning: could not write the cleanup record of run {id}: {error:#}"
-                );
-            }
+        if let Err(error) = write_record(&run_dir, id, &list) {
+            eprintln!(
+                "amplihack cleanup: warning: could not write the cleanup record of run {id}: {error:#}"
+            );
         }
         if removed && let Err(error) = prune_owned_paths(&run_dir) {
             eprintln!(
@@ -1789,16 +1778,14 @@ fn write_records(entries: &[Entry], root: &WorkRoot) -> HashSet<PathBuf> {
             );
         }
     }
-    new_failures
 }
 
 /// Appends one sweep to the run's `cleanup-record.json`, unless every
-/// failure in `list` is already recorded and nothing was removed, and returns
-/// the failures the record did not hold yet. Paths are compared in the string
-/// form the record holds, not by error text. A missing record starts empty;
-/// one that cannot be parsed is renamed aside with a warning so its history
-/// is kept; any other read error is returned.
-fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<Vec<PathBuf>> {
+/// failure in `list` is already recorded and nothing was removed. Paths are
+/// compared in the string form the record holds, not by error text. A missing
+/// record starts empty; one that cannot be parsed is renamed aside with a
+/// warning so its history is kept; any other read error is returned.
+fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<()> {
     let path = run_dir.join(CLEANUP_RECORD);
     let empty = || CleanupRecord {
         run_id: id.to_string(),
@@ -1834,18 +1821,16 @@ fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<Vec<PathBuf
         .filter(|item| item.failed)
         .map(|item| item.path.as_str())
         .collect();
-    let new_failures: Vec<PathBuf> = list
+    let has_new_failure = list
         .iter()
         .filter(|e| e.action == Action::Failed)
-        .filter(|e| !recorded.contains(e.path.display().to_string().as_str()))
-        .map(|e| e.path.clone())
-        .collect();
+        .any(|e| !recorded.contains(e.path.display().to_string().as_str()));
     // A sweep whose only news would be failures already recorded is not
     // appended, so a folder that fails at every sweep is recorded once.
     let failed = list.iter().any(|e| e.action == Action::Failed);
     let removed = list.iter().any(|e| e.action == Action::Removed);
-    if failed && new_failures.is_empty() && !removed {
-        return Ok(Vec::new());
+    if failed && !has_new_failure && !removed {
+        return Ok(());
     }
     record.run_id = id.to_string();
     let item = |e: &Entry, with_reason: bool| RecordItem {
@@ -1870,8 +1855,7 @@ fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<Vec<PathBuf
     });
     let mut bytes = serde_json::to_vec_pretty(&record)?;
     bytes.push(b'\n');
-    write_atomic_0600(&path, &bytes)?;
-    Ok(new_failures)
+    write_atomic_0600(&path, &bytes)
 }
 
 /// Drops paths that no longer exist from `owned-paths`, and removes the file

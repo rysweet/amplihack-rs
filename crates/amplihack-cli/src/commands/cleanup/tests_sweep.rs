@@ -1131,6 +1131,73 @@ fn end_of_run_keeps_each_kind_of_work_and_cleans_another_run() {
     }
 }
 
+/// Bare clones have no `.git` entry. Local-only commits keep the containing
+/// runtime folder, while a fully pushed bare clone remains removable.
+#[test]
+fn end_of_run_checks_nested_bare_clones_for_unpushed_commits() {
+    for pushed in [false, true] {
+        let fx = Fx::new();
+        let (origin, clone) = origin_and_clone(&fx.root.join("src"));
+        let sha = commit(&clone, "local.txt");
+        let (_, runtime) = stopped_run(&fx, false);
+        let bare = runtime.join("tmp/bare-clone");
+        git(
+            &runtime,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                clone.to_str().unwrap(),
+                bare.to_str().unwrap(),
+            ],
+        );
+        git(
+            &bare,
+            &["remote", "set-url", "origin", origin.to_str().unwrap()],
+        );
+        git(
+            &bare,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+        );
+        if pushed {
+            git(&bare, &["push", "-q", "origin", "HEAD:main"]);
+        }
+        git(&bare, &["fetch", "-q", "origin"]);
+        assert_eq!(has_object(&origin, &sha), pushed);
+
+        let result = end_of_run_inner(&fx.work).unwrap();
+        let outcome = entry(&result.entries, &runtime);
+        if pushed {
+            assert_eq!(outcome.action, Action::Removed, "{outcome:?}");
+            assert!(!runtime.exists());
+        } else {
+            assert_eq!(outcome.action, Action::Skipped, "{outcome:?}");
+            assert!(outcome.preserved, "{outcome:?}");
+            assert!(
+                has_object(&bare, &sha),
+                "the retained clone must remain usable"
+            );
+            assert_eq!(
+                git(&bare, &["show", &format!("{sha}:local.txt")]),
+                "local.txt"
+            );
+            assert!(
+                result.warnings.iter().any(|line| {
+                    line.contains(&format!("{runtime:?}"))
+                        && line.contains(&format!("{bare:?}"))
+                        && line.contains("commits on no remote branch")
+                }),
+                "preservation must reach normal output: {:?}",
+                result.warnings
+            );
+        }
+    }
+}
+
 /// Legacy run targets also need the recursive check, including changes made
 /// after a clean plan was collected.
 #[test]
