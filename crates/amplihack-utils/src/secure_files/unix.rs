@@ -179,13 +179,26 @@ impl PrivateTemp {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let tmp = dir.join(format!(".{name}.tmp.{}.{nanos}", std::process::id()));
-        let file = super::create_private_file(&tmp)?;
-        Ok(Self {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&tmp)?;
+        let pending = Self {
             file: Some(file),
             dir: dir.to_path_buf(),
             target: dir.join(name),
             tmp,
-        })
+        };
+        // Own the temporary name before this fallible operation, so Drop
+        // removes it if permission finalization fails before return.
+        pending
+            .file
+            .as_ref()
+            .expect("new temporary file owns its descriptor")
+            .set_permissions(fs::Permissions::from_mode(0o600))?;
+        Ok(pending)
     }
 
     /// The temporary file.
