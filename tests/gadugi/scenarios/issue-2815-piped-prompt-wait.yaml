@@ -1,0 +1,90 @@
+name: issue-2815-piped-prompt-wait
+description: >
+  Outside-in QA for issue #2815. A recipe agent step is launched as
+  `amplihack claude --subprocess-safe -- -p` with its prompt on stdin, and a
+  usage limit in such a step ended the whole run: the supervisor refused the
+  usage-limit wait with `skipped reason=piped_prompt`, because a rerun would
+  have had no prompt to read. The scenario (via
+  tests/gadugi/run-issue-2815-piped-prompt-wait-scenario.sh) pipes a prompt
+  larger than a pipe buffer, with a NUL byte and bytes that are not valid
+  UTF-8, into the real binary's supervised launch, against a stub agent that
+  reports a Claude usage limit on its first call and succeeds on its second.
+  The limit states a reset a few minutes in the past, so the real wait ends
+  at once and the scenario takes seconds without any debug-only clock seam.
+  It checks that the step succeeds, that the agent ran twice, that both
+  calls read the prompt byte for byte, that one wait was reported with its
+  reset and its end, that no `piped_prompt` refusal was written, and that no
+  copy of the prompt was left in the rerun scratch folder. A second case is
+  the issue #1618 regression guard: with the prompt in argv and stdin a pipe
+  nobody writes to or closes, the step still finishes. Everything runs under
+  `env -i` with a scratch HOME, so the real ~/.claude and ~/.amplihack are
+  never read or written, and no agent, account or network call is made. CI's
+  Install Smoke Test job runs the driver script directly against the binary
+  it installs; CI does not run gadugi-test, so this file is for running the
+  same cases through gadugi-test by hand.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, usage-limit, stdin, recipe-step, regression]
+  priority: high
+  issues: ["2815"]
+steps:
+  - name: run-issue-2815-piped-prompt-wait-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2815-piped-prompt-wait-scenario.sh
+    timeout: 880000
+  - name: all-piped-prompt-wait-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: step-succeeded-after-the-limit
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: step_succeeded_after_the_limit - "
+  - name: step-ran-again
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: step_ran_again - "
+  - name: rerun-read-the-same-prompt
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: rerun_read_the_same_prompt - "
+  - name: one-wait-reported-with-its-reset
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: one_wait_reported_with_its_reset - "
+  - name: no-piped-prompt-refusal
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: no_piped_prompt_refusal - "
+  - name: no-captured-prompt-left-behind
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: no_captured_prompt_left_behind - "
+  - name: held-open-stdin-does-not-hang
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: held_open_stdin_does_not_hang - "

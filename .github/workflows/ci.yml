@@ -760,6 +760,12 @@ jobs:
       - name: "Outside-in - Existing pull request on another base (issue #2784)"
         shell: bash
         run: AMPLIHACK_2784_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2784-existing-pr-other-base-scenario.sh
+      # Issue #2815: a usage limit in a step whose prompt arrived on stdin, which
+      # is how every recipe agent step is launched, against the binary installed
+      # above. The limit states a past reset, so the real wait ends at once.
+      - name: "Outside-in - Usage limit on a piped prompt (issue #2815)"
+        shell: bash
+        run: AMPLIHACK_2815_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2815-piped-prompt-wait-scenario.sh
       # Issue #1619: outside-in check of the model and reasoning effort each
       # harness receives when a recipe agent step declares a tier, through the
       # pinned runner installed above. REQUIRE_ALL turns a case that could not
