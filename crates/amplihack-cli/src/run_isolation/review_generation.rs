@@ -307,10 +307,20 @@ pub(super) fn is_owned_launch_dir(directory: &Path) -> bool {
         for entry in fs::read_dir(allocation)? {
             let entry = entry?;
             let name = entry.file_name();
-            let Some(checkout_name) = name.as_bytes().strip_suffix(b".review-owner.json") else {
+            let Some(checkout_name) = name
+                .as_bytes()
+                .strip_suffix(b".review-owner.json")
+                .map(OsStr::from_bytes)
+                .and_then(|name| Path::new(name).file_name())
+            else {
                 continue;
             };
-            let checkout = allocation.join(OsStr::from_bytes(checkout_name));
+            // Only regular manifest candidates have contents to validate;
+            // special files and symlinks confer no ownership evidence.
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let checkout = allocation.join(checkout_name);
             match read_live(&checkout) {
                 Ok(generation) if generation.launch == directory => return Ok(true),
                 Ok(_) => {}

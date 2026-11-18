@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -367,6 +368,46 @@ fn invalid_or_retired_ownership_evidence_withholds_automatic_skip() {
         }
         fs::write(&manifest, &original).unwrap();
     }
+}
+
+#[test]
+fn unrelated_and_special_manifest_candidates_do_not_disrupt_launches() {
+    let f = Fixture::new();
+    let allocation = f.review.parent().unwrap();
+    for name in [
+        ".review-owner.json",
+        "..review-owner.json",
+        "...review-owner.json",
+        "broken.review-owner.json",
+    ] {
+        fs::write(allocation.join(name), b"not a generation").unwrap();
+    }
+    fs::create_dir(allocation.join("directory.review-owner.json")).unwrap();
+    symlink(
+        allocation.join("missing"),
+        allocation.join("dangling.review-owner.json"),
+    )
+    .unwrap();
+    let fifo = std::ffi::CString::new(
+        allocation
+            .join("pipe.review-owner.json")
+            .as_os_str()
+            .as_bytes(),
+    )
+    .unwrap();
+    // SAFETY: fifo is a live, NUL-terminated path for the duration of the call.
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+    let launch = f.step(&f.launch, &[]);
+    succeeds(&launch.out);
+    assert_eq!(launch.skip_count, 1, "{:?}", launch.argv);
+
+    // With no live manifest, discovery still finishes and leaves Codex's
+    // directory check in place, rather than opening the pipe candidate.
+    fs::remove_file(f.manifest()).unwrap();
+    let launch = f.step(&f.launch, &[]);
+    assert_eq!(launch.skip_count, 0, "{:?}", launch.argv);
+    assert_eq!(launch.out.status.code(), Some(42), "{:?}", launch.out);
 }
 
 #[test]
