@@ -29,7 +29,10 @@ RECIPES_DIR="$REPO_ROOT/amplifier-bundle/recipes"
 # recipe:expected-number-of-resolution-sites
 RECIPE_SITES=(
   "workflow-tdd.yaml:1"
-  "workflow-finalize.yaml:3"
+  # Publication now resolves workflow_finalize_publish.sh, which sources its
+  # sibling runtime helper. Installed-bundle precedence and missing-sibling
+  # behavior are exercised by workflow_finalize_publish_ready's native tests.
+  "workflow-finalize.yaml:2"
   "workflow-publish.yaml:2"
   "workflow-refactor-review.yaml:1"
   "workflow-pr-review.yaml:1"

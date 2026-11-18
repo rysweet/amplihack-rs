@@ -828,6 +828,82 @@ pub fn recipe_publication_precedes_readiness(f: &Fixture) {
     f.assert_ready();
 }
 
+fn install_publication_tools(f: &Fixture, home: &Path) -> std::path::PathBuf {
+    let tools = home.join("amplifier-bundle/tools");
+    fs::create_dir_all(&tools).unwrap();
+    for entry in fs::read_dir(f.source.join("amplifier-bundle/tools")).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            fs::copy(entry.path(), tools.join(entry.file_name())).unwrap();
+        }
+    }
+    // Observe which real sibling is sourced without replacing its behavior.
+    let runtime = tools.join("workflow_runtime_artifacts.sh");
+    let content = fs::read_to_string(&runtime).unwrap();
+    fs::write(
+        runtime,
+        format!("printf '%s\\n' \"$SCRIPT_DIR\" > \"$FIXTURE/runtime-helper-source\"\n{content}"),
+    )
+    .unwrap();
+    tools
+}
+
+/// Execute the shipped publication step from a repository with no bundle.
+/// Installing competing bundles incrementally verifies the real resolver's
+/// fallback and precedence as well as its sibling runtime-helper selection.
+pub fn publication_resolves_installed_runtime_helper(f: &Fixture) {
+    let home = f.root.join("tmp/home");
+    for bundle in [
+        home.join(".amplihack"),
+        home.join(".copilot"),
+        f.root.join("explicit home"),
+    ] {
+        let tools = install_publication_tools(f, &bundle);
+        f.audit(false);
+        let mut command = f.step(PUBLISH);
+        command.env_remove("AMPLIHACK_HOME");
+        if bundle == f.root.join("explicit home") {
+            command.env("AMPLIHACK_HOME", &bundle);
+        }
+        success(command.output().unwrap());
+        assert_eq!(
+            fs::read_to_string(f.root.join("runtime-helper-source"))
+                .unwrap()
+                .trim(),
+            tools.to_str().unwrap(),
+            "publication must use the selected installed bundle's sibling"
+        );
+        assert_eq!(f.remote_head(), f.head(&f.pr));
+    }
+    success(f.ready());
+    f.assert_ready();
+}
+
+pub fn publication_missing_runtime_helper_prevents_push(f: &Fixture) {
+    let tools = install_publication_tools(f, &f.root.join("tmp/home/.amplihack"));
+    fs::remove_file(tools.join("workflow_runtime_artifacts.sh")).unwrap();
+    f.audit(false);
+    let before = f.remote_head();
+    let output = f
+        .step(PUBLISH)
+        .env_remove("AMPLIHACK_HOME")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", show(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("workflow_runtime_artifacts.sh"),
+        "missing sibling must be diagnosed: {}",
+        show(&output)
+    );
+    assert_eq!(f.remote_head(), before, "missing helper must prevent push");
+    assert_eq!(f.head(&f.pr), before, "missing helper must prevent commit");
+    assert_eq!(
+        fs::read_to_string(f.pr.join("audit.txt")).unwrap(),
+        "audit fix included\n"
+    );
+    f.assert_no_mutation();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -839,6 +915,8 @@ mod tests {
         ($($name:ident),+ $(,)?) => { $(#[test] fn $name() { super::$name(&fixture()); })+ };
     }
     contract!(
+        publication_resolves_installed_runtime_helper,
+        publication_missing_runtime_helper_prevents_push,
         missing_worktree_reaches_readiness_recovery,
         push_output_redacts_credentials,
         artifact_failure_prevents_publication,

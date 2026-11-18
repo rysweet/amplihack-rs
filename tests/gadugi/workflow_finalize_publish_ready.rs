@@ -14,12 +14,15 @@ fn recipe_through_binary(source: &Path, binary: &Path, runner: &Path) {
     let commands = [PUBLISH, READY].map(|id| f.step_body(id));
     // Load each production command as data, rather than copying its shell body.
     // The contract suite also executes these commands in their shipped order.
+    // CLI recipe defaults are transported as strings. Keep the worktree JSON
+    // as a string too: a mapping default is serialized as YAML, which the
+    // publication helper correctly rejects as non-JSON.
     let doc = success(f.command("jq", &f.main).args(["-cn", "--arg", "publish"])
         .arg(&commands[0]).args(["--arg", "ready"]).arg(&commands[1])
         .args(["--arg", "wt"]).arg(f.worktree_json())
         .args(["--arg", "repo"]).arg(&f.main)
         .arg(r#"{name:"issue-2787-finalize",description:"Publication before readiness",version:"1.0.0",
-            context:{repo_path:$repo,worktree_setup:($wt|fromjson),base_branch:"main",
+            context:{repo_path:$repo,worktree_setup:$wt,base_branch:"main",
                 pr_number:"7",pr_url:"https://github.com/acme/widget/pull/7",issue_number:"2787",step_recovery_dir:""},
             steps:[{id:"step-20b-push-cleanup",type:"bash",command:$publish},
                    {id:"step-21-pr-ready",type:"bash",command:$ready}]}"#)
@@ -52,6 +55,14 @@ fn main() {
         .canonicalize()
         .expect("pinned runner prerequisite");
     let cases: &[(&str, fn(&contracts::fixture::Fixture))] = &[
+        (
+            "publication_resolves_installed_runtime_helper",
+            contracts::publication_resolves_installed_runtime_helper,
+        ),
+        (
+            "publication_missing_runtime_helper_prevents_push",
+            contracts::publication_missing_runtime_helper_prevents_push,
+        ),
         (
             "discovery_secondary_mismatches_enter_recovery",
             contracts::discovery_secondary_mismatches_enter_recovery,
