@@ -575,11 +575,16 @@ SHIM
     REAL_GIT="${real_git}" "${bin_dir}/git" --version >/dev/null
     # The checkpoint steps run 'amplihack hygiene artifact-guard' before they
     # stage. These cases test the commit guard, not the artifact guard, and CI
-    # has no amplihack binary, so a stub accepts exactly that call and refuses
-    # any other, as in test-checkpoint-scoped-format.sh.
+    # has no amplihack binary. Accept the guard and pass through these benign
+    # fixture commit/push messages when publication requests sanitization.
+    # Dedicated publication security tests exercise the real sanitizer.
     cat > "${bin_dir}/amplihack" <<'SHIM'
 #!/usr/bin/env bash
 [[ "$*" == 'hygiene artifact-guard --repo . --mode pre-publish' ]] && exit 0
+if [[ "$*" == 'orch helper sanitize-output' ]]; then
+    cat
+    exit 0
+fi
 printf 'amplihack stub: unexpected call: %s\n' "$*" >&2
 exit 97
 SHIM
