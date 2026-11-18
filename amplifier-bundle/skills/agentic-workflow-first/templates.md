@@ -53,7 +53,7 @@ steps:
       RECORD
     output: "record_written"
 
-  # (c) THIN RAIL: read the record for integrity, then route (Step 3c / Template D)
+  # (c) THIN RAIL — read the record for integrity, then route (Step 3c / Template D)
   - id: "route"
     type: "bash"
     command: |
@@ -107,7 +107,7 @@ format in this repo; keep prompts inline.
 Control flow reads ONLY typed fields (`decision`, `schema_version`, `nonce`). `rationale`
 is human-facing and must never drive routing (that would re-introduce AP-1).
 
-## Template D: Record-integrity reader (`scripts/read_record.sh`, the thin rail)
+## Template D — Record-integrity reader (`scripts/read_record.sh`, the thin rail)
 
 The rail reports what it found about ownership, freshness and parseability. A
 nonzero exit here is that report to the step which invoked the rail, not a gate

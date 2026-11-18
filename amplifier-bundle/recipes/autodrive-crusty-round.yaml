@@ -127,7 +127,7 @@ steps:
       Ask this of every diff: does this change add or extend a check, parser, gate or exit path that can end a run, or a script that judges what an agent
       should judge? If so, that is a major concern unless it only prevents data loss. Name the agentic alternative, such as removing the check or giving
       the situation to an agent step with guidance. Also ask: does the change add more checking code than it removes? Report such a finding with
-      `severity` set to `major`, or higher if the diff warrants it.
+      `severity` set to `major`, or `blocking` if the diff warrants it.
 
       ## Output contract (REQUIRED)
 

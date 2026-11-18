@@ -29,7 +29,13 @@ or "reduce the code".
 Default behavior is to write code. This skill forces the opposite default: prove a
 step *cannot* be a prompt or a tool before you write imperative logic for it.
 
-The same rule governs fixes. Deterministic code fetches, renders, installs and records; it does not judge. When a step or check fails, the fix removes the brittle mechanism or replaces it with an agent step that assesses the situation against guidance and proceeds, repairs, or stops with a stated reason. Do not add a new fail-closed gate, exact-format parser, must-match check or run-ending exit code. Extending the check is a last resort the design must justify in writing. A step that only protects data (never delete unpushed work, never force-push) may decline to act but does not end the run.
+The same rule governs fixes. Deterministic code fetches, renders, installs and records;
+it does not judge. When a step or check fails, the fix removes the brittle mechanism or
+replaces it with an agent step that assesses the situation against guidance and proceeds,
+repairs, or stops with a stated reason. Do not add a new fail-closed gate, exact-format
+parser, must-match check or run-ending exit code. Extending the check is a last resort
+the design must justify in writing. A step that only protects data (never delete
+unpushed work, never force-push) may decline to act but does not end the run.
 
 ## The 6-Step Decision Procedure
 
@@ -94,10 +100,11 @@ See `reference.md` for the four named anti-patterns and their replacements:
 
 ## Templates & Example
 
-- `templates.md`: copy-ready recipe, prompt, typed-record, and record-integrity-reader
+- `templates.md` — copy-ready recipe, prompt, typed-record, and record-integrity-reader
   skeletons matching the repo's real shapes.
 - `worked-example.md` — one behavior (classify + route a signal) built as recipe +
-  prompt + typed record + ~10-line rail, contrasted with a naive hardcoded function. A second example replaces step-21 pr-ready's `workflow_pr_scope.sh` with an agent step.
+  prompt + typed record + ~10-line rail, contrasted with a naive hardcoded function.
+  A second example replaces step-21 pr-ready's `workflow_pr_scope.sh` with an agent step.
 
 ## §7 — Honest note on reflexive irony
 
@@ -105,6 +112,7 @@ Some shipped recipes in this repo still hand data between steps by having a late
 parse an earlier step's stdout (e.g. `parse_json` over agent output). That works, and
 this skill does not claim those recipes are broken. The **recipe step is the agentic
 unit** either way. What this skill teaches is the *improved handoff*: a step writes a
-**typed record** (owner-only, freshness-checked) and the next step reads it for integrity and hands anything unreadable to an agent step.
+**typed record** (owner-only, freshness-checked) and the next step reads it for integrity,
+handing anything unreadable to an agent step.
 Model new work on the typed-record handoff; treat stdout-scraping as legacy, not as the
 target pattern.

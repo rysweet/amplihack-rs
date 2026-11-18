@@ -315,7 +315,7 @@ Do not bootstrap from local `HEAD` or silently skip push/upstream setup.
 **Failure (#978)**: A temporary workstream branch tracks an unrelated/stale upstream; a blind `git pull --rebase` replays already-integrated historical commits and produces add/add conflicts.
 **Resilience**: Step 15 is ancestry-aware. After fetching, it compares HEAD to `@{u}`:
 - upstream is an ancestor of HEAD (behind == 0) → fast-forward push, preserving the tested commit identities (no history rewrite, no rebase);
-- histories diverged (behind > 0) -> **decline to act** and report structured `merge-base / ahead / behind` evidence, then hand the merge-or-rebase decision to an agent step that does not rewrite pushed history. Step 15 never auto-rebases divergent history onto a possibly-unrelated upstream.
+- histories diverged (behind > 0) → **decline to act** and report structured `merge-base / ahead / behind` evidence, then hand the merge-or-rebase decision to an agent step that does not rewrite pushed history. Step 15 never auto-rebases divergent history onto a possibly-unrelated upstream.
 
 ### Step 16 — PR Creation (already exists / no commits)
 

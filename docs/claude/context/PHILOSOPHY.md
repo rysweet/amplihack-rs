@@ -20,7 +20,7 @@ Recipes are composable workflows of agentic steps. Deterministic code fetches, r
 
 Every fix to a failing step or check either removes the brittle mechanism or replaces it with such an agent step. A fix adds no new fail-closed gate, exact-format parser, must-match check or exit code that ends a run. Extending an existing check to cover one more case is a last resort and the design must justify it in writing.
 
-The one exception is a step that protects data: it may decline to act, and so may any agent step, but declining does not end the run. Never delete unpushed work, never force-push, and never perform an equivalent destructive operation such as a hard reset, a forced branch deletion or a forced clean. The rule applies to recipe steps and workflow checks. It does not apply to authentication, authorisation, input validation, secret handling or integrity verification of artefacts, and a user-facing command such as `amplihack install` still verifies its own completeness and reports failure.
+The one exception is a step that protects data: it may decline to act, but declining does not end the run. Never delete unpushed work, never force-push, and never perform an equivalent destructive operation such as a hard reset, a forced branch deletion or a forced clean. The rule applies to recipe steps and workflow checks. It does not apply to authentication, authorization, input validation, secret handling or integrity verification of artifacts, and a user-facing command such as `amplihack install` still verifies its own completeness and reports failure.
 
 ### The Brick Philosophy for AI Development
 

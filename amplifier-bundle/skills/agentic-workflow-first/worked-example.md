@@ -67,7 +67,7 @@ steps:
         urgent) gh issue create --label urgent --title "signal: urgent" ;;
         normal) echo "queued: normal" ;;
         ignore) echo "dropped: ignore" ;;
-        *)      echo "unrecognised decision, routing to agent step: $decision" ;;   # an agent step reads the record and decides
+        *)      echo "unrecognized decision, routing to agent step: $decision" ;;   # report, not exit
       esac
     output: "route_result"
 ```
@@ -82,11 +82,15 @@ written `0o600`, the router branches correctly, and no stdout scraping is involv
 adding a class is a prompt edit, not a recompile; the rail shrank to an integrity
 reader plus a `case`; an unexpected value goes to an agent step, not to an exit.
 
-## Second example: step-21 pr-ready without a script that judges
+## Second example — step-21 pr-ready without a script that judges
 
-**Brittle form:** `workflow_pr_scope.sh` decides whether the pull request matches the run, and the step ends the run when its exact-format check does not match. Each new case needs another edit to the check.
+**Brittle form:** `workflow_pr_scope.sh` decides whether the pull request matches the
+run, and the step ends the run when its exact-format check does not match. Each new
+case needs another edit to the check.
 
-**Agentic form:** a deterministic step fetches the pull request list for the run's branch. An agent step, with the goal "Mark PR N ready for review", reads that output and acts:
+**Agentic form:** a deterministic step fetches the pull request list for the run's
+branch. An agent step, with the goal "Mark PR N ready for review", reads that output
+and acts:
 
 ```yaml
   - id: "pr-ready"
@@ -99,4 +103,6 @@ reader plus a `case`; an unexpected value goes to an agent step, not to an exit.
       Post no log or secret content. State what you found and what you did.
 ```
 
-The scope is stated in the example because examples get copied: the match is by the run's own branch, the agent acts only on complete and pushed work, and it reports without credentials. The precedent is `workflow-terminal-adjudication.yaml` (#1268), which already treats a scope match as a cheap signal behind an agent judgement.
+The prompt states the scope because examples get copied. The precedent is
+`workflow-terminal-adjudication.yaml` (#1268), which already treats a scope match as a
+cheap signal behind an agent judgment.
