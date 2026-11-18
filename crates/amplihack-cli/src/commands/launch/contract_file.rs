@@ -306,6 +306,15 @@ pub(crate) fn ensure_contract_file_as(home: &Path, euid: u32) -> Result<PathBuf>
     match std::fs::symlink_metadata(&private) {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Issue #2346: the first launch often creates `~/.amplihack`,
+            // which sits above the default work root; it is made 0700
+            // whatever the umask, and an existing one keeps its mode.
+            crate::private_dir::ensure_private_leaf_dir(home).with_context(|| {
+                format!(
+                    "cannot create the amplihack home {} with mode 0700",
+                    home.display()
+                )
+            })?;
             std::fs::create_dir_all(home)
                 .with_context(|| format!("cannot create the amplihack home {}", home.display()))?;
             let mut builder = std::fs::DirBuilder::new();

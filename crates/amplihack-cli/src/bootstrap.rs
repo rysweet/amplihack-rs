@@ -197,6 +197,16 @@ fn ensure_node_for_copilot() -> Result<Option<PathBuf>> {
     eprintln!("  ⬇️  Downloading Node.js {NODE_AUTO_INSTALL_VERSION} ({os_name}-{arch_name})...");
     tracing::info!(%url, "downloading Node.js");
 
+    // Issue #2346: `~/.amplihack` is created 0700 whatever the umask, and an
+    // existing one keeps its mode.
+    if let Some(dot_amplihack) = runtimes_dir.parent() {
+        crate::private_dir::ensure_private_leaf_dir(dot_amplihack).with_context(|| {
+            format!(
+                "failed to create {} with mode 0700",
+                dot_amplihack.display()
+            )
+        })?;
+    }
     fs::create_dir_all(&runtimes_dir)
         .with_context(|| format!("failed to create {}", runtimes_dir.display()))?;
 
