@@ -22,7 +22,11 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-pub(crate) const CALLER_TRACE_VARS: &[&str] = &[
+/// Git's tracing namespace, which routes diagnostic output to a caller-chosen
+/// file descriptor or path. Deliberately not in `amplihack_git::scrub`, whose
+/// list is repository selection: that list is unset wholesale by
+/// `tests/issue_1278_git_env_isolation.sh` and shared with every other caller.
+pub(super) const CALLER_TRACE_VARS: &[&str] = &[
     "GIT_TRACE2",
     "GIT_TRACE2_CONFIG_PARAMS",
     "GIT_TRACE2_ENV_VARS",
