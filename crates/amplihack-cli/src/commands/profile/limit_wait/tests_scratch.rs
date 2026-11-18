@@ -6,7 +6,7 @@
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_scratch;`.
 
 use super::super::auto_switch::{rerun_owner, sweep_rerun};
-use super::scratch::{RerunStdin, home_rerun_dir};
+use super::scratch::{RerunStdin, capture_prompt, home_rerun_dir};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
@@ -113,7 +113,7 @@ fn a_regular_file_is_read_again_from_where_the_step_started() {
     let mut step_stdin = fs::File::open(&path).unwrap();
     let mut skipped = [0u8; 5];
     step_stdin.read_exact(&mut skipped).unwrap();
-    let policy = RerunStdin::from_file(step_stdin.try_clone().unwrap());
+    let mut policy = RerunStdin::from_file(step_stdin.try_clone().unwrap());
     assert!(
         matches!(policy, RerunStdin::File { start: 5, .. }),
         "{policy:?}"
@@ -135,7 +135,7 @@ fn a_regular_file_is_read_again_from_where_the_step_started() {
 fn a_held_open_pipe_gives_reruns_dev_null_without_reading_it() {
     let (reader, mut writer) = std::io::pipe().unwrap();
     writer.write_all(b"never read").unwrap();
-    let policy = RerunStdin::from_file(fs::File::from(std::os::fd::OwnedFd::from(reader)));
+    let mut policy = RerunStdin::from_file(fs::File::from(std::os::fd::OwnedFd::from(reader)));
     assert!(matches!(policy, RerunStdin::Pipe), "{policy:?}");
     // The writer is still open: a rerun reading the pipe would hang here.
     assert_eq!(cat(policy.for_attempt(2).unwrap()), b"");
@@ -153,9 +153,10 @@ fn a_character_device_is_passed_through() {
 #[test]
 fn rerun_owner_parses_out_names_only() {
     assert_eq!(rerun_owner(OsStr::new("123-4.out")), Some(123));
+    assert_eq!(rerun_owner(OsStr::new("123-0.in")), Some(123), "#2815");
     for bad in [
         "123-0.txt",
-        "123-0.in",
+        "123-1.in",
         "abc-0.out",
         "0-0.out",
         "123.out",
@@ -243,4 +244,194 @@ fn the_age_rule_applies_only_to_names_that_parse() {
         old_unknown.exists(),
         "an unparseable name is kept at any age"
     );
+}
+
+// --- Captured prompt (issue #2815) ----------------------------------------
+//
+// Contract: `capture_prompt(dir, source)` takes the rerun scratch directory
+// and a duplicate of the step's stdin (a pipe). It returns
+// `RerunStdin::Captured` once the copier runs, and `RerunStdin::Pipe` (with
+// no byte of `source` consumed) when the capture file cannot be created.
+
+/// A prompt with NUL bytes, invalid UTF-8 and more bytes than a pipe holds.
+fn awkward_prompt() -> Vec<u8> {
+    let mut v = b"head\0\xff\xfe\n".to_vec();
+    v.extend((0..300_000u32).map(|i| (i % 251) as u8));
+    v
+}
+
+/// A pipe whose read end is a `File`, and the thread writing `bytes` then
+/// closing it.
+fn fed_pipe(bytes: Vec<u8>) -> (fs::File, std::thread::JoinHandle<()>) {
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let t = std::thread::spawn(move || {
+        writer.write_all(&bytes).unwrap();
+    });
+    (fs::File::from(std::os::fd::OwnedFd::from(reader)), t)
+}
+
+fn capture_file(dir: &Path) -> PathBuf {
+    dir.join(format!("{}-0.in", std::process::id()))
+}
+
+#[test]
+fn every_attempt_of_a_captured_prompt_reads_the_same_bytes_from_offset_zero() {
+    let (_t, dir) = rerun();
+    let prompt = awkward_prompt();
+    let (source, feeder) = fed_pipe(prompt.clone());
+    let mut policy = capture_prompt(&dir, source);
+    assert!(matches!(policy, RerunStdin::Captured(_)), "{policy:?}");
+    // Attempt 1 reads the pipe while the copier is still pumping.
+    assert_eq!(cat(policy.for_attempt(1).unwrap()), prompt, "attempt 1");
+    feeder.join().unwrap();
+    for n in [2, 3, 4] {
+        assert_eq!(cat(policy.for_attempt(n).unwrap()), prompt, "attempt {n}");
+    }
+}
+
+#[test]
+fn an_attempt_that_never_reads_its_prompt_does_not_stop_the_capture() {
+    let (_t, dir) = rerun();
+    let prompt = awkward_prompt();
+    let (source, feeder) = fed_pipe(prompt.clone());
+    let mut policy = capture_prompt(&dir, source);
+    // The child exits without reading: its stdin is closed at once, so the
+    // copier's writes to it fail with EPIPE and are absorbed.
+    drop(policy.for_attempt(1).unwrap());
+    feeder.join().unwrap();
+    assert_eq!(cat(policy.for_attempt(2).unwrap()), prompt);
+}
+
+#[test]
+fn the_capture_file_is_private_named_by_pid_and_removed_on_drop() {
+    let (_t, dir) = rerun();
+    let (source, feeder) = fed_pipe(b"prompt".to_vec());
+    let mut policy = capture_prompt(&dir, source);
+    let path = capture_file(&dir);
+    assert_eq!(mode(&path), 0o600);
+    assert!(fs::symlink_metadata(&path).unwrap().is_file());
+    cat(policy.for_attempt(1).unwrap());
+    feeder.join().unwrap();
+    assert!(path.exists(), "kept for reruns until the step is done");
+    drop(policy);
+    assert!(!path.exists(), "removed when the step returns");
+}
+
+#[test]
+fn the_capture_file_is_removed_when_the_step_ends_in_an_error() {
+    fn step(dir: &Path) -> Result<(), String> {
+        let (source, _feeder) = fed_pipe(b"prompt".to_vec());
+        let _policy = capture_prompt(dir, source);
+        Err("the step failed".to_string())
+    }
+    let (_t, dir) = rerun();
+    assert!(step(&dir).is_err());
+    assert!(!capture_file(&dir).exists());
+}
+
+#[test]
+fn a_capture_that_cannot_be_created_leaves_the_pipe_unread() {
+    let (_t, dir) = rerun();
+    // An existing file, and a planted symlink, both refuse `create_new`.
+    for plant in ["file", "symlink"] {
+        let path = capture_file(&dir);
+        let victim = dir.join("victim");
+        fs::write(&victim, b"keep").unwrap();
+        match plant {
+            "file" => fs::write(&path, b"other").unwrap(),
+            _ => symlink(&victim, &path).unwrap(),
+        }
+        let (source, feeder) = fed_pipe(b"prompt".to_vec());
+        let reader = source.try_clone().unwrap();
+        let policy = capture_prompt(&dir, source);
+        assert!(matches!(policy, RerunStdin::Pipe), "{plant}: {policy:?}");
+        feeder.join().unwrap();
+        let mut left = Vec::new();
+        let mut reader = reader;
+        reader.read_to_end(&mut left).unwrap();
+        assert_eq!(left, b"prompt", "{plant}: no byte consumed");
+        assert_eq!(
+            fs::read(&victim).unwrap(),
+            b"keep",
+            "{plant}: no write-through"
+        );
+        assert!(fs::symlink_metadata(&path).is_ok(), "{plant}: left alone");
+        drop(policy);
+        assert!(
+            fs::symlink_metadata(&path).is_ok(),
+            "{plant}: not ours to remove"
+        );
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(&victim).unwrap();
+    }
+}
+
+#[test]
+fn a_failed_copy_is_an_error_for_a_rerun_never_a_partial_prompt() {
+    let (_t, dir) = rerun();
+    // A write-only descriptor: reading it fails (EBADF), so the copier ends
+    // without having seen end of file.
+    let source = fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/null")
+        .unwrap();
+    let mut policy = capture_prompt(&dir, source);
+    assert!(matches!(policy, RerunStdin::Captured(_)), "{policy:?}");
+    assert!(policy.for_attempt(2).is_err(), "no partial replay");
+}
+
+#[test]
+fn the_other_kinds_of_stdin_behave_as_before_with_a_mutable_policy() {
+    let mut inherit = RerunStdin::Inherit;
+    let mut null = RerunStdin::Null;
+    assert!(inherit.for_attempt(1).is_ok() && inherit.for_attempt(2).is_ok());
+    assert_eq!(cat(null.for_attempt(2).unwrap()), b"");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_child_holds_only_descriptors_0_1_and_2() {
+    let (_t, dir) = rerun();
+    let (source, feeder) = fed_pipe(b"prompt".to_vec());
+    let mut policy = capture_prompt(&dir, source);
+    let list = |stdin: Stdio| {
+        let out = Command::new("/bin/sh")
+            .args(["-c", "cat >/dev/null; ls /proc/$$/fd"])
+            .stdin(stdin)
+            .stdout(Stdio::piped())
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    for n in 1..=2 {
+        let fds = list(policy.for_attempt(n).unwrap());
+        let extra: Vec<&str> = fds
+            .split_whitespace()
+            .filter(|f| !["0", "1", "2", "255"].contains(f))
+            .collect();
+        assert!(extra.is_empty(), "attempt {n} inherited {extra:?}");
+    }
+    feeder.join().unwrap();
+}
+
+#[test]
+fn the_sweep_removes_orphaned_captures_only_for_dead_pids() {
+    let (_t, dir) = rerun();
+    let dead = dead_pid();
+    let me = std::process::id();
+    let orphan = dir.join(format!("{dead}-0.in"));
+    let live = dir.join(format!("{me}-0.in"));
+    let target = dir.join("target");
+    let planted = dir.join(format!("{}-0.in", dead_pid()));
+    fs::write(&orphan, b"x").unwrap();
+    fs::write(&live, b"x").unwrap();
+    fs::write(&target, b"keep").unwrap();
+    symlink(&target, &planted).unwrap();
+
+    sweep_rerun(&dir);
+
+    assert!(!orphan.exists(), "an orphaned capture is removed");
+    assert!(live.exists(), "a live process's capture is kept");
+    assert!(fs::symlink_metadata(&planted).is_ok(), "symlinks are kept");
+    assert_eq!(fs::read(&target).unwrap(), b"keep");
 }
