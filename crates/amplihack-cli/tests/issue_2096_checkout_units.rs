@@ -190,6 +190,69 @@ fn prepare_distinguishes_corrupt_metadata_from_absent_repository() {
     );
 }
 
+/// Issue #2346: a checkout's fresh execution storage is private storage
+/// under the work root, so it is created 0700 whatever the umask. A
+/// `tempfile` folder with no explicit mode is 0777 less the umask.
+#[test]
+fn fresh_execution_storage_is_0700() {
+    isolated_body("fresh_execution_storage_is_0700", |f| {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = f.root.join("scratch");
+        fs::create_dir(&scratch).unwrap();
+        let mut checkout = implementation::RunCheckout::prepare(&f.repo, &scratch, false).unwrap();
+        let implementation::RunCheckout::Private { storage, .. } = &checkout else {
+            panic!("a repository gets a private checkout");
+        };
+        let mode = fs::metadata(storage).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(format!("{mode:04o}"), "0700", "{}", storage.display());
+        checkout.remove().unwrap();
+    });
+}
+
+/// Issue #2346: the record a release leaves for a durable worktree is a
+/// private file, 0600 whatever the umask, like every other file amplihack
+/// writes for its own state.
+#[test]
+fn a_durable_dependency_record_is_0600() {
+    isolated_body("a_durable_dependency_record_is_0600", |f| {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = f.root.join("scratch");
+        fs::create_dir(&scratch).unwrap();
+        let mut checkout = implementation::RunCheckout::prepare(&f.repo, &scratch, false).unwrap();
+        let (storage, repository) = match &checkout {
+            implementation::RunCheckout::Private {
+                storage,
+                repository,
+                ..
+            } => (storage.clone(), repository.clone()),
+            implementation::RunCheckout::Caller(_) => {
+                panic!("a repository gets a private checkout")
+            }
+        };
+        // A worktree a workflow made in the run's private repository, which
+        // must outlive the run's own checkout.
+        let durable = f.root.join("durable");
+        f.git_in(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                "--quiet",
+                durable.to_str().unwrap(),
+            ],
+        );
+        checkout.remove().unwrap();
+        let record = storage.join("durable-dependencies");
+        let mode = fs::symlink_metadata(&record)
+            .unwrap_or_else(|e| panic!("{}: {e}", record.display()))
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(format!("{mode:04o}"), "0600", "{}", record.display());
+    });
+}
+
 #[test]
 fn release_revalidates_directory_identity_before_removing_contents() {
     isolated_body(

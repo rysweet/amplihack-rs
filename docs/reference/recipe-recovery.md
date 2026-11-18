@@ -2,7 +2,7 @@
 title: Recipe recovery reference
 description: Durable recovery identity, persistence policies, resource declarations, and runner contracts.
 doc_type: reference
-last_updated: 2026-11-15
+last_updated: 2026-11-18
 ---
 
 # Recipe recovery reference
@@ -557,6 +557,39 @@ platform equivalents. Traversal, reads, locks, and temporary files reject
 unsafe ownership, permissions, links, and object types. Artifact copying
 rejects devices, sockets, FIFOs, and unsafe links, confines destinations to
 the admitted attempt, and hashes copied bytes while preventing substitution.
+
+These modes are set explicitly when each folder and file is created, so they
+do not depend on the umask of the shell that started the run. Under umask
+`0002`, the default on Ubuntu for users with a private group, the store is
+still `0700` and `0600`.
+
+The store is reached through the work root, so the folders above it are
+checked too. The runner opens the path one component at a time from `/`,
+without following links, and creates any missing folder at `0700`. Each
+folder above the work root must be a folder, not a link, with no group or
+other write bit, or with the sticky bit set. The work root must be owned by
+you with mode `0700`; setgid and sticky bits are ignored. Before the runner
+opens the store, `recipe run` checks the same path and names every folder
+that fails, with its mode and the `chmod` that fixes it. An owned work root with no group or other write bit, such as `0755`, is
+set to `0700`, and stderr says so:
+
+```text
+amplihack: work root /data/amplihack-work had mode 0755; set it to 0700, the mode the recovery store requires
+```
+
+A work root or folder above it that other users can write is never changed;
+the run stops and names it. If the runner's own check fails after that, for
+example on `recovery-index/`, the message ends with the runner's reason but
+names no mode. See
+[Work root permissions](recipe-command.md#work-root-permissions) for the full
+rules and messages.
+
+Two limits apply. Setting a work root to `0700` stops other users reading it
+from then on, but cannot undo what they read before, such as the names of run
+folders already listed. The rule also checks only the mode bits of folders
+above the work root, not their owners: a folder above the work root that
+belongs to another user can be renamed or replaced by that user even at
+`0755`. Keep the work root under folders owned by you or by root.
 
 A single writer creates an exclusive temporary file in the destination
 directory, serializes the complete bounded record, synchronizes it,

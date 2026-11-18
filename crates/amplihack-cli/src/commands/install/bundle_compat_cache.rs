@@ -310,6 +310,42 @@ steps:
         assert!(cache.is_file(), "cold validation must prime the cache file");
     }
 
+    /// Issue #2346: the cache lives in `~/.amplihack`, and writing it is
+    /// often the first thing to create that folder. A missing one is created
+    /// 0700 whatever the umask, and an existing one keeps its mode.
+    #[test]
+    fn the_cache_creates_a_missing_dot_amplihack_0700_and_keeps_an_existing_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        // Octal text, so a failure reads `0755` rather than `493`.
+        let mode = |p: &Path| {
+            format!(
+                "{:04o}",
+                fs::metadata(p).unwrap().permissions().mode() & 0o7777
+            )
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("amplifier-bundle");
+        write_compatible_bundle(&bundle);
+
+        let fresh = temp.path().join("fresh-home/.amplihack");
+        fs::create_dir(temp.path().join("fresh-home")).unwrap();
+        assert_eq!(
+            compatibility_issue_cached(&bundle, &fresh.join(CACHE_FILE)),
+            None
+        );
+        assert!(fresh.join(CACHE_FILE).is_file());
+        assert_eq!(mode(&fresh), "0700");
+
+        let existing = temp.path().join("home/.amplihack");
+        fs::create_dir_all(&existing).unwrap();
+        fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            compatibility_issue_cached(&bundle, &existing.join(CACHE_FILE)),
+            None
+        );
+        assert_eq!(mode(&existing), "0755");
+    }
+
     /// Warm path — the point of issue #1271. A second call over an unchanged
     /// bundle must read zero bundle files.
     #[test]

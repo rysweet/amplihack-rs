@@ -993,4 +993,31 @@ mod tests {
             None => unsafe { std::env::remove_var("AMPLIHACK_SESSION_TREE_DIR") },
         }
     }
+
+    /// Issue #2346: the session-tree folder is often the first thing a run
+    /// creates under `~/.amplihack`, so it must create a missing
+    /// `~/.amplihack` 0700 whatever the umask. Created by `create_dir_all`
+    /// it was 0775 under umask 0002, and the recovery store then stopped the
+    /// run: `~/.amplihack` is above the default work root.
+    #[test]
+    fn state_dir_under_home_creates_a_missing_dot_amplihack_0700() {
+        let _lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let td = TempDir::new().unwrap();
+        let home = td.path().join("home");
+        fs::create_dir(&home).unwrap();
+        let _env = crate::test_support::env_paths(&[
+            ("HOME", Some(home.as_path())),
+            ("AMPLIHACK_SESSION_TREE_DIR", None),
+        ]);
+        let dir = state_dir().unwrap();
+        assert_eq!(dir, home.join(".amplihack").join(STATE_DIR_NAME));
+        let mode = fs::metadata(home.join(".amplihack"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(format!("{mode:04o}"), "0700", "~/.amplihack");
+    }
 }

@@ -254,3 +254,29 @@ fn with_install_lock_nests_on_one_thread() {
     assert!(!install_lock::held_by_current_thread());
     assert!(lock_file(&fx).is_file());
 }
+
+// ------------------------------------------- ~/.amplihack mode (issue #2346)
+
+/// The install lock is often the first thing to create `~/.amplihack`. It
+/// creates that one folder 0700, whatever the umask: the recovery store
+/// stops a work root with a group-writable folder above it.
+#[test]
+fn lock_creates_a_missing_dot_amplihack_0700() {
+    let fx = Fixture::new();
+    let path = lock_file(&fx);
+    let guard = install_lock::acquire_at(&path).unwrap();
+    assert_eq!(format!("{:04o}", mode(&fx.home.join(".amplihack"))), "0700");
+    drop(guard);
+}
+
+/// An existing `~/.amplihack` is the user's: its mode is never changed.
+#[test]
+fn lock_leaves_an_existing_dot_amplihack_mode_alone() {
+    let fx = Fixture::new();
+    let dot = fx.home.join(".amplihack");
+    fs::create_dir(&dot).unwrap();
+    set_mode(&dot, 0o755);
+    let guard = install_lock::acquire_at(&lock_file(&fx)).unwrap();
+    assert_eq!(format!("{:04o}", mode(&dot)), "0755");
+    drop(guard);
+}

@@ -99,3 +99,31 @@ fn missing_absolute_root_is_valid_and_created_0700() {
     let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o700);
 }
+
+/// Issue #2346: the message keeps "writable by group or others", which other
+/// tests and users search for, and adds the octal mode. The root is printed as
+/// given and the path in `chmod 700` is not quoted, as before.
+#[test]
+fn group_or_world_writable_root_message_names_the_mode_and_the_fix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = home_in(tmp.path());
+    for mode in [0o775, 0o757, 0o2770] {
+        let root = tmp.path().join(format!("work{mode:o}"));
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(mode)).unwrap();
+        let err = validate(&root, &home).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            format!(
+                "work root {root} is writable by group or others (mode {mode:04o}); fix it \
+                 with `chmod 700 {root}`",
+                root = root.display()
+            )
+        );
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o7777,
+            mode,
+            "validate never changes the root"
+        );
+    }
+}

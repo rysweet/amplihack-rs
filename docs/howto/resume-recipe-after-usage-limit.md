@@ -2,7 +2,7 @@
 title: Resume a recipe after a usage limit
 description: Relaunch identified work, inspect the restart decision, or deliberately start fresh.
 doc_type: howto
-last_updated: 2026-11-11
+last_updated: 2026-11-18
 ---
 
 # Resume a recipe after a usage limit
@@ -21,6 +21,7 @@ completed steps when that run durably stopped on a usage limit.
 - [Check where execution resumes](#check-where-execution-resumes)
 - [Start fresh deliberately](#start-fresh-deliberately)
 - [Resolve a fresh fallback](#resolve-a-fresh-fallback)
+- [Fix folder permissions that stop a relaunch](#fix-folder-permissions-that-stop-a-relaunch)
 - [Keep recovery state available](#keep-recovery-state-available)
 
 ## Relaunch the same work
@@ -118,11 +119,47 @@ will pass execution-time compatibility checks.
 | Input, revision, recipe, or relevant file changed | Review the change; affected work and its ordered suffix in that invocation execute again |
 | Required artifact missing or unsafe | Regenerate it through the workflow; an old path in saved output is insufficient |
 | Live admission or authorization unavailable | Resolve the current session, governor, or authorization refusal; historical receipts do not grant access |
-| Current recovery storage unsafe or publication failed | Fix ownership, permissions, disk capacity, or the configured work root, then relaunch; this error stops execution |
+| Current recovery storage unsafe | If the message names a folder, its mode and a `chmod`, run the command and relaunch; see [Fix folder permissions that stop a relaunch](#fix-folder-permissions-that-stop-a-relaunch). If it begins `cannot durably admit recipe launch` or `cannot open the recovery store at work root`, it gives only the runner's reason, with no mode or command; see [Troubleshooting](clean-up-after-recipe-runs.md#troubleshooting) to find the folder at fault |
+| Durable publication failed | Fix disk capacity or the configured work root, then relaunch; this error stops execution |
 
 Do not reset Git or delete local edits merely to match a saved record.
 Workflow-produced branch changes are checked against recorded cumulative
 state. Unexplained changes require affected work to run again.
+
+## Fix folder permissions that stop a relaunch
+
+A relaunch reads the recovery store under the original work root, so that
+work root and every folder above it must pass the
+[work root permission rules](../reference/recipe-command.md#work-root-permissions).
+A folder created under umask `0002` (mode `0775`) fails them, and the
+relaunch stops before any step with a message such as:
+
+```text
+Error: cannot open the recovery store under work root /srv/canary/work: other users can change a folder above it
+  /srv/canary is group-writable (mode 0775) and has no sticky bit; fix it with `chmod g-w /srv/canary`
+```
+
+1. Run the command the message prints for each folder it names:
+
+   ```sh
+   chmod g-w /srv/canary
+   ```
+
+   For the work root itself the message prints `chmod 700 <root>`, and for
+   `<work root>/runs` it prints `chmod 700 <work root>/runs`.
+
+2. Relaunch with the same command as before. Do not add `--fresh`: the saved
+   records are unchanged, and the relaunch recovers from them as usual.
+
+Do not move the work root to get past the message. Recovery history is found
+under the work root that recorded it, so a run started with a different
+`AMPLIHACK_WORK_ROOT` starts fresh. Setting `AMPLIHACK_WORK_ROOT` also moves
+new worktrees under the work root unless `AMPLIHACK_WORK_ROOT_EXPLICIT=0` is
+set (see
+[Worktree location](clean-up-after-recipe-runs.md#worktree-location)).
+
+An owned work root with no group or other write bit, such as `0755`, needs no
+action. The relaunch sets it to `0700` and prints one line saying so.
 
 ## Keep recovery state available
 

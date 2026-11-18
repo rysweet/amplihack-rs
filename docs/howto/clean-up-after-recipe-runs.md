@@ -2,7 +2,7 @@
 title: Clean up after recipe runs
 description: Locate, retain, remove, or archive run-owned files and recovery state.
 doc_type: howto
-last_updated: 2026-11-16
+last_updated: 2026-11-18
 ---
 
 # Clean Up After Recipe Runs
@@ -92,7 +92,14 @@ The work root must be an absolute path. It is refused if it is `/`, your home
 folder, an ancestor of your home folder, a system folder such as `/usr` or
 `/etc`, the system temporary folder, or the root of a git checkout. If the
 folder already exists it must be owned by you and must not be writable by
-group or others. New folders under the work root are created with mode `0700`.
+group or others. An existing work root that you own and that has no group or
+other write bit, such as one at `0755`, is set to `0700` by the next
+`recipe run`, which prints one line saying so. Every folder above the work
+root must have no group or other write bit, or have the sticky bit, as `/tmp`
+does. New folders under the work root are created with mode `0700` and files
+with `0600`, whatever your umask. See
+[Work root permissions](../reference/recipe-command.md#work-root-permissions)
+for the full rules and the messages.
 
 ## Where a run writes
 
@@ -1034,7 +1041,8 @@ The tag is written by:
   a `CACHEDIR.TAG` that is a link, dangling or not;
 - `scripts/install-pinned-recipe-runner.sh` and `scripts/dev-space.sh`, when
   they create a target folder;
-- the Rust helper `create_tagged_target_dir`.
+- the Rust helper `create_tagged_target_dir`, which creates the folder with
+  mode `0700` and the tag with mode `0600`, whatever the umask.
 
 `git-hook-cargo.sh` chooses its folder like this, inside or outside a run:
 
@@ -1167,6 +1175,12 @@ amplihack recipe run default-workflow \
   -c task_description="Fix flaky login tests" \
   -c repo_path=.
 ```
+
+`install -d -m 700` gives the folder its mode whatever your umask. A folder
+made with plain `mkdir` under umask `0002` is `0775`, and the first run stops
+and names it with `chmod 700 /data/amplihack-work`. `/data` itself must not
+be writable by group or others unless it has the sticky bit; check it with
+`stat -c '%a %n' /data`.
 
 With the variable set, nothing new is created under `~/.amplihack/work`.
 Existing items under the old root are not moved; run
@@ -1386,14 +1400,78 @@ export TMPDIR=/tmp
 amplihack recipe run default-workflow --dry-run -c task_description="Check plan"
 ```
 
-**`work root ... is writable by group or others`.** An existing
-`~/.amplihack/work` created with a permissive umask is refused. Fix it with:
+**`work root ... is writable by group or others (mode 0775)`.** The work
+root was created under umask `0002`, or changed by hand, so group members can
+write to it. amplihack does not change it, because entries another user made
+there would stay. Check what is inside, then run the command from the
+message:
 
 ```bash
+ls -la ~/.amplihack/work
 chmod 700 ~/.amplihack/work
 ```
 
 Until then, `amplihack recipe run` stops with this error before any step runs.
+
+**`other users can change a folder above it`.** A folder above the work root
+is group- or world-writable and has no sticky bit. The message has one line
+for each such folder, with its mode and a fix:
+
+```text
+Error: cannot open the recovery store under work root /srv/canary/work: other users can change a folder above it
+  /srv/canary is group-writable (mode 0775) and has no sticky bit; fix it with `chmod g-w /srv/canary`
+```
+
+Run the printed command for each folder, or choose a work root under folders
+that only you can write. This message also appears when `~/.amplihack` was
+created at `0775`; the fix is then `chmod g-w ~/.amplihack`. If other users
+must keep writing to the folder, `chmod +t` on it also satisfies the rule.
+
+**`is a symbolic link to ...; the recovery store needs a folder, not a
+link`.** The work root, or a folder above it, is a symbolic link. The
+recovery store is opened without following links. Set `AMPLIHACK_WORK_ROOT`
+to the path the message suggests, which is the same folder reached without
+the link:
+
+```bash
+export AMPLIHACK_WORK_ROOT=/data/alice/scratch/work
+export AMPLIHACK_WORK_ROOT_EXPLICIT=0
+```
+
+The second line keeps new worktrees in `<main checkout>/worktrees/`. Without
+it, setting `AMPLIHACK_WORK_ROOT` makes `AMPLIHACK_WORK_ROOT_EXPLICIT` default
+to `1`, and new worktrees go under the work root instead (see
+[Worktree location](#worktree-location)). Leave it out if you want that.
+
+**`runs folder is not private`.** `<work root>/runs` was changed by hand
+from the `0700` amplihack gave it. Run the `chmod 700` from the message.
+
+**`amplihack: work root ... had mode 0755; set it to 0700`.** This is a
+notice, not an error. The work root had read or search bits for group or
+others but no write bit, so amplihack made it private and the run went on.
+Nothing needs to be done.
+
+**`cannot durably admit recipe launch (work root ..., run folder ...)`.**
+The runner's own check of the recovery store failed after the check in
+`recipe run` passed. The message ends with the runner's reason, for example
+`recovery directory must be owned and mode 0700`, but names no mode and
+prints no `chmod`. Check the owner and mode of the two folders named, of
+`recovery/` in the run folder and of `recovery-index/` in the work root. Each
+must be yours and `700`. Set `RUN` to the run folder from the message:
+
+```bash
+RUN="$HOME/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3"
+stat -c '%a %U %n' ~/.amplihack/work ~/.amplihack/work/runs \
+  ~/.amplihack/work/recovery-index "$RUN" "$RUN/recovery" 2>&1
+```
+
+**`cannot open the recovery store at work root ...: Permission denied`.**
+The runner could not create a missing folder on the path to the work root,
+or, with `unsafe recovery ancestor` as the reason, a folder changed after the
+check in `recipe run` passed. The message names no mode and prints no
+`chmod`. Choose a work root under a folder you can write, or have the owner of
+the parent folder create the work root for you, owned by you with mode
+`0700`. Then run again, so that the check names any folder still at fault.
 
 **A worktree is always skipped with `not recorded in owned-paths`.** The
 worktree was created outside the bundled helpers, or by a release before this

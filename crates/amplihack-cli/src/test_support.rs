@@ -149,6 +149,92 @@ mod scratch_base_tests {
         }
     }
 
+    // Issue #2346: a base below a folder that the recovery store's ancestor
+    // rule stops makes every test that runs a recipe fail with that rule's
+    // message, so it is rejected by name and the next candidate is tried.
+
+    /// A 0700 temporary folder, canonical, that the rule accepts.
+    fn private_root() -> (tempfile::TempDir, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        assert_eq!(
+            scratch_base_rejection(&root, None),
+            None,
+            "TMPDIR ({}) must sit under folders only you can write for this test",
+            std::env::temp_dir().display()
+        );
+        (tmp, root)
+    }
+
+    fn dir(path: &std::path::Path, mode: u32) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        path.to_path_buf()
+    }
+
+    #[test]
+    fn a_base_below_a_group_writable_folder_is_rejected_by_name() {
+        let (_tmp, root) = private_root();
+        let shared = dir(&root.join("shared"), 0o775);
+        let base = dir(&shared.join("base"), 0o700);
+        let reason = scratch_base_rejection(&base, None)
+            .unwrap_or_else(|| panic!("{} above the base was not rejected", shared.display()));
+        for part in [
+            shared.display().to_string(),
+            "group-writable".to_string(),
+            "0775".to_string(),
+        ] {
+            assert!(reason.contains(&part), "{part:?} missing from {reason:?}");
+        }
+    }
+
+    #[test]
+    fn a_group_or_world_writable_base_is_rejected() {
+        let (_tmp, root) = private_root();
+        for mode in [0o775, 0o757, 0o777] {
+            let base = dir(&root.join(format!("base{mode:o}")), mode);
+            let reason = scratch_base_rejection(&base, None)
+                .unwrap_or_else(|| panic!("a {mode:04o} base was not rejected"));
+            assert!(
+                reason.contains(&base.display().to_string()),
+                "the rejection must name the folder: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_base_reached_through_a_symbolic_link_is_rejected() {
+        let (_tmp, root) = private_root();
+        let real = dir(&root.join("real"), 0o700);
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let reason = scratch_base_rejection(&link, None)
+            .unwrap_or_else(|| panic!("{} is a symbolic link", link.display()));
+        assert!(
+            reason.contains(&link.display().to_string()),
+            "the rejection must name the link: {reason}"
+        );
+    }
+
+    #[test]
+    fn a_sticky_or_closed_folder_above_the_base_is_accepted() {
+        let (_tmp, root) = private_root();
+        for mode in [0o1777, 0o1775, 0o755, 0o700] {
+            let above = dir(&root.join(format!("above{mode:o}")), mode);
+            let base = dir(&above.join("base"), 0o700);
+            assert_eq!(
+                scratch_base_rejection(&base, None),
+                None,
+                "a {mode:04o} folder above the base passes the recovery store's rule"
+            );
+        }
+    }
+
     #[test]
     fn a_missing_base_is_rejected_and_a_clean_one_accepted() {
         let root = super::tempdir_outside_framework_roots();

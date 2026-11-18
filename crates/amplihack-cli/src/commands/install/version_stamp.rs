@@ -324,6 +324,36 @@ mod tests {
         assert!(tmp.path().join(".amplihack").join(STAMP_FILE).exists());
     }
 
+    /// Issue #2346: the stamp writer creates a missing `~/.amplihack` 0700,
+    /// whatever the umask, and never changes an existing one.
+    #[test]
+    fn write_creates_a_missing_amplihack_dir_0700_and_keeps_an_existing_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        // Octal text, so a failure reads `0755` rather than `493`.
+        let mode = |p: &std::path::Path| {
+            format!(
+                "{:04o}",
+                fs::metadata(p).unwrap().permissions().mode() & 0o7777
+            )
+        };
+
+        {
+            let tmp = TempDir::new().expect("tempdir");
+            let _g = HomeGuard::set(tmp.path());
+            write_installed_version("0.9.0").expect("write");
+            assert_eq!(mode(&tmp.path().join(".amplihack")), "0700");
+        }
+        {
+            let tmp = TempDir::new().expect("tempdir");
+            let dot = tmp.path().join(".amplihack");
+            fs::create_dir(&dot).unwrap();
+            fs::set_permissions(&dot, fs::Permissions::from_mode(0o755)).unwrap();
+            let _g = HomeGuard::set(tmp.path());
+            write_installed_version("0.9.0").expect("write");
+            assert_eq!(mode(&dot), "0755");
+        }
+    }
+
     #[test]
     fn write_contents_have_no_trailing_newline() {
         let tmp = TempDir::new().expect("tempdir");

@@ -285,3 +285,24 @@ fn checkout_hash_handles_unusual_path_bytes() {
     }
     assert!(!root.join("pwned").exists());
 }
+
+/// Issue #2346: the folder, and every parent the helper creates, is 0700 and
+/// the tag 0600, whatever the umask.
+#[test]
+fn create_tagged_target_dir_makes_folders_0700_and_the_tag_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("a/b/target");
+    create_tagged_target_dir(&target).unwrap();
+    // Octal text, so a failure reads `0755` rather than `493`.
+    let mode = |p: &std::path::Path| {
+        format!(
+            "{:04o}",
+            fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
+        )
+    };
+    for created in [tmp.path().join("a"), tmp.path().join("a/b"), target.clone()] {
+        assert_eq!(mode(&created), "0700", "{}", created.display());
+    }
+    assert_eq!(mode(&target.join("CACHEDIR.TAG")), "0600");
+}

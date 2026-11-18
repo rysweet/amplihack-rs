@@ -2,7 +2,7 @@
 title: amplihack recipe reference
 description: Commands and options for inspecting and executing recipes.
 doc_type: reference
-last_updated: 2026-11-17
+last_updated: 2026-11-18
 ---
 
 # amplihack recipe — Reference
@@ -19,6 +19,7 @@ inspects, validates, and runs YAML recipe files.
   - [recipe validate](#recipe-validate)
   - [recipe run](#recipe-run)
   - [Usage-limit relaunch recovery](#usage-limit-relaunch-recovery)
+  - [Work root permissions](#work-root-permissions)
   - [Detached runs](#detached-runs)
   - [recipe stop](#recipe-stop)
   - [recipe guide](#recipe-guide)
@@ -372,6 +373,274 @@ invocation path, or explains the fresh fallback. JSON/YAML preserve the
 additive [recovery metadata](recipe-result.md#recovery-metadata).
 See [relaunch commands](../howto/resume-recipe-after-usage-limit.md) and
 [the recovery contract](recipe-recovery.md) for policies and storage rules.
+
+### Work root permissions
+
+A `recipe run` that executes steps keeps its run folder and its recovery store
+under the [work root](../howto/clean-up-after-recipe-runs.md#settings),
+`~/.amplihack/work` unless `AMPLIHACK_WORK_ROOT` is set. Before it creates the
+work root, `<work root>/runs` or the run folder, `recipe run` checks the
+folders on the path to the work root, the work root itself, and
+`<work root>/runs`. A run that fails the check stops before any step starts,
+with a message that names each folder at fault, its mode, and the command
+that fixes it.
+
+The rules for the folders above the work root and for the work root are the
+recipe runner's own rules for the recovery store
+(`recipe_runner_rs::recovery::private_fs::Directory::open`). The runner still
+applies them when it opens the store; the check in `recipe run` adds the
+folder names and the fix. For those folders both give the same answer, and a
+unit test compares them. `runs/` is held to the work root's rule, which is
+stricter than the runner's rule for it.
+
+#### Folders above the work root
+
+Each folder from `/` down to the work root's parent is checked as the path is
+written. Symbolic links are not resolved. A folder passes when it is a
+folder, not a symbolic link or a file, and either has no group or other write
+bit or has the sticky bit (`mode & 0o022 == 0 || mode & 0o1000 != 0`):
+
+| Mode | Result |
+| --- | --- |
+| `0700`, `0750`, `0755` | Passes |
+| `1777` (as on `/tmp`), `1775` | Passes: the sticky bit stops other users removing or renaming entries they do not own |
+| `0775`, `2775` | Stops: group-writable, no sticky bit |
+| `0757` | Stops: world-writable, no sticky bit |
+| `0777` | Stops: group-writable and world-writable, no sticky bit |
+
+The check ends at the first folder that does not exist. Every missing folder
+on the path, the work root included, is then created at `0700`. This includes
+`HOME` if it does not exist.
+
+Every failing folder is named in one message, outermost first. For example,
+with `AMPLIHACK_WORK_ROOT=/srv/canary/work` and `/srv/canary` at `0775`:
+
+```console
+$ AMPLIHACK_WORK_ROOT=/srv/canary/work amplihack recipe run default-workflow \
+    -c task_description="Fix flaky login tests" -c repo_path=.
+Error: cannot open the recovery store under work root /srv/canary/work: other users can change a folder above it
+  /srv/canary is group-writable (mode 0775) and has no sticky bit; fix it with `chmod g-w /srv/canary`
+```
+
+Each line names the folder, `group-writable`, `world-writable` or both, the
+octal mode, the missing sticky bit, and the fix:
+
+| Bits set | Fix printed |
+| --- | --- |
+| Group write | `chmod g-w <folder>` |
+| Other write | `chmod o-w <folder>` |
+| Both | `chmod go-w <folder>` |
+
+For a folder that other users must keep writing to, setting the sticky bit
+(`chmod +t <folder>`) also satisfies the rule. The message mentions this in
+words but prints only the command that removes the write bit.
+
+A symbolic link on the path stops the check at that folder:
+
+```text
+Error: cannot open the recovery store under work root /home/alice/scratch/work: a folder above it is a symbolic link
+  /home/alice/scratch is a symbolic link to /data/alice/scratch; the recovery store needs a folder, not a link, at each step of the path. Set AMPLIHACK_WORK_ROOT to /data/alice/scratch/work
+```
+
+Setting `AMPLIHACK_WORK_ROOT` also makes
+[`AMPLIHACK_WORK_ROOT_EXPLICIT`](../howto/clean-up-after-recipe-runs.md#where-a-run-writes)
+default to `1`, which moves new
+[worktrees](../howto/clean-up-after-recipe-runs.md#worktree-location) under
+the work root. To keep them in `<main checkout>/worktrees/`, as with the
+default work root, set `AMPLIHACK_WORK_ROOT_EXPLICIT=0` as well.
+
+A file where a folder is expected, or a folder that cannot be inspected, is
+named the same way, with the reason.
+
+`~/.amplihack` is above the default work root, so an existing `~/.amplihack`
+at `0775` stops the run with `chmod g-w /home/alice/.amplihack`. amplihack
+never changes the mode of a folder above the work root.
+
+#### The work root
+
+The work root itself is checked as follows:
+
+| Work root | What `recipe run` does |
+| --- | --- |
+| Missing | Nothing. It is created at `0700` |
+| A symbolic link | Stops: `work root <root> is a symbolic link to <target>; the recovery store needs a folder, not a link. Set AMPLIHACK_WORK_ROOT to <resolved path>`, where `<resolved path>` is the folder the link leads to. The link is neither followed nor changed |
+| Not a folder | Stops: `work root <root> is not a folder` |
+| Owned by another user | Stops: `work root <root> is not owned by you` |
+| Owned by you, writable by group or others (`0775`, `0757`, `0777`) | Stops: ``work root <root> is writable by group or others (mode 0775); fix it with `chmod 700 <root>` ``. The mode is not changed |
+| Owned by you, no group or other write bit, not `0700` (`0755`, `0750`, `0711`, `0500`, `2755`) | Sets the mode to `0700`, prints a notice, and continues. This also clears a setgid or sticky bit: `2755` becomes `0700` |
+| Owned by you, `0700` | Nothing. The setgid and sticky bits are ignored, as the runner ignores them, so `2700` stays `2700` |
+
+The notice is one line on stderr. It prints the mode the root had, with any
+setgid or sticky bit:
+
+```text
+amplihack: work root /data/amplihack-work had mode 0755; set it to 0700, the mode the recovery store requires
+```
+
+No other user can add, remove or rename entries in a root without group or
+other write bits, so setting `0700` only removes their read and search
+access. A root that others could write may already hold entries they made,
+which a `chmod` would not remove, so amplihack leaves that root unchanged and
+names it.
+
+amplihack changes the mode through a descriptor opened without following
+links, after confirming that it is the folder inspected earlier, that you own
+it and that it has no group or other write bit. If any of these fails, or
+the folder cannot be opened (for example a root at `0300`), the run stops,
+names the root and prints `chmod 700 <root>`. Nothing is changed.
+
+#### The `runs` folder
+
+If `<work root>/runs` exists, it must be a folder (not a symbolic link),
+owned by you, with mode `0700`. Otherwise the run stops:
+
+```text
+Error: cannot open the recovery store under work root /data/amplihack-work: runs folder is not private
+  /data/amplihack-work/runs has mode 0755; fix it with `chmod 700 /data/amplihack-work/runs`
+```
+
+amplihack creates `runs/` at `0700` and never changes it afterwards, so this
+message follows only a change made by hand.
+
+#### Order of the checks
+
+The folders above the work root, the work root and `runs/` are all checked
+before any mode is changed and before the work root, `runs/` or the run folder
+is created. A run that stops leaves every mode as it was and has created none
+of these. The work root's mode is changed last, and the notice is printed
+only after the change succeeds.
+
+Start-up work comes before the check, so a run that stops may already have
+created `~/.amplihack`: self-heal and the install lock
+create it for the version stamp and the lock file (see
+[Modes amplihack creates](#modes-amplihack-creates)).
+
+Three of the work root's messages, `is not owned by you`, `is not a folder`
+and `is writable by group or others`, come from the work root validation that
+every run already does, so they appear before any line about the folders
+above it. When both fail, fix the work root, run again, and the folders above it are
+then named.
+
+#### Paths in messages
+
+The check passes every path it prints through `sanitize_path` in
+`crates/amplihack-cli/src/commands/install/paths.rs`, as other amplihack
+warnings do. This covers the first line of each message, the lines for
+folders above the work root, the symbolic link lines, the `runs` line, the
+lines about changing the work root's mode, and the notice. Control characters, DEL included, are printed as
+`?`, and bytes that are not valid UTF-8 as `�` (U+FFFD).
+
+The folder at the start of a line is printed as it is, without quotes. In a
+suggested command, or a suggested `AMPLIHACK_WORK_ROOT` value, a path made
+only of letters, digits and `/._+,:@%=-` is printed as it is; any other path
+is single-quoted, with `'` written as `'\''`:
+
+```text
+  /srv/team share is group-writable (mode 0775) and has no sticky bit; fix it with `chmod g-w '/srv/team share'`
+```
+
+A path that is not valid UTF-8, or that contains a control character, gets no
+command or value. Its printed form cannot be pasted back, because a `?` may
+stand for any control character, so the line names the folder in that form
+and says in words what to change.
+
+The three messages from the existing work root validation, `is not owned by
+you`, `is not a folder` and `is writable by group or others`, keep its
+formatting: the root is printed as given, and the path in `chmod 700 <root>`
+is not quoted.
+
+#### Messages from the runner
+
+The runner checks the path again when it opens the store, and again when it
+admits the launch. If its check fails after the check in `recipe run` passed,
+the message ends with the runner's reason, after a colon, on the same line.
+The first form adds the work root; the second adds the work root and the run
+folder:
+
+```text
+Error: cannot open the recovery store at work root /srv/shared/work: Permission denied (os error 13)
+Error: cannot durably admit recipe launch (work root /data/amplihack-work, run folder /data/amplihack-work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3): recovery directory must be owned and mode 0700
+```
+
+The first form appears when the runner cannot create a missing folder on the
+path, for example a work root under `/srv/shared` at `0555` owned by root,
+which has no write bit and so passes the check. It also appears, with
+`unsafe recovery ancestor` as the reason, when a folder changes between the
+two checks. The second form covers `<run dir>/recovery/`,
+`<work root>/recovery-index/` and the files in them, which the check in
+`recipe run` does not inspect.
+
+Neither form prints a mode or a `chmod`.
+[Troubleshooting](../howto/clean-up-after-recipe-runs.md#troubleshooting)
+shows how to find the folder at fault.
+
+#### Modes amplihack creates
+
+Folders that amplihack creates for its own state are `0700` and files are
+`0600`, whatever the umask of the shell that started the run:
+
+| Path | Mode |
+| --- | --- |
+| `~/.amplihack`, when it does not exist | `0700`. The helper that self-heal and the install lock use for the version stamp and the lock file creates only this folder, never `HOME`, and never changes an existing `~/.amplihack` |
+| Missing folders on the path to the work root, `HOME` among them | `0700` |
+| The work root, `runs/`, each run folder and every folder below them that amplihack or the runner creates | `0700` |
+| Run reports, `owned-paths`, run records, locks and the recovery store's files | `0600` |
+| `durable-dependencies` in a run's execution storage | `0600` |
+| A target folder from `create_tagged_target_dir`, and its `CACHEDIR.TAG` | `0700` and `0600` |
+| Executables that amplihack writes in order to run them | `0700` |
+
+Some files follow the umask of the process that writes them:
+
+- files that steps write;
+- files the recipe runner writes with the process umask, such as its progress
+  files;
+- git's files in a run's checkout and in its execution storage
+  (`<work root>/exec/<id>/repository.git`).
+
+amplihack does not change the umask of steps; a detached run takes the umask
+of the shell that launched it (see [Detached runs](#detached-runs)). These
+files sit inside `0700` folders, so other users cannot reach them.
+
+#### Where the check runs
+
+Only a `recipe run` that executes steps: a foreground run, or the pane of a
+detached run. For a detached run the message is written to the run's log.
+
+`--dry-run`, `amplihack cleanup`, `recipe stop`, `recipe guide` and the
+process that launches a detached run skip the checks of the folders above the
+work root, of symbolic links and of `runs/`, and change no mode. Commands that
+resolve the work root, such as `amplihack cleanup`, still apply the existing
+work root validation, so a work root that is not yours, not a folder, or
+writable by group or others stops them as before.
+
+#### Limits
+
+- The rule looks at the mode bits of the folders above the work root, not at
+  their owners. A folder owned by another user, even at `0755`, can be
+  renamed or replaced by that user. Keep the work root under folders owned
+  by you or by root.
+- Setting a `0755` work root to `0700` stops other users reading it from then
+  on. It cannot undo what they read earlier, such as the names of run
+  folders.
+- On macOS, extended ACLs on these folders are not inspected.
+
+#### Tests
+
+| Test | What it checks |
+| --- | --- |
+| `crates/amplihack-cli/tests/issue_2346_umask_recovery_store.rs` | Starts the built `amplihack` with a temporary `HOME` and umask `0002` set in the child only. A one-step recipe runs with a `0750` `HOME`, `~/.amplihack` ends `0700`, and every folder under the work root is `0700` and every file `0600`, except executables amplihack writes (`0700`), files the runner writes with the process umask, and git's content under `<work root>/exec/*`. A `0775` folder above the work root stops the run, the message names the folder, `group-writable`, `0775` and `chmod g-w`, and the work root is not created. An owned `0755` work root ends `0700`, with the notice on stderr. In a git repository with `-c issue_number=1` and a `0755` `<work root>/recovery-index` made beforehand, the run stops and stderr holds `cannot durably admit recipe launch (work root <root>, run folder <run dir>): recovery directory must be owned and mode 0700` |
+| `crates/amplihack-cli/src/commands/cleanup/tests_recovery_path.rs` | The mode tables above, symbolic links, two failing folders named in order, unquoted folders at the start of a line, quoting of paths in commands, `?` for control characters with no command printed, the runner's reason at the end of both messages from the runner, and a comparison with the pinned runner's `Directory::open` for each mode in the first table |
+| `tests/gadugi/scenarios/issue-2346-recovery-store-under-umask-0002.yaml` | The same three cases from outside, under `umask 0002` with a temporary `HOME`, run in the `install-smoke` CI job |
+
+Run the Rust tests with:
+
+```bash
+cargo test -p amplihack-cli --lib cleanup::recovery_path
+cargo test -p amplihack-cli --test cli_integration issue_2346_umask_recovery_store::
+```
+
+The behaviour tests set umask `0002` in the child process only, so they give
+the same result under CI's umask `022`.
 
 ### Detached runs
 
@@ -904,6 +1173,10 @@ Recipe execution can fail at multiple levels. For diagnosis:
 | Condition parse error | `condition` field uses unsupported expression | [Agentic Step Patterns](../concepts/agentic-step-patterns.md) |
 | Context variable missing | `{{var}}` renders as empty string | [Context variables](#context-variables) |
 | Run not started, exit 80 | `amplihack: governor: not started (<code>): ...` on stderr | [Capacity Governor](./capacity-governor.md#reason-codes) |
+| Run stops before any step: a folder above the work root is open to other users | `cannot open the recovery store under work root <root>: other users can change a folder above it`, then one line per folder with its mode and `chmod g-w`, `chmod o-w` or `chmod go-w` | [Work root permissions](#folders-above-the-work-root) |
+| Run stops before any step: the work root or `runs/` | `work root <root> is writable by group or others (mode 0775)`, or `runs folder is not private`, with `chmod 700` | [Work root permissions](#the-work-root) |
+| Notice before the first step | `amplihack: work root <root> had mode 0755; set it to 0700, ...` | [Work root permissions](#the-work-root) |
+| Run stops before any step with the runner's reason | `cannot open the recovery store at work root <root>: <reason>`, or `cannot durably admit recipe launch (work root <root>, run folder <run dir>): <reason>`, with no mode or `chmod` | [Messages from the runner](#messages-from-the-runner) |
 | Opaque long-running step | No visible child output for a while | [Recipe Runner Logging](./recipe-runner-logging.md) |
 
 For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../howto/troubleshoot-recipe-execution.md).

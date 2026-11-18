@@ -549,3 +549,8 @@ mod issue_2756_user_git_config;
 // `autodrive-*` sub-recipe's.
 #[path = "issue_2769_autodrive_outcome_scope.rs"]
 mod issue_2769_autodrive_outcome_scope;
+
+// Issue #2346: a recipe run under umask 0002 in a fresh HOME, a folder above
+// the work root that others can write, and an owned 0755 work root.
+#[path = "issue_2346_umask_recovery_store.rs"]
+mod issue_2346_umask_recovery_store;

@@ -1,7 +1,7 @@
 ---
 title: Auto-drive State Permissions
 description: How auto-drive writes its state and evidence 0700/0600 under any umask, and when the evidence check repairs or refuses an entry, decided by the state folder's location under the auto-drive state root or, for files, by the folder being private.
-last_updated: 2026-11-17
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -22,6 +22,7 @@ for what the evidence itself must contain.
 
 - [The rule in one line](#the-rule-in-one-line)
 - [Writers](#writers)
+- [Run folders and the work root](#run-folders-and-the-work-root)
 - [What the evidence check does](#what-the-evidence-check-does)
 - [Where repairs happen](#where-repairs-happen)
 - [The repair log line](#the-repair-log-line)
@@ -64,6 +65,27 @@ repairs those files, as described below. For a drive started with
 `amplihack recipe run --detach`, the umask is that of the shell that ran the
 command, not the tmux server's (#2778); see
 [Detached runs](./recipe-command.md#detached-runs).
+
+## Run folders and the work root
+
+A drive runs inside `amplihack recipe run`, so its run folder, its recovery
+store and the `autodrive-state` folder in the run folder sit under the
+[work root](../howto/clean-up-after-recipe-runs.md#settings). amplihack
+creates those folders `0700` and its files there `0600` under any umask, as
+it does for the state folders above. Before the first step, `recipe run`
+checks the folders above the work root, the work root and `runs/`. A folder
+there that other users can write stops the run with the folder, its mode and
+the fix named; an owned work root such as `0755` is set to `0700` with a
+notice. See [Work root permissions](./recipe-command.md#work-root-permissions).
+
+The review allocation folders (`review-<random>`) and review storage folders
+(`review-generation-<random>`) are also created `0700` under any umask, so
+the shell finalization check described in
+[What stays strict](#what-stays-strict) keeps them rather than setting them
+aside (#2778, pull request #2781). The test
+`review_allocate_under_umask_0002_makes_folders_the_trust_scan_keeps` in
+`crates/amplihack-cli/tests/issue_2096_review_isolation.rs` runs
+`amplihack internal review-allocate` under umask `0002` and checks this.
 
 ## What the evidence check does
 
@@ -482,7 +504,9 @@ way.
   under it strict. Run `chmod 700` on the root.
 - **Ancestors of the state root.** The rule checks the canonical state root,
   not the folders above it. A custom `AMPLIHACK_STATE_DIR` is trusted to sit
-  under folders that other users cannot rename or replace.
+  under folders that other users cannot rename or replace. The work root is
+  different: `recipe run` checks every folder above it; see
+  [Run folders and the work root](#run-folders-and-the-work-root).
 - **State roots reached through a symlink.** `Scope::of` requires the state
   folder's path to equal its canonical form, so a state root under a
   symlinked folder makes `check_dir` strict. On macOS `/tmp` is a symlink to
