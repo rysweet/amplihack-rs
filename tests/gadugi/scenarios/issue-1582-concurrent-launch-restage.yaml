@@ -1,0 +1,73 @@
+name: issue-1582-concurrent-launch-restage
+description: >
+  Outside-in QA for issue #1582: two launches that start together on one home
+  with missing framework assets re-stage once. The scenario runs the real
+  amplihack binary (via tests/gadugi/run-issue-1582-concurrent-launch-scenario.sh)
+  under env -i, with a HOME of its own inside one temporary directory and stub
+  claude, node, amplihack-hooks and recipe-runner-rs executables. It installs
+  from this checkout, removes ~/.amplihack/.claude/agents, takes the install
+  lock itself, and starts two `amplihack claude` launches on pseudo-terminals.
+  Once both have printed the lock-wait line, so both have decided without the
+  lock that the assets are missing, it releases the lock. Both launches exit
+  0, exactly one new release directory appears, exactly one launch prints
+  "Bootstrapping amplihack framework assets", and every path the install
+  staged exists again. The script needs AMPLIHACK_1582_QA_BIN, an amplihack
+  binary built from this checkout, and Linux (flock and script from
+  util-linux). CI's Install Smoke Test job runs the script directly against
+  the binary it installs; CI does not run gadugi-test itself.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, install, launch, concurrency, regression]
+  priority: high
+  issues: ["1582"]
+steps:
+  - name: run-issue-1582-concurrent-launches
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-1582-concurrent-launch-scenario.sh
+    timeout: 880000
+  - name: scenario-exits-zero
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: contract-green
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: "issue 1582 concurrent launch contract green"
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: both-launches-exit-zero
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: both-launches-exit-0 -"
+  - name: one-release-directory-is-created
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: one-new-release -"
+  - name: one-launch-re-stages
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: one-bootstrap-line -"
+  - name: the-staged-assets-are-complete
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: assets-complete -"

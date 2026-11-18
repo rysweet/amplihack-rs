@@ -1,7 +1,7 @@
 ---
 title: Framework source selection reference
 description: Which source amplihack install, update and self-heal stage the framework bundle from, how versions are compared, and which checks and modes staging applies.
-last_updated: 2026-11-11
+last_updated: 2026-11-18
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: reference
@@ -170,8 +170,13 @@ If any step after the first fails, the staging directory is deleted, the
 installed bundle stays as it was and the stamp doesn't advance. A symlink at the
 source's `amplifier-bundle` root is an error.
 
-Self-heal stages under `~/.amplihack/.install.lock`, including its fetch.
-Explicit `install` doesn't take that lock.
+Every install stages under `~/.amplihack/.install.lock`. Explicit `install`,
+including the install child that `amplihack update` starts, chooses its
+source and runs any release tag fetch before it takes the lock. Self-heal and
+the launch bootstrap's re-stage take the lock first, so their fetch runs
+under it. Once they hold the lock, they also re-read the stamp and check
+again whether a re-stage is needed, so a launch that waited for another
+install stages nothing if that install has already done the work (#1582).
 
 ## Fetch backoff
 

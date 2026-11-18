@@ -757,6 +757,14 @@ jobs:
       - name: "Outside-in: model tiers per harness (issue #1619)"
         shell: bash
         run: AMPLIHACK_1619_QA_REQUIRE_ALL=1 AMPLIHACK_1619_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1619-tier-scenario.sh
+      # Issue #1582: two launches that start together on one home with missing
+      # framework assets re-stage once, against the binary installed above.
+      # The driver has no timers; this step's limit bounds the runner if a
+      # launch ever blocks somewhere other than the install lock.
+      - name: "Outside-in: concurrent launches re-stage once (issue #1582)"
+        shell: bash
+        timeout-minutes: 15
+        run: AMPLIHACK_1582_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1582-concurrent-launch-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing
