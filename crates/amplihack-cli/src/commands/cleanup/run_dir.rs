@@ -814,6 +814,7 @@ impl RunWorkspace {
         }
         let dir = tempfile::Builder::new()
             .prefix("amplihack-dry-")
+            .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in(&base)
             .with_context(|| format!("cannot create a dry-run folder under {base:?}"))?;
         create_private_dir_all(&dir.path().join("tmp"))?;

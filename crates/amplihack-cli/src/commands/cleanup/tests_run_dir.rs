@@ -278,6 +278,14 @@ fn a_dry_runtime_records_attempts_as_a_no_op_and_removes_its_folder() {
     let mut workspace = RunWorkspace::dry_runtime().expect("dry runtime");
     let runtime = workspace.runtime_dir().to_path_buf();
     assert!(runtime.is_dir());
+    for path in [&runtime, &runtime.join("tmp"), &runtime.join("artifacts")] {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "private dry-run directory {}",
+            path.display()
+        );
+    }
     assert!(workspace.run_dir().is_none(), "a dry run has no run folder");
     workspace
         .record_attempt_checked("dry-attempt")
