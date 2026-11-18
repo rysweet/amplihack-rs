@@ -444,7 +444,17 @@ explicitly supplied the flag.
 Flag detection uses parsed options. A caller-supplied
 `--skip-git-repo-check` is forwarded without adding a duplicate. The same
 text used as another option's value or as prompt text does not count as an
-explicit flag. Invocations without an `exec`/`e` subcommand receive no
+explicit flag. A `--cd` or `-C` override must resolve to the same validated
+launch directory, including relative paths and symlinks. Both separate and
+attached values are supported before or after `exec`/`e` and after its prompt
+positional. Option values and text after `--` are not directory options.
+A different directory, repeated overrides, home expansion, conflicting
+logical and physical path resolution, malformed values or unknown options
+withhold automatic injection while retaining normal argument
+forwarding and explicit caller bypass flags. Starting in an unowned directory
+never gains eligibility by selecting an owned directory.
+
+Invocations without an `exec`/`e` subcommand receive no
 automatic directory-check bypass.
 
 This behavior requires no new configuration key or environment variable.
@@ -465,8 +475,9 @@ derives their checkout paths internally, and reuses
 path equality is required; invalid candidates yield no eligibility.
 
 `build_command_for_dir` resolves ownership for the explicit child execution
-directory in its Codex branch. The Codex argument transformer receives that
-Boolean and remains pure. This interface adds no public API, ownership
+directory in its Codex branch and uses the existing prompt parser to prove
+any directory override selects that same directory. The argument transformer
+receives that Boolean and remains pure. This interface adds no public API, ownership
 registry or manifest schema.
 
 ---

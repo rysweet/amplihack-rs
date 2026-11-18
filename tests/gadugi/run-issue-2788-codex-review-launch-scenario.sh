@@ -84,17 +84,27 @@ case "${1:-}" in
   plugin) echo '{"installed":[]}'; exit 0 ;;
 esac
 argv=("$@")
-skip=0 final=
+skip=0 final= directory= directory_set=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
     --output-last-message|-o) final="$2"; shift 2 ;;
-    --model|-m|--config|-c|--sandbox|-s|--profile|-p|--cd|-C|--image|-i|--add-dir|--enable|--disable)
+    --cd|-C) directory="$2"; directory_set=1; shift 2 ;;
+    --cd=*) directory="${1#--cd=}"; directory_set=1; shift ;;
+    -C?*) directory="${1#-C}"; directory="${directory#=}"; directory_set=1; shift ;;
+    --model|-m|--config|-c|--sandbox|-s|--profile|-p|--image|-i|--add-dir|--enable|--disable)
       shift 2 ;;
     --skip-git-repo-check) skip=$((skip + 1)); shift ;;
     *) shift ;;
   esac
 done
+if [ "$directory_set" = 1 ]; then
+  case "$directory" in
+    '~') directory="$HOME" ;;
+    '~/'*) directory="$HOME/${directory#??}" ;;
+  esac
+  cd -- "$directory"
+fi
 prompt="$(cat)"
 if grep -qF 'Read PR #' <<< "$prompt"; then
   label=context

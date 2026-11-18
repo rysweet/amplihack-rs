@@ -28,19 +28,35 @@ case "${1-}" in
 esac
 printf '%s\000' "$@" > "$HOME/argv"
 pwd -P > "$HOME/cwd"
-skip=0 final= exec_mode=0
+skip=0 final= exec_mode=0 directory= directory_set=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     exec|e) exec_mode=1; shift ;;
     --) shift; break ;;
     --output-last-message|-o) final="$2"; shift 2 ;;
-    --model|-m|--config|-c|--sandbox|-s|--profile|-p|--cd|-C|--image|-i|--add-dir|--enable|--disable)
-      shift 2 ;;
+    --cd|-C) [ "$#" -ge 2 ] || exit 2; directory="$2"; directory_set=1; shift 2 ;;
+    --cd=*) directory="${1#--cd=}"; directory_set=1; shift ;;
+    -C?*) directory="${1#-C}"; directory="${directory#=}"; directory_set=1; shift ;;
+    --model|-m|--config|-c|--sandbox|-s|--profile|-p|--add-dir|--enable|--disable)
+      [ "$#" -ge 2 ] || exit 2; shift 2 ;;
+    --image|-i)
+      shift
+      while [ "$#" -gt 0 ]; do
+        case "$1" in -*) break ;; *) shift ;; esac
+      done ;;
     --skip-git-repo-check) skip=$((skip + 1)); shift ;;
     *) shift ;;
   esac
 done
 printf '%s\n' "$skip" > "$HOME/skip-count"
+if [ "$directory_set" = 1 ]; then
+  case "$directory" in
+    '~') directory="$HOME" ;;
+    '~/'*) directory="$HOME/${directory#??}" ;;
+  esac
+  cd -- "$directory" || exit 2
+fi
+pwd -P > "$HOME/effective-cwd"
 cat > "$HOME/prompt"
 if [ "$exec_mode" = 1 ] && ! git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [ "$skip" = 0 ]; then
   echo 'not inside a trusted directory' >&2
@@ -179,7 +195,7 @@ impl Fixture {
     fn run(&self, cwd: &Path, tail: &[&str]) -> Invocation {
         let final_file = self.root.join("final-message");
         let _ = fs::remove_file(&final_file);
-        for name in ["argv", "cwd", "skip-count", "prompt"] {
+        for name in ["argv", "cwd", "effective-cwd", "skip-count", "prompt"] {
             let _ = fs::remove_file(self.home.join(name));
         }
         let mut child = self
@@ -211,6 +227,11 @@ impl Fixture {
         Invocation {
             out,
             argv,
+            effective_cwd: PathBuf::from(
+                fs::read_to_string(self.home.join("effective-cwd"))
+                    .unwrap()
+                    .trim(),
+            ),
             skip_count: fs::read_to_string(self.home.join("skip-count"))
                 .unwrap()
                 .trim()
@@ -235,6 +256,7 @@ impl Fixture {
 struct Invocation {
     out: Output,
     argv: Vec<String>,
+    effective_cwd: PathBuf,
     skip_count: usize,
 }
 
@@ -489,4 +511,135 @@ fn non_exec_invocations_in_owned_launch_do_not_get_skip_flag() {
         assert_eq!(launch.argv, tail);
         assert_eq!(launch.skip_count, 0);
     }
+}
+
+#[test]
+fn directory_overrides_cannot_export_owned_launch_authorization() {
+    let f = Fixture::new();
+    // This directory is outside Git and has no ownership evidence.
+    let unowned = f.root.to_str().unwrap();
+    let launch = f.launch.to_str().unwrap();
+    fs::create_dir(f.launch.join("nested")).unwrap();
+    for directory in [unowned, launch, ".", "nested/.."] {
+        let expected = Path::new(directory);
+        let expected = f.launch.join(expected).canonicalize().unwrap();
+        let allowed = expected == f.launch;
+        for option in [
+            vec!["--cd".to_owned(), directory.to_owned()],
+            vec!["-C".to_owned(), directory.to_owned()],
+            vec![format!("--cd={directory}")],
+            vec![format!("-C{directory}")],
+            vec![format!("-C={directory}")],
+        ] {
+            // Root options, exec options, and options following the prompt
+            // positional all select the same effective directory in Codex.
+            for position in 0..3 {
+                let mut tail = vec!["exec", "-"];
+                let insertion = position;
+                tail.splice(insertion..insertion, option.iter().map(String::as_str));
+                let invocation = f.run(&f.launch, &tail);
+                assert_eq!(invocation.effective_cwd, expected, "{tail:?}");
+                assert_eq!(invocation.skip_count, usize::from(allowed), "{tail:?}");
+                assert_eq!(
+                    invocation.out.status.code(),
+                    Some(if allowed { 0 } else { 42 }),
+                    "{tail:?}: {:?}",
+                    invocation.out
+                );
+            }
+        }
+    }
+    // Normalization accepts a symlink back to the exact owned directory.
+    let alias = f.root.join("launch-alias");
+    symlink(&f.launch, &alias).unwrap();
+    let invocation = f.step(&f.launch, &["--cd", alias.to_str().unwrap()]);
+    succeeds(&invocation.out);
+    assert_eq!(invocation.skip_count, 1);
+    assert_eq!(invocation.effective_cwd, f.launch);
+
+    // Entering an owned directory from an unowned start grants no authority.
+    let invocation = f.step(&f.root, &["--cd", launch]);
+    assert_eq!(invocation.skip_count, 0);
+    assert_eq!(invocation.out.status.code(), Some(42));
+    assert!(!f.root.join("final-message").exists());
+}
+
+#[test]
+fn repeated_and_uncertain_directory_overrides_withhold_automatic_bypass() {
+    let f = Fixture::new();
+    for options in [
+        vec!["--cd", ".", "-C", "."],
+        vec!["--cd=.", "--cd=."],
+        vec!["--unknown-option=opaque", "-C", "."],
+    ] {
+        let invocation = f.step(&f.launch, &options);
+        assert_eq!(
+            invocation.skip_count, 0,
+            "{options:?}: {:?}",
+            invocation.argv
+        );
+        assert_eq!(invocation.out.status.code(), Some(42), "{options:?}");
+        assert!(!f.root.join("final-message").exists());
+    }
+    // A caller's explicit bypass survives even an ambiguous or escaping cd.
+    for options in [
+        vec!["--cd", ".", "-C", ".", SKIP],
+        vec!["--cd", f.root.to_str().unwrap(), SKIP],
+    ] {
+        let invocation = f.step(&f.launch, &options);
+        succeeds(&invocation.out);
+        assert_eq!(invocation.skip_count, 1, "{:?}", invocation.argv);
+        assert_eq!(
+            fs::read_to_string(f.root.join("final-message")).unwrap(),
+            FINAL
+        );
+    }
+}
+
+#[test]
+fn directory_option_text_in_values_and_prompts_is_not_an_override() {
+    let f = Fixture::new();
+    for tail in [
+        vec!["exec", "--model", "--cd", "-"],
+        vec!["exec", "--image=--cd=unowned", "-"],
+        vec!["e", "--", "--cd"],
+        vec!["exec", "--", "-C/unowned"],
+        vec!["exec", "Explain --cd and -C without changing directories"],
+    ] {
+        let invocation = f.run(&f.launch, &tail);
+        succeeds(&invocation.out);
+        assert_eq!(invocation.skip_count, 1, "{tail:?}: {:?}", invocation.argv);
+        assert_eq!(invocation.effective_cwd, f.launch);
+    }
+}
+
+#[test]
+fn home_expansion_and_symlink_parent_components_cannot_export_authorization() {
+    let f = Fixture::new();
+    let outer = f.root.join("outer");
+    let unowned = f.root.join("unowned");
+    fs::create_dir_all(outer.join("child")).unwrap();
+    fs::create_dir(&unowned).unwrap();
+    symlink(outer.join("child"), f.launch.join("a")).unwrap();
+    symlink(&unowned, f.launch.join("b")).unwrap();
+    symlink(&f.launch, outer.join("b")).unwrap();
+    // Following links before resolving '..' appears to select the launch,
+    // but Codex's logical normalization selects the unowned 'b' instead.
+    assert_eq!(f.launch.join("a/../b").canonicalize().unwrap(), f.launch);
+    let invocation = f.step(&f.launch, &["--cd", "a/../b"]);
+    assert_eq!(invocation.skip_count, 0);
+    assert_eq!(invocation.effective_cwd, unowned);
+    assert_eq!(invocation.out.status.code(), Some(42));
+    assert!(!f.root.join("final-message").exists());
+
+    // Codex expands a leading '~'; a literal symlink is not proof that the
+    // selected home directory is this launch. Explicit bypass is untouched.
+    symlink(&f.launch, f.launch.join("~")).unwrap();
+    let invocation = f.step(&f.launch, &["--cd", "~"]);
+    assert_eq!(invocation.skip_count, 0);
+    assert_eq!(invocation.effective_cwd, f.home);
+    assert_eq!(invocation.out.status.code(), Some(42));
+    let invocation = f.step(&f.launch, &["--cd", "~", SKIP]);
+    succeeds(&invocation.out);
+    assert_eq!(invocation.skip_count, 1);
 }

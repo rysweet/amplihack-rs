@@ -278,9 +278,12 @@ pub(super) fn build_command_for_dir(
             eprintln!("{line}");
         }
         // The caller supplies the child's execution directory. Only existing
-        // live review ownership grants the Git-check bypass (#2788).
-        let owned_review_launch =
-            add_dir_override.is_some_and(crate::runner_validation::is_owned_review_launch_dir);
+        // live review ownership grants the Git-check bypass (#2788), and a
+        // Codex directory override must resolve to that same owned directory.
+        let owned_review_launch = add_dir_override.is_some_and(|directory| {
+            crate::runner_validation::is_owned_review_launch_dir(directory)
+                && super::codex_exec_args::directory_override_matches(extra_args, directory)
+        });
         cmd.args(codex_agent_step::codex_agent_step_args(
             extra_args,
             owned_review_launch,

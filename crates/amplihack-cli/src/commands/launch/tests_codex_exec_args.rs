@@ -173,3 +173,41 @@ fn missing_values_are_refused() {
         assert!(parse_exec_line(&args).is_err(), "{items:?}");
     }
 }
+
+#[test]
+fn directory_authorization_requires_one_known_resolvable_override() {
+    use super::codex_exec_args::directory_override_matches;
+    let launch = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["exec", "--cd"],
+        vec!["exec", "--cd="],
+        vec!["exec", "-C="],
+        vec!["exec", "--cd", "--json"],
+        vec!["exec", "--cd", "does-not-exist"],
+        vec!["exec", "--cd", ".", "-C", "."],
+        vec!["exec", "--unknown", "--cd", "."],
+        vec!["exec", "--unknown=value", "--cd", "."],
+        vec!["exec", "--json=true", "--cd", "."],
+        vec!["exec", "-ZC.", "-"],
+        vec!["exec", "resume", "--cd", "."],
+    ] {
+        let argv = args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        assert!(
+            !directory_override_matches(&argv, launch.path()),
+            "{args:?}"
+        );
+    }
+    // Short flags can precede a value option in a cluster. The value owns
+    // the rest of the cluster and cannot conceal a directory option.
+    for args in [
+        vec!["-hC.", "exec", "-"],
+        vec!["exec", "-hC=.", "-"],
+        vec!["exec", "-m-C/unowned", "-"],
+        vec!["exec", "--config=--cd=/unowned", "-"],
+        vec!["exec", "--image", "a.png", "b.png", "-C.", "-"],
+        vec!["exec", "--", "--cd=/unowned"],
+    ] {
+        let argv = args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        assert!(directory_override_matches(&argv, launch.path()), "{args:?}");
+    }
+}
