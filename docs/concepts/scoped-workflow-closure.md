@@ -89,6 +89,12 @@ OPEN candidate remains, that candidate is adopted. OPEN is always preferred over
 closed. The helper never falls back to recent PRs, PR author, or broad
 title/body search.
 
+Publish is the one caller that may look past the base. On GitHub, with an
+empty `base_branch`, it also accepts a single OPEN same-repository PR from the
+same head into another base, so a branch that already has one is not given a
+second PR into the default branch (see
+[An open pull request on another base](../reference/workflow-delivery-inputs.md#an-open-pull-request-on-another-base)).
+
 This is why the workflow reliably adopts its own PR even when the branch bakes in
 a local tracking issue (`feat/issue-1014-...`) while the PR body references a
 different upstream issue (`#4610`), or when the remote head advances past the
