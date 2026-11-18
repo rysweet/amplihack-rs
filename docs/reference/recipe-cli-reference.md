@@ -284,10 +284,12 @@ The first match is used, in this order:
 
 1. **Issue URL.** A target of the form `https://github.com/<owner>/<repo>/issues/<number>`
    is looked up as an issue: the pointer line whose `issue_url` matches, or
-   whose `issue_number` matches with the same owner and repository.
+   whose `issue_number` matches with the same owner and repository. This rule
+   never creates the state folder. If no recorded run names the issue, the
+   command exits 1 and nothing is tried further.
 2. **Pull request URL.** A `/pull/<number>` URL goes to the pull request's
-   state folder. Any other target that contains `://` exits 2 and nothing
-   else is tried.
+   state folder. Any other target that contains `://` (a URL that is neither
+   an issue URL nor a pull request URL) exits 2 and nothing else is tried.
 3. **Session name.** The pointer line in `<session>.log`. If it records
    `run_dir`, that folder is used.
 4. **Run ID.** The `run_dir` recorded by the pointer line that carries that
@@ -296,8 +298,10 @@ The first match is used, in this order:
    as the correlation ID in each run's `run.json`.
 5. **Bare issue number.** `<number>` or `#<number>`, tried only after rules 3
    and 4 find nothing. It matches the pointer line's `issue_number` alone,
-   without checking the repository, and the command prints the folder it
-   chose.
+   without checking the repository. When more than one repository or run
+   matches, the newest run is used and a warning on stderr names the run ID
+   that was chosen. The warning appears only when the command succeeds and
+   only when there was more than one match; stdout is the same either way.
 
 Where both the recorded folder and the work root in the environment resolve,
 the recorded folder is used: it is the folder the run actually uses.
@@ -308,20 +312,43 @@ session name through the work root in the environment, as it was before. It
 is not found by issue, because the issue lookup depends on the recorded
 pointer line.
 
-The recorded folder is checked before it is written to, and a folder that
-fails any check is not used. The reason appears in the not-found message.
+#### Recorded claims and named inputs
 
-- The path is absolute and has no empty, `.` or `..` component.
+The command treats two kinds of input differently.
+
+- **A recorded claim** is a `run_dir`, session or issue taken from a pointer
+  line or a `run.json`. A claim that fails a check below is not used. It
+  becomes a note in the not-found message, and the next rule is still tried.
+- **An operator-named input** is something you typed: the target and the
+  `--file` path. These are refused with an error when they fail: a malformed
+  pull request URL, a session log you named that is a symbolic link or not
+  trusted, a destination folder that fails a check, or a `--file` path that
+  cannot be read.
+
+Checks applied to a recorded folder before it is written to:
+
+- The raw path string is absolute and has no empty, `.` or `..` segment. The
+  segments are checked on the string as recorded, before any normalisation
+  can remove them.
+- The recorded path does not contain U+FFFD (the replacement character that
+  stands for bytes that are not valid UTF-8).
 - Its parent is named `runs` and its name is a valid run ID.
-- Neither the folder nor `run.json` is a symbolic link.
+- Neither the folder nor `run.json` is a symbolic link, and neither `runs`
+  nor the work root is a symbolic link (checked with `lstat`, so a link is
+  seen rather than followed).
+- `run.json`, the run folder, `runs` and the log files are owned by the
+  current user (uid equals euid) and are not writable by group or others.
+- The log directory passes the same trust check. A failure is reported as a
+  note.
 - `run.json` parses and agrees with the match: it lists the ID, session or
-  issue that selected the folder.
+  issue that selected the folder, and its `run_id` agrees with the folder.
 - The work root implied by the folder (the parent of `runs`) passes the same
   work root validation that `AMPLIHACK_WORK_ROOT` does.
 
-Logs are searched newest first, stopping at the first match. A log that
-cannot be read or is not trusted is skipped; a log you name as a session is
-refused with an error.
+Logs are searched newest first, stopping at the first match. At most 10,000
+log entries are scanned; the not-found message reports how many were skipped
+(unreadable, untrusted or past the cap). A log that cannot be read or is not
+trusted is skipped; a log you name as a session is refused with an error.
 
 **Session names.** A session name containing `/` is refused. If the log is
 missing or has no pointer line yet, the command exits 1 and names the log
@@ -712,7 +739,7 @@ does not read this folder; see [Known limits](#known-limits).
 | `1` | The target could be a run ID, but the work root cannot be resolved | `recipe guide: cannot look for run "nightly-fix": HOME is not set, so the default work root cannot be resolved` |
 | `1` | `AMPLIHACK_STATE_DIR` (or `HOME`) is set to a relative path, for a pull request URL target | `recipe guide: cannot find the state folder: AMPLIHACK_STATE_DIR is not an absolute path` |
 | `1` | The session's log has no pointer line | `recipe guide: /home/alice/.amplihack/recipe-logs/nightly-fix.log has no amplihack.recipe.log_pointer line` |
-| `1` | A folder failed the safety checks | `recipe guide: refusing /home/alice/.amplihack/work/runs/8c0e…/guidance: it is owned by uid 0, not uid 1000` |
+| `1` | The chosen destination folder failed a safety check. A recorded folder that fails becomes a note and the next rule is tried; it does not cause this exit | `recipe guide: refusing /home/alice/.amplihack/work/runs/8c0e…/guidance: it is owned by uid 0, not uid 1000` |
 | `1` | The folder already holds 256 KiB of guidance | `recipe guide: guidance folder /home/alice/.amplihack/work/runs/8c0e…/guidance would hold 307285 bytes of entries; the limit is 262144` |
 | `1` | The `--file` path cannot be opened or read | `recipe guide: cannot read /home/alice/notes/tests-only.md: No such file or directory (os error 2)` |
 | `2` | Text given as an argument after `<TARGET>` | `recipe guide: instruction text is not accepted on the command line; pipe it on stdin (or pass -) or use --file <path>` |
@@ -722,18 +749,24 @@ does not read this folder; see [Known limits](#known-limits).
 | `2` | Oversize text on stdin, or in a regular `--file` file | `guidance entry is 61440 bytes; the limit is 51200 bytes` |
 | `2` | Oversize text from a `--file` path that is not a regular file, or a regular file whose recorded size is wrong | `guidance entry is more than 51200 bytes; the limit is 51200 bytes` |
 | `2` | Invalid UTF-8, a refused character or a delimiter line | `recipe guide: guidance text contains a control character (U+001B)` |
-| `2` | Malformed pull request URL, or any other URL that is not an issue URL | `recipe guide: not a GitHub pull request URL: port is not allowed` |
+| `2` | Malformed pull request URL, or any URL that is neither an issue URL nor a pull request URL | `recipe guide: not a GitHub pull request URL: port is not allowed` |
 | `2` | Run inside a recipe run without `--from-step` | `recipe guide: refusing to add guidance from inside a recipe run (AMPLIHACK_RECIPE_RUN_ID is set); an agent step that means to add an entry must pass --from-step, and the entry is then shown as coming from an agent step` |
 
 Every failure prints one line and writes nothing.
 
-The not-found line shows at most three rejection reasons for recorded folders,
+The not-found line also reports the number of pointer records read. When `HOME` is
+unset the comparison with the home folder is skipped, and the line carries a
+note saying so. It shows at most three rejection reasons for recorded folders,
 followed by `and <n> more` with the exact number left out. Control characters
 in text taken from a log are replaced, and paths are shown escaped, so a
 crafted log cannot add lines or terminal sequences to the message.
 
 ### Known limits
 
+- **Foreground runs leave no log.** A run started without `--detach` writes
+  no session log, so it cannot be found by session name or from the log
+  directory. It is addressable only through the environment (the work root
+  in `AMPLIHACK_WORK_ROOT`) or by a pull request URL.
 - **A drive that has not opened its pull request yet.** Guidance given by
   pull request URL reaches every drive or round started with that pull
   request in its context, including relaunches. A drive still in its first
