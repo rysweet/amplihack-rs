@@ -345,9 +345,11 @@ Checks applied to a recorded folder before it is written to:
 - The work root implied by the folder (the parent of `runs`) passes the same
   work root validation that `AMPLIHACK_WORK_ROOT` does.
 
-Logs are searched newest first, stopping at the first match. At most 10,000
-log entries are scanned; the not-found message reports how many were skipped
-(unreadable, untrusted or past the cap). A log that cannot be read or is not
+Logs are searched newest first. A run ID or a session name stops at the first
+match; an issue keeps looking, so a run that is named more than once can be
+reported. At most 10,000 logs are scanned; the not-found message reports how
+many were skipped (not a regular file, unreadable, untrusted, holding no
+pointer line, or past the cap). A log that cannot be read or is not
 trusted is skipped; a log you name as a session is refused with an error.
 
 **Session names.** A session name containing `/` is refused. If the log is
@@ -734,8 +736,8 @@ does not read this folder; see [Known limits](#known-limits).
 | Code | Meaning | Example message on stderr |
 | --- | --- | --- |
 | `0` | The entry was written | |
-| `1` | No run matches the target. One line names the target and each place looked at: the session log path, the log directory, the recorded run folder if one was named but is absent, and `<work root>/runs/` | `recipe guide: no recipe run or detached session named "nightly-fix"; looked at session log /home/alice/.amplihack/recipe-logs/nightly-fix.log (not found), pointer lines in /home/alice/.amplihack/recipe-logs (none names it), /home/alice/.amplihack/work/runs (no run folder or run.json with that ID)` |
-| `1` | An issue URL that no recorded run names. Nothing is created under the state folder | `recipe guide: no recipe run or detached session named "https://github.com/rysweet/amplihack-rs/issues/2783"; looked at pointer lines in /home/alice/.amplihack/recipe-logs (none records that issue)` |
+| `1` | No run matches the target. One line names the target and each place looked at: the session log path, the log directory, the recorded run folder if one was named but is absent, and `<work root>/runs/` | `recipe guide: no recipe run or detached session named "nightly-fix"; looked at session log /home/alice/.amplihack/recipe-logs/nightly-fix.log (not found), pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s), none names it), /home/alice/.amplihack/work/runs (no run folder or run.json with that ID)` |
+| `1` | An issue URL that no recorded run names. Nothing is created under the state folder | `recipe guide: no recipe run or detached session named "https://github.com/rysweet/amplihack-rs/issues/2783"; looked at pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s), none names it)` |
 | `1` | The target could be a run ID, but the work root cannot be resolved | `recipe guide: cannot look for run "nightly-fix": HOME is not set, so the default work root cannot be resolved` |
 | `1` | `AMPLIHACK_STATE_DIR` (or `HOME`) is set to a relative path, for a pull request URL target | `recipe guide: cannot find the state folder: AMPLIHACK_STATE_DIR is not an absolute path` |
 | `1` | The session's log has no pointer line | `recipe guide: /home/alice/.amplihack/recipe-logs/nightly-fix.log has no amplihack.recipe.log_pointer line` |
@@ -754,12 +756,14 @@ does not read this folder; see [Known limits](#known-limits).
 
 Every failure prints one line and writes nothing.
 
-The not-found line also reports the number of pointer records read. When `HOME` is
-unset the comparison with the home folder is skipped, and the line carries a
-note saying so. It shows at most three rejection reasons for recorded folders,
-followed by `and <n> more` with the exact number left out. Control characters
-in text taken from a log are replaced, and paths are shown escaped, so a
-crafted log cannot add lines or terminal sequences to the message.
+The not-found line reports the number of pointer records read and how many
+logs were skipped. When `HOME` is unset the comparison with the home folder is
+skipped, and the line says that the work root could not be resolved. A folder
+a record named that was not used is listed after `not used:`, at most three of
+them, followed by `, and <n> more` with the exact number left out. Control
+characters in text taken from a log are escaped as `\u{..}`, as are the
+bidirectional marks and the line and paragraph separators, so a crafted log
+cannot add lines or terminal sequences to the message.
 
 ### Known limits
 

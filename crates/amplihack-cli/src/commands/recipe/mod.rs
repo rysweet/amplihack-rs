@@ -15,6 +15,8 @@ use std::process::Command;
 pub mod detach;
 /// Issue #2535: `recipe guide`, operator guidance for a run's later agent steps.
 pub mod guide;
+/// Issue #2783: the log-pointer records `recipe guide` finds a run by.
+mod guide_records;
 pub mod list;
 mod parse;
 /// Issue #1606: the processes `recipe stop` signals.

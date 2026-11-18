@@ -103,6 +103,46 @@ pub(crate) fn parse_pr_url(url: &str) -> Result<PrRef, GuideError> {
     })
 }
 
+/// Parses `https://github.com/<owner>/<repo>/issues/<number>`, with an
+/// optional trailing slash, query or fragment, under the same bounds as
+/// [`parse_pr_url`].
+///
+/// Returns `None`, never an error, for anything else: the caller tries the
+/// pull request form next, and a URL that is neither gets that form's
+/// refusal (issue #2783).
+pub(crate) fn parse_issue_url(url: &str) -> Option<PrRef> {
+    let rest = url.strip_prefix(GITHUB_HTTPS)?;
+    let path = rest.split(['?', '#']).next().unwrap_or_default();
+    if path.contains('%') {
+        return None;
+    }
+    let path = path.strip_suffix('/').unwrap_or(path);
+    let parts: Vec<&str> = path.split('/').collect();
+    let [owner, repo, "issues", number] = parts.as_slice() else {
+        return None;
+    };
+    if !valid_owner(owner) || !valid_repo(repo) {
+        return None;
+    }
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let number: u64 = number.parse().ok()?;
+    (number != 0).then(|| PrRef {
+        owner: (*owner).to_string(),
+        repo: (*repo).to_string(),
+        number,
+    })
+}
+
+/// Whether two GitHub references name the same issue. Owner and repository
+/// are compared whole and without case, never by substring.
+pub(crate) fn same_repo_ref(a: &PrRef, b: &PrRef) -> bool {
+    a.number == b.number
+        && a.owner.eq_ignore_ascii_case(&b.owner)
+        && a.repo.eq_ignore_ascii_case(&b.repo)
+}
+
 /// The owner and repository of a `github.com` remote in `https`, `ssh://`
 /// or scp form (`git@github.com:o/r.git`). `None` for any other host.
 pub(crate) fn canonical_repo_from_remote(remote: &str) -> Option<(String, String)> {
