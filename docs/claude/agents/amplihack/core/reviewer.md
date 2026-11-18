@@ -124,6 +124,8 @@ Fix: [Minimal solution]
 2. Modularity verification
 3. Regeneratability check
 4. Documentation quality
+5. Does this change add or extend a check, parser, gate or exit path that can end a run, or a script that judges what an agent should judge? If so, that is a major concern unless it only prevents data loss. Name the agentic alternative, such as removing the check or giving the situation to an agent step with guidance.
+6. Does the change add more checking code than it removes?
 
 ## Bug Investigation Process
 
