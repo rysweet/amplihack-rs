@@ -45,7 +45,7 @@ branch state.
 | Azure DevOps host | `ManualRequired` with an Azure Repos pull-request action; no `gh pr create` or `az repos pr create` call. |
 | Local or unsupported host | `ManualRequired` with provider-neutral next action; no remote provider command. |
 | No branch diff against base | Success with `state=no-diff`; no PR is created. |
-| Existing open PR for the same head branch | Success with `state=existing-open-pr`; existing PR URL is returned. |
+| Existing open PR for the same head branch | Success with `state=existing-open-pr`; existing PR URL is returned. On GitHub with `base_branch` empty, an open PR into another base counts too if that base passes the base checks; its base is kept, and it takes precedence over a merged or closed PR into the default branch ([details](../reference/workflow-delivery-inputs.md#an-open-pull-request-on-another-base)). |
 | Existing merged PR for the same head branch | Success with `state=already-merged`; merged PR URL is returned. |
 | Existing closed PR that was merged | Success with `state=closed-after-merge`; merged PR URL is returned. |
 | Existing closed, unmerged PR with branch diff | Failure with a clear action message. |
