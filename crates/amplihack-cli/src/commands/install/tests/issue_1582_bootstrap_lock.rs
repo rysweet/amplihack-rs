@@ -8,27 +8,6 @@
 //! re-staged again over a fresh install and under live sessions. A newer
 //! install that finished while a launch waited for the lock was not seen.
 //!
-//! Contract under test:
-//!
-//! ```text
-//! // self_heal.rs: the only copy of take-lock, re-read stamp, Guard #2.
-//! pub(crate) enum LockedRestage { NewerInstalled, NotNeeded, Installed }
-//! pub(crate) fn restage_under_install_lock(
-//!     notice: &mut W,
-//!     still_needed: impl FnOnce(Option<&str>) -> Result<bool>,
-//!     install: impl FnOnce(&mut W) -> Result<()>,
-//! ) -> Result<LockedRestage>
-//!
-//! // install/mod.rs, private.
-//! fn framework_restage_needed_now() -> Result<bool>
-//! fn restage_framework_if_needed(
-//!     notice: &mut W,
-//!     needed: impl FnMut() -> Result<bool>,   // once unlocked, once locked
-//!     install: impl FnOnce() -> Result<()>,
-//! ) -> Result<LockedRestage>
-//! fn ensure_framework_installed_using(notice: &mut W, needed, install) -> Result<()>
-//! ```
-//!
 //! None of these tests sleeps, times out or retries. The concurrency test
 //! orders its two threads with a barrier, and asserts that the lock is not
 //! held before it waits there, so a regression panics instead of hanging.

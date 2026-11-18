@@ -85,10 +85,6 @@ esac
 # The scenario never reads or assigns HOME for its own paths: every path below
 # is under $qa_home, and every child gets HOME=$qa_home through env -i.
 qa_home="$root/home"
-case "$qa_home" in
-  "$root"/*) ;;
-  *) die "the scenario home is not inside its temporary directory" ;;
-esac
 
 lock_held=0
 lockfd=""

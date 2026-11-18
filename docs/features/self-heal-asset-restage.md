@@ -207,9 +207,8 @@ on demand, mode `0o600`) for the duration of the decision-and-install window.
   install; see [Versioned Install Layout](../concepts/versioned-install-layout.md).
 - The launch bootstrap (`ensure_framework_installed`) re-stages missing
   framework assets through the same helper as self-heal,
-  `restage_under_install_lock` (issue
-  [#1582](https://github.com/rysweet/amplihack-rs/issues/1582)). Under the
-  lock it re-reads the stamp, applies the #1526 downgrade check and checks
+  `restage_under_install_lock` (issue #1582). Under the lock it re-reads
+  the stamp, applies the #1526 downgrade check and checks
   the assets again before it stages anything. Two launches started together
   therefore re-stage once, and a launch that waited behind a newer install
   stages nothing. When the assets are complete, the bootstrap does not take

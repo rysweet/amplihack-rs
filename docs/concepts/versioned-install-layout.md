@@ -424,8 +424,7 @@ waits for the update to finish. This is intended.
 
 The launch bootstrap (`ensure_framework_installed`) runs before an
 interactive launch and re-stages the framework when files are missing from
-`~/.amplihack/.claude`. It decides in two stages (issue
-[#1582](https://github.com/rysweet/amplihack-rs/issues/1582)):
+`~/.amplihack/.claude`. It decides in two stages (issue #1582):
 
 1. Without the lock, it checks whether the stamp is newer than the running
    binary (#1526) and whether the framework assets are complete. If the
