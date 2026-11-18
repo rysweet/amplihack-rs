@@ -555,6 +555,12 @@ diagnostic here leaves the run going. amplihack does not verify that a mapped
 model is available to your account, your plan or your harness install; a
 harness that does not have it says so in its own output.
 
+Under `amplihack recipe run` the per-launch lines come from each step's child
+launch, and the pinned runner keeps an agent step's stderr only when that step
+fails. For a run whose steps succeed, the `Model tiers:` section and the record
+file are where the tier, the model, the effort and any fall-back appear; the
+record also keeps a lowered effort's `requested_effort`.
+
 ## Related
 
 - [Put Recipe Steps on Model Tiers](../howto/set-model-tiers.md), the
