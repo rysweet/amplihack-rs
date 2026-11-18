@@ -92,6 +92,9 @@ pub fn run_all(args: &[String]) -> Result<()> {
         report.add_allowance(allowance)?;
     }
     report.persist()?;
+    let boundary =
+        super::environment::observe_container_boundary(&argument(args, "--host-sentinel")?)?;
+    save(&evidence_root.join("isolation-boundary.json"), &boundary)?;
     let network =
         super::environment::network_interfaces(&fs::read_to_string("/proc/self/net/dev")?)?;
     save(

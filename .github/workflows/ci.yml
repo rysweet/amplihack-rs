@@ -741,29 +741,49 @@ jobs:
           tmux -V
           bash scripts/install-pinned-recipe-runner.sh
       # #2806 is unconditional release evidence. All assets are installed before
-      # execution; the unprivileged scenario has only loopback networking.
+      # execution. The scenario has a private filesystem, UID and network namespace.
       - name: Build CI-only build and drive fixture (issue #2806)
         shell: bash
         run: |
           set -euo pipefail
           cargo build --locked --release -p amplihack-cli --example issue-2806-build-drive
-          python3 -m venv "$RUNNER_TEMP/issue-2806-tools"
-          "$RUNNER_TEMP/issue-2806-tools/bin/pip" install 'pre-commit==4.3.0'
       - name: Outside-in — complete build and private-copy drive (issue #2806)
         shell: bash
         run: |
           set -euo pipefail
-          qa_root=$(mktemp -d "$RUNNER_TEMP/issue-2806.XXXXXX")
-          chmod 700 "$qa_root"
-          mkdir -m 700 "$qa_root/home" "$qa_root/tmp"
-          sudo unshare --net -- setpriv --reuid="$(id -u)" --regid="$(id -g)" --clear-groups \
-            /usr/bin/env -i HOME="$qa_root/home" TMPDIR="$qa_root/tmp" PATH=/usr/bin:/bin \
-            "$GITHUB_WORKSPACE/target/release/examples/issue-2806-build-drive" run-all \
-              --evidence "$GITHUB_WORKSPACE/artifacts/issue-2806" \
-              --assets "$GITHUB_WORKSPACE" --amplihack "$(command -v amplihack)" \
-              --runner "$RECIPE_RUNNER_RS_PATH" --cargo "$(rustup which cargo)" \
-              --rustc "$(rustup which rustc)" \
-              --precommit "$RUNNER_TEMP/issue-2806-tools/bin/pre-commit" \
+          # No checkout, host home, credentials, sockets or environment enter
+          # the container. Only selected build inputs enter its image.
+          context=$(mktemp -d "$RUNNER_TEMP/issue-2806-image.XXXXXX")
+          mkdir -p "$context/tools" "$context/assets/amplifier-bundle/skills" \
+            "$context/assets/tests/gadugi" "$context/assets/claude-plugin"
+          cp target/release/examples/issue-2806-build-drive "$context/tools/"
+          cp "$(command -v amplihack)" "$context/tools/amplihack"
+          cp "$RECIPE_RUNNER_RS_PATH" "$context/tools/recipe-runner-rs"
+          cp -a "$(dirname "$(rustup which cargo)")/.." "$context/toolchain"
+          for area in recipes tools agents; do
+            cp -a "amplifier-bundle/$area" "$context/assets/amplifier-bundle/"
+          done
+          for area in qa-team merge-ready auto-drive-to-merge crusty-old-engineer; do
+            cp -a "amplifier-bundle/skills/$area" "$context/assets/amplifier-bundle/skills/"
+          done
+          cp -a tests/gadugi/issue-2806 "$context/assets/tests/gadugi/"
+          cp claude-plugin/recipe-runner.rev "$context/assets/claude-plugin/"
+          docker build --tag issue-2806-fixture --file tests/gadugi/issue-2806/Dockerfile "$context"
+          qa_root=$(mktemp -d "$RUNNER_TEMP/issue-2806-state.XXXXXX")
+          mkdir -p "$qa_root/home" "$qa_root/tmp" artifacts/issue-2806
+          sudo chown -R 65532:65532 "$qa_root" artifacts/issue-2806
+          sudo chmod 700 "$qa_root" "$qa_root/home" "$qa_root/tmp" artifacts/issue-2806
+          sentinel=$(mktemp "$RUNNER_TEMP/issue-2806-host-only.XXXXXX")
+          printf 'host-only boundary sentinel\n' > "$sentinel"
+          # No fallback: an unavailable container runtime fails release evidence.
+          docker run --rm --network none --user 65532:65532 --cap-drop ALL \
+            --security-opt no-new-privileges:true --read-only --pids-limit 512 \
+            --mount "type=bind,source=$qa_root,target=/state" \
+            --mount "type=bind,source=$GITHUB_WORKSPACE/artifacts/issue-2806,target=/evidence" \
+            issue-2806-fixture --evidence /evidence --assets /assets \
+              --amplihack /opt/fixture/amplihack --runner /opt/fixture/recipe-runner-rs \
+              --cargo /opt/toolchain/bin/cargo --rustc /opt/toolchain/bin/rustc \
+              --precommit /opt/precommit/bin/pre-commit --host-sentinel "$sentinel" \
               --tested-sha "$(git rev-parse HEAD)"
       - name: Retain build and drive evidence (issue #2806)
         if: always()

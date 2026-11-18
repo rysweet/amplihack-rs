@@ -64,7 +64,7 @@ fn execute() -> Result<()> {
         }
         Some("finalize-boundary") => driver::finalize_boundary(&args[2..]),
         _ => bail!(
-            "usage: issue-2806-build-drive run-all --evidence <directory> --assets <checkout> --amplihack <absolute binary> --runner <absolute binary> --cargo <absolute binary> --rustc <absolute binary> --precommit <absolute binary> --tested-sha <sha>"
+            "usage: issue-2806-build-drive run-all --evidence <directory> --assets <checkout> --amplihack <absolute binary> --runner <absolute binary> --cargo <absolute binary> --rustc <absolute binary> --precommit <absolute binary> --host-sentinel <host-only path> --tested-sha <sha>"
         ),
     }
 }

@@ -257,3 +257,66 @@ pub fn network_interfaces(devices: &str) -> Result<Vec<String>> {
     names.dedup();
     Ok(names)
 }
+
+/// Parse Linux's own boundary evidence; wrapper declarations do not suffice.
+pub fn validate_container_status(status: &str, mounts: &str) -> Result<()> {
+    let field = |name: &str| -> Result<&str> {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(name))
+            .map(str::trim)
+            .context("container status field absent")
+    };
+    for name in ["Uid:", "Gid:"] {
+        let ids: Vec<_> = field(name)?.split_whitespace().collect();
+        ensure!(
+            ids == ["65532"; 4],
+            "scenario requires restricted container identity"
+        );
+    }
+    for name in ["CapInh:", "CapPrm:", "CapEff:", "CapBnd:", "CapAmb:"] {
+        ensure!(
+            u64::from_str_radix(field(name)?, 16)? == 0,
+            "container retained capabilities: {name}"
+        );
+    }
+    ensure!(field("NoNewPrivs:")? == "1", "no_new_privs is disabled");
+    ensure!(
+        mounts.lines().any(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            fields.len() > 5 && fields[4] == "/" && fields[5].split(',').any(|flag| flag == "ro")
+        }),
+        "container root filesystem is not read-only"
+    );
+    Ok(())
+}
+
+pub fn observe_container_boundary(sentinel: &Path) -> Result<serde_json::Value> {
+    ensure!(
+        sentinel.is_absolute(),
+        "host sentinel must have an absolute path"
+    );
+    ensure!(
+        matches!(fs::symlink_metadata(sentinel), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
+        "host-only sentinel is visible inside the scenario"
+    );
+    let status = fs::read_to_string("/proc/self/status")?;
+    let mounts = fs::read_to_string("/proc/self/mountinfo")?;
+    validate_container_status(&status, &mounts)?;
+    let interfaces = network_interfaces(&fs::read_to_string("/proc/self/net/dev")?)?;
+    ensure!(
+        interfaces == ["lo"],
+        "external network interface is visible"
+    );
+    // No route exists in the network-none namespace, so this fails immediately.
+    ensure!(
+        std::net::TcpStream::connect("192.0.2.1:9").is_err(),
+        "external networking succeeded"
+    );
+    Ok(
+        serde_json::json!({"host_sentinel":sentinel,"host_sentinel_absent":true,
+        "restricted_uid":65532,"capabilities":"none","no_new_privs":true,
+        "root_read_only":true,"network_interfaces":interfaces,"external_connect_denied":true,
+        "process_status":status,"mountinfo":mounts}),
+    )
+}

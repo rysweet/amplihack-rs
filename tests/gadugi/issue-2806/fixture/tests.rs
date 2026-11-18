@@ -1288,3 +1288,24 @@ fn runtime_destinations_reject_traversal_sibling_prefix_and_symlink_escapes_befo
     assert!(!sibling.exists());
     assert!(!temp.path().join("missing-outside").exists());
 }
+
+#[test]
+fn container_boundary_requires_restricted_identity_no_capabilities_and_read_only_root() {
+    let status = "Uid: 65532 65532 65532 65532\nGid: 65532 65532 65532 65532\nCapInh: 0000000000000000\nCapPrm: 0000000000000000\nCapEff: 0000000000000000\nCapBnd: 0000000000000000\nCapAmb: 0000000000000000\nNoNewPrivs: 1\n";
+    let mounts = "1 0 0:1 / / ro,relatime - overlay overlay ro\n";
+    assert!(environment::validate_container_status(status, mounts).is_ok());
+    for bad in [
+        status.replace("65532", "0"),
+        status.replace("NoNewPrivs: 1", "NoNewPrivs: 0"),
+        status.replace("CapBnd: 0000000000000000", "CapBnd: 0000000000000001"),
+        status.replace("CapEff: 0000000000000000", "CapEff: 0000000000000001"),
+        String::new(),
+    ] {
+        assert!(environment::validate_container_status(&bad, mounts).is_err());
+    }
+    assert!(environment::validate_container_status(status, &mounts.replace("ro", "rw")).is_err());
+    let (_temp, fixture) = case();
+    let sentinel = fixture.root.join("host-sentinel");
+    fs::write(&sentinel, b"host").unwrap();
+    assert!(environment::observe_container_boundary(&sentinel).is_err());
+}

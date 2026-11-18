@@ -249,3 +249,14 @@ root before cloning, preparing worktrees, changing permissions or writing files.
 Validation rejects traversal, sibling prefixes and symlinks in existing ancestors,
 including the root itself; nonexistent suffixes undergo the same component checks.
 The same boundary covers rendered autodrive state and observed repository paths.
+
+CI now builds one ephemeral Docker image from selected test assets, tested
+executables, a pinned Rust toolchain and preinstalled system/Python tools.
+Scenarios execute as UID/GID 65532 with all capabilities dropped,
+`no_new_privs`, network `none`, and a read-only image. Only fresh fixture state
+and evidence directories are writable mounts. Host homes, checkout, credentials
+and sockets are excluded. There is no less-isolated fallback. Before scenarios,
+probes require an absent host-only sentinel, the restricted identity, zero
+capability sets, `NoNewPrivs: 1`, a read-only root mount, loopback-only interfaces
+and a failed external connection; raw status and mount observations are retained
+in isolation-boundary.json. Container scenarios remain CI-only.
