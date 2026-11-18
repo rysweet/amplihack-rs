@@ -236,7 +236,8 @@ fn a_newer_stamp_found_under_the_lock_stops_the_bootstrap_under_the_bypass() {
 
 /// AC8. A launch whose assets are complete decides that without the lock: it
 /// neither waits behind an unrelated install nor creates the lock file. The
-/// whole bootstrap runs, so a lock taken by any later step fails here too.
+/// whole bootstrap runs for a Claude launch, so a lock taken by one of its
+/// later steps fails here too. The Codex steps are not reached.
 #[test]
 fn a_launch_with_complete_assets_takes_no_lock_and_installs_nothing() {
     let tmp = tempfile::tempdir().unwrap();
@@ -253,9 +254,10 @@ fn a_launch_with_complete_assets_takes_no_lock_and_installs_nothing() {
     assert!(!lock.exists(), "precondition: no install lock file yet");
 
     let installs = Cell::new(0u32);
+    let mut notice = Vec::new();
     crate::freshness::with_provider("claude", || {
         ensure_framework_installed_using(
-            &mut Vec::new(),
+            &mut notice,
             framework_restage_needed_now,
             counting_installer(&installs),
         )
@@ -263,6 +265,7 @@ fn a_launch_with_complete_assets_takes_no_lock_and_installs_nothing() {
     .expect("a launch with complete assets must succeed");
 
     assert_eq!(installs.get(), 0, "complete assets were re-staged");
+    assert_eq!(String::from_utf8_lossy(&notice), "");
     assert!(
         !lock.exists(),
         "a launch with complete assets must not take the install lock"
@@ -270,8 +273,9 @@ fn a_launch_with_complete_assets_takes_no_lock_and_installs_nothing() {
 }
 
 /// `AMPLIHACK_SKIP_AUTO_INSTALL` stops startup self-heal only. The shared
-/// helper never reads it, so the bootstrap still re-stages missing assets
-/// under it, with the lock held and without a notice.
+/// helper never reads it, so the bootstrap's re-stage still installs missing
+/// assets under it, with the lock held and without a notice. This drives the
+/// re-stage unit; AC4's bypass case drives the whole bootstrap under it.
 #[test]
 fn the_bypass_does_not_stop_the_bootstrap_restage() {
     let tmp = tempfile::tempdir().unwrap();
