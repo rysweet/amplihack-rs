@@ -1,0 +1,84 @@
+name: issue-2783-recipe-guide-without-work-root
+description: >
+  Outside-in QA for issue #2783 (first piece). `amplihack recipe guide`
+  resolved a target only under `<work root>/runs/`, taken from
+  AMPLIHACK_WORK_ROOT in the caller's own environment, so a run started by a
+  factory lane with a work root of its own could not be addressed from an
+  ordinary shell. A run now records `run_dir` in its
+  `amplihack.recipe.log_pointer` line, and `recipe guide` reads that line back
+  from the recipe log directory, which is derived from HOME (or
+  `recipe.log_dir`) and does not depend on the work root. The scenario (via
+  tests/gadugi/run-issue-2783-guide-without-work-root-scenario.sh) starts a
+  one-step recipe through `amplihack recipe run` and the pinned recipe runner
+  with AMPLIHACK_WORK_ROOT set to a folder of its own, keeps the run's stderr
+  where a detached run keeps it, and then guides that run four ways from a
+  shell with no work-root variable: by session name, by run folder name, by
+  correlation id and by issue number. A fifth case checks that a target
+  matching nothing exits 1 and names the target, the log directory and the
+  runs directory. Everything runs under `env -i` with the scenario's own HOME;
+  the real ~/.claude and ~/.amplihack are never read or written, and nothing
+  reaches the network. This file is not wired into a CI job: the driver has
+  not been run yet, and the same contract is covered under CI by
+  crates/amplihack-cli/tests/issue_2783_recipe_guide_work_root.rs. Run it
+  through gadugi-test, or the script directly, before adding a job for it.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, recipe-guide, work-root, regression]
+  priority: high
+  issues: ["2783"]
+steps:
+  - name: run-issue-2783-guide-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2783-guide-without-work-root-scenario.sh
+    timeout: 880000
+  - name: all-guide-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: run-records-its-own-folder
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: run_dir_is_under_the_alternative_work_root - "
+  - name: session-name-resolves-without-the-work-root
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: by_session_name - "
+  - name: run-folder-name-resolves-without-the-work-root
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: by_run_folder_name - "
+  - name: correlation-id-resolves-without-the-work-root
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: by_correlation_id - "
+  - name: issue-number-resolves-without-the-work-root
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: by_issue_number - "
+  - name: an-unmatched-target-names-where-it-looked
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: unmatched_names_where - "
