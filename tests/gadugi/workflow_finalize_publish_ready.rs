@@ -4,40 +4,12 @@
 
 #[path = "../integration/workflow_finalize_publish_ready.rs"]
 mod contracts;
-use contracts::fixture::{Fixture, PUBLISH, READY, success};
-use std::fs;
+use contracts::fixture::Fixture;
 use std::path::{Path, PathBuf};
 
 fn recipe_through_binary(source: &Path, binary: &Path, runner: &Path) {
     let f = Fixture::new(source, binary);
-    f.audit(false);
-    let commands = [PUBLISH, READY].map(|id| f.step_body(id));
-    // Load each production command as data, rather than copying its shell body.
-    // The contract suite also executes these commands in their shipped order.
-    // CLI recipe defaults are transported as strings. Keep the worktree JSON
-    // as a string too: a mapping default is serialized as YAML, which the
-    // publication helper correctly rejects as non-JSON.
-    let doc = success(f.command("jq", &f.main).args(["-cn", "--arg", "publish"])
-        .arg(&commands[0]).args(["--arg", "ready"]).arg(&commands[1])
-        .args(["--arg", "wt"]).arg(f.worktree_json())
-        .args(["--arg", "repo"]).arg(&f.main)
-        .arg(r#"{name:"issue-2787-finalize",description:"Publication before readiness",version:"1.0.0",
-            context:{repo_path:$repo,worktree_setup:$wt,base_branch:"main",
-                pr_number:"7",pr_url:"https://github.com/acme/widget/pull/7",issue_number:"2787",step_recovery_dir:""},
-            steps:[{id:"step-20b-push-cleanup",type:"bash",command:$publish},
-                   {id:"step-21-pr-ready",type:"bash",command:$ready}]}"#)
-        .output().unwrap());
-    let recipe = f.main.join("issue-2787.yaml");
-    fs::write(&recipe, doc).unwrap();
-    success(
-        f.command(binary, &f.main)
-            .args(["recipe", "run"])
-            .arg(&recipe)
-            .env("RECIPE_RUNNER_RS_PATH", runner)
-            .output()
-            .unwrap(),
-    );
-    f.assert_ready();
+    contracts::recipe_through_built_binary(&f, runner);
 }
 
 fn main() {

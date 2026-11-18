@@ -100,6 +100,17 @@ impl Fixture {
                 "https://github.com/acme/widget.git",
             ],
         );
+        // Native recipe execution scrubs ambient Git config overrides. Keep
+        // the local-only transport mapping in this temporary repository too.
+        f.git(
+            &f.main,
+            &[
+                "config",
+                &format!("url.{}/.insteadOf", f.root.join("remotes").display()),
+                "https://github.com/",
+            ],
+        );
+        f.git(&f.main, &["config", "protocol.file.allow", "always"]);
         fs::write(f.main.join("README.md"), "baseline\n").unwrap();
         f.git(&f.main, &["add", "README.md"]);
         f.git(&f.main, &["commit", "-qm", "baseline"]);

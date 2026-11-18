@@ -10,6 +10,37 @@ use std::fs;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
+pub fn recipe_through_built_binary(f: &Fixture, runner: &Path) {
+    f.audit(false);
+    let commands = [PUBLISH, READY].map(|id| f.step_body(id));
+    // Load each production command as data, rather than copying its shell body.
+    // The contract suite also executes these commands in their shipped order.
+    // CLI recipe defaults are transported as strings. Keep the worktree JSON
+    // as a string too: a mapping default is serialized as YAML, which the
+    // publication helper correctly rejects as non-JSON.
+    let doc = success(f.command("jq", &f.main).args(["-cn", "--arg", "publish"])
+        .arg(&commands[0]).args(["--arg", "ready"]).arg(&commands[1])
+        .args(["--arg", "wt"]).arg(f.worktree_json())
+        .args(["--arg", "repo"]).arg(&f.main)
+        .arg(r#"{name:"issue-2787-finalize",description:"Publication before readiness",version:"1.0.0",
+            context:{repo_path:$repo,worktree_setup:$wt,base_branch:"main",
+                pr_number:"7",pr_url:"https://github.com/acme/widget/pull/7",issue_number:"2787",step_recovery_dir:""},
+            steps:[{id:"step-20b-push-cleanup",type:"bash",command:$publish},
+                   {id:"step-21-pr-ready",type:"bash",command:$ready}]}"#)
+        .output().unwrap());
+    let recipe = f.main.join("issue-2787.yaml");
+    fs::write(&recipe, doc).unwrap();
+    success(
+        f.command(&f.binary, &f.main)
+            .args(["recipe", "run"])
+            .arg(&recipe)
+            .env("RECIPE_RUNNER_RS_PATH", runner)
+            .output()
+            .unwrap(),
+    );
+    f.assert_ready();
+}
+
 pub fn unpushed_commit(f: &Fixture) {
     f.audit(true);
     let local = f.head(&f.pr);
@@ -1363,6 +1394,25 @@ mod tests {
         Fixture::new(&source, Path::new(env!("CARGO_BIN_EXE_amplihack")))
     }
 
+    fn pinned_runner() -> std::path::PathBuf {
+        let search = std::env::var_os("PATH").unwrap_or_default();
+        let runner = std::env::var_os("RECIPE_RUNNER_RS_PATH")
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_file())
+            .or_else(|| {
+                std::env::split_paths(&search)
+                    .map(|dir| dir.join("recipe-runner-rs"))
+                    .find(|path| path.is_file())
+            })
+            .expect("pinned recipe-runner-rs is required for behavioral recipe tests");
+        runner
+    }
+
+    #[test]
+    fn publication_through_cli_preserves_local_transport_and_worktree() {
+        super::recipe_through_built_binary(&fixture(), &pinned_runner());
+    }
+
     /// Run production commands, conditions and output bindings through the
     /// pinned runner. The audit and unrelated phases are fixture setup; their
     /// agents must not start. Assertions inspect remote objects and events.
@@ -1415,16 +1465,7 @@ mod tests {
         .unwrap();
         let path = f.root.join("publication-conditions.yaml");
         fs::write(&path, serde_yaml::to_string(&recipe).unwrap()).unwrap();
-        let search = std::env::var_os("PATH").unwrap_or_default();
-        let runner = std::env::var_os("RECIPE_RUNNER_RS_PATH")
-            .map(std::path::PathBuf::from)
-            .filter(|path| path.is_file())
-            .or_else(|| {
-                std::env::split_paths(&search)
-                    .map(|dir| dir.join("recipe-runner-rs"))
-                    .find(|path| path.is_file())
-            })
-            .expect("pinned recipe-runner-rs is required for behavioral recipe tests");
+        let runner = pinned_runner();
         let output = f
             .command(runner, &f.main)
             .arg(&path)

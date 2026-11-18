@@ -18,7 +18,6 @@
 #      branch, emit a WARNING (not ERROR), include `cwd=`, and NOT `exit 2`:
 #        - workflow-tdd.yaml      :: checkpoint-after-implementation
 #        - workflow-finalize.yaml :: step-20a-artifact-guard
-#        - workflow-finalize.yaml :: step-20b-push-cleanup
 #        - workflow-finalize.yaml :: step-22b-final-status
 #   B. Each softened site MUST still source + run the preflight enrichment in
 #      the helper-PRESENT branch (degrade only the missing case).
@@ -147,9 +146,12 @@ assert_softened() {
     fi
 }
 
+# Publication now lives in workflow_finalize_publish.sh. Its installed-helper,
+# missing-helper, artifact-check and hook-enabled commit behavior is exercised
+# by workflow_finalize_publish_ready integration contracts; do not inspect the
+# extracted command's source layout here.
 assert_softened "A-tdd"        "${TDD}"      "checkpoint-after-implementation"
 assert_softened "A-fin20a"     "${FINALIZE}" "step-20a-artifact-guard"
-assert_softened "A-fin20b"     "${FINALIZE}" "step-20b-push-cleanup"
 assert_softened "A-fin22b"     "${FINALIZE}" "step-22b-final-status"
 
 # ---------------------------------------------------------------------------
@@ -224,14 +226,10 @@ assert_contains "D-guard-tdd"  "${TDD}"      "checkpoint-after-implementation" \
     'amplihack hygiene artifact-guard' "tdd checkpoint keeps artifact-guard call"
 assert_contains "D-guard-20a"  "${FINALIZE}" "step-20a-artifact-guard" \
     'amplihack hygiene artifact-guard' "finalize 20a keeps artifact-guard call"
-assert_contains "D-guard-20b"  "${FINALIZE}" "step-20b-push-cleanup" \
-    'amplihack hygiene artifact-guard' "finalize 20b keeps artifact-guard call"
 
 # D2: git-identity helper retains its own exit 2.
 assert_contains "D-gitid-tdd"  "${TDD}"      "checkpoint-after-implementation" \
     'git identity helper not found.*exit[[:space:]]+2' "tdd checkpoint keeps git-identity exit-2"
-assert_contains "D-gitid-20b"  "${FINALIZE}" "step-20b-push-cleanup" \
-    'git identity helper not found.*exit[[:space:]]+2' "finalize 20b keeps git-identity exit-2"
 
 # D3: final-status helper retains its own exit 1.
 assert_contains "D-final-22b"  "${FINALIZE}" "step-22b-final-status" \
