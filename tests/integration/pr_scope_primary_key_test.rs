@@ -95,6 +95,7 @@ fn run_scope_env(
         .arg(helper_path("workflow_pr_scope.sh"))
         .args(args)
         .current_dir(dir)
+        .env("HOME", dir)
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
         .envs(envs.iter().copied())
         .output()
@@ -644,6 +645,42 @@ fn any_base_open_never_adopts_a_pr_whose_head_is_in_another_repository() {
         "a PR headed in other/repo must not match; stdout:\n{stdout}"
     );
     assert_eq!(scope_json(&stdout)["reason"], "no_scoped_pr", "{stdout}");
+}
+
+#[test]
+fn any_base_open_never_adopts_a_cross_repository_pr_with_matching_repository_metadata() {
+    let mut candidate = candidate_2784(615, "OPEN", "dev", "owner");
+    let (stdout, ok) = scope_2784(std::slice::from_ref(&candidate), &["--any-base-open"], &[]);
+    assert!(ok, "the unchanged candidate must be eligible; {stdout}");
+    assert_eq!(scope_json(&stdout)["number"], 615, "{stdout}");
+
+    // Keep the owner and repository eligible so only this predicate excludes it.
+    candidate["isCrossRepository"] = true.into();
+    let (stdout, ok) = scope_2784(&[candidate], &["--any-base-open"], &[]);
+    assert!(
+        !ok,
+        "a cross-repository PR must not match even with matching repository metadata; stdout:\n{stdout}"
+    );
+    assert_eq!(scope_json(&stdout)["reason"], "no_scoped_pr", "{stdout}");
+    assert_eq!(scope_json(&stdout)["ok"], false, "{stdout}");
+}
+
+#[test]
+fn any_base_open_never_adopts_a_pr_with_an_empty_base() {
+    let mut candidate = candidate_2784(615, "OPEN", "dev", "owner");
+    let (stdout, ok) = scope_2784(std::slice::from_ref(&candidate), &["--any-base-open"], &[]);
+    assert!(ok, "the unchanged candidate must be eligible; {stdout}");
+    assert_eq!(scope_json(&stdout)["baseRefName"], "dev", "{stdout}");
+
+    // All identity and state fields remain eligible; only the base is missing.
+    candidate["baseRefName"] = "".into();
+    let (stdout, ok) = scope_2784(&[candidate], &["--any-base-open"], &[]);
+    assert!(
+        !ok,
+        "a PR with an unknown base must not match; stdout:\n{stdout}"
+    );
+    assert_eq!(scope_json(&stdout)["reason"], "no_scoped_pr", "{stdout}");
+    assert_eq!(scope_json(&stdout)["ok"], false, "{stdout}");
 }
 
 #[test]

@@ -1,3 +1,9 @@
+---
+title: Workflow Delivery Inputs Reference
+description: Base selection, existing pull request adoption, and strict delivery inputs.
+doc_type: reference
+---
+
 # Workflow Delivery Inputs Reference
 
 > [Home](../index.md) > Reference > Workflow Delivery Inputs
@@ -161,11 +167,23 @@ A pull request into another base is considered only when:
   checkout's `origin`. A pull request from a fork that uses the same branch
   name is not considered.
 
-The issue number, head commit, title prefix and creation time are not checked
-for it. They break ties only among pull requests into the resolved base. Two
-open pull requests from one branch have the same head commit, so these fields
+These eligibility conditions apply independently. A candidate with
+`isCrossRepository: true` is excluded even when its repository metadata
+otherwise matches. A candidate with an empty `baseRefName` is also excluded;
+the helper does not substitute the resolved base for missing metadata. If
+there are no other candidates, either case returns `no_scoped_pr`.
+
+In discovery mode, the issue number, head commit, title prefix and creation
+time are not requirements for a unique match. They break ties among pull
+requests into the resolved base. Two open pull requests from one branch have
+the same head commit, so these fields
 could not tell them apart, and a check that set the only candidate aside would
 lead straight to the second pull request this rule prevents.
+
+An explicitly named pull request (`--pr-number` or `--pr-url`) keeps the
+existing authoritative validation, including supplied issue and head-SHA
+checks. `--any-base-open` does not widen that lookup. See the
+[scope helper selection rules](scoped-workflow-closure.md#pr-scope-helper).
 
 Step-16 adds no base check of its own for that base. Finalize checks it:
 step-21 and step-22b read the recorded base and pass it through
@@ -216,17 +234,19 @@ and `base_branch` empty, step-16 checks `pr_repository` and
 request on another base by the same rules. A strict caller that needs the pull
 request on a fixed base sets `base_branch`.
 
-Example: in `octo/example`, `origin/HEAD` names `main`, `origin/dev` exists,
-and branch `feat/x` already has open pull request #615 into `dev`. A run with
-`base_branch` empty reaches step-16, which makes no `gh pr create` call and
-writes this publish result:
+Example: the project's
+[isolated publish scenario](../../tests/gadugi/scenarios/issue-2784-existing-pr-on-other-base.yaml)
+uses repository identity `owner/repo` and branch `feat/issue-2784-qa`.
+`origin/HEAD` names `main`, `origin/dev` exists, and the stub `gh` returns open
+pull request #615 into `dev`. With `base_branch` empty, step-16 makes no
+`gh pr create` call and writes this expected publish result:
 
 ```json
 {
   "state": "existing-open-pr",
   "legacy_state": "existing-open-pr",
   "terminal_status": "success",
-  "pr_url": "https://github.com/octo/example/pull/615",
+  "pr_url": "https://github.com/owner/repo/pull/615",
   "pr_number": "615",
   "branch_diff_status": "has-diff",
   "message": "existing open PR #615 targets dev; the resolved base was main; kept dev",
