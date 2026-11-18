@@ -1396,7 +1396,7 @@ mod tests {
 
     fn pinned_runner() -> std::path::PathBuf {
         let search = std::env::var_os("PATH").unwrap_or_default();
-        let runner = std::env::var_os("RECIPE_RUNNER_RS_PATH")
+        std::env::var_os("RECIPE_RUNNER_RS_PATH")
             .map(std::path::PathBuf::from)
             .filter(|path| path.is_file())
             .or_else(|| {
@@ -1404,8 +1404,7 @@ mod tests {
                     .map(|dir| dir.join("recipe-runner-rs"))
                     .find(|path| path.is_file())
             })
-            .expect("pinned recipe-runner-rs is required for behavioral recipe tests");
-        runner
+            .expect("pinned recipe-runner-rs is required for behavioral recipe tests")
     }
 
     #[test]
