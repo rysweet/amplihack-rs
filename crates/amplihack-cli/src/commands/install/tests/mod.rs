@@ -20,6 +20,9 @@ mod issue_1449_partial_registration;
 mod issue_1526_implicit_downgrade;
 mod issue_1526_implicit_mode;
 mod issue_1526_launch_bootstrap;
+// Issue #1582: the launch bootstrap re-checks under the install lock.
+#[cfg(unix)]
+mod issue_1582_bootstrap_lock;
 #[cfg(unix)]
 mod issue_1745_launch_repair_statusline;
 // Issue #1699: the real-profile-root guard also runs in this binary, where

@@ -2,7 +2,7 @@
 title: Recipe Run and Auto-Drive Checkout Isolation
 description: Where recipe runs and auto-drive reviews execute, what they copy from the caller, and how they release what they own.
 doc_type: reference
-last_updated: 2026-11-17
+last_updated: 2026-11-18
 ---
 
 # Recipe run and auto-drive checkout isolation
@@ -414,6 +414,16 @@ stamp.
 
 Judging agents start in the launch directory and read the checkout by
 explicit path and SHA. Every verdict records `reviewed_head_sha`.
+For Codex `exec`/`e` steps, amplihack adds `--skip-git-repo-check` only when
+existing live ownership validation identifies that exact execution directory
+as the generation's launch directory. This lets Codex start outside Git
+without loading the PR checkout's instruction files. Steps in ordinary or
+linked checkouts, including the review checkout itself, receive no automatic
+bypass. Missing or invalid ownership evidence withholds the flag without
+adding a launch error. Codex configuration and project trust settings are
+unchanged. See the
+[owned launch directory rules](launch-flag-injection.md#owned-review-launch-directories).
+
 `amplihack internal review-release` removes the generation, under the same
 ownership rules as [execution release](#ownership-and-release). See
 [Review generations](auto-drive-to-merge.md#review-generations).

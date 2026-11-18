@@ -458,6 +458,68 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
 /// [`ensure_framework_installed`], writing the #1526 refusal warning to
 /// `notice` (stderr in the binary).
 pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W) -> Result<()> {
+    ensure_framework_installed_using(
+        notice,
+        framework_restage_needed_now,
+        repair_framework_assets,
+    )
+}
+
+/// Whether the staged framework assets need a re-stage, read from disk on
+/// every call (issue #1582): the answer before the install lock and the
+/// answer under it can differ, so neither is ever reused for the other.
+fn framework_restage_needed_now() -> Result<bool> {
+    let staging_dir = staging_claude_dir()?;
+    let staging_exists = staging_dir.exists();
+    let missing = if staging_exists {
+        missing_framework_paths(&staging_dir)?
+    } else {
+        Vec::new()
+    };
+    Ok(framework_restage_needed(staging_exists, &missing))
+}
+
+/// The launch bootstrap's re-stage (issue #1582).
+///
+/// `needed` is asked first without the install lock, so a launch whose assets
+/// are complete neither waits behind another install nor creates the lock
+/// file. A "yes" there only leads to the lock: under it, the shared helper
+/// re-reads the stamp, runs Guard #2 and asks `needed` again, so a launch that
+/// waited for another launch's re-stage finds nothing to do. `install` runs
+/// only on that second "yes", with the lock held.
+fn restage_framework_if_needed<W, N, I>(
+    notice: &mut W,
+    mut needed: N,
+    install: I,
+) -> Result<crate::self_heal::LockedRestage>
+where
+    W: std::io::Write,
+    N: FnMut() -> Result<bool>,
+    I: FnOnce() -> Result<()>,
+{
+    if !needed()? {
+        return Ok(crate::self_heal::LockedRestage::NotNeeded);
+    }
+    crate::self_heal::restage_under_install_lock(
+        notice,
+        move |_stamp: Option<&str>| needed(),
+        |_notice: &mut W| {
+            println!("🔧 Bootstrapping amplihack framework assets...");
+            install()
+        },
+    )
+}
+
+/// The launch bootstrap, with the re-stage check and the installer injected so
+/// tests can drive it without a real install.
+fn ensure_framework_installed_using<W, N, I>(notice: &mut W, needed: N, install: I) -> Result<()>
+where
+    W: std::io::Write,
+    N: FnMut() -> Result<bool>,
+    I: FnOnce() -> Result<()>,
+{
+    use crate::self_heal::LockedRestage;
+
     // Issue #1526: this bootstrap is an implicit installer too. A binary older
     // than the installed stamp must not stage, top up commands or repair
     // settings.json over the newer install.
@@ -475,20 +537,17 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
         return Ok(());
     }
 
-    let staging_dir = staging_claude_dir()?;
-    let staging_exists = staging_dir.exists();
-    let missing = if staging_exists {
-        missing_framework_paths(&staging_dir)?
-    } else {
-        Vec::new()
-    };
     // Issue #254: framework assets are now bundled in the amplihack-rs source
     // tree.  The legacy upstream freshness check is removed;
     // framework updates are delivered via amplihack-rs binary updates instead.
-    if framework_restage_needed(staging_exists, &missing) {
-        println!("🔧 Bootstrapping amplihack framework assets...");
-        repair_framework_assets()?;
+
+    // Issue #1582: a newer install that finished while this launch waited for
+    // the install lock stops the bootstrap here, as Guard #1 does above.
+    match restage_framework_if_needed(notice, needed, install)? {
+        LockedRestage::NewerInstalled => return Ok(()),
+        LockedRestage::NotNeeded | LockedRestage::Installed => {}
     }
+    let staging_dir = staging_claude_dir()?;
 
     // Issue #1344: `~/.claude/commands/amplihack/` lives outside `claude_dir`,
     // so `missing_framework_paths` never sees it — and must not, per the
