@@ -408,6 +408,10 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
         );
         hosting.set_checks(1, Checks::Green)?;
         driver::save(
+            &case.evidence.join("outside-in-observation.json"),
+            &json!({"head":pr.head_sha,"api":api,"bytes":bytes,"fixes":0}),
+        )?;
+        driver::save(
             &case.evidence.join("green-transition.json"),
             &json!({"head":pr.head_sha,
             "cause":"explicit build check completion after published-head API and byte verification"}),
@@ -425,11 +429,39 @@ pub fn respond(case: &IsolatedCase, task: &str) -> Result<String> {
             pr.head_sha, pr.number
         )
     } else if task.starts_with("Outside-in testing validation check.") {
-        "Outside-in evidence retained: cargo public API assertion and byte-exact answer file check."
-            .into()
-    } else if task.starts_with("Produce a concise execution summary.")
-        || task.starts_with("# Agentic Finalization Narrative")
-    {
+        let pr = build_delivery(case, &repo)?;
+        let measured: Value = serde_json::from_slice(&fs::read(
+            case.evidence.join("outside-in-observation.json"),
+        )?)?;
+        ensure!(
+            measured["head"] == pr.head_sha,
+            "outside-in evidence targets another head"
+        );
+        for scenario in ["api", "bytes"] {
+            let receipt = PathBuf::from(
+                measured[scenario]["exit_receipt"]
+                    .as_str()
+                    .context("outside-in exit receipt absent")?,
+            );
+            let relative = receipt
+                .strip_prefix(&case.root)
+                .context("outside-in receipt escapes case")?;
+            ensure!(
+                fs::read(super::environment::confined_path(&case.root, relative)?)? == b"0\n",
+                "outside-in scenario {scenario} did not pass"
+            );
+        }
+        format!(
+            "OUTSIDE-IN TESTING VALIDATION REPORT\nExecution mode: single\nPR(s) found: https://github.com/fixture/project/pull/{}\nWorkstream: answer\nqa-team strategy: Rust consumer API and byte-exact file checks\nStep 13 results documented: YES (PR Validation records both scenarios)\nChosen validation strategy documented: YES\nTest scenarios executed: 2\nVERDICT: PASS\nOUTSIDE_IN_VALIDATION: PASSED",
+            pr.number
+        )
+    } else if task.starts_with("Produce a concise execution summary.") {
+        let pr = build_delivery(case, &repo)?;
+        format!(
+            "Corrected answer() to return 42 and published the verified implementation at {}. PR remains open: https://github.com/fixture/project/pull/{}. Outside-in testing: PASSED. Goal status: ACHIEVED. No remaining implementation work; no adaptive strategy was needed.",
+            pr.head_sha, pr.number
+        )
+    } else if task.starts_with("# Agentic Finalization Narrative") {
         let prs = host(case)?.open_prs()?;
         format!(
             "Observed open PRs: {}. Completed check artifacts are retained separately.",

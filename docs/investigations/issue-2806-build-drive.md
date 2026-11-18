@@ -208,3 +208,24 @@ uses a separate prose contract; it is now supported with fresh local/origin/PR
 observations and a nonempty green required-check read, shared with first-round
 reflection and terminal adjudication. The unsupported prompt remained a fatal
 harness error in that run; no expected-failure allowance was added.
+
+## Complete control result and final review
+
+Run 44386929063 at `e6ae5f81cf477050a5776d62b4ca43bb159e5e0a`, artifact
+14466583260, passed both complete workflow controls: real smart-orchestrator
+success and real auto-drive matched-head merge with fresh MERGED readback.
+There are 15 PASS, 11 substantiated XFAIL and six explicitly unexecuted
+assertions, with no harness/fixture errors. All 31 local contract tests and
+all-file pre-commit checks pass. No complete scenario ran on this host.
+
+Final contract review made smart validation consume the recorded published-head
+API/file check exit receipts and emit OUTSIDE_IN_VALIDATION: PASSED. Its summary
+likewise names the observed delivery, PR, testing and goal status. The final
+contribution remains open for deputy review and merge. Subsequent changes must
+preserve the issue/comment authority, independent cases and required successful
+controls, exact-commit CI/release admission, narrow behavior-backed allowances,
+private env -i homes and local origins, exact recorded PID ownership, ordinary
+pushed checkpoint commits and hooks. Do not run this scenario on a factory host,
+access real user configuration, introduce waits/retries/timeout increases or
+production guards, change versions, rewrite contribution history, or merge this
+PR from the implementation step.

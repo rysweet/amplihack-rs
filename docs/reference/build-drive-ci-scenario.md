@@ -295,3 +295,33 @@ at `97d56c6194071548551470bd0fc837be7609595c` supplies
 only its bare registration and detached launch checkout, and every entry gate
 reports no-worktree without a fixture error. Only the resolution assertion is
 allowed; review, retention and merge downstream remain explicitly unexecuted.
+
+## Successful whole-workflow evidence
+
+CI [run 44386929063](https://github.com/rysweet/amplihack-rs/actions/runs/44386929063)
+at `e6ae5f81cf477050a5776d62b4ca43bb159e5e0a` produced artifact
+`14466583260`. Both `build.complete` and `drive-control.complete` are PASS:
+the real smart-orchestrator reports success, committed answer content matches
+the bare-origin branch and one open PR, and the private-copy drive records the
+production matched-head merge followed by a fresh MERGED readback.
+
+The report contains 15 PASS, 11 issue-scoped XFAIL, six explicitly unexecuted
+assertions, and zero harness errors. The allowances comprise three #2343
+finalization classifications, one #2802 worktree-resolution assertion, and seven
+#2785 preservation/reporting assertions. The unexecuted assertions are the four
+missing-worktree downstream checks and the two cleanup continuation checks;
+they supply no passing coverage. Independent successful controls remain mandatory.
+
+Local verification includes 31 unit and fixture-integration tests, formatting,
+all-target Clippy with warnings denied, and pre-commit on all files. No Gadugi
+scenario or complete driver was run on the implementation host. The final
+reflection, outside-in validation and summary use actual Git/hosting observations
+and retained command exit receipts; they do not fabricate downstream completion.
+
+When running the YAML entry point in an already prepared CI namespace, stage the
+example executable on PATH and supply its inputs through
+`AMPLIHACK_2806_ASSETS`, `AMPLIHACK_2806_AMPLIHACK`, `AMPLIHACK_2806_RUNNER`,
+`AMPLIHACK_2806_CARGO`, `AMPLIHACK_2806_RUSTC`, `AMPLIHACK_2806_PRECOMMIT`, and
+`AMPLIHACK_2806_TESTED_SHA`. The unconditional CI step supplies the equivalent
+explicit arguments. All executable inputs are resolved before isolation;
+the driver downloads and installs nothing.
