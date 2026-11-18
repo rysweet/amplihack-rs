@@ -52,6 +52,22 @@ fn main() {
         .canonicalize()
         .expect("pinned runner prerequisite");
     let cases: &[(&str, fn(&contracts::fixture::Fixture))] = &[
+        (
+            "discovery_secondary_mismatches_enter_recovery",
+            contracts::discovery_secondary_mismatches_enter_recovery,
+        ),
+        (
+            "final_read_mismatches_enter_recovery",
+            contracts::final_read_mismatches_enter_recovery,
+        ),
+        (
+            "hostile_final_metadata_is_protected",
+            contracts::hostile_final_metadata_is_protected,
+        ),
+        (
+            "valid_discovery_only_readiness_succeeds",
+            contracts::valid_discovery_only_readiness_succeeds,
+        ),
         ("unpushed_commit", contracts::unpushed_commit),
         ("uncommitted_audit", contracts::uncommitted_audit),
         (

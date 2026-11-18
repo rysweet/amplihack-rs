@@ -441,6 +441,190 @@ pub fn identity_and_secondary_filters_still_apply(f: &Fixture) {
     }
 }
 
+// Execute the shipped essential step, including its recovery wrapper. Return
+// the new complete report so tail truncation cannot hide missing exclusions.
+fn readiness_rejection(f: &Fixture, discovery: bool) -> String {
+    let before = files_under(&f.root.join("runtime"));
+    // Each case needs a fresh recovery decision and evidence, even in a loop.
+    let recovery = f.root.join("recovery");
+    fs::remove_dir_all(&recovery).unwrap();
+    fs::create_dir(&recovery).unwrap();
+    let evidence_path = f.root.join("recovery-evidence.json");
+    let _ = fs::remove_file(&evidence_path);
+    fs::write(f.root.join("events"), "").unwrap();
+    let mut command = f.step(READY);
+    command
+        .env("RECIPE_VAR_step_recovery_dir", &recovery)
+        .env("EXPECTED_PR_TITLE_PREFIX", "Fix:")
+        .env("WORKFLOW_STARTED_AT", "2026-11-18T01:23:00Z");
+    if discovery {
+        command
+            .env_remove("RECIPE_VAR_pr_number")
+            .env_remove("RECIPE_VAR_pr_url");
+    }
+    let o = command.output().unwrap();
+    assert_eq!(o.status.code(), Some(81), "{}", show(&o));
+    let evidence = fs::read_to_string(evidence_path).expect("recovery must receive evidence");
+    assert!(
+        evidence.contains("final PR validation failed"),
+        "{evidence}"
+    );
+    let events = fs::read_to_string(f.root.join("events")).unwrap();
+    assert!(events.contains("final-pr-read"), "{events}");
+    assert!(events.contains("recovery-agent"), "{events}");
+    f.assert_no_mutation();
+    let reports = files_under(&f.root.join("runtime"));
+    let report_path = reports
+        .iter()
+        .find(|p| {
+            !before.contains(p)
+                && fs::read_to_string(p)
+                    .is_ok_and(|s| s.contains("authoritative readiness validation"))
+        })
+        .unwrap_or_else(|| panic!("missing final-validation report: {}", show(&o)));
+    assert!(
+        evidence.contains(report_path.to_str().unwrap()),
+        "{evidence}"
+    );
+    let report = fs::read_to_string(report_path).unwrap();
+    for data in [&show(&o), &evidence, &report] {
+        assert!(!data.contains('\u{1b}'), "raw terminal control: {data:?}");
+        assert!(
+            !data.contains("secret-user") && !data.contains("secret-pass"),
+            "credential leaked: {data}"
+        );
+    }
+    report
+}
+
+pub fn discovery_secondary_mismatches_enter_recovery(f: &Fixture) {
+    f.audit(true);
+    success(f.publish());
+    let original = fs::read(f.root.join("candidate.json")).unwrap();
+    // The first case reproduces the review's sole-candidate bypass. Independent
+    // cases ensure no one working discriminator conceals another missing check.
+    for (filter, checks) in [
+        (
+            r#".title="Unrelated change" | .body="Fixes #9999" | .createdAt="2020-01-01T00:00:00Z""#,
+            &["issue token", "work-item", "title prefix", "created-after"][..],
+        ),
+        (
+            r#".title="Fix: unrelated" | .body="unrelated""#,
+            &["issue token", "work-item"][..],
+        ),
+        (r#".title="Other prefix #2787""#, &["title prefix"][..]),
+        (
+            r#".createdAt="2020-01-01T00:00:00Z""#,
+            &["created-after"][..],
+        ),
+        ("del(.title)", &["title prefix"][..]),
+        ("del(.createdAt)", &["created-after"][..]),
+        (r#"del(.title,.body)"#, &["issue token", "title prefix"][..]),
+    ] {
+        fs::write(f.root.join("candidate.json"), &original).unwrap();
+        f.patch_candidate(filter);
+        let report = readiness_rejection(f, true);
+        for check in checks {
+            assert!(
+                report.contains(&format!("\"check\": \"{check}\"")),
+                "{filter}: {report}"
+            );
+        }
+        for value in ["expected", "observed", PR_URL] {
+            assert!(report.contains(value), "{report}");
+        }
+    }
+}
+
+pub fn final_read_mismatches_enter_recovery(f: &Fixture) {
+    f.audit(true);
+    success(f.publish());
+    for discovery in [false, true] {
+        for (filter, check) in [
+            (".number=8", "PR number"),
+            (r#".url="https://github.com/acme/widget/pull/8""#, "PR URL"),
+            (r#".url="https://github.com/other/widget/pull/7""#, "PR URL"),
+            (r#".headRefName="other-branch""#, "head branch"),
+            (r#".baseRefName="dev""#, "base branch"),
+            (r#".headRepositoryOwner.login="other""#, "repository"),
+            (".isCrossRepository=true", "cross repository"),
+            (r#".headRefOid="stale-head""#, "head SHA"),
+            (
+                r#".title="Fix: unrelated" | .body="unrelated""#,
+                "issue token",
+            ),
+            (r#".title="Other prefix #2787""#, "title prefix"),
+            (r#".createdAt="2020-01-01T00:00:00Z""#, "created-after"),
+            ("del(.title)", "title prefix"),
+            ("del(.createdAt)", "created-after"),
+            (".createdAt={}", "creation time type"),
+            ("del(.number)", "PR number"),
+            ("del(.url)", "PR URL"),
+            ("del(.headRefName)", "head branch"),
+            ("del(.headRepositoryOwner)", "repository"),
+            ("del(.isCrossRepository)", "cross repository flag"),
+            ("del(.state)", "state"),
+            ("del(.isDraft)", "draft flag"),
+        ] {
+            fs::write(f.root.join("final-filter.jq"), filter).unwrap();
+            let report = readiness_rejection(f, discovery);
+            assert!(
+                report.contains(&format!("\"check\": \"{check}\"")),
+                "{filter}: {report}"
+            );
+        }
+    }
+}
+
+pub fn hostile_final_metadata_is_protected(f: &Fixture) {
+    f.audit(true);
+    success(f.publish());
+    for field in [
+        "url",
+        "headRepositoryOwner.login",
+        "headRepository.name",
+        "headRefName",
+        "baseRefName",
+        "title",
+        "body",
+        "createdAt",
+        "headRefOid",
+    ] {
+        let filter = format!(
+            r#".{field}="\u001b[31m$(touch injected) https://secret-user:secret-pass@example.invalid/""#
+        );
+        // Body contributes to an exclusion only when neither text field has
+        // the configured issue token. Keep the scope read entirely valid.
+        let filter = if field == "body" {
+            format!(r#"{filter} | .title="Fix: unrelated""#)
+        } else {
+            filter
+        };
+        fs::write(f.root.join("final-filter.jq"), filter).unwrap();
+        let report = readiness_rejection(f, false);
+        assert!(report.contains("REDACTED"), "{field}: {report}");
+        assert!(report.contains("untrusted"), "{report}");
+        assert!(!f.pr.join("injected").exists());
+        assert!(!f.main.join("injected").exists());
+    }
+}
+
+pub fn valid_discovery_only_readiness_succeeds(f: &Fixture) {
+    f.audit(true);
+    success(f.step(PUBLISH).output().unwrap());
+    success(
+        f.step(READY)
+            .env_remove("RECIPE_VAR_pr_number")
+            .env_remove("RECIPE_VAR_pr_url")
+            .env("EXPECTED_PR_TITLE_PREFIX", "Fix:")
+            .env("WORKFLOW_STARTED_AT", "2026-11-18T01:23:00Z")
+            .output()
+            .unwrap(),
+    );
+    f.assert_ready();
+    assert!(!f.root.join("recovery-evidence.json").exists());
+}
+
 pub fn empty_lookup_is_failure(f: &Fixture) {
     f.audit(true);
     success(f.publish());
@@ -670,6 +854,10 @@ mod tests {
         divergence_preserves_history,
         remote_fast_forward_keeps_audit,
         identity_and_secondary_filters_still_apply,
+        discovery_secondary_mismatches_enter_recovery,
+        final_read_mismatches_enter_recovery,
+        hostile_final_metadata_is_protected,
+        valid_discovery_only_readiness_succeeds,
         empty_lookup_is_failure,
         diagnostics_report_all_exclusions,
         hostile_candidate_text_is_data,

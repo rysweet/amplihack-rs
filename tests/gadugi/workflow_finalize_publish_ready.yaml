@@ -4,7 +4,9 @@ description: >
   the built binary, a pinned runner, a stateful gh stub, linked worktrees and
   local bare remotes under a private HOME. Covers committed and uncommitted
   audit work, invocation from main, aliases, exact PR validation, exclusion
-  diagnostics and recovery. CI Install Smoke Test runs this Rust driver;
+  diagnostics and recovery, including discovery-only secondary filters and
+  hostile metadata or identity changes in the final PR read. CI Install Smoke
+  Test runs this Rust driver;
   do not run this scenario on a factory host.
 version: "1.0"
 config:
@@ -59,3 +61,23 @@ assertions:
     params:
       target: stdout
       expected: "PASS: recipe_through_built_binary"
+  - name: discovery-rejection-and-recovery
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: discovery_secondary_mismatches_enter_recovery"
+  - name: final-read-rejection-and-recovery
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: final_read_mismatches_enter_recovery"
+  - name: protected-final-diagnostics
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: hostile_final_metadata_is_protected"
+  - name: valid-discovery-readiness
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: valid_discovery_only_readiness_succeeds"

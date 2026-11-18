@@ -314,6 +314,16 @@ case "${1:-} ${2:-}" in
     head="$(git -C "$FIXTURE/remotes/acme/widget.git" rev-parse refs/heads/feat/issue-2787-publication)"
     [ ! -f "$FIXTURE/stale" ] || head="$(cat "$FIXTURE/prior-head")"
     json="$(jq --arg head "$head" '.headRefOid=$head' "$FIXTURE/candidate.json")"
+    # Scoped reads include --repo. Only the readiness boundary's fresh read
+    # receives this patch, so tests prove selection cannot validate it for us.
+    final_read=true
+    for arg in "$@"; do [ "$arg" != --repo ] || final_read=false; done
+    if [ "$2" = view ] && [ "$final_read" = true ]; then
+      printf 'final-pr-read\n' >> "$FIXTURE/events"
+      if [ -f "$FIXTURE/final-filter.jq" ]; then
+        json="$(printf '%s' "$json" | jq -f "$FIXTURE/final-filter.jq")"
+      fi
+    fi
     if [ "$2" = list ]; then json="[$json]"; fi
     filter=""; prev=""
     for arg in "$@"; do

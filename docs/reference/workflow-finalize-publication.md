@@ -64,7 +64,7 @@ These are internal recipe helpers under `amplifier-bundle/tools/`.
 | `RECIPE_VAR_worktree_setup` | The complete JSON output from worktree setup, including an absolute `worktree_path`. Required for publication and readiness. |
 | `base_branch` | Intended PR base, passed to readiness as `--base`. Empty uses the existing [delivery-input resolution](workflow-delivery-inputs.md#how-finalize-finds-the-base). |
 | `pr_number`, `pr_url`, `pr_publish_result` | Persisted PR identity from recipe context and publish outputs. An explicit identity must agree with repository and branch scope. |
-| `issue_number` and configured tracking metadata | Retain the scope helper's existing authoritative filters and discovery tie-breakers. |
+| `issue_number` | A numeric issue supplies both issue-token and work-item checks; local tracking references do not filter PRs. These checks are mandatory for readiness, including discovery-only runs. |
 | `WORKFLOW_STARTED_AT`, `RECIPE_STARTED_AT`, `TASK_STARTED_AT` | First nonempty value, in that order, supplies the creation-time discriminator as `--created-after`. |
 | `EXPECTED_PR_TITLE_PREFIX`, `PR_EXPECTED_TITLE_PREFIX` | First nonempty value supplies the optional `--expected-pr-title-prefix` discriminator. |
 | `step_recovery_dir` | Private directory initialized by the recipe for recovery evidence and records. |
@@ -134,14 +134,21 @@ worktree does not count as successful publication.
 ## Readiness contract
 
 `workflow_pr_ready.sh` reads HEAD after publication, from the same canonical
-worktree. It retains scoped selection and the identity recheck immediately
-before mutation. Validation includes repository, supplied PR number and URL,
-mapped head branch, intended base, and the exact published commit.
+worktree. Scoped selection discovers a candidate using the shared helper's
+existing rules. Readiness pins the selected PR number and canonical repository
+URL, then fetches fresh metadata for that PR. Candidate discovery alone does
+not establish readiness, even when exactly one branch/base candidate exists.
 
-For an explicitly named PR, every configured secondary discriminator remains
-a hard filter: issue and work-item references, creation time, title prefix,
-recipe-run ID, tree ID, and workstream ID. Discovery keeps its existing matching
-rules; finding a candidate does not bypass exact readiness validation.
+Immediately before any readiness mutation or successful terminal handling,
+readiness validates the fresh response with the shared scope predicates. It
+requires the pinned number and URL, repository, mapped head branch, intended
+base, exact current HEAD, valid state and draft flag, and same-repository status.
+Every configured secondary discriminator is a hard requirement: numeric issue
+and work-item references, creation time, and title prefix. Missing fields needed
+by a configured check fail validation. This applies equally to recorded PRs and
+runs with neither a recorded PR number nor URL. The shared discovery helper's
+behavior for other consumers, including its extra tracking discriminators,
+remains unchanged.
 
 Readiness passes neither `--allow-head-behind` nor `--allow-head-ahead`. A PR
 initially one commit behind succeeds when publication sends the missing commit
@@ -187,7 +194,11 @@ The internal `amplihack orch helper pr-scope-report` command uses recovery's
 existing redaction and descriptor-relative file creation for reports.
 Reports use private file permissions and do not follow symlinks. Candidate
 text is marked as untrusted evidence, rendered with terminal control characters
-escaped, and passed through existing redaction before persistence. Credentials,
+escaped, and passed through existing redaction before persistence. Final-read
+validation uses the same protected renderer and report creation. Failures list
+each failed check with expected and observed values; response URLs, repositories,
+branches, and secondary metadata never enter raw error messages. Recovery gets
+the report path even when its inline evidence is truncated. Credentials,
 authenticated URLs, and unrelated environment contents are excluded.
 
 ## Recovery contract
@@ -225,8 +236,14 @@ The readiness stub independently checks the remote HEAD and audit contents
 before accepting a mutation. Coverage includes committed and uncommitted work,
 invocation from `main`, aliases, initially stale and persistently stale PR heads,
 identity and metadata mismatches, multiple exclusions, hostile candidate text,
-missing worktrees, rejected pushes, divergence, and recovery handoffs. Recipe
-event traces verify publication precedes readiness's HEAD read.
+missing worktrees, rejected pushes, divergence, and recovery handoffs. Additional
+recipe-step contracts cover discovery-only secondary mismatches together and
+independently, final-read identity and metadata changes, missing required fields,
+and hostile metadata introduced only after scoped selection. These assert
+recovery routing, protected diagnostics, and no readiness mutation. A valid
+discovery-only run also exercises successful readiness with all configured
+checks enabled. Recipe event traces verify publication precedes readiness's
+HEAD read.
 
 The qa-team scenario at `tests/gadugi/workflow_finalize_publish_ready.yaml` and
 its Rust driver at `tests/gadugi/workflow_finalize_publish_ready.rs` exercise
