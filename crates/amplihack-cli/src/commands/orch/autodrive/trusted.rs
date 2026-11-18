@@ -84,15 +84,8 @@ impl LaunchBundle {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
         use std::io::Write;
-        let mut file = options.open(&temp)?;
+        let mut file = amplihack_utils::secure_files::create_private_file(&temp)?;
         file.write_all(serde_json::to_string(auth)?.as_bytes())?;
         file.sync_all()?;
         fs::rename(&temp, &path)?;
@@ -123,20 +116,19 @@ impl LaunchBundle {
             builder.permissions(fs::Permissions::from_mode(0o700));
         }
         let temp = builder.tempdir()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700))?;
+        }
         let dest = temp.path().join("amplifier-bundle");
         copy_tree(&bundle, &dest)?;
         auth.bind_policy(bundle_digest(&dest)?);
         let invocation = serde_json::to_string(auth)?;
         let auth_path = temp.path().join("invocation.json");
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
         use std::io::Write;
-        options.open(&auth_path)?.write_all(invocation.as_bytes())?;
+        amplihack_utils::secure_files::create_private_file(&auth_path)?
+            .write_all(invocation.as_bytes())?;
         let recipes = dest.join("recipes");
         for entry in fs::read_dir(&recipes)? {
             let path = entry?.path();

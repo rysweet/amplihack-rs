@@ -280,14 +280,9 @@ fn cargo_lock_refusal(dir: &Path) -> Option<String> {
 /// truncated). `Ok(None)` when another process holds it.
 pub(crate) fn try_lock(path: &Path) -> Result<Option<fs::File>> {
     use std::os::fd::AsRawFd;
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .custom_flags(libc::O_NOFOLLOW)
-        .mode(0o600)
-        .open(path)
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).truncate(false);
+    let file = amplihack_utils::secure_files::open_private_created(path, options)
         .with_context(|| format!("cannot open {}", path.display()))?;
     // SAFETY: the fd is valid for the life of `file`.
     let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };

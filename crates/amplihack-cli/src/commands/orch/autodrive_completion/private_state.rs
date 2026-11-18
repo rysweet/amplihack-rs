@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 #[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Serialize, Deserialize)]
@@ -131,12 +131,15 @@ pub fn prepare(args: Prepare) -> Result<()> {
     builder.prefix(".completion-");
     #[cfg(unix)]
     builder.permissions(std::fs::Permissions::from_mode(0o700));
-    let root = builder.tempdir_in(&args.state_dir)?.keep();
+    let allocation = builder.tempdir_in(&args.state_dir)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(allocation.path(), std::fs::Permissions::from_mode(0o700))?;
+    let root = allocation.keep();
     let trusted = root.join("driver");
     let output = root.join("output");
     for path in [&trusted, &output] {
         #[cfg(unix)]
-        std::fs::DirBuilder::new().mode(0o700).create(path)?;
+        amplihack_utils::secure_files::create_private_directory(path)?;
         #[cfg(not(unix))]
         std::fs::create_dir(path)?;
     }

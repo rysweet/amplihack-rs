@@ -327,6 +327,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
 - [Why a Recipe Run Does Not Trace Git Commands](concepts/no-git-command-tracing.md) - Why the ptrace observer and the Git-command journal were removed, what the private clone does instead, and what a tamper-resistant record would require (#2738)
 - [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, recovery decisions, and [work-root permissions](reference/recipe-command.md#work-root-permissions), including private creation and actionable storage diagnostics
+- [Private-State Creation API](reference/private-state-creation.md) - Current creation behavior, proposed exact-mode guarantees, private constructors and the runner's umask limitation
 
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution

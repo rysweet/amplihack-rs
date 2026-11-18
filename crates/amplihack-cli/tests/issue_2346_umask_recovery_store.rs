@@ -38,8 +38,10 @@ use crate::isolated_amplihack::HOME_GUARD_ENV;
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::private_tempdir::{private_dir_all, private_tempdir_in};
 use crate::support::scratch_base::scratch_base;
+use std::ffi::OsStr;
 use std::fs::{self, DirBuilder};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -446,4 +448,150 @@ fn recipe_run_creates_missing_private_work_root_components_under_umask_0002() {
         "nonprivate intermediate state:\n{}",
         open.join("\n")
     );
+}
+
+#[test]
+fn launch_identifies_final_and_intermediate_symlinks_before_target_mode_advice() {
+    for intermediate in [false, true] {
+        let f = Fixture::new(0o700, "{}");
+        let actual = f.root.join("actual");
+        dir_with_mode(&actual, 0o755);
+        let link = f.root.join("alias");
+        symlink(&actual, &link).unwrap();
+        let (work, target) = if intermediate {
+            let target = actual.join("work");
+            dir_with_mode(&target, 0o755);
+            (link.join("work"), target)
+        } else {
+            (link.clone(), actual.clone())
+        };
+        let out = f.run(f.command().env("AMPLIHACK_WORK_ROOT", &work));
+        let stderr = String::from_utf8(out.stderr.clone()).unwrap();
+        assert!(!out.status.success() && !f.step_ran(), "{}", text(&out));
+        for part in [
+            link.display().to_string(),
+            actual.display().to_string(),
+            "symbolic link".into(),
+        ] {
+            assert!(stderr.contains(&part), "missing {part:?}: {}", text(&out));
+        }
+        assert!(
+            !stderr.contains("chmod"),
+            "misleading target correction: {stderr}"
+        );
+        assert!(
+            !stderr.contains("requires 0700"),
+            "target mode inspected: {stderr}"
+        );
+        assert_eq!(mode_of(&target), "0755");
+        assert_eq!(mode_of(&actual), "0755");
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+}
+
+#[test]
+fn launch_attributes_creation_denial_to_the_existing_parent_without_changing_it() {
+    // Root bypasses directory access bits. The unprivileged test must exercise
+    // a real EACCES, rather than infer one from mode bits.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: root bypasses directory creation permissions");
+        return;
+    }
+    let f = Fixture::new(0o700, "{}");
+    let parent = f.root.join("locked");
+    dir_with_mode(&parent, 0o555);
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            fs::set_permissions(&self.0, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+    let _restore = Restore(parent.clone());
+    let work = parent.join("missing/work");
+    assert_eq!(
+        fs::create_dir(parent.join("probe")).unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    let out = f.run(f.command().env("AMPLIHACK_WORK_ROOT", &work));
+    let stderr = String::from_utf8(out.stderr.clone()).unwrap();
+    assert!(!out.status.success() && !f.step_ran(), "{}", text(&out));
+    for part in [
+        parent.display().to_string(),
+        "mode 0555".into(),
+        format!(
+            "observed uid {}",
+            fs::symlink_metadata(&parent).unwrap().uid()
+        ),
+        format!("chmod u+wx {}", word(&parent)),
+        "runner: Permission denied".into(),
+        "mode bits alone do not establish its cause".into(),
+    ] {
+        assert!(stderr.contains(&part), "missing {part:?}: {}", text(&out));
+    }
+    assert_eq!(mode_of(&parent), "0555");
+    assert!(!parent.join("missing").exists());
+}
+
+#[test]
+fn launch_diagnostics_preserve_unusual_path_bytes_with_safe_distinct_escapes() {
+    let cases: &[(&[u8], &str)] = &[
+        (b"control\twork", r"control\twork"),
+        (b"control\nwork", r"control\nwork"),
+        (b"control\x1bwork", r"control\x1bwork"),
+        (br"control\twork", r"control\\twork"),
+        (b"control\xffwork", r"control\xffwork"),
+        (br"control\xffwork", r"control\\xffwork"),
+    ];
+    for ancestor in [false, true] {
+        let mut seen = std::collections::HashSet::new();
+        for (raw, expected) in cases {
+            let f = Fixture::new(0o700, "{}");
+            let odd = f.root.join(OsStr::from_bytes(raw));
+            dir_with_mode(&odd, 0o775);
+            let work = if ancestor {
+                odd.join("work")
+            } else {
+                odd.clone()
+            };
+            let out = f.run(f.command().env("AMPLIHACK_WORK_ROOT", &work));
+            let stderr = String::from_utf8(out.stderr.clone()).unwrap();
+            assert!(!out.status.success() && !f.step_ran(), "{}", text(&out));
+            let shown = format!("{}/{expected}", f.root.display());
+            assert!(stderr.contains(&shown), "missing {shown:?}: {stderr}");
+            if let Ok(raw) = std::str::from_utf8(raw)
+                && raw.chars().any(char::is_control)
+            {
+                assert!(!stderr.contains(raw), "raw path controls in {stderr:?}");
+            }
+            assert!(
+                !stderr.chars().any(|ch| ch.is_control() && ch != '\n'),
+                "{stderr:?}"
+            );
+            assert!(
+                !stderr.contains('\u{fffd}') && !stderr.contains("control?work"),
+                "{stderr}"
+            );
+            assert!(
+                !stderr.contains("`chmod"),
+                "escaped paths need verbal corrections: {stderr}"
+            );
+            assert!(
+                stderr.contains(if ancestor {
+                    "remove group write"
+                } else {
+                    "remove its group and other access"
+                }),
+                "{stderr}"
+            );
+            assert!(seen.insert(expected), "distinct paths rendered identically");
+            assert_eq!(mode_of(&odd), "0775");
+            assert_eq!(fs::read_dir(&odd).unwrap().count(), 0);
+        }
+    }
 }

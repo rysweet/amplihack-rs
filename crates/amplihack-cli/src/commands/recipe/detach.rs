@@ -29,7 +29,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -414,10 +414,7 @@ pub(crate) fn log_dir() -> Result<PathBuf> {
 /// Create `dir` (and missing parents) with mode 0700. An existing directory
 /// must be owned by this user, and loses group and other access.
 fn ensure_private_dir(dir: &Path) -> Result<()> {
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
+    amplihack_utils::secure_files::create_private_directories(dir)
         .with_context(|| format!("cannot create the log directory {}", dir.display()))?;
     let meta = fs::metadata(dir)?;
     // SAFETY: geteuid has no preconditions and cannot fail.
@@ -433,12 +430,7 @@ fn ensure_private_dir(dir: &Path) -> Result<()> {
 /// Create a new file with mode 0600. Never opens an existing file or follows
 /// a symlink planted at `path`.
 fn create_private(path: &Path) -> Result<File> {
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
+    amplihack_utils::secure_files::create_private_file(path)
         .with_context(|| format!("cannot create {}", path.display()))
 }
 

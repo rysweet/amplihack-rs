@@ -96,11 +96,39 @@ permission bits `0700`. Existing roots at `0755`, `0750` and `0775` stop
 `recipe run` with their exact path, actual mode and a `chmod 700` correction;
 permissions are left unchanged. Every folder above the work root must have
 no group or other write bit, or have the sticky bit, as `/tmp` does. Private
-directory creation requests `0700` and private file creation requests `0600`,
-including under umask `0002`. Ordinary Git checkout contents retain repository
-permissions. See
+creation finalizes new directories to `0700` and new files to `0600` before
+return or publication. The pinned runner still requests modes without restoring
+owner access removed by restrictive masks, so recovery storage under those
+masks requires a separate runner-source change. Umask `0002` preserves owner
+access. See the [creation API and platform limits](../reference/private-state-creation.md).
+Ordinary Git checkout contents retain
+repository permissions. See
 [Work root permissions](../reference/recipe-command.md#work-root-permissions)
 for the full rules and the messages.
+
+### Configure a private work root
+
+For a new custom root under your home on Linux:
+
+```bash
+install -d -m 700 -- "$HOME/amplihack-work"
+export AMPLIHACK_WORK_ROOT="$HOME/amplihack-work"
+stat -c '%a' -- "$AMPLIHACK_WORK_ROOT"
+# Output: 700
+```
+
+Later `amplihack recipe run` invocations in this shell use that root. Under
+umask `0002`, no global umask change is needed. Precreating the root does not
+restore owner permissions on storage created later under an owner-removing
+mask. Setting the variable also moves newly created
+worktrees under the work root; set `AMPLIHACK_WORK_ROOT_EXPLICIT=0` to keep
+the default worktree location. Every ancestor must still meet the
+[ancestor rules](../reference/recipe-command.md#folders-above-the-work-root).
+
+For an existing root, inspect it before applying the printed `chmod 700`
+correction, especially if other users could previously write there. Correct
+only the named directory; recursively changing a checkout's permissions
+would alter repository files and executable bits.
 
 ## Where a run writes
 

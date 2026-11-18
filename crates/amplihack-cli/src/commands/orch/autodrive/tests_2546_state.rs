@@ -161,7 +161,7 @@ fn isolated_2546(
     let parent = if std::env::var_os(UMASK_2546_CHILD).is_some() {
         None
     } else {
-        Some(tempfile::tempdir().unwrap())
+        Some(crate::test_support::private_tempdir())
     };
     let mut env: Vec<(&str, Option<std::ffi::OsString>)> = Vec::new();
     if let Some(dir) = &parent {
@@ -335,7 +335,7 @@ printf '{}'
 fn run_shell_writers_2546(state: &std::path::Path, mask: libc::mode_t) -> Vec<String> {
     use std::os::unix::fs::PermissionsExt;
     let tools = tools_2546();
-    let stub_dir = tempfile::tempdir().unwrap();
+    let stub_dir = crate::test_support::private_tempdir();
     let stub = stub_dir.path().join("amplihack-stub");
     std::fs::write(&stub, CONTEXT_STUB_2546).unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -601,7 +601,7 @@ fn issue_2546_state_folder_0775_is_repaired_and_logged() {
 fn issue_2546_outside_state_tree_stays_strict() {
     use crate::commands::orch::autodrive_completion::secure_fs::{self, Scope};
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::private_tempdir();
     let state = dir.path().join("autodrive-state");
     std::fs::create_dir(&state).unwrap();
     assert!(
@@ -1275,7 +1275,7 @@ fn store_error_2546(root: &std::path::Path) -> String {
 #[test]
 fn issue_2546_completion_part_outside_state_root_stays_strict() {
     use crate::commands::orch::autodrive_completion::secure_fs::{self, Scope};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::private_tempdir();
     let x = dir.path().join("x");
     make_2546(&x, None, 0o755);
     make_2546(&x.join(".completion-y"), None, 0o700);

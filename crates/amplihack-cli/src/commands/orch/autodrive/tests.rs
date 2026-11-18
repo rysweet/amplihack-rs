@@ -172,7 +172,7 @@ fn explicit_state_directory_must_be_absolute_and_free_of_traversal() {
 
 #[test]
 fn bound_state_directory_is_serialised_and_survives_private_invocation_read() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::private_tempdir();
     let store_root = dir.path().join("invocation");
     let store = EvidenceStore::create(&store_root).unwrap();
     let mut auth = authorization("true", "false");
@@ -205,7 +205,7 @@ fn each_resume_has_fresh_authority() {
 #[test]
 fn state_is_private_and_existing_files_are_never_overwritten() {
     use std::os::unix::fs::PermissionsExt;
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::private_tempdir();
     let root = dir.path().join("state");
     let store = EvidenceStore::create(&root).unwrap();
     assert_eq!(
@@ -232,7 +232,7 @@ fn state_is_private_and_existing_files_are_never_overwritten() {
 #[test]
 fn state_rejects_symlinks_traversal_and_unsafe_permissions() {
     use std::os::unix::{fs::PermissionsExt, fs::symlink};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::private_tempdir();
     let root = dir.path().join("autodrive-state");
     let store = EvidenceStore::create(&root).unwrap();
     let outside = dir.path().join("secret.json");
@@ -338,7 +338,7 @@ fn already_merged_preparation_requires_fresh_bound_platform_confirmation() {
 
 #[test]
 fn report_ignores_merge_output_when_the_state_directory_is_not_the_assigned_one() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::test_support::private_tempdir();
     let assigned = dir.path().join("assigned");
     let mut auth = authorization("false", "false");
     auth.bind_state_dir(assigned.clone());

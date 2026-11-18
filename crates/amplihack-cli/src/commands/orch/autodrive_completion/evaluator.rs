@@ -157,6 +157,8 @@ pub fn run(
     #[cfg(unix)]
     builder.permissions(std::fs::Permissions::from_mode(0o700));
     let context_dir = builder.tempdir_in(&state.state_dir)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(context_dir.path(), std::fs::Permissions::from_mode(0o700))?;
     for (key, value) in context {
         if matches!(key.as_str(), "loop_clean_token" | "loop_round_verdict") {
             cmd.arg("-c").arg(format!("{key}={value}"));

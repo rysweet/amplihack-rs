@@ -558,14 +558,17 @@ unsafe ownership, permissions, links, and object types. Artifact copying
 rejects devices, sockets, FIFOs, and unsafe links, confines destinations to
 the admitted attempt, and hashes copied bytes while preventing substitution.
 
-Creation explicitly requests `0700` for directories and `0600` for files.
-Masks that preserve owner permissions, including `0002`, leave these modes
-unchanged. A mask that removes owner permissions can leave new state
-unusable; explicit private creation does not restore those permissions.
+Amplihack's private creation helpers finalize new-object modes through
+descriptors before return or publication, independently of umask. The pinned
+runner creates its own recovery storage separately: it requests private modes
+but does not restore owner access removed by restrictive masks. Umask `0002`
+preserves those modes. Exact-mode recovery creation under owner-removing masks
+requires a runner-source change; the pin and admission policy are unchanged.
+See the [creation API and platform limits](private-state-creation.md).
 
 The store is reached through the work root, so the folders above it are
 checked too. The runner opens the path one component at a time from `/`,
-without following links, and creates any missing folder at `0700`. Each
+without following links, and requests `0700` for any missing folder. Each
 folder above the work root must be a folder, not a link, with no group or
 other write bit, or with the sticky bit set. The work root must be owned by
 the effective user with permission bits `0700`; special bits follow the
@@ -575,7 +578,7 @@ checks the path and names inspectable failures. An existing root at `0755`,
 diagnostic includes the path, actual mode and correction:
 
 ```text
-work root /data/amplihack-work has mode 0755; fix it with `chmod 700 /data/amplihack-work`
+work root /data/amplihack-work has mode 0755, requires 0700; fix it with `chmod 700 /data/amplihack-work`
 ```
 
 A root or ancestor is never automatically changed. Writable ancestors name
@@ -603,8 +606,9 @@ belongs to another user can be renamed or replaced by that user even at
 `0755`. Keep the work root under folders owned by you or by root.
 
 Private state callers explicitly select private construction for
-`AtomicJsonFile`, `FileLock` and `AtomicFlag`. Missing parent components use
-`0700`; data, flags, lock files and publication temporary files use `0600`.
+`AtomicJsonFile`, `AtomicCounter`, `FileLock` and `AtomicFlag`. They finalize
+`0700` for missing parent components and `0600` for new data, flags,
+lock files and publication temporary files before return or publication.
 Generic constructors retain their existing storage contracts, and private
 construction does not change existing parent permissions. Shared helpers
 preserve their separate strict and legacy contracts; recovery roots and

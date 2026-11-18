@@ -37,7 +37,7 @@ pub enum Ran {
 
 #[cfg(unix)]
 fn spool(dir: &Path) -> Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let path = dir.join(format!(".spool-{}", uuid::Uuid::new_v4().simple()));
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -47,6 +47,7 @@ fn spool(dir: &Path) -> Result<File> {
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&path)
         .with_context(|| format!("cannot create spool file in {}", dir.display()))?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     std::fs::remove_file(&path)
         .with_context(|| format!("cannot unlink spool file {}", path.display()))?;
     Ok(file)

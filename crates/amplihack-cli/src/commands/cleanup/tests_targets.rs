@@ -13,6 +13,7 @@
 //!   `CACHEDIR.TAG` is a regular file starting with the signature.
 
 use super::*;
+use crate::test_support::private_tempdir;
 use std::fs;
 
 const SIGNATURE: &str = "Signature: 8a477f597d28d172789f06886806bc55";
@@ -26,7 +27,7 @@ fn tag_constant_starts_with_standard_signature() {
 
 #[test]
 fn create_tagged_target_dir_writes_standard_signature() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let target = tmp.path().join("a/b/target");
     create_tagged_target_dir(&target).unwrap();
     let tag = fs::read_to_string(target.join("CACHEDIR.TAG")).unwrap();
@@ -36,7 +37,7 @@ fn create_tagged_target_dir_writes_standard_signature() {
 
 #[test]
 fn create_tagged_target_dir_is_idempotent_and_keeps_contents() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let target = tmp.path().join("target");
     create_tagged_target_dir(&target).unwrap();
     fs::write(target.join("keep"), "x").unwrap();
@@ -47,7 +48,7 @@ fn create_tagged_target_dir_is_idempotent_and_keeps_contents() {
 
 #[test]
 fn is_tagged_rejects_missing_wrong_or_symlinked_tags() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let missing = tmp.path().join("missing");
     fs::create_dir(&missing).unwrap();
     assert!(!is_tagged(&missing));
@@ -99,7 +100,7 @@ fn shell_hash(path: &Path) -> String {
 }
 
 fn canonical_tmp() -> (tempfile::TempDir, PathBuf) {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let root = fs::canonicalize(tmp.path()).unwrap();
     (tmp, root)
 }
@@ -291,7 +292,7 @@ fn checkout_hash_handles_unusual_path_bytes() {
 #[test]
 fn create_tagged_target_dir_makes_folders_0700_and_the_tag_0600() {
     use std::os::unix::fs::PermissionsExt;
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let target = tmp.path().join("a/b/target");
     create_tagged_target_dir(&target).unwrap();
     // Octal text, so a failure reads `0755` rather than `493`.

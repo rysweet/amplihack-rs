@@ -14,8 +14,8 @@
 //!
 //! The specification is `docs/reference/recipe-command.md#work-root-permissions`.
 
-use crate::commands::install::paths::sanitize_path;
 use anyhow::{Context, Result, bail};
+use std::fmt::Write;
 use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::fs::MetadataExt;
@@ -124,6 +124,30 @@ fn inspect(path: &Path) -> std::result::Result<Option<fs::Metadata>, Fault> {
     }
 }
 
+/// Walk existing components in order without following links. Stop at the
+/// first missing component or blocking entry; return the final directory's
+/// metadata only when the whole path exists. Observations never authorize access.
+pub(crate) fn inspect_components(
+    dir: &Path,
+    mut visit: impl FnMut(&Path, &fs::Metadata),
+) -> std::result::Result<Option<fs::Metadata>, Fault> {
+    let mut current = PathBuf::new();
+    let mut last = None;
+    for component in dir.components() {
+        match component {
+            Component::RootDir => current.push("/"),
+            Component::Normal(name) if current.is_absolute() => current.push(name),
+            _ => return Err(Fault::NonNormal { path: dir.into() }),
+        }
+        let Some(meta) = inspect(&current)? else {
+            return Ok(None);
+        };
+        visit(&current, &meta);
+        last = Some(meta);
+    }
+    Ok(last)
+}
+
 /// Every folder from `/` down to `dir`, as written, that the runner's rule
 /// for folders above the work root stops, outermost first.
 ///
@@ -134,33 +158,16 @@ fn inspect(path: &Path) -> std::result::Result<Option<fs::Metadata>, Fault> {
 /// `0700`).
 pub(crate) fn path_faults(dir: &Path) -> Vec<Fault> {
     let mut faults = Vec::new();
-    let mut current = PathBuf::new();
-    for component in dir.components() {
-        match component {
-            Component::RootDir => current.push("/"),
-            Component::Normal(name) if current.is_absolute() => current.push(name),
-            _ => {
-                faults.push(Fault::NonNormal {
-                    path: dir.to_path_buf(),
-                });
-                return faults;
-            }
+    let result = inspect_components(dir, |path, meta| {
+        if !ancestor_mode_ok(meta.mode()) {
+            faults.push(Fault::Writable {
+                path: path.into(),
+                mode: meta.mode(),
+            });
         }
-        match inspect(&current) {
-            Ok(None) => return faults,
-            Ok(Some(meta)) => {
-                if !ancestor_mode_ok(meta.mode()) {
-                    faults.push(Fault::Writable {
-                        path: current.clone(),
-                        mode: meta.mode(),
-                    });
-                }
-            }
-            Err(fault) => {
-                faults.push(fault);
-                return faults;
-            }
-        }
+    });
+    if let Err(fault) = result {
+        faults.push(fault);
     }
     faults
 }
@@ -243,6 +250,7 @@ pub(crate) fn recovery_diagnostics(
     root: &Path,
     run: Option<&Path>,
     identity: Option<&str>,
+    error: &anyhow::Error,
 ) -> String {
     let mut faults = root.parent().map(path_faults).unwrap_or_default();
     let mut files = Vec::new();
@@ -283,11 +291,52 @@ pub(crate) fn recovery_diagnostics(
     if !faults.is_empty() {
         files.insert(0, describe(root, &faults));
     }
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == ErrorKind::PermissionDenied)
+    }) && let Some(parent) = creation_parent_diagnostic(root)
+    {
+        files.push(parent);
+    }
     if files.is_empty() {
         "no path problem observed after the runner error; filesystem state may have changed".into()
     } else {
         files.join("\n")
     }
+}
+
+/// Evidence about the nearest existing parent of a missing root after EACCES.
+/// Mode bits are observations, not proof of the cause (ACLs and other access
+/// controls can also deny creation). Never walk beyond a link or lookup failure.
+fn creation_parent_diagnostic(root: &Path) -> Option<String> {
+    let mut parent = None;
+    if inspect_components(root, |path, meta| {
+        parent = Some((path.to_path_buf(), meta.clone()));
+    })
+    .ok()?
+    .is_some()
+    {
+        return None;
+    }
+    let (path, meta) = parent?;
+    let correction = if meta.uid() == euid() && meta.mode() & 0o300 != 0o300 {
+        command_or_words(
+            "chmod u+wx",
+            &path,
+            "give this parent owner write and search access",
+        )
+    } else {
+        "choose a location where you can create directories; check ACLs and other access controls"
+            .into()
+    };
+    Some(format!(
+        "existing parent {} of the missing work root has observed uid {} (effective uid {}) and mode {:04o}; creation requires write and search access; {correction}. These observations may explain the permission denial; mode bits alone do not establish its cause",
+        display_path(&path),
+        meta.uid(),
+        euid(),
+        meta.mode() & 0o7777,
+    ))
 }
 
 fn diagnostic_directory(path: &Path, faults: &mut Vec<Fault>) -> bool {
@@ -315,11 +364,11 @@ fn diagnostic_file(path: &Path) -> Option<String> {
         Err(error) => {
             return Some(format!(
                 "{} cannot be inspected ({error})",
-                sanitize_path(path)
+                display_path(path)
             ));
         }
     };
-    let shown = sanitize_path(path);
+    let shown = display_path(path);
     let problem = if meta.file_type().is_symlink() {
         "is a symbolic link; use a regular private file".into()
     } else if !meta.is_file() {
@@ -351,18 +400,42 @@ fn diagnostic_file(path: &Path) -> Option<String> {
     Some(format!("{shown} {problem}"))
 }
 
+/// Terminal-safe recovery path display that preserves identifying bytes.
+/// Backslashes are doubled so literal escape spellings remain distinguishable.
+/// Valid readable Unicode is kept; invalid UTF-8 bytes use hexadecimal escapes.
+pub(crate) fn display_path(path: &Path) -> String {
+    let mut shown = String::new();
+    for chunk in path.as_os_str().as_encoded_bytes().utf8_chunks() {
+        for ch in chunk.valid().chars() {
+            match ch {
+                '\\' => shown.push_str("\\\\"),
+                '\n' => shown.push_str("\\n"),
+                '\r' => shown.push_str("\\r"),
+                '\t' => shown.push_str("\\t"),
+                ch if ch.is_ascii_control() => write!(shown, "\\x{:02x}", ch as u32).unwrap(),
+                ch if ch.is_control() => write!(shown, "\\u{{{:x}}}", ch as u32).unwrap(),
+                ch => shown.push(ch),
+            }
+        }
+        for byte in chunk.invalid() {
+            write!(shown, "\\x{byte:02x}").unwrap();
+        }
+    }
+    shown
+}
+
 /// `path` as one shell word, for a suggested command or an
 /// `AMPLIHACK_WORK_ROOT` value: unchanged when every byte is a letter, a
 /// digit or one of `/._+,:@%=-`, otherwise single-quoted with `'` written as
 /// `'\''`. `None` for a path that is not valid UTF-8 or holds a control
-/// character, whose printed form cannot be pasted back.
+/// character or backslash, whose escaped display is not a literal shell path.
 pub(crate) fn shell_word(path: &Path) -> Option<String> {
     debug_assert!(
         path.is_absolute(),
         "only absolute paths are suggested, so a word never starts with `-`, `~` or `=`"
     );
     let text = path.to_str()?;
-    if text.chars().any(char::is_control) {
+    if text.chars().any(char::is_control) || text.contains('\\') {
         return None;
     }
     let plain = text
@@ -406,7 +479,7 @@ fn resolved_root(link: &Path, rest: &Path) -> String {
 
 fn target_text(target: Option<&Path>) -> String {
     match target {
-        Some(target) => sanitize_path(target),
+        Some(target) => display_path(target),
         None => "a target that cannot be read".to_string(),
     }
 }
@@ -469,7 +542,7 @@ fn reason(place: Place, fault: &Fault) -> &'static str {
 /// One line about a fault on the work root itself, in the form of the work
 /// root validation's messages.
 pub(crate) fn root_line(root: &Path, fault: &Fault) -> String {
-    let shown = sanitize_path(root);
+    let shown = display_path(root);
     match fault {
         Fault::Link { target, .. } => format!(
             "work root {shown} is a symbolic link to {}; the recovery store needs a folder, not a \
@@ -488,9 +561,9 @@ pub(crate) fn root_line(root: &Path, fault: &Fault) -> String {
             "work root {shown} has mode {:04o}, requires 0700{}; {}",
             mode & 0o7777,
             if mode & 0o022 != 0 {
-                "; writable by group or others"
+                format!("; {}", writable_words(*mode).0)
             } else {
-                ""
+                String::new()
             },
             command_or_words(
                 "chmod 700",
@@ -500,7 +573,8 @@ pub(crate) fn root_line(root: &Path, fault: &Fault) -> String {
         ),
         Fault::Inspect { error, .. } => format!("work root {shown} cannot be inspected ({error})"),
         Fault::Writable { mode, .. } => format!(
-            "work root {shown} is writable by group or others (mode {:04o})",
+            "work root {shown} is {} (mode {:04o})",
+            writable_words(*mode).0,
             mode & 0o7777
         ),
         Fault::NonNormal { .. } => format!(
@@ -511,7 +585,7 @@ pub(crate) fn root_line(root: &Path, fault: &Fault) -> String {
 
 /// One indented line about a fault above the work root or on `runs/`.
 fn detail_line(root: &Path, place: Place, fault: &Fault) -> String {
-    let shown = sanitize_path(fault.path());
+    let shown = display_path(fault.path());
     match fault {
         Fault::Writable { path, mode } => {
             let (bits, command, words) = writable_words(*mode);
@@ -522,9 +596,18 @@ fn detail_line(root: &Path, place: Place, fault: &Fault) -> String {
             )
         }
         Fault::NotPrivate { path, mode } => format!(
-            "  {shown} has mode {:04o}; {}",
+            "  {shown} has mode {:04o}, requires 0700{}; {}",
             mode & 0o7777,
-            command_or_words("chmod 700", path, "give it mode 0700")
+            if mode & 0o022 != 0 {
+                format!("; {}", writable_words(*mode).0)
+            } else {
+                String::new()
+            },
+            command_or_words(
+                "chmod 700",
+                path,
+                "give it mode 0700 and remove its group and other access"
+            )
         ),
         Fault::NotOwned { uid, .. } => {
             format!(
@@ -556,7 +639,7 @@ fn detail_line(root: &Path, place: Place, fault: &Fault) -> String {
 /// the reasons, then one indented line per folder with its mode and fix. A
 /// fault on the work root alone is given as the work root validation gives
 /// its messages, on one line.
-fn describe(root: &Path, faults: &[Fault]) -> String {
+pub(crate) fn describe(root: &Path, faults: &[Fault]) -> String {
     if let [fault] = faults
         && matches!(fault, Fault::NonNormal { .. })
     {
@@ -576,7 +659,7 @@ fn describe(root: &Path, faults: &[Fault]) -> String {
     }
     let mut lines = vec![format!(
         "cannot open the recovery store under work root {}: {}",
-        sanitize_path(root),
+        display_path(root),
         reasons.join("; ")
     )];
     for fault in faults {

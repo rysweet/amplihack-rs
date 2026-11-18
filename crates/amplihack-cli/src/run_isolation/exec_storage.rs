@@ -23,7 +23,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 pub(crate) const CLAIM: &str = "claim.json";
@@ -283,7 +283,7 @@ fn live_dependant(stable: &Path) -> Result<Option<PathBuf>> {
 /// Creates `stable` exclusively and writes its claim record. `false` when
 /// it already exists.
 fn create(stable: &Path, owner_run_dir: &Path) -> Result<bool> {
-    match fs::DirBuilder::new().mode(0o700).create(stable) {
+    match amplihack_utils::secure_files::create_private_directory(stable) {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::AlreadyExists => return Ok(false),
         Err(error) => {
@@ -293,12 +293,7 @@ fn create(stable: &Path, owner_run_dir: &Path) -> Result<bool> {
     }
     let record = serde_json::json!({"schema_version": 1, "run_dir": owner_run_dir});
     let path = stable.join(CLAIM);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)
+    let mut file = amplihack_utils::secure_files::create_private_file(&path)
         .with_context(|| format!("cannot create {}", path.display()))?;
     file.write_all(&serde_json::to_vec(&record)?)
         .and_then(|()| file.sync_all())
@@ -315,10 +310,7 @@ fn private_parent(stable: &Path) -> Result<PathBuf> {
     let parent = stable
         .parent()
         .context("execution storage path has no parent")?;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(parent)
+    amplihack_utils::secure_files::create_private_directories(parent)
         .with_context(|| format!("cannot create {}", parent.display()))?;
     let metadata = fs::symlink_metadata(parent)
         .with_context(|| format!("cannot inspect {}", parent.display()))?;

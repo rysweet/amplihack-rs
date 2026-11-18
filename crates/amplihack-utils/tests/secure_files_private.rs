@@ -18,6 +18,12 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::time::{Duration, Instant};
 
+fn private_tempdir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
 fn mode(path: &std::path::Path) -> u32 {
     fs::symlink_metadata(path).unwrap().mode() & 0o7777
 }
@@ -33,7 +39,7 @@ fn read_bounded_returns_one_extra_byte_when_input_is_longer() {
 
 #[test]
 fn read_bounded_nofollow_missing_file_is_none() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     assert!(
         read_bounded_nofollow(&tmp.path().join("nope"), 16)
             .unwrap()
@@ -43,7 +49,7 @@ fn read_bounded_nofollow_missing_file_is_none() {
 
 #[test]
 fn read_bounded_nofollow_refuses_symlink_and_oversize() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let real = tmp.path().join("real");
     fs::write(&real, b"hello").unwrap();
     let link = tmp.path().join("link");
@@ -62,7 +68,7 @@ fn read_bounded_nofollow_refuses_symlink_and_oversize() {
 
 #[test]
 fn write_private_atomic_writes_0600_and_refuses_symlink_target() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     write_private_atomic(tmp.path(), "f", b"one").unwrap();
     assert_eq!(fs::read(tmp.path().join("f")).unwrap(), b"one");
     assert_eq!(mode(&tmp.path().join("f")), 0o600);
@@ -76,7 +82,7 @@ fn write_private_atomic_writes_0600_and_refuses_symlink_target() {
 
 #[test]
 fn write_private_atomic_nosync_replaces_0600_and_refuses_symlink_target() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     write_private_atomic_nosync(tmp.path(), "f", b"one").unwrap();
     write_private_atomic_nosync(tmp.path(), "f", b"two").unwrap();
     assert_eq!(fs::read(tmp.path().join("f")).unwrap(), b"two");
@@ -92,7 +98,7 @@ fn write_private_atomic_nosync_replaces_0600_and_refuses_symlink_target() {
 
 #[test]
 fn ensure_private_dir_creates_0700_and_checks_existing() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let d = tmp.path().join("d");
     ensure_private_dir(&d).unwrap();
     assert_eq!(mode(&d), 0o700);
@@ -103,7 +109,7 @@ fn ensure_private_dir_creates_0700_and_checks_existing() {
 
 #[test]
 fn ensure_private_dir_refuses_existing_0755_without_changing_it() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let d = tmp.path().join("d");
     fs::create_dir(&d).unwrap();
     fs::set_permissions(&d, fs::Permissions::from_mode(0o755)).unwrap();
@@ -114,7 +120,7 @@ fn ensure_private_dir_refuses_existing_0755_without_changing_it() {
 
 #[test]
 fn ensure_private_dir_does_not_create_parents() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let nested = tmp.path().join("a").join("b");
     assert!(ensure_private_dir(&nested).is_err());
     assert!(!tmp.path().join("a").exists());
@@ -155,7 +161,7 @@ fn recursive_private_directory_creates_every_missing_component_0700() {
     under_umask_0002(
         "recursive_private_directory_creates_every_missing_component_0700",
         || {
-            let tmp = tempfile::tempdir().unwrap();
+            let tmp = private_tempdir();
             let first = tmp.path().join("state");
             let target = first.join("sessions/current");
             ensure_private_directory(&target).unwrap();
@@ -171,7 +177,7 @@ fn private_append_creates_every_missing_parent_0700_and_preserves_contents() {
     under_umask_0002(
         "private_append_creates_every_missing_parent_0700_and_preserves_contents",
         || {
-            let tmp = tempfile::tempdir().unwrap();
+            let tmp = private_tempdir();
             let first = tmp.path().join("state");
             let parent = first.join("sessions/current");
             let target = parent.join("events.log");
@@ -197,7 +203,7 @@ fn recursive_helpers_preserve_existing_parents_and_legacy_leaf_contracts() {
     under_umask_0002(
         "recursive_helpers_preserve_existing_parents_and_legacy_leaf_contracts",
         || {
-            let tmp = tempfile::tempdir().unwrap();
+            let tmp = private_tempdir();
             let existing = tmp.path().join("existing");
             fs::create_dir(&existing).unwrap();
             fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
@@ -235,7 +241,7 @@ fn recursive_helpers_preserve_existing_parents_and_legacy_leaf_contracts() {
 
 #[test]
 fn check_private_dir_refuses_symlink_to_private_dir() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let real = tmp.path().join("real");
     ensure_private_dir(&real).unwrap();
     let link = tmp.path().join("link");
@@ -245,7 +251,7 @@ fn check_private_dir_refuses_symlink_to_private_dir() {
 
 #[test]
 fn writable_by_others_detects_world_write() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let f = tmp.path().join("f");
     fs::write(&f, b"").unwrap();
     fs::set_permissions(&f, fs::Permissions::from_mode(0o600)).unwrap();
@@ -258,7 +264,7 @@ fn writable_by_others_detects_world_write() {
 
 #[test]
 fn owned_by_euid_is_true_for_own_files() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let meta = fs::metadata(tmp.path()).unwrap();
     assert_eq!(meta.uid(), euid());
     assert!(owned_by_euid(&meta));
@@ -276,7 +282,7 @@ fn owned_by_euid_is_false_for_root_owned_files_when_not_root() {
 
 #[test]
 fn open_private_nofollow_creates_missing_file_0600() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let p = tmp.path().join("new");
     let mut f = open_private_nofollow(&p).unwrap();
     f.write_all(b"a").unwrap();
@@ -286,7 +292,7 @@ fn open_private_nofollow_creates_missing_file_0600() {
 
 #[test]
 fn open_private_nofollow_appends_to_existing_private_file() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let p = tmp.path().join("f");
     fs::write(&p, b"one\n").unwrap();
     fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
@@ -304,7 +310,7 @@ fn open_private_nofollow_appends_to_existing_private_file() {
 
 #[test]
 fn open_private_nofollow_refuses_symlink() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let target = tmp.path().join("target");
     fs::write(&target, b"keep").unwrap();
     fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
@@ -316,7 +322,7 @@ fn open_private_nofollow_refuses_symlink() {
 
 #[test]
 fn open_private_nofollow_refuses_dangling_symlink_without_creating_target() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let target = tmp.path().join("would-be-created");
     let link = tmp.path().join("link");
     symlink(&target, &link).unwrap();
@@ -326,7 +332,7 @@ fn open_private_nofollow_refuses_dangling_symlink_without_creating_target() {
 
 #[test]
 fn open_private_nofollow_refuses_group_or_world_readable_file() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let p = tmp.path().join("f");
     fs::write(&p, b"").unwrap();
     for m in [0o644, 0o640, 0o620, 0o602] {
@@ -338,7 +344,7 @@ fn open_private_nofollow_refuses_group_or_world_readable_file() {
 
 #[test]
 fn open_private_nofollow_refuses_hard_linked_file() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let p = tmp.path().join("f");
     fs::write(&p, b"").unwrap();
     fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
@@ -348,7 +354,7 @@ fn open_private_nofollow_refuses_hard_linked_file() {
 
 #[test]
 fn open_private_nofollow_refuses_directory_and_fifo() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let d = tmp.path().join("d");
     fs::create_dir(&d).unwrap();
     fs::set_permissions(&d, fs::Permissions::from_mode(0o700)).unwrap();
@@ -368,7 +374,7 @@ fn open_private_nofollow_refuses_directory_and_fifo() {
 
 #[test]
 fn lock_exclusive_timeout_is_exclusive_and_released_on_drop() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let p = tmp.path().join("lock");
     let a = open_private_nofollow(&p).unwrap();
     let b = open_private_nofollow(&p).unwrap();
@@ -395,7 +401,7 @@ fn lock_exclusive_timeout_is_exclusive_and_released_on_drop() {
 
 #[test]
 fn lock_exclusive_timeout_retries_until_holder_releases() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let p = tmp.path().join("lock");
     let held = lock_exclusive_timeout(open_private_nofollow(&p).unwrap(), Duration::ZERO).unwrap();
     let releaser = std::thread::spawn(move || {
@@ -412,7 +418,7 @@ fn private_state_writer_creates_0600_files_under_umask_0002() {
     under_umask_0002(
         "private_state_writer_creates_0600_files_under_umask_0002",
         || {
-            let tmp = tempfile::tempdir().unwrap();
+            let tmp = private_tempdir();
             let path = tmp.path().join("state");
             amplihack_utils::secure_files::write_private_file(&path, b"first").unwrap();
             assert_eq!(mode(&path), 0o600);

@@ -33,25 +33,14 @@ pub(crate) fn open_or_create_root(root: &Path) -> Result<(bool, fs::Metadata)> {
         );
         Ok((false, m))
     };
-    let builder = |recursive: bool| {
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(recursive);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder
-    };
     match fs::symlink_metadata(root) {
         Ok(m) => existing(m),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             if let Some(parent) = root.parent() {
-                builder(true)
-                    .create(parent)
+                amplihack_utils::secure_files::create_private_directories(parent)
                     .with_context(|| format!("create private state {}", parent.display()))?;
             }
-            match builder(false).create(root) {
+            match amplihack_utils::secure_files::create_private_directory(root) {
                 Ok(()) => Ok((true, fs::symlink_metadata(root)?)),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     existing(fs::symlink_metadata(root)?)
@@ -170,7 +159,13 @@ impl EvidenceStore {
                 return Err(std::io::Error::last_os_error())
                     .context("open private evidence without following links");
             }
-            Ok(unsafe { File::from_raw_fd(fd) })
+            // SAFETY: openat returned a fresh descriptor owned by this File.
+            let file = unsafe { File::from_raw_fd(fd) };
+            if create {
+                use std::os::unix::fs::PermissionsExt;
+                file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            }
+            Ok(file)
         }
         #[cfg(not(unix))]
         {

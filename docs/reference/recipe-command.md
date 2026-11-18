@@ -449,7 +449,7 @@ home directory, a system directory or a Git checkout root. See
 
 | Existing work root | Result |
 | --- | --- |
-| Missing | Creates it and each missing intermediate directory with mode `0700` |
+| Missing | Requests mode `0700` for it and each missing intermediate directory; umask can remove owner permissions (see [creation modes](#modes-amplihack-creates)) |
 | Symbolic link, wrong type or inaccessible | Stops with the path and reason; does not inspect children through it |
 | Owned by another user | Stops with the path, actual owner UID and expected effective UID; explains that a correctly owned location is required |
 | Owned by you, permission bits differ from `0700` (`0755`, `0750`, `0775`, `0711`, `0500`) | Stops with the exact path, actual octal mode and shell-usable `chmod 700` correction; leaves mode and contents unchanged |
@@ -458,7 +458,7 @@ home directory, a system directory or a Git checkout root. See
 For an existing root at `0755`, the diagnostic includes:
 
 ```text
-work root /data/amplihack-work has mode 0755; fix it with `chmod 700 /data/amplihack-work`
+work root /data/amplihack-work has mode 0755, requires 0700; fix it with `chmod 700 /data/amplihack-work`
 ```
 
 For group- or world-writable roots, it also identifies the offending write
@@ -544,9 +544,15 @@ Inspection never exposes recovery-document contents. See
 
 #### Modes amplihack creates
 
-Creation of private state explicitly requests `0700` for directories and
-`0600` for files, including intermediate directories. Under umask `0002`,
-new private storage has these modes:
+Amplihack's private creation helpers finalize new directories to `0700` and
+new files to `0600` before returning or publishing them. Files are created
+exclusively and finalized through descriptors; existing files retain their
+permissions. Missing directories are created relative to parent handles
+without following symlinks. Unsupported mechanisms and permission-setting
+failures stop the operation with the affected path. See the
+[private-state creation API](private-state-creation.md) for platform limits.
+
+Under umask `0002`, new private storage has these modes:
 
 | Private state | Mode |
 | --- | --- |
@@ -568,9 +574,17 @@ amplihack does not change the process umask. A detached run takes the umask
 of the launching shell; see [Detached runs](#detached-runs). Review
 allocations survive the auto-drive trust sweep under umask `0002`.
 
-A mask that removes owner permissions can still make new state unusable.
-Explicit private creation never changes existing roots or ancestors to make
-them pass recovery checks.
+The pinned runner creates its own recovery objects separately. It requests
+private modes but does not restore owner permissions removed by a restrictive
+umask. Such a mask can make runner-created storage unusable and prevent recovery
+admission. Exact modes for those dependency-created objects require a
+runner-source change;
+the pin and admission policy are unchanged. Umask `0002` preserves owner
+permissions and does not have this limitation.
+
+Private creation never changes existing roots or ancestors to make them pass
+recovery checks. Generic storage constructors retain their existing permission
+contracts.
 
 #### Where the check runs
 

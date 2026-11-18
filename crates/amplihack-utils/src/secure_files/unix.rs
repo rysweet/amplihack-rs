@@ -7,7 +7,7 @@
 
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub fn euid() -> u32 {
@@ -64,12 +64,8 @@ pub fn read_bounded_nofollow(
 /// and is left as it is. Never blocks on a FIFO.
 pub fn open_private_nofollow(path: &Path) -> io::Result<fs::File> {
     let mut opts = fs::OpenOptions::new();
-    opts.read(true)
-        .append(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
-    let file = opts.open(path).map_err(|e| {
+    opts.read(true).append(true);
+    let file = super::open_private_created(path, opts).map_err(|e| {
         if e.raw_os_error() == Some(libc::ELOOP) {
             invalid("is a symlink")
         } else {
@@ -183,12 +179,7 @@ impl PrivateTemp {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let tmp = dir.join(format!(".{name}.tmp.{}.{nanos}", std::process::id()));
-        let mut opts = fs::OpenOptions::new();
-        opts.write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-        let file = opts.open(&tmp)?;
+        let file = super::create_private_file(&tmp)?;
         Ok(Self {
             file: Some(file),
             dir: dir.to_path_buf(),
@@ -281,15 +272,13 @@ impl Drop for PrivateTemp {
 /// checks an existing one: a real directory owned by the current user with
 /// no group or other mode bits.
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
-    match fs::DirBuilder::new().mode(0o700).create(path) {
-        Ok(()) => {
-            if let Some(parent) = path.parent() {
-                fsync_dir(parent)?;
-            }
-            Ok(())
+    if create_directory(path, false)? {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fsync_dir(parent)?;
         }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => check_private_dir(path),
-        Err(e) => Err(e),
+        Ok(())
+    } else {
+        check_private_dir(path)
     }
 }
 
@@ -461,3 +450,124 @@ mod tests_dir_rule;
 #[cfg(test)]
 #[path = "tests_link_new.rs"]
 mod tests_link_new;
+
+/// Walk directory components through handles, never through symbolic links.
+/// Only directories created by this call have their modes finalized. Callers
+/// remain responsible for admitting existing parents: use in an owned, trusted
+/// hierarchy, as recovery admission requires, prevents replacement of a newly
+/// created entry before it is opened. This helper does not relax admission.
+pub(super) fn create_directories(path: &Path) -> io::Result<()> {
+    walk_directories(path, true, false).map(|_| ())
+}
+
+/// Exclusively create one private directory with exact mode 0700.
+/// Existing entries produce AlreadyExists and are never modified.
+pub fn create_private_directory(path: &Path) -> io::Result<()> {
+    if create_directory(path, true)? {
+        Ok(())
+    } else {
+        Err(io::ErrorKind::AlreadyExists.into())
+    }
+}
+
+/// Create exactly the final component. `false` means it already existed.
+fn create_directory(path: &Path, exclusive: bool) -> io::Result<bool> {
+    walk_directories(path, false, exclusive).map(|(_, created)| created)
+}
+
+fn walk_directories(path: &Path, recursive: bool, exclusive: bool) -> io::Result<(fs::File, bool)> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+
+    let start = if path.is_absolute() { c"/" } else { c"." };
+    // Linux O_PATH works even when the umask removed all owner access. The
+    // descriptor pins the inode used by fchmodat2; no pathname chmod follows.
+    #[cfg(target_os = "linux")]
+    const ACCESS: i32 = libc::O_PATH;
+    #[cfg(not(target_os = "linux"))]
+    const ACCESS: i32 = libc::O_RDONLY;
+    let flags = ACCESS | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    // SAFETY: start is a terminated constant, and flags require no mode argument.
+    let fd = unsafe { libc::open(start.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: open returned a fresh descriptor now owned by File.
+    let mut parent = unsafe { fs::File::from_raw_fd(fd) };
+    let parts: Vec<_> = path
+        .components()
+        .filter(|c| !matches!(c, Component::RootDir | Component::CurDir))
+        .collect();
+    let mut last_created = false;
+    for (index, component) in parts.iter().enumerate() {
+        let name = CString::new(component.as_os_str().as_bytes())
+            .map_err(|_| invalid("directory path contains a NUL byte"))?;
+        let may_create = recursive || index + 1 == parts.len();
+        let mut created = false;
+        if may_create {
+            // SAFETY: parent is live, name is terminated, and mode is valid.
+            if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } == 0 {
+                created = true;
+            } else {
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::AlreadyExists
+                    || (exclusive && index + 1 == parts.len())
+                {
+                    return Err(error);
+                }
+            }
+        }
+        // SAFETY: parent is live and name is terminated. O_NOFOLLOW prevents
+        // substitution by a symlink; O_DIRECTORY requires a directory.
+        let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: openat returned a fresh descriptor.
+        let child = unsafe { fs::File::from_raw_fd(fd) };
+        if created {
+            finalize_directory(&child)?;
+        }
+        parent = child;
+        last_created = created;
+    }
+    Ok((parent, last_created))
+}
+
+/// The legacy helper explicitly tightens an existing leaf; creation-only
+/// callers and recovery admission must use create_private_directories instead.
+pub(super) fn ensure_legacy_directory(path: &Path) -> io::Result<()> {
+    // Preserve the pathname API's empty-path error: an empty creation walk
+    // must never turn into permission changes on the current directory.
+    if path.as_os_str().is_empty() {
+        return Err(io::ErrorKind::NotFound.into());
+    }
+    let (dir, _) = walk_directories(path, true, false)?;
+    finalize_directory(&dir)
+}
+
+fn finalize_directory(dir: &fs::File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    #[cfg(target_os = "linux")]
+    // SAFETY: dir is a live O_PATH descriptor and AT_EMPTY_PATH addresses
+    // that inode, including when it currently has mode 0000.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_fchmodat2,
+            dir.as_raw_fd(),
+            c"".as_ptr(),
+            0o700 as libc::mode_t,
+            libc::AT_EMPTY_PATH,
+        )
+    };
+    #[cfg(not(target_os = "linux"))]
+    // SAFETY: dir is an owned directory descriptor.
+    let result = unsafe { libc::fchmod(dir.as_raw_fd(), 0o700) };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}

@@ -1,10 +1,10 @@
 //! The work root: one folder for run folders, targets, clones, the archive
 //! and, when set explicitly, worktrees (issue #1808, D7, D9, R4).
 
+use super::recovery_path::{describe, display_path, inspect_components};
 use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::{Component, Path, PathBuf};
 
 /// The folder of stable execution storage under the work root.
@@ -74,7 +74,7 @@ pub(crate) fn resolve_from_env() -> Result<WorkRoot> {
 /// Refuses a work root that cleanup could not safely manage.
 pub(crate) fn validate(path: &Path, home: &Path) -> Result<()> {
     if !path.is_absolute() {
-        bail!("work root {} must be an absolute path", path.display());
+        bail!("work root {} must be an absolute path", display_path(path));
     }
     if path
         .components()
@@ -82,9 +82,13 @@ pub(crate) fn validate(path: &Path, home: &Path) -> Result<()> {
     {
         bail!(
             "work root {} must not contain `.` or `..` components",
-            path.display()
+            display_path(path)
         );
     }
+    // Classify every component before any ownership/mode advice or resolved
+    // location checks. A link's target is never used to suggest chmod.
+    let meta = inspect_components(path, |_, _| {})
+        .map_err(|fault| anyhow::anyhow!(describe(path, &[fault])))?;
     // Compare both the path as given and its resolved form, so a symlink
     // cannot hide a refused folder.
     let mut forms = vec![path.to_path_buf()];
@@ -102,62 +106,44 @@ pub(crate) fn validate(path: &Path, home: &Path) -> Result<()> {
     }
     for form in &forms {
         if form == Path::new("/") {
-            bail!("work root {} is the root folder", path.display());
+            bail!("work root {} is the root folder", display_path(path));
         }
         if homes.iter().any(|h| h.starts_with(form)) {
             bail!(
                 "work root {} is your home folder or one of its ancestors",
-                path.display()
+                display_path(path)
             );
         }
         if SYSTEM_PREFIXES.iter().any(|p| form.starts_with(p)) {
-            bail!("work root {} is inside a system folder", path.display());
+            bail!("work root {} is inside a system folder", display_path(path));
         }
         if SHARED_FOLDERS.iter().any(|p| form == Path::new(p)) || temps.contains(form) {
             bail!(
                 "work root {} is a shared folder such as the system temporary folder",
-                path.display()
+                display_path(path)
             );
         }
         if form.join(".git").exists() {
-            bail!("work root {} is the root of a git checkout", path.display());
+            bail!(
+                "work root {} is the root of a git checkout",
+                display_path(path)
+            );
         }
     }
-    match fs::symlink_metadata(path) {
-        Ok(meta) => {
-            let meta = if meta.file_type().is_symlink() {
-                fs::metadata(path)
-                    .with_context(|| format!("work root {} is a broken link", path.display()))?
-            } else {
-                meta
-            };
-            if !meta.is_dir() {
-                bail!("work root {} is not a folder", path.display());
-            }
-            if let Some(fault) = super::recovery_path::private_directory_fault(path, &meta) {
-                bail!(super::recovery_path::root_line(path, &fault));
-            }
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => {
-            Err(error).with_context(|| format!("cannot inspect work root {}", path.display()))
-        }
+    if let Some(meta) = meta
+        && let Some(fault) = super::recovery_path::private_directory_fault(path, &meta)
+    {
+        bail!(super::recovery_path::root_line(path, &fault));
     }
+    Ok(())
 }
 
 impl WorkRoot {
     /// Creates the root with mode 0700, regardless of umask. Never called by a
     /// dry run.
     pub(crate) fn ensure_created(&self) -> Result<()> {
-        if !self.path.is_dir() {
-            fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(&self.path)
-                .with_context(|| format!("cannot create work root {}", self.path.display()))?;
-        }
-        Ok(())
+        create_private_dir_all(&self.path)
+            .with_context(|| format!("cannot create work root {}", display_path(&self.path)))
     }
 
     pub(crate) fn runs_dir(&self) -> PathBuf {
@@ -189,15 +175,8 @@ impl WorkRoot {
 
 /// `create_dir_all` with mode 0700 on every folder it creates.
 pub(crate) fn create_private_dir_all(dir: &Path) -> Result<()> {
-    if dir.is_dir() {
-        return Ok(());
-    }
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .with_context(|| format!("cannot create {}", dir.display()))?;
-    Ok(())
+    amplihack_utils::secure_files::create_private_directories(dir)
+        .with_context(|| format!("cannot create {}", display_path(dir)))
 }
 
 #[cfg(test)]

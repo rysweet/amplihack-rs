@@ -39,12 +39,7 @@ fn open_nofollow(path: &Path) -> std::io::Result<fs::File> {
 }
 
 fn create_new_0600(path: &Path) -> std::io::Result<fs::File> {
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .mode(0o600)
-        .open(path)
+    amplihack_utils::secure_files::create_private_file(path)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -245,13 +240,9 @@ fn write_archive(source: &Path, partial: &Path, name: &str, meta: &fs::Metadata)
 }
 
 fn append_manifest(path: &Path, line: &ManifestLine) -> Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .mode(0o600)
-        .open(path)
+    let mut options = fs::OpenOptions::new();
+    options.read(true).append(true);
+    let mut file = amplihack_utils::secure_files::open_private_created(path, options)
         .with_context(|| format!("cannot open {}", path.display()))?;
     // A write cut short (for example by a full disk) leaves a fragment with
     // no newline; start on a fresh line so this entry stays readable.

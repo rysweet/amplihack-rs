@@ -37,7 +37,7 @@ struct OrphanRecordFile<'a> {
 #[cfg(unix)]
 pub(crate) fn write_orphan_record(dir: &Path, record: &OrphanRecord) -> Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::MetadataExt;
 
     if !dir.is_absolute() {
         bail!("state dir {} is not an absolute path", dir.display());
@@ -73,12 +73,7 @@ pub(crate) fn write_orphan_record(dir: &Path, record: &OrphanRecord) -> Result<(
     .context("cannot serialise orphaned.json")?;
 
     let temp = dir.join(format!(".{ORPHAN_RECORD_FILE}.{}.tmp", std::process::id()));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&temp)
+    let mut file = amplihack_utils::secure_files::create_private_file(&temp)
         .with_context(|| format!("cannot create {}", temp.display()))?;
     let written = file
         .write_all(body.as_bytes())

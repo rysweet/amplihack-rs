@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub(crate) const RUN_JSON: &str = "run.json";
@@ -131,7 +131,7 @@ impl RuntimeGuard {
             Ok(_) => bail!("{path:?} is no longer this run's runtime folder"),
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 create_private_dir_all(path.parent().context("runtime parent")?)?;
-                fs::DirBuilder::new().mode(0o700).create(path)?;
+                amplihack_utils::secure_files::create_private_directory(path)?;
                 let (anchor, identity) = open_anchor(path)?;
                 self._anchor = anchor;
                 self.identity = identity;
@@ -544,12 +544,7 @@ pub(crate) fn write_atomic_0600(path: &Path, bytes: &[u8]) -> Result<()> {
             return Err(error).with_context(|| format!("cannot remove stale {}", tmp.display()));
         }
     }
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .mode(0o600)
-        .open(&tmp)
+    let mut file = amplihack_utils::secure_files::create_private_file(&tmp)
         .with_context(|| format!("cannot create {}", tmp.display()))?;
     file.write_all(bytes)
         .and_then(|()| file.sync_all())
@@ -658,9 +653,7 @@ impl RunScope {
         create_private_dir_all(&runs)?;
         let run_id = new_run_id();
         let run_dir = runs.join(&run_id);
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .create(&run_dir)
+        amplihack_utils::secure_files::create_private_directory(&run_dir)
             .with_context(|| format!("cannot create run folder {}", run_dir.display()))?;
         let pid = std::process::id();
         let report = RunReport {
@@ -686,7 +679,7 @@ impl RunScope {
         };
         scope.write_report()?;
         create_private_dir_all(runtime_dir.parent().context("runtime parent")?)?;
-        fs::DirBuilder::new().mode(0o700).create(&runtime_dir)?;
+        amplihack_utils::secure_files::create_private_directory(&runtime_dir)?;
         let guard = RuntimeGuard::new(runtime_dir.clone())?;
         create_private_dir_all(&runtime_dir.join("tmp"))?;
         create_private_dir_all(&runtime_dir.join("artifacts"))?;
@@ -777,10 +770,10 @@ impl RunWorkspace {
         super::recovery_path::prepare_work_root(&root.path)?;
         recipe_runner_rs::recovery::private_fs::Directory::open(&root.path, true).map_err(
             |error| {
-                let diagnostics = super::recovery_path::recovery_diagnostics(&root.path, None, None);
+                let diagnostics = super::recovery_path::recovery_diagnostics(&root.path, None, None, &error);
                 let message = format!(
                     "cannot open the recovery store at work root {}: {diagnostics}; runner: {error:#}",
-                    crate::commands::install::paths::sanitize_path(&root.path)
+                    super::recovery_path::display_path(&root.path)
                 );
                 error.context(message)
             },
@@ -817,6 +810,7 @@ impl RunWorkspace {
             .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in(&base)
             .with_context(|| format!("cannot create a dry-run folder under {base:?}"))?;
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
         create_private_dir_all(&dir.path().join("tmp"))?;
         create_private_dir_all(&dir.path().join("artifacts"))?;
         Ok(Self::Legacy { dir })

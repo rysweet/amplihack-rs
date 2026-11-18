@@ -533,7 +533,7 @@ fn report_v2_merged_record_without_pr_is_not_trusted() {
 // ---------------------------------------------------------------------------
 
 fn bound_state(auth: &mut InvocationAuthorization) -> tempfile::TempDir {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::private_tempdir();
     let dir = temp.path().join("state");
     crate::commands::orch::autodrive::state::EvidenceStore::create(&dir).unwrap();
     auth.bind_state_dir(dir);

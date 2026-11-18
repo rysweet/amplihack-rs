@@ -63,16 +63,10 @@ fn state_home() -> Result<PathBuf> {
 
 #[cfg(unix)]
 fn make_private_dir(path: &Path) -> Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
     let parent = path.parent().context("recovery directory has no parent")?;
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(parent)
+    amplihack_utils::secure_files::create_private_directories(parent)
         .with_context(|| format!("cannot create {}", parent.display()))?;
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(path)
+    amplihack_utils::secure_files::create_private_directory(path)
         .with_context(|| format!("cannot create {}", path.display()))
 }
 

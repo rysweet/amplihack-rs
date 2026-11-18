@@ -47,23 +47,16 @@ impl FileLock {
 
     fn open_and_lock(path: &Path, timeout: Duration, private: bool) -> Result<Self, FileLockError> {
         let mut options = OpenOptions::new();
-        #[cfg(unix)]
-        if private {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        #[cfg(not(unix))]
-        let _ = private;
-        let file = options
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .read(true)
-            .open(path)
-            .map_err(|e| FileLockError::Open {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
+        options.truncate(false).write(true).read(true);
+        let file = (if private {
+            amplihack_utils::secure_files::open_private_created(path, options)
+        } else {
+            options.create(true).open(path)
+        })
+        .map_err(|e| FileLockError::Open {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
 
         let deadline = Instant::now() + timeout;
 

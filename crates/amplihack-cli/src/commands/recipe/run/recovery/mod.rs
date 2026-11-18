@@ -1,5 +1,5 @@
 //! Amplihack's work identity and launch admission; replay belongs to the runner.
-use crate::commands::install::paths::sanitize_path;
+use crate::commands::cleanup::recovery_path::display_path;
 use anyhow::Result;
 use recipe_runner_rs::recovery::{admission::Admission, model::fingerprint, resources::git};
 use std::{collections::BTreeMap, path::Path};
@@ -138,12 +138,12 @@ pub(super) fn admit(
     )
     .map_err(|error| {
         let diagnostics = crate::commands::cleanup::recovery_path::recovery_diagnostics(
-            &scope.work_root.path, Some(&scope.run_dir), identity.as_deref(),
+            &scope.work_root.path, Some(&scope.run_dir), identity.as_deref(), &error,
         );
         let message = format!(
             "cannot durably admit recipe launch (work root {}, run folder {}): {diagnostics}; runner: {error:#}",
-            sanitize_path(&scope.work_root.path),
-            sanitize_path(&scope.run_dir)
+            display_path(&scope.work_root.path),
+            display_path(&scope.run_dir)
         );
         error.context(message)
     })

@@ -15,6 +15,7 @@
 //!   creates the root with mode 0700 regardless of umask.
 
 use super::*;
+use crate::test_support::private_tempdir;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -23,12 +24,13 @@ use std::path::Path;
 fn home_in(tmp: &Path) -> std::path::PathBuf {
     let home = tmp.join("home");
     fs::create_dir_all(&home).unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
     home
 }
 
 #[test]
 fn default_is_home_amplihack_work_and_not_explicit() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let home = home_in(tmp.path());
     let root = resolve(None, None, &home).unwrap();
     assert_eq!(root.path, home.join(".amplihack/work"));
@@ -38,7 +40,7 @@ fn default_is_home_amplihack_work_and_not_explicit() {
 
 #[test]
 fn set_variable_is_explicit_unless_flag_passes_through_0() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let home = home_in(tmp.path());
     let custom = tmp.path().join("custom");
     let var = Some(custom.as_os_str());
@@ -57,7 +59,7 @@ fn set_variable_is_explicit_unless_flag_passes_through_0() {
 
 #[test]
 fn unsafe_roots_are_refused() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let home = home_in(tmp.path());
     let checkout = tmp.path().join("checkout");
     fs::create_dir_all(checkout.join(".git")).unwrap();
@@ -77,20 +79,20 @@ fn unsafe_roots_are_refused() {
 
 #[test]
 fn existing_root_must_not_be_group_or_world_writable() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let home = home_in(tmp.path());
     let root = tmp.path().join("work");
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o770)).unwrap();
     let err = validate(&root, &home).unwrap_err().to_string();
-    assert!(err.contains("writable by group or others"), "{err}");
+    assert!(err.contains("group-writable"), "{err}");
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     validate(&root, &home).unwrap();
 }
 
 #[test]
 fn missing_absolute_root_is_valid_and_created_0700() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let home = home_in(tmp.path());
     let path = tmp.path().join("new/work");
     validate(&path, &home).unwrap();
@@ -104,7 +106,7 @@ fn missing_absolute_root_is_valid_and_created_0700() {
 /// roots, including readable roots with no group/world write bit.
 #[test]
 fn group_or_world_writable_root_message_names_the_mode_and_the_fix() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let home = home_in(tmp.path());
     for mode in [0o755, 0o750, 0o775, 0o757, 0o2770] {
         let root = tmp.path().join(format!("work{mode:o}"));
@@ -131,7 +133,7 @@ fn group_or_world_writable_root_message_names_the_mode_and_the_fix() {
 
 #[test]
 fn a_work_root_with_shell_metacharacters_has_a_usable_correction() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let home = home_in(tmp.path());
     let root = tmp.path().join("work 'quoted' $(false)");
     fs::create_dir(&root).unwrap();
@@ -160,7 +162,7 @@ fn a_work_root_with_shell_metacharacters_has_a_usable_correction() {
 #[test]
 fn work_root_errors_escape_unprintable_names_without_suggesting_an_unusable_command() {
     use std::os::unix::ffi::OsStrExt;
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let home = home_in(tmp.path());
     for name in [b"work\x1b\nbroken".as_slice(), b"work\xffbroken".as_slice()] {
         let root = tmp.path().join(OsStr::from_bytes(name));
@@ -184,4 +186,64 @@ fn work_root_errors_escape_unprintable_names_without_suggesting_an_unusable_comm
             0o775
         );
     }
+}
+
+#[test]
+fn work_root_creation_restores_owner_access_under_restrictive_umask() {
+    use std::os::unix::process::CommandExt;
+    const CHILD: &str = "AMPLIHACK_WORK_ROOT_MODE_TEST_CHILD";
+    if std::env::var(CHILD).as_deref()
+        != Ok(std::os::unix::process::parent_id().to_string().as_str())
+    {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "commands::cleanup::work_root::tests::work_root_creation_restores_owner_access_under_restrictive_umask",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(CHILD, std::process::id().to_string());
+        // SAFETY: umask is changed only in the forked child before exec.
+        unsafe {
+            command.pre_exec(|| {
+                libc::umask(0o777);
+                Ok(())
+            });
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{}\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let tmp = private_tempdir();
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let parent = tmp.path().join("new");
+    let path = parent.join("work");
+    struct Restore(Vec<PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            for path in &self.0 {
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
+    let _restore = Restore(vec![parent.clone(), path.clone()]);
+    let root = WorkRoot {
+        path,
+        explicit: true,
+    };
+    root.ensure_created().unwrap();
+    for dir in [&parent, &root.path] {
+        assert_eq!(
+            fs::metadata(dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+    }
+    fs::write(root.path.join("probe"), b"usable").unwrap();
 }

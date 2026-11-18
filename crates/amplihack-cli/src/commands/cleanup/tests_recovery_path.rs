@@ -26,8 +26,7 @@
 //! pub(crate) fn shell_word(path: &Path) -> Option<String>
 //! ```
 //!
-//! Paths in messages go through `commands::install::paths::sanitize_path`
-//! (control characters become `?`, invalid UTF-8 becomes U+FFFD). Suggested
+//! Paths in messages use lossless terminal-safe escapes. Suggested
 //! commands and `AMPLIHACK_WORK_ROOT` values go through `shell_word`.
 //!
 //! Every fixture lives in a temporary folder created 0700 with an explicit
@@ -219,6 +218,41 @@ fn root_mode_sorts_owner_and_mode_bits() {
 // ------------------------------------------------------------ shell_word
 
 #[test]
+fn path_display_preserves_distinct_names_without_terminal_controls() {
+    let cases: &[(&[u8], &str)] = &[
+        (b"/srv/a\tb", r"/srv/a\tb"),
+        (b"/srv/a\nb", r"/srv/a\nb"),
+        (b"/srv/a\x1b[2Jb", r"/srv/a\x1b[2Jb"),
+        (b"/srv/a\x7fb", r"/srv/a\x7fb"),
+        (b"/srv/a\xffb", r"/srv/a\xffb"),
+        (b"/srv/a\xfeb", r"/srv/a\xfeb"),
+        (br"/srv/a\tb", r"/srv/a\\tb"),
+        (br"/srv/a\xffb", r"/srv/a\\xffb"),
+        (b"/srv/a?b", "/srv/a?b"),
+        ("/srv/a\u{fffd}b".as_bytes(), "/srv/a\u{fffd}b"),
+        ("/srv/ünïcode".as_bytes(), "/srv/ünïcode"),
+        ("/srv/a\u{85}b".as_bytes(), r"/srv/a\u{85}b"),
+    ];
+    let mut seen = std::collections::HashSet::new();
+    for (raw, expected) in cases {
+        let path = Path::new(OsStr::from_bytes(raw));
+        let text = root_line(
+            path,
+            &Fault::NotPrivate {
+                path: path.into(),
+                mode: 0o755,
+            },
+        );
+        assert!(
+            text.contains(&format!("work root {expected} has mode")),
+            "{text}"
+        );
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+        assert!(seen.insert(text), "distinct paths rendered identically");
+    }
+}
+
+#[test]
 fn shell_word_leaves_a_plain_path_as_it_is() {
     for plain in [
         "/home/alice/.amplihack/work",
@@ -249,7 +283,6 @@ fn shell_word_single_quotes_any_other_path_and_the_quoted_form_reads_back() {
         "/srv/~x",
         "/srv/a!b",
         "/srv/a\"b",
-        r"/srv/a\b",
         "/srv/a&b|c",
         "/srv/ünïcode",
     ] {
@@ -277,8 +310,15 @@ fn shell_word_single_quotes_any_other_path_and_the_quoted_form_reads_back() {
 }
 
 #[test]
-fn shell_word_gives_nothing_for_control_characters_or_invalid_utf8() {
-    for raw in ["/a\tb", "/a\nb", "/a\x1b[2Jb", "/a\x7fb", "/a\u{85}b"] {
+fn shell_word_gives_nothing_for_controls_backslashes_or_invalid_utf8() {
+    for raw in [
+        "/a\tb",
+        "/a\nb",
+        "/a\x1b[2Jb",
+        "/a\x7fb",
+        "/a\u{85}b",
+        r"/a\tb",
+    ] {
         assert_eq!(
             shell_word(Path::new(raw)),
             None,
@@ -576,8 +616,13 @@ fn an_open_runs_folder_is_named_and_left_unchanged() {
             root.display()
         );
         let line = format!(
-            "  {} has mode {mode:04o}; fix it with `chmod 700 {}`",
+            "  {} has mode {mode:04o}, requires 0700{}; fix it with `chmod 700 {}`",
             runs.display(),
+            if mode == 0o775 {
+                "; group-writable"
+            } else {
+                ""
+            },
             word(&runs)
         );
         assert!(has_line(&text, &header), "expected {header:?} in:\n{text}");
@@ -792,15 +837,15 @@ fn a_symbolic_link_above_the_root_is_named_with_its_target_and_the_resolved_root
 }
 
 #[test]
-fn control_characters_in_a_link_target_are_printed_as_question_marks() {
+fn control_characters_in_a_link_target_are_escaped_losslessly() {
     let (_tmp, t) = private_root();
     let link = t.join("l");
     symlink(OsStr::from_bytes(b"/x\x1b[2J\ny"), &link).unwrap();
     let text = message(prepare_work_root(&link.join("work")));
     assert!(!text.contains('\x1b'), "raw escape in:\n{text:?}");
     assert!(
-        text.contains("/x?[2J?y"),
-        "sanitised target missing:\n{text}"
+        text.contains(r"/x\x1b[2J\ny"),
+        "escaped target missing:\n{text}"
     );
     assert!(
         !text.lines().any(|line| line.starts_with('y')),
@@ -815,7 +860,7 @@ fn a_folder_name_with_a_control_character_gets_no_command() {
     let text = message(prepare_work_root(&odd.join("work")));
     assert!(
         text.contains(&format!(
-            "{}/a?b is group-writable (mode 0775)",
+            r"{}/a\tb is group-writable (mode 0775)",
             t.display()
         )),
         "{text}"
@@ -839,7 +884,7 @@ fn a_folder_name_that_is_not_utf8_gets_no_command() {
     let text = message(prepare_work_root(&bad.join("work")));
     assert!(
         text.contains(&format!(
-            "{}/bad\u{FFFD} is group-writable (mode 0775)",
+            r"{}/bad\xff is group-writable (mode 0775)",
             t.display()
         )),
         "{text}"
@@ -948,6 +993,57 @@ fn the_runs_rule_matches_the_pinned_runner() {
 
 // ----------------------------------------------------- the runner's reason
 
+#[test]
+fn post_failure_diagnostics_stop_at_an_ancestor_link() {
+    let (_tmp, t) = private_root();
+    let real = dir(&t.join("actual"), 0o700);
+    let root = dir(&real.join("work"), 0o700);
+    let runs = dir(&root.join("runs"), 0o700);
+    let run = dir(&runs.join("current"), 0o700);
+    dir(&run.join("recovery"), 0o755);
+    let link = t.join("alias");
+    symlink(&real, &link).unwrap();
+    let aliased_root = link.join("work");
+    let text = recovery_diagnostics(
+        &aliased_root,
+        Some(&aliased_root.join("runs/current")),
+        None,
+        &recipe_runner_rs::recovery::private_fs::Directory::open(&aliased_root, true).unwrap_err(),
+    );
+    assert!(text.contains(&link.display().to_string()), "{text}");
+    assert!(text.contains("symbolic link"), "{text}");
+    assert!(
+        !text.contains("mode 0755"),
+        "inspected behind the link: {text}"
+    );
+    assert!(
+        !text.contains("chmod"),
+        "chmod cannot repair a link: {text}"
+    );
+    assert_eq!(mode_of(&run.join("recovery")), "0755");
+}
+
+#[test]
+fn post_failure_diagnostics_report_an_ancestor_that_became_writable() {
+    let (_tmp, t) = private_root();
+    let ancestor = dir(&t.join("changed"), 0o700);
+    let root = dir(&ancestor.join("work"), 0o700);
+    prepare_work_root(&root).unwrap();
+    set_mode(&ancestor, 0o775);
+    let error = recipe_runner_rs::recovery::private_fs::Directory::open(&root, true).unwrap_err();
+    let text = recovery_diagnostics(&root, None, None, &error);
+    for part in [
+        ancestor.display().to_string(),
+        "group-writable".into(),
+        "0775".into(),
+        format!("chmod g-w {}", word(&ancestor)),
+    ] {
+        assert!(text.contains(&part), "missing {part:?}: {text}");
+    }
+    assert_eq!(mode_of(&ancestor), "0775");
+    assert_eq!(mode_of(&root), "0700");
+}
+
 /// When the runner's own check fails after this one passed, the message names
 /// the work root and ends with the runner's reason on the same line: the
 /// top-level `Error: {error}` prints only the outermost message.
@@ -991,5 +1087,22 @@ fn a_runner_failure_ends_the_message_with_the_runners_reason() {
         top.contains("Permission denied"),
         "the runner's reason must be on the same line: {top:?}"
     );
+    for part in [
+        locked.display().to_string(),
+        "mode 0555".into(),
+        format!("observed uid {}", euid()),
+        format!("effective uid {}", euid()),
+        format!("chmod u+wx {}", word(&locked)),
+        "mode bits alone do not establish its cause".into(),
+    ] {
+        assert!(top.contains(&part), "missing {part:?}: {top}");
+    }
+    assert!(
+        error.chain().skip(1).any(|cause| cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == ErrorKind::PermissionDenied)),
+        "original permission-denied cause lost: {error:#}"
+    );
+    assert_eq!(mode_of(&locked), "0555");
     assert!(!root.exists());
 }

@@ -61,12 +61,12 @@ impl AtomicFlag {
 
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
-        #[cfg(unix)]
-        if self.private {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(&self.path) {
+        let result = if self.private {
+            amplihack_utils::secure_files::create_private_file(&self.path)
+        } else {
+            options.open(&self.path)
+        };
+        match result {
             Ok(_) => Ok(true),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(false),
             Err(e) => Err(AtomicFlagError::Io {
@@ -129,6 +129,8 @@ mod tests {
             "semaphore::tests::private_flag_creates_0700_parents_and_a_0600_file_under_umask_0002",
             || {
                 let dir = tempfile::tempdir().unwrap();
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
                 let parent = dir.path().join("session/nested");
                 let flag = AtomicFlag::new_private(parent.join("initialized"));
                 assert!(flag.set().unwrap());

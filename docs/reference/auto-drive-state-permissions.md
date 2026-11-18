@@ -1,6 +1,6 @@
 ---
 title: Auto-drive State Permissions
-description: Requested private creation modes, their umask limits, and when auto-drive repairs or refuses state and evidence entries.
+description: Private creation modes, recovery dependency limits, and auto-drive state checks.
 last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
@@ -32,9 +32,9 @@ for what the evidence itself must contain.
 
 ## The rule in one line
 
-Writers request `0700` for folders and `0600` for files. Masks that preserve
-owner permissions, including `0002`, leave those modes unchanged. A mask
-that removes owner permissions can leave new state unusable. An entry
+The migrated Rust state writers finalize new folders to `0700` and new files
+to `0600`. The retained review-allocation implementation requests `0700`,
+as described below. Shell writers set their own umask. An entry
 this user owns with extra group or other bits has those extra bits removed and is
 logged when it lies in a state folder directly under the auto-drive state
 root, or when it is a file read from a private state folder. Anything else
@@ -42,16 +42,18 @@ that is wrong is refused.
 
 ## Writers
 
-A umask can only remove bits. A writer that requests `0700` or `0600`
-gets that mode under masks that preserve owner permissions, including
-`0002`. Explicit private creation does not restore owner permissions removed
-by the mask.
+The migrated Rust writers finalize new-object modes before use or publication.
+Review allocation retains its existing creation requests and coverage (#2781).
+Existing objects retain their admission and repair rules. The shared
+[creation helpers](private-state-creation.md) use exclusive file creation
+and directory handles; that reference lists platform limits. The pinned
+runner's own recovery creation remains subject to owner-removing masks.
 
 | Writer | How the mode is set |
 | --- | --- |
-| `EvidenceStore::create`, `write_new`, `snapshot` (`autodrive/state.rs`) | `DirBuilder::mode(0o700)`, `openat(…, 0o600)` |
-| `helper::write_new_private` (`autodrive/helper.rs`) | `OpenOptions::mode(0o600)` |
-| `secure_fs::create`, `secure_fs::output` (`autodrive_completion/secure_fs.rs`) | `openat(…, 0o600)` under a `0700` folder |
+| `EvidenceStore::create`, `write_new`, `snapshot` (`autodrive/state.rs`) | private directory helpers, exclusive `openat` plus descriptor finalization |
+| `helper::write_new_private` (`autodrive/helper.rs`) | exclusive private-file helper |
+| `secure_fs::create`, `secure_fs::output` (`autodrive_completion/secure_fs.rs`) | exclusive `openat` plus descriptor finalization under a `0700` folder |
 | `private_state.rs`, `evaluator.rs` | explicit `0o700` / `0o600` modes, tempfiles in `0700` folders |
 | `review_generation::allocate` and `provision` (`run_isolation/review_generation.rs`), behind `amplihack internal review-allocate`, `review-next` and `review-checkout` | `tempfile::Builder::permissions(0o700)` for each `review-<random>` allocation folder in the state folder and each `review-generation-<random>` storage folder, which is made beside the checkout it backs (#2778); see [Superseded generations are retired](./recipe-checkout-isolation.md#superseded-generations-are-retired) |
 | `autodrive_state.sh` (`autodrive_private_dir`, `autodrive_mark_phase_done`, `autodrive_clear_phase`, `autodrive_record_crusty_loop_done`, `autodrive_record_resolved`, `autodrive_use_task_file`) | `umask 077` in the subshell that writes |
@@ -74,11 +76,11 @@ command, not the tmux server's (#2778); see
 
 A drive runs inside `amplihack recipe run`, so its run folder, its recovery
 store and the `autodrive-state` folder in the run folder sit under the
-[work root](../howto/clean-up-after-recipe-runs.md#settings). amplihack
-requests `0700` for those folders and `0600` for its files there, as it does
-for the state folders above. Masks that preserve owner permissions,
-including `0002`, leave these modes unchanged; owner-removing masks can
-leave state unusable. Before the first step, `recipe run`
+[work root](../howto/clean-up-after-recipe-runs.md#settings). Amplihack's
+[private creation helpers](private-state-creation.md) finalize new folders
+to `0700` and new files to `0600`. The pinned runner's separate recovery
+creation still requires a runner-source change for masks that remove owner
+access. Umask `0002` preserves owner access for both paths. Before the first step, `recipe run`
 checks the folders above the work root, the work root and `runs/`. A folder
 above the root that other users can write without the sticky bit stops the
 run with its path, mode, offending write bits and correction. An existing

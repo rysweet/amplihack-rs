@@ -20,6 +20,7 @@
 //!   control-character lines; an empty or missing branch is `None`.
 
 use super::*;
+use crate::test_support::private_tempdir;
 use std::path::{Path, PathBuf};
 
 #[test]
@@ -64,7 +65,7 @@ fn runtime_dir_boundary_is_80_bytes_of_runtime_tmp() {
 
 #[test]
 fn runtime_guard_removes_folder_on_drop_and_on_panic() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let dir = tmp.path().join("runtime");
     std::fs::create_dir_all(dir.join("tmp/nested")).unwrap();
     drop(RuntimeGuard::new(dir.clone()).unwrap());
@@ -340,7 +341,7 @@ impl Drop for Holder {
 }
 
 fn runtime_with_tmp() -> (tempfile::TempDir, PathBuf) {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let rt = tmp.path().join("runtime");
     std::fs::create_dir_all(rt.join("tmp")).unwrap();
     std::fs::create_dir_all(rt.join("artifacts")).unwrap();
@@ -546,7 +547,7 @@ fn mode(path: &Path) -> u32 {
 #[test]
 fn prepare_attempt_recreates_missing_tmp_and_artifacts() {
     let _procs = fake_proc_scope();
-    let base = tempfile::tempdir().unwrap();
+    let base = private_tempdir();
     let mut ws = scoped_workspace(base.path());
     let rt = ws.runtime_dir().to_path_buf();
     std::fs::remove_dir_all(rt.join("tmp")).unwrap();
@@ -568,7 +569,7 @@ fn prepare_attempt_recreates_missing_tmp_and_artifacts() {
 #[test]
 fn prepare_attempt_recreates_a_runtime_folder_removed_entirely() {
     let _procs = fake_proc_scope();
-    let base = tempfile::tempdir().unwrap();
+    let base = private_tempdir();
     let mut ws = scoped_workspace(base.path());
     let rt = ws.runtime_dir().to_path_buf();
     std::fs::remove_dir_all(&rt).unwrap();
@@ -591,7 +592,7 @@ fn prepare_attempt_recreates_a_runtime_folder_removed_entirely() {
 #[test]
 fn prepare_attempt_refuses_a_replaced_runtime_folder() {
     let _procs = fake_proc_scope();
-    let base = tempfile::tempdir().unwrap();
+    let base = private_tempdir();
     let mut ws = scoped_workspace(base.path());
     let rt = ws.runtime_dir().to_path_buf();
     std::fs::remove_dir_all(&rt).unwrap();
@@ -611,7 +612,7 @@ fn prepare_attempt_refuses_a_replaced_runtime_folder() {
 #[test]
 fn prepare_attempt_keeps_an_existing_tmp_and_its_contents() {
     let _procs = fake_proc_scope();
-    let base = tempfile::tempdir().unwrap();
+    let base = private_tempdir();
     let mut ws = scoped_workspace(base.path());
     let rt = ws.runtime_dir().to_path_buf();
     std::fs::write(rt.join("tmp/from-attempt-1"), "kept").unwrap();
@@ -627,7 +628,7 @@ fn prepare_attempt_keeps_an_existing_tmp_and_its_contents() {
 #[test]
 fn prepare_attempt_refuses_symlinked_tmp_and_leaves_the_target_alone() {
     let _procs = fake_proc_scope();
-    let base = tempfile::tempdir().unwrap();
+    let base = private_tempdir();
     let mut ws = scoped_workspace(base.path());
     let rt = ws.runtime_dir().to_path_buf();
     let elsewhere = base.path().join("elsewhere");
@@ -654,7 +655,7 @@ fn prepare_attempt_refuses_symlinked_tmp_and_leaves_the_target_alone() {
 #[test]
 fn prepare_attempt_refuses_artifacts_that_is_a_file() {
     let _procs = fake_proc_scope();
-    let base = tempfile::tempdir().unwrap();
+    let base = private_tempdir();
     let mut ws = scoped_workspace(base.path());
     let rt = ws.runtime_dir().to_path_buf();
     std::fs::remove_dir_all(rt.join("artifacts")).unwrap();
@@ -918,7 +919,7 @@ fn restore_neither_enters_nor_reports_symlinks() {
 /// A missing root is not an error and reports nothing.
 #[test]
 fn restore_on_a_missing_root_reports_nothing() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     assert!(restore_owner_access(&tmp.path().join("gone"), euid()).is_empty());
 }
 
@@ -936,7 +937,7 @@ fn restore_on_a_missing_root_reports_nothing() {
 /// ignore an unknown field rather than reject the file.
 #[test]
 fn a_run_json_written_before_the_tracer_was_removed_still_reads() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let id = "0123abcd-0000-0000-0000-00000000002a";
     let dir = tmp.path().join("runs").join(id);
     std::fs::create_dir_all(&dir).unwrap();
@@ -985,7 +986,7 @@ fn a_run_json_written_before_the_tracer_was_removed_still_reads() {
 /// it was given.
 #[test]
 fn a_run_finishes_with_an_older_releases_recording_files_beside_its_report() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = private_tempdir();
     let work = WorkRoot {
         path: tmp.path().join("work"),
         explicit: false,

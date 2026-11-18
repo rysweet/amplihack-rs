@@ -61,20 +61,44 @@ mod platform {
     fn open_at(dir: &File, name: &std::ffi::OsStr, flags: i32) -> Result<File> {
         use std::os::unix::ffi::OsStrExt;
         let name = CString::new(name.as_bytes())?;
-        let fd = unsafe {
-            libc::openat(
-                dir.as_raw_fd(),
-                name.as_ptr(),
-                flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                0o600,
-            )
+        let creating = flags & libc::O_CREAT != 0;
+        let exclusive = flags & libc::O_EXCL != 0;
+        let open = |flags| {
+            // SAFETY: dir is live and name is terminated. Final symlinks
+            // cannot be followed; the returned descriptor is owned below.
+            unsafe {
+                libc::openat(
+                    dir.as_raw_fd(),
+                    name.as_ptr(),
+                    flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                    0o600,
+                )
+            }
         };
-        ensure!(
-            fd >= 0,
-            "private state open refused: {}",
-            std::io::Error::last_os_error()
-        );
-        Ok(unsafe { File::from_raw_fd(fd) })
+        let mut fd = open(if creating {
+            flags | libc::O_EXCL
+        } else {
+            flags
+        });
+        let mut created = creating && fd >= 0;
+        if fd < 0
+            && creating
+            && !exclusive
+            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::AlreadyExists
+        {
+            fd = open(flags & !libc::O_CREAT);
+            created = false;
+        }
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error()).context("private state open failed");
+        }
+        // SAFETY: openat returned a fresh descriptor owned exactly once.
+        let file = unsafe { File::from_raw_fd(fd) };
+        if created {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(file)
     }
 
     fn private(file: &File, path: &Path, kind: Kind, repair: Repair) -> Result<()> {

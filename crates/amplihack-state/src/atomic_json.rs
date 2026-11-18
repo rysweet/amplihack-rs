@@ -84,7 +84,15 @@ impl AtomicJsonFile {
             use std::os::unix::fs::PermissionsExt;
             builder.permissions(fs::Permissions::from_mode(0o600));
         }
-        builder.tempfile_in(dir)
+        let temporary = builder.tempfile_in(dir)?;
+        #[cfg(unix)]
+        if self.private {
+            use std::os::unix::fs::PermissionsExt;
+            temporary
+                .as_file()
+                .set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(temporary)
     }
 
     /// Set the lock timeout (default: 5 seconds).
@@ -249,7 +257,7 @@ mod tests {
 
     #[test]
     fn read_nonexistent_returns_none() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let file = AtomicJsonFile::new(dir.path().join("nonexistent.json"));
         let result: Option<TestData> = file.read().unwrap();
         assert!(result.is_none());
@@ -257,7 +265,7 @@ mod tests {
 
     #[test]
     fn write_and_read_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let file = AtomicJsonFile::new(dir.path().join("test.json"));
         let data = TestData {
             count: 42,
@@ -270,7 +278,7 @@ mod tests {
 
     #[test]
     fn update_creates_file_if_missing() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let file = AtomicJsonFile::new(dir.path().join("update.json"));
         let result: TestData = file
             .update(|d: &mut TestData| {
@@ -288,7 +296,7 @@ mod tests {
         // write to a not-yet-existing nested path must create the directory
         // before opening the lock (otherwise `NotFound`). This is exactly the
         // per-session Signal state/inbox path shape (`<root>/<session>/x.json`).
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let nested = dir.path().join("a").join("b").join("state.json");
         let file = AtomicJsonFile::new(&nested);
         let data = TestData {
@@ -303,7 +311,7 @@ mod tests {
 
     #[test]
     fn update_creates_missing_nested_dirs() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let nested = dir.path().join("x").join("y").join("inbox.json");
         let file = AtomicJsonFile::new(&nested);
         let result: TestData = file
@@ -319,7 +327,7 @@ mod tests {
 
     #[test]
     fn update_modifies_existing() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let file = AtomicJsonFile::new(dir.path().join("modify.json"));
         let data = TestData {
             count: 10,
@@ -333,7 +341,7 @@ mod tests {
 
     #[test]
     fn read_or_default_returns_default_when_missing() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let file = AtomicJsonFile::new(dir.path().join("default.json"));
         let result: TestData = file.read_or_default().unwrap();
         assert_eq!(result, TestData::default());
@@ -341,7 +349,7 @@ mod tests {
 
     #[test]
     fn parse_error_includes_path() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let path = dir.path().join("bad.json");
         std::fs::write(&path, "not valid json").unwrap();
         let file = AtomicJsonFile::new(path.clone());
@@ -355,7 +363,7 @@ mod tests {
 
     #[test]
     fn path_accessor_returns_configured_path() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let expected = dir.path().join("accessor.json");
         let file = AtomicJsonFile::new(expected.clone());
         assert_eq!(file.path(), expected);
@@ -368,7 +376,13 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             builder.permissions(fs::Permissions::from_mode(0o700));
         }
-        builder.tempdir().unwrap()
+        let dir = builder.tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        dir
     }
 
     #[test]
@@ -434,7 +448,7 @@ mod tests {
         under_umask_0002(
             "atomic_json::tests::private_write_and_update_create_private_parents_documents_and_locks",
             || {
-                let dir = tempfile::tempdir().unwrap();
+                let dir = private_tempdir();
                 for operation in ["write", "update"] {
                     let parent = dir.path().join(operation).join("nested");
                     let path = parent.join("state.json");
@@ -471,7 +485,7 @@ mod tests {
         under_umask_0002(
             "atomic_json::tests::private_storage_preserves_existing_parents_and_generic_storage_modes",
             || {
-                let dir = tempfile::tempdir().unwrap();
+                let dir = private_tempdir();
                 let existing = dir.path().join("existing");
                 fs::create_dir(&existing).unwrap();
                 fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
@@ -508,7 +522,7 @@ mod tests {
         under_umask_0002(
             "atomic_json::tests::a_failed_private_update_preserves_the_document_and_cleans_up",
             || {
-                let dir = tempfile::tempdir().unwrap();
+                let dir = private_tempdir();
                 let path = dir.path().join("state.json");
                 let file = AtomicJsonFile::new_private(&path);
                 file.write(&TestData {
@@ -558,7 +572,7 @@ mod tests {
             return;
         }
         under_umask_0002(NAME, || {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = private_tempdir();
             let path = dir.path().join("state.json");
             let file = AtomicJsonFile::new_private(&path);
             file.write(&TestData::default()).unwrap();

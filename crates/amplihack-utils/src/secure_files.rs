@@ -145,19 +145,19 @@ pub fn lock_exclusive_timeout_with(
 
 /// Create a directory (and parents) with owner-only permissions.
 ///
-/// On Unix the directory mode is set to `0o700`. On non-Unix platforms
+/// On Unix the leaf mode is set to `0o700`, including an existing leaf.
+/// Missing parents are private; existing parent permissions are unchanged.
+/// Use `create_private_directories` when existing modes must be preserved. On non-Unix platforms
 /// the directory is created with default permissions.
 pub fn ensure_private_directory(path: &Path) -> io::Result<()> {
-    create_private_directories(path)?;
-
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = fs::Permissions::from_mode(0o700);
-        fs::set_permissions(path, perms)?;
+        unix::ensure_legacy_directory(path)
     }
-
-    Ok(())
+    #[cfg(not(unix))]
+    {
+        create_private_directories(path)
+    }
 }
 
 /// Open a file for appending with owner-only permissions.
@@ -169,23 +169,12 @@ pub fn open_private_append(path: &Path) -> io::Result<fs::File> {
         create_private_directories(parent)?;
     }
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(path)
-    }
-
-    #[cfg(not(unix))]
-    {
-        fs::OpenOptions::new().create(true).append(true).open(path)
-    }
+    let mut options = fs::OpenOptions::new();
+    options.append(true);
+    open_private_created(path, options)
 }
 
-/// Write a state file, requesting mode 0600 for a new file on Unix.
+/// Write a state file, setting mode 0600 for a new file on Unix.
 /// Existing permissions are preserved. Parent directories must exist.
 /// The final component is opened without following a symlink on Unix.
 pub fn write_private_file(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Result<()> {
@@ -193,37 +182,96 @@ pub fn write_private_file(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io
     open_private_write(path.as_ref())?.write_all(bytes.as_ref())
 }
 
-/// Open a state file for writing, requesting mode 0600 for a new file.
+/// Open a state file for writing, setting mode 0600 for a new file.
 /// Truncates an existing file while preserving its permissions. Parents must
 /// exist; on Unix the final component is opened without following symlinks.
 pub fn open_private_write(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).truncate(true);
+    open_private_created(path, options)
+}
+
+/// Open or exclusively create a private file with the supplied access options.
+/// Only a newly created descriptor is finalized to 0600. Existing files retain
+/// their permissions; Unix opens never follow the final symlink.
+pub fn open_private_created(path: &Path, mut options: fs::OpenOptions) -> io::Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+        match options.clone().create_new(true).open(path) {
+            Ok(file) => {
+                file.set_permissions(fs::Permissions::from_mode(0o600))?;
+                Ok(file)
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                options.create(false).create_new(false).open(path)
+            }
+            Err(error) => Err(error),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        options.create(true).open(path)
+    }
+}
+
+/// Exclusively create a new private file, finalizing its descriptor to 0600.
+/// Returns AlreadyExists without opening or changing an existing entry.
+pub fn create_private_file(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     }
-    options.open(path)
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
+/// Exclusively create a directory; non-Unix permissions follow platform policy.
+#[cfg(not(unix))]
+pub fn create_private_directory(path: &Path) -> io::Result<()> {
+    fs::create_dir(path)
 }
 
 /// Create missing directory components with mode 0700 on Unix, leaving
 /// existing directories and their permissions unchanged.
 pub fn create_private_directories(path: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        unix::create_directories(path)
     }
-    builder.create(path)
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(path)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    fn private_tempdir() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        tmp
+    }
 
     #[test]
     fn temp_bases_are_canonical_and_distinct() {
@@ -250,7 +298,7 @@ mod tests {
 
     #[test]
     fn ensure_private_directory_creates_dir() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = private_tempdir();
         let target = tmp.path().join("secure").join("nested");
 
         ensure_private_directory(&target).unwrap();
@@ -262,7 +310,7 @@ mod tests {
     fn ensure_private_directory_sets_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = private_tempdir();
         let target = tmp.path().join("private_dir");
 
         ensure_private_directory(&target).unwrap();
@@ -273,7 +321,7 @@ mod tests {
 
     #[test]
     fn ensure_private_directory_idempotent() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = private_tempdir();
         let target = tmp.path().join("idem");
 
         ensure_private_directory(&target).unwrap();
@@ -283,7 +331,7 @@ mod tests {
 
     #[test]
     fn open_private_append_creates_file() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = private_tempdir();
         let target = tmp.path().join("data").join("log.txt");
 
         let mut f = open_private_append(&target).unwrap();
@@ -297,7 +345,7 @@ mod tests {
 
     #[test]
     fn open_private_append_actually_appends() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = private_tempdir();
         let target = tmp.path().join("append.log");
 
         let mut f = open_private_append(&target).unwrap();
@@ -318,7 +366,7 @@ mod tests {
     fn open_private_append_sets_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = private_tempdir();
         let target = tmp.path().join("secure.log");
 
         let f = open_private_append(&target).unwrap();

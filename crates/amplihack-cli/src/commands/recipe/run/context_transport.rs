@@ -29,7 +29,6 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::ErrorKind;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -137,7 +136,7 @@ pub(super) fn write_context_file(
     let dir = runtime_dir.join(CONTEXT_DIR_NAME);
     let path = dir.join(CONTEXT_FILE_NAME);
     let failed = || format!("failed to write recipe context file {}", path.display());
-    match fs::DirBuilder::new().mode(0o700).create(&dir) {
+    match amplihack_utils::secure_files::create_private_directory(&dir) {
         Ok(()) => {}
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
             anyhow::bail!(
@@ -155,9 +154,6 @@ pub(super) fn write_context_file(
         path: path.clone(),
         dir,
     };
-    // The umask may have narrowed the mode; it never widens it, but set it
-    // explicitly so the folder is exactly 0700.
-    fs::set_permissions(&file.dir, fs::Permissions::from_mode(0o700)).with_context(failed)?;
     let bytes = serde_json::to_vec(context).with_context(failed)?;
     crate::commands::cleanup::run_dir::write_atomic_0600(&path, &bytes).with_context(failed)?;
     Ok(file)

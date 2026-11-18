@@ -511,31 +511,13 @@ pub(crate) fn validate_step_id(raw: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-#[cfg(unix)]
 fn create_private_dir(dir: &Path) -> Result<(), String> {
-    use std::os::unix::fs::DirBuilderExt;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
+    amplihack_utils::secure_files::create_private_directories(dir)
         .map_err(|error| format!("{}: {error}", dir.display()))
 }
 
-#[cfg(not(unix))]
-fn create_private_dir(dir: &Path) -> Result<(), String> {
-    fs::create_dir_all(dir).map_err(|error| format!("{}: {error}", dir.display()))
-}
-
 fn write_private(path: &Path, text: &str) -> Result<(), String> {
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
+    let mut file = amplihack_utils::secure_files::open_private_write(path)
         .map_err(|error| format!("{}: {error}", path.display()))?;
     file.write_all(text.as_bytes())
         .map_err(|error| format!("{}: {error}", path.display()))

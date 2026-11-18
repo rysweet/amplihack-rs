@@ -38,6 +38,10 @@ mod permission_tests {
     /// Re-exec just this test with umask 0002. The parent test runner's umask
     /// is never modified, even while sibling tests create files concurrently.
     pub(crate) fn under_umask_0002(name: &str, body: impl FnOnce()) {
+        under_umask(name, 0o002, body);
+    }
+
+    pub(crate) fn under_umask(name: &str, mask: libc::mode_t, body: impl FnOnce()) {
         const CHILD: &str = "AMPLIHACK_STATE_PERMISSION_TEST_CHILD";
         let parent = std::os::unix::process::parent_id().to_string();
         if std::env::var(CHILD).as_deref() == Ok(parent.as_str()) {
@@ -50,8 +54,8 @@ mod permission_tests {
             .env(CHILD, std::process::id().to_string());
         // SAFETY: only umask(2) runs between fork and exec, in the child.
         unsafe {
-            command.pre_exec(|| {
-                libc::umask(0o002);
+            command.pre_exec(move || {
+                libc::umask(mask);
                 Ok(())
             });
         }
@@ -65,3 +69,6 @@ mod permission_tests {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests_private_umask;

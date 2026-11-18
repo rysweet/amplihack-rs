@@ -120,7 +120,13 @@ pub(crate) fn tempdir_outside_framework_roots() -> tempfile::TempDir {
         use std::os::unix::fs::PermissionsExt;
         builder.permissions(std::fs::Permissions::from_mode(0o700));
     }
-    builder.tempdir_in(scratch_base::scratch_base()).unwrap()
+    let dir = builder.tempdir_in(scratch_base::scratch_base()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    dir
 }
 
 /// A drop-in for `tempfile::tempdir()` whose folder is `0700` whatever the
@@ -135,7 +141,13 @@ pub(crate) fn private_tempdir() -> tempfile::TempDir {
         use std::os::unix::fs::PermissionsExt;
         builder.permissions(std::fs::Permissions::from_mode(0o700));
     }
-    builder.tempdir().expect("create a 0700 temporary folder")
+    let dir = builder.tempdir().expect("create a 0700 temporary folder");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    dir
 }
 
 #[cfg(test)]

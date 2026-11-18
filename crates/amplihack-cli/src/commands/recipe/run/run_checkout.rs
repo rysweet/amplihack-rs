@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -170,13 +170,19 @@ impl RunCheckout {
             None => tempfile::Builder::new()
                 .prefix("execution-")
                 .permissions(fs::Permissions::from_mode(0o700))
-                .tempdir_in(parent)?
+                .tempdir_in(parent)
+                .and_then(|dir| {
+                    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
+                    Ok(dir)
+                })?
                 .keep(),
         };
+        // Newly allocated temporary storage is ours; stable storage admission
+        // retains its own checks and never has its permissions normalized.
         let repository = storage.join("repository.git");
         let root = storage.join("checkout");
         // Git populates an existing empty allocation without broadening it.
-        fs::DirBuilder::new().mode(0o700).create(&repository)?;
+        amplihack_utils::secure_files::create_private_directory(&repository)?;
         let owner = uuid::Uuid::new_v4().to_string();
         // No caller worktree registration, object alternates or hardlinks.
         // --no-local forces object transfer instead of copying object files.
@@ -201,7 +207,7 @@ impl RunCheckout {
         }
         let head = std::str::from_utf8(trim_lf(&before.head))?;
         // Allocate the checkout privately; tracked contents retain Git modes.
-        fs::DirBuilder::new().mode(0o700).create(&root)?;
+        amplihack_utils::secure_files::create_private_directory(&root)?;
         let output = preparation_command(&repository)
             .args(["worktree", "add", "--detach", "--no-checkout", "--quiet"])
             .arg(&root)
@@ -271,12 +277,8 @@ impl RunCheckout {
         ];
         let manifest = serde_json::json!({"schema_version":1,"owner":owner,"repository":repository,"checkout":root,"identities":identities,"head":head});
         use std::io::Write;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(storage.join("owner.json"))?;
+        let mut file =
+            amplihack_utils::secure_files::create_private_file(&storage.join("owner.json"))?;
         file.write_all(&serde_json::to_vec(&manifest)?)?;
         file.sync_all()?;
         fs::File::open(&storage)?.sync_all()?;
@@ -483,13 +485,7 @@ impl RunCheckout {
 /// following a symbolic link at `path` (issue #2346).
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .mode(0o600)
-        .open(path)
+    let mut file = amplihack_utils::secure_files::open_private_write(path)
         .with_context(|| format!("cannot open {}", path.display()))?;
     file.write_all(bytes)
         .with_context(|| format!("cannot write {}", path.display()))
