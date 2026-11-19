@@ -2,7 +2,10 @@
 //!
 //! A caller who still passes one gets an error and exit 1 before any work,
 //! never a silent no-op. `should_publish` looked like a switch that stopped
-//! a run from publishing, but nothing ever read it.
+//! a run from publishing, but nothing ever read it. `review_dir` and
+//! `review_launch_dir` named the separate checkout reviewers used to start
+//! in; #2808 removed that checkout, so a value for either would now be
+//! accepted and quietly ignored — the same silent no-op (#2814).
 //!
 //! The key is the text before the first `=`, trimmed, compared exactly
 //! (case-sensitive, like every other context key). Every value is refused.
@@ -13,12 +16,28 @@ use anyhow::Result;
 use std::io::Write;
 
 /// `(key, message)` for every removed context key.
-pub(crate) const REMOVED_CONTEXT_KEYS: &[(&str, &str)] = &[(
-    "should_publish",
-    "Error: context key 'should_publish' was removed by #1976 (decision 17.113). \
-     It never stopped a run from publishing; do not rely on it. \
-     Remove '-c should_publish=…' from the command.",
-)];
+pub(crate) const REMOVED_CONTEXT_KEYS: &[(&str, &str)] = &[
+    (
+        "should_publish",
+        "Error: context key 'should_publish' was removed by #1976 (decision 17.113). \
+         It never stopped a run from publishing; do not rely on it. \
+         Remove '-c should_publish=…' from the command.",
+    ),
+    (
+        "review_dir",
+        "Error: context key 'review_dir' was removed by #2808. \
+         Reviewers run in the PR's own linked worktree, so no separate review \
+         checkout exists for it to name. \
+         Remove '-c review_dir=…' from the command.",
+    ),
+    (
+        "review_launch_dir",
+        "Error: context key 'review_launch_dir' was removed by #2808. \
+         Reviewers run in the PR's own linked worktree, so no separate review \
+         checkout exists for it to name. \
+         Remove '-c review_launch_dir=…' from the command.",
+    ),
+];
 
 /// The removed key `arg` (a `KEY=VALUE` pair) passes, if any.
 pub(crate) fn removed_key(arg: &str) -> Option<&'static str> {

@@ -14,12 +14,10 @@ pub struct State {
     pub state_dir: PathBuf,
     pub record: PathBuf,
     pub repo: PathBuf,
-    pub review_dir: PathBuf,
     pub launch_tools: PathBuf,
     pub binary: PathBuf,
     pub decision_file: PathBuf,
     pub context: BTreeMap<String, String>,
-    pub review_stamp: String,
     pub depth: Option<String>,
     pub ceiling: Option<String>,
 }
@@ -155,13 +153,11 @@ pub fn prepare(args: Prepare) -> Result<()> {
             .context("launch binary not found")?
     };
     let state = State {
-        review_stamp: evidence::review_stamp(&launch_tools, &args.review_dir)?,
         run_id: run_id.clone(),
         round_label: args.round_label,
         state_dir: args.state_dir,
         record: args.record,
         repo: args.repo.canonicalize()?,
-        review_dir: args.review_dir.canonicalize()?,
         launch_tools,
         binary,
         decision_file: decision_file.clone(),

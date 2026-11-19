@@ -205,8 +205,8 @@ fn unresolved_major_and_blocking_concerns_still_reach_evaluator_at_sibling_depth
         assert_eq!(calls[0]["ceiling"], "6");
         let argv = calls[0]["argv"].as_array().unwrap();
         assert!(
-            argv.iter().any(|v| v == &json!(d.review)),
-            "evaluator works in trusted review directory"
+            argv.iter().any(|v| v == &json!(d.repo)),
+            "evaluator works in the actual PR worktree"
         );
         assert!(argv.iter().any(|v| v == "loop_round_verdict=CONCERNS"));
         assert!(!d.marked());
@@ -400,6 +400,60 @@ fn unavailable_rust_helper_fails_preflight_before_spending_a_review() {
     assert!(
         stderr(&o).contains("helper"),
         "report the missing completion dependency: {}",
+        show(&o)
+    );
+}
+
+/// #2814: the record carries the commit the loop measured, and recording it is
+/// all the loop does with it. A review that names another commit leaves no
+/// finding, refuses nothing and stops nothing: the round completes on its
+/// verdict exactly as it would have had the review named the same commit. The
+/// reconciliation this replaces turned that round into a stopped drive.
+#[test]
+fn a_review_naming_another_commit_does_not_change_the_round() {
+    let d = Drive::new();
+    d.git(&d.repo, &["commit", "--allow-empty", "-qm", "other"]);
+    let other = d.head();
+    d.git(&d.repo, &["reset", "-q", "--hard", "HEAD~1"]);
+    assert_ne!(other, d.head());
+    d.set("review-head", &other);
+    let o = d.run_loop();
+    assert_complete(&d, &o);
+    let record: serde_json::Value = serde_json::from_str(&d.read("crusty-latest.json")).unwrap();
+    assert_eq!(
+        record["reviewed_head_sha"],
+        d.head(),
+        "the record carries the measured commit, not the claim: {}",
+        show(&o)
+    );
+    assert_eq!(
+        d.read("crusty-round-1.json.findings"),
+        "",
+        "a disagreeing claim is not a finding: {}",
+        show(&o)
+    );
+}
+
+/// #2814: a dispatch refusal ends the drive, so the reason the loop records
+/// names what the helper refused. "The completion decision or evidence was
+/// invalid" on its own left the operator to work out which of the two it was,
+/// and from a run that had already stopped.
+#[test]
+fn an_invalid_decision_records_what_dispatch_refused() {
+    let d = Drive::new();
+    d.set("review.json", &json!({"crusty_verdict":"CONCERNS", "concerns":[{
+        "id":"wrong-result", "severity":"major", "summary":"Wrong return value", "evidence":"lib.rs:4"
+    }]}).to_string());
+    // The next-action agent claims a completion the evidence cannot carry.
+    d.set("action", "complete");
+    let o = d.run_loop();
+    assert!(!o.status.success(), "{}", show(&o));
+    let v = json_output(&o);
+    assert_eq!(v["loop_result"], "INVALID_DECISION", "{}", show(&o));
+    let reason = v["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("unresolved findings"),
+        "the recorded reason must name what dispatch refused: {reason:?} {}",
         show(&o)
     );
 }

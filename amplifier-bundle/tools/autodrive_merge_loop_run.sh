@@ -87,20 +87,8 @@ if [ -z "${AMPLIHACK_HOME:-}" ]; then
   export AMPLIHACK_HOME
 fi
 
-# The PR worktree is the preflight's repo ($REPO, #1543): the PR head's
-# linked worktree, where only each round's commit step works. Rust then
-# allocates a private review generation at that PR commit; reviewed
-# instruction files remain data and judging starts from separate trusted
-# launch material (#1528/#2096). The loop owns its generation, including
-# nested re-reviews, and releases it on exit.
+# Review and fix steps use the legitimate PR worktree.
 PR_WORKTREE="$REPO"
-[ -n "$PR_WORKTREE" ] || { echo "ERROR: prepared PR worktree is required (#1528)" >&2; exit 1; }
-REVIEW_DIR="$(amplihack internal review-allocate "$PR_WORKTREE" "$DIR")" || exit 1
-release_review_dir() { amplihack internal review-release "$REVIEW_DIR"; }
-# Replaces the task-file trap above: the checkout is released and the task file removed on every exit from here.
-on_exit() { local rc=$?; release_review_dir || rc=1; rm -f -- "${TASK_IN:-}"; exit "$rc"; }
-trap on_exit EXIT
-
 # #2575 M1: <rounds> more rounds is a loop budget of the merge-ready rounds
 # already recorded in this state directory plus <rounds>, capped by the
 # operator's own budget. An unreadable usage file counts 0 rounds used, which
@@ -131,7 +119,6 @@ bash "$LOOP_HELPER" --task-file "$TASK_IN" \
   --clean-token "MERGE_READY" \
   --verdict-field "merge_ready_verdict" \
   --repo "$PR_WORKTREE" \
-  --review-dir "$REVIEW_DIR" \
   --state-dir "$DIR" \
   --context "repo_path=$PR_WORKTREE" \
   --context "step_recovery_dir=${RECIPE_VAR_step_recovery_dir:-}" \

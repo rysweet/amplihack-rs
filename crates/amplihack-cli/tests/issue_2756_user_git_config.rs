@@ -1,6 +1,6 @@
 //! Issue #2756: a recipe step reads the user's own Git configuration again.
 //!
-//! Since #2290 `RunCheckout::apply_to` set `GIT_CONFIG_NOSYSTEM=1`,
+//! Until #2808 `RunCheckout::apply_to` (now removed) set `GIT_CONFIG_NOSYSTEM=1`,
 //! `GIT_CONFIG_SYSTEM=/dev/null` and `GIT_CONFIG_GLOBAL=/dev/null` on the
 //! recipe-runner command itself, so every step, hook and agent started under a
 //! run lost the user's global and system Git configuration. A URL-scoped
@@ -12,15 +12,14 @@
 //!
 //! 1. the user's own global configuration — a commit identity and a
 //!    URL-scoped credential helper — reaches a step;
-//! 2. #2096's protection is untouched: inherited `GIT_DIR` and
+//! 2. inherited Git routing is scrubbed: `GIT_DIR` and
 //!    `GIT_INDEX_FILE` still cannot send a run's Git back to the checkout
 //!    they name.
 //!
 //! The runner is a stub shell script wired through `RECIPE_RUNNER_RS_PATH`.
-//! `RunCheckout::apply_to` is applied to exactly that command, at both of its
-//! call sites in `execute.rs`, so the stub's environment is the environment
-//! every step would inherit. The stub runs the real Git operations rather
-//! than asserting on a list of variable names.
+//! `execute.rs` scrubs routing after constructing that command, so the stub's
+//! environment is the environment every step would inherit. The stub runs real
+//! Git operations rather than asserting on a list of variable names.
 //!
 //! Nothing here reads or writes the developer's real `~/.gitconfig`,
 //! `~/.claude` or `~/.amplihack`: `Fixture::base_environment` clears the
@@ -41,8 +40,7 @@ use std::{
 
 /// The commit identity that exists only in the temporary `HOME`'s
 /// `.gitconfig`. The caller's checkout deliberately has no `--local`
-/// `user.name`, because `RunCheckout::prepare` copies a local one into the
-/// private clone and would mask what this test is asking about.
+/// `user.name`, which would mask what this test is asking about.
 const SENTINEL_NAME: &str = "Issue 2756 Global Identity";
 const SENTINEL_EMAIL: &str = "issue-2756@example.invalid";
 
@@ -88,7 +86,6 @@ while [ $# -gt 0 ]; do
 done
 cd "$dir"
 printf '%s' "$(pwd -P)" > "$out/cwd"
-printf '%s' "${AMPLIHACK_RUN_CHECKOUT:-}" > "$out/run_checkout"
 status=0
 git rev-parse --absolute-git-dir > "$out/git_dir" 2> "$out/git_dir.err" || status=$?
 printf '%s' "$status" > "$out/git_dir.status"
@@ -233,7 +230,7 @@ impl Fixture {
     }
 
     /// A commit with an identity given on the command line, so no `--local`
-    /// `user.name` is left behind for `RunCheckout::prepare` to copy.
+    /// `user.name` is left behind to mask the global identity.
     fn commit_in(&self, dir: &Path, message: &str) {
         self.git_in(
             dir,
@@ -384,13 +381,7 @@ fn inherited_git_dir_and_index_file_still_cannot_reroute_a_run() {
     succeeds(&out);
 
     let cwd = PathBuf::from(f.observed_text("routing", "cwd"));
-    let checkout = PathBuf::from(f.observed_text("routing", "run_checkout"));
-    assert!(
-        !checkout.as_os_str().is_empty(),
-        "the run reported no private checkout"
-    );
-    assert_eq!(cwd, checkout, "the runner did not start in its checkout");
-    assert_ne!(cwd, f.repo, "the run used the caller's checkout");
+    assert_eq!(cwd, f.repo, "the runner uses the named checkout");
     assert!(
         !cwd.starts_with(&f.other),
         "the run was rerouted into the inherited repository: {}",

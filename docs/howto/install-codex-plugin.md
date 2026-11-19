@@ -104,13 +104,11 @@ When a recipe agent step runs on Codex, it is launched as `amplihack codex -- ex
 --dangerously-bypass-hook-trust
 ```
 
-For Crusty and merge-ready steps that execute in an amplihack-owned review
-launch directory, amplihack also adds `--skip-git-repo-check`. Ownership is
-validated from the existing review manifest. You do not need to add a Codex
-project trust entry or change your configuration. Steps in Git checkouts
-receive no automatic directory-check bypass. See the
-[owned review launch directory reference](../reference/launch-flag-injection.md#owned-review-launch-directories)
-for eligibility and explicit-flag handling.
+Crusty and merge-ready steps execute in the actual linked PR worktree.
+Codex discovers Git there normally. Amplihack does not automatically add
+`--skip-git-repo-check` or inspect review-folder ownership. Explicit caller
+arguments retain their existing behavior; see
+[Codex worktree launches](../reference/launch-flag-injection.md#codex-worktree-launches).
 
 A step that the runner starts as
 
@@ -140,7 +138,11 @@ When amplihack adds the sandbox, it writes one line to stderr before Codex start
 amplihack: codex exec: added --sandbox danger-full-access, --dangerously-bypass-hook-trust (#1985)
 ```
 
-If the caller already passed `--dangerously-bypass-hook-trust`, the line is `amplihack: codex exec: added --sandbox danger-full-access (#1985)`. In an owned review launch directory the line also names `--skip-git-repo-check` first, for example `amplihack: codex exec: added --skip-git-repo-check, --sandbox danger-full-access, --dangerously-bypass-hook-trust (#2788, #1985)`, and it is printed whenever that flag is added, even when the caller chose a sandbox. A Crusty or merge-ready step whose line does not name `--skip-git-repo-check` was not judged to be in an owned launch directory. The line is built from fixed text only and never contains caller arguments. It goes only to stderr, so a step's stdout and its `--output-last-message` file are unchanged. Otherwise no line is printed when the caller passed its own sandbox, even though the hook-trust flag is still added, and none is printed for an argv without `exec`. There is no option to turn the line off.
+If the caller already passed `--dangerously-bypass-hook-trust`, the line is
+`amplihack: codex exec: added --sandbox danger-full-access (#1985)`.
+The fixed-text notice goes only to stderr; stdout and `--output-last-message`
+are unchanged. No notice is printed when the caller chose a sandbox or when
+argv has no `exec` subcommand. There is no option to turn the notice off.
 
 The line is reliably seen only when you run `amplihack codex -- exec` yourself. In a recipe run it usually is not seen. The recipe runner pinned in `claude-plugin/recipe-runner.rev` (recipe-runner-rs `4d5187e`) does not stream an agent step's stderr to the recipe log. It writes the stderr to a file under `/tmp/amplihack-agent-stderr/` and deletes that file when the step succeeds. When the step fails, the error quotes only the last 4000 bytes, which after a long Codex run usually leaves the notice out; the full file is kept at the path printed after `--- stderr-log:`. Finding no line in a recipe log therefore does not mean no flags were added. Issue #2066 tracks keeping these lines from agent steps. The full rules are in [launch flag injection](../reference/launch-flag-injection.md).
 
@@ -176,7 +178,7 @@ amplihack codex -- exec --sandbox read-only --output-last-message /d0/run/final-
 
 Full access is not safe for untrusted input. It gives a Codex step the same reach as a Claude step: anything the user account can read or write.
 
-- **Use a trusted execution directory.** Run agent steps in checkouts you trust or in amplihack-provisioned review launch directories. During review, the PR checkout is data read by explicit path; its instruction files are not loaded as launch instructions. Text in a checkout or a task can still steer the model, and nothing below the user account limits what the step then does. See [private review generations](../reference/recipe-checkout-isolation.md#private-review-generations).
+- **Use the intended worktree.** Review agents run directly in the PR worktree and are instructed to leave it unchanged. Trusted workflow assets are selected independently of cwd. Repository instruction files are visible to the harness; direct worktree execution does not isolate the reviewer from them. Treat repository text as task data, not authority for credential access, publication, or cleanup. See [direct review](../reference/recipe-checkout-isolation.md#review-in-the-pr-worktree).
 - **A step can change what later steps run.** Under full access a step can write `.codex/hooks.json` at any level of the checkout, files under `~/.codex/`, `.git/hooks` and `.git/config`. Because every agent step bypasses hook trust, a hook planted by one step runs in later steps without a trust prompt. Codex loads hooks from `CODEX_HOME`, from installed plugins, and, when the project is marked trusted (`trust_level = "trusted"` in the user `config.toml`), from `.codex/` in the working directory and each parent up to the project root. The bypass flag does not mark a project trusted, and amplihack writes no trust entry. That condition gives no protection under full access, because a step can also write `~/.codex/config.toml` and set `trust_level` for the checkout itself. Issue #1993 tracks the planting of `.codex/hooks.json`.
 - **A step can reach credentials.** Files the user account can read, such as SSH keys, `~/.codex/auth.json`, the `gh` and git credential stores and cloud CLI tokens, are readable and writable by the step, and the network is open.
 - **The argv comes from the recipe author.** The caller-wins rule trusts the arguments after `--`. Prompt text, issue bodies and other untrusted content must reach Codex on stdin (`-`), never in argv, where a crafted `--sandbox` or `-c` value would be honoured.

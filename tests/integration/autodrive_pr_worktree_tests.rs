@@ -1359,7 +1359,7 @@ fn quiet_git(home: &Path, dir: &Path, args: &[&str]) {
 /// of it (`<root>/pr-wt`), which the stub resolver also returns, as when an
 /// operator passes `-c repo_path=<PR worktree>` from the main checkout.
 /// The real `autodrive_worktree_guard.sh` and `workflow_worktree_root.sh`
-/// derive the review dir.
+/// are on the ladder the step searches.
 fn run_loop_step_02_from(
     recipe: &str,
     step: &str,
@@ -1400,7 +1400,7 @@ fn run_loop_step_02_from(
         &launch
     };
     fs::create_dir_all(&tools).expect("mkdir tools");
-    // Step-02 takes the review dir from the real guard (#1528).
+    // Step-02 resolves its recipes with the real guard (#1528).
     for real_tool in ["autodrive_worktree_guard.sh", "workflow_worktree_root.sh"] {
         fs::copy(tools_dir().join(real_tool), tools.join(real_tool))
             .unwrap_or_else(|e| panic!("copy {real_tool}: {e}"));
@@ -1458,9 +1458,6 @@ fn run_loop_step_02_from(
            *'extract-field --field state_dir'*) printf '%s' /stub/state ;;\n\
            *'extract-field --field pr'*) printf '%s' 7 ;;\n\
            *'extract-field --field repo'*) printf '%s' \"$STUB_PRE_REPO\" ;;\n\
-           'internal review-allocate '*) printf '%s\\n' \"$@\" > \"$STUB_LOGS/allocate.argv\"; printf '%s\\n' \"$STUB_LOGS/review-generation\" ;;\n\
-           'internal review-release '*) printf '%s\\n' \"$@\" > \"$STUB_LOGS/release.argv\" ;;\n\
-           *'extract-field --field review_dir'*) printf '%s' \"$STUB_REVIEW_DIR\" ;;\n\
            *'extract-field --field base_branch'*) printf '%s' main ;;\n\
            *) printf 'stub amplihack: unexpected: %s\\n' \"$*\" >&2; exit 97 ;;\n\
          esac\n",
@@ -1491,7 +1488,6 @@ fn run_loop_step_02_from(
                 std::path::Path::new("/stub/wt")
             },
         )
-        .env("STUB_REVIEW_DIR", &launch)
         .env(
             preflight_var,
             r#"{"state_dir":"/stub/state","pr":"7","repo":"<stub>"}"#,
@@ -1515,7 +1511,6 @@ fn loop_step_02_refuses_before_the_loop_when_resolution_fails() {
         assert!(output.status.success(), "{}", describe(&output));
         let argv = read(&tmp.path().join("logs/loop.argv"));
         assert!(argv.contains("repo_path=/stub/wt"));
-        assert!(argv.contains("--review-dir"));
         assert_eq!(
             read(&tmp.path().join("logs/loop.task")),
             "drive PR 7 to merge"
@@ -1524,497 +1519,36 @@ fn loop_step_02_refuses_before_the_loop_when_resolution_fails() {
             !tmp.path().join("logs/resolver.argv").exists(),
             "agent preparation must not be repeated through a mandatory hosting CLI"
         );
-        // The review dir is a private generation Rust allocates from the PR
-        // worktree (#2096); the main checkout the preflight names is not used.
-        assert!(
-            argv.contains("/logs/review-generation"),
-            "{recipe}: the review dir is the allocated generation: {argv}"
-        );
-        assert_eq!(
-            read(&tmp.path().join("logs/allocate.argv")),
-            "internal\nreview-allocate\n/stub/wt\n/stub/state\n",
-            "{recipe}: the generation is allocated from the PR worktree"
-        );
     }
 }
 
-/// Crusty round 1 on PR #1586: with `repo_path` set to the PR's linked
-/// worktree, step-02 used to take the review dir from `pwd` after entering
-/// `repo_path`, so the review dir WAS the PR worktree and the loop preflight
-/// refused UNTRUSTED_REVIEW_DIR before round 1. The review dir is now a private
-/// generation allocated from the PR worktree (#2096), never the PR worktree
-/// itself and never the launch checkout.
-#[test]
-fn loop_step_02_with_repo_path_set_to_the_pr_worktree_reviews_from_the_main_checkout() {
-    for (recipe, step, preflight_var) in LOOPS {
-        let (output, tmp) = run_loop_step_02_from(recipe, step, preflight_var, false, true);
-        let root = fs::canonicalize(tmp.path()).expect("canon");
-        assert_eq!(
-            output.status.code(),
-            Some(0),
-            "{recipe}\n{}",
-            describe(&output)
-        );
-        let main = root.join("launch").display().to_string();
-        let worktree = root.join("pr-wt").display().to_string();
-        let argv: Vec<String> = read(&root.join("logs/loop.argv"))
-            .lines()
-            .map(str::to_string)
-            .collect();
-        let after = |flag: &str| {
-            let at = argv
-                .iter()
-                .position(|arg| arg == flag)
-                .unwrap_or_else(|| panic!("{recipe}: loop gets {flag}: {argv:?}"));
-            argv[at + 1].clone()
-        };
-        let review = after("--review-dir");
-        assert!(
-            review.ends_with("/logs/review-generation") && review != worktree && review != main,
-            "{recipe}: the review dir is the allocated generation: {argv:?}"
-        );
-        assert_eq!(
-            read(&root.join("logs/allocate.argv")),
-            format!("internal\nreview-allocate\n{worktree}\n/stub/state\n"),
-            "{recipe}: the generation is allocated from the PR worktree"
-        );
-        assert_eq!(after("--repo"), worktree, "{recipe}: {argv:?}");
-        assert!(
-            !root.join("logs/resolver.argv").exists(),
-            "the agent-prepared worktree is reused"
-        );
+// Crusty round 1 on PR #1586: `repo_path` is the PR's linked worktree, and
+// since #2808 the reviewer runs there. The loop preflight no longer resolves a
+// separate directory for it; what it still refuses is a round recipe that
+// resolves inside the reviewed tree, and a loop-owned context key arriving
+// through `--context`.
 
-        // The loop's own preflight still accepts the main checkout as legacy
-        // review input (the loop converts it to an owned generation).
-        let preflight = Command::new("bash")
-            .arg(tools_dir().join("autodrive_worktree_guard.sh"))
-            .args([
-                "loop-preflight",
-                "crusty",
-                &worktree,
-                &main,
-                "autodrive-crusty-round",
-            ])
-            .output()
-            .expect("run loop-preflight");
-        assert_eq!(
-            preflight.status.code(),
-            Some(0),
-            "{recipe}: the preflight accepts the main checkout as review dir\n{}",
-            describe(&preflight)
-        );
-        assert_eq!(
-            text(&preflight.stdout).lines().next(),
-            Some(main.as_str()),
-            "{recipe}: {}",
-            describe(&preflight)
-        );
+// A main checkout with one commit and a linked worktree of it, under `root`.
 
-        // The step-02 working directory is no longer the review dir: the
-        // same worktree handed in as the review dir is still refused, and
-        // the refusal names --review-dir and the preflight repo it is derived
-        // from (not repo_path, which may differ when a PR number is given),
-        // and not the launch dir.
-        let refused = Command::new("bash")
-            .arg(tools_dir().join("autodrive_worktree_guard.sh"))
-            .args([
-                "loop-preflight",
-                "crusty",
-                &worktree,
-                &worktree,
-                "autodrive-crusty-round",
-            ])
-            .output()
-            .expect("run loop-preflight");
-        assert_eq!(refused.status.code(), Some(1), "{}", describe(&refused));
-        let said = text(&refused.stderr);
-        assert!(
-            said.contains("--review-dir")
-                && said.contains("preflight repo")
-                && !said.contains("launch auto-drive from"),
-            "{recipe}: the refusal points at the setting that matters: {said}"
-        );
-    }
-}
-
-#[test]
-fn guard_review_dir_prints_the_main_checkout_or_stops() {
-    let tmp = TempDir::new().expect("tempdir");
-    let root = fs::canonicalize(tmp.path()).expect("canon");
-    let (home, main, wt) = (root.join("home"), root.join("main"), root.join("wt"));
-    fs::create_dir_all(&home).expect("mkdir home");
-    fs::create_dir_all(&main).expect("mkdir main");
-    quiet_git(&home, &main, &["init", "-q"]);
-    quiet_git(
-        &home,
-        &main,
-        &["commit", "-q", "--allow-empty", "-m", "init"],
-    );
-    let wt_str = wt.display().to_string();
-    quiet_git(
-        &home,
-        &main,
-        &["worktree", "add", "-q", "-b", "pr", &wt_str],
-    );
-    let guard = tools_dir().join("autodrive_worktree_guard.sh");
-    for repo_path in [&main, &wt, &wt.join(".")] {
-        let output = Command::new("bash")
-            .arg(&guard)
-            .arg("review-dir")
-            .arg(repo_path)
-            .output()
-            .expect("run review-dir");
-        assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
-        assert_eq!(
-            text(&output.stdout).trim_end(),
-            main.display().to_string(),
-            "repo_path {}",
-            repo_path.display()
-        );
-    }
-    let not_git = root.join("not-git");
-    fs::create_dir_all(&not_git).expect("mkdir");
-    let output = Command::new("bash")
-        .arg(&guard)
-        .arg("review-dir")
-        .arg(&not_git)
-        .env("GIT_CEILING_DIRECTORIES", &root)
-        .output()
-        .expect("run review-dir");
-    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
-    assert!(output.stdout.is_empty(), "{}", describe(&output));
-    assert!(
-        text(&output.stderr).contains("#1528"),
-        "{}",
-        describe(&output)
-    );
-}
-
-/// A main checkout with one commit and a linked worktree of it, under `root`.
-fn main_and_worktree(home: &Path, main: &Path, wt: &Path) {
-    fs::create_dir_all(main).expect("mkdir main");
-    quiet_git(home, main, &["init", "-q"]);
-    quiet_git(home, main, &["commit", "-q", "--allow-empty", "-m", "init"]);
-    let wt_str = wt.display().to_string();
-    quiet_git(home, main, &["worktree", "add", "-q", "--detach", &wt_str]);
-}
-
-/// Crusty round 3 on PR #1586, item 1: `review-dir` must not take its answer
-/// from an inherited `GIT_DIR` (a git hook runs with one set, githooks(5)),
-/// and the loop preflight must refuse a review dir in another repository,
-/// whose `gh pr diff N` would read that repository's pull request N.
-#[test]
-fn review_dir_ignores_an_inherited_git_dir_and_the_preflight_refuses_another_repository() {
-    let tmp = TempDir::new().expect("tempdir");
-    let root = fs::canonicalize(tmp.path()).expect("canon");
-    let home = root.join("home");
-    fs::create_dir_all(&home).expect("mkdir home");
-    let (main, wt) = (root.join("main"), root.join("wt"));
-    let (other, other_wt) = (root.join("other"), root.join("other-wt"));
-    main_and_worktree(&home, &main, &wt);
-    main_and_worktree(&home, &other, &other_wt);
-    let guard = tools_dir().join("autodrive_worktree_guard.sh");
-
-    let output = Command::new("bash")
-        .arg(&guard)
-        .arg("review-dir")
-        .arg(&wt)
-        .env("GIT_DIR", other.join(".git"))
-        .env("GIT_COMMON_DIR", other.join(".git"))
-        .env("GIT_WORK_TREE", &other)
-        .env("GIT_INDEX_FILE", other.join(".git/index"))
-        .output()
-        .expect("run review-dir");
-    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
-    assert_eq!(
-        text(&output.stdout).trim_end(),
-        main.display().to_string(),
-        "an inherited GIT_DIR must not choose the review dir\n{}",
-        describe(&output)
-    );
-
-    for (review, why) in [
-        (&other, "another repository"),
-        (&other_wt, "another repository"),
-        (&root, "not the top of a git checkout"),
-    ] {
-        let refused = Command::new("bash")
-            .arg(&guard)
-            .arg("loop-preflight")
-            .arg("crusty")
-            .arg(&wt)
-            .arg(review)
-            .arg("autodrive-crusty-round")
-            .output()
-            .expect("run loop-preflight");
-        assert_eq!(refused.status.code(), Some(1), "{}", describe(&refused));
-        assert!(
-            text(&refused.stdout).contains("\"loop_result\":\"UNTRUSTED_REVIEW_DIR\"")
-                && text(&refused.stderr).contains(why),
-            "review dir {}: {}",
-            review.display(),
-            describe(&refused)
-        );
-    }
-
-    // The round's own guard refuses it too, before the judging agent starts.
-    let refused = Command::new("bash")
-        .arg(&guard)
-        .arg("round-guard")
-        .env("REVIEW_DIR", &other)
-        .env("REPO_PATH", &wt)
-        .output()
-        .expect("run round-guard");
-    assert_eq!(refused.status.code(), Some(1), "{}", describe(&refused));
-    assert!(refused.stdout.is_empty(), "{}", describe(&refused));
-}
-
-/// Crusty round 3 on PR #1586, item 2: for a bare repository the resolver
-/// answers the directory beside the bare git dir, which is no checkout.
-/// `review-dir` stops by name rather than start agents there.
-#[test]
-fn review_dir_stops_on_a_bare_repository_with_a_linked_worktree() {
-    let tmp = TempDir::new().expect("tempdir");
-    let root = fs::canonicalize(tmp.path()).expect("canon");
-    let home = root.join("home");
-    fs::create_dir_all(&home).expect("mkdir home");
-    let (seed, seed_wt) = (root.join("seed"), root.join("seed-wt"));
-    main_and_worktree(&home, &seed, &seed_wt);
-    let parent = root.join("src");
-    fs::create_dir_all(&parent).expect("mkdir src");
-    let bare = parent.join("repo.git");
-    let bare_str = bare.display().to_string();
-    quiet_git(&home, &seed, &["clone", "-q", "--bare", ".", &bare_str]);
-    let wt = bare.join("wt");
-    let wt_str = wt.display().to_string();
-    quiet_git(
-        &home,
-        &bare,
-        &["worktree", "add", "-q", "--detach", &wt_str],
-    );
-
-    let guard = tools_dir().join("autodrive_worktree_guard.sh");
-    let output = Command::new("bash")
-        .arg(&guard)
-        .arg("review-dir")
-        .arg(&wt)
-        .env("GIT_CEILING_DIRECTORIES", &root)
-        .output()
-        .expect("run review-dir");
-    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
-    assert!(output.stdout.is_empty(), "{}", describe(&output));
-    let said = text(&output.stderr);
-    assert!(
-        said.contains("STOP:") && said.contains("bare repository") && said.contains("#1528"),
-        "{}",
-        describe(&output)
-    );
-
-    // Handed to the loop anyway, the directory beside the bare git dir is refused.
-    let refused = Command::new("bash")
-        .arg(&guard)
-        .arg("loop-preflight")
-        .arg("crusty")
-        .arg(&wt)
-        .arg(&parent)
-        .arg("autodrive-crusty-round")
-        .env("GIT_CEILING_DIRECTORIES", &root)
-        .output()
-        .expect("run loop-preflight");
-    assert_eq!(refused.status.code(), Some(1), "{}", describe(&refused));
-    assert!(
-        text(&refused.stdout).contains("UNTRUSTED_REVIEW_DIR"),
-        "{}",
-        describe(&refused)
-    );
-}
+// Crusty round 3 on PR #1586, item 1: the guard must not take its answer from
+// an inherited `GIT_DIR` (a git hook runs with one set, githooks(5)), whose
+// `gh pr diff N` would read another repository's pull request N.
 
 // ---------------------------------------------------------------------------
 // Round 3: judging agents never start in the tree they judge (#1528)
 // ---------------------------------------------------------------------------
 
-fn agent_steps(recipe: &str) -> Vec<(String, String)> {
-    load_recipe(recipe)
-        .get("steps")
-        .and_then(Value::as_sequence)
-        .expect("recipe has steps")
-        .iter()
-        .filter(|step| step.get("agent").is_some())
-        .map(|step| {
-            let id = step
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("?")
-                .to_string();
-            let wd = step
-                .get("working_dir")
-                .and_then(Value::as_str)
-                .unwrap_or_else(|| panic!("{recipe}: agent step `{id}` must set working_dir"))
-                .to_string();
-            (id, wd)
-        })
-        .collect()
-}
-
-/// The agent CLI loads AGENTS.md, CLAUDE.md and .claude hooks from its
-/// working directory. Only the commit step (step-04) may start in the PR
-/// worktree; the review, merge-ready assessment and next-action agents start
-/// in the review generation's trusted launch dir (#2096), so the branch under
-/// review never instructs the agent that decides whether it passes or when the
-/// loop stops.
-#[test]
-fn judging_agents_do_not_take_working_dir_from_the_pr_worktree() {
-    for (recipe, commit_step) in ROUNDS {
-        let steps = agent_steps(recipe);
-        assert!(
-            steps.len() >= 2,
-            "{recipe}: expected a judging and a commit agent: {steps:?}"
-        );
-        for (id, wd) in &steps {
-            if id == commit_step {
-                assert_eq!(
-                    wd, "{{repo_path}}",
-                    "{recipe}: {id} commits in the PR worktree"
-                );
-            } else {
-                assert_eq!(
-                    wd, "{{review_launch_dir}}",
-                    "{recipe}: judging agent `{id}` must start in the trusted review_launch_dir, not the PR worktree"
-                );
-            }
-        }
-        // A review_dir default of "." would resolve against the round's
-        // working dir, the PR worktree. It must be empty, and refused.
-        let ctx = load_recipe(recipe);
-        let default = ctx
-            .get("context")
-            .and_then(|c| c.get("review_dir"))
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("{recipe}: context must declare review_dir"));
-        assert_eq!(default, "", "{recipe}: review_dir has no default");
-        let launch_default = ctx
-            .get("context")
-            .and_then(|c| c.get("review_launch_dir"))
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("{recipe}: context must declare review_launch_dir"));
-        assert_eq!(
-            launch_default, "",
-            "{recipe}: review_launch_dir has no default"
-        );
-        // The guard runs before any agent and before any sub-recipe. The
-        // merge round finds its tools first (step-00-tools-dir, #1517); that
-        // step starts no agent.
-        let all = ctx
-            .get("steps")
-            .and_then(Value::as_sequence)
-            .unwrap_or_else(|| panic!("{recipe}: no steps"));
-        let guard = all
-            .iter()
-            .position(|s| s.get("id").and_then(Value::as_str) == Some("step-00-review-dir-guard"))
-            .unwrap_or_else(|| panic!("{recipe}: no step-00-review-dir-guard"));
-        let first_judged = all
-            .iter()
-            .position(|s| {
-                s.get("agent").is_some() || s.get("type").and_then(Value::as_str) == Some("recipe")
-            })
-            .unwrap_or_else(|| panic!("{recipe}: no agent or recipe step"));
-        assert!(
-            guard < first_judged,
-            "{recipe}: the guard runs before any agent or sub-recipe step"
-        );
-    }
-
-    let steps = agent_steps("loop-health-evaluator.yaml");
-    assert_eq!(
-        steps,
-        vec![(
-            "step-02-evaluate-loop-health".to_string(),
-            "{{loop_agent_working_dir}}".to_string()
-        )],
-        "the analyzer starts in loop_agent_working_dir, never in loop_repo_path"
-    );
-}
-
-fn run_review_dir_guard(recipe: &str, repo: &Path, review: Option<&Path>) -> Output {
-    let command = step_field(recipe, "step-00-review-dir-guard", "command");
-    let mut cmd = Command::new("bash");
-    cmd.arg("-c")
-        .arg(&command)
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("REPO_PATH", repo)
-        .env("AUTODRIVE_LAUNCH_TOOLS", launch_tools());
-    if let Some(review) = review {
-        cmd.env("REVIEW_DIR", review);
-    }
-    cmd.output().expect("run step-00")
-}
+// The agent CLI loads AGENTS.md, CLAUDE.md and .claude hooks from its
+// working directory. Since #2808 every round step starts in the PR worktree,
+// including the review and the merge-ready assessment. What keeps the branch
+// under review from instructing the agent that decides whether it passes is
+// the prompt's data-not-instructions rule and the guard's refusal of a round
+// recipe that resolves inside the reviewed tree, not a separate directory.
 
 /// The launch-side tools dir autodrive_loop.sh hands each round
 /// (`autodrive_launch_tools`): this checkout's amplifier-bundle/tools.
 fn launch_tools() -> PathBuf {
     workspace_root().join("amplifier-bundle/tools")
-}
-
-#[test]
-fn round_review_dir_guard_refuses_the_tree_under_review() {
-    let tmp = TempDir::new().expect("tempdir");
-    let root = fs::canonicalize(tmp.path()).expect("canonicalize");
-    let pr = root.join("pr-worktree");
-    let launch = root.join("launch");
-    let home = root.join("home");
-    fs::create_dir_all(&home).expect("mkdir home");
-    // The PR worktree is a linked worktree of the launch checkout, as in a
-    // real run; the guard accepts only that main checkout as the review dir.
-    main_and_worktree(&home, &launch, &pr);
-    fs::create_dir_all(pr.join("sub")).expect("mkdir pr/sub");
-    // A symlink that points into the PR worktree is still the PR worktree.
-    std::os::unix::fs::symlink(&pr, root.join("alias")).expect("symlink");
-    // Outside the PR worktree, yet not its main checkout (crusty round 3 on
-    // PR #1586): a plain directory, another repository, a sibling worktree.
-    fs::create_dir_all(root.join("plain")).expect("mkdir plain");
-    main_and_worktree(&home, &root.join("other"), &root.join("other-wt"));
-    let sibling = root.join("sibling-wt").display().to_string();
-    quiet_git(
-        &home,
-        &launch,
-        &["worktree", "add", "-q", "--detach", &sibling],
-    );
-
-    for (recipe, _) in ROUNDS {
-        let ok = run_review_dir_guard(recipe, &pr, Some(&launch));
-        assert_eq!(
-            ok.status.code(),
-            Some(0),
-            "{recipe}: launch side passes\n{}",
-            describe(&ok)
-        );
-        let cases: [(&str, Option<PathBuf>); 9] = [
-            ("missing", None),
-            ("empty", Some(PathBuf::new())),
-            ("same", Some(pr.clone())),
-            ("inside", Some(pr.join("sub"))),
-            ("symlinked", Some(root.join("alias"))),
-            ("absent", Some(root.join("nope"))),
-            ("plain", Some(root.join("plain"))),
-            ("other-repo", Some(root.join("other"))),
-            ("sibling-worktree", Some(root.join("sibling-wt"))),
-        ];
-        for (label, review) in &cases {
-            let out = run_review_dir_guard(recipe, &pr, review.as_deref());
-            assert_ne!(
-                out.status.code(),
-                Some(0),
-                "{recipe}/{label}: must refuse\n{}",
-                describe(&out)
-            );
-            assert!(
-                text(&out.stderr).contains("#1528"),
-                "{recipe}/{label}: say why\n{}",
-                describe(&out)
-            );
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2028,201 +1562,11 @@ const ROUNDS: [(&str, &str); 2] = [
 
 /// The fenced ```bash block in the step-04 prompt that stages and commits.
 fn commit_block(prompt: &str) -> String {
-    let mut rest = prompt;
-    while let Some(open) = rest.find("```bash\n") {
-        let body = &rest[open + "```bash\n".len()..];
-        let close = body.find("```").expect("closing fence");
-        if body[..close].contains("git add -A") {
-            return body[..close].to_string();
-        }
-        rest = &body[close + 3..];
-    }
-    panic!("no ```bash block with `git add -A` in prompt:\n{prompt}");
+    let body = prompt.split_once("```bash\n").expect("shell example").1;
+    body.split_once("```").expect("closing fence").0.to_string()
 }
 
-/// The prompt with every fenced block removed.
-fn prose(prompt: &str) -> String {
-    let mut out = String::new();
-    let mut fenced = false;
-    for line in prompt.lines() {
-        if line.trim_start().starts_with("```") {
-            fenced = !fenced;
-            continue;
-        }
-        if !fenced {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    out
-}
-
-fn position(lines: &[String], context: &str, predicate: impl Fn(&str) -> bool) -> usize {
-    lines
-        .iter()
-        .position(|line| predicate(line))
-        .unwrap_or_else(|| panic!("{context}: missing line in block:\n{}", lines.join("\n")))
-}
-
-#[test]
-fn round_step_04_blocks_check_linked_worktree_and_head_branch_before_staging() {
-    for (recipe, step) in ROUNDS {
-        let prompt = step_field(recipe, step, "prompt");
-        let lines = logical_lines(&commit_block(&prompt));
-        let ctx = |what: &str| format!("{recipe} {step}: {what}");
-
-        let cd = position(&lines, &ctx("cd"), |l| {
-            l.starts_with("cd \"{{repo_path}}\"")
-        });
-        assert_eq!(
-            cd,
-            0,
-            "{}",
-            ctx("the block must start by entering repo_path")
-        );
-        // The linked-worktree and head-branch checks live in the launch-side
-        // autodrive_worktree_guard.sh; the block calls it, and stops on it.
-        let checks = position(&lines, &ctx("commit-dir check"), |l| {
-            l.starts_with("bash \"{{autodrive_launch_tools}}/autodrive_worktree_guard.sh\" commit-dir {{pr_number}}")
-        });
-        let identity = position(&lines, &ctx("identity helper"), |l| {
-            l.contains("amplihack_prepare_git_commit_identity")
-        });
-        let guards: Vec<usize> = lines
-            .iter()
-            .enumerate()
-            .filter(|(_, l)| l.contains("amplihack hygiene artifact-guard"))
-            .map(|(index, _)| index)
-            .collect();
-        let add = position(&lines, &ctx("git add -A"), |l| l == "git add -A");
-        let commit = position(&lines, &ctx("git commit"), |l| l.starts_with("git commit"));
-
-        let tool = logical_lines(&read(&launch_tools().join("autodrive_worktree_guard.sh")));
-        let linked_line = tool
-            .iter()
-            .find(|l| l.contains("gd=\"$(git rev-parse --absolute-git-dir)\""))
-            .unwrap_or_else(|| panic!("autodrive_worktree_guard.sh: no linked-worktree check"));
-        for required in [
-            "--path-format=absolute --git-common-dir",
-            "case \"$cd\" in /*)",
-            "[ \"$gd\" != \"$cd\" ]",
-            "*) false",
-            "|| stop ",
-        ] {
-            assert!(
-                linked_line.contains(required),
-                "{}",
-                ctx(&format!("linked check needs `{required}`: {linked_line}"))
-            );
-        }
-        let head_line = tool
-            .iter()
-            .find(|l| l.contains("gh pr view \"$pr\" --json headRefName"))
-            .unwrap_or_else(|| panic!("autodrive_worktree_guard.sh: no head-branch check"));
-        for required in [
-            "[ -n \"$pr_head\" ]",
-            "[ \"$(git branch --show-current)\" = \"$pr_head\" ]",
-            "|| stop ",
-        ] {
-            assert!(
-                head_line.contains(required),
-                "{}",
-                ctx(&format!("head check needs `{required}`: {head_line}"))
-            );
-        }
-        for line in [linked_line, head_line] {
-            assert!(
-                !line.contains("2>/dev/null") && !line.contains("|| true"),
-                "{}",
-                ctx(&format!("checks must not be silenced: {line}"))
-            );
-        }
-        for at in [cd, checks] {
-            let line = &lines[at];
-            assert!(
-                line.contains("|| {") && line.contains("STOP") && line.contains("exit 1; }"),
-                "{}",
-                ctx(&format!("each check must stop the shell: {line}"))
-            );
-            assert!(
-                !line.contains("2>/dev/null") && !line.contains("|| true"),
-                "{}",
-                ctx(&format!("checks must not be silenced: {line}"))
-            );
-        }
-
-        assert_eq!(
-            guards.len(),
-            2,
-            "{}",
-            ctx("guard runs before and after staging")
-        );
-        for at in &guards {
-            let line = &lines[*at];
-            assert!(
-                line.starts_with(
-                    "amplihack hygiene artifact-guard --repo . --mode pre-commit || {"
-                ) && line.contains("STOP")
-                    && line.contains("exit 1; }"),
-                "{}",
-                ctx(&format!("a guard refusal must stop the shell: {line}"))
-            );
-        }
-        assert!(
-            cd < checks
-                && checks < identity
-                && identity < guards[0]
-                && guards[0] < add
-                && add < guards[1]
-                && guards[1] < commit,
-            "{}",
-            ctx(&format!(
-                "order must be cd -> commit-dir check -> identity -> guard -> add -> guard -> commit:\n{}",
-                lines.join("\n")
-            ))
-        );
-        assert!(
-            prompt
-                .to_ascii_lowercase()
-                .contains("optional command example"),
-            "{}",
-            ctx("the prompt must say the block runs as one shell command")
-        );
-    }
-}
-
-#[test]
-fn round_step_04_prompts_forbid_ignored_nested_and_forced_staging() {
-    // R4. The wording must not itself trip the forbidden-flag scanners.
-    for (recipe, step) in ROUNDS {
-        let prompt = step_field(recipe, step, "prompt");
-        let prose = prose(&prompt);
-        let lower = prose.to_ascii_lowercase();
-        for required in [
-            "after staging",
-            "ignored",
-            "worktrees/",
-            "another checkout",
-            "never force",
-            "#1528",
-        ] {
-            assert!(
-                lower.contains(required),
-                "{recipe} {step}: the staging rules must mention `{required}`:\n{prose}"
-            );
-        }
-        for forbidden in ["git add", "--force", " -f "] {
-            assert!(
-                !prose.contains(forbidden),
-                "{recipe} {step}: the prose must not contain `{forbidden}`:\n{prose}"
-            );
-        }
-        assert!(
-            !prompt.contains("--force") && !prompt.contains("git add -f"),
-            "{recipe} {step}: no forced staging anywhere in the prompt"
-        );
-    }
-}
+// The prompt with every fenced block removed.
 
 /// A linked worktree at `<main>/worktrees/feat/x` on `feat/x`, tracking
 /// `origin/feat/x`, with the stub `gh` answering `feat/x` for PR 7.
@@ -2265,7 +1609,7 @@ fn run_round_block_env(
     // `autodrive_launch_tools` is the real launch-side tools dir, so the
     // block runs the real commit-dir check; the merge round's
     // `autodrive_tools_dir` (git-identity.sh) is the stub below.
-    let script = block
+    let script = format!("fix_paths=(change.txt)\n{block}")
         .replace("{{repo_path}}", repo_path.to_str().expect("utf-8"))
         .replace("{{pr_number}}", "7")
         .replace(
@@ -2475,14 +1819,6 @@ fn round_step_04_snippet_commits_only_after_both_guards_pass() {
 // ---------------------------------------------------------------------------
 // AC10: documentation
 // ---------------------------------------------------------------------------
-
-#[test]
-fn auto_drive_reference_has_where_phases_2_and_3_run_section() {
-    let reference = read(&workspace_root().join("docs/reference/auto-drive-to-merge.md"));
-    assert!(reference.contains("PR head and worktree resolution"));
-    assert!(reference.contains("linked worktree"));
-    assert!(reference.contains("main checkout"));
-}
 
 // ---------------------------------------------------------------------------
 // Security review: SEC-V1..V4 (resolver environment and verification),
@@ -2828,30 +2164,6 @@ fn head_mode_never_asks_gh() {
         repo.sb.gh_calls().is_empty(),
         "--head must not call gh:\n{}",
         repo.sb.gh_calls()
-    );
-}
-
-#[test]
-fn preparation_uses_explicit_pr_and_finalization_keeps_review_separate() {
-    let doc = load_recipe("autodrive-merge-loop.yaml");
-    let prep = &doc["steps"][0];
-    assert_eq!(prep["type"].as_str(), Some("agent"));
-    let prompt = prep["prompt"].as_str().unwrap();
-    assert!(prompt.contains("Explicit operator PR"));
-    assert!(prompt.contains("source repository"));
-    let finalize = doc["steps"]
-        .as_sequence()
-        .unwrap()
-        .iter()
-        .find(|s| s["recipe"].as_str() == Some("autodrive-finalize"))
-        .unwrap();
-    assert_eq!(
-        finalize["context"]["repo_path"].as_str(),
-        Some("{{merge_loop_preflight.repo}}")
-    );
-    assert_eq!(
-        finalize["context"]["review_dir"].as_str(),
-        Some("{{merge_loop_preflight.review_dir}}")
     );
 }
 

@@ -29,8 +29,9 @@ mod isolated_amplihack;
 mod pinned_runner;
 mod support;
 
-#[path = "issue_2096_execution_isolation.rs"]
-mod issue_2096_execution_isolation;
+#[path = "issue_2808_named_checkout.rs"]
+mod issue_2808_named_checkout;
+
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
 #[path = "issue_2556_autodrive_evidence.rs"]
@@ -402,8 +403,6 @@ mod issue_2539_step_recovery_validation;
 mod issue_2658_routing_replay;
 #[path = "issue_2731_login_change_wait.rs"]
 mod issue_2731_login_change_wait;
-#[path = "issue_2788_codex_review_launch.rs"]
-mod issue_2788_codex_review_launch;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -526,8 +525,8 @@ mod issue_1619_operator_default_model;
 // the tests that assert on it. One copy follows the call-out.
 #[path = "../../../tests/integration/recipe_step_body.rs"]
 mod recipe_step_body;
-// Issue #2738: the Git-command tracer is gone; the private clone per run
-// stays. `issue_2738_support` holds the fixture the stub-runner tests share;
+// Issues #2738/#2808: tracing and private execution clones are gone.
+// `issue_2738_support` holds the fixture the stub-runner tests share;
 // `issue_2738_no_ptrace` drives the pinned runner and has none.
 #[path = "issue_2738_drive_shaped_layout.rs"]
 mod issue_2738_drive_shaped_layout;
@@ -535,8 +534,6 @@ mod issue_2738_drive_shaped_layout;
 mod issue_2738_git_outside_repo;
 #[path = "issue_2738_no_ptrace.rs"]
 mod issue_2738_no_ptrace;
-#[path = "issue_2738_private_clone.rs"]
-mod issue_2738_private_clone;
 #[path = "issue_2738_run_status.rs"]
 mod issue_2738_run_status;
 #[path = "issue_2738_support.rs"]

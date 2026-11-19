@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Merge-ready Round, Merge and Hand-off
-description: how the merge-ready agent writes up the 13 criteria in the PR, how it reads the Crusty verdict from the PR, how the loop reads its outcome and waits for pending checks, the GitHub-only merge conditions, the base sync, the hand-off recipe, the run report, and how the round and loop steps run on private review checkouts with step recovery, and which invocations the outcome rule judges (#2575, #2628, #2663, #2096, #2539, #2769).
-last_updated: 2026-11-17
+description: Merge-ready assessment, direct PR-worktree review, recovery, finalization, and handoff.
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -40,30 +40,30 @@ the drive.
 
 ## Round steps
 
-`autodrive-merge-round.yaml` runs these steps in order for each round, after
-`step-00-tools-dir`, `step-00-review-dir-guard` and the evidence steps. Every
-agent step that judges the PR (`step-01`, `step-01b`, `step-02` and `step-03`)
-starts in `{{review_launch_dir}}` and reads the PR from the private review
-checkout by path and SHA (see
-[Review checkout and step recovery](#review-checkout-and-step-recovery)).
-`step-04` alone works in the PR worktree, because it commits and pushes.
+`autodrive-merge-round.yaml` runs its judging agents directly in the actual
+linked PR worktree. Trusted skills and tools come from the launch installation.
+Immediately before the reviewer, read-only tool steps capture ordinary
+pre-review evidence after preceding agents finish. The reviewer is instructed
+to leave files, index, branch, `HEAD`, and workflow state unchanged.
+A following assessment agent inspects any changes before the round continues.
+Fixes, commits, and pushes also use this PR worktree.
 
 | Step | Kind | Output | Responsibility |
 | --- | --- | --- | --- |
 | `step-01b-crusty-evidence` | agent | `crusty_evidence` | Reads the newest authorised `Crusty verdict:` comment on the PR and judges whether it covers the current head. See [Crusty verdict at the head](#crusty-verdict-at-the-head). |
 | `step-01a` | bash | `merge_ready_assessed_head` | Captures `git rev-parse HEAD` in the PR worktree before the assessment and checks it is 40 or 64 lowercase hex characters; any other value exits `2`. |
 | `step-02` | agent, `parse_json: false` | `merge_ready_writeup` | Reads the pinned merge-ready skill, assesses all 13 criteria at `merge_ready_assessed_head`, posts one PR comment naming that SHA and ends with one sentence stating the outcome. Under `autodrive_dry_run=true` it prints the write-up instead of posting it. |
+| `step-02b-assess-review-changes` | agent, no `parse_json` | `review_change_assessment` | Compares status, index, staged/unstaged content, untracked files, and HEAD against pre-review evidence. Preserves existing and uncertain work; differences alone do not fail. |
 | `step-03` | agent | `merge_ready_outcome` | Answers one question about the write-up: did the assessment conclude ready, not ready, waiting, or hand-off? It replies with one word on its last line and, on the line before, `ci: pass`, `ci: pending`, `ci: fail` or `ci: none`. |
 | `step-05a` | bash | `merge_ready_word` | Passes the word, the `ci:` line and `merge_ready_assessed_head` to `autodrive_round_word`. |
 | `step-04` | agent | | Runs only when `merge_ready_word.word == 'not-ready'`. Works on the blockers named in the write-up, commits and pushes in the PR worktree. It does not run for `waiting`. |
 | `step-05` | bash | | Writes the round files through `autodrive_round_file`, passing `merge_ready_assessed_head` and the round's `ci_signal`. |
 
-The head is captured before `step-02` so that the `.head` round file names
-the commit the agent assessed, not a commit made afterwards. `step-02` may
-still commit or push by mistake, and `step-04` commits before `step-05`
-runs; in both cases the worktree head no longer equals the captured head,
-so finalisation refuses the merge and hands the PR off. The write-up is not
-searched for the SHA; the comparison at finalisation is the check.
+The head captured before `step-02` identifies the commit assessed. A later
+commit or unexpected reviewer mutation does not relabel it. The following
+agent assesses the change, preserves prior work, and chooses a continuation
+or handoff. Existing finalization conditions still require the assessed head;
+a review does not authorize merging a different commit.
 
 From round two onwards, `step-02` receives the previous round's write-up as
 `prior_writeup` and works on the blockers it names. Round one receives an
@@ -83,84 +83,67 @@ parsed verdict and no `**Record:**` line.
 
 ## Review checkout and step recovery
 
-The merge round and the merge loop run on the private review generations of
-[checkout isolation](recipe-checkout-isolation.md#private-review-generations)
-(#2096) and under [step failure recovery](step-failure-recovery.md) (#2539).
-Both apply to the steps that remain after #2575; the retired steps listed in
-[What was retired](#what-was-retired) are not wrapped and do not return.
+Both round types and their relevant evaluators run in the actual linked PR
+worktree. The loop resolves it through the named repository using
+`amplihack orch helper autodrive worktree`, retaining registration, branch,
+and intended-head verification. It does not allocate, advance, bind records
+to, or release a private review generation.
 
-### Context keys set by the loop
+### Review evidence and assessment
 
-`autodrive_loop.sh` sets these round keys itself and passes them as `-c`
-values after the caller's context, so the loop's values win. `repo_path`
-comes from the loop's `--repo` argument; the other keys come from the Rust
-helpers `internal review-next`, `review-launch` and `review-head`.
+Immediately before each reviewer invocation, tool steps save repository
+identity, branch, full `HEAD`, NUL-delimited status/index entries, the index
+and split-index dependencies, binary staged/unstaged diffs, and original dirty
+and untracked contents, modes, and symlink targets. Existing artifact storage
+keeps evidence private (`0700` directories, `0600` files). Collection does not
+change the repository or follow symlinks into external content.
 
-| Key | Value |
+The agent after review compares status, index, working content, untracked
+files, and `HEAD` with that baseline. It may safely restore clearly
+attributable reviewer edits, or report them and choose further work or handoff.
+Staged edits, edits to already-dirty files, and changed pre-existing untracked
+files require content comparison. Uncertainty preserves the work. A difference
+alone never fails the run; blanket restoration, cleanup, and wholesale index
+replacement are forbidden. See the
+[assessment contract](recipe-checkout-isolation.md#assessment-after-review).
+
+### Recovery and launch assets
+
+The loop supplies the actual PR worktree, intended reviewed commit, and trusted
+launch-tools path to rounds. Private review checkout and `review_launch_dir`
+context are removed. Trusted asset selection remains independent of cwd.
+`step_recovery_dir` continues through the loop to each round. The loop's own
+context values retain precedence over caller context, and existing completion
+state remains driver-owned.
+
+The merge-loop recovery contracts remain:
+
+| Step | Recovery flags |
 | --- | --- |
-| `repo_path` | The PR worktree. |
-| `review_dir` | The private review checkout, detached at the recorded PR head. |
-| `review_launch_dir` | The trusted launch directory that judging agents start in. |
-| `reviewed_head_sha` | The commit the review checkout holds. |
-| `autodrive_launch_tools` | The launch install's tools directory. |
+| `step-02-merge-ready-loop` | `--essential --stop-on-handoff` |
+| `step-03-finalize`, recovered by `step-03r-finalize-recovery` | `--already-failed --essential` |
 
-`step_recovery_dir` is not one of these keys. `autodrive_merge_loop_run.sh`
-passes it to the loop as a `--context` value; the loop reads it and passes it
-on to each round in the round context.
+Finalization recovery runs only when the loop permits finalization and the
+finalization result is absent. A loop that handed off never gains merge
+authority through recovery.
 
-`--context` refuses `review_dir`, `review_launch_dir`, `reviewed_head_sha`,
-`autodrive_launch_tools` and `autodrive_completion_state`. The round order of
-context is the completion context, then `prior_writeup` (from the state
-directory), then the round context, then the loop's own `-c` values.
+Recovery retains the original baseline for an interrupted reviewer invocation,
+including staged, unstaged, and untracked state. It does not recapture partial
+reviewer edits as pre-existing work. Runtime finalization, loop recovery, and
+finalization recovery retain their responsibilities under
+[step failure recovery](step-failure-recovery.md). The former review-directory
+guards and `step-02b-review-dir-unchanged` deterministic gate are removed.
 
-### Where recovery applies
+### Loop launch and exit
 
-| Recipe | Step | Flags |
-| --- | --- | --- |
-| `autodrive-merge-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
-| `autodrive-merge-loop` | `step-02-merge-ready-loop` | `--essential --stop-on-handoff` |
-| `autodrive-merge-loop` | `step-03-finalize` (sub-recipe, `continue_on_error: true`), recovered by `step-03r-finalize-recovery` | `--already-failed --essential` |
+`autodrive_merge_loop_run.sh` validates its required inputs, resolves the PR
+worktree in the named repository, and runs the loop there. Temporary task text
+is removed on exit. There are no review-generation release traps. Uncommitted
+files, unpushed commits, branches, and worktree registration survive an
+interrupted run. Legacy execution/review directories are left for recovery.
 
-`step-02-merge-ready-loop` reads its short body (`exec bash "$RUN"`, which
-runs `autodrive_merge_loop_run.sh`) from a quoted heredoc into `STEP_BODY` and
-runs it under recovery. A run with no `step_recovery_dir` runs the body
-directly.
-
-```bash
-[ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-02-merge-ready-loop
-exec amplihack orch helper step-recovery run --step-id step-02-merge-ready-loop --essential --stop-on-handoff \
-  --dir "$RECIPE_VAR_step_recovery_dir" \
-  --goal "Run the merge-ready loop to a merge-ready verdict for PR ${RECIPE_VAR_pr_number:-unknown}" \
-  -- bash -c "$STEP_BODY" step-02-merge-ready-loop
-```
-
-`step-03r-finalize-recovery` runs immediately after `step-03-finalize`, only
-when `merge_loop_outcome.finalise == 'true' and not autodrive_finalization`.
-A loop that handed the PR off never reaches finalisation, so recovery never
-runs finalisation without a `DONE` or `WAITING` loop result. The other loop
-steps (`step-02a`, `step-02c` and `step-03b` to `step-03f`) are not wrapped.
-
-### Review checkout lifecycle in `autodrive_merge_loop_run.sh`
-
-The tool allocates the review generation itself:
-
-1. As soon as it creates the task file, it installs
-   `trap 'rm -f -- "$TASK_IN"' EXIT`, so that every exit after that point
-   removes the task text: `task_description` unavailable, the Crusty
-   re-review tool missing, no repository, the round recipe missing, the tool
-   root unresolved, or no PR worktree or review checkout. The round-count,
-   tools-directory and state-directory checks run earlier and exit before the
-   task file exists.
-2. It checks the PR worktree, then runs `amplihack internal review-allocate`
-   on it.
-3. At allocation it replaces the early trap with one that releases the
-   review generation (`release_review_dir`, through `internal review-release`)
-   and removes the task file.
-4. It calls `autodrive_loop.sh` with `--context step_recovery_dir=<dir>`
-   after `repo_path`, and with the allocated checkout as `--review-dir`.
-
-The loop never receives `--invocation`; merge permission is read only by
-`autodrive-finalize` through `helper autodrive authorization --invocation`.
+The loop does not grant merge authority; `autodrive-finalize` reads captured
+invocation authorization through the existing helper.
 
 ## Crusty verdict at the head
 
@@ -1037,12 +1020,10 @@ echo $?
 
 ### `autodrive_merge_loop_run.sh`
 
-Holds the command body of `autodrive-merge-loop.yaml` `step-02`, moved into
-a trusted tool so that the base-sync round can run it again. The body keeps
-its behaviour, including the review-generation allocation and release of
-[the review checkout lifecycle](#review-checkout-lifecycle-in-autodrive_merge_loop_runsh);
-the tool adds only the round-count argument and the budget sum described
-below.
+Holds the command body of `autodrive-merge-loop.yaml` `step-02` in a trusted
+tool so the base-sync round can run it again. It resolves and runs in the
+actual PR worktree, retains task-file cleanup, and passes the round count and
+budget sum described below. It allocates no review repository or launch folder.
 
 `autodrive-merge-loop.yaml` has no `step-00-tools-dir`. Both steps take the
 tool from the directory `step-02` already uses for its loop helper,
@@ -1115,13 +1096,15 @@ leave the drive `STUCK` (#2656). The tests
   `CLEAN` or `MINOR_ONLY` verdict before dispatch accepts `complete`.
 - Loop results are read from the driver's result file, not from text an
   agent printed.
-- Judging agents start in `{{review_launch_dir}}`, never in the PR worktree,
-  so the PR's `AGENTS.md`, `CLAUDE.md` and `.claude/` files cannot instruct
-  its own judge. A caller cannot set `review_dir`, `review_launch_dir` or
-  `reviewed_head_sha`.
-- Step recovery cannot turn a failed merge-ready loop or finalisation into a
-  silent success: both are `--essential`, and the review-dir guards are
-  `--guard`.
+- Judging agents run in the actual PR worktree with instructions to leave it
+  unchanged. Trusted workflow assets are selected independently of cwd;
+  repository text and review output do not grant workflow authority.
+- A following agent assesses reviewer changes against retained pre-review
+  evidence. It preserves pre-existing and uncertain work, including staged,
+  unstaged, and untracked content. A difference alone does not fail the run.
+- Step recovery cannot turn a failed merge-ready loop or finalization into
+  silent success. Review recovery retains the original invocation baseline;
+  the obsolete deterministic review-directory guards are removed.
 - Exit `79` is checked after every `gh` call and passes through the merge
   step, the finalisation recipe and the hand-off recipe. No status defaults
   to `0`.
@@ -1196,5 +1179,5 @@ report still use them. The crusty loop's `STUCK` endings are unchanged.
 - [Verify a PR without merging](../howto/verify-pr-with-auto-drive.md)
 - [Loop-health evaluator](loop-health-evaluator.md)
 - [Crusty completion contract](autodrive-crusty-completion.md)
-- [Checkout isolation](recipe-checkout-isolation.md)
+- [Named-checkout execution and review](recipe-checkout-isolation.md)
 - [Step failure recovery](step-failure-recovery.md)

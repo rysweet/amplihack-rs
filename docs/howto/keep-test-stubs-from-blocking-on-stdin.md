@@ -1,7 +1,7 @@
 ---
 title: "Keep Shell Test Stubs from Blocking on stdin"
 description: "Why a multi-mode shell stub must dispatch on its mode before reading stdin, the orch helper modes that take a blob and the ones that do not, the null stdin the bundled-tool helper gives every call, and how to prove a stub answers without opening stdin."
-last_updated: 2026-11-16
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: rysweet
 doc_type: howto
@@ -178,14 +178,12 @@ subcommand family to the stub:
 
 ```bash
   '  "orch helper") STUB_STATE="$AB_STATE" exec "$AB_STUB" "$@" ;;' \
-  '  "internal review-bind-record") cat -- "$4"; exit 0 ;;' \
 ```
 
 So the chain is: bundled tool → `amplihack-alt` → `exec` the stub, with stdin
 inherited at every step and never redirected along the way. `amplihack-alt`
-itself never reads stdin — it `printf`s to a log, and its
-`review-bind-record` arm reads a file named in `$4`, not a pipe — which is
-what makes [half one](#half-one-dispatch-before-reading) sufficient on its
+itself never reads stdin — it `printf`s to a log and forwards the arguments —
+which is what makes [half one](#half-one-dispatch-before-reading) sufficient on its
 own: the only process in that chain that can block on stdin is the stub.
 
 `tests/issue_1437_autodrive_loop.sh` runs bundled tools through one helper, so
@@ -400,5 +398,5 @@ as evidence only because nothing else could have written it.
 - [Stop Background Jobs by PID](./stop-background-jobs-by-pid.md) - Stop a job you started by `$!`, never by pattern
 - [Structured Verdict & Intent Parsing Reference](../reference/structured-verdict-parsing.md) - The stdin contract of every blob mode in the table above, and the source of truth a stub stands in for
 - [Parse Agent Verdicts with orch helper](./parse-agent-verdicts-with-orch-helper.md) - How to build the pipelines the blob modes sit in
-- [Recipe Checkout Isolation](../reference/recipe-checkout-isolation.md) - The private review checkout the same stub stands in for
+- [Recipe Execution in Named Checkouts](../reference/recipe-checkout-isolation.md) - The real PR worktree used by review stubs
 - [Recipe Context Transport Reference](../reference/recipe-context-transport.md) - The #2582 change these tests cover

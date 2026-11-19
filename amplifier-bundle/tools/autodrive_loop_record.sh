@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Mechanical round preservation and existing accounting inputs, sourced by
-# autodrive_loop.sh after checking the child status and review directory.
+# autodrive_loop.sh after checking the child status.
 # --- read the round's STRUCTURED record -----------------------------------
 # A missing or unparseable record is never clean; it is evidence of a round that produced nothing.
 RAW=""

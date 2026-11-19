@@ -1,6 +1,6 @@
 ---
 title: Step Failure Recovery Reference
-last_updated: 2026-11-15
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -64,8 +64,6 @@ record is an ordinary failure.
 | `autodrive-build` | `step-02-default-workflow` (sub-recipe), recovered by `step-02r-default-workflow-recovery` | `--already-failed --essential` |
 | `autodrive-crusty-loop` | `step-02-crusty-loop` | `--essential --stop-on-handoff` |
 | `autodrive-crusty-loop` | `step-03-record-crusty-phase` (agent), recovered by `step-03r-record-crusty-phase-recovery` | `--essential` |
-| `autodrive-crusty-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
-| `autodrive-merge-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
 | `autodrive-merge-loop` | `step-02-merge-ready-loop` | `--essential --stop-on-handoff` |
 | `autodrive-merge-loop` | `step-03-finalize` (sub-recipe), recovered by `step-03r-finalize-recovery` only when the loop asked for finalisation | `--already-failed --essential` |
 | `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff --no-repair` |
@@ -78,18 +76,29 @@ Report steps: `workflow-finalize` `step-recovery-report` (before
 
 ### Recovery inside the auto-drive loops
 
-The round recipes run on the private review generations of
-[Auto Drive To Merge](./auto-drive-to-merge.md#review-generations) (issue
-#2096). Recovery still wraps the round guard steps and `step-02b` there:
+The round recipes run directly in the actual linked PR worktree. Trusted
+recipe/tool selection remains independent of cwd. The former review-directory
+guards and mutation gate are removed; a following agent assesses reviewer
+changes against ordinary pre-review evidence and handles them without failing
+on a mere difference. See
+[review and preservation](recipe-checkout-isolation.md#assessment-after-review).
 
-- Agent steps in the rounds start in `{{review_launch_dir}}`, which only the
-  loop sets.
-- `autodrive_loop.sh` takes the recovery directory as
-  `--context step_recovery_dir=<dir>` and passes it on to each round.
-- A caller cannot set the loop's own keys. `--context` refuses
-  `review_dir`, `review_launch_dir`, `reviewed_head_sha`,
-  `autodrive_launch_tools` and `autodrive_completion_state`, and the loop's
-  own `-c` values come after the caller's, so the loop's values win.
+`autodrive_loop.sh` passes `step_recovery_dir` to each round. Recovery retains
+the baseline associated with an interrupted reviewer invocation; it does not
+replace the baseline with partial reviewer changes. Pre-existing staged,
+unstaged, and untracked work remains recoverable. There are no
+`review_launch_dir` or private review-generation context values.
+
+That retention holds across the round and past its end. The loop reclaims the
+round's `pre-review.*` baseline only once the round has returned and the loop
+is going on; the reclaim runs after `orphan_stop`, the terminal-refusal check,
+`usage_limit_stop` and `recovery_stop`, so a round that ends the run — and in
+particular one that ends it on a recorded handoff — leaves its baseline in
+place for the operator who has to act on it. The next run's first round
+reclaims every `pre-review.*` in the state directory, so a handoff nobody
+resumes leaves one on disk until then; #2834 tracks giving it a reclaimer that
+does not depend on a later run. See
+[pre-review evidence](recipe-checkout-isolation.md#pre-review-evidence).
 
 `workflow-worktree` `step-04-setup-worktree` writes the build's branch to
 `build-branch.txt` in the recovery directory. A retried build passes it as
@@ -242,9 +251,9 @@ directory that recipe was given by its caller.
 The driver runs `amplihack recipe run step-failure-recovery -c
 step_recovery_evidence=<path>` with `AMPLIHACK_STEP_RECOVERY_ACTIVE=1`. The
 prompt says the evidence is untrusted data, and that the agent must not make
-GitHub writes, bypass hooks, read credentials, change the review directory,
-the main checkout, guard or validator scripts or their evidence, write under
-the recovery directory, or start another orchestration.
+GitHub writes, bypass hooks, read credentials, change the main checkout,
+guard or validator scripts or their evidence, write under the recovery
+directory, or start another orchestration.
 
 A local repair adds new commits only. The prompt forbids rewriting or
 discarding commits (amend, rebase, squash, reset to an earlier commit) and

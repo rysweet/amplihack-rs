@@ -159,7 +159,86 @@ crusty_covers() {
   esac
 }
 
+# Ordinary workflow evidence, not a checkout, manifest or mutation gate. The
+# recipe checkpoint retains this output across an interrupted reviewer resume.
+# The directory holds the contents of the worktree's untracked files and may
+# hold secrets, so nothing outside the round reads it and autodrive_loop.sh
+# removes every pre-review.* in the state directory once the round returns
+# (#2808 SR-10).
+#
+# contents.tar holds the untracked files and the tracked paths that already
+# differed from HEAD or the index. A tracked path that matched them is in the
+# repository already, and in the staged and unstaged diffs saved beside it, so
+# archiving it too copied the whole tree every round (#2814). The round
+# prompts restore such a path from the commit in the `head` file instead.
+#
+# Evidence only, and deliberately so. Collection failure is non-fatal: the
+# function writes 'incomplete' to collection-status, warns on stderr and still
+# returns the directory and exit 0, leaving the assessor to preserve uncertain
+# work. Do not add a hash comparison against this baseline, and do not exit
+# non-zero when the worktree differs from it. Either change turns the round's
+# observation back into the must-match refusal that #2808 removed.
+review_baseline() (
+  umask 077
+  export GIT_OPTIONAL_LOCKS=0
+  . "$HERE/git-repo-env.sh"
+  amplihack_clear_git_repo_env
+  cd -- "${REPO_PATH:-.}" || return 1
+  local dir index shared
+  dir="$(mktemp -d "${AUTODRIVE_STATE_DIR:-${AUTODRIVE_ROUND_RECORD%/*}}/pre-review.XXXXXX")" || return 1
+  collect() {
+    git rev-parse --show-toplevel --absolute-git-dir --git-common-dir > "$dir/repository" || return 1
+    git rev-parse HEAD > "$dir/head" || return 1
+    git symbolic-ref -q HEAD > "$dir/branch"
+    local branch_rc=$?
+    # A detached HEAD has no symbolic branch and is a valid observation.
+    [ "$branch_rc" -eq 0 ] || [ "$branch_rc" -eq 1 ] || return "$branch_rc"
+    index="$(git rev-parse --path-format=absolute --git-path index)" || return 1
+    if [ -f "$index" ]; then cp -- "$index" "$dir/index" || return 1; fi
+    shared="$(git rev-parse --path-format=absolute --shared-index-path)" || return 1
+    if [ -n "$shared" ]; then cp -- "$shared" "$dir/$(basename -- "$shared")" || return 1; fi
+    git -c core.fsmonitor=false status --porcelain=v1 -z --untracked-files=all > "$dir/status" &&
+    git ls-files --stage -z > "$dir/entries" &&
+    git -c core.fsmonitor=false diff --binary --no-ext-diff --no-textconv --ignore-submodules=all --cached > "$dir/staged.diff" &&
+    git -c core.fsmonitor=false diff --binary --no-ext-diff --no-textconv --ignore-submodules=all > "$dir/unstaged.diff" &&
+    # Only what Git cannot already give back: the untracked files and the
+    # tracked paths that differ from HEAD or the index, which is exactly what
+    # the status above lists. Tracked content matching both is in the
+    # repository already, and in the two diffs saved beside this, so archiving
+    # the whole tree copied tens of MiB per round for nothing (#2814).
+    # `-z` writes `XY <path>` per entry, and a rename or copy adds the original
+    # path as the next record, with no `XY ` of its own; both are kept.
+    local rec orig=0
+    while IFS= read -r -d '' rec; do
+      if [ "$orig" = 1 ]; then orig=0; printf '%s\0' "$rec"; continue; fi
+      case "${rec:0:2}" in [RC]?|?[RC]) orig=1 ;; esac
+      printf '%s\0' "${rec:3}"
+    done < "$dir/status" > "$dir/paths" || return 1
+    # Use NUL names, retain symlink targets and modes, never follow links. Save
+    # only paths still present: deleted files remain represented by Git evidence.
+    local path parent safe incomplete=0
+    while IFS= read -r -d '' path; do
+      parent="$path"; safe=1
+      while [[ "$parent" == */* ]]; do
+        parent="${parent%/*}"
+        if [ -L "$parent" ]; then safe=0; incomplete=1; break; fi
+      done
+      if [ "$safe" = 1 ] && { [ -e "$path" ] || [ -L "$path" ]; }; then printf '%s\0' "$path" || return 1; fi
+    done < "$dir/paths" > "$dir/present-paths"
+    tar --create --file "$dir/contents.tar" --no-recursion --null --files-from "$dir/present-paths" || return 1
+    [ "$incomplete" = 0 ] || { echo "A path has a symlink parent; external contents were not collected" >&2; return 1; }
+  }
+  if collect 2> "$dir/collection-errors"; then
+    printf 'complete\n' > "$dir/collection-status"
+  else
+    printf 'incomplete; inspect collection-errors and preserve existing work\n' > "$dir/collection-status"
+    echo "WARNING: pre-review evidence is incomplete; the assessor must preserve uncertain work" >&2
+  fi
+  printf '%s\n' "$dir"
+)
+
 case "${1:-}" in
+  review-baseline) review_baseline ;;
   crusty-range) crusty_range ;;
   qa-evidence-sha) qa_evidence_sha "${2:-}" ;;
   qa-evidence-hash) qa_evidence_hash "${2:-}" ;;

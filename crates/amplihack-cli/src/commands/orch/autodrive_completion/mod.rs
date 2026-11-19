@@ -22,8 +22,6 @@ pub struct Prepare {
     #[arg(long)]
     repo: PathBuf,
     #[arg(long)]
-    review_dir: PathBuf,
-    #[arg(long)]
     launch_tools: PathBuf,
     #[arg(long)]
     evaluator_context_file: Option<PathBuf>,
