@@ -378,6 +378,11 @@ fn control_characters_from_a_log_never_reach_the_message() {
     one_line_error(&o);
 }
 
+/// The operator named this log, so the trust failure is a refusal: the
+/// command says `refusing` and stops. The same failure on a log the sweep
+/// merely listed only counts a skipped log and is never called a refusal
+/// (issue #2809); `a_log_the_sweep_skips_is_not_called_a_refusal` is the
+/// other half of that pair.
 #[test]
 fn a_session_log_named_by_the_operator_that_is_a_symlink_is_still_refused() {
     let f = GuideFixture::new();
@@ -387,7 +392,46 @@ fn a_session_log_named_by_the_operator_that_is_a_symlink_is_still_refused() {
     symlink(&target, f.recipe_logs.join(format!("{SESSION}.log"))).unwrap();
     let o = f.guide_without_work_root(&[SESSION], "text");
     assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    one_line_error(&o);
+    let line = one_line_error(&o);
+    assert!(line.starts_with("recipe guide: refusing "), "{line}");
+    assert!(line.contains("it is a symbolic link"), "{line}");
+}
+
+/// The other half: a log the sweep listed, not one the operator named. It
+/// fails the same trust check -- group and others can write to it -- and the
+/// not-found line counts it among the skipped logs with its reason. The word
+/// `refusing` belongs to what the operator typed, so it must not appear
+/// here, and the run the next log records is still found, because a skipped
+/// log ends nothing (issue #2809).
+#[test]
+fn a_log_the_sweep_skips_is_not_called_a_refusal() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    private_dir(&f.recipe_logs);
+    let loose = f.recipe_logs.join("amp-loose-20261118-000009.log");
+    crate::support::recipe_guide::private_file(&loose, "not a pointer\n");
+    fs::set_permissions(&loose, fs::Permissions::from_mode(0o666)).unwrap();
+
+    // Nothing matches: the line reports the sweep, the skipped log included.
+    let miss = f.guide_without_work_root(&["4201"], "text");
+    assert_eq!(miss.status.code(), Some(1), "{}", show(&miss));
+    let line = one_line_error(&miss);
+    assert!(line.contains("log(s) skipped"), "{line}");
+    assert!(line.contains("writable by group or others"), "{line}");
+    assert!(
+        !line.contains("refusing"),
+        "a log the sweep skipped is not a refusal: {line}"
+    );
+    // The sweep did not change what it would not read.
+    assert_eq!(
+        fs::metadata(&loose).unwrap().permissions().mode() & 0o777,
+        0o666
+    );
+
+    // And the sweep went on: the real run recorded beside it is still found.
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    let o = f.guide_without_work_root(&["2783"], "found past the skipped log");
+    assert_lands_in(&o, &run);
 }
 
 #[test]

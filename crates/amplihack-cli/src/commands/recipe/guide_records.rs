@@ -131,6 +131,12 @@ fn parse_line(line: &[u8]) -> Result<Pointer, String> {
 ///
 /// Reading stops at the first pointer line or EOF. Only the current line
 /// is kept, so a long prefix of unrelated output does not accumulate.
+///
+/// Reasons name the log and the fault and stop there, with no word for what
+/// happens next: the same failure ends the command when the operator named
+/// the log and only adds to a skipped-log count when the sweep found it.
+/// [`read_named`] is what turns an `Unsafe` reason into a refusal; see the
+/// two-word rule in the `guide` module documentation (issue #2809).
 fn read_pointer_line(log: &Path) -> Result<Option<Vec<u8>>, GuideError> {
     let file = fs::OpenOptions::new()
         .read(true)
@@ -138,7 +144,7 @@ fn read_pointer_line(log: &Path) -> Result<Option<Vec<u8>>, GuideError> {
         .open(log)
         .map_err(|e| {
             if e.raw_os_error() == Some(libc::ELOOP) {
-                GuideError::Unsafe(format!("refusing {}: it is a symbolic link", log.display()))
+                GuideError::Unsafe(format!("{}: it is a symbolic link", log.display()))
             } else if e.kind() == ErrorKind::NotFound {
                 GuideError::NotFound(format!("{} does not exist", log.display()))
             } else {
@@ -149,10 +155,7 @@ fn read_pointer_line(log: &Path) -> Result<Option<Vec<u8>>, GuideError> {
         .metadata()
         .map_err(|e| GuideError::Io(format!("cannot check {}: {e}", log.display())))?;
     if let Some(reason) = untrusted_reason(&meta, false) {
-        return Err(GuideError::Unsafe(format!(
-            "refusing {}: {reason}",
-            log.display()
-        )));
+        return Err(GuideError::Unsafe(format!("{}: {reason}", log.display())));
     }
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
@@ -185,11 +188,17 @@ fn read_pointer_line(log: &Path) -> Result<Option<Vec<u8>>, GuideError> {
 /// [`GuideError::Unsafe`] when the log is a symbolic link or fails the trust
 /// rule, [`GuideError::NotFound`] when it holds no usable pointer line, and
 /// [`GuideError::Io`] for any other read failure. These are the operator's
-/// own input, so they are reported rather than passed over.
+/// own input, so they are reported rather than passed over: the trust
+/// failure is the one place a log is *refused*, and the word is added here
+/// rather than in [`read_pointer_line`], which the sweep also calls and
+/// whose reasons there only count a skipped log (issue #2809).
 pub(super) fn read_named(log: &Path) -> Result<Option<Pointer>, GuideError> {
     let found = match read_pointer_line(log) {
         Ok(found) => found,
         Err(GuideError::NotFound(_)) => return Ok(None),
+        Err(GuideError::Unsafe(why)) => {
+            return Err(GuideError::Unsafe(format!("refusing {why}")));
+        }
         Err(e) => return Err(e),
     };
     let missing = || {
