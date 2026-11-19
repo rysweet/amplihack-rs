@@ -88,18 +88,27 @@ fn outcome_reason(classified: &Output) -> String {
         .to_string()
 }
 
-/// Runs both steps with a driver that exits 1 with no result file and writes
-/// `stderr`; returns the loop line's reason, the hand-off reason and step-02.
-fn unreadable(fx: &Fx, stderr: Option<&str>) -> (String, String, Output) {
-    let (out, classified) = loop_step(fx, &case("1", None, stderr));
+/// Runs `step-02` with a driver that exits 1 with no result file and writes
+/// `stderr`; returns the loop line's reason and the step. The hand-off step
+/// is a second process, so the tests that do not read the hand-off's own
+/// reason stop here and [`unreadable`] adds it for those that do.
+fn unreadable_line(fx: &Fx, stderr: Option<&str>) -> (String, Output) {
+    let out = loop_step_02(fx, &case("1", None, stderr));
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-    let classified = classified.expect("step-02a runs after an exit-0 step-02");
+    (loop_reason(&out), out)
+}
+
+/// [`unreadable_line`], carried on through `step-02a`: the loop line's
+/// reason, the hand-off reason and step-02.
+fn unreadable(fx: &Fx, stderr: Option<&str>) -> (String, String, Output) {
+    let (why, out) = unreadable_line(fx, stderr);
+    let classified = loop_outcome_step(fx, &out);
     assert_eq!(classified.status.code(), Some(0), "{}", show(&classified));
     assert_eq!(
         last_json(&classified, "outcome")["outcome"],
         json!("handoff")
     );
-    (loop_reason(&out), outcome_reason(&classified), out)
+    (why, outcome_reason(&classified), out)
 }
 
 /// `loop_step` with extra stub-driver fixture files set for the one run.
@@ -177,7 +186,7 @@ fn unreadable_handoff_names_the_kept_file_and_quotes_its_last_line() {
 #[test]
 fn what_the_driver_prints_reaches_the_log_unchanged_and_in_order() {
     let Some(fx) = loop_fixture() else { return };
-    let (out, _) = loop_step(
+    let out = loop_step_02(
         &fx,
         &LoopCase {
             rc: "1",
@@ -258,7 +267,7 @@ fn every_driver_ending_is_unchanged_and_keeps_its_output() {
     {
         // A marker no other run writes, so the kept file is this run's alone.
         let marker = format!("marker-{n}-for-driver-exit-{rc}\n");
-        let (out, _) = loop_step(&fx, &case(rc, result, Some(&marker)));
+        let out = loop_step_02(&fx, &case(rc, result, Some(&marker)));
         assert_eq!(
             out.status.code(),
             Some(exit),
@@ -307,7 +316,7 @@ fn the_last_non_empty_line_is_the_one_quoted() {
 #[test]
 fn a_last_line_with_no_newline_is_quoted() {
     let Some(fx) = loop_fixture() else { return };
-    let (why, _, _) = unreadable(&fx, Some("one\npartial line, cut off mid-wr"));
+    let (why, _) = unreadable_line(&fx, Some("one\npartial line, cut off mid-wr"));
     assert!(
         why.contains(&quoted("partial line, cut off mid-wr")),
         "{why}"
@@ -322,7 +331,7 @@ fn ordinary_error_text_is_quoted_not_withheld() {
         "ERROR: round 3 did not finish (exit 124)",
         "gh: not logged in; run gh auth login",
     ] {
-        let (why, _, _) = unreadable(&fx, Some(&format!("{line}\n")));
+        let (why, _) = unreadable_line(&fx, Some(&format!("{line}\n")));
         assert!(why.contains(&quoted(line)), "{why}");
         assert!(!why.contains("withheld"), "{why}");
     }
@@ -476,28 +485,40 @@ fn credential_lines() -> Vec<(String, String)> {
     shapes
 }
 
+/// What a reason says about a credential-shaped last line: that it was
+/// withheld, with no part of the line in it, and the file still named.
+fn assert_withheld(text: &str, fx: &Fx, line: &str, material: &str) {
+    assert!(text.contains(WITHHELD), "shape {material:?}: {text}");
+    // The file is still named: the evidence is there for a person.
+    assert!(
+        text.contains(&kept_clause(fx)),
+        "shape {material:?}: {text}"
+    );
+    assert!(
+        !text.contains(material),
+        "shape {material:?} reached: {text}"
+    );
+    assert!(!text.contains(line), "shape {material:?}: {text}");
+    assert!(!text.contains("untrusted text"), "no quote slot: {text}");
+}
+
 #[test]
 fn a_credential_shaped_last_line_is_withheld_from_both_reasons() {
     let Some(fx) = loop_fixture() else { return };
-    for (line, material) in credential_lines() {
-        let (out, classified) =
-            loop_step(&fx, &case("1", None, Some(&format!("ok so far\n{line}\n"))));
+    let shapes = credential_lines();
+    let last = shapes.len() - 1;
+    for (n, (line, material)) in shapes.into_iter().enumerate() {
+        let out = loop_step_02(&fx, &case("1", None, Some(&format!("ok so far\n{line}\n"))));
         assert_eq!(out.status.code(), Some(0), "{}", show(&out));
-        let why = loop_reason(&out);
-        let handoff_why = outcome_reason(&classified.unwrap());
-        for text in [&why, &handoff_why] {
-            assert!(text.contains(WITHHELD), "shape {material:?}: {text}");
-            // The file is still named: the evidence is there for a person.
-            assert!(
-                text.contains(&kept_clause(&fx)),
-                "shape {material:?}: {text}"
-            );
-            assert!(
-                !text.contains(&material),
-                "shape {material:?} reached: {text}"
-            );
-            assert!(!text.contains(&line), "shape {material:?}: {text}");
-            assert!(!text.contains("untrusted text"), "no quote slot: {text}");
+        assert_withheld(&loop_reason(&out), &fx, &line, &material);
+        // Whether a shape is withheld is settled in `step-02`. `step-02a`
+        // never reads the quote: it prefixes `loop result UNREADABLE: ` and
+        // cuts at 1000 characters, so one shape from either end of the list
+        // carries the hand-off for all of them, and the rest stop at the
+        // first step instead of paying for a second process each.
+        if n == 0 || n == last {
+            let handoff_why = outcome_reason(&loop_outcome_step(&fx, &out));
+            assert_withheld(&handoff_why, &fx, &line, &material);
         }
         // No output of the step other than the log carries it.
         assert!(!stdout(&out).contains(&material), "{}", stdout(&out));
@@ -541,7 +562,7 @@ fn a_partial_result_file_is_named_as_unreadable_and_stays_in_the_state_folder() 
 #[test]
 fn a_done_result_after_a_failed_exit_says_what_it_says() {
     let Some(fx) = loop_fixture() else { return };
-    let (out, _) = loop_step(
+    let out = loop_step_02(
         &fx,
         &case("1", Some("DONE"), Some("exited 1 after writing DONE\n")),
     );
@@ -566,14 +587,14 @@ fn a_done_result_after_a_failed_exit_says_what_it_says() {
 #[test]
 fn each_run_replaces_the_previous_runs_output() {
     let Some(fx) = loop_fixture() else { return };
-    let (out, _) = loop_step(&fx, &case("1", Some("STUCK"), Some("first run marker\n")));
+    let out = loop_step_02(&fx, &case("1", Some("STUCK"), Some("first run marker\n")));
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
     assert_eq!(read(&kept(&fx)), "first run marker\n");
     assert!(result_path(&fx).is_file());
 
     // A second run whose driver writes nothing leaves nothing of the first:
     // an empty kept file and no result file, never a mixture.
-    let (why, _, _) = unreadable(&fx, None);
+    let (why, _) = unreadable_line(&fx, None);
     assert_eq!(read(&kept(&fx)), "", "{why}");
     assert!(!result_path(&fx).exists());
     assert!(why.contains(&format!("{RESULT_NAME} is absent")), "{why}");
@@ -592,7 +613,7 @@ fn a_planted_link_at_the_kept_name_is_replaced_never_followed() {
     fs::set_permissions(&victim, fs::Permissions::from_mode(0o644)).unwrap();
     symlink(&victim, kept(&fx)).unwrap();
 
-    let (why, _, _) = unreadable(&fx, Some("the driver's own output\n"));
+    let (why, _) = unreadable_line(&fx, Some("the driver's own output\n"));
 
     assert_eq!(
         read(&victim),
@@ -615,7 +636,7 @@ fn a_link_to_a_missing_target_does_not_create_the_target() {
     let Some(fx) = loop_fixture() else { return };
     let target = fx.root.join("not-there-yet.txt");
     symlink(&target, kept(&fx)).unwrap();
-    let _ = unreadable(&fx, Some("output\n"));
+    let _ = unreadable_line(&fx, Some("output\n"));
     assert!(!target.exists(), "nothing was written through the link");
     assert!(
         fs::symlink_metadata(kept(&fx))
@@ -630,7 +651,7 @@ fn an_existing_loose_file_is_replaced_by_a_private_one() {
     let Some(fx) = loop_fixture() else { return };
     fs::write(kept(&fx), "old evidence from an older run\n").unwrap();
     fs::set_permissions(kept(&fx), fs::Permissions::from_mode(0o644)).unwrap();
-    let _ = unreadable(&fx, Some("new evidence\n"));
+    let _ = unreadable_line(&fx, Some("new evidence\n"));
     assert_eq!(read(&kept(&fx)), "new evidence\n");
     assert_eq!(mode(&kept(&fx)), 0o600, "the old mode is not kept");
 }
@@ -736,7 +757,7 @@ fn an_unwritable_state_folder_changes_neither_the_exit_nor_the_log() {
 
     // The driver's exit status still passes through, whatever the copy does.
     for (rc, expected) in [("79", 79), ("75", 75), ("3", 3)] {
-        let (out, _) = loop_step(&fx, &case(rc, None, Some(driver_line)));
+        let out = loop_step_02(&fx, &case(rc, None, Some(driver_line)));
         assert_eq!(
             out.status.code(),
             Some(expected),
@@ -770,7 +791,7 @@ fn a_state_folder_that_is_a_link_is_not_written_through() {
     let link = fx.root.join("linked-state");
     symlink(&real, &link).unwrap();
     fx.state = link;
-    let (out, _) = loop_step(&fx, &case("1", None, Some("output behind a link\n")));
+    let out = loop_step_02(&fx, &case("1", None, Some("output behind a link\n")));
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
     assert_not_kept(&loop_reason(&out), &fx);
     assert!(
@@ -784,7 +805,7 @@ fn a_state_folder_that_is_a_link_is_not_written_through() {
 fn a_directory_at_the_kept_name_is_left_alone_and_the_run_goes_on() {
     let Some(fx) = loop_fixture() else { return };
     fs::create_dir(kept(&fx)).unwrap();
-    let (out, _) = loop_step(&fx, &case("1", None, Some("output next to a directory\n")));
+    let out = loop_step_02(&fx, &case("1", None, Some("output next to a directory\n")));
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
     assert_not_kept(&loop_reason(&out), &fx);
     assert!(kept(&fx).is_dir(), "the directory is still there");
@@ -799,7 +820,7 @@ fn step02_under_file_limit(fx: &Fx, case: &LoopCase) -> Option<Output> {
     let mut c = fx.bash();
     c.arg("-c")
         .arg("ulimit -f 2 || exit 77; trap '' XFSZ; exec bash -c \"$STEP\"")
-        .env("STEP", command_of("autodrive-merge-loop", "step-02"));
+        .env("STEP", &loop_commands().0);
     loop_env(&mut c, fx, &loop_preflight(fx));
     let out = c.output().expect("run step-02 under a file size limit");
     if out.status.code() == Some(77) {

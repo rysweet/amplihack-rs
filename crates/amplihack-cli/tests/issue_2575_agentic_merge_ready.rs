@@ -25,6 +25,7 @@
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 
@@ -1386,23 +1387,45 @@ fn loop_env(c: &mut Command, fx: &Fx, preflight: &str) {
         .stdin(Stdio::null());
 }
 
-fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
+/// The commands of `step-02` and `step-02a`. `autodrive-merge-loop.yaml` is
+/// 21 KB of YAML that no run changes, so it is read and parsed once for the
+/// whole test binary rather than twice for every step run.
+fn loop_commands() -> &'static (String, String) {
+    static CMDS: OnceLock<(String, String)> = OnceLock::new();
+    CMDS.get_or_init(|| {
+        (
+            command_of("autodrive-merge-loop", "step-02"),
+            command_of("autodrive-merge-loop", "step-02a"),
+        )
+    })
+}
+
+/// Runs `step-02` alone. `step-02a` is a second process, so [`loop_step`]
+/// adds it only for the callers that read the outcome it produces.
+fn loop_step_02(fx: &Fx, case: &LoopCase) -> Output {
     stage_loop_driver(fx, case);
-    let preflight = loop_preflight(fx);
+    let mut c = fx.bash();
+    c.arg("-c").arg(&loop_commands().0);
+    loop_env(&mut c, fx, &loop_preflight(fx));
+    c.output().expect("run merge loop step-02")
+}
+
+/// Runs `step-02a` over the loop line a `step-02` that exited 0 printed.
+fn loop_outcome_step(fx: &Fx, out: &Output) -> Output {
     let mut c = fx.bash();
     c.arg("-c")
-        .arg(command_of("autodrive-merge-loop", "step-02"));
-    loop_env(&mut c, fx, &preflight);
-    let out = c.output().expect("run merge loop step-02");
+        .arg(&loop_commands().1)
+        .env("RECIPE_VAR_merge_loop_result", stdout(out));
+    loop_env(&mut c, fx, &loop_preflight(fx));
+    c.output().expect("run merge loop step-02a")
+}
+
+fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
+    let out = loop_step_02(fx, case);
     if out.status.code() != Some(0) {
         return (out, None);
     }
-    let mut c = fx.bash();
-    c.arg("-c")
-        .arg(command_of("autodrive-merge-loop", "step-02a"))
-        .env("RECIPE_VAR_merge_loop_result", stdout(&out));
-    loop_env(&mut c, fx, &preflight);
-    let classified = c.output().expect("run merge loop step-02a");
+    let classified = loop_outcome_step(fx, &out);
     (out, Some(classified))
 }
 
