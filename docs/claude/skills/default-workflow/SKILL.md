@@ -294,8 +294,13 @@ Git-verified `origin/HEAD`, then fall back to `origin/master`, then
 `origin/develop`. `origin/HEAD` may target `origin/main`, `origin/master`,
 `origin/develop`, or another remote default branch as long as Git verifies it as
 a remote-tracking ref under `refs/remotes/origin/`. If no supported remote base
-source exists, report what each base source returned and hand the choice of base to an agent step.
-Do not bootstrap from local `HEAD` or silently skip push/upstream setup.
+source exists, fail loudly: name each base source that was tried and what it
+returned, and stop the step with an actionable message. Do not bootstrap from
+local `HEAD`, do not silently skip push/upstream setup, and do not accept an
+unverified ref to keep going. This step has no agentic recovery hand-off today:
+`workflow-worktree` is not among the steps listed in
+`docs/reference/step-failure-recovery.md`, so the loud error is where it ends.
+Giving it one is a recipe change, not a documentation change.
 
 ### Step 4 — Initial Push (network transient)
 
@@ -315,7 +320,7 @@ Do not bootstrap from local `HEAD` or silently skip push/upstream setup.
 **Failure (#978)**: A temporary workstream branch tracks an unrelated/stale upstream; a blind `git pull --rebase` replays already-integrated historical commits and produces add/add conflicts.
 **Resilience**: Step 15 is ancestry-aware. After fetching, it compares HEAD to `@{u}`:
 - upstream is an ancestor of HEAD (behind == 0) → fast-forward push, preserving the tested commit identities (no history rewrite, no rebase);
-- histories diverged (behind > 0) → **decline to act** and report structured `merge-base / ahead / behind` evidence, then hand the merge-or-rebase decision to an agent step that does not rewrite pushed history. Step 15 never auto-rebases divergent history onto a possibly-unrelated upstream.
+- histories diverged (behind > 0) → **fail loudly** with structured `merge-base / ahead / behind` evidence, and hand that failure to recovery instead of ending the run. `step-15-commit-push` carries `continue_on_error: true`, so its non-zero exit falls through to `step-15-push-recovery`, which runs the `push-failure-recovery` sub-recipe and gives an agent the merge-or-rebase decision (`docs/reference/recipe-push-failure-recovery.md`). That recovery works from its own snapshot of the worktree and the remote, not from step-15's `reason`: the runner keeps no output from a step that exited non-zero, so the loud message survives only in the step log. Step 15 never auto-rebases divergent history onto a possibly-unrelated upstream, and recovery must not rewrite pushed history to make the push succeed.
 
 ### Step 16 — PR Creation (already exists / no commits)
 

@@ -44,8 +44,12 @@ Validate architectural decisions through amplihack's philosophy:
 5. **Value**: "Does the complexity add proportional value?"
 6. **Error Visibility**: "Are all errors propagated visibly? Any swallowed exceptions or silent fallbacks?"
 7. **No Silent Degradation**: "Does any code path silently drop data, skip work, or substitute defaults?"
-8. **Brittle Checks**: "Does this change add or extend a check, parser, gate or exit path that can end a run, or a script that judges what an agent should judge? If so, that is a major concern unless it only prevents data loss. Name the agentic alternative, such as removing the check or giving the situation to an agent step with guidance."
-9. **Checking Balance**: "Does the change add more checking code than it removes?"
+8. **Validation**: "Does this change validate its result, and does a failure report itself with evidence?"
+9. **Agentic Recovery**: "When validation fails, does the workflow give an agent the evidence and room to diagnose and fix? Or does it end the run, or make the check pass by special-casing the new case?"
+10. **Lowered Bar**: "Does any path hide a failure or lower the bar: a skipped or weakened check, a silent retry, or a success that has not been shown?" If so, that is a blocking concern.
+11. **Judgement in a Script**: "Is a judgement made by a script that pattern-matches, where an agent step with guidance should decide?"
+
+Questions 8 to 11 ask what happens after a failure, not whether checking code grew. Added validation and the regression tests that pin it are not findings. A step that refuses in order to protect data (never delete unpushed work, never force-push) is correct; check only that its refusal is loud and reaches recovery.
 
 ## Red Flags
 

@@ -14,13 +14,19 @@ Our development philosophy embodies a Zen-like minimalism that values simplicity
 - **Present-moment focus**: The code handles what's needed now rather than anticipating every possible future scenario.
 - **Pragmatic trust**: We trust external systems enough to interact with them directly, handling failures as they occur rather than assuming they'll happen.
 
-### Agentic Steps, Not Brittle Checks
+### Validate Strictly, Fail Loudly, Recover Agentically, Never Lower the Bar
 
-Recipes are composable workflows of agentic steps. Deterministic code fetches, renders, installs and records. It does not judge. When something does not match what was expected, an agent step assesses the situation against guidance and acts: it proceeds, repairs, or stops with a stated reason.
+- **Validate**: Every step that produces work checks the result against the intended quality: build, tests, review, the PR's real state. Validation is not optional, and it is not weakened to make progress.
+- **Fail loudly**: A failed check reports what failed, the evidence and where it came from. A failure is never swallowed, silently retried, marked as passed, or left only in a log.
+- **Recover agentically**: A failure does not end the run by itself. It goes to an agent step with the evidence and the step's purpose. That step decides what went wrong: the change, the environment, the plan, or the check itself. Then it acts:
+  - fixes the cause and runs the validation again;
+  - changes approach;
+  - or, if it cannot proceed without lowering quality, stops and states plainly what is blocked and why.
+- **Never lower the bar**: Recovery may change how the work is done, never what counts as done. It must not skip, weaken, mock out, special-case or delete a check to get past it, and it must not report a success it has not shown.
+- **Code for mechanics, agents for judgement**: Deterministic code fetches, builds, tests, renders and records. A question that needs judgement, such as "is this the run's PR?", "is the work complete?" or "is this failure ours or main's?", belongs to an agent step with guidance, not to a script that pattern-matches and exits.
+- **Protect data**: A step that would lose work refuses. Never delete unpushed work, never force-push, and never perform an equivalent destructive operation such as a hard reset, a forced branch deletion or a forced clean. The refusal is loud and goes to recovery like any other failure.
 
-Every fix to a failing step or check either removes the brittle mechanism or replaces it with such an agent step. A fix adds no new fail-closed gate, exact-format parser, must-match check or exit code that ends a run. Extending an existing check to cover one more case is a last resort and the design must justify it in writing.
-
-The one exception is a step that protects data: it may decline to act, but declining does not end the run. Never delete unpushed work, never force-push, and never perform an equivalent destructive operation such as a hard reset, a forced branch deletion or a forced clean. The rule applies to recipe steps and workflow checks. It does not apply to authentication, authorization, input validation, secret handling or integrity verification of artifacts, and a user-facing command such as `amplihack install` still verifies its own completeness and reports failure.
+When the task is a failing step, start by asking why it failed. If the check was right, fix the cause. If the check was making a judgement that belongs to an agent, keep the validation and move the judgement into an agent step. Removing a check is not the first move, and it is never the move that makes a failing check pass. Where guidance elsewhere in this bundle says "fail closed" in the sense of ending the run, read it as "fail loudly and hand the failure to recovery". That rewording never weakens a check: security and integrity validation (authentication, authorization, input validation, secret handling, artefact integrity) and a user-facing command's own completeness check, such as `amplihack install`, stay strict and still fail loudly, and recovery fixes the cause rather than the check.
 
 ### The Brick Philosophy for AI Development
 
@@ -64,7 +70,7 @@ Like a brick model, our software is built from small, clear modules. Each module
 - **No swallowed exceptions**: Handle errors transparently and ensure they are visible during development
 - **Install completeness**: `amplihack install` MUST guarantee that every component the user-facing CLI advertises is actually present and functional after install completes. This includes: every framework asset the post-install verifier checks (e.g. `CLAUDE.md`, hooks, settings), every helper binary that recipes/skills/hooks invoke (e.g. `recipe-runner-rs`), and every PATH-resident command users will type. If install cannot place a component, install must fail loudly with a precise error — never finish "successfully" while the verifier prints `❌`. When adding a new component (binary, asset, hook), update both the install staging code AND the verifier in the same change so they cannot drift.
 
-Recipes are composable workflows of agentic steps, not implicit shells that assume the host environment is already perfect. A step that calls a host tool (`git`, `gh`, `cargo`, package managers, cloud CLIs) reports at the step boundary what the tool returned, without credentials or environment values. When the result is not what the step expected, an agent step reads that report against guidance and proceeds, repairs, or stops with a stated reason. Optional host-tool work, such as telemetry or decorative status reporting, notes visibly when it is skipped instead of silently degrading.
+Recipes are composable workflows of agentic steps, not implicit shells that assume the host environment is already perfect. Any host-tool call (`git`, `gh`, `cargo`, package managers, cloud CLIs) must declare or check its preconditions at the step boundary and surface clear errors when those preconditions are required, reporting what the tool returned without credentials or environment values. Optional host-tool work, such as telemetry or decorative status reporting, must skip visibly with an explicit note instead of silently degrading; strict workflow work, such as branch, worktree, commit, or PR creation, must fail loudly with an actionable message. That loud failure, with its evidence and the step's purpose, then goes to an agent recovery step, which diagnoses the cause and either repairs it and revalidates, changes approach, or stops and states what is blocked. Recovery never lowers what counts as done.
 
 ### 4. Library vs Custom Code
 

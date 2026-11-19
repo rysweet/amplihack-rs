@@ -29,13 +29,19 @@ or "reduce the code".
 Default behavior is to write code. This skill forces the opposite default: prove a
 step *cannot* be a prompt or a tool before you write imperative logic for it.
 
-The same rule governs fixes. Deterministic code fetches, renders, installs and records;
-it does not judge. When a step or check fails, the fix removes the brittle mechanism or
-replaces it with an agent step that assesses the situation against guidance and proceeds,
-repairs, or stops with a stated reason. Do not add a new fail-closed gate, exact-format
-parser, must-match check or run-ending exit code. Extending the check is a last resort
-the design must justify in writing. A step that only protects data (never delete
-unpushed work, never force-push) may decline to act but does not end the run.
+A second rule governs fixes: **validate strictly, fail loudly, recover agentically,
+never lower the bar.** Keep the validation and keep the loud failure. What changes is
+what happens next. The failure, with its evidence and the step's purpose, goes to an
+agent step, which works out whether the change, the environment, the plan or the check
+itself is at fault, and then fixes the cause and revalidates, changes approach, or stops
+and states plainly what is blocked and why.
+
+When a step or check fails, ask first why it failed. If the check was right, fix the
+cause. If the check was making a judgement, keep the validation and move the judgement
+into an agent step. Never skip, weaken, mock out, special-case or delete a check to get
+past it, and never report a success you have not shown. A step that would lose work
+(deleting unpushed commits, force-pushing) refuses; that refusal is loud and goes to
+recovery like any other failure.
 
 ## The 6-Step Decision Procedure
 
@@ -91,7 +97,8 @@ carry the data.
 
 See `reference.md` for the four named anti-patterns and their replacements:
 1. Brittle stdout / JSON scraping of agent output → typed, owner-only (`0o600`),
-   freshness-checked records whose reader reports what it found and never guesses.
+   freshness-checked records. The reader still refuses to proceed on a record it
+   cannot verify; it reports which check failed, as evidence an agent step can read.
 2. Imperative heuristics standing in for judgment (`classify_signal`, `orient`,
    `decide`) → an agentic step behind a prompt.
 3. Wall-clock timeouts that kill working agentic steps → idle/liveness detection.
@@ -104,7 +111,8 @@ See `reference.md` for the four named anti-patterns and their replacements:
   skeletons matching the repo's real shapes.
 - `worked-example.md` — one behavior (classify + route a signal) built as recipe +
   prompt + typed record + ~10-line rail, contrasted with a naive hardcoded function.
-  A second example replaces step-21 pr-ready's `workflow_pr_scope.sh` with an agent step.
+  A second example moves step-21 pr-ready's judgement out of `workflow_pr_scope.sh`
+  into an agent step, keeping the readiness check and the loud "none found".
 
 ## §7 — Honest note on reflexive irony
 
@@ -112,7 +120,8 @@ Some shipped recipes in this repo still hand data between steps by having a late
 parse an earlier step's stdout (e.g. `parse_json` over agent output). That works, and
 this skill does not claim those recipes are broken. The **recipe step is the agentic
 unit** either way. What this skill teaches is the *improved handoff*: a step writes a
-**typed record** (owner-only, freshness-checked) and the next step reads it for integrity,
-handing anything unreadable to an agent step.
+**typed record** (owner-only, freshness-checked) and the next step verifies it, refusing
+to act on a record that fails a check and handing that failure, with its reason, to an
+agent step.
 Model new work on the typed-record handoff; treat stdout-scraping as legacy, not as the
 target pattern.
