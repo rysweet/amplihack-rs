@@ -59,6 +59,12 @@ pub(crate) enum RuntimeRemoval {
     /// Another process still uses the folder, so it was left in place for a
     /// later sweep (issue #2486).
     KeptInUse,
+    /// A Git work tree in the folder holds changes that were never
+    /// committed, or commits that are on no remote, or could not be checked,
+    /// so the folder was left in place (issue #2785). Deleting it would
+    /// destroy work that exists nowhere else. This is an outcome, not an
+    /// error: it never fails a run and never changes its outcome.
+    KeptUnsavedWork,
 }
 
 /// Removes a runtime folder when dropped, including during unwinding, unless
@@ -183,6 +189,14 @@ impl RuntimeGuard {
         // a step left locked, so removal is not stopped by them.
         let unchanged = restore_owner_access(&path, euid());
         report_unchanged(&path, &unchanged);
+        // Issue #2785, after the restore and not before it: a folder a step
+        // left at mode 000 would otherwise hide the work tree inside it, and
+        // a locked folder holding nothing would be kept for ever, which the
+        // #2486 case forbids. The judgement says once why it keeps the
+        // folder; it is the last thing before the delete.
+        if super::sweep::keep_and_report_unsaved_work(&path).is_some() {
+            return Ok(RuntimeRemoval::KeptUnsavedWork);
+        }
         match fs::remove_dir_all(&path) {
             Ok(()) => Ok(RuntimeRemoval::Removed),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(RuntimeRemoval::Removed),

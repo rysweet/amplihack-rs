@@ -26,6 +26,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -416,6 +417,364 @@ fn unpushed_reason(worktree: &Path) -> Option<String> {
         Ok(_) => Some(label.to_string()),
         Err(error) => Some(format!("cannot check for unpushed commits: {error:#}")),
     }
+}
+
+// ----- issue #2785: folders that hold unsaved Git work ----------------------
+//
+// Before a folder is removed it is judged: does it hold a Git work tree with
+// changes that were never committed, or commits that are on no remote? If it
+// does, the folder is kept and one line says so. Deleting is not reversible
+// and declining to delete is, so what cannot be settled is kept.
+//
+// `git rev-parse` walks upwards, so asking Git about a folder that merely
+// sits inside a repository answers for that repository; a work root inside a
+// checkout would then keep everything for ever. The judgement is therefore a
+// funnel that only ever walks downwards:
+//
+//   1. the file system alone: which folders at or below this one hold a
+//      `.git` entry shaped like a repository (no Git command is run, so a
+//      folder that holds none costs nothing);
+//   2. Git confirms that each of those folders is itself the root of a work
+//      tree, compared byte for byte;
+//   3. only then, the folder's uncommitted changes and unpushed commits.
+
+/// How far below a folder a `.git` entry is looked for: the folder itself, a
+/// folder directly inside it, or a folder two levels inside it. That covers
+/// where a repository copy lands — a run's `runtime/tmp/<repo>` is two levels
+/// below its runtime folder — and keeps the walk cheap.
+const MAX_WORK_TREE_DEPTH: usize = 2;
+
+/// How many work trees are judged in one folder. Each costs up to four Git
+/// commands, so a folder holding more of them is kept rather than checked.
+/// This is a count of work trees, not a clock.
+const MAX_WORK_TREES: usize = 8;
+
+/// The start of every reason that means "this could not be settled". The
+/// text after it is Git's own, or the file system's.
+const CANNOT_CHECK: &str = "cannot check for unpushed commits";
+
+/// Why a folder is kept: a Git work tree in it holds work that exists
+/// nowhere else, or could not be shown to hold none.
+#[derive(Debug, Clone)]
+pub(super) struct KeepReason {
+    /// The folder that was judged, and that is kept.
+    folder: PathBuf,
+    /// The work tree the reason is about: `folder` itself, or one below it.
+    pub(super) worktree: PathBuf,
+    /// Free of control characters, so it is safe wherever it is shown.
+    reason: String,
+}
+
+impl KeepReason {
+    fn new(folder: &Path, worktree: &Path, reason: impl AsRef<str>) -> Self {
+        Self {
+            folder: folder.to_path_buf(),
+            worktree: worktree.to_path_buf(),
+            reason: escape_controls(reason.as_ref()),
+        }
+    }
+
+    /// A work tree that could not be checked, with the words of whatever
+    /// refused after the reason.
+    fn unchecked(folder: &Path, worktree: &Path, detail: impl std::fmt::Display) -> Self {
+        Self::new(folder, worktree, format!("{CANNOT_CHECK}: {detail}"))
+    }
+}
+
+impl std::fmt::Display for KeepReason {
+    /// The reason alone when the work tree is the folder itself, and the work
+    /// tree's path before it otherwise. There is no prefix: this same text is
+    /// the report's `reason` and the apply-time refusal, and the one message
+    /// adds its own words around it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.worktree == self.folder {
+            f.write_str(&self.reason)
+        } else {
+            // `{:?}` on a path escapes control characters and bytes that are
+            // not UTF-8, as the `KeptInUse` line already does.
+            write!(f, "work tree {:?}: {}", self.worktree, self.reason)
+        }
+    }
+}
+
+/// `text` with every control character written as an escape. Folder names
+/// are attacker-influenced and Git quotes them back in its errors: a newline
+/// would forge a second line, and an escape sequence would reach a terminal.
+fn escape_controls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            out.extend(c.escape_debug());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A missing path, or a path whose parent is not a folder: there is nothing
+/// there, as opposed to something that could not be looked at.
+fn is_absent(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+    )
+}
+
+/// What a folder's `.git` entry says, from the file system alone. Git's own
+/// output is never matched on: "not a git repository" is what Git says about
+/// a repository it refuses as much as about a folder that holds none.
+enum GitEntry {
+    /// A folder with a `HEAD` in it, or a regular file or a link (a linked
+    /// work tree, or a repository kept elsewhere).
+    Repository,
+    /// No `.git`, or one that is not shaped like a repository at all.
+    None,
+    /// It could not be looked at, so nothing can be ruled out.
+    Unknown(String),
+}
+
+/// [`GitEntry`] for `dir`. The contents of a `.git` file are never read: a
+/// named pipe called `.git` would block for ever, and this can run from
+/// `Drop`.
+fn classify_git_entry(dir: &Path) -> GitEntry {
+    let git = dir.join(".git");
+    let kind = match fs::symlink_metadata(&git) {
+        Ok(meta) => meta.file_type(),
+        Err(error) if is_absent(&error) => return GitEntry::None,
+        Err(error) => return GitEntry::Unknown(format!("cannot inspect {git:?}: {error}")),
+    };
+    if kind.is_file() || kind.is_symlink() {
+        return GitEntry::Repository;
+    }
+    if !kind.is_dir() {
+        return GitEntry::None;
+    }
+    let head = git.join("HEAD");
+    match fs::symlink_metadata(&head) {
+        Ok(_) => GitEntry::Repository,
+        Err(error) if is_absent(&error) => GitEntry::None,
+        Err(error) => GitEntry::Unknown(format!("cannot inspect {head:?}: {error}")),
+    }
+}
+
+/// A folder that holds a `.git` entry shaped like a repository.
+struct WorkTreeCandidate {
+    /// How far below the judged folder it lies; 0 is the folder itself.
+    depth: usize,
+    path: PathBuf,
+    /// The folder and its `.git` both belong to this process's user.
+    owned: bool,
+}
+
+/// `dir` and its `.git` both belong to `owner`.
+///
+/// A repository planted by another user can name programs for Git to run,
+/// and Git refuses a repository of dubious ownership anyway. Checking the
+/// owner first means such a folder is kept without Git ever being asked.
+fn owned_by(dir: &Path, owner: u32) -> bool {
+    let belongs = |path: &Path| fs::symlink_metadata(path).is_ok_and(|m| m.uid() == owner);
+    belongs(dir) && belongs(&dir.join(".git"))
+}
+
+/// Every folder at or below `dir`, down to [`MAX_WORK_TREE_DEPTH`], that
+/// holds a `.git` entry shaped like a repository, shallowest first and then
+/// by path, so the answer does not depend on the order the file system lists
+/// entries in. Links are neither followed nor counted.
+///
+/// No Git command is built here, so a folder that holds no repository costs
+/// none. (That cost property holds by construction and has no test of its
+/// own: proving it would need a stand-in for `git` on the process-wide PATH,
+/// which the test harness shares between threads.)
+///
+/// `Err` when the folder must be kept without looking any further: something
+/// could not be inspected, or there are more work trees than can be checked.
+fn work_tree_candidates(dir: &Path, owner: u32) -> Result<Vec<WorkTreeCandidate>, KeepReason> {
+    let mut found: Vec<WorkTreeCandidate> = Vec::new();
+    let mut queue = vec![(dir.to_path_buf(), 0usize)];
+    while let Some((path, depth)) = queue.pop() {
+        match classify_git_entry(&path) {
+            GitEntry::Repository => {
+                if found.len() >= MAX_WORK_TREES {
+                    return Err(KeepReason::new(
+                        dir,
+                        dir,
+                        format!("{CANNOT_CHECK}: more work trees than can be checked"),
+                    ));
+                }
+                found.push(WorkTreeCandidate {
+                    depth,
+                    owned: owned_by(&path, owner),
+                    path: path.clone(),
+                });
+            }
+            GitEntry::None => {}
+            GitEntry::Unknown(detail) => return Err(KeepReason::unchecked(dir, &path, detail)),
+        }
+        if depth >= MAX_WORK_TREE_DEPTH {
+            continue;
+        }
+        let listing = match fs::read_dir(&path) {
+            Ok(listing) => listing,
+            Err(error) if is_absent(&error) => continue,
+            Err(error) => {
+                return Err(KeepReason::unchecked(
+                    dir,
+                    &path,
+                    format!("cannot list {path:?}: {error}"),
+                ));
+            }
+        };
+        for entry in listing {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    return Err(KeepReason::unchecked(
+                        dir,
+                        &path,
+                        format!("cannot list {path:?}: {error}"),
+                    ));
+                }
+            };
+            // From the directory entry, so a link is seen as a link and is
+            // never followed.
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => queue.push((entry.path(), depth.saturating_add(1))),
+                Ok(_) => {}
+                Err(error) if is_absent(&error) => {}
+                Err(error) => {
+                    let at = entry.path();
+                    return Err(KeepReason::unchecked(
+                        dir,
+                        &at,
+                        format!("cannot inspect {at:?}: {error}"),
+                    ));
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| (a.depth, &a.path).cmp(&(b.depth, &b.path)));
+    Ok(found)
+}
+
+/// Whether Git agrees that a folder is itself the root of a work tree.
+enum WorkTreeRoot {
+    /// Git resolved this folder, and the root it named is this folder.
+    Confirmed,
+    /// Git could not be run, refused the folder, or named another folder as
+    /// the root. Which of those it was does not matter: none of them shows
+    /// the folder holds nothing unsaved.
+    Unknown(String),
+}
+
+/// Asks Git for the root of the work tree at `dir` and requires the answer
+/// to be `dir` itself. This is what bounds the search downwards: without it
+/// a folder inside a repository would answer for that repository.
+///
+/// The answer is compared as bytes. `trim` would equate a folder whose name
+/// ends in a space with a different folder, and a lossy decode would do the
+/// same to a name that is not UTF-8; either way the judgement would be about
+/// some other folder than the one that is about to be deleted.
+fn confirm_work_tree_root(dir: &Path) -> WorkTreeRoot {
+    let mut command = hardened_git();
+    command
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--show-toplevel"]);
+    let output = match crate::util::run_output_with_timeout(command, GIT_TIMEOUT) {
+        Ok(output) => output,
+        Err(error) => return WorkTreeRoot::Unknown(format!("{error:#}")),
+    };
+    if !output.status.success() {
+        return WorkTreeRoot::Unknown(sanitized_stderr_short(&output.stderr));
+    }
+    let bytes = output
+        .stdout
+        .strip_suffix(b"\n")
+        .unwrap_or(output.stdout.as_slice());
+    let reported = PathBuf::from(std::ffi::OsStr::from_bytes(bytes));
+    match (fs::canonicalize(&reported), fs::canonicalize(dir)) {
+        (Ok(root), Ok(here)) if root == here => WorkTreeRoot::Confirmed,
+        (Ok(root), Ok(_)) => WorkTreeRoot::Unknown(format!(
+            "Git names {root:?} as the work tree root, not this folder"
+        )),
+        _ => WorkTreeRoot::Unknown(format!(
+            "the work tree root Git names, {reported:?}, cannot be resolved"
+        )),
+    }
+}
+
+/// Why the work tree at `candidate` keeps `dir`, or `None` when everything
+/// in it is committed and on a remote.
+fn judge_work_tree(dir: &Path, candidate: &WorkTreeCandidate) -> Option<KeepReason> {
+    let at = candidate.path.as_path();
+    if !candidate.owned {
+        return Some(KeepReason::unchecked(
+            dir,
+            at,
+            "it is not owned by the current user",
+        ));
+    }
+    if let WorkTreeRoot::Unknown(detail) = confirm_work_tree_root(at) {
+        return Some(KeepReason::unchecked(dir, at, detail));
+    }
+    // The same two checks, in the same order and with the same words, as the
+    // ones a worktree removal has always made (`worktree_item`).
+    if git_has_dirty_state(at) {
+        return Some(KeepReason::new(dir, at, "has uncommitted changes"));
+    }
+    unpushed_reason(at).map(|reason| KeepReason::new(dir, at, reason))
+}
+
+/// Why `dir` must be kept, or `None` when it may be removed. Says nothing;
+/// [`keep_and_report_unsaved_work`] is the one that speaks.
+///
+/// `owner` is the user the folder and its `.git` must belong to; production
+/// passes this process's effective uid. This never fails and never panics:
+/// it runs from `Drop`, where a panic during unwinding ends the process.
+pub(super) fn judge_unsaved_work(dir: &Path, owner: u32) -> Option<KeepReason> {
+    match fs::symlink_metadata(dir) {
+        // A link or a file is not judged: removal refuses it anyway.
+        Ok(meta) if !meta.file_type().is_dir() => return None,
+        Ok(_) => {}
+        Err(error) if is_absent(&error) => return None,
+        Err(error) => {
+            return Some(KeepReason::unchecked(
+                dir,
+                dir,
+                format!("cannot inspect {dir:?}: {error}"),
+            ));
+        }
+    }
+    let candidates = match work_tree_candidates(dir, owner) {
+        Ok(candidates) => candidates,
+        Err(keep) => return Some(keep),
+    };
+    candidates
+        .iter()
+        .find_map(|candidate| judge_work_tree(dir, candidate))
+}
+
+/// [`judge_unsaved_work`] for this process's user, which says once why it
+/// keeps `dir`: on stderr, which is the line the run log keeps, and as a
+/// `tracing` record for anyone who has turned those on.
+///
+/// Called at the point of judgement, so there is one message per folder per
+/// pass with no bookkeeping: a folder kept while planning becomes a skip and
+/// never reaches the removal that would judge it again.
+pub(super) fn keep_and_report_unsaved_work(dir: &Path) -> Option<KeepReason> {
+    let keep = judge_unsaved_work(dir, euid())?;
+    tracing::warn!(
+        folder = ?dir,
+        worktree = ?keep.worktree,
+        reason = %keep,
+        "leaving a folder in place: it holds Git work that exists nowhere else"
+    );
+    // Not `eprintln!`, which panics when stderr is closed; this can run from
+    // `Drop`. One write, so the line cannot be split by another thread's.
+    let line = format!("amplihack: leaving {dir:?} in place: {keep}\n");
+    let _ = std::io::Write::write_all(&mut std::io::stderr().lock(), line.as_bytes());
+    Some(keep)
 }
 
 /// The branch checked out in `worktree`, or `None` for a detached HEAD.
@@ -847,6 +1206,17 @@ impl Collector<'_> {
                             Category::RunTmp,
                             dir,
                             "in use by a running process",
+                            Some(id),
+                        ));
+                    } else if let Some(keep) = keep_and_report_unsaved_work(dir) {
+                        // Issue #2785: a step left a repository copy here
+                        // with work that is in no commit, or in no commit
+                        // that is on a remote. Removing the folder would
+                        // destroy it, so it is kept and said once.
+                        self.items.push(Item::skip(
+                            Category::RunTmp,
+                            dir,
+                            keep.to_string(),
                             Some(id),
                         ));
                     } else {
@@ -1386,6 +1756,12 @@ fn target_item(
     // A legacy real folder keeps its #1808 removal, which needs no Cargo
     // shape; it still holds the `.cargo-lock` locks while deleting.
     let op = if c.owned.target.is_none() && shape == Shape::Dir {
+        // Issue #2785: only this form is a plain folder that a run may have
+        // checked a repository out into. A Cargo build tree (the other arm)
+        // is never user work.
+        if let Some(keep) = keep_and_report_unsaved_work(&c.canonical) {
+            return Item::skip(Category::RunTarget, path, keep.to_string(), Some(id));
+        }
         Op::RemoveDir {
             run_dir: Some(run_dir.to_path_buf()),
             cargo_lock: true,
