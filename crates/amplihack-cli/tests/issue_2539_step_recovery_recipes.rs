@@ -118,12 +118,20 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
             "{name}/{id}: values come from $RECIPE_VAR_*, never {{{{…}}}}"
         );
     }
-    // A handoff on a guard, or before an outward action, stops the recipe there.
+    // A handoff before an outward action stops the recipe there.
+    //
+    // validate-agentic-finalization is not a guard. Since #2343 it reports the
+    // terminal state assess-finalization decided, and a failure to reach one
+    // is a gap its recovery agent can close by pushing the branch or opening
+    // the pull request and validating again. `--guard` refuses
+    // retry_after_repair, which is exactly that move, so the step is
+    // `--essential --stop-on-handoff`: no continue_recorded, and a handoff
+    // still exits 81. See docs/reference/step-failure-recovery.md.
     for (name, id, flag) in [
         (
             "workflow-finalize",
             "validate-agentic-finalization",
-            "--guard",
+            "--essential --stop-on-handoff",
         ),
         (
             "workflow-finalize",

@@ -77,7 +77,9 @@ steps:
         could not be obtained to ask about.
 
       You may read more yourself: `git` in the worktree and read-only `gh` are
-      both available, and a fact you check beats one you assume.
+      both available, and a fact you check beats one you assume. Run them
+      noninteractively, exporting `GIT_PAGER=cat GH_PAGER=cat PAGER=cat` in the
+      same shell call, so a pager can never block this step.
 
       ## Choose one terminal state
 
