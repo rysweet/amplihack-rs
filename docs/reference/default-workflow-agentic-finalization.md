@@ -8,12 +8,27 @@ Deterministic steps collect evidence, emit typed recipe state, validate the
 terminal decision, and choose the process exit code. An agentic finalizer step
 contributes a human-readable narrative only.
 
-**Terminal classification is a deterministic function of typed evidence.**
+Since #2343 the first evidence is the run's real outcome: the branch pushed at
+the local head, the PR open at that head, and its check state. A missing context
+file, an unset empty object key or pending CI is not a failure. See
+[The Run's Real Outcome](#the-runs-real-outcome-2343). Where this
+page describes fail-closed handling of incomplete bookkeeping, that section
+takes precedence.
+
+**The terminal state is decided by one step, `assess-finalization`, on the
+facts of what the run produced.** Since #2809 it is not a deterministic
+function of typed evidence: bash collects the facts and reports the decision,
+and it computes neither. What stays deterministic is everything around the
+decision -- which facts are collected, which blockers precede them, which
+tokens may be published, and how the result is built.
+
 Finalization never parses agent-generated prose with `jq`, regex, fence
-stripping, or JSON extraction to decide the outcome. The narrative the finalizer
-agent produces is an output artifact for humans, not the machine-control
-protocol. A fully successful run cannot be reported as failed merely because the
-finalizer emitted human-readable text instead of parser-compatible JSON.
+stripping, or JSON extraction to decide the outcome. `assess-finalization`
+returns one typed JSON object through the recipe's own context transport; the
+narrative the *finalizer* agent produces is a separate artifact for humans and
+is never read. A fully successful run cannot be reported as failed merely
+because the finalizer emitted human-readable text instead of parser-compatible
+JSON.
 
 This page is the target implementation contract for the feature. If recipe,
 helper, or test behavior differs, update the implementation to match this
@@ -21,9 +36,9 @@ contract rather than reintroducing a brittle parser that translates
 unconstrained agent prose into workflow control flow.
 
 The finalizer does not mutate Git state, create or edit pull requests, merge, or
-decide success from free-form prose. Terminal success is reported only after the
-deterministic finalization gate classifies a known terminal state from typed
-evidence.
+decide success from free-form prose. Terminal success is reported only for a
+state `assess-finalization` named and the published vocabulary calls a success,
+and only after the deterministic blockers below have been answered.
 
 ## Design Rule: No Prose Parsing
 
@@ -96,16 +111,24 @@ step status, not through an agent's stdout.
 
 | Step | Type | Responsibility | Emits |
 | --- | --- | --- | --- |
-| `collect-finalization-evidence` | Deterministic shell/JSON | Read Git status, branch/base diff, provider-safe change-request metadata, CI state, implementation and verification markers, publish result, prior recipe state, missing tooling, and observed phases. | `finalization_evidence` (typed JSON, `schema_version: 1`) |
+| `collect-finalization-evidence` | Deterministic shell/JSON | Read Git status, branch/base diff, provider-safe change-request metadata, CI state, implementation and verification markers, publish result, prior recipe state, missing tooling, observed phases, and the facts of what the run produced (`outcome`). | `finalization_evidence` (typed JSON, `schema_version: 1`) |
 | `agentic-finalizer` | Agentic | Produce a human-readable narrative explaining the run and the recommended next action for operators. | `agentic_finalizer_narrative` (opaque text artifact) |
 | `finalizer-step-status` | Deterministic shell/JSON | Record whether the narrative step itself completed or failed, as typed state. | `finalizer_step_status` (`{status, reporting_failure}`) |
-| `validate-agentic-finalization` | Deterministic shell/JSON | Classify one terminal state from typed evidence and typed markers, applying guards before any success state. | `workflow_result` (normalized terminal result) |
+| `assess-finalization` | Agentic (sub-recipe) | Decide the run's terminal state from the collected facts, and close a gap with one of two additive actions when that is what is missing (#2809). | `finalization_assessment` (`{terminal_state, action_taken, pr_number, reason, next_action}`) |
+| `validate-agentic-finalization` | Deterministic shell/JSON | Apply the blockers about the local checkout, confirm the facts were gathered, and report the terminal state the assessment decided. | `workflow_result` (normalized terminal result) |
 | `workflow-complete` | Deterministic shell/JSON | Emit the human-readable summary and canonical result JSON, including the reporting-vs-implementation distinction. | `workflow_completion` |
 
-The agentic finalizer is deliberately boxed out of control flow. It cannot make
-an unsupported state successful, ignore dirty work, override failed CI, repair
-invalid PR metadata, or flip a decision by emitting text such as
-`terminal_state: MERGED`. Its narrative is never scanned for those tokens.
+`agentic-finalizer` is deliberately boxed out of control flow. Its narrative is
+never scanned for tokens such as `terminal_state: MERGED`, and no step reads it.
+
+`assess-finalization` is the opposite: it is in control flow, and that is the
+point (#2809). It decides the terminal state, which the validator then reports.
+What it cannot do is reach past the blockers the validator takes first -- a
+dirty worktree, missing `git` or `jq`, a deterministic probe that already named
+a blocker -- or supply the identity of a pull request: `pr_url` is rebuilt from
+the remote the facts report, and `pr_number` is used only when it is a pull
+request number. It may push the run branch and open a pull request, and nothing
+else. See [The assessment decides](#the-assessment-decides).
 
 ### Typed State Across Step Boundaries
 
@@ -134,15 +157,18 @@ failures. The finished model is designed around these concrete cases:
 | Remaining meaningful diff | Branch changes remain but no valid publish, merge, follow-up, or implementation-plus-verification path proves closure. | Return `FAILED_MEANINGFUL_DIFF` unless the diff is intentionally represented by a validated PR/follow-up or another success state with deterministic proof. |
 | Missing tooling | `gh`, `jq`, Git metadata, or provider auth was absent on paths that required it. | Tooling absence is reported as a deterministic failure such as `FAILED_MISSING_TOOLING` or `FAILED_PR_METADATA_UNAVAILABLE`, not as no-op success. |
 | Failed CI | Open PRs with failed or unavailable required checks reached final output that looked complete. | Return `BLOCKED_CI` with failing check evidence and `terminal_success=false`. |
-| Hollow success | A recipe exited `0` after setup, planning, empty agent output, or inaccessible codebase messages without implementation, verification, publish, or valid no-op evidence. | Return `HOLLOW_SUCCESS` or `FAILED_MISSING_TERMINAL_EVIDENCE`. |
+| Hollow success | A recipe exited `0` after setup, planning, empty agent output, or inaccessible codebase messages without implementation, verification, publish, or valid no-op evidence. | The signal is a typed fact beside the published outcome; `HOLLOW_SUCCESS` when nothing published contradicts it (#2809). |
+| Finished runs failed on bookkeeping | A run whose branch was pushed and whose pull request was open ended `FAILED_IMPLEMENTATION` because its context file was unreadable and its checks were pending (#2343, the #2784 run). | The terminal state is decided on what the run published, not on whether its own record of itself is complete. |
 | Implementation failure | Implementation or verification evidence is absent or failed while meaningful work remains. | Return `FAILED_IMPLEMENTATION`, distinct from a reporting failure. |
 
 ## Input Evidence Document
 
-`validate-agentic-finalization` classifies the terminal state from one
-normalized evidence document plus typed recipe markers. Producers collect the
+`collect-finalization-evidence` assembles one normalized evidence document, and
+`assess-finalization` decides the terminal state on it.
+`validate-agentic-finalization` reads five fields of it for the blockers no
+published outcome can answer, and reports that decision. Producers collect the
 data from recipe context, step outputs, shell helpers, Git, and provider
-metadata, but the classifier sees a single JSON object.
+metadata, but each reader sees a single JSON object.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -160,8 +186,19 @@ metadata, but the classifier sees a single JSON object.
 | `publish` | object | Publish result, follow-up PR details, no-diff state, or provider-specific skip reason. |
 | `tooling` | object | Missing deterministic tooling and whether `gh` is required for the selected path. |
 | `observed_phases` | array of strings | Recipe phases that produced evidence before finalization. |
-| `agent_outputs` | object | Summaries needed to detect empty, inaccessible, or generic agent responses. |
+| `task` | object | `description`: the run's own task text, as data, with any fence of three or more backticks defanged and the whole capped at 4000 characters; `description_read`: whether any reached the collector. |
+| `agent_outputs` | object | `implementation_output`: whether the implementation step returned anything (`present`, `empty`, `unread`); `hollow_success_signals`: a typed flag another producer may set, `unknown` when nobody set it. |
 | `prior_terminal_state` | object | Existing terminal markers from publish or terminal-state probes, when present. |
+| `outcome` | object | The facts of what the run produced; see [The facts](#the-facts). |
+
+`task.description` is there because two success states are judgements about
+the task and not about the artifacts: `ALLOW_NO_OP` is "the task asked for no
+change" and `NO_DIFF_SUCCESS` is "did what was asked". Without the task text
+`assess-finalization` would have to fail every no-change task or approve them
+blind; the prompt says so, and says to choose on the published artifacts and
+record why when `description_read` is `false`. `agent_outputs` is the same
+rule applied to `HOLLOW_SUCCESS`: `unknown` means the signal was not
+collected, which is not `false`.
 
 Evidence collectors must record absence explicitly. For example, a missing PR is
 `"pr": {"present": false}`, not an omitted `pr` object.
@@ -170,10 +207,13 @@ Evidence collectors must record absence explicitly. For example, a missing PR is
 the typed markers below. The prohibition on parsing applies solely to
 **agent-generated narrative**.
 
-## Typed Markers Consumed by the Classifier
+## Typed Markers Collected Beside the Evidence
 
-In addition to `finalization_evidence`, the classifier reads typed recipe
-markers produced by earlier deterministic steps.
+In addition to `finalization_evidence`, earlier deterministic steps produce
+typed recipe markers. Since #2343 and #2809 nothing in bash classifies them:
+they are collected, handed to `assess-finalization` and carried into the
+result. The validator reads only the five that are blockers about the local
+checkout, listed under [The Run's Real Outcome](#the-runs-real-outcome-2343).
 
 | Marker | Source | Meaning |
 | --- | --- | --- |
@@ -187,62 +227,320 @@ markers produced by earlier deterministic steps.
 
 `finalizer-step-status` only observes the reporting step's exit status — it does
 not and cannot know whether implementation succeeded. `reporting_failure=true`
-means "a reporting step failed," nothing more. The **classifier**
-(`validate-agentic-finalization`) is the sole owner of the reporting-vs-implementation
-decision: it combines this marker with `implementation_completed` /
-`verification_completed` evidence to choose `FAILED_REPORTING` (implementation
-proven, reporting failed) versus `FAILED_IMPLEMENTATION` (implementation absent
-or unproven). See [Implementation Failure vs Reporting Failure](#implementation-failure-vs-reporting-failure).
+means "a reporting step failed," nothing more. Since #2809 it is passed to
+`assess-finalization` beside the run's published outcome, which is where
+`FAILED_REPORTING` (the work is published, only the reporting failed) is told
+apart from `FAILED_IMPLEMENTATION` (it is not). See
+[Implementation Failure vs Reporting Failure](#implementation-failure-vs-reporting-failure).
+
+`implementation_completed`, `verification_completed` and `publish_state_reached`
+are no longer read to decide a terminal state at all (#2343). They are still
+collected and still reported in the result, so an operator can see what the run
+recorded about itself beside what it actually produced.
 
 All markers are typed recipe state. None of them are derived by scanning the
 finalizer narrative.
 
+## The Run's Real Outcome (#2343)
+
+Finalization reports what the run produced. It does not ask whether the run's
+bookkeeping is complete. A finished run, one whose branch is pushed and whose
+pull request is open at that head, ends as a success whatever state the context
+file is in, whether `implementation_completed` or `verification_completed` were
+recorded, and whether CI has reported yet.
+
+The work is split in three, and the split is the point:
+
+| Part | File | What it does |
+| --- | --- | --- |
+| Collect | [`workflow_finalization_outcome.sh`](../../amplifier-bundle/tools/workflow_finalization_outcome.sh) | Reports what `git` and `gh` printed. Reaches no verdict. |
+| Decide | [`workflow-finalization-assessment.yaml`](../../amplifier-bundle/recipes/workflow-finalization-assessment.yaml) | One agent step reads those facts and names the terminal state. |
+| Report | [`workflow_finalization_validate.sh`](../../amplifier-bundle/tools/workflow_finalization_validate.sh) | Emits the result for the state the assessment decided. Derives none of its own. |
+
+Before #2809 the middle part was bash: a reader that issued `SUCCESS`,
+`BLOCKED`, `GAP` and `UNCERTAIN` verdicts, a classifier that turned them into
+terminal states, and a validator that re-read the outcome and classified on
+that, discarding the agent's answer. All three are gone, and with them the
+coercion rules that made a field outside its allowed set default to the
+success-looking value.
+
+### The facts
+
+```text
+finalization_outcome_facts <target_dir> <branch> [<pr_ref>]
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `target_dir` | Worktree or repository path. |
+| `branch` | The run branch. It is checked with `git check-ref-format` before any git call, and a rejected name is reported unread, not as an error. |
+| `pr_ref` | Optional PR number or exact GitHub PR URL. Without it the PR is found by head branch. A PR reference the run recorded is never widened to discovery, so another branch's pull request cannot be adopted. |
+
+It always exits `0` and always prints one compact JSON object. Every value but
+`schema_version` is a String:
+
+```json
+{
+  "schema_version": 3,
+  "branch": "feat/issue-2343-fix-issue-2343-and-1726",
+  "local_head": "3f9c2a7d5e1b4c60a8d2f1e9b7c3a5d4e6f80912",
+  "remote": "rysweet/amplihack-rs",
+  "github_origin": "true",
+  "remote_head": "3f9c2a7d5e1b4c60a8d2f1e9b7c3a5d4e6f80912",
+  "remote_head_descends_local_head": "true",
+  "open_pr_count": "1",
+  "pr_number": "2792",
+  "pr_url": "https://github.com/rysweet/amplihack-rs/pull/2792",
+  "pr_state": "OPEN",
+  "pr_draft": "false",
+  "pr_head": "3f9c2a7d5e1b4c60a8d2f1e9b7c3a5d4e6f80912",
+  "pr_cross_repository": "false",
+  "pr_head_descends_local_head": "true",
+  "checks": "pending",
+  "check_states": "build=COMPLETED/SUCCESS; e2e=IN_PROGRESS",
+  "unread": ""
+}
+```
+
+| Field | What it reports |
+| --- | --- |
+| `branch` | The run branch this read is about. Empty when the recorded name was unusable, or when the checkout is on another branch; `unread` then says which. |
+| `local_head` | `git rev-parse HEAD^{commit}` in `target_dir`. |
+| `remote` | `origin` as `owner/repo`, through `parse_github_repo_identity`. The origin URL itself never appears, here or on stderr. |
+| `github_origin` | `true` when that parse succeeded. |
+| `remote_head` | The commit `git ls-remote --heads origin refs/heads/<branch>` listed. Empty when it answered and listed the branch nowhere; empty with a sentence in `unread` when it did not answer. |
+| `open_pr_count` | How many open pull requests `gh pr list` returned for the branch: `0`, `1`, or `2` for two or more. Empty when the run named its own pull request, so no list was asked for. |
+| `pr_number`, `pr_url` | The pull request this read is about, and its canonical URL. |
+| `pr_state`, `pr_draft`, `pr_head`, `pr_cross_repository` | `gh pr view`'s `.state`, `.isDraft`, `.headRefOid` and `.isCrossRepository`. A value outside its shape is reported unread, never coerced into another value. |
+| `checks` | That view's `statusCheckRollup` through `_finalization_pr_rollup_class`: `green`, `failing`, `pending`, `none` or `unknown`. Empty when no view was read. A class that falls outside that set reads `unknown` and says so in `unread`. |
+| `check_states` | The same rollup as the states gh reported, `name=STATUS/CONCLUSION` for a check run and `name=STATE` for a status context, separated by `; `, at most 40 entries. The class above is a reading; this is what it was read from, so a reader handed `failing` can still see which check failed. Empty when the view carried no rollup. |
+| `remote_head_descends_local_head`, `pr_head_descends_local_head` | What `git merge-base --is-ancestor <local_head> <commit>` answered: `true`, `false`, or empty when the commit could not be obtained to ask about. |
+| `unread` | One sentence per fact that could not be read, with the reason the tool gave. Empty when everything was read. |
+
+There is no `verdict` field, no `gap` field, no `branch_pushed` and no
+`pr_head_relation`. Whether the branch was pushed, whether the pull request is
+this run's, and whether any of that is a success are questions about the facts,
+not facts, and this file answers none of them. A fact that was read and is
+negative -- the remote listing the branch nowhere, `gh pr list` returning none
+-- is reported as that fact with `unread` empty, so a reader can tell it from
+a fact that could not be read at all.
+
+The reader reuses `_finalization_pr_rollup_class`, `_finalization_pr_head_descends`,
+`_finalization_pr_number_valid` and `parse_github_repo_identity`, so the
+fast-forward rule and the meaning of "green" are the ones described under
+[Resumed Runs](#resumed-runs-open-pr-success-path-1641) and are defined once.
+It adds no wait, poll, retry or timer: every state is read exactly once. The
+remote is addressed by the name `origin`, never by a URL read from
+configuration, and git runs with `GIT_TERMINAL_PROMPT=0` and the batch SSH
+command `workflow_pr_head_fetch.sh` already uses, so it fails rather than
+prompting. `git` and `gh` stderr is discarded.
+
+### Where the facts are read
+
+`collect-finalization-evidence` runs the reader once and embeds the object at
+`finalization_evidence.outcome`. If the reader cannot run, the collector embeds
+an empty object, which routes the validator to a live read rather than to a
+failure. No field passes through a command line: the object is written to a
+`0600` temporary file under a private directory and spliced into the evidence
+with `jq --slurpfile`.
+
+`validate-agentic-finalization` uses the embedded object. When it carries no
+facts the validator runs the reader itself, once. It fails only when no facts
+could be gathered at all, and then as a gap in finalization rather than a
+verdict about the run; see [Terminal Classification](#terminal-classification).
+
+### The context file is not a gate
+
+A missing, unreadable, symlinked or directory file named by
+`AMPLIHACK_CONTEXT_FILE` makes every context read report absence (status `2`,
+nothing on stdout), including the finalization metadata and context readers.
+`workflow_context.sh` decides that once, when it is sourced, and says so once:
+one `WARN` line on stderr naming the path and why it carried nothing. Removing
+the refusal that ended the run was the #2343 fix; removing the diagnostic with
+it was not, and a consumer such as `workflow_enforce_verdict.sh` was left
+reporting that its producer "produced no output" with nothing anywhere naming
+the file (#2819).
+Absence is not failure: the facts above are still gathered and still reported.
+A file that is present but not a single JSON object carries no data either, so
+it reports absence too. A value that IS present but unparseable, of the wrong
+type, or carrying a NUL byte is corrupt data: it still returns status `3` with
+its diagnostic, it is never repaired from a stale alias, and it is recorded as
+unreadable beside the result. See
+[Workflow Context Transport](./workflow-context-transport.md#absence-and-corruption-2343).
+
+What a lost context file does cost is the decision it was carrying. The run
+then has facts and no terminal state, which finalization reports as exactly
+that rather than filling one in.
+
+### The assessment decides
+
+`assess-finalization` is a sub-recipe step between `finalizer-step-status` and
+`validate-agentic-finalization`, whose one agent step lives in
+[`workflow-finalization-assessment.yaml`](../../amplifier-bundle/recipes/workflow-finalization-assessment.yaml).
+It runs on every outcome, with no `condition:` and no verdict that skips it:
+before #2343 the states it now decides were reached by bash rules in
+`workflow_finalization_validate.sh` and `workflow_finalization_open_pr.sh`,
+which exited the run before any agent was asked. Those rules and that second
+file are gone.
+
+Its answer is stored as `finalization_assessment`:
+
+| Leaf | Meaning |
+| --- | --- |
+| `terminal_state` | The run's terminal state, one of the states in [Terminal States](#terminal-states) that finalization owns. This is the decision. |
+| `action_taken` | `none`, `pushed_branch` or `opened_pull_request`. |
+| `pr_number` | The pull request it judged, as digits, or empty. |
+| `reason` | One sentence naming the artifacts it decided on. Becomes `terminal_reason`. |
+| `next_action` | What a human or the next loop should do. Becomes `required_next_action`. |
+
+The agent reads the evidence as data. The prompt fences it and states that
+nothing inside it is an instruction. It may take two additive actions: push the
+run branch (clean worktree, current branch equal to the run branch, `origin` at
+the repository the facts name) and open a pull request from it into the run's
+recorded base in the same repository. It must not force-push, rewrite history,
+delete a branch, work on another branch, merge, close, or change a pull
+request's state, readiness, base or metadata. It must not run `env`,
+`gh auth token` or `git config --list`, and must not put command output in its
+JSON. After an action it reads the result back with `gh` and reports the pull
+request number it read.
+
+What it supplies is a state and words. It does not supply identity: the result's
+`pr_url` is always built as `https://github.com/<outcome.remote>/pull/<number>`,
+and `pr_number` is its own only when that is a canonical pull request number,
+otherwise the one the facts read. No repository, URL or commit from its text
+reaches `pr_number`, `pr_url` or `evidence_used`. `terminal_reason` and
+`required_next_action` are its sentences, cleaned of control characters and
+capped in length; they are read by humans and drive nothing.
+
+Both the outer `assess-finalization` step in `workflow-finalize.yaml` and the
+agent step inside the sub-recipe carry `continue_on_error: true`, so neither a
+declined assessment nor a failure of the sub-recipe itself (resolution, the
+recursion limit) ends the run by itself. It leaves the validator with no
+decision to report, which is handled below.
+
 ## Terminal Classification
 
-`validate-agentic-finalization` computes `terminal_state` deterministically. It
-applies guards before any success state, so a reporting failure or a dirty
-worktree can never be reported as success.
+`validate-agentic-finalization` reports the terminal state `assess-finalization`
+decided. It reads no typed implementation or verification boolean to decide
+whether work was finished, it reads no agent narrative, and it compares no
+commits of its own.
 
 Evaluation order:
 
-1. **Guards (fail closed).** Dirty worktree, missing required tooling
-   (`git`/`jq`, and `gh` when required), and deterministic prior blockers
-   (`BLOCKED_CI`, `FAILED_MEANINGFUL_DIFF`, `FAILED_CLOSED_UNMERGED`,
-   `FAILED_PR_METADATA_UNAVAILABLE`, `FAILED_INVALID_INPUT`,
-   `FAILED_WRONG_BRANCH`) override any success-looking evidence.
-2. **Hollow-success downgrade.** Empty, generic, or inaccessible agent output
-   without implementation/verification/publish/no-op evidence resolves to
-   `HOLLOW_SUCCESS`.
-3. **Reporting vs implementation split.** If durable implementation and
-   verification evidence is present but `finalizer_step_status.reporting_failure`
-   is `true`, classify `FAILED_REPORTING` and preserve the durable evidence. If
-   implementation/verification evidence is absent or failed while meaningful
-   work remains, classify `FAILED_IMPLEMENTATION`. Inside auto-drive only
-   (`finalization_handoff` is `true`), the open-PR check from step 5 runs
-   first on a reporting failure, and a PR it confirms is handed to the crusty
-   and merge-ready loops on either exit (#1714, see
-   [auto-drive's finalization hand-off](./auto-drive-to-merge.md#which-states-are-handed-on)).
-   It never turns a reporting failure into success.
-4. **Success states.** With guards clear, classify the proven terminal success
-   state (`MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`,
-   `SUPERSEDED`, `IMPLEMENTED_VERIFIED`, `ALLOW_NO_OP`) using the required
-   deterministic proof for that state.
-5. **Resumed-run open-PR path.** If steps 1–4 produced no result, a run whose
-   PR is already published can still succeed as `EXISTING_OPEN_PR`. It needs an
-   open same-repo PR on the run's branch, plus either all-green checks or, while
-   CI has not reported (pending or no checks), this run's typed verification
-   evidence. A failing check on that PR fails closed as `BLOCKED_CI`. See
-   [Resumed Runs: Open-PR Success Path](#resumed-runs-open-pr-success-path-1641).
-   This step only replaces the step 6 default. It never overrides steps 1–4.
-6. **Fallthrough.** If no more specific state applies, the validator keeps its
-   initial default, `FAILED_IMPLEMENTATION`. The validator never sets
-   `INCOMPLETE`; that state reaches the result only through
-   `prior_terminal_state`.
+1. **Tooling.** Without `jq` the validator cannot read evidence and returns
+   `FAILED_MISSING_TOOLING`.
+2. **Selected evidence fields.** A field that is present but corrupt is marked
+   unread. It is not a terminal state of its own and it never ends the run; it
+   is recorded in `evidence_used` as `finalization_evidence=unreadable`.
+3. **Blockers about the local checkout**, which no published outcome can
+   answer. A dirty worktree is `FAILED_DIRTY_WORKTREE`; missing `git` or `jq`
+   is `FAILED_MISSING_TOOLING`. A missing `gh` is not among them: without `gh`
+   the outcome cannot be read, which the facts say in words. A deterministic
+   terminal probe that already named a blocker is answered from its own record,
+   without asking the remote again. These precede everything else, so no
+   decision can mask them.
 
-Malformed or contradictory `finalization_evidence` (for example, an object that
-fails schema validation) fails closed as `FAILED_INVALID_EVIDENCE`. There is no
-`FAILED_FINALIZER_OUTPUT` state; the narrative can no longer be malformed in a
-way that matters because it is never parsed.
+   The dirty-worktree blocker is the one of the three with two sources, so its
+   precedence is explicit: the collected `git.dirty_worktree` is believed when
+   it says exactly `true` or exactly `false`, and in every other case -- unread,
+   `unknown`, `yes`, `1` -- the worktree is probed live, because none of those
+   values answers the question and the worktree always can (#2819).
+4. **The facts.** The recorded outcome, or one live read when none was
+   recorded. Nothing here reads them as a success or a failure. When no facts
+   could be gathered at all the result is `FAILED_MISSING_TERMINAL_EVIDENCE`,
+   with the reason naming what could not be read.
+5. **The decision.** `finalization_assessment.terminal_state` is the terminal
+   state, if it is one finalization publishes. Whether that state is a success
+   is a property of the published vocabulary
+   (`_finalization_state_is_success` in
+   [`workflow_finalization_result.sh`](../../amplifier-bundle/tools/workflow_finalization_result.sh)),
+   not of this run. A non-success is routed through the hand-off brick, so a
+   pull request reaches the auto-drive loops (#1714).
+6. **No decision.** A missing assessment, or a state outside the published
+   vocabulary, is `FAILED_MISSING_TERMINAL_EVIDENCE`. The reason quotes what was
+   returned and names any fact that was unread, and the step exits `1`.
+
+There is one decision the validator declines to publish, and it is not a
+judgement about the run (#2819). `EXISTING_OPEN_PR` is *defined* as a pull
+request open at the run's head, so a decision that reports it while naming no
+pull request has shown nothing. The validator does not ask whether that pull
+request should exist, or re-read the facts to find one, or substitute the
+number the run's own bookkeeping recorded: it refuses to certify a decision
+that contradicts its own definition, which is no decision, and routes it to
+step 6 with a reason quoting what came back. The number has to be the
+assessment's own, in canonical form, because the point of the state is that the
+agent read the pull request back after deciding. `_finalization_state_names_pr`
+in `workflow_finalization_result.sh` is the list, and `EXISTING_OPEN_PR` is the
+only member: `IMPLEMENTED_VERIFIED`, `ALLOW_NO_OP` and `NO_DIFF_SUCCESS` all
+assert the opposite and name none.
+
+Step 6 is a gap in finalization, not a verdict about the run, and it is what
+sends the step to its own recovery agent. `validate-agentic-finalization` runs
+under `amplihack orch helper step-recovery` with `--essential
+--stop-on-handoff --no-repair`, so the agent's move is `handoff`: it stops the
+run with the reason and an owner.
+
+`--no-repair` is there because a retry could not observe a repair (#2819).
+Everything this step reads was recorded before it first ran -- the decision in
+`finalization_assessment`, the facts and the blockers in
+`finalization_evidence` -- so running the same body again reads the same bytes
+and ends the same way. The recovery agent cannot change what they say either:
+`step-failure-recovery.yaml` forbids it every GitHub write, so it cannot push
+the branch or open the pull request a `FAILED_IMPLEMENTATION` is missing, and
+forbids it starting a recipe, so it cannot produce an assessment where there
+is none. Offering `retry_after_repair` would promise a convergence that cannot
+happen. Repairing the run's outcome belongs one step earlier, to
+`assess-finalization`, which is permitted exactly those two actions -- push
+the run branch, open the pull request -- and then decides the terminal state
+on what it did (see
+[Step Failure Recovery](./step-failure-recovery.md#when-a-retry-cannot-observe-a-repair)).
+
+`HOLLOW_SUCCESS` and the implementation-vs-reporting split are no longer exits
+of their own. `agent_outputs` (`implementation_output` and the typed
+`hollow_success_signals`) and the typed
+`finalizer_step_status` are facts handed to the assessment and carried in the
+result (`hollow_success_detected`, `reporting_failure`, and
+`reporting_failure=` in `evidence_used`); the assessment returns `HOLLOW_SUCCESS`
+or `FAILED_REPORTING` when they are what happened. This closes the limit the
+first version of #2343 left: a run whose finalizer step failed is now judged on
+its published outcome rather than ahead of it.
+
+`FAILED_INVALID_EVIDENCE` is no longer produced. The evidence-completeness
+checks, the `verification_completed`-gated pending branch and the typed-boolean
+fallback were removed: the run's real outcome answers the question each of them
+was a proxy for. The token stays in `terminal_vocabulary` and in
+`_handoff_known_state`, because a reader must still recognise it from older
+runs and other producers. There is no `FAILED_FINALIZER_OUTPUT` state; the
+narrative is never parsed.
+
+### What the record carries
+
+`evidence_used` carries the facts the result was reported against, so an
+operator can act on a failure without opening the log, and so a test can assert
+that the decision was made against what the run produced rather than against
+its bookkeeping:
+
+```text
+outcome.branch=feat/x,outcome.local_head=<sha>,outcome.remote_head=<sha|none>,
+outcome.pr=<n|none>,outcome.pr_state=OPEN,outcome.pr_head=<sha|none>,
+outcome.checks=pending,assessment_state=EXISTING_OPEN_PR,
+assessment_action=none,reporting_failure=false
+```
+
+Tests assert on those SHAs and identifiers, never on wording.
+
+| Situation | Expected `terminal_state` | The record names |
+| --- | --- | --- |
+| Local head is not on the remote branch | `FAILED_IMPLEMENTATION` | The branch and the local head, with `outcome.remote_head=none`. |
+| Branch pushed, no open PR | `FAILED_IMPLEMENTATION` | The branch and `outcome.pr=none`. |
+| PR head differs and does not descend from the local head | `FAILED_IMPLEMENTATION` | `outcome.pr`, `outcome.pr_head` and `outcome.local_head`. |
+| A check is failing | `BLOCKED_CI` | `outcome.pr` and `outcome.checks=failing`. |
+| PR open at the run's head, CI pending | `EXISTING_OPEN_PR` (a success) | `outcome.pr`, `outcome.pr_state=OPEN` and `outcome.checks=pending`. |
+| `EXISTING_OPEN_PR` decided with no pull request named | `FAILED_MISSING_TERMINAL_EVIDENCE` (no decision) | The facts, and a reason quoting the `pr_number` that came back. |
+
+A real failure ends the run as before and exits `1`. The change removes the
+failures that were not real.
+
 
 ## Terminal States
 
@@ -255,7 +553,7 @@ way that matters because it is never parsed.
 | `SUPERSEDED` | Yes | A newer workflow-owned PR or issue explicitly supersedes this run and durable metadata links the old run to the replacement. |
 | `IMPLEMENTED_VERIFIED` | Yes | Implementation and required verification completed on a path that does not require publish/merge evidence. |
 | `ALLOW_NO_OP` | Yes | Explicit no-op path was allowed and includes evidence-backed reason text. |
-| `EXISTING_OPEN_PR` | Yes | The run did not record implementation evidence itself (usually because it resumed an earlier attempt), but its branch has a published, open, same-repo PR whose checks are all green, or whose CI has not reported yet (pending or no checks) while this run's typed verification evidence passed. A failing check is `BLOCKED_CI` instead. See [Resumed Runs](#resumed-runs-open-pr-success-path-1641). |
+| `EXISTING_OPEN_PR` | Yes | The branch is pushed at the local head and an open, same-repo PR sits at that head (or a descendant of it). Checks may be green, pending or not reported; when they are not green, `terminal_reason` names the pending checks and `required_next_action` names the PR to watch. A failing check is `BLOCKED_CI` instead. See [The Run's Real Outcome](#the-runs-real-outcome-2343). |
 | `MANUAL_REQUIRED` | No | A provider action is intentionally manual and the final output names the required next action. |
 | `BLOCKED_MANUAL_PROVIDER` | No | Provider tooling, credentials, permissions, or APIs block required automation. |
 | `BLOCKED_CI` | No | Required checks are failing, pending beyond policy, or unavailable when required. On the resumed-run open-PR path, any failing check in the PR's `statusCheckRollup` (#1641). |
@@ -264,90 +562,109 @@ way that matters because it is never parsed.
 | `FAILED_CLOSED_UNMERGED` | No | PR is closed without merge evidence and meaningful branch diff remains. |
 | `FAILED_PR_METADATA_UNAVAILABLE` | No | Provider change-request proof is required but metadata or auth is missing, stale, or ambiguous. |
 | `FAILED_MISSING_TOOLING` | No | Required deterministic tooling such as `git`, `jq`, or provider CLI support is missing for the selected path. |
-| `FAILED_INVALID_EVIDENCE` | No | Typed evidence is malformed, contradictory, unknown, or incomplete. |
+| `FAILED_INVALID_EVIDENCE` | No | Retired as an outcome of finalization (#2343). Still recognised in the vocabulary so older runs and other producers read correctly. |
 | `FAILED_IMPLEMENTATION` | No | Durable implementation or verification evidence is absent or failed while meaningful work remains. |
-| `FAILED_REPORTING` | No | Implementation succeeded but a reporting/finalization step failed. Durable evidence (`pr_url`, `pr_number`, implementation/verification markers) is preserved and reported. |
-| `FAILED_MISSING_TERMINAL_EVIDENCE` | No | Development workflow stopped before implementation, verification, publish, or valid no-op evidence. |
-| `HOLLOW_SUCCESS` | No | The recipe appeared successful but agents produced empty/generic output or could not access the codebase. |
-| `INCOMPLETE` | No | Work remains and no more specific terminal failure state applies. Reaches the result only via `prior_terminal_state`; the validator never originates it. |
+| `FAILED_REPORTING` | No | The work is published but a reporting/finalization step failed. Durable evidence (`pr_url`, `pr_number`) is preserved and reported. Since #2809 `assess-finalization` returns it, judging the typed `finalizer_step_status` beside the published outcome rather than ahead of it. |
+| `FAILED_MISSING_TERMINAL_EVIDENCE` | No | Finalization reached no decision: the facts of the run's outcome could not be gathered, or `assess-finalization` named no state finalization publishes. It is a gap in finalization rather than a verdict about the run, and it leaves the step failing for its recovery agent (#2343, #2809). |
+| `HOLLOW_SUCCESS` | No | Empty or inaccessible agent output: the run may have produced nothing at all. Since #2809 the signal is a fact handed to `assess-finalization`, which returns this state when nothing published contradicts it, rather than an exit taken ahead of the outcome read. |
+| `INCOMPLETE` | No | Work remains and no more specific terminal failure state applies. It is the default for a missing `workflow_result` in `workflow-complete`, with a plain reason. |
 
 `terminal_failure=true` is derived for all non-success states. Failure states
 override success-looking implementation, verification, publish, and no-op
 markers.
 
-`MANUAL_REQUIRED` and `BLOCKED_MANUAL_PROVIDER` are not emitted by the agentic
-finalizer's own classifier. They belong to the broader terminal-state vocabulary
-in `workflow-terminal-state.yaml` and reach the finalization result only via
-`prior_terminal_state` propagation from an upstream deterministic probe. The
-agentic classifier preserves them but never originates them.
+`MANUAL_REQUIRED` and `BLOCKED_MANUAL_PROVIDER` are not states finalization
+decides. They belong to the broader terminal-state vocabulary in
+`workflow-terminal-state.yaml` and reach the finalization result only via
+`prior_terminal_state` propagation from an upstream deterministic probe.
+Finalization preserves them but never originates them: they are not in the
+list `assess-finalization` may choose from, and the validator reaches no state
+of its own.
 
 > **Retired:** `FAILED_FINALIZER_OUTPUT` no longer exists. It described the
 > brittle "agent output was not a single JSON object" failure that this feature
-> removes. Reporting-step failures now classify as `FAILED_REPORTING`, and
-> malformed deterministic evidence classifies as `FAILED_INVALID_EVIDENCE`.
+> removes. Reporting-step failures classify as `FAILED_REPORTING`. Malformed
+> deterministic evidence no longer classifies at all: it is recorded as
+> unreadable beside whatever the outcome says (#2343).
 
 ## Implementation Failure vs Reporting Failure
 
-The finished feature distinguishes two failure families that were previously
-collapsed:
+Two failure families that were once collapsed stay distinct:
 
 | | `FAILED_IMPLEMENTATION` | `FAILED_REPORTING` |
 | --- | --- | --- |
-| Meaning | The code change / verification did not complete. | The code change completed, but a reporting/finalization step failed. |
-| `implementation_completed` | `false` or unproven | `true` |
-| `verification_completed` | `false` or unproven | `true` |
-| Durable evidence (`pr_url`, `pr_number`) | Not required | Preserved and reported when present |
+| Meaning | The work was not published: nothing on the remote, no pull request, or a pull request at a commit unrelated to the run's head. | The work is published, but a reporting/finalization step failed. |
+| `reporting_failure` | May be either | `true` |
+| Durable evidence (`pr_url`, `pr_number`) | Named when the decision was about a pull request | Preserved and reported |
 | `terminal_success` | `false` | `false` |
-| Operator action | Resume implementation/verification. | Retry the reporting step; the implementation is intact. |
+| Operator action | Push the work and open the pull request, or explain why there is none. | Retry the reporting step; the implementation is intact. |
 
-This split ensures that free-form explanatory output — or a transient failure in
-a reporting step — can never erase proof that the implementation succeeded.
+The split ensures that free-form explanatory output, or a transient failure in
+a reporting step, can never erase proof that the work was published.
 
-The distinction is computed by the classifier, not by the reporting step. The
-`finalizer-step-status` marker only reports whether a reporting step failed;
-`validate-agentic-finalization` then combines that marker with typed
-implementation and verification evidence. `reporting_failure=true` resolves to
-`FAILED_REPORTING` only when implementation and verification are independently
-proven; otherwise it resolves to `FAILED_IMPLEMENTATION`.
+Since #2809 it is `assess-finalization` that makes the split, not the
+validator. `finalizer-step-status` reports, deterministically and without
+touching agent prose, whether the reporting step failed; that typed fact is
+handed to the assessment beside the run's published outcome, and carried into
+the result as `reporting_failure` and into `evidence_used`. The assessment
+returns `FAILED_REPORTING` when the work is published and only the reporting
+failed, and `FAILED_IMPLEMENTATION` when it is not. The validator reports
+whichever it returns; it no longer combines the marker with typed
+implementation and verification booleans, which it does not read.
 
 ## Deterministic Validation Rules
 
-After evidence is collected, the deterministic classifier validates typed state
-before persisting or reporting the result.
+These are what `validate-agentic-finalization` checks for itself before it
+reports the result. They are deliberately few: since #2343 the step is a
+reporter, so every rule here is either a blocker about the local checkout or a
+check that a decision names what it asserts. None of them re-derives a
+terminal state.
 
-1. `finalization_evidence` must be a single JSON object using schema version
-   `1`. Malformed or unknown-version evidence fails closed as
-   `FAILED_INVALID_EVIDENCE`.
-2. Guards run first: dirty worktree, missing required tooling, and deterministic
-   prior blockers override success-looking evidence.
-3. Hollow success downgrades success-looking runs that lack meaningful
-   completion evidence.
-4. Reporting failure (`finalizer_step_status.reporting_failure=true`) with
-   present implementation/verification evidence classifies `FAILED_REPORTING`
-   and preserves durable identifiers.
-5. Implementation/verification absence with remaining meaningful work classifies
-   `FAILED_IMPLEMENTATION`.
-6. Success states require their deterministic proof: `MERGED` needs merge
-   evidence, `NO_DIFF_SUCCESS` needs clean no-diff proof, `CLOSED_OBSOLETE`
-   needs local no-diff or obsolete proof, `FOLLOWUP_CREATED` needs a durable
-   follow-up identifier, `SUPERSEDED` needs a durable replacement identifier plus
-   a supersession reason, `IMPLEMENTED_VERIFIED` needs implementation and
-   verification evidence, `ALLOW_NO_OP` needs explicit no-op authorization
-   plus reason text, and `EXISTING_OPEN_PR` needs a publish signal, a live
-   GitHub check that the PR is open, same-repo and on the run's branch, and
-   either all-green checks or `verification_completed=true`.
+1. The run's real outcome is read first (see
+   [The Run's Real Outcome](#the-runs-real-outcome-2343)).
+   Evidence with no usable `outcome` is not invalid: the outcome is read live.
+2. A dirty worktree and missing `git` or `jq` still end the run. A missing `gh`
+   does not; it routes to the assessment. A collected `dirty_worktree` that is
+   neither `true` nor `false` is not a negative: the worktree is probed.
+3. No terminal state is derived from empty or generic agent output.
+4. Reporting failure (`finalizer_step_status.reporting_failure=true`) is a
+   typed fact passed to `assess-finalization` and carried into the result; it
+   is not an exit of the validator's own.
+5. The terminal state is the one `assess-finalization` returned, if it is one
+   finalization publishes. Otherwise the result is
+   `FAILED_MISSING_TERMINAL_EVIDENCE` and the step is left failing for its
+   recovery agent.
+6. One decision is refused: `EXISTING_OPEN_PR` naming no pull request. That
+   state's definition *is* an open pull request, so a decision reporting it
+   without one has shown nothing, and the result is
+   `FAILED_MISSING_TERMINAL_EVIDENCE` with the returned value quoted back.
+   The number has to be the assessment's own, in canonical form; the validator
+   does not read the remote to find one, substitute the number the run's
+   bookkeeping recorded, or ask whether that pull request should exist. No
+   other state carries a proof requirement here. In particular `ALLOW_NO_OP`
+   is *not* checked for a no-op authorization and `BLOCKED_CI` is not checked
+   against CI: `allow_no_op`, `terminal_no_op` and the check states are facts
+   handed to `assess-finalization`, which weighs them against the run's task
+   text, and its answer is what gets reported.
 7. The narrative artifact is never read for any of these decisions.
 8. The normalized result is persisted even for failure states so operators can
    diagnose the run from recipe JSON.
 
-The classifier is total: every input maps to exactly one terminal state. Inside
-`validate_finalization` the fallthrough is `FAILED_IMPLEMENTATION` (evaluation
-order step 6). When validation produces no result at all, the default is
-`FAILED_INVALID_EVIDENCE`, not the retired `FAILED_FINALIZER_OUTPUT`. The
-completion helper (`complete()` in `workflow_agentic_finalization.sh`) must
-initialize its `terminal_state` default to `FAILED_INVALID_EVIDENCE` so that an
-unclassifiable or empty-evidence run fails closed on a live state rather than a
-retired one.
+Finalization is still total: every input produces exactly one result. Inside
+`validate_finalization` the fallthrough is step 6 of the evaluation order in
+[Terminal Classification](#terminal-classification) -- no decision, carrying
+the outcome's gap -- which is a failure to reach a terminal state rather than a
+terminal state of its own. When validation produces no result at all, the
+default is `INCOMPLETE` with a plain reason. The completion helper (`complete()`
+in `complete_workflow` in `workflow_finalization_complete.sh`) initialises its
+`terminal_state` default to `INCOMPLETE`. `terminal_vocabulary` and the hand-off helper's known-state list
+are unchanged, so retired tokens stay recognised.
+
+The proof requirements this section used to list -- `MERGED` needs merge
+evidence, `CLOSED_OBSOLETE` needs obsolete proof, `SUPERSEDED` needs a
+replacement identifier, and so on -- belong to the producers of those states,
+not to finalization. `assess-finalization` cannot return them (they are not in
+the list it chooses from), and the validator never reached them on its own.
 
 ## Resumed Runs: Open-PR Success Path (#1641)
 
@@ -359,51 +676,65 @@ fell through to the default `FAILED_IMPLEMENTATION`, even though step 22b
 (`workflow_final_status.sh`, since #1623) had already reported the same run as a
 success. PRs #1635 and #1639 hit this.
 
-Step 5 of the [evaluation order](#terminal-classification) closes that gap. It classifies
-`EXISTING_OPEN_PR` only when every condition below holds. If any one fails, the
-run stays `FAILED_IMPLEMENTATION`, exactly as before, with one exception: when
-conditions 1–6 hold and the confirmed PR has a failing check, the result is
-`BLOCKED_CI`, because a red check is a negative signal and the run must not
-look like it only lacked evidence.
+Since #2343 that case is decided on the run's real outcome, described under
+[The Run's Real Outcome](#the-runs-real-outcome-2343), and `verification_completed`
+is not consulted at all: a pending or unreported CI state with the pull request
+open at the pushed head is `EXISTING_OPEN_PR` without it.
 
-### Conditions
+What survives of this section is its definitions, which the facts reader and
+the terminal-state probe both still use: what counts as the same pull request
+(the [PR head rule](#pr-head-rule-1714)), how the pull request is located, and
+what ["green" means](#what-green-means). What does not survive is the
+classifier those definitions once fed. There is no longer a list of conditions
+that must all hold before `EXISTING_OPEN_PR` may be reached: the facts below
+are collected and reported, and `assess-finalization` decides what they mean.
 
-| # | Condition | Source |
+Read as facts rather than as conditions, they are:
+
+| Fact | Where it comes from | Reported as |
 | --- | --- | --- |
-| 1 | Evaluation-order steps 1–4 returned no result: no invalid evidence, dirty worktree, missing tooling, prior blocker, hollow success, reporting-failure split, `IMPLEMENTED_VERIFIED` or `ALLOW_NO_OP`. | Classifier order |
-| 2 | **Publish signal.** A non-empty `pr_url` or `pr_number`, `publish_state_reached=true`, or a `publish_status` or `prior_terminal_state` of `EXISTING_OPEN_PR`, `existing-open-pr`, `FOLLOWUP_CREATED`, `MERGED` or `closed-after-merge`. | Typed context (`workflow_finalization_context.sh`) |
-| 2a | **Valid metadata.** None of `worktree_path`, `repo_path`, `pr_url`, `pr_number`, `publish_state_reached`, `prior_terminal_state`, `publish_status`, `branch_name` or `remote_host_type` is invalid authoritative context (wrong JSON type, NUL byte). An invalid value would otherwise read as empty, so any one disables this path. | `workflow_finalization_metadata` status 3 |
-| 3 | **Explicit target directory.** `worktree_path` or `repo_path` resolved. The `.` fallback never qualifies. | Recipe metadata |
-| 4 | **GitHub remote.** `remote_host_type` is empty or `github` (any of `github`, `GitHub`, `GITHUB`), and `remote.origin.url` of the target directory parses to `owner/repo`. | Local git config |
-| 5 | **Run branch.** `branch_name` and `git branch --show-current` agree when both are set. The branch is not `main`, `master` or `HEAD`, does not start with `-`, and is a valid branch name under `git check-ref-format "refs/heads/<branch>"`. | Metadata + live git |
-| 6 | **Live PR state.** `gh pr view --repo <owner>/<repo>` reports `state=OPEN`, `headRefName` equal to the run branch, `headRefOid` equal to the local `git rev-parse HEAD` or a fast-forward of it (see [PR head rule](#pr-head-rule-1714); fails closed if HEAD cannot be resolved), `isCrossRepository=false`, the requested number, and `url` exactly `https://github.com/<owner>/<repo>/pull/<n>`. | `gh` read-only + live git |
-| 7 | **Verification signal.** Either `checks=green` (every rollup entry passed, see below), or `checks` is `pending` or `none` (CI has not reported) and `verification_completed=true` from this run's typed `verification_terminal_evidence`. `checks=failing` never qualifies, whatever `verification_completed` says: it is `BLOCKED_CI`. `checks=unknown` never qualifies either. | `statusCheckRollup` or typed evidence |
+| The finalization target directory | `worktree_path`, else `repo_path`. The `.` fallback is not a recorded worktree, so no outcome is read for it. | Nothing is gathered; the result says so. |
+| The origin | `remote.origin.url` of that directory, through `parse_github_repo_identity`. | `remote`, `github_origin` |
+| The remote the run declared | `remote_host_type`. A run that recorded a non-GitHub remote is never asked about a GitHub pull request, whatever its origin says (#1641, D5). | `declared_remote_host`, and a sentence in `unread` |
+| The run branch | `branch_name`, and `git branch --show-current` when both are set. Not `main`, `master` or `HEAD`, not leading-dash, and valid under `git check-ref-format`. | `branch`, or empty with a sentence in `unread` |
+| The commit the remote carries | one `git ls-remote --heads origin refs/heads/<branch>` | `remote_head`, `remote_head_descends_local_head` |
+| The pull request | `gh pr view --repo <owner>/<repo>`, for the number the run recorded or the single open one `gh pr list --head <branch>` returned | `pr_number`, `pr_url`, `pr_state`, `pr_draft`, `pr_head`, `pr_head_ref`, `pr_cross_repository`, `open_pr_count` |
+| Its checks | `statusCheckRollup` through `_finalization_pr_rollup_class` | `checks` |
+| Whether that head carries the run's work | `git merge-base --is-ancestor`, with the one bounded fetch of the [PR head rule](#pr-head-rule-1714) | `pr_head_descends_local_head` |
 
-Each kind of signal is insufficient on its own. A publish status without a live
-open PR fails. An open PR with no green checks and no verification evidence
-fails. An open PR with a failing check is `BLOCKED_CI` even with verification
-evidence: this run's local pre-commit run does not override CI. A green rollup on another branch's PR fails. A green rollup on an older
-commit fails too: if the run committed locally but never pushed, the local
-HEAD is not in the PR, so checks (and this run's precommit evidence) that
-never covered the run's code cannot vouch for it.
+Metadata that is present but corrupt (wrong JSON type, NUL byte) still stops a
+live read being directed by it, because it cannot say which branch or pull
+request to read. Absence is not corruption: a missing context file, or an unset
+empty object key, reads as empty and disables nothing (#1726, #2343). A pull
+request number the run recorded is still never widened to discovery, so another
+branch's pull request cannot be adopted.
+
+The judgements those facts used to be fed into are now the assessment's, and
+the prompt states them: a pull request open at the run's head is a success
+whether its checks are green, pending or unreported; a failing check is
+`BLOCKED_CI`; a pull request on another branch, from a fork, or at a commit the
+local head is not an ancestor of does not carry this run's work, and a green
+rollup on an older commit cannot vouch for code that was never pushed.
 
 ### PR head rule (#1714)
 
 The PR head commit (`headRefOid`) qualifies when it is the local HEAD, or when
 the local HEAD is its ancestor, which is the case when a merge of main was
 pushed to the PR from another checkout. Every local commit is then in the PR,
-so the PR's checks cover this run's work. The signal reports which case held
-in its `head` field (`local` or `descendant`), and the classifier records
-`pr_head_sha_matches=true`, or `pr_head_sha_matches=false,pr_head_fast_forwards_local_head=true`,
-in `evidence_used`.
+so the PR's checks cover this run's work. Since #2343 the facts reader reports
+the question's answer rather than a label for it: `pr_head` is the commit gh
+named, and `pr_head_descends_local_head` is what `git merge-base --is-ancestor`
+replied -- `true`, `false`, or empty when the commit could not be obtained to
+ask about. `evidence_used` carries `outcome.local_head` and `outcome.pr_head`,
+so a result shows both.
 
-| Local HEAD vs PR head | Signal |
-| --- | --- |
-| Equal | Yes, `head:"local"` |
-| Local HEAD is an ancestor of the PR head | Yes, `head:"descendant"` |
-| Local HEAD is ahead (unpushed commits) | No |
-| Diverged, or the PR head is a rewrite of the local commit | No |
-| PR head commit not in the local object store and not fetchable | No |
+| Local HEAD vs PR head | `pr_head_descends_local_head` | `finalization_open_pr_signal`'s `head` |
+| --- | --- | --- |
+| Equal | `true` | `local` |
+| Local HEAD is an ancestor of the PR head | `true` | `descendant` |
+| Local HEAD is ahead (unpushed commits) | `false` | no signal |
+| Diverged, or the PR head is a rewrite of the local commit | `false` | no signal |
+| PR head commit not in the local object store and not fetchable | empty, with the reason in `unread` | no signal |
 
 The test and its fetch are `_finalization_pr_head_descends` in
 [`workflow_pr_head_fetch.sh`](../../amplifier-bundle/tools/workflow_pr_head_fetch.sh).
@@ -486,8 +817,9 @@ fail falsely.
 makes a single attempt with a 60-second timeout, does not retry, does not wait
 out rate limits and has no REST fallback. A validation makes at most two calls
 (`pr list` then `pr view`), so the worst case is about two minutes. A missing,
-unauthenticated or failing `gh`, or malformed JSON, means "no signal": the run
-stays `FAILED_IMPLEMENTATION` and no new failure state is introduced.
+unauthenticated or failing `gh`, or malformed JSON, means "no signal". The
+outcome is then `UNCERTAIN` and the
+[assessment](#the-assessment-step) names the gap.
 
 ### What "green" means
 
@@ -500,62 +832,54 @@ stays `FAILED_IMPLEMENTATION` and no new failure state is introduced.
 A pending, failing or null entry, an unknown type, or an empty rollup is not
 green. Every entry counts, not only required checks: `gh pr view` does not say
 which checks are required, so the evidence is labelled `all_checks=green`, not
-`required_checks=green`. The typed `verification_completed=true` signal can
-stand in for CI only while CI has not reported (`pending` or `none`). It never
-overrides a `failing` entry, which classifies `BLOCKED_CI`, and never an
-`unknown` one, which stays `FAILED_IMPLEMENTATION`.
+`required_checks=green`. CI that has not reported (`pending` or `none`)
+does not stop the hand-off. A `failing` entry classifies `BLOCKED_CI`, and an
+`unknown` one goes to the assessment.
 
 ### Result
 
-On success the canonical result keeps its schema of 19 string keys and exits 0:
+On success the canonical result keeps its schema of 19 string keys and exits 0.
+`terminal_reason` and `required_next_action` are `assess-finalization`'s own
+sentences and are illustrative here; nothing reads them. `evidence_used`
+carries the facts the decision was reported against, and is what a test asserts
+on:
 
 ```text
 terminal_success=true
 terminal_state=EXISTING_OPEN_PR
-terminal_reason=<illustrative: final wording is set by the implementation>
+terminal_reason=<the assessment's sentence>
 required_next_action=No action required.
 publish_state_reached=true
 pr_number=1641
 pr_url=https://github.com/rysweet/amplihack-rs/pull/1641
 hollow_success_detected=false
 reporting_failure=false
-evidence_used=publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=1641,all_checks=green
+evidence_used=outcome.branch=feat/x,outcome.local_head=<sha>,outcome.remote_head=<sha>,outcome.pr=1641,outcome.pr_state=OPEN,outcome.pr_head=<sha>,outcome.checks=green,assessment_state=EXISTING_OPEN_PR,assessment_action=none,reporting_failure=false
 ```
 
-The `terminal_reason` line above is a placeholder; its exact text is defined
-by the code, not by this page. Every other line is the specified output.
+When CI has not reported yet (`checks` is `pending` or `none`), the run still
+succeeds. This is the "PR open, CI pending" state: `outcome.checks=pending` (or
+`none`) in `evidence_used`, and a `required_next_action` that names the pull
+request to watch.
 
-When CI has not reported yet (`checks` is `pending` or `none`) and this run's
-precommit verification passed, the run still succeeds, but the tail of
-`evidence_used` is `precommit_passed=true,all_checks=pending` (or
-`all_checks=none`) instead of `all_checks=green`, and `required_next_action` is
-not "No action required.". It tells the next step to watch CI on the PR and to
-treat any failing check as `BLOCKED_CI`:
-
-```text
-required_next_action=Watch CI on PR #1641: checks are pending and only this run's pre-commit verification vouches for it; a failing check is BLOCKED_CI.
-evidence_used=...,pr_number=1641,precommit_passed=true,all_checks=pending
-```
-
-Those three tails (`all_checks=green`, `precommit_passed=true,all_checks=pending`
-and `precommit_passed=true,all_checks=none`) are the only ones a success can
-carry.
-
-When the confirmed PR has a failing check, the result is `BLOCKED_CI` and exits
-nonzero. `pr_number` and `pr_url` are still the confirmed values, so the next
-step knows which PR to fix:
+When the pull request has a failing check, `assess-finalization` returns
+`BLOCKED_CI` and the result exits nonzero. `pr_number` and `pr_url` are still
+the confirmed values, so the next step knows which pull request to fix:
 
 ```text
 terminal_success=false
 terminal_state=BLOCKED_CI
-required_next_action=Fix the failing CI checks on PR #1641 before merge.
-evidence_used=...,pr_number=1641,all_checks=failing,verification_completed=<true|false>
+required_next_action=<the assessment's sentence>
+evidence_used=...,outcome.pr=1641,outcome.checks=failing,assessment_state=BLOCKED_CI,...
 ```
 
-`pr_number` and `pr_url` in the result are the values `gh` confirmed. They are
-not copied from the input context. `publish_state_reached=true` comes from an
-internal override that `validate_finalization` clears on entry, so it cannot be
-set from the environment.
+`pr_number` is the one the assessment judged, validated to be a pull request
+number; `pr_url` is always rebuilt as
+`https://github.com/<outcome.remote>/pull/<number>`, so neither is copied from
+the input context or from the assessment's text.
+`publish_state_reached=true` comes from an internal override that
+`validate_finalization` clears on entry, so it cannot be set from the
+environment; it is `true` when the facts report that pull request `OPEN`.
 
 `workflow-complete` accepts `EXISTING_OPEN_PR` as success. It is listed in
 `terminal_vocabulary`, and `workflow_final_status.sh` already treats it as
@@ -563,32 +887,61 @@ success.
 
 ### Fail-closed cases kept
 
+The validator no longer maps a situation to a terminal state; it applies the
+blockers about the local checkout, gathers the facts and reports the decision.
+The first group below is still the validator's, taken before anything is read,
+so no decision can mask it. The second is what the facts carry and what the
+assessment prompt says the answer is; the assessment may be asked to read more
+itself, and the result says plainly when it decided nothing.
+
+Blockers the validator still owns, in order, before any outcome is gathered:
+
 | Situation | Terminal state | `gh` called? |
 | --- | --- | --- |
-| No PR, no publish state, no evidence | `FAILED_IMPLEMENTATION` | No |
-| Open PR, any check failing (with or without `verification_completed=true`) | `BLOCKED_CI` | Yes |
-| Open PR, a check pending, `verification_completed` unset | `FAILED_IMPLEMENTATION` | Yes |
-| Open PR, an unclassifiable check (unknown type or conclusion), with or without `verification_completed=true` | `FAILED_IMPLEMENTATION` | Yes |
-| PR `CLOSED` or `MERGED` | `FAILED_IMPLEMENTATION` | Yes |
-| PR head ≠ run branch, or cross-repository PR | `FAILED_IMPLEMENTATION` | Yes |
-| PR head commit diverged from, behind, or not a fast-forward of the local HEAD, or not fetchable | `FAILED_IMPLEMENTATION` | Yes |
-| `pr_url` names a different repo than `origin` and no valid `pr_number` is set (no `pr list` fallback) | `FAILED_IMPLEMENTATION` | No |
-| `gh` missing, unauthenticated, non-zero exit or malformed JSON | `FAILED_IMPLEMENTATION` | Attempted |
-| `pr list` returns zero PRs, two PRs, or one cross-repository PR | `FAILED_IMPLEMENTATION` | Yes |
-| Target directory fell back to `.` or is a `.git` directory / bare repo, branch is `main`, or remote is AzDO | `FAILED_IMPLEMENTATION` | No |
-| Dirty worktree with an open green PR | `FAILED_DIRTY_WORKTREE` | No |
-| Hollow-success signals with an open green PR | `HOLLOW_SUCCESS` | No |
-| `prior_terminal_state=BLOCKED_CI` with an open green PR | `BLOCKED_CI` | No |
-| `reporting_failure=true` | `FAILED_REPORTING` / `FAILED_IMPLEMENTATION` (unchanged) | No |
+| Dirty worktree, with or without an open green PR | `FAILED_DIRTY_WORKTREE` | No |
+| Collected evidence reports missing `git` or `jq` | `FAILED_MISSING_TOOLING` | No |
+| `prior_terminal_state=BLOCKED_CI` (or another deterministic blocker), with or without an open green PR | that state | No |
+| No recorded worktree or repository path, or corrupt metadata | `FAILED_MISSING_TERMINAL_EVIDENCE`, naming what could not be read | No |
+| `assess-finalization` returned nothing, or a state finalization does not publish | `FAILED_MISSING_TERMINAL_EVIDENCE`, quoting what it returned | Facts were read |
 
-The path never reads `agentic_finalizer_narrative` or any other prose, and it
-does not add fields to the `workflow_finalization_field` allowlist.
+What the facts report, and the state the prompt tells the assessment to return:
+
+| Situation | The facts carry | Expected state | `gh` called? |
+| --- | --- | --- | --- |
+| Nothing pushed, no pull request | `remote_head=""`, `pr_number=""`, `open_pr_count=0` | `FAILED_IMPLEMENTATION` | Yes |
+| Open PR at the pushed head, any check failing | `pr_state=OPEN`, `pr_head_descends_local_head=true`, `checks=failing` | `BLOCKED_CI` | Yes |
+| Open PR at the pushed head, a check pending or none reported | the same with `checks=pending` or `none` | `EXISTING_OPEN_PR` (success) | Yes |
+| Open PR, an unclassifiable check | `checks=unknown` | the assessment reads the checks itself, or fails naming them | Yes |
+| PR `CLOSED` or `MERGED` | `pr_state=CLOSED` / `MERGED` | `FAILED_IMPLEMENTATION`, or `FAILED_CLOSED_UNMERGED` | Yes |
+| PR on another branch, or cross-repository | `pr_head_ref`, `pr_cross_repository=true` | `FAILED_IMPLEMENTATION` | Yes |
+| PR head diverged from, behind, or not a fast-forward of the local HEAD | `pr_head`, `pr_head_descends_local_head=false` | `FAILED_IMPLEMENTATION` | Yes |
+| PR head not fetchable | `pr_head_descends_local_head=""` and a sentence in `unread` | not a success it could not check | Yes |
+| `pr_url` names another repo and no valid `pr_number` is set | `pr_number=""` and a sentence in `unread`; no `pr list` fallback | `FAILED_IMPLEMENTATION` | No |
+| `gh` missing, unauthenticated, non-zero exit or malformed JSON | the pull request fields empty, with the reason in `unread` | never an unexplained failure | Attempted |
+| `pr list` returns zero, two, or one cross-repository PR | `open_pr_count` `0` or `2`, `pr_number=""` | `FAILED_IMPLEMENTATION` | Yes |
+| Target directory is a `.git` directory or bare repo, or the branch is `main` | `branch=""` and a sentence in `unread` | not a success it could not check | No |
+| The run recorded a non-GitHub remote | `declared_remote_host`, no pull request read | `IMPLEMENTED_VERIFIED` when the work was done | No |
+| Hollow-success signals with an open green PR | `hollow_success_signals=true` beside the open PR | `EXISTING_OPEN_PR` (the PR is the evidence) | Yes |
+| `reporting_failure=true` with a PR at the pushed head | `reporting_failure=true` beside the open PR | `FAILED_REPORTING` | Yes |
+| `reporting_failure=true` with nothing published | `reporting_failure=true`, `pr_number=""` | `FAILED_IMPLEMENTATION` | Yes |
+
+Neither the facts reader nor the validator reads
+`agentic_finalizer_narrative` or any other prose, and neither adds a prose
+field to the `workflow_finalization_field` allowlist.
 
 ### Helper: `finalization_open_pr_signal`
 
 `amplifier-bundle/tools/workflow_finalization_pr_signal.sh` is sourced by
 `workflow_agentic_finalization.sh` together with `workflow_gh_retry.sh`. It
 reports facts and does not classify.
+
+Since #2343 the validator does not call this entry point. It is kept as the one
+definition of the rules the outcome reader reuses -- `_finalization_pr_checks`,
+`_finalization_pr_list_number`, `_finalization_pr_number_valid` and the bounded
+`gh` read -- so the "is this PR this run's PR" rule cannot drift between the
+two. The brick that used to wrap it, `workflow_finalization_open_pr.sh`, is
+deleted: its check asked whether the run's own bookkeeping permitted it to
+look, and refused to look otherwise, which is the behaviour #2343 removes.
 
 ```text
 finalization_open_pr_signal <target_dir> <branch> [<pr_ref>]
@@ -619,11 +972,13 @@ returns 1 rather than writing into the working directory.
 
 ### Known limitations
 
-- **Every reported check, not just the required ones.** A run whose PR has an
-  irrelevant (non-required) failing check is `BLOCKED_CI`, even with
-  `verification_completed=true`. That is deliberate: `gh pr view` cannot tell
-  which checks are required, and a classifier that cannot tell must not call a
-  red build done. Fix or remove the failing check, then re-run finalization.
+- **Every reported check, not just the required ones.** `gh pr view` cannot
+  tell which checks are required, so the rollup it feeds cannot either. Since
+  #2819 the facts carry `check_states` -- what gh reported, check by check --
+  beside the rollup class, and `assess-finalization` is told to judge on that
+  where the two could differ. It is still the conservative reading: a failing
+  check nobody marked required is a reason to look, not to call a red build
+  done.
 - **Point-in-time.** The PR can change after validation. Finalization reports
   what it saw; it is not a merge gate.
 - **AzDO.** Resumed AzDO runs are not checked against provider CI. Without the
@@ -659,11 +1014,11 @@ exactly as before.
 | --- | --- | --- |
 | 1 | The state is `BLOCKED_CI`, `FAILED_IMPLEMENTATION` or `FAILED_REPORTING`, matched exactly by `finalization_handoff_allowed`. | `workflow_finalization_handoff.sh` |
 | 2 | `RECIPE_VAR_finalization_handoff` is exactly `true`. Only `autodrive-build` step-02 sets it; `default-workflow.yaml` declares it `""`. | `finalization_handoff_flag` |
-| 3 | `pr_number` passes `_finalization_pr_number_valid`. On the open-PR path this is the number `gh` confirmed; on the prior-state path it is the run's own PR evidence. | Validator state |
-| 4 | For `FAILED_IMPLEMENTATION` and `FAILED_REPORTING` only: the open-PR check confirmed the PR in the same validation (open, same repository, on the run branch, canonical URL, head at or a fast-forward of the local HEAD). On the default exit the checks were also pending or absent and this run had no `verification_completed`, so it could not succeed. On the two reporting-failure exits the check runs only with the flag set and never classifies success. The hand-off names that PR. | `finalization_try_handoff_open_pr` |
+| 3 | `pr_number` passes `_finalization_pr_number_valid`. On the assessment path this is the number `assess-finalization` returned; on the prior-state path it is the run's own PR evidence. | Validator state |
+| 4 | For `FAILED_IMPLEMENTATION` and `FAILED_REPORTING` only: `assess-finalization` named a pull request, in canonical form, with the failure it decided (`open_pr_confirmed_number`). Since #2343 there is no live open-PR check: the agent read the request back after deciding, and that number is what the loops are handed. It is checked again before any hand-off is acted on -- `autodrive_build_handoff` refuses a pull request that is not `OPEN`. | `finalization_try_handoff_open_pr` |
 
-Both `BLOCKED_CI` exits use it: the prior-state probe and the open-PR check
-with a failing check. The default `FAILED_IMPLEMENTATION` exit and the reporting-path
+Both `BLOCKED_CI` exits use it: the prior-state probe and the assessment's own
+decision. The default `FAILED_IMPLEMENTATION` exit and the reporting-path
 `FAILED_IMPLEMENTATION` exit use it through
 `finalization_fail_or_handoff_open_pr`; the `FAILED_REPORTING` exit calls
 `finalization_try_handoff_open_pr` and otherwise emits its own result, which
@@ -672,7 +1027,7 @@ keeps `finalizer_output_valid=true`. The five other prior-state blockers
 `FAILED_PR_METADATA_UNAVAILABLE`, `FAILED_INVALID_INPUT`,
 `FAILED_WRONG_BRANCH`), `FAILED_DIRTY_WORKTREE`, and every other failure keep
 `exit 1` with the flag on. So does a `FAILED_IMPLEMENTATION` or
-`FAILED_REPORTING` whose PR the open-PR check did not confirm.
+`FAILED_REPORTING` that named no pull request.
 
 ### Result
 
@@ -714,9 +1069,10 @@ may be called only from inside `validate_finalization`. When the conditions
 above do not hold it calls `fail_result "$@"` and never returns.
 
 `finalization_fail_or_handoff_open_pr` takes the same arguments. It hands off
-only when the validator recorded a confirmed PR (`open_pr_confirmed_number`,
-`open_pr_confirmed_url` and `open_pr_confirmed_facts`, set only by the open-PR
-check). Otherwise, or when the hand-off is refused, it calls `fail_result` with
+only when the validator recorded a pull request the assessment named
+(`open_pr_confirmed_number`, `open_pr_confirmed_url` and
+`open_pr_confirmed_facts`, set only from a canonical number the assessment
+itself returned). Otherwise, or when the hand-off is refused, it calls `fail_result` with
 the run's own PR evidence restored.
 
 ### Standalone runs
@@ -758,7 +1114,7 @@ key/value outputs, but the field names and meanings are identical.
 | `required_next_action` | Actionable next step. |
 | `hollow_success_detected` | Whether hollow success was detected. |
 | `evidence_used` | Typed evidence keys used for classification. |
-| `reporting_failure` | `true` when a reporting/finalization step itself failed (from that step's exit status); combined with implementation evidence by the classifier to select `FAILED_REPORTING`. |
+| `reporting_failure` | `true` when a reporting/finalization step itself failed (from that step's exit status). Since #2809 it is one of the facts `assess-finalization` weighs against the published outcome to choose between `FAILED_REPORTING` and `FAILED_IMPLEMENTATION`; the validator only carries it. |
 | `implementation_completed` | Normalized implementation evidence. |
 | `verification_completed` | Normalized verification evidence. |
 | `publish_state_reached` | Normalized publish/PR/follow-up evidence. |
@@ -803,7 +1159,7 @@ open PR, and only `autodrive-build` sets it.
 | `jq` | Always | Required for building and reading the deterministic evidence document and typed markers. Not used to parse agent narrative. |
 | `gh` | GitHub PR metadata path | Required only when a GitHub PR URL or GitHub remote makes PR metadata necessary. |
 | `GH_TOKEN` or GitHub auth | GitHub PR metadata path | Missing or invalid auth fails closed when GitHub metadata is required. |
-| `finalization_handoff=true` | `autodrive-build` step-02 only | Exact value `true`; anything else is off. Hands a `BLOCKED_CI` PR, or a `FAILED_IMPLEMENTATION` on a PR the open-PR check confirmed, to auto-drive's crusty and merge-ready loops with exit `0` and `handoff=merge_ready_loop`. `terminal_success` stays `false`. `default-workflow.yaml` declares it `""`. See [Auto-Drive Finalization Hand-Off](#auto-drive-finalization-hand-off-1714). |
+| `finalization_handoff=true` | `autodrive-build` step-02 only | Exact value `true`; anything else is off. Hands a `BLOCKED_CI` PR, or a `FAILED_IMPLEMENTATION` on a PR the assessment named, to auto-drive's crusty and merge-ready loops with exit `0` and `handoff=merge_ready_loop`. `terminal_success` stays `false`. `default-workflow.yaml` declares it `""`. See [Auto-Drive Finalization Hand-Off](#auto-drive-finalization-hand-off-1714). |
 | `allow_no_op=true` | Explicit no-op tasks | Allows only valid no-op success states with evidence and reason text. It cannot bypass dirty work, failed CI, or missing terminal evidence. |
 
 There is no configuration that converts finalization failures into advisory
@@ -919,38 +1275,56 @@ publish_status=existing-open-pr
 implementation_completed=
 verification_completed=
 => gh pr list --repo <origin repo> --head <branch> returns exactly one PR, same-repo
-=> gh pr view 1641 --repo <origin repo>: state=OPEN, head matches, all checks SUCCESS
+=> gh pr view 1641 --repo <origin repo>: state=OPEN, headRefOid = local HEAD, rollup all SUCCESS
+=> outcome: pr_number=1641, pr_state=OPEN, pr_head_descends_local_head=true, checks=green
+=> assess-finalization: terminal_state=EXISTING_OPEN_PR, pr_number=1641
 => terminal_state=EXISTING_OPEN_PR, terminal_success=true, exit 0
 ```
 
-If the same run had no publish signal at all, `gh` is never called and the
-result is `terminal_state=FAILED_IMPLEMENTATION` with
-`workflow finalization failed closed` on stderr.
+Since #2343 the publish signal is not a precondition: the same run with no
+publish signal at all is read the same way. A run with nothing on the remote
+and no pull request gets `outcome.remote_head=none` and `outcome.pr=none`,
+`assess-finalization` returns `FAILED_IMPLEMENTATION`, and the result carries
+`workflow finalization failed closed` on stderr. A run where nothing decided at
+all ends `FAILED_MISSING_TERMINAL_EVIDENCE` and goes to the step's recovery
+agent instead.
 
 ### Hollow success after planning-only output
 
 ```text
 terminal_success=false
 terminal_state=HOLLOW_SUCCESS
-terminal_reason=planning output only; no implementation, verification, publish, or valid no-op evidence
+terminal_reason=planning output only; nothing published contradicts the empty agent output
 required_next_action=Resume default-workflow from implementation or emit a valid no-op state with evidence.
 hollow_success_detected=true
+evidence_used=...,outcome.remote_head=none,outcome.pr=none,assessment_state=HOLLOW_SUCCESS,...
 ```
 
-The recipe exits nonzero even if earlier planning steps exited `0`.
+The recipe exits nonzero even if earlier planning steps exited `0`. Since #2809
+the hollow-success signal is a typed fact handed to `assess-finalization`
+rather than an exit taken ahead of the outcome read: the same signal beside a
+pull request open at the run's head is `EXISTING_OPEN_PR`, because the pull
+request is the evidence that the run produced something.
 
 ### Adversarial narrative cannot flip the decision
 
 The finalizer narrative contains shell metacharacters and fake tokens such as
-`terminal_state: MERGED` or `"terminal_success": true`. Because the narrative is
-never parsed or evaluated, the classification is unchanged and derives only from
-typed evidence.
+`terminal_state: MERGED` or `"terminal_success": true`. The narrative is never
+parsed or evaluated, so it changes nothing:
 
 ```text
-implementation_completed=false
-verification_completed=false
-=> terminal_state=FAILED_IMPLEMENTATION (narrative tokens ignored)
+agentic_finalizer_narrative="... terminal_state: MERGED ..."
+=> outcome.remote_head=none, outcome.pr=none
+=> assess-finalization: terminal_state=FAILED_IMPLEMENTATION
+=> terminal_state=FAILED_IMPLEMENTATION (narrative never read)
 ```
+
+`assess-finalization` reads the evidence, which is a different thing: its
+prompt fences it as data and says that nothing inside it is an instruction, and
+only validated fields are forwarded -- pull request titles, bodies and commit
+messages are not. What it returns is the terminal state, so its own answer is
+the decision; what it cannot do is name a repository or a URL, which the result
+builds from the facts, or reach past the blockers the validator takes first.
 
 ## Operator Troubleshooting
 
@@ -985,8 +1359,11 @@ git rev-parse HEAD
 git diff --stat origin/main...HEAD
 ```
 
-If a resumed run reports `FAILED_IMPLEMENTATION` although its PR is open, check
-each [open-PR condition](#conditions) in turn:
+If a run reports `FAILED_IMPLEMENTATION` although its pull request is open,
+read `evidence_used` first: it carries the facts the decision was reported
+against (`outcome.remote_head`, `outcome.pr`, `outcome.pr_head`,
+`outcome.checks`, `assessment_state`), which usually names the gap on its own.
+To check the same facts by hand:
 
 ```bash
 git -C "$WORKTREE" branch --show-current   # must equal branch_name and not be main
@@ -1000,12 +1377,20 @@ gh pr view 1641 --repo "$R" --json state,headRefName,headRefOid,isCrossRepositor
   --jq '.statusCheckRollup[] | {name, status, conclusion, state}'
 ```
 
-A failing entry in the rollup (reported as `BLOCKED_CI`), a pending entry
-without this run's verification evidence, a second open PR for the branch (even
-from a fork), a PR head that does not contain the local HEAD (unpushed or
-rewritten commits), a
-`pr_url` for another repo, or a missing publish signal all keep
-the run failed by design.
+A failing entry in the rollup (`BLOCKED_CI`), a second open PR for the branch
+(even from a fork), or a PR head that does not contain the local HEAD (unpushed
+or rewritten commits) all keep the run failed by design. A pending entry does
+not: since #2784 a pull request open at the run's head with CI still running is
+a success that hands the request on. Nor does a missing publish signal, which
+is not consulted since #2343.
+
+`FAILED_MISSING_TERMINAL_EVIDENCE` means something different from the states
+above: finalization reached no decision. Either no facts could be gathered
+(`terminal_reason` names what could not be read) or `assess-finalization`
+returned nothing or a state finalization does not publish (`terminal_reason`
+quotes it). The step is left failing for its recovery agent, so check the
+step-recovery record and the `assess-finalization` step's own output before
+anything else.
 
 If an auto-drive build stopped on `BLOCKED_CI` or `FAILED_IMPLEMENTATION` instead of handing off, check
 the `handoff` field and the step-03 `#1714` error line:
@@ -1014,20 +1399,22 @@ the `handoff` field and the step-03 `#1714` error line:
 jq '.. | objects | select(has("terminal_state")) | {terminal_state, pr_number, handoff}' recipe-result.json
 ```
 
-No `handoff` field means the flag did not reach finalization or `pr_number`
-was not numeric; for `FAILED_IMPLEMENTATION` it can also mean the open-PR
-check did not confirm the PR (see its `WARNING: no open-PR signal` line). A `handoff` with a step-03 error means the PR was missing,
-not open, or differed from the one phase 1 resolved.
+No `handoff` field means the flag did not reach finalization, or the decision
+named no pull request: `pr_number` is the one `assess-finalization` returned,
+and an assessment that names none is taken at its word, so there is nothing to
+hand on. A `handoff` with a step-03 error means the PR was missing, not open,
+or differed from the one phase 1 resolved.
 
 Do not override `BLOCKED_CI`, `FAILED_MEANINGFUL_DIFF`, `HOLLOW_SUCCESS`,
-`FAILED_IMPLEMENTATION`, `FAILED_REPORTING`, or `FAILED_INVALID_EVIDENCE` in CI
-scripts. These states mean finalization did not prove successful closure.
+`FAILED_IMPLEMENTATION`, `FAILED_REPORTING`, or
+`FAILED_MISSING_TERMINAL_EVIDENCE` in CI scripts. These states mean finalization did not prove successful closure.
 `FAILED_REPORTING` specifically means the implementation is intact — retry the
 reporting step rather than re-running the implementation.
 
 ## See Also
 
 - [Workflow Terminal-State Reference](workflow-terminal-state.md)
+- [Workflow Context Transport](workflow-context-transport.md#absence-and-corruption-2343)
 - [Workflow Terminal-State Provider Safety](workflow-terminal-state-provider-safety.md)
 - [Default Coding Workflow](../concepts/default-workflow.md)
 - [Agentic Step Patterns](../concepts/agentic-step-patterns.md)

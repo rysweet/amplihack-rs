@@ -596,9 +596,19 @@ fn read_entry(dir: &Path, name: String) -> Option<Entry> {
 pub(crate) fn read_entries(dirs: &[PathBuf]) -> Vec<Entry> {
     let mut found: Vec<(String, usize)> = Vec::new();
     for (index, dir) in dirs.iter().enumerate() {
-        match fs_safety::check_dir(dir) {
-            Ok(true) => {}
-            Ok(false) => continue,
+        // A folder that fails the rule here is ignored, not refused: the
+        // launch goes on without its entries, so the warning carries no
+        // verdict word (issue #2809).
+        match fs_safety::dir_state(dir) {
+            Ok(fs_safety::DirState::Trusted) => {}
+            Ok(fs_safety::DirState::Missing) => continue,
+            Ok(fs_safety::DirState::Untrusted(reason)) => {
+                eprintln!(
+                    "amplihack: ignoring operator guidance folder {}: {reason}",
+                    dir.display()
+                );
+                continue;
+            }
             Err(e) => {
                 eprintln!("amplihack: ignoring operator guidance folder: {e}");
                 continue;

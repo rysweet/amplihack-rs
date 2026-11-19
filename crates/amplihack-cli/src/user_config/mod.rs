@@ -160,9 +160,12 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
     match home_or_reason() {
         Ok(home) => Some(home),
         Err(reason) => {
-            if test_guard() {
-                // Said once per process, on stderr: a guarded run must never
-                // look like a missing HOME.
+            // Said once per process, on stderr, and only when the guard
+            // discarded a HOME that is set: that is the case a guarded run
+            // could otherwise mistake for a missing HOME. A HOME that is
+            // genuinely unset needs no notice, and the command that reports
+            // it must still print only its own line (issue #2783).
+            if test_guard() && std::env::var_os("HOME").is_some_and(|home| !home.is_empty()) {
                 static SAID: std::sync::Once = std::sync::Once::new();
                 SAID.call_once(|| eprintln!("amplihack: {reason}"));
             }

@@ -77,20 +77,58 @@ pub(crate) fn untrusted_reason(meta: &fs::Metadata, want_dir: bool) -> Option<St
     None
 }
 
-/// `lstat` of a folder that must be trusted. `Ok(false)` when it does not
-/// exist.
-pub(crate) fn check_dir(path: &Path) -> Result<bool, GuideError> {
+/// What an `lstat` of a folder that must be trusted found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DirState {
+    /// It exists and passes the trust rule.
+    Trusted,
+    /// It does not exist.
+    Missing,
+    /// It exists and fails the rule: the fault alone, with no path and no
+    /// word for what happens next.
+    Untrusted(String),
+}
+
+/// `lstat` of a folder that must be trusted, with no verdict attached.
+///
+/// The reason in [`DirState::Untrusted`] names the fault and stops there,
+/// as the reasons in `guide_records::read_pointer_line` do: a caller that
+/// ends the command adds `refusing` ([`check_dir`]), and a caller that
+/// passes the folder over adds nothing (the two-word rule, issue #2809).
+/// The three callers that pass a folder over -- the log-directory sweep,
+/// the launcher reading guidance folders, and the reader of
+/// `AMPLIHACK_RUN_GUIDANCE_DIRS` -- name the folder in their own message,
+/// so the reason here does not repeat it.
+pub(crate) fn dir_state(path: &Path) -> Result<DirState, GuideError> {
     match fs::symlink_metadata(path) {
-        Ok(meta) => match untrusted_reason(&meta, true) {
-            None => Ok(true),
-            Some(reason) => Err(GuideError::Unsafe(format!(
-                "refusing {}: {reason}",
-                path.display()
-            ))),
-        },
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+        Ok(meta) => Ok(match untrusted_reason(&meta, true) {
+            None => DirState::Trusted,
+            Some(reason) => DirState::Untrusted(reason),
+        }),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(DirState::Missing),
         Err(e) => Err(GuideError::Io(format!(
             "cannot check {}: {e}",
+            path.display()
+        ))),
+    }
+}
+
+/// [`dir_state`] for a caller that stops the command when the folder is not
+/// trusted: the path and the word `refusing` are added here. `Ok(false)`
+/// when the folder does not exist.
+///
+/// Every caller is a path the command is about to use and will not go on
+/// without -- a folder being created or written to under the chosen
+/// destination, or the `runs` folder of the work root the caller's own
+/// environment names -- so the verdict is always a refusal. A caller that
+/// would pass the folder over must use [`dir_state`] instead, so the
+/// message it prints does not call a skipped folder a refusal.
+pub(crate) fn check_dir(path: &Path) -> Result<bool, GuideError> {
+    match dir_state(path)? {
+        DirState::Trusted => Ok(true),
+        DirState::Missing => Ok(false),
+        DirState::Untrusted(reason) => Err(GuideError::Unsafe(format!(
+            "refusing {}: {reason}",
             path.display()
         ))),
     }

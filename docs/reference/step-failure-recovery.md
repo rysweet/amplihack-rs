@@ -68,7 +68,7 @@ record is an ordinary failure.
 | `autodrive-merge-loop` | `step-03-finalize` (sub-recipe), recovered by `step-03r-finalize-recovery` only when the loop asked for finalisation | `--already-failed --essential` |
 | `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff --no-repair` |
 | `workflow-finalize` | `step-21-pr-ready` | `--essential --stop-on-handoff` |
-| `workflow-finalize` | `validate-agentic-finalization` | `--guard` |
+| `workflow-finalize` | `validate-agentic-finalization` | `--essential --stop-on-handoff --no-repair` |
 
 Report steps: `workflow-finalize` `step-recovery-report` (before
 `workflow-complete`), `auto-drive-to-merge` `autodrive-report`, and
@@ -140,6 +140,36 @@ grep -n 'recipe: "push-failure-recovery"' amplifier-bundle/recipes/*.yaml
 
 `owner` must be one of the evidence file's `owner_roles`, the caller's
 `--owner`, or `default_owner` (the caller's `--owner`, else `run-requester`).
+
+### When a retry cannot observe a repair
+
+`retry_after_repair` re-runs the same command with the same environment. That
+is only a way forward when the command's answer depends on something the
+agent can change and the command will read again. A step that reads only
+values recorded before its first attempt has no such input: the second run
+reads the same bytes and ends the same way, and offering the choice promises
+a convergence that cannot happen. Such a step takes `--no-repair`, so the
+agent is asked for the move it can actually make.
+
+`validate-agentic-finalization` is the worked example. It reports the
+terminal state `assess-finalization` decided, from `finalization_assessment`,
+over the facts and blockers in `finalization_evidence` -- all recorded. The
+recovery agent may make no GitHub write and start no recipe, so it can
+neither push the branch and open the pull request that a `FAILED_IMPLEMENTATION`
+is missing, nor produce an assessment where there is none. The repair belongs
+to `assess-finalization`, which is permitted exactly those two actions and
+then decides on what it did.
+
+Making the step read live instead would not rescue the retry. The terminal
+state is still the one recorded before the first attempt, so fresher facts
+could not change it; and the one local repair that is physically available --
+committing a dirty worktree -- would move the local head away from the commit
+the recorded decision was made about, so a retry that accepted it would
+certify a pull request that does not hold the new commit. The convergent move
+is to run finalization again, assessment included, not to retry the reporter.
+See
+[Recipe Recovery](./recipe-recovery.md) and
+[The Run's Real Outcome](./default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 
 ## Opting a step in
 
@@ -216,7 +246,7 @@ run --step-id <id> --dir <dir> --goal <text> [--owner <v>]
 | `--alternative` | Named alternative, repeatable; name `^[A-Za-z0-9_-]{1,64}$`; command split on whitespace, no shell |
 | `--essential` | `continue_recorded` not offered |
 | `--stop-on-handoff` | A handoff exits 81 |
-| `--no-repair` | `retry_after_repair` not offered (a step that publishes the worktree) |
+| `--no-repair` | `retry_after_repair` not offered (a step that publishes the worktree, or one whose every input was recorded before the first attempt) |
 | `--guard` | Only `handoff` and declared alternatives; implies the three flags above |
 | `--already-failed` | Go straight to recovery; the record has `unavailable_reason` |
 | `--recipe-dir` | Run `<dir>/step-failure-recovery.yaml` (tests) |
@@ -350,6 +380,13 @@ A step with `--stop-on-handoff` or `--guard` exits 81, the runner stops, and
 Behaviour change: a failure at `step-20b-push-cleanup`, `step-21-pr-ready` or
 `validate-agentic-finalization` now ends the run with exit 81 and a record,
 where it used to exit 1.
+
+`validate-agentic-finalization` ends the run only on a failure the run really
+has: a branch that was not pushed, no open PR, a PR at a different head, a
+failing check, a dirty worktree or missing `git`/`jq`. A missing or unreadable
+context file, an unset empty object key and pending CI no longer produce a
+failure, so they never reach the guard (#2343, #1726). See
+[The Run's Real Outcome](./default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 
 ## Recovery directory
 

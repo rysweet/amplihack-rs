@@ -30,13 +30,14 @@ amplihack recipe show <recipe> --format json
 amplihack recipe show <recipe> --steps-only
 
 # Add an instruction to a running recipe run
-amplihack recipe guide <run-id | session | pr-url> - < note.md
-amplihack recipe guide <run-id | session | pr-url> --file note.md
+amplihack recipe guide <session | run-id | issue | pr-url> - < note.md
+amplihack recipe guide <session | run-id | issue | pr-url> --file note.md
+amplihack recipe guide '#2783' - < note.md   # quote #<number>
 ```
 
 | Command | Purpose |
 |---|---|
-| `amplihack recipe guide <target> [-] [--file <path>]` | Append an operator instruction, read from stdin or a file, that every later agent step of the run receives. Text on the command line is refused. See [amplihack recipe guide](recipe-cli-reference.md#amplihack-recipe-guide). |
+| `amplihack recipe guide <target> [-] [--file <path>]` | Append an operator instruction, read from stdin or a file, that every later agent step of the run receives. Works for builds and drives, and finds the run from its start-time record without a work-root variable. Text on the command line is refused. See [amplihack recipe guide](recipe-cli-reference.md#amplihack-recipe-guide). |
 
 ## Common Recipes
 

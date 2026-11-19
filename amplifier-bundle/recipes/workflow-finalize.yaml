@@ -30,6 +30,7 @@ context:
   terminal_adjudication_evidence: ""
   terminal_adjudication: ""
   finalizer_step_status: ""
+  finalization_assessment: ""  # #2343/#2809: assess-finalization's structured answer, when it ran
   workflow_result: ""
   issue_number: ""
   pr_number: ""
@@ -305,8 +306,8 @@ steps:
       Write a concise, human-readable narrative that explains the default
       workflow's terminal outcome for an operator reading the run log. This is
       an explanatory ARTIFACT for humans — it is never parsed and never drives
-      control flow. Deterministic recipe steps own the machine-readable terminal
-      classification; do not attempt to encode machine state here.
+      control flow. The `assess-finalization` step owns the machine-readable
+      terminal classification (#2343); do not encode machine state here.
 
       ## Structured evidence
       {{finalization_evidence}}
@@ -319,15 +320,12 @@ steps:
       bullet points. There is no required schema, no required keys, and no
       machine contract — write for a human reader.
 
-      ## Observed failure modes worth calling out when the evidence shows them
-
-      Recent finalization runs failed for reasons that are useful operator
-      background: a dirty worktree (including generated runtime artifacts left
-      behind), a closed-unmerged PR, missing tooling required for the selected
-      path, failed CI, and hollow success where setup/planning or
-      inaccessible-codebase output merely looked successful. When the structured
-      evidence indicates one of these, name it plainly in your narrative so the
-      operator understands the durable state.
+      The evidence carries the facts of the run's outcome under `outcome`: the
+      commit the remote carries for the branch, the pull request at it and that
+      request's CI checks. When `outcome.unread` names a fact that could not be
+      read, say so plainly. Name these durable states too when the evidence
+      shows them: a dirty worktree, a closed-unmerged PR, missing tooling for
+      the selected path, failed CI, and hollow success.
     output: "agentic_finalizer_narrative"
   - id: "finalizer-step-status"
     type: "bash"
@@ -360,27 +358,29 @@ steps:
       jq -nc --arg status "$status" --arg reporting_failure "$reporting_failure" \
         '{status: $status, reporting_failure: $reporting_failure}'
     output: "finalizer_step_status"
+  - id: "assess-finalization"  # decides the terminal state (#2343, #2809); runs on every outcome, see docs/reference/default-workflow-agentic-finalization.md#the-assessment-step
+    type: "recipe"
+    recipe: "workflow-finalization-assessment"
+    continue_on_error: true
   - id: "validate-agentic-finalization"
     type: "bash"
     parse_json: true
     command: |
       IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || : # #2539: docs/reference/step-failure-recovery.md
       set -euo pipefail
-      # Issue #969 contract: this step classifies the terminal state from typed
-      # deterministic evidence ONLY. It reads finalization_evidence and the typed
-      # finalizer_step_status/implementation/verification recipe state. It never
-      # reads the agent narrative and never parses agent-generated prose.
-      # Emitted vocabulary includes FAILED_INVALID_EVIDENCE (malformed evidence),
-      # FAILED_REPORTING (reporting step failed but impl/verify durable),
-      # FAILED_IMPLEMENTATION (impl/verify absent), IMPLEMENTED_VERIFIED, plus the
-      # preserved fail-closed invariants FAILED_DIRTY_WORKTREE,
-      # FAILED_PR_METADATA_UNAVAILABLE, BLOCKED_CI, FAILED_MEANINGFUL_DIFF, and
-      # FAILED_MISSING_TOOLING. Non-success classifications exit 1 (fail closed).
-      # Success also includes EXISTING_OPEN_PR (#1641): see default-workflow-agentic-finalization.md.
+      # Issue #2343 contract: this step REPORTS the terminal state
+      # assess-finalization decided on the collected facts; it derives none of
+      # its own and never reads the agent narrative. The vocabulary is in
+      # workflow_finalization_result.sh. A non-success ends the run with exit 1;
+      # no decision at all leaves the step failing for its recovery agent.
+      # #2819 R2: --no-repair -- a retry re-reads the same recorded decision
+      # and evidence, and the recovery agent may make no GitHub write and no
+      # recipe, so no repair it can make would show. Repairing the outcome is
+      # assess-finalization's job. See docs/reference/step-failure-recovery.md.
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
       bash "$FINALIZER_HELPER" validate
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --guard --dir "$RECIPE_VAR_step_recovery_dir" --goal "Validate the finalization evidence of the workflow for PR ${RECIPE_VAR_pr_number:-unknown}" -- bash -c "$STEP_BODY" validate-agentic-finalization
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --essential --stop-on-handoff --no-repair --dir "$RECIPE_VAR_step_recovery_dir" --goal "Report the terminal state assess-finalization decided for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}; every input is already recorded, so name the owner of the gap rather than trying to repair it" -- bash -c "$STEP_BODY" validate-agentic-finalization
     output: "workflow_result"
   - id: "step-recovery-report"  # #2539: a recorded handoff ends the run here with exit 81; with recovery off the output says so
     type: "bash"

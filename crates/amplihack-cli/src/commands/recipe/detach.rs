@@ -309,12 +309,8 @@ fn context_object(pairs: &[String]) -> Result<serde_json::Map<String, serde_json
 /// an earlier run, or a concurrent launch in the same second then moves on to
 /// the next name instead of failing.
 fn claim_session(base: &str, log_dir: &Path) -> Result<(String, PathBuf)> {
-    for n in 1..=1000 {
-        let session = if n == 1 {
-            base.to_string()
-        } else {
-            format!("{base}-{n}")
-        };
+    for n in 1..=MAX_CLAIM_TRIES {
+        let session = nth_claim_name(base, n);
         if session_exists(&session) {
             continue;
         }
@@ -331,7 +327,22 @@ fn claim_session(base: &str, log_dir: &Path) -> Result<(String, PathBuf)> {
             Err(error) => return Err(error),
         }
     }
-    bail!("no free tmux session name for {base} after 1000 tries")
+    bail!("no free tmux session name for {base} after {MAX_CLAIM_TRIES} tries")
+}
+
+/// The `n`th name [`claim_session`] tries for `base`: `base` itself, then
+/// `base-2`, `base-3`, and so on.
+///
+/// Its own function, and visible to the crate, so that the suffix
+/// [`MAX_CLAIM_SUFFIX_CHARS`] bounds is derived from the formatting that
+/// actually happens rather than written out a second time in a test here or
+/// in `guide`. One identifier, one bound (issue #2818).
+pub(crate) fn nth_claim_name(base: &str, n: u32) -> String {
+    if n == 1 {
+        base.to_string()
+    } else {
+        format!("{base}-{n}")
+    }
 }
 
 fn session_exists(session: &str) -> bool {
@@ -442,6 +453,26 @@ fn create_private(path: &Path) -> Result<File> {
         .with_context(|| format!("cannot create {}", path.display()))
 }
 
+/// The most characters [`session_name`] keeps of an expanded pattern.
+pub(crate) const MAX_PATTERN_CHARS: usize = 80;
+
+/// The most names [`claim_session`] tries before giving up. The suffix it
+/// appends, `-<n>`, is longest at this value.
+pub(crate) const MAX_CLAIM_TRIES: u32 = 1000;
+
+/// The longest suffix [`claim_session`] can append to a name from
+/// [`session_name`]: `-1000`, five characters.
+pub(crate) const MAX_CLAIM_SUFFIX_CHARS: usize = 5;
+
+/// The longest session name `recipe run --detach` can create, and so the
+/// longest a reader of `<log dir>/<session>.log` must accept. Anything that
+/// looks a session up by name takes this bound, not the shorter rule for a
+/// name tmux is about to be asked to create: holding a lookup to the latter
+/// is what made `recipe guide` skip 65-character auto-drive sessions in
+/// issue #2818. `the_three_bounds_of_a_detached_session_name_agree` keeps
+/// the three constants in step.
+pub(crate) const MAX_DETACHED_SESSION_CHARS: usize = MAX_PATTERN_CHARS + MAX_CLAIM_SUFFIX_CHARS;
+
 /// Expand a validated pattern, then keep only characters tmux accepts in a
 /// session name and nothing needs quoting for.
 pub(crate) fn session_name(pattern: &str, recipe: &str, repo: &str, ts: &str) -> String {
@@ -458,7 +489,7 @@ pub(crate) fn session_name(pattern: &str, recipe: &str, repo: &str, ts: &str) ->
                 '-'
             }
         })
-        .take(80)
+        .take(MAX_PATTERN_CHARS)
         .collect();
     if name.is_empty() {
         "amp".to_string()
@@ -722,6 +753,48 @@ mod tests {
         );
         assert_eq!(session_name("{repo}", "r", "a b:c'$(x)", "t"), "a-b-c---x-");
         assert_eq!(session_name("{recipe}", "", "", ""), "amp");
+    }
+
+    /// Issue #2818: a session name is bounded in two places -- the pattern
+    /// truncation here and the collision suffix `claim_session` appends --
+    /// and read back somewhere else entirely, by `recipe guide`. Two
+    /// independent numbers for one identifier is what let the reader refuse
+    /// names this module had already created, so they are held together
+    /// here against the code that produces each.
+    #[test]
+    fn the_three_bounds_of_a_detached_session_name_agree() {
+        let truncated = session_name("{repo}", "r", &"a".repeat(500), "t");
+        assert_eq!(
+            truncated.chars().count(),
+            MAX_PATTERN_CHARS,
+            "session_name truncates at MAX_PATTERN_CHARS"
+        );
+
+        // The suffix comes from `claim_session`'s own name builder, not from
+        // this test formatting one: a change to the format then fails here
+        // rather than passing and leaving the reader's bound behind.
+        assert_eq!(
+            nth_claim_name("base", 1),
+            "base",
+            "the first name claim_session tries is the base itself"
+        );
+        let longest_candidate = nth_claim_name(&truncated, MAX_CLAIM_TRIES);
+        let longest_suffix = longest_candidate
+            .strip_prefix(&truncated)
+            .expect("claim_session appends to the base rather than rewriting it");
+        assert_eq!(
+            longest_suffix.chars().count(),
+            MAX_CLAIM_SUFFIX_CHARS,
+            "MAX_CLAIM_SUFFIX_CHARS does not match the longest suffix claim_session appends"
+        );
+
+        // The two together are the bound every reader of a session log must
+        // accept. `recipe guide`'s lookup is checked against a name of this
+        // length in `guide::every_name_detach_can_produce_is_accepted_by_the_lookup`.
+        assert_eq!(
+            longest_candidate.chars().count(),
+            MAX_DETACHED_SESSION_CHARS
+        );
     }
 
     #[test]

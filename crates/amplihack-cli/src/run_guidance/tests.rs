@@ -1301,3 +1301,36 @@ fn an_empty_env_list_reads_no_folders() {
     let got = env::dirs_from_env_value(OsStr::new(""));
     assert!(got.is_empty());
 }
+
+/// The two-word rule at its source (issue #2809): the same failing folder
+/// yields a bare reason for a caller that passes it over and a `refusing`
+/// line for a caller that stops on it. A caller that skips a folder must
+/// never print the word, so the word is not built into the check.
+#[test]
+fn a_failing_folder_reads_as_a_bare_reason_until_a_caller_refuses_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("guidance");
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+
+    let reason = match fs_safety::dir_state(&dir).unwrap() {
+        fs_safety::DirState::Untrusted(reason) => reason,
+        other => panic!("expected an untrusted folder, got {other:?}"),
+    };
+    assert!(reason.contains("writable by group or others"), "{reason}");
+    assert!(!reason.contains("refusing"), "{reason}");
+    assert!(!reason.contains(&dir.display().to_string()), "{reason}");
+
+    let refusal = fs_safety::check_dir(&dir).unwrap_err().to_string();
+    assert!(refusal.starts_with("refusing "), "{refusal}");
+    assert!(refusal.contains(&dir.display().to_string()), "{refusal}");
+    assert!(refusal.contains(&reason), "{refusal}");
+
+    // A missing folder is neither: it is just absent.
+    let absent = tmp.path().join("gone");
+    assert_eq!(
+        fs_safety::dir_state(&absent).unwrap(),
+        fs_safety::DirState::Missing
+    );
+    assert!(!fs_safety::check_dir(&absent).unwrap());
+}

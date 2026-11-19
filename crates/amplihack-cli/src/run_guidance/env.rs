@@ -5,7 +5,7 @@
 //! only the folders listed there, so an interactive launch (variable unset)
 //! never changes a prompt.
 
-use super::fs_safety::{check_dir, untrusted_reason};
+use super::fs_safety::{DirState, dir_state, untrusted_reason};
 use super::pr_key::{canonical_repo_from_remote, parse_pr_url, pr_guidance_dir, pr_key};
 use super::{GUIDANCE_DIR, MAX_ENV_DIRS};
 use std::collections::BTreeMap;
@@ -72,9 +72,13 @@ pub(crate) fn dirs_from_env_value(value: &OsStr) -> Vec<PathBuf> {
                 continue;
             }
         }
-        match check_dir(&dir) {
-            Ok(true) => out.push(dir),
-            Ok(false) => {}
+        // Skipped, never refused: the launch goes on with the folders that
+        // pass, so the warning carries no verdict word (issue #2809), and
+        // it names the folder once, as the other warnings here do.
+        match dir_state(&dir) {
+            Ok(DirState::Trusted) => out.push(dir),
+            Ok(DirState::Missing) => {}
+            Ok(DirState::Untrusted(reason)) => warn_skipped(&dir, &reason),
             Err(e) => warn_skipped(&dir, &e.to_string()),
         }
     }

@@ -2987,7 +2987,7 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
 // these scenarios with the real gadugi-test, so the harnesses read the
 // shipped step body with `tests/gadugi/recipe-step-command.sh` (awk) rather
 // than python3 and PyYAML.
-const HARNESS_STEPS: [(&str, &str, &str); 3] = [
+const HARNESS_STEPS: [(&str, &str, &str); 5] = [
     (
         "run-step-03b.sh",
         "workflow-prep",
@@ -3002,6 +3002,18 @@ const HARNESS_STEPS: [(&str, &str, &str); 3] = [
         "run-issue-2784-existing-pr-other-base-scenario.sh",
         "workflow-publish",
         "step-16-create-draft-pr",
+    ),
+    // Issue #2343: the finalization pair, run end to end against a local bare
+    // remote and a stub gh reporting a check still in progress.
+    (
+        "run-issue-2343-finalization-outcome-scenario.sh",
+        "workflow-finalize",
+        "collect-finalization-evidence",
+    ),
+    (
+        "run-issue-2343-finalization-outcome-scenario.sh",
+        "workflow-finalize",
+        "validate-agentic-finalization",
     ),
 ];
 

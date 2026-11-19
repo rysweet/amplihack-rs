@@ -1001,6 +1001,11 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // preference must never stop a run.
     let staged_recipes =
         stage_step_tier_overrides(workspace.borrow().run_dir(), search_dirs, recipe_path);
+    // Issue #2783: the folder this run uses, recorded in every pointer line
+    // it writes, so `recipe guide` finds the run from what it recorded at
+    // start rather than from the caller's work-root variables. Cloned once:
+    // the correlation sites below must not hold a `RefCell` borrow.
+    let run_location: Option<PathBuf> = workspace.borrow().run_dir().map(Path::to_path_buf);
     let build_command = |run_id: &str| -> Result<Command> {
         // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
         // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
@@ -1246,7 +1251,8 @@ pub(super) fn execute_recipe_via_rust_fresh(
                         context,
                         binary.as_path(),
                     )
-                    .with_settings(run_settings.clone());
+                    .with_settings(run_settings.clone())
+                    .with_run_location(run_location.as_deref());
                     // The pointer contract is one `early` then one `final`
                     // per run_id, even when no runner is spawned.
                     correlation.emit_early();
@@ -1262,7 +1268,8 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 context,
                 binary.as_path(),
             )
-            .with_settings(run_settings.clone());
+            .with_settings(run_settings.clone())
+            .with_run_location(run_location.as_deref());
             if let Err(error) = workspace
                 .borrow_mut()
                 .record_attempt_checked(correlation.run_id())
