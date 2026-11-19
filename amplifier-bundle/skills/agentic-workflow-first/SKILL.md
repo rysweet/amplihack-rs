@@ -72,8 +72,10 @@ Tag each step as exactly one of:
   IO, `git`, `gh`. Choose this for anything with an external effect or a single
   correct deterministic result.
 - **(c) Thin rail** — minimal glue code: typed-record IO, guardrails, attempt caps,
-  record-integrity reads. Choose this ONLY for plumbing that is neither judgment nor an
-  external capability.
+  record-integrity reads. An attempt cap belongs on a mechanical loop such as
+  pagination or polling. Recovery is excluded: never cap it with an attempt counter,
+  because it stops on a lack of progress rather than at a count (see the rule above).
+  Choose this ONLY for plumbing that is neither judgment nor an external capability.
 
 **Classification test — apply literally:**
 - Does the step *decide something* a reasonable person could disagree on? → **(a)**.

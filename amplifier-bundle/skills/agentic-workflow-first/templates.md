@@ -163,11 +163,14 @@ echo "$decision"
 - [ ] No example shows a fail-OPEN handoff (proceeding on missing/partial record).
 - [ ] Every reader failure reaches an agent step with its own reason as evidence, not
       as a bare "unreadable" and not only in the log.
-- [ ] Every external tool call in a bash step (`gh`, `git`, `curl`) reaches an agent
-      the same way, either by capturing what it returned into the evidence file and
-      reporting a typed status, or through the step-recovery wrapper
+- [ ] Every call in a bash step that can exit non-zero (`gh`, `git`, `curl`, and the
+      `jq` that parses what they returned) reaches an agent the same way, either by
+      capturing what it returned into the evidence file and reporting a typed status,
+      or through the step-recovery wrapper
       (`docs/reference/step-failure-recovery.md`). An unguarded call under `set -e`
       ends the step and leaves its reason only in the log.
+- [ ] Required inputs are checked (`: "${VAR:?}"`) before the first call, not after
+      it, so a missing one fails on its own name rather than part-way through.
 - [ ] No example uses `chmod` after write (must be `0o600` at creation).
 - [ ] No large/sensitive payload passed via argv or env (stdin/file only).
 - [ ] No control flow keys off `rationale`/free-text (only typed fields).

@@ -80,7 +80,12 @@ steps:
       route_status="done"
       case "$decision" in
         urgent)
-          if ! gh issue create --label urgent --title "signal: urgent" 2>>"$EVIDENCE_PATH"; then
+          # `--body` is not optional here: run without a terminal, `gh issue create`
+          # refuses before it writes anything unless both `--title` and `--body` are
+          # given, and a recipe step never has a terminal.
+          if ! gh issue create --label urgent --title "signal: urgent" \
+                 --body "Routed as urgent by the classify workflow." \
+                 2>>"$EVIDENCE_PATH"; then
             route_status="failed"
             echo "ERROR: routing the urgent signal failed; evidence at $EVIDENCE_PATH" >&2
           fi ;;
@@ -152,13 +157,28 @@ instead of ending the run.
 ## Second example: step-21 pr-ready without a script that judges
 
 **Brittle form:** step-21 runs `workflow_pr_ready.sh`, which calls
-`workflow_pr_scope.sh` to decide which pull request belongs to the run and exits 1 with
-"scoped PR validation returned no PR target" when the match does not hold. Each new
-case (a fork head, a renamed branch, a reopened pull request) means another edit to that
-match. The failure itself already reaches an agent: the step is wrapped in `amplihack
-orch helper step-recovery` (`docs/reference/step-failure-recovery.md`). What is still in
-the script is the judgement about which pull request is the run's, and the remedies when
-there is none.
+`workflow_pr_scope.sh` to decide which pull request belongs to the run. What that match
+does when it does not hold depends on what the run recorded earlier, and two of the
+three outcomes are quiet:
+
+- no candidate matched and the run recorded no pull request of its own: the script
+  prints `INFO: [skip]` and exits 0 (`workflow_pr_ready.sh:216-219`). Nothing is marked
+  ready and the run carries on. That is the silent pass this skill exists to remove;
+- no candidate matched but the run did record a pull request: exit 1 with "scoped PR
+  validation failed before ready mutation" and the helper's reason (line 220);
+- the helper returned a match carrying no URL or number: exit 1 with "scoped PR
+  validation returned no PR target" (line 224). That message is this case only, not the
+  general no-match one.
+
+Past the match, a merged pull request is also an exit 0, with
+`terminal_status=already-merged`, or `closed-after-merge` when it was closed afterwards
+(lines 237-243). Only a closed-unmerged one refuses (lines 244-252). Each new case
+(a fork head, a renamed branch, a reopened pull request) means another edit to that
+match. Where the script does fail, the failure reaches an agent: the step is wrapped
+in `amplihack orch helper step-recovery`
+(`docs/reference/step-failure-recovery.md`). What is still in the script is the
+judgement about which pull request is the run's, the quiet skip when it finds none, and
+the remedies that are therefore never reached.
 
 **Agentic form:** the validation stays and so does the loud failure. A deterministic
 step lists the pull requests for the run's branch and writes them to a file. An agent
@@ -174,28 +194,66 @@ goes to the remedies, not a quiet pass:
       # Code does the mechanics and no judgement: list, record, report the count.
       # An empty list is not an error here: it is evidence the agent step needs,
       # so this step must not exit on it.
+      #
+      # Every input this step reports is checked here, before anything runs, so a
+      # missing one fails on its own line with its own name rather than halfway
+      # through the listing or after it.
+      : "${BRANCH_NAME:?}" "${EXPECTED_BASE:?}"
       ( umask 177; : > "${PR_LIST_PATH:?}" )
       ( umask 177; : > "${LIST_ERR_PATH:?}" )
+      listing="ok"; count=0; pushed_head=""
+      # One helper for every failure path, so each one does the same three things:
+      # name the cause in the evidence file, say so loudly, and leave a typed
+      # `listing:"failed"` behind. Nothing below exits on a failed call.
+      note_failure() {
+        listing="failed"; count=0
+        printf '%s\n' "$1" >> "$LIST_ERR_PATH"
+        echo "ERROR: $1; evidence at $LIST_ERR_PATH" >&2
+      }
       # Fetch every field the script compared, not just the ones that are nice to
       # read. A head branch name is not an identity: it is reused after a branch is
       # deleted, and a fork can open a pull request from a branch of the same name.
-      pushed_head=$(git rev-parse HEAD)   # own line: `set -e` does not see a failure inside an argument
-      # `gh` is a network call. Under `set -e` an unguarded one would end the step on
-      # an authentication, rate-limit or network failure, leaving the reason on stderr
-      # where the agent step cannot read it. Capture it as evidence instead.
-      if gh pr list --head "$BRANCH_NAME" --state all \
-           --json number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,mergedAt \
-           > "$PR_LIST_PATH" 2>>"$LIST_ERR_PATH"; then
-        listing="ok"
-        count=$(jq 'length' "$PR_LIST_PATH")
-      else
-        listing="failed"; count=0
-        echo "ERROR: listing pull requests failed; evidence at $LIST_ERR_PATH" >&2
+      # `git` fails too (a repository with no commits, an unreadable object store),
+      # so it is guarded exactly like the network call. It also gets its own line:
+      # `set -e` does not see a failure inside an argument.
+      if ! pushed_head=$(git rev-parse HEAD 2>>"$LIST_ERR_PATH"); then
+        pushed_head=""
+        note_failure "reading this run's head with git rev-parse failed"
       fi
+      # Without the pushed head there is no identity to check a candidate against,
+      # so the listing is not attempted: a count with no head to match is not
+      # evidence, and reporting one would invite the agent to act on a branch name.
+      if [ "$listing" = "ok" ]; then
+        # `gh` is a network call. Under `set -e` an unguarded one would end the step on
+        # an authentication, rate-limit or network failure, leaving the reason on stderr
+        # where the agent step cannot read it. Capture it as evidence instead.
+        if gh pr list --head "$BRANCH_NAME" --state all \
+             --json number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,isCrossRepository,mergedAt \
+             > "$PR_LIST_PATH" 2>>"$LIST_ERR_PATH"; then
+          # A zero exit is not a usable listing. `jq` is what proves the body parses
+          # and is the array the agent step will read, so it is guarded as well: left
+          # bare, a non-JSON body would end the step with a parse error on stderr and
+          # a 0-byte evidence file.
+          if ! count=$(jq 'if type == "array" then length else error("listing body is not a JSON array") end' \
+                         "$PR_LIST_PATH" 2>>"$LIST_ERR_PATH"); then
+            note_failure "the pull request listing did not parse as a JSON array"
+          fi
+        else
+          note_failure "listing pull requests failed"
+        fi
+      fi
+      # The pull request this run recorded when it opened one is the strongest
+      # identity the run holds, stronger than any field of the listing, so it is
+      # passed through rather than left for the agent to infer. Empty is normal on
+      # a run that has not opened one yet. `run_started_at` bounds the candidates
+      # the same way the script's `--created-after` does.
       jq -cn --arg p "$PR_LIST_PATH" --arg e "$LIST_ERR_PATH" --arg l "$listing" \
-        --arg h "$pushed_head" --arg b "${EXPECTED_BASE:?}" --argjson n "$count" \
+        --arg h "$pushed_head" --arg b "$EXPECTED_BASE" --argjson n "$count" \
+        --arg u "${RECORDED_PR_URL:-}" --arg m "${RECORDED_PR_NUMBER:-}" \
+        --arg s "${RUN_STARTED_AT:-}" \
         '{pr_list_path:$p, listing:$l, error_path:$e, pushed_head:$h,
-          expected_base:$b, count:$n}'
+          expected_base:$b, count:$n, recorded_pr_url:$u,
+          recorded_pr_number:$m, run_started_at:$s}'
     output: "pr_list"
     parse_json: true
 
@@ -212,9 +270,16 @@ goes to the remedies, not a quiet pass:
 
       Decide which entry is this run's pull request. The head branch narrows the
       candidates; it does not identify one. A deleted branch name is reused, and a
-      fork can open a pull request from a branch of the same name, so check all of
-      the following on a candidate before you act on it, fetching any field the
-      listing lacks:
+      fork can open a pull request from a branch of the same name.
+
+      Start from what this run recorded when it opened a pull request:
+      `{{pr_list.recorded_pr_url}}`, number `{{pr_list.recorded_pr_number}}`. That is
+      the strongest identity the run holds, and either may be empty if the run has
+      not opened one. When it is present, the entry it names is the candidate, and
+      an entry that contradicts it is not. Only `{{pr_list.run_started_at}}` and
+      later is in scope: a pull request opened before this run started is not this
+      run's, whatever its branch says. Then check all of the following on the
+      candidate before you act on it, fetching any field the listing lacks:
 
       - `headRefOid` is the commit this run pushed, `{{pr_list.pushed_head}}`. At this
         point in the run, a different head means the pull request does not carry this
@@ -234,10 +299,12 @@ goes to the remedies, not a quiet pass:
       - Work not complete, or not pushed: say so loudly. Name what is missing and the
         evidence for it. Do not leave it as a draft without saying why, and do not
         report this step as done.
-      - The listing is `failed`: the count is not evidence of anything. Read what the
-        call returned from `{{pr_list.error_path}}`, say so loudly, fix the cause if
-        you can (authentication, rate limit, network) and list again. Never read a
-        failed listing as "no pull request exists".
+      - The listing is `failed`: neither the count nor the head is evidence of
+        anything. `{{pr_list.error_path}}` names which call failed, one of reading
+        this run's head, the listing call itself, or parsing what it returned, and
+        what that call reported. Say so loudly, fix the cause if you can
+        (authentication, rate limit, network, a checkout with no commit) and list
+        again. Never read a failed listing as "no pull request exists".
       - An open same-repository pull request matches the branch and the base but not
         the head: that is this run's pull request without this run's work. Say so
         loudly, get the work pushed, and check the head again. Do not open a second
@@ -260,20 +327,39 @@ goes to the remedies, not a quiet pass:
       a readiness you have not read back. Post no log or secret content.
 ```
 
+**Verify the `pr-list` step the same way as the first example,** by failing each call
+in turn against stubs on `PATH` and checking the step's exit status, not just its
+message. Make `gh` exit 1 with a 401; make it exit 0 with a non-JSON body, and again
+with a JSON object rather than an array; make `git rev-parse HEAD` exit 128 as it does
+in a checkout with no commit. Each of those must end with exit 0, a typed line carrying
+`listing:"failed"`, and a non-empty evidence file naming the call that failed. A step
+that exits non-zero there, or leaves a 0-byte evidence file, has handed the agent
+nothing. Then unset `EXPECTED_BASE` and confirm the step stops on that name before it
+lists anything.
+
 The prompt states the scope, the identity fields and the remedies because examples get
 copied. What moved to the agent is the judgement about which candidate is the run's
 pull request and what to do when none is. What did not move is the evidence that
-judgement runs on: the prompt asks for the same four fields `workflow_pr_scope.sh`
-compares (`headRefName`, `headRefOid`, `baseRefName`, `isCrossRepository`) plus the
-merged and closed states `workflow_pr_ready.sh` refuses on before it mutates anything,
-so the agent is not deciding identity from a branch name. Nor did the readiness check
-soften: the agent must read the state back before it reports. The precedent is
+judgement runs on. `workflow_pr_scope.sh` validates six fields by its own header
+(`workflow_pr_ready.sh:32-33`): `headRefName`, `baseRefName`, `headRefOid`,
+`isCrossRepository`, `expected_pr_title_prefix` and `created_after`. The script also
+passes it the pull request URL or number step-16 recorded, and, when the run's start
+time is set, that as `--created-after` (lines 209-212). The `pr-list` step above
+reports the same evidence: the four listing fields, the recorded URL and number, and
+`run_started_at`. The title prefix is the one piece left out, because it is a
+convention the agent is told rather than a field it compares. So the agent is not deciding identity from a branch name, and
+the "none found" that the script passes over quietly is a loud failure here with the
+remedies attached. Nor did the readiness check soften: the agent must read the state
+back before it reports, and a merged pull request is reported rather than mutated, which
+is what the script does too. The precedent is
 `workflow-terminal-adjudication.yaml` (#1268), which already treats a scope match as a
 cheap signal behind an agent judgment.
 
-Both tool steps above capture their `gh` failure into a file and report it as a typed
-field, so an infrastructure failure reaches an agent as evidence rather than ending the
-run. That is one of two ways to get there, and a copier should pick one deliberately.
+Both tool steps above capture every call that can fail into a file and report a typed
+status, so an infrastructure failure reaches an agent as evidence rather than ending the
+run. "Every call" is meant literally: not just the network ones, but the `git` read and
+the `jq` parse, each of which has its own way to exit non-zero with the reason on stderr
+only. That is one of two ways to get there, and a copier should pick one deliberately.
 The other is the step-recovery wrapper the existing step-21 uses: the step body runs
 under `amplihack orch helper step-recovery`, which on a non-zero exit writes an
 evidence file and hands it to an agent recipe
@@ -284,5 +370,5 @@ evidence in-step, as here, is the right choice when a later step consumes this o
 typed record: when recovery chooses `continue_recorded` or `handoff`, the wrapper exits
 0 having printed only its own `{"step_recovery":...}` outcome line and not the body's
 output, so a `parse_json` consumer would not find the fields it expects. What is not
-acceptable is neither: a bare `gh` under `set -e` whose reason survives only in the
-log.
+acceptable is neither: a bare `gh`, `git` or `jq` under `set -e` whose reason survives
+only in the log.
