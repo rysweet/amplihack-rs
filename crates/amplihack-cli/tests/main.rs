@@ -405,6 +405,8 @@ mod issue_2658_routing_replay;
 mod issue_2731_login_change_wait;
 #[path = "issue_2783_recipe_guide_work_root.rs"]
 mod issue_2783_recipe_guide_work_root;
+#[path = "issue_2815_piped_prompt_wait.rs"]
+mod issue_2815_piped_prompt_wait;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

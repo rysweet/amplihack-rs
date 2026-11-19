@@ -128,7 +128,18 @@ fn rerun_buffer_names_give_their_supervisor() {
     let pid = |s: &str| rerun_owner(std::ffi::OsStr::new(s));
     assert_eq!(pid("1234-1.out"), Some(1234));
     assert_eq!(pid("1234-12.out"), Some(1234));
+    // Issue #2815: the captured prompt of a step, `<pid>-0.in`.
+    assert_eq!(pid("1234-0.in"), Some(1234));
     for bad in [
+        "1234-1.in",
+        "1234-12.in",
+        "1234-x.in",
+        "x-0.in",
+        "0-0.in",
+        "-1-0.in",
+        "1234.in",
+        "1234-0.in.bak",
+        "1234-0.inx",
         "1234.out",
         "x-1.out",
         "1234-x.out",

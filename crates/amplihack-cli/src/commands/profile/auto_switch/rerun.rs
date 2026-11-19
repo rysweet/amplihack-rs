@@ -20,7 +20,7 @@ use super::state::{Ledger, State};
 use super::takeover::{capacity_candidate, profile_check};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
-    Limited, Signals, note_key_error, run_attempt_with_recovery, usage_limited,
+    Attempt, Limited, Signals, note_key_error, run_attempt_with_recovery, usage_limited,
 };
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
@@ -34,6 +34,12 @@ use std::path::PathBuf;
 
 #[cfg(test)]
 pub(super) use crate::commands::profile::attempt::limit_reset;
+
+/// Why no rerun can be given this step's prompt when no copy of it was ever
+/// made: the pre-#2815 conduct, reported in the same shape as the reasons
+/// [`RerunStdin::rerun_refused`] gives (issue #2816).
+const NO_STORED_PROMPT: &str = "this step's prompt came on a pipe and could not be stored, so a \
+                                rerun cannot read it again";
 
 /// A profile for a nested launch.
 #[derive(Debug, PartialEq)]
@@ -55,7 +61,7 @@ pub struct Pick {
 /// profile.
 ///
 /// The caller writes [`Pick::per_token`] when it makes the move, not here: a
-/// piped prompt can still refuse the rerun.
+/// piped prompt the supervisor could not store can still refuse the rerun.
 pub fn nested_candidate(
     state: &State,
     ledger: &Ledger,
@@ -389,8 +395,19 @@ pub fn supervise(
 /// could not start, so the caller launches unsupervised; once an attempt
 /// has run, errors are returned instead, so a step is never run twice by
 /// accident.
+///
+/// Every `Ok(None)` goes through [`unsupervised`], which checks that fd 0
+/// is still whole for the plain launch that follows, and every result of an
+/// attempt goes through [`finish`], which refuses to report a success as
+/// the step's when the prompt that reached that attempt stopped short of
+/// the one that was sent (issue #2816).
 pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Option<i32>> {
     let on = switch.is_some();
+    // Looks at stdin without reading it, so nothing here can block. It is
+    // taken before the scratch directory so that every path out of this
+    // function, including the ones that stand down below, can say what has
+    // been taken off stdin and hand it back (issue #2816).
+    let mut stdin = RerunStdin::capture();
     let setup = scratch_dir(switch.as_ref().map(|s| &s.state)).and_then(|dir| {
         Ok((
             dir,
@@ -399,21 +416,46 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     });
     let (rerun_dir, exe) = match setup {
         Ok(s) => s,
-        Err(e) => return unsupervised(&waiter, on, &e),
+        Err(e) => return unsupervised(&waiter, on, &stdin, &e),
     };
     super::sweep_rerun(&rerun_dir);
-    // Never reads stdin, so nothing here can block before signals are caught.
-    let stdin = RerunStdin::capture();
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    // The prompt is on the pipe: neither an auto-switch rerun nor the wait
-    // could give it to another attempt.
-    let piped_prompt = matches!(stdin, RerunStdin::Pipe) && !waiter.prompt_in_args();
-    if piped_prompt {
+    // Issue #2815: what this step reads is on the pipe, which is how a
+    // recipe agent step is always given its prompt. A prompt is copied
+    // aside as it arrives, so a rerun can read the same bytes. The copier
+    // reads nothing until the first attempt is running and this thread
+    // never reads stdin at all, so a pipe nobody closes cannot hold the
+    // supervisor up (issue #2816).
+    //
+    // A `--input-format` channel is the one piped stdin that is not a
+    // prompt: it has no end to copy, its caller holds it open on purpose,
+    // and replaying a session's history to a retry would be wrong. It is
+    // read here as input that cannot be kept, which is the conduct every
+    // piped prompt had before #2815: no wait and no rerun (issue #2816).
+    let input_on_stdin = matches!(stdin, RerunStdin::Pipe) && !waiter.prompt_in_args();
+    if input_on_stdin
+        && !waiter.stdin_is_a_channel()
+        && let Some(captured) = scratch::capture_own_prompt(&rerun_dir)
+    {
+        stdin = captured;
+    }
+    // No copy was made: as before #2815, neither an auto-switch rerun nor
+    // the wait could give what this step reads to another attempt. Set
+    // again below if the copy is later lost (#2816).
+    let mut no_capture = input_on_stdin && !stdin.is_captured();
+    if no_capture {
         waiter.block(NoWait::PipedPrompt);
     }
     let signals = match Signals::register() {
         Ok(s) => s,
-        Err(e) => return unsupervised(&waiter, on, &format!("cannot catch stop signals: {e}")),
+        Err(e) => {
+            return unsupervised(
+                &waiter,
+                on,
+                &stdin,
+                &format!("cannot catch stop signals: {e}"),
+            );
+        }
     };
 
     // The profile this attempt runs under; `None` keeps the inherited
@@ -497,7 +539,6 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             .zip(profile.as_ref())
             .map(|(sw, p)| (p, sw.state.profile_dir(p.as_str())));
         let env = switch_dir.as_ref().map(|(p, d)| (*p, d.as_path()));
-        let input = stdin.for_attempt(n);
         // Issue #2731: which login this attempt runs on, read before it
         // starts. The rotator reacts to the same exhausted reading that
         // fails it, so the swap often lands while the attempt is failing.
@@ -507,15 +548,17 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             &args,
             &rerun_dir,
             env,
-            input,
+            &mut stdin,
             n,
             &signals,
             recovery.as_ref(),
         ) {
             Ok(a) => a,
-            // The first attempt never started, so a plain launch can follow.
+            // The first attempt never started, so a plain launch can
+            // follow. `unsupervised` gives it back the prompt a copier has
+            // taken off stdin by now, or refuses to let it run (#2816).
             Err(e) if n == 1 && profile.is_none() => {
-                return unsupervised(&waiter, on, &e);
+                return unsupervised(&waiter, on, &stdin, &e);
             }
             Err(e) => return Err(e),
         };
@@ -526,8 +569,20 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             switch.as_ref().map(|sw| sw.store.root()),
         );
         let Some(lim) = usage_limited(&attempt, waiter.now()) else {
-            return attempt.finish(None);
+            return finish(attempt, None, &stdin);
         };
+        // Issue #2816: the copier knows at once when the capture file was
+        // lost, but `for_attempt` only asks when a rerun is already due,
+        // which is after the wait. Ask here instead, without joining the
+        // copier: a capture already known to be lost then refuses the
+        // auto-switch rerun and the wait on the spot, with the reasons
+        // either already gives, and this attempt's result — its held-back
+        // stdout included — is passed up. Waiting hours and then failing
+        // adds an outcome no caller asked for.
+        if !no_capture && stdin.capture_lost() {
+            no_capture = true;
+            waiter.block(NoWait::PipedPrompt);
+        }
         if let Some(client) = &recovery {
             client.outcome(recipe_runner_rs::recovery::model::Outcome::UsageLimit)?;
         }
@@ -547,7 +602,8 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             let current = profile.as_ref().unwrap_or(&sw.inherited).clone();
             tried.push(current.to_string());
             let eff = config::effective(&sw.state.root);
-            // The profile a piped prompt kept this step from rerunning under.
+            // The profile an unstored prompt kept this step from rerunning
+            // under.
             let mut refused: Option<ProfileName> = None;
             if eff.on
                 && let Some(next) = next_profile(
@@ -560,18 +616,23 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                     &waiter,
                 )
             {
-                if piped_prompt {
-                    // The limit is recorded; a rerun would get no prompt. The
-                    // wait below refuses too, with `piped_prompt`.
+                // The limit is recorded; a rerun that has no whole prompt to
+                // read is refused rather than given part of one. When the
+                // capture was never made the wait below refuses too, with
+                // `piped_prompt`; when the prompt is merely still arriving
+                // the wait is still worth making, and is asked again when
+                // it ends (issue #2816).
+                let unstored = no_capture.then(|| NO_STORED_PROMPT.to_string());
+                if let Some(why) = unstored.or_else(|| stdin.rerun_refused()) {
                     eprintln!(
-                        "auto-switch: no rerun under profile {:?}: this step's prompt came on a pipe, which a rerun cannot read again",
+                        "auto-switch: no rerun under profile {:?}: {why}",
                         next.profile.as_str()
                     );
                     refused = Some(next.profile);
                 } else {
                     if let Some(sig) = signals.received() {
                         eprintln!("auto-switch: no rerun: this step was told to stop");
-                        return attempt.finish(Some(128 + sig));
+                        return finish(attempt, Some(128 + sig), &stdin);
                     }
                     eprintln!(
                         "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?} (auto-switch)",
@@ -588,22 +649,25 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             // passed over only for the threshold and still has capacity.
             // This is an auto-switch rerun; it does not call `after_limit`,
             // so the wait is still there if that profile is limited next.
-            if inherited_has_capacity && profile.is_some() && piped_prompt {
-                // As for a candidate above: a rerun would get no prompt. The
-                // `skipped` event is written below.
-                inherited_has_capacity = false;
-                if refused.as_ref() != Some(&sw.inherited) {
-                    eprintln!(
-                        "auto-switch: no rerun under profile {:?}: this step's prompt came on a pipe, which a rerun cannot read again",
-                        sw.inherited.as_str()
-                    );
+            if inherited_has_capacity && profile.is_some() {
+                // As for a candidate above: a rerun needs the whole prompt.
+                // The `skipped` event is written below.
+                let unstored = no_capture.then(|| NO_STORED_PROMPT.to_string());
+                if let Some(why) = unstored.or_else(|| stdin.rerun_refused()) {
+                    inherited_has_capacity = false;
+                    if refused.as_ref() != Some(&sw.inherited) {
+                        eprintln!(
+                            "auto-switch: no rerun under profile {:?}: {why}",
+                            sw.inherited.as_str()
+                        );
+                    }
                 }
             }
             if inherited_has_capacity && profile.is_some() {
                 inherited_has_capacity = false;
                 if let Some(sig) = signals.received() {
                     eprintln!("auto-switch: no rerun: this step was told to stop");
-                    return attempt.finish(Some(128 + sig));
+                    return finish(attempt, Some(128 + sig), &stdin);
                 }
                 eprintln!(
                     "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?}, which is over the auto-switch threshold but not limited (auto-switch)",
@@ -618,22 +682,63 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // Set by now unless the inherited profile never ran and has no
         // known reset: a candidate's limit is another account's and never
         // times the wait. That happens when the move back to the inherited
-        // profile was refused (a piped prompt); the wait is refused for the
-        // same reason, so `after_limit` still writes the `skipped` event
-        // (`piped_prompt`, or `disabled`/`ci`) and never starts a wait.
+        // profile was refused (a prompt on a pipe that could not be
+        // stored); the wait is refused for the same reason, so
+        // `after_limit` still writes the `skipped` event (`piped_prompt`,
+        // or `disabled`/`ci`) and never starts a wait.
         // With nothing blocking the wait there is no reset to wait for, and
         // the result is passed up.
         let Some(wait) = inherited_wait.or_else(|| waiter.blocked_skip()) else {
-            return attempt.finish(None);
+            return finish(attempt, None, &stdin);
         };
-        match waiter.after_limit(wait, n, &signals, &probe) {
-            AfterLimit::Finish(code) => return attempt.finish(code),
+        // Issue #2816: the retry the wait earns is announced only once the
+        // prompt it would read is known to be there. `rerun_refused` is
+        // asked at that moment and not before, because a prompt still
+        // arriving when the limit was seen has normally arrived by the time
+        // the wait ends; when it has not, the step ends here with this
+        // attempt's result rather than on a rerun with nothing to read.
+        match waiter.after_limit(wait, n, &signals, &probe, &mut || stdin.rerun_refused()) {
+            AfterLimit::Finish(code) => return finish(attempt, code, &stdin),
             AfterLimit::Retry => {
                 attempt.discard();
                 profile = retry_profile(switch.as_ref(), &waiter);
             }
         }
     }
+}
+
+/// Ends the step with this attempt's result, unless the prompt that reached
+/// the attempt stopped short of the one that was sent (issue #2816).
+///
+/// The copier sits between the caller's pipe and the attempt, and closing a
+/// pipe is the only signal it can give its reader. A read of the source
+/// that fails therefore arrives at the attempt as a clean end of file: the
+/// attempt acts on whatever came before it, cannot tell that from a whole
+/// prompt, and may well exit 0. Reporting that as the step's success would
+/// put a result for part of a task where the result of the task belongs.
+///
+/// So the attempt's own output is still printed — nothing it produced is
+/// hidden — its exit code is kept when it already failed, and only a
+/// success is replaced, because only a success would be believed. The
+/// copier has already named the cause on stderr; this line names the
+/// consequence.
+///
+/// The flag is read without joining the copier, and for this case it cannot
+/// be missed: the copier publishes it before it drops the attempt's pipe,
+/// the attempt reaches end of file only once that pipe is dropped, and this
+/// runs after the attempt has exited. The one case it cannot see is a
+/// source that fails after an attempt which exited without reading to the
+/// end of its prompt, and there the copier's own line is the report.
+fn finish(attempt: Attempt, code: Option<i32>, stdin: &RerunStdin) -> Result<Option<i32>> {
+    let out = attempt.finish(code)?;
+    if !stdin.prompt_cut_short() {
+        return Ok(out);
+    }
+    eprintln!(
+        "amplihack: this step's prompt was cut short on its way to the attempt, so the \
+         attempt was not given the whole task and its result is not this step's result"
+    );
+    Ok(Some(out.filter(|c| *c != 0).unwrap_or(1)))
 }
 
 /// The profile the retry after a wait runs under; `None` keeps the inherited
@@ -716,12 +821,35 @@ fn scratch_dir(state: Option<&State>) -> Result<PathBuf> {
     }
 }
 
-fn unsupervised(waiter: &Waiter, on: bool, why: &dyn std::fmt::Display) -> Result<Option<i32>> {
+/// Stands down: the supervisor cannot go on and no attempt has run, so the
+/// caller runs the step once in this process (`Ok(None)`).
+///
+/// That launch inherits this process's own fd 0, which is why `stdin` is
+/// taken. A prompt copier started for issue #2815 would have been reading
+/// fd 0, and handing the launch what was left of that pipe would give it a
+/// truncated prompt. It never has: the copier starts only once the first
+/// attempt is running, and every path here is reached before that (issue
+/// #2816). `stand_down` is the check that says so, for a capture as for
+/// every other kind of stdin, and it returns `Err` — leaving the step
+/// unrun — rather than let a launch read a prompt that is short by whatever
+/// a copier took.
+fn unsupervised(
+    waiter: &Waiter,
+    on: bool,
+    stdin: &RerunStdin,
+    why: &dyn std::fmt::Display,
+) -> Result<Option<i32>> {
     let who = if on {
         "auto-switch"
     } else {
         "the usage-limit wait"
     };
+    stdin.stand_down().map_err(|e| {
+        anyhow::anyhow!(
+            "{who} cannot supervise this step ({why}), and this step's prompt \
+             cannot be given to a plain launch either, so the step was not run: {e}"
+        )
+    })?;
     eprintln!("warning: {who} cannot supervise this step ({why}); running it once");
     waiter.not_supervised();
     Ok(None)

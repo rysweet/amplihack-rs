@@ -32,7 +32,10 @@ pub(crate) enum NoWait {
     NoReset,
     /// The stated reset is more than five hours away.
     ResetTooFar,
-    /// The prompt came on a pipe, which a rerun cannot read again.
+    /// The prompt came on a pipe and no copy of it could be kept, so a
+    /// rerun cannot read it again (issue #2815). A piped prompt that was
+    /// copied is replayed and never reaches this reason; the name is kept
+    /// because it is the logged value callers already match on.
     PipedPrompt,
 }
 

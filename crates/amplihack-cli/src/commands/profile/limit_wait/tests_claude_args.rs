@@ -13,10 +13,12 @@ fn p(args: &[&str]) -> ClaudeArgs {
 const PRINT_PROMPT: ClaudeArgs = ClaudeArgs {
     print: true,
     prompt: true,
+    stream_stdin: false,
 };
 const PRINT_ONLY: ClaudeArgs = ClaudeArgs {
     print: true,
     prompt: false,
+    stream_stdin: false,
 };
 
 #[test]
@@ -92,7 +94,8 @@ fn a_prompt_starting_with_a_dash_is_reachable_only_after_double_dash() {
         p(&["--", "-p"]),
         ClaudeArgs {
             print: false,
-            prompt: true
+            prompt: true,
+            stream_stdin: false,
         }
     );
     assert_eq!(p(&["-p", "--", ""]), PRINT_ONLY);
@@ -114,13 +117,21 @@ fn print_needs_the_flag_itself() {
 #[test]
 fn an_unknown_option_fails_safe_by_taking_the_next_word_as_its_value() {
     // A newer Claude's option this table lacks: its value is not the
-    // prompt, so a piped prompt skips the wait instead of waiting hours and
-    // rerunning with no prompt.
+    // prompt. The launch is therefore treated as having its prompt on
+    // stdin, so stdin is copied aside and replayed (issue #2815). The
+    // other way round would be worse: a wait of hours and then a rerun
+    // with no prompt at all.
     assert_eq!(p(&["-p", "--some-new-opt", "value"]), PRINT_ONLY);
     assert_eq!(p(&["-p", "-z", "value"]), PRINT_ONLY);
     // Followed by a real prompt, the prompt is missed too. That is the safe
-    // side: `prompt` only matters with stdin on a pipe, where a missed
-    // prompt means "no wait", the behaviour before this feature.
+    // side, and issue #2816 is what makes it one. The pipe is copied aside,
+    // and a caller that passed its prompt in argv may well hold that pipe
+    // open for ever: the copier reads it on its own thread, nothing joins
+    // that thread unless it is certain to end, and a rerun with no whole
+    // copy to read is refused with a named reason
+    // (`scratch::Capture::settle`). So the cost is a file and a refused
+    // rerun, where before #2816 it was a step hung after its wait with no
+    // line saying why, and a supervisor deaf to SIGTERM.
     assert_eq!(p(&["-p", "--some-new-flag", "the real prompt"]), PRINT_ONLY);
     // It takes at most one word, and never an option.
     assert_eq!(p(&["-p", "--some-new-opt", "v", "x"]), PRINT_PROMPT);
@@ -130,6 +141,51 @@ fn an_unknown_option_fails_safe_by_taking_the_next_word_as_its_value() {
     );
     assert_eq!(p(&["--some-new-opt=v", "-p", "x"]), PRINT_PROMPT);
     assert_eq!(p(&["-p", "--some-new-flag", "--", "x"]), PRINT_PROMPT);
+}
+
+/// Issue #2816: `--input-format` with anything but `text` makes stdin a
+/// control channel, so it is never copied aside as a prompt.
+///
+/// `stream-json` is the shape amplihack's own usage request uses
+/// (`usage_request::ARGS`): a long-lived channel whose caller holds it open
+/// for the whole session and writes to it as it goes. Copying that would
+/// store a session's history in the rerun directory and replay it to a
+/// retry as if it were the prompt. The step keeps the conduct it had before
+/// #2815 instead: no copy, and a usage limit ends it.
+#[test]
+fn an_input_format_channel_is_not_a_prompt_on_stdin() {
+    for args in [
+        &["-p", "--input-format", "stream-json"][..],
+        &["-p", "--input-format=stream-json"],
+        &[
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ],
+        // A value that is missing altogether reads the same way, which is
+        // the safe side: no copy is what this step did before #2815.
+        &["-p", "--input-format"],
+    ] {
+        let parsed = p(args);
+        assert!(parsed.stream_stdin, "{args:?}");
+        assert!(!parsed.prompt, "{args:?}");
+        assert!(parsed.print, "{args:?}");
+    }
+    // `text` is the default and is a prompt: it is copied as a bare `-p` is.
+    for args in [
+        &["-p", "--input-format", "text"][..],
+        &["-p", "--input-format=text"],
+    ] {
+        let parsed = p(args);
+        assert!(!parsed.stream_stdin, "{args:?}");
+        assert!(!parsed.prompt, "{args:?}");
+    }
+    // A prompt in argv is still found whatever the input format.
+    assert_eq!(p(&["-p", "--input-format", "text", "x"]), PRINT_PROMPT);
+    assert_eq!(p(&["-p"]), PRINT_ONLY, "a bare -p reads stdin");
 }
 
 #[test]
