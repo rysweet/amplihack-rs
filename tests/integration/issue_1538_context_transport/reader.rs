@@ -124,3 +124,44 @@ fn reader_missing_context_file_is_absent_for_every_key_kind() {
         assert!(r.stderr.is_empty(), "{key}: {}", r.stderr);
     }
 }
+
+// #1726 through the context file. The file carries every value as a string, so
+// an object-typed key declared with an empty default and never set arrives as
+// "". The RECIPE_VAR read of that same key reports absence, and the file must
+// not disagree: a run whose context file carries one must not end on "invalid
+// authoritative workflow context" (#2343).
+#[test]
+fn reader_empty_object_value_in_the_file_is_absent_not_invalid() {
+    for key in ["verdict_json", "worktree_setup", "finalization_assessment"] {
+        let mut context = serde_json::Map::new();
+        context.insert(key.to_owned(), json!(""));
+        let r = Fixture::new()
+            .file(serde_json::Value::Object(context))
+            .run(&script(&format!("workflow_context_read {key}")));
+        r.exit(2);
+        assert!(r.stdout.is_empty(), "{key}: {}", r.stdout);
+        assert!(r.stderr.is_empty(), "{key}: {}", r.stderr);
+    }
+}
+
+#[test]
+fn reader_empty_scalar_value_in_the_file_still_reads_as_empty_success() {
+    for key in ["branch_name", "precommit_results"] {
+        let mut context = serde_json::Map::new();
+        context.insert(key.to_owned(), json!(""));
+        let r = Fixture::new()
+            .file(serde_json::Value::Object(context))
+            .run(&script(&format!("workflow_context_read {key}")));
+        r.exit(0);
+        assert!(r.stdout.is_empty(), "{key}: {}", r.stdout);
+    }
+}
+
+#[test]
+fn reader_unparseable_object_value_in_the_file_is_still_invalid() {
+    let r = Fixture::new()
+        .file(json!({"verdict_json": "not-an-object"}))
+        .run(&script("workflow_context_read verdict_json"));
+    r.exit(3);
+    assert!(r.stdout.is_empty());
+}

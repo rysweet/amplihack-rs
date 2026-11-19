@@ -132,6 +132,14 @@ workflow_context_read() {
       _workflow_context_invalid; return 3
     fi
     [[ -n $raw ]] || return 2
+    # #1726, as in the environment tier below. The file carries every value the
+    # runner was given as a string, so an object-typed key the recipe declares
+    # with an empty default and no step has set arrives here as the empty
+    # string. It holds no object, which makes it an unset key, not a corrupt
+    # one; the same key read through RECIPE_VAR_<key> already reports absence,
+    # and the two sources must not disagree. Any other unparseable value stays
+    # corrupt, so a typo still cannot read as absence.
+    [[ $_wc_type != object || $raw != '""' ]] || return 2
   else
     name="RECIPE_VAR_$1"
     raw=$(_workflow_context_get "$name" && printf '.') || return 2

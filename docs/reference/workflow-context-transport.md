@@ -433,9 +433,14 @@ worktree setup or publish. Before this change it read as invalid context and
 disabled finalization's open-PR check; it now reads as empty and the run's real
 outcome is read instead.
 
-Status `2` on an empty `RECIPE_VAR_<key>` applies only to object-typed canonical
-keys. An empty scalar key such as `branch_name` is a value and reads as empty
-with status `0`.
+Status `2` on an empty value applies only to object-typed canonical keys. An
+empty scalar key such as `branch_name` is a value and reads as empty with
+status `0`, and so does an empty `report` key such as `precommit_results`.
+
+The two sources answer alike. The context file carries every value the runner
+was given as a string, so the same declared-empty object key arrives there as
+`""`; it reads as absent exactly as `RECIPE_VAR_<key>=""` does. Any other
+unparseable value in the file is still corrupt and keeps status `3`.
 
 Missing context file (nothing is printed on either stream):
 
@@ -453,6 +458,16 @@ Unset empty object key (#1726):
 ```bash
 unset AMPLIHACK_CONTEXT_FILE
 export RECIPE_VAR_verdict_json=""        # object key, declared empty, never set
+source amplifier-bundle/tools/workflow_context.sh
+workflow_context_read verdict_json; echo "status=$?"
+# status=2
+```
+
+The same declared-empty object key carried in the context file:
+
+```bash
+printf '%s' '{"verdict_json":""}' > "$HOME/.amplihack/runs/context.json"
+export AMPLIHACK_CONTEXT_FILE="$HOME/.amplihack/runs/context.json"
 source amplifier-bundle/tools/workflow_context.sh
 workflow_context_read verdict_json; echo "status=$?"
 # status=2
