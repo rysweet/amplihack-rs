@@ -76,7 +76,7 @@ steps:
       PUSH_RESULT=false
       PUSH_REASON="no_remote"
       if git remote get-url origin >/dev/null 2>&1; then
-        if git pull --rebase 2>/dev/null && git push 2>/dev/null; then
+        if workflow_pull_rebase 2>/dev/null && git push 2>/dev/null; then  # #2839: autostash the rewritten tracked report the staging helper left unstaged
           PUSH_RESULT=true
           PUSH_REASON="success"
         else

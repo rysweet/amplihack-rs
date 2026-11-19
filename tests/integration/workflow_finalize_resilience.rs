@@ -1555,7 +1555,7 @@ fn cleanup_push_logging_redacts_embedded_remote_credentials() {
     );
     assert!(
         command.contains("pull_output_file")
-            && command.contains("git --no-pager pull --rebase >\"$pull_output_file\" 2>&1"),
+            && command.contains("workflow_pull_rebase --no-pager >\"$pull_output_file\" 2>&1"),
         "cleanup push step must capture git pull output before logging it"
     );
     assert!(

@@ -32,6 +32,11 @@
 # entirely. unstage_root_run_reports_here is that correction on its own, for a
 # caller that has already staged.
 #
+# workflow_pull_rebase is the counterpart a publishing step needs after its
+# commit: the index correction above leaves a rewritten, tracked report on disk
+# as an unstaged modification, and a plain `git pull --rebase` refuses to run
+# with one. It lives here because this module creates that state.
+#
 # Contract: docs/reference/recipe-commit-hook-repair.md#staging-rules
 
 # workflow_stage_filter <top>: NUL-separated untracked paths (relative to
@@ -168,6 +173,27 @@ unstage_root_run_reports_here() {
   unstage_root_run_reports "$top" "$scratch" || rc=$?
   rm -rf -- "${scratch:?}"
   return "$rc"
+}
+
+# workflow_pull_rebase [git-option...]: `git pull --rebase` that survives the
+# one unstaged change the corrections above leave behind (#2839). A run/reports
+# file the repository already tracks and the run has since rewritten is reset in
+# the index and kept on disk, so the next pull sees an unstaged modification and
+# a plain `git pull --rebase` exits 128 with `cannot pull with rebase: You have
+# unstaged changes`. On the publishing path that refusal is a dead end rather
+# than a recoverable failure: push-failure-recovery is forbidden to stage,
+# commit, reset or rebase, and its gate fails on a dirty tracked file, so the
+# run ends needing a person. rebase.autoStash stashes the report, rebases and
+# reapplies it with its bytes intact; a clean autostash leaves no entry on
+# refs/stash, which is shared with every other worktree of the repository.
+#
+# Passed as `-c rebase.autoStash=true`, not `--autostash`: git older than 2.9
+# has neither, and ignores an unknown configuration key instead of failing on an
+# unknown option, so on such a git the caller behaves exactly as it did before.
+# Any arguments are given to git before `pull`, for a caller needing --no-pager.
+# Returns git's exit status; writes nothing of its own.
+workflow_pull_rebase() {
+  git -c rebase.autoStash=true "$@" pull --rebase
 }
 
 stage_workflow_changes() {

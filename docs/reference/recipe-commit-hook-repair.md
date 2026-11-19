@@ -38,6 +38,7 @@ This page concerns **git hooks**. It has nothing to do with Claude Code hooks
 - [Agent output contract](#agent-output-contract)
 - [Refusal rules](#refusal-rules)
 - [Staging rules](#staging-rules)
+  - [Pulling after staging](#pulling-after-staging)
 - [`hook_repair_run`](#hook_repair_run)
 - [`stage_workflow_changes`](#stage_workflow_changes)
 - [Result line](#result-line)
@@ -648,7 +649,67 @@ The `artifact-guard` calls are unchanged. `stage_workflow_changes` runs
 between the call before staging and the call after it at each step that stages
 the whole tree. Each step resolves `workflow_stage_changes.sh` through the same
 search chain as its other helpers and exits with status 2 when it is missing,
-rather than falling back to a raw add.
+rather than falling back to a raw add. This changes the posture of step 20b of
+`workflow-finalize`, which staged with a raw `git add -A` and is still the one
+step that warns and continues when its *runtime artifact* helper is missing: a
+missing staging helper now ends it with status 2 instead. Routing that exit to
+recovery rather than ending the step is tracked in #2855, together with the
+source file moved *into* `run/reports/` whose addition is dropped.
+
+### Pulling after staging
+
+Resetting a rewritten, tracked report in the index leaves it on disk as an
+unstaged modification. `git pull --rebase` refuses to run with one, exiting
+128 with `cannot pull with rebase: You have unstaged changes`, and on the
+publishing path that refusal is a dead end rather than a recoverable failure:
+step 18c of `workflow-pr-review` has `continue_on_error: true`, so
+[`push-failure-recovery`](recipe-push-failure-recovery.md) runs, but that
+recipe refuses to act while `git status --porcelain
+--untracked-files=no` is non-empty, forbids its agent to stage, commit, reset
+or rebase, and fails its gate on `uncommitted-changes`. The run would need a
+person.
+
+So every pull that can follow `stage_workflow_changes` within the same step
+goes through `workflow_pull_rebase`, a third entry point in the same helper —
+each of these steps has already sourced it to stage, and the helper is where
+the state being tolerated is created:
+
+| Recipe | Step |
+|---|---|
+| `workflow-pr-review` | `step-18c-push-feedback-changes` |
+| `workflow-finalize` | `step-20b-push-cleanup` |
+| `workflow-publish` | the outside-in retry loop in `step-16b` |
+| `consensus-publish` | `step9-commit` |
+| `consensus-pr-feedback` | the review-update push |
+
+```
+workflow_pull_rebase [git-option...]
+```
+
+runs `git -c rebase.autoStash=true <git-option...> pull --rebase`. Git stashes
+the report before the rebase and reapplies it afterwards, so the pull and the
+push succeed and the report keeps its bytes on disk. Arguments are passed to
+git before `pull`, which is how step 20b gets `--no-pager`. The setting is
+passed as `-c rebase.autoStash=true` rather than `--autostash` because git
+older than 2.9 has neither, and ignores an unknown configuration key instead
+of failing on an unknown option; on such a git the step behaves as it did
+before. A clean autostash leaves no entry on `refs/stash`, which matters
+because that stack is shared with every other worktree of the repository.
+
+The worktree is still left with the report modified, which is the residue
+described under [Residual risks](#residual-risks-and-detection-limits).
+`step-15-commit-push` of `workflow-publish` needs none of this: it
+fast-forwards or refuses by ancestry (#978) and never rebases.
+
+Two cases remain. If the upstream branch has rewritten the *same* report path
+since the local commit, reapplying the autostash conflicts: git completes the
+rebase and the push, says so on the step's output, and leaves conflict markers
+in the report and one `autostash` entry on the stash stack. Nothing can be
+published from it — the next `stage_workflow_changes` resets that path again —
+but the entry has to be dropped by hand. And a pull is not reached at all when
+the branch has no upstream; those paths push directly. Both end when the
+tracked reports' removal is committed once, after which the directory is
+untracked and none of this recurs.
 
 ## `hook_repair_run`
 
@@ -862,12 +923,10 @@ fails closed. This is tracked in #1675.
 
 A `run/reports/` file that the repository already tracks and that the run has
 since rewritten is reset in the index but kept on disk, so it stays as an
-unstaged modification. A step that pulls with `--rebase` after its commit,
-such as `workflow-pr-review` step 18c, then refuses with `cannot pull with
-rebase: You have unstaged changes`. This only arises in a repository already
-polluted by the behaviour #2839 fixed; the remedy is to commit the removal of
-the tracked reports once, after which the directory is untracked and the case
-does not recur.
+unstaged modification until someone commits the removal of the tracked
+reports. See [Pulling after staging](#pulling-after-staging) for what the
+publishing steps do with it; the residue itself is harmless, because the next
+run of the helper resets the same path again and no commit can carry it.
 
 ## Tests
 
@@ -923,6 +982,8 @@ has its own case in the shell test:
 | top-level `run/reports/` stays out of the index whether untracked, pre-staged, rewritten or in a repository with no commit; a staged deletion still commits | [Staging rules](#staging-rules) |
 | the TDD checkpoint's scoped add also keeps a pre-staged or rewritten tracked report out of the `wip:` commit, through `unstage_root_run_reports_here` | [Where it applies](#where-it-applies) |
 | `workflow-pr-review` step 18c, run whole, commits and pushes the reviewed source with no `run/reports/` path in the commit | [Staging rules](#staging-rules) |
+| step 18c on a branch that already tracks a rewritten report, with origin ahead: the pull autostashes, the rebase and push land, the report keeps its new bytes on disk and its committed bytes in `HEAD`, and the stash stack is left empty | [Pulling after staging](#pulling-after-staging) |
+| `workflow_pull_rebase` on its own, against a repository in that state and a plain `git pull --rebase` refusing the same fixture as a control | [Pulling after staging](#pulling-after-staging) |
 | step-15's commit hook never sees `PRE_COMMIT_ALLOW_NO_CONFIG`; a checkpoint's does without a config | [Where it applies](#where-it-applies) |
 | a kept `HR_DIR` holds no unredacted agent or evaluator log | [Evidence](#evidence) |
 

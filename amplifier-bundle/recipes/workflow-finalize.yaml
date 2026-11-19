@@ -201,7 +201,7 @@ steps:
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
         push_cmd=(git push ${remote_branch:+origin "HEAD:$remote_branch"})
         pull_output_file=$(mktemp -t step20b-cleanup-pull-XXXXXX)
-        if git --no-pager pull --rebase >"$pull_output_file" 2>&1; then
+        if workflow_pull_rebase --no-pager >"$pull_output_file" 2>&1; then  # #2839: autostash the rewritten tracked report the staging helper left unstaged
           redact_sensitive_output < "$pull_output_file"
           rm -f "$pull_output_file"
         else

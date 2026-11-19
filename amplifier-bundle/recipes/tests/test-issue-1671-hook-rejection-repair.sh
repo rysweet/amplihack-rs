@@ -733,6 +733,60 @@ section_a2() {
     if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; unstage_root_run_reports_here' _ "${STAGE_HELPER}" ) \
         >/dev/null 2>&1; then pass; else fail "A2(i): second run failed"; fi
     expect_eq "A2(i): idempotent" "$(git -C "${repo}" write-tree)" "${before}"
+
+    # (j) workflow_pull_rebase: what a publishing step calls after its commit
+    # (#2839). The corrections above leave a rewritten, tracked report on disk
+    # as an unstaged modification, and a plain `git pull --rebase` refuses to
+    # run with one. The plain pull is run first as a control, so a fixture that
+    # had stopped reproducing the refusing state could not let this pass
+    # vacuously. H1e runs the whole of step 18c; this covers the function for
+    # the four call sites that have no step-level behaviour test of their own.
+    local pull_branch upstream_head
+    dir="${WORK}/a2-pull"; reports_repo "${dir}"; repo="${dir}/repo"
+    pull_branch="feat/issue-1671-${dir##*/}"
+    write_reports "${repo}"
+    git -C "${repo}" add -f run/reports/step17e-fixture
+    git -C "${repo}" commit -qm "tracked pollution"
+    git -C "${repo}" push -q origin "HEAD:${pull_branch}" 2>/dev/null
+    # Origin moves ahead, so the pull must really rebase, not report up to date.
+    git clone -q "${dir}/origin.git" "${dir}/other" 2>/dev/null
+    configure_identity "${dir}/other"
+    git -C "${dir}/other" checkout -q "${pull_branch}"
+    printf 'upstream\n' > "${dir}/other/upstream.txt"
+    git -C "${dir}/other" add upstream.txt
+    git -C "${dir}/other" commit -qm "a commit only origin has"
+    git -C "${dir}/other" push -q 2>/dev/null
+    upstream_head="$(git -C "${dir}/other" rev-parse HEAD)"
+    # The state stage_workflow_changes leaves: report rewritten on disk, index at HEAD.
+    printf '{"synthetic": true, "ci": "fresh"}\n' > "${repo}/run/reports/step17e-fixture/results.json"
+    expect_eq "A2(j): the fixture leaves exactly one unstaged tracked change" \
+        "$(git -C "${repo}" status --porcelain --untracked-files=no)" \
+        " M run/reports/step17e-fixture/results.json"
+    if ( cd "${repo}" && git pull --rebase ) >/dev/null 2>&1; then
+        fail "A2(j): control — a plain git pull --rebase must refuse this state"
+    else pass; fi
+    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; workflow_pull_rebase' _ "${STAGE_HELPER}" ) \
+        >"${dir}/pull.out" 2>"${dir}/pull.err"; then pass; else
+        fail "A2(j): workflow_pull_rebase must survive it"; sed 's/^/    | /' "${dir}/pull.err" >&2
+    fi
+    expect_eq "A2(j): the commit only origin had is now an ancestor" \
+        "$(git -C "${repo}" merge-base --is-ancestor "${upstream_head}" HEAD && echo yes || echo no)" "yes"
+    expect_eq "A2(j): the report keeps its rewritten bytes" \
+        "$(cat "${repo}/run/reports/step17e-fixture/results.json")" '{"synthetic": true, "ci": "fresh"}'
+    expect_eq "A2(j): the report is still the only unstaged tracked change" \
+        "$(git -C "${repo}" status --porcelain --untracked-files=no)" \
+        " M run/reports/step17e-fixture/results.json"
+    expect_eq "A2(j): nothing is staged by the pull" \
+        "$(git -C "${repo}" diff --cached --name-only)" ""
+    # refs/stash is shared with every other worktree of the repository, so a
+    # clean autostash must leave no entry on it.
+    expect_eq "A2(j): a clean autostash leaves the stash stack empty" \
+        "$(git -C "${repo}" stash list)" ""
+    # Step 20b passes --no-pager; it must reach git as a git option, before `pull`.
+    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; workflow_pull_rebase --no-pager' _ "${STAGE_HELPER}" ) \
+        >/dev/null 2>"${dir}/pull2.err"; then pass; else
+        fail "A2(j): workflow_pull_rebase --no-pager must work"; sed 's/^/    | /' "${dir}/pull2.err" >&2
+    fi
 }
 
 # =============================================================================
@@ -1916,8 +1970,8 @@ section_h_dynamic() {
     # to the fixture's origin are the real ones.
     #
     # A report that is already tracked and has since been rewritten is left as
-    # an unstaged modification, which `git pull --rebase` on this path refuses;
-    # that shape is covered where no pull follows, by H1c and by A2(e).
+    # an unstaged modification; that shape reaches the pull, and H1e below runs
+    # it through this same step with origin ahead.
     dir="${WORK}/h1d-pr-review-reports"
     new_repo "${dir}"
     mkdir -p "${dir}/repo/run/reports/new" "${dir}/repo/run/reports/loose"
@@ -1965,6 +2019,67 @@ section_h_dynamic() {
     expect_eq "H1d: the push landed" \
         "$(git -C "${dir}/origin.git" rev-parse "refs/heads/feat/issue-1671-${dir##*/}")" \
         "$(git -C "${dir}/repo" rev-parse HEAD)"
+
+    # H1e step-18c on a branch that already tracks a run/reports file -- the
+    # shape a repository polluted before #2839 is in. The helper resets the
+    # rewritten report in the index and leaves the new bytes on disk, so the
+    # step reaches its `git pull --rebase` with an unstaged tracked change. A
+    # plain pull refuses that ("cannot pull with rebase: You have unstaged
+    # changes") and the step dead-ends: step 18c continues on error into
+    # push-failure-recovery, which is forbidden to stage, commit or reset and
+    # whose gate fails on a dirty tracked file, so nothing downstream can clear
+    # it. The step pulls through workflow_pull_rebase instead, which stashes the
+    # report, rebases and puts it back. Origin is moved ahead first, so the pull
+    # must really rebase rather than report the branch up to date.
+    local branch upstream_commit tracked_blob
+    dir="${WORK}/h1e-pr-review-tracked-report"
+    new_repo "${dir}"
+    branch="feat/issue-1671-${dir##*/}"
+    mkdir -p "${dir}/repo/run/reports"
+    printf '{"round":1}\n' > "${dir}/repo/run/reports/results.json"
+    git -C "${dir}/repo" add -f run/reports/results.json
+    git -C "${dir}/repo" commit -qm "report published before #2839"
+    git -C "${dir}/repo" push -q origin "HEAD:${branch}" 2>/dev/null
+    tracked_blob="$(git -C "${dir}/repo" rev-parse "HEAD:run/reports/results.json")"
+    git clone -q "${dir}/origin.git" "${dir}/other" 2>/dev/null
+    configure_identity "${dir}/other"
+    git -C "${dir}/other" checkout -q "${branch}"
+    printf 'upstream\n' > "${dir}/other/upstream.txt"
+    git -C "${dir}/other" add upstream.txt
+    git -C "${dir}/other" commit -qm "a commit only origin has"
+    git -C "${dir}/other" push -q 2>/dev/null
+    upstream_commit="$(git -C "${dir}/other" rev-parse HEAD)"
+    # This round rewrites the tracked report and edits the file under review.
+    printf '{"round":2}\n' > "${dir}/repo/run/reports/results.json"
+    printf 'reviewed\n' > "${dir}/repo/src.txt"
+    run_step "${dir}" "${STEP_18C}"
+    expect_eq "H1e: exit 0" "$(rc_of "${dir}")" "0"
+    expect_file_contains "H1e: the step reports the push" "${dir}/step.out" "=== Changes Pushed ==="
+    expect_eq "H1e: the reviewed file is committed" "$(git -C "${dir}/repo" show HEAD:src.txt 2>/dev/null)" "reviewed"
+    expect_eq "H1e: no report in the review-feedback commit" \
+        "$(git -C "${dir}/repo" show --name-only --no-renames --format= HEAD | grep -c '^run/reports/' || true)" "0"
+    expect_eq "H1e: the tracked report keeps its committed bytes" \
+        "$(git -C "${dir}/repo" rev-parse "HEAD:run/reports/results.json")" "${tracked_blob}"
+    expect_eq "H1e: the rewritten report bytes survive the autostash" \
+        "$(cat "${dir}/repo/run/reports/results.json")" '{"round":2}'
+    expect_eq "H1e: the rebase integrated the commit only origin had" \
+        "$(git -C "${dir}/repo" merge-base --is-ancestor "${upstream_commit}" HEAD && echo yes || echo no)" "yes"
+    expect_eq "H1e: the push landed" \
+        "$(git -C "${dir}/origin.git" rev-parse "refs/heads/${branch}")" \
+        "$(git -C "${dir}/repo" rev-parse HEAD)"
+    # The report stays modified on disk: that is the documented residue, and it
+    # is exactly the predicate push-failure-recovery's gate reads as
+    # tracked_dirty. Nothing else tracked may be left dirty.
+    expect_eq "H1e: the report is the only tracked file left dirty" \
+        "$(git -C "${dir}/repo" status --porcelain --untracked-files=no)" " M run/reports/results.json"
+    expect_eq "H1e: nothing is left staged after the commit" \
+        "$(git -C "${dir}/repo" diff --cached --name-only)" ""
+    # The stash stack is shared with every other worktree of the repository, so
+    # a clean autostash must leave no entry behind on it.
+    expect_eq "H1e: the autostash left no entry on the stash stack" \
+        "$(git -C "${dir}/repo" stash list)" ""
+    expect_file_contains "H1e: the rewritten tracked report is reported as unstaged" "${dir}/step.err" \
+        "stage_workflow_changes: unstaged run/reports/results.json"
 
     # H1b TDD checkpoint: the guard refuses what the round staged; not retried.
     dir="${WORK}/h1b-tdd-guard-after-round"
