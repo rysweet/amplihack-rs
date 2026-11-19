@@ -85,7 +85,7 @@ mod unix {
                 settings,
                 store.as_ref(),
                 default.as_ref(),
-                parsed.prompt,
+                parsed,
             );
         };
         let Some(inherited) = inherited.to_str().map(str::to_string) else {
@@ -120,13 +120,7 @@ mod unix {
         // A profile step's takeover check needs auto-switch: `rerun::run`.
         // The rotator never changes an inherited profile's login, so no
         // login-change wait applies to it either (issue #2731).
-        let waiter = Waiter::new(
-            wait,
-            watch,
-            parsed.prompt,
-            Box::new(|| false),
-            Box::new(|| false),
-        );
+        let waiter = Waiter::new(wait, watch, parsed, Box::new(|| false), Box::new(|| false));
         auto_switch::rerun::supervise(&store, name, waiter)
     }
 }

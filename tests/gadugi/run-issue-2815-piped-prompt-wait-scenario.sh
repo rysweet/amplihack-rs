@@ -37,6 +37,10 @@
 #      driven directly, which is the smallest shape that reproduces the bug.
 #   2. a held-open stdin pipe with the prompt in argv: the #1618 guard, which
 #      copies nothing.
+#  2b. a held-open stdin pipe with a bare `-p`, which the supervisor does
+#      copy: the same guard on the capture path (issue #2816). The step must
+#      end with its limit result and a named reason instead of joining a
+#      copier that can never finish.
 #   3. a one-step recipe through `amplihack recipe run` and the pinned recipe
 #      runner, which is the shape the issue's Check names. The runner builds
 #      its own argv (`--system-prompt-file F -p --add-dir . --model M`) and
@@ -320,6 +324,45 @@ if mkfifo -- "$FIFO" 2>/dev/null && exec 9<>"$FIFO"; then
   fi
 else
   fl held_open_stdin_does_not_hang "could not create or hold open a FIFO for the held-open case"
+fi
+
+# --- case 2b: a held-open pipe the supervisor DID copy still does not hang --
+# Issue #2816. Case 2 keeps the prompt in argv, so nothing is copied and the
+# copier never runs. This is the other half: a bare `-p`, so the supervisor
+# copies stdin, and a caller that holds the pipe open and never writes to it.
+# The agent is told not to read its stdin ($SKIP_STDIN), which is what makes
+# the shape reachable — a launch whose prompt this version's option table
+# misread, or any caller that leaves an idle pipe on fd 0.
+#
+# The copier then ends only when that caller closes the pipe, and nothing
+# promises it ever will. The step must still finish: it waits out its reset,
+# finds there is no whole copy of a prompt to give a retry, refuses the
+# retry by name and ends with the limited attempt's own result. Before
+# #2816 the supervisor joined the copier here and blocked for ever, after a
+# full reset wait, deaf to SIGTERM and with nothing in the log saying what it
+# was waiting for.
+rm -f -- "$RECORDS"/count.* "$RECORDS"/call.* "$RECORDS"/stdin.* 2>/dev/null
+FIFO2="$WORK/held-copied.fifo"
+if mkfifo -- "$FIFO2" 2>/dev/null && exec 8<>"$FIFO2"; then
+  # The ceiling is a hang detector and nothing else, as in case 2.
+  SKIP_STDIN=1 scenario_env timeout 120 "$BIN" claude --subprocess-safe -- -p \
+    <"$FIFO2" >"$WORK/held2.out" 2>"$WORK/held2.err"
+  HELD2_RC=$?
+  exec 8>&-
+  HELD2_CALLS="$(cat "$RECORDS/count.0" 2>/dev/null || echo 0)"
+  HELD2_SKIP="$(count_in 'skipped reason=piped_prompt' "$WORK/held2.err")"
+  HELD2_WHY="$(count_in 'still arriving on a pipe its caller has not closed' "$WORK/held2.err")"
+  HELD2_RESUME="$(count_in 'usage_limit_wait resume attempt=2' "$WORK/held2.err")"
+  if [ "$HELD2_RC" -eq 1 ] && [ "$HELD2_CALLS" = 1 ] && [ "$HELD2_SKIP" -ge 1 ] \
+     && [ "$HELD2_WHY" -ge 1 ] && [ "$HELD2_RESUME" = 0 ]; then
+    pass held_open_copied_pipe_does_not_hang \
+      "a captured pipe nobody closes ended the step with its limit result and a named reason"
+  else
+    fl held_open_copied_pipe_does_not_hang \
+      "rc=$HELD2_RC calls=$HELD2_CALLS skipped=$HELD2_SKIP reason=$HELD2_WHY resume=$HELD2_RESUME (124 is the 120 s timeout); held2.err tail: $(tail -n 8 "$WORK/held2.err" 2>/dev/null | tr '\n' ' ')"
+  fi
+else
+  fl held_open_copied_pipe_does_not_hang "could not create or hold open a FIFO for the captured held-open case"
 fi
 
 # --- case 3: the same limit in a real recipe step, through the runner ------

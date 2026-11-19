@@ -252,8 +252,13 @@ fn the_age_rule_applies_only_to_names_that_parse() {
 //
 // Contract: `capture_prompt(dir, source)` takes the rerun scratch directory
 // and a duplicate of the step's stdin (a pipe). It returns
-// `RerunStdin::Captured` once the copier runs, and `RerunStdin::Pipe` (with
-// no byte of `source` consumed) when the capture file cannot be created.
+// `RerunStdin::Captured`, or `RerunStdin::Pipe` when the capture file
+// cannot be created.
+//
+// Nothing is read off `source` until `attempt_started`, which the
+// supervisor calls once the first attempt's child holds the other end of
+// the prompt pipe (issue #2816). These tests therefore call it where a
+// supervised step would, right after `for_attempt(1)`.
 
 /// A prompt with NUL bytes, invalid UTF-8 and more bytes than a pipe holds.
 fn awkward_prompt() -> Vec<u8> {
@@ -274,6 +279,33 @@ fn fed_pipe(bytes: Vec<u8>) -> (fs::File, std::thread::JoinHandle<()>) {
 
 fn capture_file(dir: &Path) -> PathBuf {
     dir.join(format!("{}-0.in", std::process::id()))
+}
+
+/// The whole stored prompt, asking again until the copier has settled.
+///
+/// `rerun_refused` answers for the instant it is asked: it refuses while
+/// the prompt is still arriving and allows once the copier has reached the
+/// end of it, and a refusal is deliberately not recorded so that a later
+/// call can allow. In a supervised step that later call comes after an
+/// attempt has run and usually after a wait of hours; in a test it comes at
+/// once, within microseconds of this thread closing the writer, and two
+/// things are unsettled there. The copier may not have been scheduled yet,
+/// and the kernel may still count a writer this test has closed, because
+/// every `fork` holds a copy of each of its parent's descriptors until it
+/// `exec`s and these tests run beside others that spawn processes.
+///
+/// So the question is asked again, which is the contract rather than a way
+/// round it. Nothing is timed: the loop ends when the answer changes, and
+/// the cap is a hang detector, so a copier that never settles fails this
+/// test instead of hanging the suite.
+fn settled(policy: &mut RerunStdin) -> Vec<u8> {
+    for _ in 0..1_000_000 {
+        if policy.rerun_refused().is_none() {
+            return cat(policy.for_attempt(2).unwrap());
+        }
+        std::thread::yield_now();
+    }
+    panic!("the copier never settled");
 }
 
 /// A capture sink that refuses every write, standing in for the `ENOSPC`
@@ -299,7 +331,9 @@ fn every_attempt_of_a_captured_prompt_reads_the_same_bytes_from_offset_zero() {
     let mut policy = capture_prompt(&dir, source);
     assert!(matches!(policy, RerunStdin::Captured(_)), "{policy:?}");
     // Attempt 1 reads the pipe while the copier is still pumping.
-    assert_eq!(cat(policy.for_attempt(1).unwrap()), prompt, "attempt 1");
+    let first = policy.for_attempt(1).unwrap();
+    policy.attempt_started();
+    assert_eq!(cat(first), prompt, "attempt 1");
     feeder.join().unwrap();
     for n in [2, 3, 4] {
         assert_eq!(cat(policy.for_attempt(n).unwrap()), prompt, "attempt {n}");
@@ -314,9 +348,11 @@ fn an_attempt_that_never_reads_its_prompt_does_not_stop_the_capture() {
     let mut policy = capture_prompt(&dir, source);
     // The child exits without reading: its stdin is closed at once, so the
     // copier's writes to it fail with EPIPE and are absorbed.
-    drop(policy.for_attempt(1).unwrap());
+    let first = policy.for_attempt(1).unwrap();
+    policy.attempt_started();
+    drop(first);
     feeder.join().unwrap();
-    assert_eq!(cat(policy.for_attempt(2).unwrap()), prompt);
+    assert_eq!(settled(&mut policy), prompt);
 }
 
 #[test]
@@ -327,7 +363,9 @@ fn the_capture_file_is_private_named_by_pid_and_removed_on_drop() {
     let path = capture_file(&dir);
     assert_eq!(mode(&path), 0o600);
     assert!(fs::symlink_metadata(&path).unwrap().is_file());
-    cat(policy.for_attempt(1).unwrap());
+    let first = policy.for_attempt(1).unwrap();
+    policy.attempt_started();
+    cat(first);
     feeder.join().unwrap();
     assert!(path.exists(), "kept for reruns until the step is done");
     drop(policy);
@@ -399,12 +437,21 @@ fn a_failed_copy_is_an_error_for_a_rerun_never_a_partial_prompt() {
     // than after it. Nothing here is timed: the copier publishes the loss
     // before it drops the attempt's pipe, so draining that pipe to its end
     // puts this test after the publication rather than beside it.
-    assert_eq!(cat(policy.for_attempt(1).unwrap()), b"");
+    let first = policy.for_attempt(1).unwrap();
+    policy.attempt_started();
+    assert_eq!(cat(first), b"");
     assert!(policy.capture_lost(), "published without a join");
     // The refusal says why, so a caller is never left to guess.
     let why = policy.for_attempt(2).unwrap_err().to_string();
-    assert!(why.contains("was not stored whole"), "{why}");
+    assert!(why.contains("could not be read to its end"), "{why}");
     assert!(why.contains("attempt 2"), "{why}");
+    // The supervisor asks the same question without building an `Stdio`,
+    // and is given the same cause (issue #2816).
+    let refused = policy.rerun_refused().expect("a rerun must be refused");
+    assert!(
+        refused.contains("could not be read to its end"),
+        "{refused}"
+    );
 }
 
 /// Issue #2816: a read of the source that fails is published as a prompt
@@ -424,8 +471,10 @@ fn a_failed_source_read_is_published_as_a_prompt_cut_short() {
         .open("/dev/null")
         .unwrap();
     let mut policy = capture_prompt(&dir, source);
+    let first = policy.for_attempt(1).unwrap();
+    policy.attempt_started();
     assert_eq!(
-        cat(policy.for_attempt(1).unwrap()),
+        cat(first),
         b"",
         "the attempt is given the end of file it cannot tell from a prompt"
     );
@@ -583,42 +632,136 @@ fn a_lost_capture_is_published_while_the_copy_is_still_running() {
     assert!(rest.is_empty(), "the block was all that was written");
 }
 
-/// Issue #2816: `hand_back` is only for the one kind of stdin the
-/// supervisor takes bytes off. For every other kind fd 0 is the step's own
-/// descriptor, untouched, and handing it back is nothing at all.
+/// Issue #2816: standing down leaves fd 0 whole, for every kind of stdin.
+///
+/// The plain launch that follows a stand-down inherits this process's own
+/// fd 0. Every kind but a capture never touched it; a capture has not
+/// either, because the copier is armed by the first attempt and a
+/// supervisor stands down before one has run. `stand_down` is the check
+/// that says so, and it neither reads fd 0 nor replaces it.
 #[test]
-fn handing_stdin_back_does_nothing_when_nothing_was_taken() {
+fn standing_down_leaves_fd_zero_alone() {
+    let (_t, dir) = rerun();
     let before = fs::read_link("/proc/self/fd/0").ok();
     let file = fs::File::open("/dev/null").unwrap();
-    for mut policy in [
+    let prompt = b"the piped prompt".to_vec();
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let mut spare = fs::File::from(OwnedFd::from(reader));
+    let source = spare.try_clone().unwrap();
+    writer.write_all(&prompt).unwrap();
+    drop(writer);
+    let captured = capture_prompt(&dir, source);
+    assert!(captured.is_captured(), "{captured:?}");
+
+    for policy in [
         RerunStdin::Inherit,
         RerunStdin::Pipe,
         RerunStdin::Null,
         RerunStdin::File { file, start: 0 },
+        captured,
     ] {
-        assert!(!policy.was_drained(), "{policy:?}");
         assert!(!policy.capture_lost(), "{policy:?}");
-        policy.hand_back().unwrap();
+        policy
+            .stand_down()
+            .unwrap_or_else(|e| panic!("{policy:?}: {e}"));
     }
     assert_eq!(
         fs::read_link("/proc/self/fd/0").ok(),
         before,
-        "fd 0 was replaced for a stdin that was never drained"
+        "fd 0 was replaced by a stand-down"
     );
+    // And the prompt is still on the pipe for the plain launch to read: the
+    // copier never started, so not one byte of it was taken.
+    let mut left = Vec::new();
+    spare.read_to_end(&mut left).unwrap();
+    assert_eq!(left, prompt, "the whole prompt is still there");
 }
 
-/// Issue #2816: a capture says so, which is how the supervisor knows that
-/// standing down would hand a plain launch a stdin it has already eaten.
+/// Issue #2816: once the copier has started, standing down is refused
+/// rather than allowed to shorten the step's prompt.
+///
+/// No supervisor path reaches this — the copier is armed only after the
+/// first attempt has spawned, and a stand-down only happens before that —
+/// and this is the guard that keeps a new one from silently handing a plain
+/// launch a prompt that is short by whatever the copier read.
 #[test]
-fn a_capture_reports_that_stdin_was_drained() {
+fn standing_down_after_the_copier_started_is_refused() {
     let (_t, dir) = rerun();
     let (source, feeder) = fed_pipe(b"the piped prompt".to_vec());
     let mut policy = capture_prompt(&dir, source);
-    assert!(policy.was_drained(), "{policy:?}");
-    assert!(!policy.capture_lost(), "{policy:?}");
+    assert!(policy.stand_down().is_ok(), "nothing taken yet");
+    let first = policy.for_attempt(1).unwrap();
+    policy.attempt_started();
+    let e = policy.stand_down().expect_err("fd 0 is short by now");
+    assert!(e.to_string().contains("cannot be put back"), "{e}");
+    drop(first);
     feeder.join().unwrap();
-    assert_eq!(cat(policy.for_attempt(2).unwrap()), b"the piped prompt");
+}
+
+/// Issue #2816: a capture says so, which is how the supervisor knows a
+/// rerun can be given this step's prompt again.
+#[test]
+fn a_capture_reports_itself_and_replays_the_whole_prompt() {
+    let (_t, dir) = rerun();
+    let (source, feeder) = fed_pipe(b"the piped prompt".to_vec());
+    let mut policy = capture_prompt(&dir, source);
+    assert!(policy.is_captured(), "{policy:?}");
+    assert!(!policy.capture_lost(), "{policy:?}");
+    let first = policy.for_attempt(1).unwrap();
+    policy.attempt_started();
+    drop(first);
+    feeder.join().unwrap();
+    assert_eq!(settled(&mut policy), b"the piped prompt");
     assert!(!policy.capture_lost(), "a whole capture is not lost");
+}
+
+/// Issue #2816: a prompt still arriving refuses the rerun, and is never
+/// waited on.
+///
+/// The copier ends at the end of the source, and the source is a pipe
+/// belonging to whoever launched the step: a caller that holds it open for
+/// ever — a prompt this version's option table misread as stdin's, or a
+/// control channel — would make a join a wait with no end, after a usage
+/// limit and a reset wait had already passed. Issue #1618's rule is that a
+/// supervised step never waits on such a pipe, and this is that rule on the
+/// capture path.
+///
+/// Nothing here is timed, and nothing depends on when the copier runs: the
+/// writer is this test's own, so "still arriving" and "finished" are states
+/// it sets rather than moments it waits for. The refusal is not recorded
+/// either, which is what lets the rerun the wait earns go ahead once the
+/// caller has finished.
+#[test]
+fn a_prompt_still_arriving_refuses_a_rerun_rather_than_waiting_on_it() {
+    let (_t, dir) = rerun();
+    let prompt = b"the piped prompt, in two halves".to_vec();
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let mut policy = capture_prompt(&dir, fs::File::from(OwnedFd::from(reader)));
+    let first = policy.for_attempt(1).unwrap();
+    policy.attempt_started();
+    writer.write_all(&prompt[..10]).unwrap();
+    // The first attempt has exited: its end of the prompt pipe is closed,
+    // as it would be once the supervisor is back from running it.
+    drop(first);
+
+    // The caller still holds the pipe, so there is no whole copy to replay
+    // and no telling whether there ever will be. The rerun is refused, by
+    // name, and this returns rather than waiting for a writer that may
+    // never write again.
+    let why = policy.rerun_refused().expect("a rerun must be refused");
+    assert!(why.contains("still arriving"), "{why}");
+    let e = policy.for_attempt(2).unwrap_err().to_string();
+    assert!(e.contains("still arriving"), "{e}");
+    assert!(
+        !policy.capture_lost(),
+        "nothing is lost: it is not finished"
+    );
+
+    // The caller finishes, as it would during a wait of hours. The refusal
+    // was never recorded, so the rerun goes ahead on the whole prompt.
+    writer.write_all(&prompt[10..]).unwrap();
+    drop(writer);
+    assert_eq!(settled(&mut policy), prompt);
 }
 
 /// The capture is secondary to the attempt in hand: a file that cannot be
@@ -746,7 +889,9 @@ fn an_attempt_gets_only_its_own_stdin_and_cannot_write_to_it() {
     let (source, feeder) = fed_pipe(prompt.clone());
     let mut policy = capture_prompt(&dir, source);
     for n in 1..=2 {
-        let fds = list(policy.for_attempt(n).unwrap());
+        let stdin = policy.for_attempt(n).unwrap();
+        policy.attempt_started();
+        let fds = list(stdin);
         let extra: Vec<&String> = fds.difference(&baseline).collect();
         assert!(extra.is_empty(), "attempt {n} inherited {extra:?}");
     }

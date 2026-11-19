@@ -9,12 +9,14 @@
 //! except in the held-open case, which has no prompt to read.
 //!
 //! Issue #2816 adds the cases the capture path reaches on its own: a first
-//! attempt that never starts, after the copier has taken the prompt off
-//! stdin, with the copy usable and with it lost; a captured pipe the caller
-//! never closes; a capture lost before the limit, which must refuse the
-//! rerun rather than wait first and fail after; and a source the copier
-//! cannot read, which reaches the attempt as a clean end of file and must
-//! not pass for a prompt it was given whole.
+//! attempt that never starts, which must leave fd 0 whole for the plain
+//! launch and say nothing about a step that never ran; a captured pipe the
+//! caller never closes, with a limit and without one; a capture lost before
+//! the limit, which must refuse the rerun rather than wait first and fail
+//! after; a source the copier cannot read, which reaches the attempt as a
+//! clean end of file and must not pass for a prompt it was given whole;
+//! and a `--input-format` channel, which is not a prompt and is not
+//! copied.
 
 #![cfg(unix)]
 
@@ -268,9 +270,19 @@ fn a_first_attempt_that_cannot_start_hands_the_plain_launch_the_whole_prompt() {
         "the plain launch read the whole prompt, byte for byte\n{}",
         describe(&out)
     );
+    let err = text(&out.stderr);
     assert!(
-        text(&out.stderr).contains("running it once"),
+        err.contains("running it once"),
         "the stand-down was reported\n{}",
+        describe(&out)
+    );
+    // Nothing was read off fd 0, so nothing may be said about a step that
+    // stopped reading: no attempt ever ran. Before this the copier had
+    // already started, met the dropped read end of the first attempt's
+    // pipe, and said the step "ran on part of its task".
+    assert!(
+        !err.contains("stopped reading its prompt"),
+        "no attempt ran, so nothing stopped reading\n{}",
         describe(&out)
     );
     assert_eq!(
@@ -280,32 +292,40 @@ fn a_first_attempt_that_cannot_start_hands_the_plain_launch_the_whole_prompt() {
     );
 }
 
-/// Issue #2816: the same stand-down with a capture that cannot be replayed.
+/// Issue #2816: a stand-down costs the step nothing, even when its stdin
+/// cannot be read at all.
 ///
-/// The step's stdin here is the *write* end of a pipe. It is a pipe, so a
-/// copy is started, and every read of it fails with `EBADF`, so no prompt
-/// is ever stored. The step is then not run at all: a plain launch would
-/// read a stdin the copier has already touched, and a prompt that is short
-/// is a task that is wrong. The failure names the cause.
+/// The step's stdin here is the *write* end of a pipe: a pipe, so a capture
+/// is set up, and unreadable, so a copier would fail on its first read. No
+/// copier runs, because none is started until the first attempt is spawned
+/// and this one never is. So fd 0 is exactly what the caller gave the step,
+/// and the plain launch runs on it — which is what this launch did before
+/// any of this existed.
 #[test]
-fn a_stand_down_with_an_unusable_capture_refuses_to_run_the_step() {
+fn a_stand_down_with_an_unreadable_stdin_still_runs_the_step() {
     let f = Fixture::new();
     let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
     let (_read, write) = std::io::pipe().expect("a pipe");
     c.env("AMPLIHACK_TEST_FAIL_ATTEMPT", "1")
+        // The plain launch is the only run, so it must not meet a limit.
         .env("LIMIT_CALLS", "0")
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(write)))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let child = c.spawn().expect("start amplihack");
-    let out = finish(child, "the step hung after an unusable capture");
+    let out = finish(child, "the step hung after an unreadable stdin");
 
-    assert!(!out.status.success(), "{}", describe(&out));
-    assert_eq!(f.count("0"), 0, "the step never ran\n{}", describe(&out));
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 1, "one plain launch\n{}", describe(&out));
     let err = text(&out.stderr);
     assert!(
-        err.contains("cannot be given to a plain launch"),
-        "the refusal names its cause\n{}",
+        err.contains("running it once"),
+        "the stand-down was reported\n{}",
+        describe(&out)
+    );
+    assert!(
+        !err.contains("stopped reading its prompt"),
+        "no attempt ran, so nothing stopped reading\n{}",
         describe(&out)
     );
     assert_eq!(
@@ -346,6 +366,130 @@ fn a_held_open_captured_pipe_does_not_hang_the_step() {
         leftovers(&f),
         Vec::<String>::new(),
         "no capture left behind"
+    );
+}
+
+/// Issue #2816: a captured pipe the caller never closes ends the step with
+/// its limit result, and says why.
+///
+/// `a_held_open_captured_pipe_does_not_hang_the_step` above is the same
+/// shape without a limit, and it never reaches the copier at all. This one
+/// does: the attempt reports a usage limit, the wait runs to the stated
+/// reset, and only then is the stored prompt needed. There is none — the
+/// caller is still holding the pipe and has written nothing — and the
+/// copier would reach the end of it only when that caller closes it, which
+/// may be never.
+///
+/// So the retry is refused rather than announced, the step ends with the
+/// attempt's own result, and the reason is both logged (`skipped
+/// reason=piped_prompt`) and named in full on stderr. Before this the
+/// supervisor joined the copier here and blocked for ever, after a full
+/// reset wait, deaf to SIGTERM and with no line saying what it was waiting
+/// for. This is issue #1618's rule — a supervised step never waits on a
+/// pipe nobody closes — on the capture path.
+#[test]
+fn a_held_open_captured_pipe_with_a_limit_ends_with_the_limit_result() {
+    let f = Fixture::new();
+    let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
+    // The agent is told not to read its stdin: the caller never writes one.
+    c.env("SKIP_STDIN", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().expect("start amplihack");
+    // Held open for the whole of the step, never written and never closed.
+    let held = child.stdin.take();
+    let out = finish(child, "the step hung joining the copier after its wait");
+    drop(held);
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the limit result is passed up\n{}",
+        describe(&out)
+    );
+    assert_eq!(f.count("0"), 1, "no rerun\n{}", describe(&out));
+    let err = text(&out.stderr);
+    assert!(
+        err.contains("no retry after the wait"),
+        "the refusal is on stderr\n{}",
+        describe(&out)
+    );
+    assert!(
+        err.contains("still arriving on a pipe its caller has not closed"),
+        "the refusal names its cause\n{}",
+        describe(&out)
+    );
+    assert!(
+        text(&out.stdout).contains("attempt 1 output"),
+        "the attempt's held-back output is still printed\n{}",
+        describe(&out)
+    );
+    let ev = events(&out);
+    assert_eq!(ev.len(), 3, "{ev:?}");
+    assert!(ev[0].starts_with("start reason=usage_limit "), "{ev:?}");
+    assert_eq!(ev[1], "end reason=reset reached");
+    assert_eq!(
+        ev[2],
+        "skipped reason=piped_prompt",
+        "no retry is announced for an attempt that cannot run\n{}",
+        describe(&out)
+    );
+    assert_eq!(
+        leftovers(&f),
+        Vec::<String>::new(),
+        "no capture left behind"
+    );
+}
+
+/// Issue #2816: a `--input-format` channel on stdin is not a prompt and is
+/// not copied.
+///
+/// `-p --input-format stream-json` makes stdin a control channel that is
+/// read for as long as the session; amplihack's own usage request is one
+/// (`usage_request::ARGS`). Its caller holds it open on purpose, so there
+/// is no end of it to copy, and replaying a session's history to a retry
+/// would not be replaying a prompt. Such a step therefore keeps the conduct
+/// every piped prompt had before #2815: no capture file, no wait, and the
+/// limit result passed up with `skipped reason=piped_prompt`.
+#[test]
+fn an_input_format_channel_on_stdin_is_not_captured() {
+    let f = Fixture::new();
+    let mut c = f.cmd(&[
+        "claude",
+        "--subprocess-safe",
+        "--",
+        "-p",
+        "--input-format",
+        "stream-json",
+    ]);
+    c.env("SKIP_STDIN", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().expect("start amplihack");
+    // A channel its caller holds open, as a real one is.
+    let held = child.stdin.take();
+    let out = finish(child, "the step hung on a stream-json channel");
+    drop(held);
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the limit result is passed up\n{}",
+        describe(&out)
+    );
+    assert_eq!(f.count("0"), 1, "no rerun\n{}", describe(&out));
+    assert_eq!(
+        events(&out),
+        vec!["skipped reason=piped_prompt".to_string()],
+        "no wait was ever started\n{}",
+        describe(&out)
+    );
+    assert_eq!(
+        leftovers(&f),
+        Vec::<String>::new(),
+        "nothing was copied aside"
     );
 }
 
@@ -401,6 +545,73 @@ fn an_attempt_that_succeeds_on_a_cut_short_prompt_does_not_make_the_step_succeed
     assert!(
         text(&out.stdout).contains("attempt 1 output"),
         "the attempt's own output is still printed\n{}",
+        describe(&out)
+    );
+    assert_eq!(
+        leftovers(&f),
+        Vec::<String>::new(),
+        "no capture left behind"
+    );
+}
+
+/// Issue #2816: a capture file that cannot be written says why, and the
+/// attempt in hand still gets its whole prompt.
+///
+/// `AMPLIHACK_TEST_REFUSE_CAPTURE_WRITE=1` gives the copier a read-only
+/// description of the capture file, so every write to it fails as a full
+/// disk, a quota or a failing device would. None of those can be arranged
+/// from outside a test, and the failure is invisible from the step's own
+/// result: the prompt still reaches the attempt whole, because the capture
+/// is secondary to the attempt in hand.
+///
+/// What is left is a step that ends with `skipped reason=piped_prompt` —
+/// and before this change that reason was all an operator ever saw. The
+/// error was recorded on the copier's own stack and read only by a join
+/// that the early refusal pre-empts, so a full disk and a prompt that was
+/// never meant to be copied looked exactly alike. Now the copier names its
+/// error the moment it meets it, as a prompt cut short already did.
+#[test]
+fn a_capture_file_that_cannot_be_written_names_its_error() {
+    let f = Fixture::new();
+    let bytes = prompt();
+    let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
+    c.env("AMPLIHACK_TEST_REFUSE_CAPTURE_WRITE", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().expect("start amplihack");
+    let feeder = feed(&mut child, bytes.clone());
+    let out = finish(child, "the step hung on a capture it could not write");
+    feeder.join().unwrap();
+
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the limit result is passed up\n{}",
+        describe(&out)
+    );
+    assert_eq!(f.count("0"), 1, "no rerun\n{}", describe(&out));
+    assert_eq!(
+        f.call("0", 1)["STDIN"],
+        sha256_hex(&bytes),
+        "the attempt still read the whole prompt, byte for byte\n{}",
+        describe(&out)
+    );
+    let err = text(&out.stderr);
+    assert!(
+        err.contains("could not be stored for a rerun ("),
+        "the copier names its error\n{}",
+        describe(&out)
+    );
+    assert!(
+        !err.contains("could not be read to its end"),
+        "the prompt itself was read fine\n{}",
+        describe(&out)
+    );
+    assert_eq!(
+        events(&out),
+        vec!["skipped reason=piped_prompt".to_string()],
+        "no wait was ever started\n{}",
         describe(&out)
     );
     assert_eq!(

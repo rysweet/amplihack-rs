@@ -885,10 +885,18 @@ including what happens when the copy cannot be made, are in
 [Stdin handling](./profile-command.md#stdin-handling).
 
 A failure to write the copy costs only the rerun: the attempt in hand still
-receives every byte. A failure to read stdin costs the prompt, because the
-attempt is reading the copier's pipe and closing a pipe is the only signal
-it carries. amplihack names that on standard error as it happens and fails
-the step rather than report the attempt's result as the step's.
+receives every byte, and amplihack names the error on standard error as it
+happens. A failure to read stdin costs the prompt, because the attempt is
+reading the copier's pipe and closing a pipe is the only signal it carries.
+amplihack names that too, and fails the step rather than report the
+attempt's result as the step's.
+
+A caller that never closes the pipe costs the rerun and nothing else. The
+copier finishes at the end of stdin, so the supervisor joins it only when it
+is certain to finish and otherwise refuses the rerun with a named reason: a
+supervised step never waits on a pipe nobody closes. An `--input-format`
+channel, which is a pipe its caller holds open on purpose, is not copied at
+all.
 
 Where no copy is made, a piped prompt went to the first attempt and a rerun
 gets `/dev/null`: the prompt is lost, not exposed.

@@ -97,6 +97,11 @@ assertions:
     params:
       target: stdout
       expected: "PASS: held_open_stdin_does_not_hang - "
+  - name: held-open-copied-pipe-does-not-hang
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: held_open_copied_pipe_does_not_hang - "
   - name: recipe-step-waited-and-reran
     type: output_contains
     params:

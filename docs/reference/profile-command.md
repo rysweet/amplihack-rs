@@ -5192,8 +5192,9 @@ The launch runs Claude under a supervising amplihack process:
   pipe or a socket on a launch whose prompt is in the arguments instead,
   since nothing was copied from it.
   The supervisor's main thread never reads stdin. The copier thread does,
-  and the supervisor joins it before a rerun, and before standing down, so
-  a pipe that never reaches end of file can delay either (see
+  and only once the first attempt is running; the supervisor joins it before
+  a rerun, and only when it is certain to finish, so a pipe that never
+  reaches end of file refuses the rerun rather than holding the step up (see
   [Stdin](#stdin-handling));
 - `SIGTERM` and `SIGHUP` are forwarded to the attempt; `SIGINT` reaches it
   through the terminal.
@@ -10816,9 +10817,9 @@ A launch is supervised for the wait when all of these hold:
 
 When checks 1 to 5 pass but the step cannot be supervised (check 6, or a
 scratch directory failure), the launch writes `skipped reason=not_supervised`
-once and runs unsupervised, as before. A prompt copier that had already
-started hands the prompt back to that unsupervised launch first; see
-[Stdin handling](#stdin-handling).
+once and runs unsupervised, as before. That launch inherits fd 0 whole: no
+prompt copier has started, because one starts only when a first attempt is
+running; see [Stdin handling](#stdin-handling).
 
 With an inherited profile and auto-switch on, the
 [auto-switch reruns](#usage-limit-reruns) come first and the wait follows.
@@ -10850,6 +10851,7 @@ What an attempt receives depends on what stdin is:
 |-------|---------------|---------|
 | A pipe or a socket, prompt not in the arguments | A pipe fed by the copier (below) | A read-only regular file holding everything the copier stored, opened at offset 0. It is not a pipe |
 | A pipe or a socket, prompt in the arguments | Inherited unchanged | `/dev/null` |
+| A pipe or a socket carrying an `--input-format` channel | Inherited unchanged | `/dev/null` |
 | A regular file | Inherited unchanged | The file again, from the offset the step started at (on Linux through its own open of `/proc/self/fd/0`, so no read offset is shared with other processes) |
 | A terminal | Inherited unchanged | Inherited unchanged |
 | A closed descriptor | Inherited unchanged | `/dev/null` |
@@ -10857,10 +10859,25 @@ What an attempt receives depends on what stdin is:
 The feature covers any caller that supplies the prompt on stdin, whatever
 launches it. A socket is not told apart from a pipe, and is treated the same
 way. When stdin is a pipe and Claude's arguments carry no prompt, the
-supervisor starts a copier thread before the first attempt. The copier reads
-stdin in fixed-size blocks, writes each block to the attempt's stdin and to a
-private capture file, and closes the attempt's stdin when the pipe reaches end
-of file. The attempt sees the prompt as it arrives, with no delay.
+supervisor starts a copier thread. The copier reads stdin in fixed-size
+blocks, writes each block to the attempt's stdin and to a private capture
+file, and closes the attempt's stdin when the pipe reaches end of file. The
+attempt sees the prompt as it arrives, with no delay.
+
+The copier is started once the first attempt's child exists, and not before,
+so no byte of this process's stdin is taken until there is a child to give it
+to. That is what lets the supervisor stand down and leave fd 0 whole (below),
+and it is why a write that fails on the attempt's end of the pipe always
+means a step that stopped reading rather than an attempt that never ran.
+
+`--input-format` with a value other than `text` is the one piped stdin that
+is not a prompt. `stream-json` makes stdin a control channel that is read for
+as long as the session — amplihack's own usage request is one — whose caller
+holds it open on purpose and writes to it as the session goes on. There is no
+end of it to copy, and replaying a session's history to a retry would not be
+replaying a prompt, so nothing is copied and such a step keeps the conduct
+every piped prompt had before this feature: no wait and no rerun
+(`skipped reason=piped_prompt`).
 
 The capture file is `<pid>-0.in` in the supervisor's rerun directory (see
 above). It is created at `0600` with `O_EXCL`, `O_NOFOLLOW` and
@@ -10870,11 +10887,23 @@ read-only. It holds the prompt as opaque bytes, with no size cap, and is
 removed when the step ends, whether it succeeded or failed. A supervisor killed with `SIGKILL` leaves its file behind; the next
 supervised launch removes it once the owning process is gone.
 
-Before a rerun the supervisor joins the copier and checks that the whole
+Before a rerun the supervisor settles the copier and checks that the whole
 prompt was stored. It then opens the file read-only at offset 0 and gives it
 to Claude as stdin, so every attempt reads byte-identical input and the step
 continues the usage-limit wait or auto-switch rerun it would have had with the
 prompt in `-p`.
+
+Settling never waits without an end to the wait. The copier finishes at the
+end of stdin, and stdin is a pipe belonging to whoever launched the step:
+nothing promises it will ever be closed. So the supervisor joins the copier
+only when it is certain to finish — it has already reached the end of stdin,
+it has already failed, or the last writer of stdin has gone, after which what
+is left to read is only what the kernel is already holding. Otherwise the
+prompt is still arriving, the rerun is refused, and the step ends with the
+limited attempt's own result. Nothing is timed: the question asked is the
+state of the descriptor, not the clock. A refusal is not recorded either, so
+the question is asked again at the next rerun — after a wait of hours, by
+which point a caller that was still writing has long since finished.
 
 A write to an attempt that has already exited (`EPIPE`) is ignored: it stops
 neither the copy nor the step, the capture still receives the whole prompt,
@@ -10899,11 +10928,15 @@ be harmed by.
 - **The capture file cannot be written** while the copy runs, through
   `ENOSPC` or `EIO`. Attempt one is not affected and still receives every
   byte that arrives, because the capture is secondary to the attempt in
-  hand. The copier publishes the loss as soon as it happens, and the
-  supervisor reads that when it classifies the limit, before it plans
-  anything: the step takes the same two refusals as a capture that was never
-  created, and the attempt's own result, its held-back stdout included, is
-  passed up. No wait is announced and none is served.
+  hand. The copier writes one line naming the error as it happens
+  (`amplihack: this step's prompt could not be stored for a rerun (…)`),
+  which is the only record of the cause: the supervisor reads the loss as a
+  flag and never the copier's result, so without that line a full disk and a
+  prompt nothing meant to copy would look alike. It reads that flag when it
+  classifies the limit, before it plans anything: the step takes the same two
+  refusals as a capture that was never created, and the attempt's own result,
+  its held-back stdout included, is passed up. No wait is announced and none
+  is served.
 - **The loss lands too late to be read that way**: a copier that failed on
   its final flush, one that panicked, or one that had not yet reached the
   failing write when the limit was classified. The rerun then returns an
@@ -10942,24 +10975,27 @@ be harmed by.
   the next byte with `poll(2)` and reads again, exactly as a blocking read
   would have.
 
-The join has one cost. The copier ends only when the writer closes the pipe.
-If attempt one reports a usage limit without reading its prompt and the pipe
-never reaches end of file, the rerun is delayed until it does. The
-supervisor does not defend against this. A step that meets no limit never
-joins the copier at all, so a pipe held open with nothing written to it does
-not hold such a step up.
+A fifth case is not a failure of the copy at all: **the caller never closes
+the pipe.** A step that meets no usage limit never settles the copier and
+finishes as it always did. A step that does meet one waits for its reset,
+and the retry it earns is announced only once the prompt it would read is
+known to be there. It is not, so no retry is announced: the step ends with
+the limited attempt's own result, its held-back stdout included, the run log
+says `skipped reason=piped_prompt`, and standard error names the cause in
+full (`amplihack: no retry after the wait: this step's prompt is still
+arriving on a pipe its caller has not closed …`). This is the rule that a
+supervised step never waits on a pipe nobody closes, applied to the capture.
 
 **Standing down.** The supervisor stands down, and the caller runs the step
 once in this process, when it cannot start at all: no scratch directory, no
 stop-signal handler, or a first attempt that never spawned. That plain launch
-inherits this process's own fd 0, which the copier has been draining since
-before the first attempt. The supervisor therefore joins the copier and puts
-the whole stored prompt back on fd 0 first, so the launch reads the same
-bytes; the capture file is unlinked immediately afterwards, so nothing is
-left in the rerun directory while the step runs. Where the prompt cannot be
-put back whole, the step is not run at all and the error names both the
-reason the supervisor stood down and the reason the prompt was lost. A
-shortened prompt is a shortened task, and it would be acted on silently.
+inherits this process's own fd 0, and it inherits it whole: every one of those
+paths is reached before a first attempt is running, which is when the copier
+starts, so not one byte has been taken off it. The supervisor checks that
+before it stands down and refuses to run the step at all if a copier has
+started after all — no path reaches that today, and the check is what keeps a
+new one from silently handing a launch a shortened prompt, because a shortened
+prompt is a shortened task that would be acted on in silence.
 
 The prompt is any positional argument, wherever it is, read with Claude's
 option table so that the values of options such as `--model`,
@@ -10970,8 +11006,10 @@ options (such as `--max-thinking-tokens`), which `claude --help` does not
 list. An option in no table, such as one a newer Claude added, is read as
 taking the next non-option word as its value. That errs toward "no prompt in
 the arguments", which means that the supervisor also copies stdin, a pipe
-that the step never reads included. The copy is then made and the join above
-applies to it.
+that the step never reads included. What that costs is a capture file and, if
+the step meets a usage limit and its caller holds the pipe open, the refused
+rerun described above — never a step held up, and never a byte of the prompt
+in argv, which Claude reads as it always did.
 
 ### Order of attempts
 
@@ -10986,11 +11024,15 @@ After an attempt hits a usage limit, in this order:
    profile at once. This is an auto-switch rerun, made at most once per
    step: no `start` or `end` is written and the wait stays unused, so a
    limit on that rerun still goes through steps 4 to 7. A piped prompt is
-   replayed from its stored copy, so this rerun is made. Only when the
-   prompt could not be stored (see [Stdin](#stdin-handling)) is it refused
-   (`auto-switch: no rerun under profile …`) and the step goes on to
+   replayed from its stored copy, so this rerun is made. It is refused only
+   when there is no whole copy to replay (see
+   [Stdin](#stdin-handling)) — none was stored, or the prompt is still
+   arriving — and the reason is named
+   (`auto-switch: no rerun under profile …`). The step then goes on to
    step 4: the log gets `skipped reason=disabled` (or `ci`) from step 4
-   when the wait is off, else `skipped reason=piped_prompt` from step 6;
+   when the wait is off, else `skipped reason=piped_prompt` from step 6 if
+   nothing was stored. A prompt that is merely still arriving does not block
+   the wait, which is asked again when it ends;
 4. the wait disabled: `skipped reason=disabled` (or `ci`), and the result
    is passed up;
 5. this step has already waited on the login the failed attempt ran on, or
