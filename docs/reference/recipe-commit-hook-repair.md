@@ -625,7 +625,9 @@ agent staged is already there before the helper runs at all. After staging,
 the helper drops a staged `run/reports/` addition and resets a rewritten,
 tracked report to its version in `HEAD`; with no commit yet it drops every
 cached path there. A staged deletion is left alone, so a commit that removes
-reports published earlier still works. The operation is index-only: report
+reports published earlier still works; one consequence is that a source file
+moved *into* `run/reports/` leaves only its deletion staged, so the commit
+takes it out of the product, which is what the move asked for. The operation is index-only: report
 files keep their bytes on disk, unrelated staged source stays staged, and
 earlier commits are not rewritten. Each path is printed on stderr as
 `stage_workflow_changes: unstaged <path>`. The same correction is available on
@@ -858,6 +860,15 @@ fails closed. This is tracked in #1675.
 `hook_repair_terminal_refusal` was copied, still misses the marker under
 `pipefail` when a large log follows it. #1674 tracks it.
 
+A `run/reports/` file that the repository already tracks and that the run has
+since rewritten is reset in the index but kept on disk, so it stays as an
+unstaged modification. A step that pulls with `--rebase` after its commit,
+such as `workflow-pr-review` step 18c, then refuses with `cannot pull with
+rebase: You have unstaged changes`. This only arises in a repository already
+polluted by the behaviour #2839 fixed; the remedy is to commit the removal of
+the tracked reports once, after which the directory is untracked and the case
+does not recur.
+
 ## Tests
 
 | Test | Covers |
@@ -911,6 +922,7 @@ has its own case in the shell test:
 | lockfiles are staged | [Staging rules](#staging-rules) |
 | top-level `run/reports/` stays out of the index whether untracked, pre-staged, rewritten or in a repository with no commit; a staged deletion still commits | [Staging rules](#staging-rules) |
 | the TDD checkpoint's scoped add also keeps a pre-staged or rewritten tracked report out of the `wip:` commit, through `unstage_root_run_reports_here` | [Where it applies](#where-it-applies) |
+| `workflow-pr-review` step 18c, run whole, commits and pushes the reviewed source with no `run/reports/` path in the commit | [Staging rules](#staging-rules) |
 | step-15's commit hook never sees `PRE_COMMIT_ALLOW_NO_CONFIG`; a checkpoint's does without a config | [Where it applies](#where-it-applies) |
 | a kept `HR_DIR` holds no unredacted agent or evaluator log | [Evidence](#evidence) |
 

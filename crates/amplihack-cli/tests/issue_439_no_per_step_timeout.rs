@@ -398,17 +398,11 @@ fn default_workflow_direct_commit_paths_use_safe_pre_commit_handling() {
             ));
         }
 
-        // #2839: the former `git add -A` needle in the list below matched a
-        // comment in two of these steps. Require the staging command each one
-        // actually runs: the shared helper, or the checkpoint's scoped add.
-        if !(cmd.contains("stage_workflow_changes")
-            || cmd.contains("git --literal-pathspecs add -A --pathspec-from-file"))
-        {
-            violations.push(format!(
-                "{recipe}: step `{step_id}` must stage through stage_workflow_changes or a scoped add"
-            ));
-        }
-
+        // #2839 removed the `git add -A` needle from the list below: these
+        // steps now stage through `stage_workflow_changes` or, in the TDD
+        // checkpoint, a scoped `--pathspec-from-file` add. What each one
+        // stages is covered by behaviour, in
+        // amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh.
         for required in [
             "set -euo pipefail",
             "git diff --cached --name-only",

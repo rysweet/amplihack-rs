@@ -70,11 +70,12 @@ CHECKPOINT_COMMIT="${TOOLS}/workflow_checkpoint_commit.sh"
 TDD_RECIPE="${RECIPES}/workflow-tdd.yaml"
 REFACTOR_RECIPE="${RECIPES}/workflow-refactor-review.yaml"
 PUBLISH_RECIPE="${RECIPES}/workflow-publish.yaml"
+PR_REVIEW_RECIPE="${RECIPES}/workflow-pr-review.yaml"
 
 for tool in git python3 jq; do
     command -v "${tool}" >/dev/null 2>&1 || { echo "HARNESS-ERROR: ${tool} is required" >&2; exit 2; }
 done
-for path in "${GIT_IDENTITY}" "${CHECKPOINT_COMMIT}" "${TDD_RECIPE}" "${REFACTOR_RECIPE}" "${PUBLISH_RECIPE}"; do
+for path in "${GIT_IDENTITY}" "${CHECKPOINT_COMMIT}" "${TDD_RECIPE}" "${REFACTOR_RECIPE}" "${PUBLISH_RECIPE}" "${PR_REVIEW_RECIPE}"; do
     [[ -f "${path}" ]] || { echo "HARNESS-ERROR: ${path} not found" >&2; exit 2; }
 done
 
@@ -1733,9 +1734,11 @@ extract_step_command() {
 STEP_TDD="${WORK}/checkpoint-after-implementation.sh"
 STEP_REFACTOR="${WORK}/checkpoint-after-review-feedback.sh"
 STEP_15="${WORK}/step-15-commit-push.sh"
+STEP_18C="${WORK}/step-18c-push-feedback-changes.sh"
 extract_step_command "${TDD_RECIPE}" "checkpoint-after-implementation" "${STEP_TDD}"
 extract_step_command "${REFACTOR_RECIPE}" "checkpoint-after-review-feedback" "${STEP_REFACTOR}"
 extract_step_command "${PUBLISH_RECIPE}" "step-15-commit-push" "${STEP_15}"
+extract_step_command "${PR_REVIEW_RECIPE}" "step-18c-push-feedback-changes" "${STEP_18C}"
 
 section_h_static() {
     local label file id
@@ -1905,6 +1908,52 @@ section_h_dynamic() {
         "stage_workflow_changes: unstaged run/reports/new/report.json"
     expect_file_contains "H1c: the rewritten tracked report is reported" "${dir}/step.err" \
         "stage_workflow_changes: unstaged run/reports/tracked/results.json"
+
+    # H1d step-18c (workflow-pr-review): the review-feedback commit stages
+    # through stage_workflow_changes, so the private root run/reports never
+    # reaches it (#2839), whether the report is untracked or an earlier agent
+    # had already staged it. The step is run whole, so the commit and the push
+    # to the fixture's origin are the real ones.
+    #
+    # A report that is already tracked and has since been rewritten is left as
+    # an unstaged modification, which `git pull --rebase` on this path refuses;
+    # that shape is covered where no pull follows, by H1c and by A2(e).
+    dir="${WORK}/h1d-pr-review-reports"
+    new_repo "${dir}"
+    mkdir -p "${dir}/repo/run/reports/new" "${dir}/repo/run/reports/loose"
+    printf '{"new":true}\n' > "${dir}/repo/run/reports/new/report.json"
+    printf '{"loose":true}\n' > "${dir}/repo/run/reports/loose/report.json"
+    git -C "${dir}/repo" add -f run/reports/new/report.json
+    printf 'reviewed\n' > "${dir}/repo/src.txt"
+    expect_ne "H1d: fixture really pre-staged a report" \
+        "$(git -C "${dir}/repo" diff --cached --name-only -- run/reports)" ""
+    seed="$(git -C "${dir}/repo" rev-parse HEAD)"
+    run_step "${dir}" "${STEP_18C}"
+    expect_eq "H1d: exit 0" "$(rc_of "${dir}")" "0"
+    expect_eq "H1d: one review-feedback commit" "$(git -C "${dir}/repo" rev-parse HEAD~1 2>/dev/null)" "${seed}"
+    expect_eq "H1d: the reviewed file is committed" "$(git -C "${dir}/repo" show HEAD:src.txt 2>/dev/null)" "reviewed"
+    expect_eq "H1d: no report in the review-feedback commit" \
+        "$(git -C "${dir}/repo" show --name-only --no-renames --format= HEAD | grep -c '^run/reports/' || true)" "0"
+    expect_eq "H1d: the pre-staged report is still untracked" \
+        "$(git -C "${dir}/repo" ls-tree -r --name-only HEAD -- run/reports | wc -l | tr -d " ")" "0"
+    expect_eq "H1d: nothing is left staged after the commit" \
+        "$(git -C "${dir}/repo" diff --cached --name-only)" ""
+    expect_eq "H1d: pre-staged report bytes kept on disk" \
+        "$(cat "${dir}/repo/run/reports/new/report.json")" '{"new":true}'
+    expect_eq "H1d: untracked report bytes kept on disk" \
+        "$(cat "${dir}/repo/run/reports/loose/report.json")" '{"loose":true}'
+    # The guard that runs after staging sees the index the commit is built
+    # from. The guard before staging still sees what the fixture pre-staged.
+    expect_eq "H1d: the post-staging guard saw no report staged" \
+        "$(grep 'artifact-guard staged=' "${dir}/stub/log" | tail -n 1 | grep -c 'run/reports/' || true)" "0"
+    expect_file_contains "H1d: the pre-staged report is reported as unstaged" "${dir}/step.err" \
+        "stage_workflow_changes: unstaged run/reports/new/report.json"
+    expect_file_contains "H1d: the untracked report is reported as skipped" "${dir}/step.err" \
+        "stage_workflow_changes: skipped run/reports/loose/report.json"
+    # The step pushes what it committed, so origin must hold that commit.
+    expect_eq "H1d: the push landed" \
+        "$(git -C "${dir}/origin.git" rev-parse "refs/heads/feat/issue-1671-${dir##*/}")" \
+        "$(git -C "${dir}/repo" rev-parse HEAD)"
 
     # H1b TDD checkpoint: the guard refuses what the round staged; not retried.
     dir="${WORK}/h1b-tdd-guard-after-round"

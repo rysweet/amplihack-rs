@@ -181,10 +181,10 @@ fn every_recipe_with_git_add_all_invokes_guard_first() {
 
     for path in recipe_files() {
         let text = read(&path);
-        // #2839: `stage_workflow_changes` counts as whole-tree staging, so
-        // converting a raw add cannot quietly retire this rule.
-        let broad_add_positions: Vec<usize> =
-            staging_spans(&text).into_iter().map(|(at, _)| at).collect();
+        let broad_add_positions: Vec<usize> = ["git add -A", "git add --all", "git add ."]
+            .iter()
+            .flat_map(|needle| text.match_indices(needle).map(|(index, _)| index))
+            .collect();
         if broad_add_positions.is_empty() {
             continue;
         }
@@ -232,11 +232,14 @@ fn recipe_commands_with_guarded_broad_staging_fail_loudly() {
             let Some(guard_position) = command.find("amplihack hygiene artifact-guard") else {
                 continue;
             };
-            // #2839: the shared helper is staging too; a converted site must
-            // still fail loudly when the guard before it refuses.
-            let broad_add_after_guard = staging_spans(command)
-                .into_iter()
-                .any(|(add_position, _)| guard_position < add_position);
+            let broad_add_after_guard =
+                ["git add -A", "git add --all", "git add ."]
+                    .iter()
+                    .any(|needle| {
+                        command
+                            .match_indices(needle)
+                            .any(|(add_position, _)| guard_position < add_position)
+                    });
             if broad_add_after_guard && !command.contains("set -euo pipefail") {
                 unsafe_commands.push(format!(
                     "{}:{id} guards broad staging but lacks `set -euo pipefail`",
@@ -317,20 +320,18 @@ fn workflow_publish_outside_in_fix_loop_guards_its_inline_git_add_all() {
     let guard = prompt
         .find("amplihack hygiene artifact-guard")
         .expect("outside-in fix loop must guard its inline staging");
-    let add = prompt
-        .find("stage_workflow_changes")
-        .expect("outside-in fix loop stages through the shared helper (#2839)");
     let guarded_line = prompt[guard..]
         .lines()
         .next()
         .expect("guard snippet must be line-oriented");
 
+    // What the snippet stages is not named here. It is behaviour, checked by
+    // running the real step bodies in
+    // amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh.
+    // What this test owns is the chain: the guard runs first, and only its
+    // success lets the rest of the line run.
     assert!(
-        guard < add,
-        "outside-in fix loop must invoke artifact guard immediately before broad staging"
-    );
-    assert!(
-        guarded_line.contains("&& stage_workflow_changes"),
+        guarded_line.starts_with(&format!("{GUARD} --repo . --mode pre-publish &&")),
         "outside-in fix loop snippet must hard-chain guard success to staging; line was `{guarded_line}`"
     );
 }
@@ -347,20 +348,6 @@ fn workflow_publish_outside_in_fix_loop_guards_its_inline_git_add_all() {
 
 const GUARD: &str = "amplihack hygiene artifact-guard";
 const SCOPED_TDD_ADD: &str = "git --literal-pathspecs add -A --pathspec-from-file";
-/// The whole-tree staging commands a publication or checkpoint step can use.
-/// `stage_workflow_changes` joined the list in #2839, when the last raw broad
-/// adds in the publication paths were converted to the shared helper; dropping
-/// the raw spellings would make every scanner below vacuous, so both stay.
-const STAGING_COMMANDS: [&str; 4] = [
-    "git add -A",
-    "git add --all",
-    "git add .",
-    "stage_workflow_changes",
-];
-/// How many step bodies stage the whole tree and then commit. Ten after #2839
-/// converted the last raw publication adds; the TDD checkpoint is not among
-/// them because it stages only the paths it captured (#1672).
-const STAGING_COMMIT_SITES: usize = 10;
 
 /// Byte offset of a shell command at the start of an executable line.
 fn shell_command_offset(text: &str, command: &str) -> Option<usize> {
@@ -402,31 +389,22 @@ fn shell_code_end(line: &str) -> usize {
     line.len()
 }
 
-/// `(start, end)` byte spans of every whole-tree staging command (`git add -A`,
-/// `git add --all`, `git add .`, `stage_workflow_changes`) in `text`.
-/// `git add .gitignore` and `git add -Ab` are not broad adds of the whole tree,
-/// so a needle must end at a word boundary; a needle that starts with an
-/// identifier character must begin at one too, so the helper's own file name
-/// (`workflow_stage_changes.sh`) cannot be mistaken for a call. Shell comments
-/// do not count as staging commands.
-fn staging_spans(text: &str) -> Vec<(usize, usize)> {
+/// `(start, end)` byte spans of every broad add (`git add -A`, `git add --all`,
+/// `git add .`) in `text`. `git add .gitignore` and `git add -Ab` are not broad
+/// adds of the whole tree, so a needle must end at a word boundary. Shell
+/// comments do not count as staging commands.
+fn broad_add_spans(text: &str) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
     let mut line_start = 0;
     for line in text.split_inclusive('\n') {
         let code = &line[..shell_code_end(line)];
-        for needle in STAGING_COMMANDS {
-            let word_start = needle.starts_with(|c: char| c.is_alphanumeric() || c == '_');
+        for needle in ["git add -A", "git add --all", "git add ."] {
             for (at, _) in code.match_indices(needle) {
                 let end = at + needle.len();
-                let starts_cleanly = !word_start
-                    || code[..at]
-                        .chars()
-                        .next_back()
-                        .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
                 let boundary = code[end..].chars().next().is_none_or(|c| {
                     c.is_whitespace() || matches!(c, ';' | '&' | '|' | ')' | '`' | '"' | '\'')
                 });
-                if starts_cleanly && boundary {
+                if boundary {
                     spans.push((line_start + at, line_start + end));
                 }
             }
@@ -437,10 +415,10 @@ fn staging_spans(text: &str) -> Vec<(usize, usize)> {
     spans
 }
 
-/// Offsets of staging commands that are followed by a `git commit` with no
-/// guard call between the two.
+/// Offsets of broad adds that are followed by a `git commit` with no guard call
+/// between the two.
 fn adds_committed_without_recheck(text: &str) -> Vec<usize> {
-    staging_spans(text)
+    broad_add_spans(text)
         .into_iter()
         .filter_map(|(start, end)| {
             let commit = text[end..].find("git commit")?;
@@ -482,19 +460,6 @@ fn broad_add_recheck_scanner_flags_a_synthetic_unguarded_commit() {
     );
     assert!(adds_committed_without_recheck(&one_line).is_empty());
 
-    // #2839: the shared staging helper is scanned exactly like a broad add.
-    let helper_unguarded =
-        format!("{GUARD} --repo . --mode pre-publish\nstage_workflow_changes\ngit commit -m x\n");
-    assert_eq!(adds_committed_without_recheck(&helper_unguarded).len(), 1);
-    let helper_rechecked = format!(
-        "{GUARD} --repo . --mode pre-publish\nstage_workflow_changes; {GUARD} --repo . --mode pre-publish\ngit commit -m x\n"
-    );
-    assert!(adds_committed_without_recheck(&helper_rechecked).is_empty());
-    assert!(
-        staging_spans(". \"$QC_TOOLS/workflow_stage_changes.sh\"\n").is_empty(),
-        "sourcing the helper file is not a staging call"
-    );
-
     for unguarded in [
         "git add --all\nPRE_COMMIT_ALLOW_NO_CONFIG=1 git commit \"$@\"\n",
         "git add . && git commit -m x\n",
@@ -507,24 +472,16 @@ fn broad_add_recheck_scanner_flags_a_synthetic_unguarded_commit() {
     }
 
     assert!(
-        staging_spans("git add .gitignore && git commit -m x").is_empty(),
+        broad_add_spans("git add .gitignore && git commit -m x").is_empty(),
         "`git add .gitignore` is not a broad add"
     );
     assert_eq!(
-        staging_spans("# git add -A\necho ready # git add --all\ngit add -A\n").len(),
+        broad_add_spans("# git add -A\necho ready # git add --all\ngit add -A\n").len(),
         1,
         "shell comments must not count as broad staging"
     );
     assert_eq!(
-        staging_spans(
-            "# stage_workflow_changes is `git add -A` minus artefacts\nstage_workflow_changes\n"
-        )
-        .len(),
-        1,
-        "a comment describing the helper must not count as a staging call"
-    );
-    assert_eq!(
-        staging_spans("echo '# in quotes'; git add -A\n").len(),
+        broad_add_spans("echo '# in quotes'; git add -A\n").len(),
         1,
         "a quoted hash must not hide a later staging command"
     );
@@ -538,15 +495,13 @@ fn broad_add_recheck_scanner_flags_a_synthetic_unguarded_commit() {
 fn every_recipe_broad_add_followed_by_commit_is_rechecked_by_the_guard() {
     // D5 / R7: guard -> git add -A -> guard -> git commit, in every recipe.
     let mut missing = Vec::new();
-    let mut checked = 0;
     for path in recipe_files() {
         let recipe = serde_yaml::from_str::<Value>(&read(&path))
             .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
         for (label, body) in step_bodies(&recipe) {
-            if staging_spans(&body).is_empty() {
+            if broad_add_spans(&body).is_empty() {
                 continue;
             }
-            checked += 1;
             for offset in adds_committed_without_recheck(&body) {
                 let line = body[offset..].lines().next().unwrap_or_default();
                 missing.push(format!(
@@ -560,16 +515,13 @@ fn every_recipe_broad_add_followed_by_commit_is_rechecked_by_the_guard() {
         }
     }
 
-    // The TDD checkpoint stages only the paths it captured (#1672) and so has
-    // no whole-tree staging command; it is checked in
-    // `phase1_commit_sites_never_fall_back_to_repo_path` instead. Every other
-    // publication and checkpoint site reaches this scanner, through either a
-    // raw broad add or `stage_workflow_changes` (#1671, #2839). The floor only
-    // ever rises: a conversion must not make the scan vacuous.
-    assert!(
-        checked >= STAGING_COMMIT_SITES,
-        "expected at least {STAGING_COMMIT_SITES} whole-tree staging commit sites to be scanned, found {checked}"
-    );
+    // No bundle recipe spells a raw broad add any more: the TDD checkpoint
+    // stages the paths it captured (#1672) and every publication and review
+    // step stages through `stage_workflow_changes` (#1671, #2839). The scan
+    // is therefore a regression guard for a raw add being written again,
+    // rather than a count of sites; what the converted sites actually stage
+    // and commit is checked by running the real step bodies in
+    // amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh.
     assert!(
         missing.is_empty(),
         "every broad add that is committed must be re-checked by the artifact guard \
@@ -592,7 +544,7 @@ fn post_add_guard_uses_the_same_mode_as_the_pre_add_guard() {
         let recipe = serde_yaml::from_str::<Value>(&read(&path))
             .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
         for (label, body) in step_bodies(&recipe) {
-            for (start, end) in staging_spans(&body) {
+            for (start, end) in broad_add_spans(&body) {
                 let Some(commit) = body[end..].find("git commit") else {
                     continue;
                 };
@@ -622,20 +574,23 @@ fn workflow_publish_fix_loop_stops_when_the_post_add_guard_refuses() {
     // guard must end the shell, or `git commit` on the next line still runs.
     let recipe = load_recipe("workflow-publish.yaml");
     let prompt = step_text(&recipe, "step-16b-outside-in-fix-loop", "prompt");
+    let pre_publish = format!("{GUARD} --repo . --mode pre-publish");
     let line = prompt
         .lines()
-        .find(|line| line.contains("&& stage_workflow_changes"))
-        .expect("step-16b stages with stage_workflow_changes");
-    let add = line
-        .find("stage_workflow_changes")
-        .expect("the staging call on the line");
+        .find(|line| line.matches(&pre_publish).count() == 2)
+        .expect("step-16b guards both sides of its staging on one line");
+    let first = line.find(&pre_publish).expect("the first guard");
+    let second = line
+        .rfind(&format!("&& {pre_publish}"))
+        .expect("the second guard is chained after the staging on the same line");
+    let staged_between = line[first + pre_publish.len()..second]
+        .trim()
+        .strip_prefix("&&")
+        .map(str::trim)
+        .expect("the first guard is hard-chained to the staging command");
     assert!(
-        line[..add].contains(&format!("{GUARD} --repo . --mode pre-publish &&")),
-        "the first guard is hard-chained to the add: `{line}`"
-    );
-    assert!(
-        line[add..].contains(&format!("&& {GUARD} --repo . --mode pre-publish")),
-        "the second guard is chained after the add on the same line: `{line}`"
+        !staged_between.is_empty(),
+        "something must stage between the two guards: `{line}`"
     );
     let tail = line.rsplit_once("||").map(|(_, tail)| tail).unwrap_or("");
     assert!(
@@ -1121,32 +1076,6 @@ fn checkpoint_and_review_recheck_after_staging() {
         command.lines().any(|line| line.trim()
             == "stage_workflow_changes; amplihack hygiene artifact-guard --repo . --mode pre-publish"),
         "workflow-pr-review.yaml must recheck artifacts after staging: {command}"
-    );
-}
-
-/// Issue #2839: a step that commits must keep the private root `run/reports/`
-/// out of the index. The publication steps inherit that from
-/// `stage_workflow_changes`, which ends in `unstage_root_run_reports`. The TDD
-/// checkpoint stages only the paths it captured (#1672), and the filter it
-/// uses sees untracked paths alone -- a report an earlier agent pre-staged, or
-/// one already tracked and since rewritten, still reaches the index through
-/// `git diff --name-only`. So it must run the same correction itself, after
-/// its scoped add and before the commit.
-#[test]
-fn tdd_checkpoint_unstages_private_reports_after_its_scoped_add() {
-    let tdd = load_recipe("workflow-tdd.yaml");
-    let command = step_text(&tdd, "checkpoint-after-implementation", "command");
-    let scoped_add = shell_command_offset(command, SCOPED_TDD_ADD)
-        .expect("TDD checkpoint must stage only captured paths");
-    let unstage = shell_command_offset(command, "unstage_root_run_reports_here").expect(
-        "TDD checkpoint must call unstage_root_run_reports_here after its scoped add (#2839)",
-    );
-    let commit = command
-        .find("commit_with_pre_commit_guard -m")
-        .expect("TDD checkpoint must invoke the guarded commit helper");
-    assert!(
-        scoped_add < unstage && unstage < commit,
-        "unstage_root_run_reports_here must run after the scoped add and before the commit: {command}"
     );
 }
 

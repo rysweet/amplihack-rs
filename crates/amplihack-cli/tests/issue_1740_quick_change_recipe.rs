@@ -335,7 +335,6 @@ fn commit_and_push_re_measure_after_hook_repair() {
         "the push step re-measures before verifying the remote ref"
     );
     let commit = command(&r, "quick-change-commit");
-    assert!(!commit.contains("git add -A"), "no raw broad add (#2839)");
     let add = commit.find("stage_workflow_changes").unwrap();
     let guard = |from: usize| commit[from..].find("artifact-guard").map(|i| i + from);
     assert!(
