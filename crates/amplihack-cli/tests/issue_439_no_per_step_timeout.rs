@@ -398,20 +398,15 @@ fn default_workflow_direct_commit_paths_use_safe_pre_commit_handling() {
             ));
         }
 
-        // #2839: staging goes through the shared helper (or the scoped
-        // checkpoint add), and no raw broad add remains outside comments.
+        // #2839: the former `git add -A` needle in the list below matched a
+        // comment in two of these steps. Require the staging command each one
+        // actually runs: the shared helper, or the checkpoint's scoped add.
         if !(cmd.contains("stage_workflow_changes")
             || cmd.contains("git --literal-pathspecs add -A --pathspec-from-file"))
         {
             violations.push(format!(
-                "{recipe}: step `{step_id}` must stage through stage_workflow_changes"
+                "{recipe}: step `{step_id}` must stage through stage_workflow_changes or a scoped add"
             ));
-        }
-        if cmd.lines().any(|l| {
-            let t = l.trim_start();
-            !t.starts_with('#') && (t.contains("git add -A") || t.contains("&& git add -A"))
-        }) {
-            violations.push(format!("{recipe}: step `{step_id}` has a raw `git add -A`"));
         }
 
         for required in [

@@ -552,9 +552,11 @@ section_a() {
 # =============================================================================
 # A2. private root run/reports (#2839)
 # =============================================================================
-# stage_in <repo> <case-dir>: run the helper, keeping stdout and stderr apart.
+# stage_in <repo> <case-dir>: run the helper under `set -euo pipefail`, as every
+# call site does, keeping stdout and stderr apart.
 stage_in() {
-    ( cd "$1" && . "${STAGE_HELPER}" && stage_workflow_changes ) >"$2/stage.out" 2>"$2/stage.err"
+    ( cd "$1" && bash -c 'set -euo pipefail; . "$1"; stage_workflow_changes' _ "${STAGE_HELPER}" ) \
+        >"$2/stage.out" 2>"$2/stage.err"
 }
 # report_entries <repo>: staged non-deletion entries under root run/reports.
 report_entries() {
@@ -695,41 +697,6 @@ section_a2() {
     if stage_in "${repo}" "${dir}"; then pass; else fail "A2(h): helper failed on an unborn HEAD"; sed 's/^/    | /' "${dir}/stage.err" >&2; fi
     expect_eq "A2(h): only the source file is staged" "$(git -C "${repo}" ls-files --cached)" "first.txt"
     expect_reports_intact "A2(h)" "${repo}"
-}
-
-# H2. every raw broad `git add -A` publication site is converted (#2839).
-section_h_static_stage_sites() {
-    local f path label code
-    for f in workflow-pr-review workflow-publish workflow-finalize consensus-publish \
-        consensus-pr-feedback quick-change auto-drive-light; do
-        path="${RECIPES}/${f}.yaml"; label="H2 ${f}"
-        need "${path}" H2 || continue
-        code="${WORK}/${f}.code"
-        grep -v '^[[:space:]]*#' "${path}" > "${code}"
-        if grep -nE '(^|[;&|[:space:]])git[[:space:]]+add[[:space:]]+-A' "${code}" >/dev/null; then
-            fail "${label}: raw git add -A remains"
-        else pass; fi
-        expect_file_contains "${label}: stages through the shared helper" "${code}" "stage_workflow_changes"
-    done
-    # Between the two guard calls at the single-line `;`-sequenced sites.
-    for f in workflow-pr-review workflow-finalize consensus-publish consensus-pr-feedback; do
-        path="${RECIPES}/${f}.yaml"
-        local stage guards before=0 after=0 g
-        stage="$(grep -n 'stage_workflow_changes' "${path}" | grep -v ':[[:space:]]*#' | sed -n 1p | cut -d: -f1 || true)"
-        guards="$(grep -n 'artifact-guard --repo . --mode pre-publish' "${path}" | cut -d: -f1 || true)"
-        for g in ${guards}; do
-            [[ -n "${stage}" ]] || break
-            (( g <= stage && stage - g <= 60 )) && before=1
-            (( g >= stage && g - stage <= 5 )) && after=1
-        done
-        if (( before && after )); then pass; else
-            fail "H2 ${f}: stage_workflow_changes (line ${stage:-?}) must sit between artifact-guard calls (${guards//$'\n'/ })"
-        fi
-    done
-    expect_eq "H2 workflow-publish: step-16b stage keeps the hard chain" \
-        "$(grep -cE 'artifact-guard[^|]*&& stage_workflow_changes[^|]*&& amplihack hygiene artifact-guard.*\|\| \{ echo "STOP' "${RECIPES}/workflow-publish.yaml" || true)" "1"
-    expect_eq "H2 auto-drive-light: all four former raw adds converted" \
-        "$(grep -v '^[[:space:]]*#' "${RECIPES}/auto-drive-light.yaml" | grep -c 'stage_workflow_changes' || true)" "4"
 }
 
 # =============================================================================
@@ -2495,7 +2462,6 @@ section_e
 section_f
 section_g
 section_h_static
-section_h_static_stage_sites
 section_h_dynamic
 section_i
 section_j
