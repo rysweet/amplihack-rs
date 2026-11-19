@@ -238,6 +238,9 @@ fn run_step(e: &Env, id: &str, tools: &Path, env: &[(&str, &str)]) -> Output {
         ("AUTODRIVE_ROUND_LABEL", OsStr::new("crusty-round-1")),
         ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
         ("RECIPE_VAR_crusty_round_context", OsStr::new(&ctx)),
+        // #2814: the loop measures the round's head and passes it in; the
+        // record writer compares the review's claim with it.
+        ("RECIPE_VAR_reviewed_head_sha", OsStr::new(&e.head)),
         ("REPO_PATH", e.repo.wt.as_os_str()),
         ("RECIPE_VAR_repo_path", e.repo.wt.as_os_str()),
         ("RECIPE_VAR_pr_number", OsStr::new("7")),
@@ -258,8 +261,10 @@ fn step03(e: &Env, tools: &Path, review: &str, env: &[(&str, &str)]) -> Output {
     run_step(e, STEP03, tools, &v)
 }
 
-/// Step-06 writes ordinary round evidence directly from the PR worktree.
+/// Step-06 writes ordinary round evidence directly from the PR worktree. The
+/// review names the head the loop measured, as an uninterrupted round does.
 fn step06(e: &Env, tools: &Path, verdict: &str, fix: &str) -> Output {
+    let review = json!({ "reviewed_head_sha": e.head }).to_string();
     run_step(
         e,
         STEP06,
@@ -267,6 +272,7 @@ fn step06(e: &Env, tools: &Path, verdict: &str, fix: &str) -> Output {
         &[
             ("RECIPE_VAR_crusty_verdict", verdict),
             ("RECIPE_VAR_crusty_fix_evidence", fix),
+            ("RECIPE_VAR_crusty_review", &review),
         ],
     )
 }

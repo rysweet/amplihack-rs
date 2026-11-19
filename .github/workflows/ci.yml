@@ -750,7 +750,8 @@ jobs:
       - name: "Outside-in - Codex Crusty review launch (issue #2788)"
         shell: bash
         run: AMPLIHACK_2788_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2788-codex-review-launch-scenario.sh
-
+      # Issue #2784: step-16 with base_branch empty, an open pull request from the
+      # branch into dev and origin/HEAD main, through the pinned runner installed above.
       - name: "Outside-in - Existing pull request on another base (issue #2784)"
         shell: bash
         run: AMPLIHACK_2784_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2784-existing-pr-other-base-scenario.sh

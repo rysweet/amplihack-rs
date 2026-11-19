@@ -64,7 +64,7 @@ fl() { echo "FAIL: $1 — $2"; fail=1; }
 #                                       \-- C (code)
 # origin/main is M0. Commits are written with plumbing, so no hook runs. They
 # are written in the main checkout FX_MAIN; FX is then its linked worktree, as
-# the pull request's worktree is, and FX_MAIN the loop's review dir (#1528).
+# the pull request's worktree is and as the rounds' only checkout (#2808).
 FX_MAIN="$WORK/main-checkout"; FX="$FX_MAIN"; ORIGIN="$WORK/origin.git"; T=1767225600
 git init -q --bare "$ORIGIN" && git init -q "$FX" && git -C "$FX" remote add origin "$ORIGIN" \
   || { echo "FAIL: could not create the fixture repository"; echo "SCENARIO_FAILED"; exit 1; }

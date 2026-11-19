@@ -178,9 +178,8 @@ fn drive(task: Option<&str>) -> Run {
     for d in [&bin, &log, &stub_state, &cwd] {
         std::fs::create_dir_all(d).unwrap();
     }
-    // The loop's review dir defaults to its working directory and must be the
-    // main checkout of --repo's repository (#1528), so `cwd` is a main
-    // checkout and `repo` its linked worktree, as in a real run.
+    // `cwd` is a main checkout and `repo` its linked worktree, as in a real
+    // run: since #2808 the rounds run in `repo`, the PR's own worktree.
     main_checkout_with_worktree(tmp.path(), &cwd, &repo);
     let stub = bin.join("amplihack");
     crate::support::exec_stub::write_executable(&stub, STUB, 0o755);

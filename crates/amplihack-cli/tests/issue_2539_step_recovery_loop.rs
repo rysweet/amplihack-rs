@@ -73,14 +73,14 @@ git -C "$wd" update-ref HEAD "$c"
 printf '{"merge_ready_verdict":"CONCERNS","head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s"}\n' "$c" "$c" "$label" > "$record"
 printf 'item-%s\n' "$label" > "$record.findings"
 if grep -qx "$label" "$S/handoff-rounds" "$S/stop-rounds" 2>/dev/null; then
-  "$REAL_AMPLIHACK" orch helper step-recovery record --dir "$srd" --step-id step-00-review-dir-guard \
-    --reason "review dir changed twice with the same error" --owner run-requester \
-    --needs "check the review dir in the state dir" || exit 2
+  "$REAL_AMPLIHACK" orch helper step-recovery record --dir "$srd" --step-id step-02-merge-ready-assessment \
+    --reason "the assessment failed twice with the same error" --owner run-requester \
+    --needs "read the round log in the state dir" || exit 2
 fi
 # A --guard or --stop-on-handoff step ends its round with the handoff exit.
 grep -qx "$label" "$S/stop-rounds" 2>/dev/null && { echo "round stopped at the handoff"; exit 81; }
 if grep -qx "$label" "$S/corrupt-rounds" 2>/dev/null; then
-  printf '{not json\n' > "$srd/step-00-review-dir-guard.jsonl"; chmod 600 "$srd/step-00-review-dir-guard.jsonl"
+  printf '{not json\n' > "$srd/step-02-merge-ready-assessment.jsonl"; chmod 600 "$srd/step-02-merge-ready-assessment.jsonl"
 fi
 echo "round ran"
 "#;
@@ -223,7 +223,7 @@ fn a_round_that_records_a_handoff_stops_the_loop_with_exit_81() {
     assert_eq!(r["loop_result"], "STEP_RECOVERY_HANDOFF", "{}", show(&o));
     let all = format!("{}{}", stdout(&o), String::from_utf8_lossy(&o.stderr));
     assert!(
-        all.contains("step-00-review-dir-guard.jsonl"),
+        all.contains("step-02-merge-ready-assessment.jsonl"),
         "names the record:\n{all}"
     );
 

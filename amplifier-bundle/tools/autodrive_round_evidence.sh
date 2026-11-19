@@ -166,6 +166,12 @@ crusty_covers() {
 # removes every pre-review.* in the state directory once the round returns
 # (#2808 SR-10).
 #
+# contents.tar holds the untracked files and the tracked paths that already
+# differed from HEAD or the index. A tracked path that matched them is in the
+# repository already, and in the staged and unstaged diffs saved beside it, so
+# archiving it too copied the whole tree every round (#2814). The round
+# prompts restore such a path from the commit in the `head` file instead.
+#
 # Evidence only, and deliberately so. Collection failure is non-fatal: the
 # function writes 'incomplete' to collection-status, warns on stderr and still
 # returns the directory and exit 0, leaving the assessor to preserve uncertain
@@ -195,7 +201,19 @@ review_baseline() (
     git ls-files --stage -z > "$dir/entries" &&
     git -c core.fsmonitor=false diff --binary --no-ext-diff --no-textconv --ignore-submodules=all --cached > "$dir/staged.diff" &&
     git -c core.fsmonitor=false diff --binary --no-ext-diff --no-textconv --ignore-submodules=all > "$dir/unstaged.diff" &&
-    git ls-files --cached --others --exclude-standard -z > "$dir/paths" || return 1
+    # Only what Git cannot already give back: the untracked files and the
+    # tracked paths that differ from HEAD or the index, which is exactly what
+    # the status above lists. Tracked content matching both is in the
+    # repository already, and in the two diffs saved beside this, so archiving
+    # the whole tree copied tens of MiB per round for nothing (#2814).
+    # `-z` writes `XY <path>` per entry, and a rename or copy adds the original
+    # path as the next record, with no `XY ` of its own; both are kept.
+    local rec orig=0
+    while IFS= read -r -d '' rec; do
+      if [ "$orig" = 1 ]; then orig=0; printf '%s\0' "$rec"; continue; fi
+      case "${rec:0:2}" in [RC]?|?[RC]) orig=1 ;; esac
+      printf '%s\0' "${rec:3}"
+    done < "$dir/status" > "$dir/paths" || return 1
     # Use NUL names, retain symlink targets and modes, never follow links. Save
     # only paths still present: deleted files remain represented by Git evidence.
     local path parent safe incomplete=0

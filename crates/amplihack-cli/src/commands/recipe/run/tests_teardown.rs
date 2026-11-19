@@ -715,11 +715,12 @@ fn test_teardown_is_scoped_to_runner_process_group() {
 //          ceiling (MAX_DEPTH_CEILING = 32) before the comparison,
 //        * below the limit the runner still spawns normally (no over-blocking).
 //
-//   B. Best-effort restoration of the CALLER checkout's git configuration on
-//      any terminal failure: if the runner corrupts the caller's checkout
-//      (e.g. flips `core.bare=true`, reproducing the observed `git status`
-//      breakage), the pre-run value is snapshotted before spawn and restored
-//      after teardown, while durable child worktrees are preserved.
+//   B. Restoration of the NAMED checkout's `core.bare`: the run reads it
+//      before spawn and again after teardown, and when a run has flipped it
+//      (reproducing the observed `git status` breakage) it says so and puts
+//      the pre-run value back, while durable child worktrees are preserved.
+//      Since #2808 that checkout is the one the operator named, usually a PR
+//      worktree, so the flip lands where they work. #1903, the cause, is open.
 //
 // All tests drive the PUBLIC entry point `execute::execute_recipe_via_rust`
 // with a stub runner installed via `RECIPE_RUNNER_RS_PATH`, so they COMPILE
@@ -882,7 +883,7 @@ fn test_depth_guard_allows_spawn_below_limit() {
 }
 
 // -------------------------------------------------------------------------
-// Durable-work retention helpers.
+// Named-checkout git-state helpers.
 // -------------------------------------------------------------------------
 
 /// Run `git <args...>` inside `repo` and return trimmed stdout, or `None` if
@@ -917,7 +918,7 @@ fn init_git_repo(repo: &Path) -> bool {
     // Deterministic identity so any future commit-based assertions are stable.
     let _ = git_in(repo, &["config", "user.email", "t@example.com"]);
     let _ = git_in(repo, &["config", "user.name", "Teardown Test"]);
-    // Give the durable-artifact fixture a committed starting point.
+    // A born HEAD: the fixtures below commit against it.
     assert!(
         git_in(
             repo,
@@ -942,7 +943,147 @@ fn init_git_repo(repo: &Path) -> bool {
 }
 
 // -------------------------------------------------------------------------
-// A failing runner preserves durable child artifacts in the named checkout.
+// Test 9 — the named checkout's git state is RESTORED after a terminal failure.
+//
+// Reproduces the observed #964 corruption against the checkout the operator
+// named: the runner flips that checkout's `core.bare` to `true` (which makes
+// `git status` fail with "this operation must be run in a work tree") and then
+// exits non-zero. After the failed run the checkout must be usable again.
+//
+// Before #2808 this passed because the runner was handed a private copy, so
+// the stub never touched the caller's checkout. It now exercises the restore
+// itself.
+// -------------------------------------------------------------------------
+#[test]
+fn test_named_checkout_git_state_restored_after_terminal_failure() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
+
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = temp.path().join("named-checkout");
+    std::fs::create_dir_all(&repo).expect("failed to create named checkout dir");
+    if !init_git_repo(&repo) {
+        eprintln!("skipping: git unavailable for named-checkout restore test");
+        return;
+    }
+    // `git status` must work before the run.
+    assert!(
+        git_in(&repo, &["status", "--porcelain"]).is_some(),
+        "precondition: the named checkout must be a healthy work tree before the run"
+    );
+
+    let runner = temp.path().join("recipe-runner-rs");
+    // The runner corrupts the NAMED checkout (passed as `-C` == working dir)
+    // exactly like the observed leak, then fails. `$5` is the `-C` value in the
+    // fixed argv layout: <recipe> --output-format json -C <working_dir> ...
+    write_stub(
+        &runner,
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ngit -C \"$5\" config core.bare true\nexit 1\n",
+    );
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: git-corrupt-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
+
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &repo, &[], None);
+    result.expect_err("non-zero runner exit must surface as an error");
+
+    // The named checkout must be restored to a usable state.
+    let bare_after = git_in(&repo, &["config", "--get", "core.bare"]);
+    assert!(
+        matches!(bare_after.as_deref(), Some("false") | None),
+        "the run must restore the named checkout's core.bare \
+         (issues #964, #2814): core.bare is still {bare_after:?} after the failed run"
+    );
+    assert!(
+        git_in(&repo, &["status", "--porcelain"]).is_some(),
+        "the run must leave the named checkout usable \
+         (`git status` must succeed) after the failed run (issues #964, #2814)"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Test 10 — the named checkout's git state is RESTORED on a STRUCTURED failure.
+//
+// The more realistic corruption path: the runner does real work, corrupts
+// `core.bare`, then reports failure by emitting a structured JSON result with
+// `"success": false` rather than crashing. That surfaces as
+// `Ok(RecipeRunResult { success: false, .. })`, not `Err`, and is still a
+// terminal failure per #964.
+// -------------------------------------------------------------------------
+#[test]
+fn test_named_checkout_git_state_restored_after_structured_failure_result() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
+
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let repo = temp.path().join("named-checkout");
+    std::fs::create_dir_all(&repo).expect("failed to create named checkout dir");
+    if !init_git_repo(&repo) {
+        eprintln!("skipping: git unavailable for structured-failure restore test");
+        return;
+    }
+    assert!(
+        git_in(&repo, &["status", "--porcelain"]).is_some(),
+        "precondition: the named checkout must be a healthy work tree before the run"
+    );
+
+    let runner = temp.path().join("recipe-runner-rs");
+    write_stub(
+        &runner,
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ngit -C \"$5\" config core.bare true\n\
+         printf '{\"recipe_name\":\"structured-fail\",\"success\":false}\\n'\nexit 0\n",
+    );
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: structured-fail-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
+
+    let result =
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &repo, &[], None);
+    // The restore reports through the result, so a run that could not put the
+    // value back is an error rather than a quiet success. Either way the
+    // checkout itself must be usable.
+    if let Ok(run) = &result {
+        assert!(
+            !run.success,
+            "precondition: runner reported a structured failure (success == false)"
+        );
+    }
+
+    let bare_after = git_in(&repo, &["config", "--get", "core.bare"]);
+    assert!(
+        matches!(bare_after.as_deref(), Some("false") | None),
+        "the run must restore the named checkout's core.bare \
+         (issues #964, #2814): core.bare is still {bare_after:?} after the failed run"
+    );
+    assert!(
+        git_in(&repo, &["status", "--porcelain"]).is_some(),
+        "the run must leave the named checkout usable \
+         (`git status` must succeed) after the failed run (issues #964, #2814)"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Test 11 — the restore PRESERVES durable child artifacts.
+//
+// It is scoped to the named checkout's own `core.bare` and never deletes or
+// unregisters durable child worktrees produced by the run.
 // -------------------------------------------------------------------------
 #[test]
 fn test_failure_preserves_durable_child_artifact() {

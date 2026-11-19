@@ -7,8 +7,8 @@ and phase completion remain separate driver operations.
 
 The public CLI is `amplihack orch helper autodrive-completion-{prepare,seal,write,dispatch}`:
 
-- `prepare` takes the state directory, round label, designated record, PR worktree,
-  review directory and launch tools. Evaluator data arrives through an allowlisted
+- `prepare` takes the state directory, round label, designated record, PR worktree
+  and launch tools. Evaluator data arrives through an allowlisted
   JSON file or `--context-from-file key=path`. It returns a fresh `run_id`, a
   `private_state` path and a unique `decision_file` path.
 - `seal` captures the record and its sidecars in driver-owned state after the

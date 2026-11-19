@@ -1359,7 +1359,7 @@ fn quiet_git(home: &Path, dir: &Path, args: &[&str]) {
 /// of it (`<root>/pr-wt`), which the stub resolver also returns, as when an
 /// operator passes `-c repo_path=<PR worktree>` from the main checkout.
 /// The real `autodrive_worktree_guard.sh` and `workflow_worktree_root.sh`
-/// derive the review dir.
+/// are on the ladder the step searches.
 fn run_loop_step_02_from(
     recipe: &str,
     step: &str,
@@ -1400,7 +1400,7 @@ fn run_loop_step_02_from(
         &launch
     };
     fs::create_dir_all(&tools).expect("mkdir tools");
-    // Step-02 takes the review dir from the real guard (#1528).
+    // Step-02 resolves its recipes with the real guard (#1528).
     for real_tool in ["autodrive_worktree_guard.sh", "workflow_worktree_root.sh"] {
         fs::copy(tools_dir().join(real_tool), tools.join(real_tool))
             .unwrap_or_else(|e| panic!("copy {real_tool}: {e}"));
@@ -1533,10 +1533,6 @@ fn loop_step_02_refuses_before_the_loop_when_resolution_fails() {
 // Crusty round 3 on PR #1586, item 1: the guard must not take its answer from
 // an inherited `GIT_DIR` (a git hook runs with one set, githooks(5)), whose
 // `gh pr diff N` would read another repository's pull request N.
-
-// Crusty round 3 on PR #1586, item 2: for a bare repository the resolver
-// answers the directory beside the bare git dir, which is no checkout.
-// `review-dir` stops by name rather than start agents there.
 
 // ---------------------------------------------------------------------------
 // Round 3: judging agents never start in the tree they judge (#1528)

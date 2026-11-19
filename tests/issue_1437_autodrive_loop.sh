@@ -52,7 +52,7 @@ done
 export REAL_AMPLIHACK
 echo "  (JSON helper: ${REAL_AMPLIHACK:-POSIX stand-in})"
 
-# The review dir must be the main checkout of --repo's repository (#1528).
+# --repo is a linked worktree of a main checkout, as a PR worktree is (#2808).
 MAIN="${WORK}/main"; WT="${WORK}/worktree"
 g() { HOME="$WORK" GIT_CONFIG_NOSYSTEM=1 git -C "$MAIN" -c user.name=t -c user.email=t@t "$@"; }
 { mkdir -p "$MAIN" && g init -q \
@@ -273,6 +273,8 @@ bare_calls() { local n; n="$(grep -c '^BARE ' "${AB}/log" 2>/dev/null)" || true;
 SHA40="$(git -C "$WT" rev-parse --verify HEAD)"
 AUTODRIVE_ROUND_RECORD="${AB}/record.json" REPO_PATH="$WT" AUTODRIVE_ROUND_LABEL=round-1 \
   RECIPE_VAR_crusty_verdict='{"crusty_verdict":"CLEAN","concern_count":0}' \
+  RECIPE_VAR_reviewed_head_sha="$SHA40" \
+  RECIPE_VAR_crusty_review="{\"reviewed_head_sha\":\"${SHA40}\"}" \
   RECIPE_VAR_crusty_round_context="{\"head_sha\":\"${SHA40}\"}" RECIPE_VAR_crusty_fix_evidence='{"commits":0}' \
   AUTODRIVE_COMPLETION_STATE="${AB}/completion" ab autodrive_crusty_record.sh >/dev/null 2>"${AB}/record.err"
 ok AMPLIHACK-BIN-RECORD-EXTRACT "the record's field extraction calls \$AMPLIHACK_BIN: $(tail -n 2 "${AB}/record.err")" \

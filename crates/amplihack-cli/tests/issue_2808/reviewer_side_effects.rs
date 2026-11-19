@@ -7,6 +7,7 @@
 //! readable by others, loop-owned keys cannot be injected), not model quality.
 use super::fixture::{Fixture, files_under, private, succeeds, workspace};
 use super::review_rounds::{Mutation, ROUNDS, run};
+use crate::support::exec_stub::write_executable;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -42,37 +43,6 @@ fn reviewer_edit_and_new_file_are_assessed_and_the_run_continues() {
         // The drive clone is a different checkout and is never touched.
         assert!(!f.repo.join("reviewer-created").exists());
         f.assert_no_private_repositories();
-    }
-}
-
-/// The step-02b result is reported, never gated on: no step after the review
-/// may turn a reviewer side effect into a stop.
-#[test]
-fn the_after_review_step_is_present_in_both_rounds_and_is_not_a_stop_condition() {
-    for (name, _, _) in ROUNDS {
-        let path = workspace()
-            .join("amplifier-bundle/recipes")
-            .join(format!("{name}.yaml"));
-        let recipe = recipe_runner_rs::parser::RecipeParser::new()
-            .parse(&fs::read_to_string(path).unwrap())
-            .unwrap();
-        let ids: Vec<&str> = recipe.steps.iter().map(|s| s.id.as_str()).collect();
-        assert!(
-            ids.contains(&"step-02b-assess-review-changes"),
-            "{name}: after-review step missing: {ids:?}"
-        );
-        for retired in ["step-02b-review-dir-unchanged", "step-02a-review-dir-index"] {
-            assert!(!ids.contains(&retired), "{name}: {retired} still present");
-        }
-        let step = recipe
-            .steps
-            .iter()
-            .find(|s| s.id == "step-02b-assess-review-changes")
-            .unwrap();
-        assert!(
-            !step.parse_json,
-            "{name}: parse_json would add a failure mode to a step that must never end the run"
-        );
     }
 }
 
@@ -186,57 +156,53 @@ fn symlinked_parent_makes_the_baseline_incomplete_without_following_it() {
     }
 }
 
-/// SR-5/SR-6/SR-7: loop-owned context keys cannot arrive from the operator.
+/// SR-5/SR-6/SR-7 and #2814: the loop owns some context keys and hands them to
+/// the guard, which then refuses the run; every other key is forwarded to the
+/// round. The guard refuses whatever key it is given, so what is under test is
+/// the loop's own routing, and only driving the loop shows it.
 #[test]
-fn loop_preflight_refuses_every_loop_owned_context_key() {
-    let f = Fixture::new();
-    let guard = workspace().join("amplifier-bundle/tools/autodrive_worktree_guard.sh");
-    for key in [
-        "pre_review_evidence",
-        "review_change_assessment",
-        "reviewed_head_sha",
-        "review_dir",
-        "review_launch_dir",
+fn the_loop_refuses_the_context_keys_it_owns_and_forwards_the_rest() {
+    let tools = workspace().join("amplifier-bundle/tools");
+    for (key, owned) in [
+        ("reviewed_head_sha", true),
+        ("autodrive_launch_tools", true),
+        ("autodrive_completion_state", true),
+        ("pre_review_evidence", true),
+        ("review_change_assessment", true),
+        ("task_type", false),
+        ("autodrive_base_branch", false),
     ] {
+        let f = Fixture::new();
+        let task = f.temp.path().join("task.txt");
+        fs::write(&task, "address the review\n").unwrap();
+        // Every amplihack call the loop makes after the preflight fails, so a
+        // forwarded key stops at the next check instead, with its own reason.
+        let stub = f.temp.path().join("amplihack-stub");
+        write_executable(&stub, "#!/bin/sh\nexit 97\n", 0o700);
         let out = f
             .command("bash")
             .current_dir(&f.pr)
-            .arg(&guard)
-            .args(["loop-preflight", "crusty", f.pr.to_str().unwrap()])
-            .args(["autodrive-crusty-round", key])
+            .env("AMPLIHACK_BIN", &stub)
+            .arg(tools.join("autodrive_loop.sh"))
+            .args(["--loop-name", "crusty"])
+            .args(["--round-recipe", "autodrive-crusty-round"])
+            .args(["--clean-token", "CLEAN"])
+            .args(["--verdict-field", "crusty_verdict"])
+            .arg("--repo")
+            .arg(&f.pr)
+            .arg("--state-dir")
+            .arg(&f.state)
+            .arg("--task-file")
+            .arg(&task)
+            .arg("--context")
+            .arg(format!("{key}=supplied-by-the-operator"))
             .output()
             .unwrap();
-        assert!(!out.status.success(), "{key} was accepted: {out:?}");
-        assert!(
-            String::from_utf8_lossy(&out.stdout).contains("UNTRUSTED_RECIPE"),
-            "{key}: {out:?}"
-        );
-    }
-}
-
-/// D3: no subcommand other than the two kept ones survives in the guard, and
-/// `launch_recipe` still refuses a recipe resolving inside the reviewed tree.
-#[test]
-fn guard_keeps_only_loop_preflight_and_commit_dir() {
-    let f = Fixture::new();
-    let guard = workspace().join("amplifier-bundle/tools/autodrive_worktree_guard.sh");
-    for retired in [
-        "review-dir",
-        "private-review-dir",
-        "release-review-dir",
-        "round-guard",
-        "index-stamp",
-        "index-check",
-        "round-index-check",
-    ] {
-        let out = f
-            .command("bash")
-            .current_dir(&f.pr)
-            .arg(&guard)
-            .arg(retired)
-            .output()
-            .unwrap();
-        assert_eq!(out.status.code(), Some(2), "{retired}: {out:?}");
+        assert!(!out.status.success(), "{key}: {out:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let refused = stdout.contains("\"loop_result\":\"UNTRUSTED_RECIPE\"")
+            && stdout.contains("reserved loop context");
+        assert_eq!(refused, owned, "{key} routing: {out:?}");
     }
 }
 

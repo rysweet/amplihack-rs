@@ -64,7 +64,11 @@ while [ $# -gt 0 ]; do
     --repo)          REPO="${2:-}"; shift 2 ;;
     --state-dir)     STATE_DIR="${2:-}"; shift 2 ;;
     --task-file)     TASK_FILE_IN="${2:-}"; shift 2 ;;
-    --context)       case "${2:-}" in reviewed_head_sha=*|autodrive_launch_tools=*|autodrive_completion_state=*) CTX_REFUSED="${2%%=*}" ;; pr_number=*) AD_PR="${2#*=}" ;; step_recovery_dir=*) AD_RECOVERY_DIR="${2#*=}" ;; esac
+    # Loop- and round-owned keys: the loop measures reviewed_head_sha itself and
+    # the round's own steps produce pre_review_evidence and
+    # review_change_assessment, so an operator value for any of them would be
+    # read as evidence nobody produced. loop-preflight refuses the run (#2814).
+    --context)       case "${2:-}" in reviewed_head_sha=*|autodrive_launch_tools=*|autodrive_completion_state=*|pre_review_evidence=*|review_change_assessment=*) CTX_REFUSED="${2%%=*}" ;; pr_number=*) AD_PR="${2#*=}" ;; step_recovery_dir=*) AD_RECOVERY_DIR="${2#*=}" ;; esac
                      case "${2:-}" in no_merge=*|autodrive_dry_run=*|autodrive_base_branch=*) BEFORE_CTX+=("-c" "${2:-}"); ROUND_CTX+=("-c" "${2:-}") ;; autodrive_budget_*) BUDGET_CTX+=("${2:-}"); BEFORE_CTX+=("-c" "${2:-}") ;; *) ROUND_CTX+=("-c" "${2:-}") ;; esac; shift 2 ;;
     --before-round)  BEFORE_ROUND="${2:-}"; shift 2 ;;
     *) echo "ERROR: autodrive_loop.sh: unknown argument '$1'" >&2; exit 2 ;;
@@ -206,8 +210,14 @@ while :; do
   fi
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
   # --verify resolves to a commit or fails, so the value interpolated into the
-  # round's context is always a full lowercase hex SHA (#2808 SR-6).
-  REVIEWED_SHA="$(git -C "$REPO" rev-parse --verify --quiet 'HEAD^{commit}')" || exit 1
+  # round's context is always a full lowercase hex SHA (#2808 SR-6). A HEAD
+  # that will not resolve stops the loop with a named reason rather than a
+  # bare exit: the round never ran, and the record says why (#2814).
+  if ! REVIEWED_SHA="$(git -C "$REPO" rev-parse --verify --quiet 'HEAD^{commit}')" || [ -z "$REVIEWED_SHA" ]; then
+    echo "ERROR: cannot resolve HEAD in ${REPO}; ${ROUND_LABEL} did not run." >&2
+    escalate "REVIEWED_HEAD_UNRESOLVED" "git rev-parse HEAD failed in the named checkout ${REPO}, so no commit could be named as the one under review" bad_checkout
+    exit 1
+  fi
   COMPLETION_CTX=(); unset AUTODRIVE_COMPLETION_STATE
   [ "$LOOP_NAME" != crusty ] || . "${LOOP_HOME}/autodrive_completion_context.sh" || exit 2
   # #2575: the merge-ready round reads the previous round's write-up (none in round one) from a private file, never argv.
@@ -225,8 +235,14 @@ while :; do
   # the round reads one, so reclaim them here, as soon as the round that took
   # them has returned. Best effort: this never changes the round's outcome.
   for BASELINE_DIR in "$STATE_DIR"/pre-review.*; do
-    [ -d "$BASELINE_DIR" ] && [ ! -L "$BASELINE_DIR" ] && rm -rf -- "$BASELINE_DIR"
-  done 2>/dev/null || :
+    [ -d "$BASELINE_DIR" ] && [ ! -L "$BASELINE_DIR" ] || continue
+    # The baseline may hold the contents of untracked files, so a removal that
+    # failed is said out loud: what is left behind is named, and the operator
+    # decides. The round's outcome is unchanged either way (#2814).
+    rm -rf -- "$BASELINE_DIR" 2>"${STATE_DIR}/.baseline-rm.err" \
+      || echo "WARNING: the round's pre-review baseline ${BASELINE_DIR} could not be removed ($(tr -d '\000' < "${STATE_DIR}/.baseline-rm.err" | tr '\n' ' ' | cut -c1-200)); it may hold untracked file contents, so remove it by hand." >&2
+    rm -f -- "${STATE_DIR}/.baseline-rm.err"
+  done
   tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 
   if terminal_refusal "$ROUND_RC" "$LOG"; then

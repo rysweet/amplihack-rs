@@ -60,8 +60,8 @@ steps:
       file, regenerate an artefact. Then say exactly what you changed.
 
       You must not:
-      - modify the review directory, the main checkout, any validator or guard
-        script, or the evidence files they read;
+      - modify the main checkout, any validator or guard script, or the
+        evidence files they read;
       - push, open, edit, merge or comment on pull requests or issues, or make
         any other GitHub write;
       - bypass or disable hooks (`--no-verify`, `SKIP=`, `core.hooksPath`) or

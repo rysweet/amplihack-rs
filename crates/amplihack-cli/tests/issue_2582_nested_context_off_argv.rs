@@ -147,8 +147,8 @@ case "${1:-} ${2:-}" in
       fi
       prev=$a
     done
-    # Never the review dir: #1528 stops the loop if a round changes its index
-    # or HEAD. A round's own commits land in the PR worktree.
+    # A round's own commits land in the PR worktree, the only checkout the
+    # round has since #2808.
     if [ -n "$rd" ] && [ -d "$rd/.git" -o -f "$rd/.git" ]; then
       t="$(git -C "$rd" write-tree)"
       c="$(git -C "$rd" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "stub round $n")"

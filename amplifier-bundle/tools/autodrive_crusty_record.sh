@@ -17,10 +17,37 @@ COUNT="$(g "${RECIPE_VAR_crusty_verdict:-}" concern_count 0)"
 COMMITS="$(g "${RECIPE_VAR_crusty_fix_evidence:-}" commits 0)"
 digits "$COUNT" || { echo "WARNING: concern_count '$(printf '%s' "$COUNT" | tr -cd '0-9A-Za-z' | cut -c1-32)' is not a number; recorded as 0" >&2; COUNT=0; }
 digits "$COMMITS" || { echo "WARNING: commits '$(printf '%s' "$COMMITS" | tr -cd '0-9A-Za-z' | cut -c1-32)' is not a number; recorded as 0" >&2; COMMITS=0; }
-# The context agent identifies the reviewed commit. head_sha is the actual
-# resulting head, so it is
+# The reviewed commit is the one the loop measured for itself with
+# `git rev-parse` before the round started (autodrive_loop.sh) and passed in as
+# reviewed_head_sha. That measurement, never an agent's claim, is what the
+# record carries. The reviewer's own reviewed_head_sha is read only to be
+# compared with it: a claim that is missing, or that names another commit, is
+# said out loud and added to the round's findings, so the round goes to the
+# evaluator instead of completing on a head nobody checked (#2814). The check
+# never fails the round by itself.
+# head_sha is the actual resulting head, so it is
 # never empty (#1517). A missing SHA fails the step: forcing CONCERNS would review the same tree forever.
-REVIEWED="$(g "${RECIPE_VAR_crusty_review:-}" reviewed_head_sha "$(g "${RECIPE_VAR_crusty_round_context:-}" head_sha '')")"
+MEASURED="${RECIPE_VAR_reviewed_head_sha:-}"
+CLAIMED="$(g "${RECIPE_VAR_crusty_review:-}" reviewed_head_sha '')"
+safe() { printf '%s' "${1:-}" | tr -cd '0-9A-Za-z' | cut -c1-64; }
+HEAD_FINDING=""
+if hex "$MEASURED"; then
+  REVIEWED="$MEASURED"
+  if [ -z "$CLAIMED" ]; then
+    HEAD_FINDING="crusty-head-claim-missing"
+    echo "ERROR: ${HEAD_FINDING}: the review named no reviewed_head_sha, so nothing confirms which commit it read. The record carries the loop-measured ${MEASURED}; this round cannot complete and goes to the evaluator." >&2
+  elif [ "$CLAIMED" != "$MEASURED" ]; then
+    HEAD_FINDING="crusty-head-claim-mismatch"
+    echo "ERROR: ${HEAD_FINDING}: the review named '$(safe "$CLAIMED")' but the loop measured ${MEASURED} as this round's head. The record carries the measured commit; this round cannot complete and goes to the evaluator." >&2
+  fi
+else
+  # The loop always passes its own measurement. Without one there is nothing to
+  # check the claim against, so the round may not complete on it either.
+  HEAD_FINDING="crusty-head-unmeasured"
+  REVIEWED="$CLAIMED"
+  [ -n "$REVIEWED" ] || REVIEWED="$(g "${RECIPE_VAR_crusty_round_context:-}" head_sha '')"
+  echo "ERROR: ${HEAD_FINDING}: no loop-measured reviewed_head_sha reached this step (got '$(safe "$MEASURED")'), so the recorded head rests on the round's own report; this round cannot complete and goes to the evaluator." >&2
+fi
 SHA="$(g "${RECIPE_VAR_crusty_fix_evidence:-}" head_sha '')"
 [ -n "$SHA" ] || SHA="$(git -C "${REPO_PATH:-.}" rev-parse HEAD)" || exit 1
 if ! hex "$REVIEWED" || ! hex "$SHA"; then
@@ -32,6 +59,13 @@ LABEL="$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | tr -c 'A-Za-z0-9._-' '_
 # it, so it is created new under umask 077, whatever the caller's umask (autodrive_state.sh, PRIVATE STATE).
 umask 077
 [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings" || { echo "ERROR: cannot write round findings" >&2; exit 1; }
+# An open finding keeps the round out of the completion path: the Rust
+# completion gate refuses a record whose findings are not empty, and the
+# next-action step reads the same file (#2814).
+if [ -n "$HEAD_FINDING" ]; then
+  printf '%s\n' "$HEAD_FINDING" >> "${RECORD}.findings" \
+    || { echo "ERROR: cannot record ${HEAD_FINDING} in the round findings; the disagreement would go unrecorded" >&2; exit 1; }
+fi
 rm -f -- "$RECORD" || exit 1
 printf '{"crusty_verdict":"%s","concern_count":%s,"commits_this_round":%s,"head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s","test_signal":"","ci_signal":""}\n' \
   "$VERDICT" "$COUNT" "$COMMITS" "$SHA" "$REVIEWED" "$LABEL" > "$RECORD" || { echo "ERROR: cannot write round record" >&2; exit 1; }

@@ -770,6 +770,11 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // lookup, temp dirs, bundle copies, spawn) so no descendant is ever
     // created past the limit.
     let guard = enforce_recursion_depth_guard(working_dir)?;
+    // Issues #964/#1903/#2814: read the named checkout's `core.bare` before
+    // anything else runs, so the release step below can tell a flip from the
+    // value it started with. Taken here, after the depth guard and before the
+    // bundle, spawn and every step.
+    let checkout_bare = super::checkout_bare::CheckoutBare::snapshot(working_dir);
     let launch = if let Some(auth) = &mut authorization {
         let env = EnvBuilder::new().with_amplihack_home_from(working_dir);
         let home = env
@@ -1421,6 +1426,15 @@ pub(super) fn execute_recipe_via_rust_fresh(
     release_in_order(
         final_result,
         vec![
+            // First, so the checkout is usable again before any later step —
+            // or the operator — runs git in it (#964, #2814).
+            (
+                "named checkout git state",
+                Box::new(|_| match checkout_bare.restore() {
+                    None => Ok(()),
+                    Some(message) => Err(anyhow::anyhow!(message)),
+                }),
+            ),
             (
                 "recovery admission finish",
                 Box::new(|result| {

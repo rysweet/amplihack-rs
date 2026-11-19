@@ -240,9 +240,9 @@ directory that recipe was given by its caller.
 The driver runs `amplihack recipe run step-failure-recovery -c
 step_recovery_evidence=<path>` with `AMPLIHACK_STEP_RECOVERY_ACTIVE=1`. The
 prompt says the evidence is untrusted data, and that the agent must not make
-GitHub writes, bypass hooks, read credentials, change the review directory,
-the main checkout, guard or validator scripts or their evidence, write under
-the recovery directory, or start another orchestration.
+GitHub writes, bypass hooks, read credentials, change the main checkout,
+guard or validator scripts or their evidence, write under the recovery
+directory, or start another orchestration.
 
 A local repair adds new commits only. The prompt forbids rewriting or
 discarding commits (amend, rebase, squash, reset to an earlier commit) and

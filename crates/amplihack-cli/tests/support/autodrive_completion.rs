@@ -188,6 +188,7 @@ impl Drive {
             .env("AUTODRIVE_ROUND_RECORD", &record)
             .env("AUTODRIVE_LAUNCH_TOOLS", tools_dir())
             .env("REVIEWED_HEAD_SHA", self.head())
+            .env("RECIPE_VAR_reviewed_head_sha", self.head())
             .env("REPO_PATH", &self.repo)
             .env("PR_NUMBER", "7")
             .output()

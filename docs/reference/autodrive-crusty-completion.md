@@ -91,10 +91,32 @@ After the round record is written, an agent reads the record and its
 | Invalid evidence: missing or unreadable record, no verdict, or a failed or refused round (rc not 0, exit `79`) | `evaluate`, with the fault as the reason | Never `complete`. Dispatch keeps its own failure handling: exits `79` and `75` return before the decision is read, a missing or unreadable record fails dispatch validation, and a record with no verdict goes to the evaluator as `MISSING`. |
 
 The PR head is the round record's `head_sha`, or the verified PR worktree's
-`HEAD`. The agent compares `reviewed_head_sha` with that PR head. Step-07 may
-run in the base checkout; its own `git rev-parse HEAD` must never substitute
-for the PR head. Any round commits require `evaluate`, even if other evidence
-suggests completion.
+`HEAD`. The agent compares `reviewed_head_sha` with that PR head. Since #2808
+step-07 runs in the PR worktree, and its own `git rev-parse HEAD` still never
+substitutes for the record's `head_sha`. Any round commits require
+`evaluate`, even if other evidence suggests completion.
+
+### The recorded reviewed head
+
+`reviewed_head_sha` in the record is the commit `autodrive_loop.sh` measured
+with `git rev-parse` in the named checkout before the round started, and
+passed to the round as the `reviewed_head_sha` context value. It is never
+taken from the review's own report.
+
+`autodrive_crusty_record.sh` reads the reviewer's `reviewed_head_sha` only to
+compare it with that measurement, and writes one of three ids into the
+`.findings` sidecar when they do not agree (#2814):
+
+| Finding | Observation |
+| --- | --- |
+| `crusty-head-claim-missing` | The review reported no `reviewed_head_sha`, so nothing says which commit it read. |
+| `crusty-head-claim-mismatch` | The review named a commit other than the one the loop measured. |
+| `crusty-head-unmeasured` | No loop-measured value reached the writer, so the claim could not be checked at all. |
+
+Each is an open finding, so the round cannot complete: the agent chooses
+`evaluate` with the disagreement as the reason, and dispatch refuses a
+completion claim whose `.findings` sidecar is not empty. The check never
+fails the round by itself; the round's own outcome is unchanged.
 
 `CONCERNS` always means `evaluate`, whatever the head SHAs or sidecars say.
 After a round with commits, `reviewed_head_sha` differing from `head_sha` is

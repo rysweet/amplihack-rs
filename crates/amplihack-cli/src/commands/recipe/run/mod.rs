@@ -2,6 +2,8 @@ use super::*;
 use crate::commands::governor::{self, AdmitRequest, Denied, GovernorArgs};
 
 mod binary;
+/// Issues #964/#1903/#2814 — the named checkout's `core.bare`, before and after.
+mod checkout_bare;
 /// Issue #1570: `--context-file` and `--context-from-file`.
 pub(crate) mod context_sources;
 /// Issue #2582: recipe context reaches the runner in a 0600 file when it can.
