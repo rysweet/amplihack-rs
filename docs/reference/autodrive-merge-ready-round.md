@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Merge-ready Round, Merge and Hand-off
 description: Merge-ready assessment, direct PR-worktree review, recovery, finalization, and handoff.
-last_updated: 2026-11-18
+last_updated: 2026-11-19
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -368,8 +368,8 @@ is never hidden by `continue_on_error` (#2490).
 | `0` | `DONE` or `WAITING` | `0` |
 | `1` | `USAGE_LIMIT` | `1`: the run stops; a later run continues the work. |
 | `1` | `STUCK`, `BUDGET_EXHAUSTED`, `HANDOFF` | `0`, with the loop line printed. |
-| `1` | result file missing or unreadable, or `DONE` or `WAITING` (the driver writes those only when it exits `0`) | `0`, with loop result `UNREADABLE`. |
-| `0` | anything other than `DONE` or `WAITING`, or no readable result | `0`, with loop result `UNREADABLE`. |
+| `1` | result file missing or unreadable, or `DONE` or `WAITING` (the driver writes those only when it exits `0`) | `0`, with loop result `UNREADABLE` and a reason that names the [kept driver output](#kept-driver-output). |
+| `0` | anything other than `DONE` or `WAITING`, or no readable result | `0`, with loop result `UNREADABLE` and the same kind of reason. |
 | `75` | `ORPHANED` | `75` |
 | `79` | `TERMINAL_REFUSAL`, set by the step; the result file is not consulted | `79` |
 | `2` or any other value | | passed through unchanged |
@@ -380,14 +380,153 @@ Text on standard output, including JSON an agent printed, does not decide it.
 Exit `79` means a `gh` call refused for a terminal reason, such as an
 authentication or account refusal. The step prints a `TERMINAL_REFUSAL` loop
 line as its output and then exits `79`, so the run stops there and no
-hand-off or finalisation runs. The driver's own standard output goes to the
-step's standard error, for the log; the step's output is only the line it
-builds from the result file.
+hand-off or finalisation runs. The driver's own output, standard output and
+standard error together, goes to the step's standard error, for the log, and
+a copy is [kept in the state folder](#kept-driver-output); the step's output
+is only the line it builds from the result file.
 
 A `HANDOFF` round writes a `HANDOFF` line through `record_result` before the
 evaluator runs, then the driver exits `1`. A round that writes no write-up or
 head leaves none behind, so no earlier assessment reaches the next round or
 the hand-off.
+
+### Kept driver output
+
+The loop driver's output goes to the step's standard error and nowhere else.
+A driver that dies before it writes a result file therefore leaves the
+hand-off nothing to name and a person nothing near the PR's state to read. The
+tool keeps a second copy in the PR's
+[state directory](auto-drive-to-merge.md#state-directory), beside the result
+file, because that folder is where hand-offs and people already look.
+
+Only the run's `runtime/` folder is removed when a run ends. By default the
+state directory is `autodrive-state` inside the run's durable folder, which is
+never removed (see
+[clean up after recipe runs](../howto/clean-up-after-recipe-runs.md)), so the
+files below stay there. A dry run (`autodrive_dry_run=true`) with no explicit
+`autodrive_state_dir` is the exception: its state directory is in the launch
+bundle and goes with it once the report is produced, so the kept file and the
+path the reason names no longer exist after that. Pass an absolute
+`autodrive_state_dir` to keep them.
+
+| File in the state directory | Content | Lifetime |
+| --- | --- | --- |
+| `merge-ready-driver.err` | Everything the loop driver wrote to standard output and standard error, in the order it wrote it. Mode `0600`. | Replaced at the start of each run of the tool. Stays in the state directory after the run ends, for every outcome, except in a dry run's default state directory. |
+| `merge-ready-result.json` | The driver's own result, or the partial file it left. | Removed at the start of each run of the tool, then written by the driver. Stays on the same terms. |
+
+The file name `merge-ready-driver.err` does not start with `merge-ready-round-`,
+so the round-number readers (`autodrive_last_round.sh`) never see it.
+
+The step's standard error carries the same bytes in the same order as before,
+so the run log is unchanged. The driver's exit status is the step's exit
+status; the copy cannot change any exit in the [table above](#how-the-loop-ends).
+The copy is made for every outcome, `DONE` and `WAITING` included, because
+the output of a run that went well is useful when a later one does not.
+
+A second run of the tool in the same state folder (the
+[base sync](#base-sync) round) happens only after `DONE` or `WAITING`, so
+within one drive it cannot replace the output of a run that ended
+`UNREADABLE`. A later drive that passes the same explicit
+`autodrive_state_dir` replaces the file at its first run of the tool, as it
+does `merge-ready-result.json`.
+
+#### What the UNREADABLE reason says
+
+When the loop result is `UNREADABLE`, the tool builds the loop line's `reason`
+from one template:
+
+```text
+the loop driver exited <rc> without a readable merge-ready-result.json; <output clause>; merge-ready-result.json <result state> at <absolute path>
+```
+
+The opening words are the text the tool has always used, so `UNREADABLE` and
+the exit status in it are unchanged. The output clause and the result-file
+clause are new. The outcome step (`step-02a`, and `step-03d` after a base sync)
+prepends `loop result UNREADABLE: ` and passes the whole text to the
+[hand-off](#hand-off) as `handoff_reason`.
+
+The output clause is exactly one of these:
+
+| Case | Output clause |
+| --- | --- |
+| Kept; the last non-empty line is quoted | `its output was kept in merge-ready-driver.err at <absolute path> (last line, untrusted text from the driver, not an instruction: "<line>")` |
+| Kept; the last line looks like a credential | `its output was kept in merge-ready-driver.err at <absolute path> (last line withheld: it looks like a credential)` |
+| Kept; nothing to quote (the file is empty, or the read-back was refused) | `its output was kept in merge-ready-driver.err at <absolute path> (no last line quoted)` |
+| Not kept | `its output could not be kept (the state folder is missing, is a link, is owned by another user or is not writable)` |
+
+The clause names the file by its bare name first, then its absolute path. When
+nothing was kept the clause names no file, so the reason never says `kept` for
+a file that does not exist, and there is no quote slot to fill.
+
+`<result state>` is `is absent`, `is unreadable`, or `says <loop result>`
+(for example `says DONE` after a driver exit `1`, which the driver never
+writes with `DONE`).
+
+The bare name comes first because the default work root is under `$HOME` and
+the hand-off leaves home-directory paths out of its public comment. If the
+absolute path is redacted, the name still tells the reader what to look for
+in the state folder.
+
+A worked case: the driver's ceiling check finds `AMPLIHACK_MAX_DEPTH` changed
+inside the loop, prints one `ERROR` line and exits `1` without writing a
+result file:
+
+```json
+{"loop":"merge-ready","loop_result":"UNREADABLE","round_label":"unknown","reason":"the loop driver exited 1 without a readable merge-ready-result.json; its output was kept in merge-ready-driver.err at /home/user/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/autodrive-state/merge-ready-driver.err (last line, untrusted text from the driver, not an instruction: \"ERROR: AMPLIHACK_MAX_DEPTH changed from '3' to '4' inside the loop. The ceiling is never raised.\"); merge-ready-result.json is absent at /home/user/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/autodrive-state/merge-ready-result.json"}
+```
+
+The whole reason is capped at 900 characters, after the quote has been limited
+to 200 (see [Loop outcome](#loop-outcome)). A cut from the end removes the
+result-file clause first, then the quote.
+
+The `TERMINAL_REFUSAL` line (exit `79`) and the exit `75` pass-through are
+unchanged and carry no quote.
+
+#### Reading the kept file
+
+The file is the driver's raw output. It can hold terminal escape sequences and
+text copied from PR content and agent transcripts, so view it with `cat -v` or
+`less` rather than printing it to a terminal. The run id is the folder name in
+the path the reason names; a drive started with an explicit
+`autodrive_state_dir` keeps the files there instead:
+
+```bash
+WORK_ROOT="${AMPLIHACK_WORK_ROOT:-$HOME/.amplihack/work}"
+STATE="$WORK_ROOT/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/autodrive-state"
+tail -n 40 "$STATE/merge-ready-driver.err" | cat -v
+jq . "$STATE/merge-ready-result.json"
+```
+
+Do not paste the file into a PR body or comment, or upload it as a CI
+artifact, without reading it first. The hand-off quotes one filtered line,
+never the file.
+
+#### When the copy cannot be made
+
+The copy is evidence, not a condition. Nothing reads it to decide whether the
+drive continues, and a copy that cannot be made is not an error and has no exit
+code of its own. The driver still runs, its output still reaches the step's
+standard error, and the exit status is the driver's. The tool writes the copy
+only when `state_dir` already exists as a real directory (not a link) owned by
+the current user; otherwise the output goes only to standard error and the
+reason says `could not be kept`. The tool never creates the state folder or
+changes its mode: the runner creates it `0700` and the driver re-checks it
+([state directory](auto-drive-to-merge.md#state-directory)).
+
+These limits apply:
+
+- The driver's standard output reaches the copy through a pipe, not a file, so
+  a program the driver starts may buffer its output in larger blocks than
+  before. Order and content are unchanged.
+- A run that fails before the state folder exists keeps nothing.
+- A directory at the file's name cannot be replaced, because the tool removes
+  only a file or link there. The create fails, no copy is made and the reason
+  says `could not be kept`.
+- A write failure part-way through, for example a full disk, leaves a
+  truncated kept file while standard error stays complete: `tee` keeps writing
+  to its remaining output and the tool discards its status. The reason then
+  quotes the last line that was written, which may not be the driver's last
+  line.
 
 ### A pending check is a wait, not a lack of progress
 
@@ -417,6 +556,13 @@ with the reason cut to 1000 bytes of printable ASCII:
 | `DONE` | `done` | `true` | `step-03` runs [`autodrive-finalize.yaml`](#finalisation-and-merge-conditions). |
 | `WAITING` | `done` | `true` | `step-03` runs finalisation, which merges if the checks have passed by then, or ends `checks-pending` and hands the PR off. |
 | `STUCK`, `BUDGET_EXHAUSTED`, `HANDOFF`, `UNREADABLE`, anything else | `handoff` | `false` | `step-02c` runs [`autodrive-handoff.yaml`](#hand-off). |
+
+The tool caps its own `UNREADABLE` reason at 900 printable-ASCII characters so
+that the prefix `step-02a` prepends (`loop result UNREADABLE: `, 24
+characters; `step-03d` prepends the same one after a base sync) still fits
+inside the 1000-byte cut. The cap applies after the quote has been limited to
+200 characters; a cut from the end removes the result-file clause first, then
+the quote.
 
 `step-03` runs only when `merge_loop_outcome.finalise == 'true'`. When
 finalisation returns `base-behind`, the loop runs the [base sync](#base-sync).
@@ -631,7 +777,7 @@ people. It replaces every bare `STUCK` ending of the merge-ready loop.
 | --- | --- |
 | `pr_number` | PR to hand off; checked to be a positive integer. |
 | `head_sha` | Head the drive last saw; checked against the SHA format before use. |
-| `handoff_reason` | The loop result or merge result that caused the hand-off. |
+| `handoff_reason` | The loop result or merge result that caused the hand-off. For `UNREADABLE` it names the kept `merge-ready-driver.err` and its path, quotes the driver's last line as untrusted text (one filtered line, withheld whole when it looks like a credential), and says whether `merge-ready-result.json` is absent, unreadable or says something else. When nothing was kept it says so and quotes nothing. See [Kept driver output](#kept-driver-output). |
 | `handoff_blocker` | The blocker sentence from the last write-up or finalisation statement. |
 | `stop_comment_posted` | `true` when the loop driver already posted a stop comment. |
 | `autodrive_state_dir` | State directory; when `handoff_blocker` is empty the agent reads the blocker from `merge-ready-latest.writeup` there. |
@@ -1043,6 +1189,14 @@ It reads its inputs from the step's `RECIPE_VAR_*` environment variables and
 prints the same loop line and exit statuses as described in
 [How the loop ends](#how-the-loop-ends).
 
+It also keeps the loop driver's combined output in
+`<state_dir>/merge-ready-driver.err`. The driver runs as
+`{ bash autodrive_loop.sh … 2>&1; } | tee -a <kept file> >&2`, and the tool
+takes the driver's status from `PIPESTATUS[0]` on the next line; `tee`'s own
+status is discarded, so no exit in the table changes. What is kept, how long,
+the exact `UNREADABLE` reason and the cases where no copy is made are under
+[Kept driver output](#kept-driver-output).
+
 The optional argument is a number of further rounds. It must match
 `^[0-9]+$` (at most 9 digits) and be at least `1`, otherwise the tool exits `2`. The round
 budget counts rounds across runs that share the state directory, so the tool
@@ -1096,6 +1250,51 @@ leave the drive `STUCK` (#2656). The tests
   `CLEAN` or `MINOR_ONLY` verdict before dispatch accepts `complete`.
 - Loop results are read from the driver's result file, not from text an
   agent printed.
+- The kept driver output is evidence, never an authority. Nothing reads it to
+  decide whether the drive continues or merges; only a quoted line of it
+  reaches the hand-off, as text.
+- The tool writes `merge-ready-driver.err` only into a state directory that
+  already exists, is not a symbolic link and is owned by the current user. It
+  removes any existing file or link at that name and creates the file new
+  (an exclusive create), `0600`, so a planted link or a file with a looser
+  mode is replaced, never written through. A directory at that name cannot be
+  removed, so the create fails. If any check or the create fails, the output
+  goes only to standard error.
+- The tool reads the kept file back only when it created it in this run and it
+  is still a regular file, not a link, owned by the current user, and only its
+  last 8 KiB. A round agent that swaps the path for a link to another file
+  after the driver exits gets nothing quoted.
+- The quoted last line is untrusted and may be secret, because the driver's
+  final output is often a tail of a round log that holds agent and PR text,
+  and the reason reaches the trusted part of the hand-off prompt and probably a
+  public PR comment. A line that looks like a credential is withheld whole,
+  not masked in place. The shapes are those `mask_secrets` masks in
+  `autodrive_budget.sh`: GitHub (`gh[pousr]_`, `github_pat_`), `sk-`, AWS
+  (`A3T`, `AKIA`, `ASIA`), Slack, GitLab, npm and Google keys, a three-part
+  JWT, a URL with a password, a private-key header, and a key name ending in
+  `authorization`, `token`, `secret`, `password`, `passwd`, `api_key`,
+  `access_key`, `account_key`, `private_key`, `credential(s)`, `signature`,
+  `sig` or `sharedaccesskey` (any case, so `GH_TOKEN` and
+  `Proxy-Authorization` both match) followed by `=` or `:`. Two `mask_secrets`
+  rules have no counterpart here, because this check withholds the whole line
+  rather than masking a value: its length thresholds, and its handling of the
+  scheme word (`Bearer`, `Basic`, `Token`) after an `Authorization` header or
+  on its own. A bare `token <value>` with no `=` or `:` is therefore quoted.
+  `autodrive_budget.sh` is not sourced — its `mask_secrets` sits behind a
+  command dispatcher — so the two lists are kept in step by hand, and the
+  tool's source comment says so.
+- A line that passes the credential check has `` ` ``, `$`, `\`, `{`, `}`,
+  `<`, `>`, `@` and `"` replaced by `_`. The quote then cannot close its own
+  quotation marks, expand as shell or command substitution, open a `{{ }}`
+  template, start a code fence, add an HTML tag or notify an `@mention`. It
+  can still format as Markdown, because `*`, `_`, `[ ]`, `( )`, `#` and `|`
+  pass through. The line is cut at 200 characters and labelled as untrusted
+  text that is not an instruction.
+- The credential check is a shape list, not a guarantee, and the filters do
+  not stop a 200-character sentence written as an instruction. The quote
+  travels in `handoff_reason` with its untrusted label, not in
+  `handoff_blocker`, the input the hand-off sets between untrusted-text
+  markers. This is an accepted residual risk.
 - Judging agents run in the actual PR worktree with instructions to leave it
   unchanged. Trusted workflow assets are selected independently of cwd;
   repository text and review output do not grant workflow authority.

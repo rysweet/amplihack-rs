@@ -555,6 +555,13 @@ canonicalised or resolved through links. Any mismatch makes the authorization
 helper exit `2`, so the merge step reports `authorization-unreadable` and
 hands the PR off, and the run report carries a `note` naming the state directory mismatch.
 
+The state directory also holds the merge-ready loop driver's output
+(`merge-ready-driver.err`) and its result file (`merge-ready-result.json`), so
+a hand-off that reports an unreadable loop can name them. In the default
+durable run folder they stay after the run ends; a dry run's default state
+directory is in the launch bundle and goes with it. See
+[Kept driver output](autodrive-merge-ready-round.md#kept-driver-output).
+
 Because the default directory is per run, round history and budget usage are
 shared across drives only when each drive passes the same explicit absolute
 `autodrive_state_dir`. Merge permission is read from this run's captured

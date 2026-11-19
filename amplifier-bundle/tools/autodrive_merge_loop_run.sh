@@ -21,7 +21,11 @@
 # operator's budget passes through unchanged.
 #
 # Prints one loop line (JSON) read from the driver's own result file; the
-# driver's standard output goes to standard error, for the log.
+# driver's standard output and standard error go to standard error, for the
+# log, and a copy of them is kept in <state_dir>/merge-ready-driver.err, which
+# outlives the run folder (#2849). merge-ready-result.json, or the partial file
+# the driver left, stays in the state directory too. An UNREADABLE line names
+# the kept file and quotes its last line as untrusted text.
 #   0   DONE or WAITING (driver exit 0), or STUCK/BUDGET_EXHAUSTED/HANDOFF
 #       (driver exit 1), or UNREADABLE when the result file does not match
 #   1   USAGE_LIMIT, or a setup failure (named on standard error)
@@ -112,7 +116,33 @@ fi
 # from text on its standard output, which goes to stderr for the log.
 RESULT_FILE="${DIR%/}/merge-ready-result.json"
 rm -f -- "$RESULT_FILE"
-bash "$LOOP_HELPER" --task-file "$TASK_IN" \
+# #2849: the driver's output is the only account of a driver that dies before
+# it writes a result, and the run folder it was logged into does not always
+# outlive the drive. Keep a copy beside the result file, in the PR's state
+# directory. The copy is evidence, never a condition: nothing reads it to
+# decide anything, and a copy that cannot be made is not an error.
+ERR_FILE="${DIR%/}/merge-ready-driver.err"
+CAPTURE=/dev/null
+CAPTURED=0
+# Write only into a state directory that is already there, is not a symbolic
+# link and is ours. This runs before the driver re-checks the directory, and
+# both the create and `tee` would otherwise follow a planted link. Whatever is
+# at the name is removed first and the file created new (an exclusive create
+# under umask 077), so a foreign file keeps neither its content nor its mode
+# and a link is replaced, never written through. A directory there cannot be
+# removed, so the create fails and no copy is made. The tool never creates the
+# state directory: autodrive_private_dir stays the only authority for that.
+if [ -d "$DIR" ] && [ ! -L "${DIR%/}" ] && [ -O "$DIR" ]; then
+  rm -f -- "$ERR_FILE" 2>/dev/null
+  if (umask 077; set -C; : > "$ERR_FILE") 2>/dev/null; then
+    CAPTURE="$ERR_FILE"
+    CAPTURED=1
+  fi
+fi
+# Deliberately not a check: when the capture target stays /dev/null the driver
+# still runs, its output still reaches this step's standard error in full, and
+# every exit status below is unchanged. Do not turn this into a gate.
+{ bash "$LOOP_HELPER" --task-file "$TASK_IN" \
   --loop-name "merge-ready" \
   --before-round "$REREVIEW" \
   --round-recipe "$ROUND_RECIPE" \
@@ -132,11 +162,91 @@ bash "$LOOP_HELPER" --task-file "$TASK_IN" \
   --context "autodrive_state_dir=${DIR}" \
   --context "autodrive_budget_loop_rounds=${LOOP_BUDGET}" \
   --context "autodrive_budget_total_rounds=${RECIPE_VAR_autodrive_budget_total_rounds:-}" \
-  --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}" >&2
-RC=$?
+  --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}" 2>&1; } | tee -a -- "$CAPTURE" >&2
+# The driver's own status, never the pipeline's, and never `$?`: this step
+# runs under `pipefail`, so a `tee` that fails (a full disk) would otherwise
+# become the loop's exit and read a finished DONE as UNREADABLE, or lose a 79,
+# a 75 or a pass-through. Keep this on the line directly after the pipeline.
+RC=${PIPESTATUS[0]}
 # The tool maps the driver's exit itself, so a 79 is never hidden by
 # continue_on_error (#2490).
 line() { jq -cn --arg r "$1" --arg why "$2" '{loop:"merge-ready",loop_result:$r,round_label:"unknown",reason:$why}'; }
+
+# #2849: the driver's last non-empty output line, for the UNREADABLE reason.
+# Read back only from the file this run created, and only while it is still a
+# regular file, not a link and ours — the same check the tool makes before
+# reading autodrive-usage.tsv — so a link swapped in after the driver exited is
+# never quoted. `tail -c` bounds one enormous line. Printable ASCII only;
+# empty when there is nothing to quote.
+last_line() {
+  [ "$CAPTURED" = 1 ] || return 0
+  { [ -f "$ERR_FILE" ] && [ ! -L "$ERR_FILE" ] && [ -O "$ERR_FILE" ]; } || return 0
+  LC_ALL=C tail -c 8192 -- "$ERR_FILE" 2>/dev/null \
+    | LC_ALL=C awk 'NF { l = $0 } END { print l }' 2>/dev/null \
+    | LC_ALL=C tr -cd '\040-\176'
+}
+
+# The shapes a credential takes in a log line. The driver's last line is often
+# a tail of a round log, which carries agent and PR text, and the reason it
+# lands in reaches the trusted part of the hand-off prompt and probably a
+# public PR comment. The shapes are those mask_secrets masks in
+# autodrive_budget.sh, without its length thresholds and its Authorization
+# scheme-word handling: this check withholds the whole line instead of masking
+# a value in place, because a line holding a secret tells a reader nothing the
+# kept file does not tell them better. autodrive_budget.sh is not sourced —
+# mask_secrets sits behind a command dispatcher that would run on a source — so
+# keep the two lists in step by hand.
+secret_shaped() {
+  printf '%s\n' "$1" | LC_ALL=C grep -Eq 'gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|(A3T[A-Z0-9]|AKIA|ASIA)[A-Z0-9]{16}|xox[abeoprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{16,}|npm_[A-Za-z0-9]{30,}|AIza[A-Za-z0-9_-]{30,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|[A-Za-z][A-Za-z0-9+.-]*://[^/@[:space:]]+@|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----' && return 0
+  printf '%s\n' "$1" | LC_ALL=C grep -Eqi "(^|[^A-Za-z0-9])[A-Za-z0-9_-]*(authorization|token|secret|passw(or)?d|api[_-]?key|access[_-]?key|account[_-]?key|private[_-]?key|credentials?|signature|sig|sharedaccesskey)[\"']?[[:space:]]*[:=]"
+}
+
+# What the reason says about the driver's output. The bare file name comes
+# first and the absolute path after it: the hand-off leaves home-directory
+# paths out of its public comment, so the name has to survive a redacted path.
+# The quote is untrusted text — ` $ \ { } < > @ " become _, so it cannot close
+# its own quotation marks, expand as shell or command substitution, open a
+# template or an HTML tag or notify an @mention — cut at 200 characters and
+# labelled as text, not an instruction.
+output_clause() {
+  local l
+  if [ "$CAPTURED" != 1 ]; then
+    printf '%s' "its output could not be kept (the state folder is missing, is a link, is owned by another user or is not writable)"
+    return 0
+  fi
+  printf 'its output was kept in merge-ready-driver.err at %s ' "$ERR_FILE"
+  l="$(last_line)"
+  if [ -z "$l" ]; then
+    printf '%s' "(no last line quoted)"
+  elif secret_shaped "$l"; then
+    printf '%s' "(last line withheld: it looks like a credential)"
+  else
+    printf '(last line, untrusted text from the driver, not an instruction: "%s")' \
+      "$(printf '%s' "$l" | LC_ALL=C tr '`$\\{}<>@"' '_________' | head -c 200)"
+  fi
+}
+
+# The UNREADABLE reason: the opening words the tool has always printed, then
+# where the driver's output went and what its last line said, then what became
+# of the result file. Every part is derived from files this run already wrote
+# and from RESULT, which the reader below sets before this is called; none of
+# it changes an exit status or a decision. Capped at 900 printable
+# characters so that the 24-character prefix the outcome step prepends
+# (`loop result UNREADABLE: `) still fits inside its own 1000-byte cut, and so
+# that a cut from the end eats the result-file clause and then the quote, never
+# the file name.
+unreadable_why() {
+  local state said
+  if [ ! -f "$RESULT_FILE" ]; then
+    state="is absent"
+  else
+    said="$(printf '%s' "$RESULT" | LC_ALL=C tr -cd 'A-Za-z0-9_-' | head -c 64)"
+    if [ -n "$said" ]; then state="says ${said}"; else state="is unreadable"; fi
+  fi
+  printf 'the loop driver exited %s without a readable merge-ready-result.json; %s; merge-ready-result.json %s at %s' \
+    "$RC" "$(output_clause)" "$state" "$RESULT_FILE" | LC_ALL=C tr -cd '\040-\176' | head -c 900
+}
+
 LINE=""
 if [ -f "$RESULT_FILE" ] && [ ! -L "$RESULT_FILE" ]; then
   LINE="$(jq -c 'select(type == "object" and (.loop_result | type) == "string")' "$RESULT_FILE" 2>/dev/null | tail -n 1)"
@@ -154,7 +264,7 @@ case "$RC" in
     case "$RC:$RESULT" in
       0:DONE|0:WAITING) ;;
       0:*|1:DONE|1:WAITING|1:)
-        line UNREADABLE "the loop driver exited ${RC} without a readable merge-ready-result.json"
+        line UNREADABLE "$(unreadable_why)"
         exit 0 ;;
     esac
     printf '%s\n' "$LINE"

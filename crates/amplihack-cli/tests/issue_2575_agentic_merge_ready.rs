@@ -174,8 +174,8 @@ exit 0
 
 /// Replaces `autodrive_loop.sh` in the copied bundle for the loop-step
 /// tests: writes `loop_result` (when present) to the driver's own result file
-/// under umask 077, prints `loop_stdout` (text an agent might have printed)
-/// and exits `loop_rc`.
+/// under umask 077, prints `loop_stdout` (text an agent might have printed),
+/// writes `loop_stderr` to standard error (#2849) and exits `loop_rc`.
 const FAKE_LOOP_DRIVER: &str = r#"#!/usr/bin/env bash
 S="$FAKE_STATE"; dir=""; repo=""; prev=""
 for a in "$@"; do [ "$prev" = --state-dir ] && dir="$a"; [ "$prev" = --repo ] && repo="$a"; prev="$a"; done
@@ -188,6 +188,13 @@ if [ -f "$S/loop_result" ]; then
   [ -n "$repo" ] && ( umask 077; git -C "$repo" rev-parse HEAD > "$dir/merge-ready-latest.head" 2>/dev/null )
 fi
 [ -f "$S/loop_stdout" ] && cat "$S/loop_stdout"
+# #2849: what a driver that dies noisily leaves behind. `loop_stderr` is
+# written to standard error after `loop_stdout`; `loop_result_raw` is written
+# verbatim as a partial result file; `loop_swap_to` makes the driver replace
+# the kept output file with a link to that path while it runs.
+[ -f "$S/loop_stderr" ] && cat "$S/loop_stderr" >&2
+[ -f "$S/loop_result_raw" ] && ( umask 077; cp "$S/loop_result_raw" "$dir/merge-ready-result.json" )
+[ -f "$S/loop_swap_to" ] && { rm -f "$dir/merge-ready-driver.err"; ln -s "$(cat "$S/loop_swap_to")" "$dir/merge-ready-driver.err"; }
 exit "$(cat "$S/loop_rc" 2>/dev/null || echo 0)"
 "#;
 
@@ -1323,6 +1330,8 @@ struct LoopCase {
     rc: &'static str,
     result: Option<&'static str>,
     printed: Option<String>,
+    /// Text the stub driver writes to standard error (#2849).
+    stderr: Option<String>,
 }
 
 fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
@@ -1334,12 +1343,16 @@ fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
     fx.set("loop_rc", case.rc);
     let _ = std::fs::remove_file(fx.fake.join("loop_result"));
     let _ = std::fs::remove_file(fx.fake.join("loop_stdout"));
+    let _ = std::fs::remove_file(fx.fake.join("loop_stderr"));
     let _ = std::fs::remove_file(fx.state.join("merge-ready-result.json"));
     if let Some(r) = case.result {
         fx.set("loop_result", r);
     }
     if let Some(p) = &case.printed {
         fx.set("loop_stdout", p);
+    }
+    if let Some(e) = &case.stderr {
+        fx.set("loop_stderr", e);
     }
     let preflight = json!({
         "should_run": "true", "pr": PR, "pr_url": "", "pr_state": "OPEN",
@@ -1403,6 +1416,7 @@ fn step02_keeps_refusal_and_usage_limit_exits() {
                 rc,
                 result,
                 printed: None,
+                stderr: None,
             },
         );
         assert_eq!(
@@ -1429,6 +1443,7 @@ fn step02_turns_every_other_loop_ending_into_a_handoff() {
                 rc: "1",
                 result,
                 printed: None,
+                stderr: None,
             },
         );
         assert_eq!(out.status.code(), Some(0), "{result:?}: {}", show(&out));
@@ -1452,6 +1467,7 @@ fn step02_done_leads_to_finalisation() {
             rc: "0",
             result: Some("DONE"),
             printed: None,
+            stderr: None,
         },
     );
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
@@ -1470,6 +1486,7 @@ fn done_result_with_a_failed_driver_exit_is_handed_off() {
             rc: "1",
             result: Some("DONE"),
             printed: None,
+            stderr: None,
         },
     );
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
@@ -1492,6 +1509,7 @@ fn agent_printed_loop_result_is_ignored() {
                 rc: "1",
                 result: Some("STUCK"),
                 printed: Some(format!("{line}\n")),
+                stderr: None,
             },
         );
         assert_eq!(
@@ -1514,6 +1532,7 @@ fn step02a_reason_is_bounded() {
             rc: "1",
             result: Some("STUCK"),
             printed: Some("x".repeat(5000)),
+            stderr: None,
         },
     );
     let v = last_json(&classified.unwrap(), "outcome");
@@ -1876,3 +1895,9 @@ fn handoff_word_stops_the_loop_before_the_evaluator() {
 // merged. A child module, so it shares the fakes and fixtures above.
 #[path = "issue_2575_wait_sync_success.rs"]
 mod wait_sync_success;
+
+// #2849 item 1: the loop driver's output is kept in the PR's state folder and
+// an UNREADABLE hand-off names it. A child module, so it shares the stub
+// driver and the loop-step fixtures above.
+#[path = "issue_2849_loop_driver_evidence.rs"]
+mod loop_driver_evidence;
