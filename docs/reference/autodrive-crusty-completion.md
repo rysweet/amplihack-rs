@@ -100,14 +100,13 @@ substitutes for the record's `head_sha`. Any round commits require
 
 `reviewed_head_sha` in the record is the commit `autodrive_loop.sh` measured
 with `git rev-parse` in the named checkout before the round started, and
-passed to the round as the `reviewed_head_sha` context value. It is never
-taken from the review's own report.
+passed to the round as the `reviewed_head_sha` context value. The round's own
+report stands in only where no measured value reaches the writer, which says so
+on stderr.
 
 Recording that commit is all the writer does with it. It does not compare the
 measurement with the review's own `reviewed_head_sha`, and no round is refused,
-stopped or sent to the evaluator because the two differ (#2814). Only when no
-measured value reaches the writer does the round's own report stand in, and the
-writer says so on stderr.
+stopped or sent to the evaluator because the two differ (#2814).
 
 Whether a review still covers the PR is judged where it is used, by an agent
 reading the PR rather than by a tool comparing strings: the merge round's

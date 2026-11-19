@@ -95,7 +95,9 @@ is going on; the reclaim runs after `orphan_stop`, the terminal-refusal check,
 `usage_limit_stop` and `recovery_stop`, so a round that ends the run — and in
 particular one that ends it on a recorded handoff — leaves its baseline in
 place for the operator who has to act on it. The next run's first round
-reclaims every `pre-review.*` in the state directory. See
+reclaims every `pre-review.*` in the state directory, so a handoff nobody
+resumes leaves one on disk until then; #2834 tracks giving it a reclaimer that
+does not depend on a later run. See
 [pre-review evidence](recipe-checkout-isolation.md#pre-review-evidence).
 
 `workflow-worktree` `step-04-setup-worktree` writes the build's branch to
