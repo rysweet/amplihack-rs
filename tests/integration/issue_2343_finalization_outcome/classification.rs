@@ -232,6 +232,47 @@ fn gh_erroring_is_not_an_unexplained_terminal_failure() {
     assert_ne!(outcome.field("terminal_state"), "IMPLEMENTED_VERIFIED");
 }
 
+// The outcome collect-finalization-evidence recorded is what the validator
+// reads on a healthy run. Every leaf it classifies on must be readable: a leaf
+// outside the field allowlist reports invalid context, which would strip the
+// pull request from a confirmed outcome and sink a finished run.
+#[test]
+fn a_recorded_outcome_is_classified_without_reading_the_remote_again() {
+    let fx = Fixture::new();
+    let evidence = serde_json::json!({
+        "schema_version": 1,
+        "git": {"dirty_worktree": "false"},
+        "tooling": {"missing": "", "gh_required": "true"},
+        "prior_terminal_state": {"terminal_state": ""},
+        "agent_outputs": {"hollow_success_signals": "unknown"},
+        "outcome": {
+            "schema_version": 1,
+            "branch": BRANCH,
+            "local_head": fx.head(),
+            "remote": REPO,
+            "github_origin": "true",
+            "branch_pushed": "true",
+            "remote_head": "",
+            "pr_number": "7",
+            "pr_url": PR_URL,
+            "pr_state": "OPEN",
+            "pr_head": fx.head(),
+            "pr_head_relation": "local",
+            "checks": "pending",
+            "verdict": "SUCCESS",
+            "gap": "",
+        },
+    })
+    .to_string();
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(("RECIPE_VAR_finalization_evidence", evidence));
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert_hands_pr_on(&outcome);
+    fx.assert_gh_not_called("a recorded outcome is the read; it is not read again");
+}
+
 fn resumed(fx: &Fixture) -> Vec<(&'static str, String)> {
     crate::issue_1641_finalization_open_pr::builders::resumed_env(&fx.repo_path())
 }
