@@ -203,6 +203,37 @@ fn an_id_no_recorded_folder_records_is_not_found_and_the_line_names_what_was_rea
     assert!(f.entries(&guidance_of(&run)).is_empty());
 }
 
+/// A run whose folder has been cleaned up, addressed by the id of its
+/// second attempt. The first stage has no record naming that id, so the
+/// answer comes from the second stage -- which must report the same reason
+/// the first stage reports for the first attempt's id, rather than fold a
+/// folder it never opened into a count of `run.json` files it read
+/// (issue #2818). The note's two counts say how far the sweep got.
+#[test]
+fn a_cleaned_up_folder_gives_its_reason_whichever_attempt_id_names_it() {
+    let f = GuideFixture::new();
+    let run = retried_run(&f);
+    fs::remove_dir_all(&run).unwrap();
+
+    let by_first = f.guide_without_work_root(&[CORRELATION], "text");
+    let by_later = f.guide_without_work_root(&[RETRY_CORRELATION], "text");
+    assert_eq!(by_first.status.code(), Some(1), "{}", show(&by_first));
+    assert_eq!(by_later.status.code(), Some(1), "{}", show(&by_later));
+    let first = one_line_error(&by_first);
+    let later = one_line_error(&by_later);
+    for line in [&first, &later] {
+        assert!(line.contains("no longer exists"), "{line}");
+        assert!(line.contains(run.to_str().unwrap()), "{line}");
+        // The folder was never opened, so the note does not claim it was.
+        assert!(
+            line.contains("the attempts in run.json of 0 of 1 recorded run folder(s)"),
+            "{line}"
+        );
+    }
+    // Both stages reach the same folder; the reason is said once.
+    assert_eq!(first.matches("no longer exists").count(), 1, "{first}");
+}
+
 // ---------------------------------------------------------------------------
 // A recorded path is untrusted
 // ---------------------------------------------------------------------------
@@ -463,6 +494,15 @@ fn early_pointers(o: &std::process::Output) -> Vec<serde_json::Value> {
 /// `recipe stop` takes and the id that attempt's agent steps carry -- is in
 /// no record; the folder every attempt shares is, and its `run.json` lists
 /// the id. Real run, real retry, real `run.json` (issue #2818).
+///
+/// The retry's backoff is a real `thread::sleep` of the planned delay, and
+/// the default plan is 10 s with equal jitter -- 5 to 10 s of wall clock on
+/// every run of this test, local and CI. `next_backoff` clamps the delay to
+/// the budget that remains, so a one-second budget makes the wait one
+/// second and leaves the control flow being tested untouched: the loop
+/// still makes the second attempt, because the budget bounds the waiting
+/// and not the attempts. What this test is about is the second attempt's
+/// correlation id, not how long the wrapper waited before making it.
 #[test]
 fn a_real_retried_run_is_found_by_the_correlation_id_of_its_second_attempt() {
     let f = GuideFixture::new();
@@ -473,14 +513,27 @@ fn a_real_retried_run_is_found_by_the_correlation_id_of_its_second_attempt() {
         &[
             ("AMPLIHACK_WORK_ROOT", alt.as_str()),
             ("AMPLIHACK_WORK_ROOT_EXPLICIT", "1"),
+            ("AMPLIHACK_RECIPE_TRANSIENT_BUDGET_SECS", "1"),
         ],
     );
     assert!(o.status.success(), "{}", show(&o));
     let pointers = early_pointers(&o);
+    // Two early pointers is the retry itself: the second attempt happened,
+    // under a budget that bounds only the wait before it.
     assert_eq!(
         pointers.len(),
         2,
         "one early pointer per attempt: {}",
+        show(&o)
+    );
+    // The clamp is load-bearing for how long this test takes, so it is
+    // asserted rather than assumed. The planned delay is 5 to 10 s before
+    // the budget bounds it, so a run that printed anything else here would
+    // be one that had stopped reading the budget and gone back to sleeping
+    // for the real backoff.
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("Retrying in 1s."),
+        "the one-second budget must clamp the backoff: {}",
         show(&o)
     );
     let ids: Vec<&str> = pointers

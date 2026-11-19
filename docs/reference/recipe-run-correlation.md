@@ -40,11 +40,20 @@ run.
 `stderr` per attempt:
 
 1. An `early` pointer as the attempt starts. On the ordinary path
-   `recipe-runner-rs` has been probed and spawned by then, and on the paths
-   where it is not spawned at all (a failed capability check, a failed spawn,
-   a stop signal) the pointer is still emitted. Nothing the runner prints can
-   precede it either way: its `stderr` is piped and relayed afterwards.
+   `recipe-runner-rs` has been probed and spawned by then; the line is
+   written once `spawn()` has returned a child, so nothing the runner prints
+   can precede it (its `stderr` is piped and relayed afterwards). On the
+   paths where the runner is not spawned at all the pointer is still
+   emitted for a failed capability check, a failed spawn, and an orphan
+   stop -- a parent that exited, which leaves `orphaned.json` beside the
+   final record.
 2. A `final` pointer when the wrapper reaches a terminal status.
+
+An attempt abandoned on `SIGINT`, `SIGTERM` or `SIGHUP` before the runner is
+spawned is the one case that emits no pointer pair at all: the wrapper
+returns the stop signal without building a correlation. A reader must
+therefore treat a missing pair as possible, not as evidence that no attempt
+was started.
 
 A run that retries after a transient failure starts a new correlation ID for
 each attempt, so it emits one such pair per attempt. The `run_dir` is the

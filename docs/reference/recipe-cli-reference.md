@@ -770,7 +770,7 @@ does not read this folder; see [Known limits](#known-limits).
 | Code | Meaning | Example message on stderr |
 | --- | --- | --- |
 | `0` | The entry was written | |
-| `1` | No run matches the target. One line names the target and each place looked at: the session log path, the log directory, the recorded run folder if one was named but is absent, and `<work root>/runs/` | `recipe guide: no recipe run or detached session named "nightly-fix"; looked at session log /home/alice/.amplihack/recipe-logs/nightly-fix.log (not found), pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s)), /home/alice/.amplihack/work/runs (no run folder or run.json with that ID)` |
+| `1` | No run matches the target. One line names the target and each place looked at: the session log path, the log directory, the `run.json` of each recorded run folder, the recorded run folder if one was named but is absent, and `<work root>/runs/` | `recipe guide: no recipe run or detached session named "nightly-fix"; looked at session log /home/alice/.amplihack/recipe-logs/nightly-fix.log (not found), pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s)), the attempts in run.json of 3 recorded run folder(s), /home/alice/.amplihack/work/runs (no run folder or run.json with that ID)` |
 | `1` | An issue URL that no recorded run names. Nothing is created under the state folder | `recipe guide: no recipe run or detached session named "https://github.com/rysweet/amplihack-rs/issues/2783"; looked at pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s))` |
 | `1` | The target could be a run ID, but the work root cannot be resolved | `recipe guide: cannot look for run "nightly-fix": HOME is not set, so the default work root cannot be resolved` |
 | `1` | `AMPLIHACK_STATE_DIR` (or `HOME`) is set to a relative path, for a pull request URL target | `recipe guide: cannot find the state folder: AMPLIHACK_STATE_DIR is not an absolute path` |
@@ -792,10 +792,21 @@ Every failure prints one line and writes nothing.
 
 The not-found line reports the number of pointer records read and how many
 logs were skipped. When `HOME` is unset the comparison with the home folder is
-skipped, and the line says that the work root could not be resolved. A folder
-a record named that was not used is listed after `not used:`, at most three of
-them, followed by `, and <n> more` counting the rest, whose reasons are left
-out so the line stays bounded. Control characters in text taken from a log are
+skipped, and the line says that the work root could not be resolved.
+
+For a target that could be a run ID, the line also says how many recorded run
+folders had their `run.json` read for it: `the attempts in run.json of 3
+recorded run folder(s)`. When a folder could not be used at all -- it is gone,
+its work root is unusable, it has no readable `run.json` -- it is not counted
+there, the note gives both numbers (`the attempts in run.json of 1 of 3
+recorded run folder(s)`), and that folder is named separately with its reason,
+as below. The count is of folders, not of records: a folder named by several
+records is read once.
+
+A folder a record named that was not used is listed after `not used:`, at most
+three of them, followed by `, and <n> more` counting the rest, whose reasons
+are left out so the line stays bounded. A reason is given once however many
+rules reached the folder. Control characters in text taken from a log are
 escaped as `\u{..}`, as are the bidirectional marks and the line and paragraph
 separators, so a crafted log cannot add lines or terminal sequences to the
 message.
