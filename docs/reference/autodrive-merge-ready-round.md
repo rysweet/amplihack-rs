@@ -417,6 +417,17 @@ path the reason names no longer exist after that. Pass an absolute
 The file name `merge-ready-driver.err` does not start with `merge-ready-round-`,
 so the round-number readers (`autodrive_last_round.sh`) never see it.
 
+`keep_and_log` is a read loop in the tool itself, not an external
+duplicator. The copy is the step's own account of a driver that died, so it
+cannot rest on a program the host supplies: where the host's coreutils is the
+uutils implementation (Ubuntu 25.10 installs it as the default `tee`), `tee`
+aborts part-way through any input larger than one pipe buffer, roughly one run
+in ten, and the bytes it has already read die with it — so the copy and the
+step's own log lose the driver's output together, which is worse than keeping
+no copy at all. A read loop cannot fail that way and reaches the log a line at
+a time rather than a block at a time. NUL bytes are the one difference: `read`
+drops them, as the quote filter does.
+
 The step's standard error carries the same bytes in the same order as before,
 so the run log is unchanged. The driver's exit status is the step's exit
 status; the copy cannot change any exit in the [table above](#how-the-loop-ends).
@@ -463,7 +474,7 @@ A copy that stopped part-way keeps its name and its path, because a truncated
 file is still the evidence to open, but it says so before naming it and quotes
 nothing: the last line in such a file is not the driver's last line, so
 quoting it would be a claim the run cannot make. The status of the copy comes
-from `tee`'s own exit, read from `PIPESTATUS` beside the driver's.
+from the copier's own exit, read from `PIPESTATUS` beside the driver's.
 
 `<result state>` is `is absent`, `is unreadable`, or `says <loop result>`
 (for example `says DONE` after a driver exit `1`, which the driver never
@@ -538,9 +549,10 @@ These limits apply:
   only a file or link there. The create fails, no copy is made and the reason
   says `could not be kept`.
 - A write failure part-way through, for example a full disk, leaves a
-  truncated kept file while standard error stays complete: `tee` keeps writing
-  to its remaining output. The reason then says `only part of its output could
-  be kept` and quotes nothing. The exit status is still the driver's.
+  truncated kept file while standard error stays complete: a write to the log
+  is never counted against the copy, so the log goes on receiving every line.
+  The reason then says `only part of its output could be kept` and quotes
+  nothing. The exit status is still the driver's.
 - A process that inherits the driver's standard error and holds it open delays
   the step until it closes, because the driver's output now reaches the copy
   through a pipe that the step waits on. Nothing in the driver normally does
@@ -1216,10 +1228,11 @@ prints the same loop line and exit statuses as described in
 
 It also keeps the loop driver's combined output in
 `<state_dir>/merge-ready-driver.err`. The driver runs as
-`{ bash autodrive_loop.sh … 2>&1; } | tee -a <kept file> >&2`, and the tool
-takes the driver's status from `PIPESTATUS[0]` on the next line; `tee`'s own
-status is discarded, so no exit in the table changes. What is kept, how long,
-the exact `UNREADABLE` reason and the cases where no copy is made are under
+`{ bash autodrive_loop.sh … 2>&1; } | keep_and_log 4>><kept file>`, and the
+tool takes the driver's status from `PIPESTATUS[0]` on the next line; the
+copier's own status reaches the reason and nothing else, so no exit in the
+table changes. What is kept, how long, the exact `UNREADABLE` reason and the
+cases where no copy is made are under
 [Kept driver output](#kept-driver-output).
 
 The optional argument is a number of further rounds. It must match

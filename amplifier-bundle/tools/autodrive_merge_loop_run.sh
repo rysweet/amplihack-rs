@@ -146,6 +146,39 @@ fi
 # before the driver starts, so it never lands between the driver's own lines.
 # Still not a check: no gate, no exit status, no decision reads it.
 [ -n "$KEPT" ] || printf 'NOTICE: the loop driver output could not be kept in %s (the state folder is missing, is a link, is owned by another user or is not writable): this log is the only account of it [autodrive-merge-loop]\n' "$DIR" >&2
+# The copy is made here, by this shell, and not by `tee`. Where the host's
+# coreutils is the uutils implementation — Ubuntu 25.10 ships it as the
+# default, so `/usr/bin/tee` is uutils 0.12.0 on the factory hosts — `tee`
+# aborts part-way through any input larger than one pipe buffer, roughly one
+# run in ten:
+#   thread 'main' panicked at src/uu/tee/src/tee.rs:188:21:
+#   assertion `left == right` failed: 2nd pipe should have enough spare
+# and the bytes it has already read die with it, so the copy AND this step's
+# own log both lose the driver's output. That is the very loss this change
+# exists to prevent, and it would be a loss this tool did not have before the
+# copy was added, because the driver used to write straight to standard
+# error. A read loop cannot abort that way, writes the same bytes, and
+# reaches the log a line at a time instead of a block at a time. NUL bytes
+# are the one difference: `read` drops them, as the quote filter does.
+#
+# Its exit status is read exactly as `tee`'s was, and for the same one
+# purpose: non-zero when a write to the copy failed, which the PARTIAL clause
+# below reports and nothing else reads. A write to the log is never counted,
+# so the log stays whole even while the copy is failing.
+keep_and_log() {
+  local line="" rc=0
+  while IFS= read -r line; do
+    printf '%s\n' "$line" >&2
+    printf '%s\n' "$line" >&4 2>/dev/null || rc=1
+  done
+  # A last line the driver ended without a newline: the same bytes, with
+  # nothing added, so the copy is what the driver wrote.
+  if [ -n "$line" ]; then
+    printf '%s' "$line" >&2
+    printf '%s' "$line" >&4 2>/dev/null || rc=1
+  fi
+  return "$rc"
+}
 # Deliberately not a check: with KEPT empty the copy goes to /dev/null, the
 # driver still runs, its output still reaches this step's standard error in
 # full, and every exit status below is unchanged. Do not turn this into a gate.
@@ -169,17 +202,17 @@ fi
   --context "autodrive_state_dir=${DIR}" \
   --context "autodrive_budget_loop_rounds=${LOOP_BUDGET}" \
   --context "autodrive_budget_total_rounds=${RECIPE_VAR_autodrive_budget_total_rounds:-}" \
-  --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}" 2>&1; } | tee -a -- "${KEPT:-/dev/null}" >&2
+  --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}" 2>&1; } | keep_and_log 4>>"${KEPT:-/dev/null}"
 # The driver's own status, never the pipeline's, and never `$?`: this step
-# runs under `pipefail`, so a `tee` that fails (a full disk) would otherwise
+# runs under `pipefail`, so a copy that fails (a full disk) would otherwise
 # become the loop's exit and read a finished DONE as UNREADABLE, or lose a 79,
 # a 75 or a pass-through. Keep this on the line directly after the pipeline.
 PS=("${PIPESTATUS[@]}")
 RC=${PS[0]}
-# `tee`'s own status, for the reason only. A write that failed part-way (a full
-# disk) leaves a kept file that stops mid-run. It changes no exit status and no
-# decision; it stops the reason claiming a complete copy and quoting a line
-# that is not the driver's last. Said in the log too, after the driver's output.
+# The copy's own status, for the reason only. A write that failed part-way (a
+# full disk) leaves a kept file that stops mid-run. It changes no exit status
+# and no decision; it stops the reason claiming a complete copy and quoting a
+# line that is not the driver's last. Said in the log too, after the output.
 PARTIAL=""
 [ -n "$KEPT" ] && [ "${PS[1]:-0}" -ne 0 ] && PARTIAL="1"
 [ -z "$PARTIAL" ] || printf 'NOTICE: only part of the loop driver output could be kept in %s (the copy failed part-way): this log is the only complete account of it [autodrive-merge-loop]\n' "$KEPT" >&2

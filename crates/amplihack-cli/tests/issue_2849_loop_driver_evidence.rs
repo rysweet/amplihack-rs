@@ -19,6 +19,9 @@
 //!   A copy that stopped part-way says so and quotes nothing either, because
 //!   the last line in it is not the driver's last line. Both are said once on
 //!   the step's standard error, on every ending, not only `UNREADABLE`.
+//! - The copy does not rest on a program the host supplies. A driver that
+//!   writes more than a pipe buffer loses nothing from the copy or the log,
+//!   and a `tee` on `PATH` that fails changes neither.
 //! - The quote is untrusted and may be secret: a credential-shaped last line
 //!   is withheld whole, a line the 8 KiB read window cut is never quoted, and
 //!   `` ` $ \ { } < > @ " [ ] ( ) # `` are replaced by `_` with `://` broken.
@@ -248,6 +251,96 @@ fn what_the_driver_prints_reaches_the_log_unchanged_and_in_order() {
         serde_json::from_str::<Value>(&lines[0]).unwrap()["loop_result"],
         json!("STUCK")
     );
+}
+
+#[test]
+fn a_driver_that_outtalks_a_pipe_buffer_loses_nothing_from_either_place() {
+    let Some(fx) = loop_fixture() else { return };
+    // A round writes the tail of its own log to the driver's standard error,
+    // so the output of a real loop is tens of kilobytes, not one line. The
+    // copy and the log must both hold every byte of it, run after run: an
+    // external duplicator that gives up part-way through anything larger than
+    // one pipe buffer takes the bytes it has already read with it, and the
+    // copy and the log lose the output together. That is worse than keeping
+    // no copy at all, because the log alone used to be enough.
+    //
+    // Eight runs, because such a loss is a race and shows up in a fraction of
+    // them, not in all. (uutils coreutils 0.12.0, which Ubuntu 25.10 installs
+    // as the default `tee`, aborts on roughly one run in ten.)
+    let filler: String = (0..1500)
+        .map(|i| format!("[round-3] {i:04} considering head 4fe286b3 against base main\n"))
+        .collect();
+    let last = "ERROR: the head moved while the round was running";
+    let written = format!("{filler}{last}\n");
+    assert!(
+        written.len() > 64 * 1024,
+        "past a 64 KiB pipe buffer, not only past the 8 KiB one: {}",
+        written.len()
+    );
+
+    for run in 1..=8 {
+        let (why, out) = unreadable_line(&fx, Some(&written));
+        assert_eq!(
+            read(&kept(&fx)),
+            written,
+            "run {run}: the copy is not the driver's output"
+        );
+        assert!(
+            stderr_of(&out).contains(&written),
+            "run {run}: the log lost the driver's output"
+        );
+        // So the reason makes the whole-copy claim and quotes the real last
+        // line, rather than falling back to the part-way wording.
+        assert!(why.contains(&kept_clause(&fx)), "run {run}: {why}");
+        assert!(why.contains(&quoted(last)), "run {run}: {why}");
+        assert!(
+            !stderr_of(&out).contains(PARTIAL_NOTICE),
+            "run {run}: {}",
+            show(&out)
+        );
+    }
+}
+
+#[test]
+fn a_tee_that_fails_on_path_changes_nothing_about_the_copy_or_the_log() {
+    let Some(fx) = loop_fixture() else { return };
+    // The deterministic half of the case above. The copy is the step's own
+    // account of a driver that died, so it cannot rest on a program the host
+    // supplies: a `tee` that fails, or is missing, or copies only part of
+    // what it reads, must leave the kept file and the log exactly as they
+    // would be without it. A host `tee` is not hypothetical — Ubuntu 25.10
+    // installs the uutils one, which aborts part-way through a copy larger
+    // than a pipe buffer — so here it fails outright, which an external
+    // duplicator could not survive and this step must.
+    let dir = fx.root.join("failing-tee");
+    fs::create_dir_all(&dir).unwrap();
+    write_executable(&dir.join("tee"), "#!/bin/sh\nexit 1\n", 0o755);
+    let written = "INFO: round 1 started\nERROR: the driver gave up\n";
+
+    stage_loop_driver(&fx, &case("1", None, Some(written)));
+    let mut c = fx.bash();
+    c.arg("-c").arg(&loop_commands().0).env(
+        "PATH",
+        format!(
+            "{}:{}:{}",
+            dir.display(),
+            fx.bin.display(),
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+        ),
+    );
+    loop_env(&mut c, &fx, &loop_preflight(&fx));
+    let out = c
+        .output()
+        .expect("run merge loop step-02 with a failing tee");
+
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(loop_line(&out)["loop_result"], json!("UNREADABLE"));
+    assert_eq!(read(&kept(&fx)), written, "{}", show(&out));
+    assert!(stderr_of(&out).contains(written), "{}", show(&out));
+    let why = loop_reason(&out);
+    assert!(why.contains(&kept_clause(&fx)), "{why}");
+    assert!(why.contains(&quoted("ERROR: the driver gave up")), "{why}");
+    assert!(!stderr_of(&out).contains(PARTIAL_NOTICE), "{}", show(&out));
 }
 
 // ===========================================================================
