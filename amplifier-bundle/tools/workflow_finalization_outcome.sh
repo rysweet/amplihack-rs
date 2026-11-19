@@ -17,21 +17,19 @@
 # The fields, every value a string, are listed with their meanings in
 # docs/reference/default-workflow-agentic-finalization.md#the-facts. In short:
 # the run branch and the local head; the remote as owner/repo and whether it
-# parsed as github.com; the commit `git ls-remote --heads origin` listed for
-# the branch; how many open pull requests gh listed for it; that pull
-# request's number, URL, state, draft flag, head and cross-repository flag;
-# its statusCheckRollup through the shared _finalization_pr_rollup_class rule;
-# what `git merge-base --is-ancestor` answered for the remote head and for the
-# pull request head; the branch gh says that pull request is on; the remote
-# host type the run itself declared; and `unread`, one sentence per fact that
-# could not be read, with the reason the tool gave.
+# parsed as github.com; what `git ls-remote --heads origin` listed for the
+# branch; how many open pull requests gh listed for it; that pull request's
+# number, URL, state, draft flag, head, branch and cross-repository flag; its
+# statusCheckRollup both as the shared _finalization_pr_rollup_class and as the
+# check states gh reported, so a reader is never handed only the rollup; what
+# `git merge-base --is-ancestor` answered for the remote head and the pull
+# request head; the remote host type the run declared; and `unread`.
 #
-# The two `*_descends_local_head` fields are the answer `git merge-base
-# --is-ancestor` gave, recorded like any other tool output; they are not a
-# relation this file derived and they feed no decision here. What that answer
-# means -- whether the branch was pushed, whether the pull request is this
-# run's, whether any of it is a success -- is the reader's business, not this
-# file's, and this file says none of it.
+# The two `*_descends_local_head` fields are what `git merge-base` answered,
+# recorded like any other tool output; they are not a relation this file
+# derived. What the answer means -- whether the branch was pushed, whether the
+# pull request is this run's, whether any of it is a success -- is the reader's
+# business, and this file says none of it.
 #
 # No wait, poll, retry or timer: every state is read exactly once. The origin
 # URL never appears in the output or on stderr: the remote is reported as
@@ -44,7 +42,7 @@
 # _finalization_pr_gh it reuses rather than restating.
 
 # A literal object for the one case where the JSON builder itself is missing.
-_FINALIZATION_OUTCOME_NO_JQ='{"schema_version":2,"branch":"","local_head":"","remote":"","github_origin":"false","declared_remote_host":"","remote_head":"","remote_head_descends_local_head":"","open_pr_count":"","pr_number":"","pr_url":"","pr_state":"","pr_draft":"","pr_head":"","pr_head_ref":"","pr_cross_repository":"","pr_head_descends_local_head":"","checks":"","unread":"the run outcome could not be read because jq is unavailable"}'
+_FINALIZATION_OUTCOME_NO_JQ='{"schema_version":3,"branch":"","local_head":"","remote":"","github_origin":"false","declared_remote_host":"","remote_head":"","remote_head_descends_local_head":"","open_pr_count":"","pr_number":"","pr_url":"","pr_state":"","pr_draft":"","pr_head":"","pr_head_ref":"","pr_cross_repository":"","pr_head_descends_local_head":"","checks":"","check_states":"","unread":"the run outcome could not be read because jq is unavailable"}'
 
 # Control characters and runaway length never reach a result field or a log.
 _finalization_outcome_clean() {
@@ -82,9 +80,9 @@ _finalization_outcome_emit() {
     --arg open_pr_count "$8" --arg pr_number "$9" --arg pr_url "${10}" \
     --arg pr_state "${11}" --arg pr_draft "${12}" --arg pr_head "${13}" \
     --arg pr_head_ref "${14}" --arg pr_cross_repository "${15}" \
-    --arg pr_desc "${16}" --arg checks "${17}" \
-    --arg unread "$(_finalization_outcome_clean "${18}")" \
-    '{schema_version:2, branch:$branch, local_head:$local_head, remote:$remote,
+    --arg pr_desc "${16}" --arg checks "${17}" --arg check_states "${18}" \
+    --arg unread "$(_finalization_outcome_clean "${19}")" \
+    '{schema_version:3, branch:$branch, local_head:$local_head, remote:$remote,
       github_origin:$github_origin, declared_remote_host:$declared_remote_host,
       remote_head:$remote_head,
       remote_head_descends_local_head:$remote_desc,
@@ -92,7 +90,7 @@ _finalization_outcome_emit() {
       pr_state:$pr_state, pr_draft:$pr_draft, pr_head:$pr_head,
       pr_head_ref:$pr_head_ref, pr_cross_repository:$pr_cross_repository,
       pr_head_descends_local_head:$pr_desc, checks:$checks,
-      unread:$unread}' 2>/dev/null \
+      check_states:$check_states, unread:$unread}' 2>/dev/null \
     || printf '%s\n' "$_FINALIZATION_OUTCOME_NO_JQ"
 }
 
@@ -146,11 +144,18 @@ _finalization_outcome_view() {
   pr_head_ref="$(_finalization_outcome_clean "$pr_head_ref")"
   pr_cross_repository="$(printf '%s' "$view" | jq -r 'if type == "object" and (.isCrossRepository | type) == "boolean" then (.isCrossRepository | tostring) else "" end' 2>/dev/null || :)"
   checks="$(printf '%s' "$view" | _finalization_pr_rollup_class)"
+  # #2819 R6: the check states themselves, beside the class. A rollup is
+  # already a reading; a reader handed only `failing` cannot see which check
+  # failed. Both are reported and neither is a verdict.
+  check_states="$(_finalization_outcome_clean "$(printf '%s' "$view" | _finalization_pr_check_states)")"
   # Field shapes, so no value can carry a newline into the result. A value
   # outside its shape is reported as unread, never coerced to another value.
   case "$pr_state" in ''|*[!A-Z_]*) [ -z "$pr_state" ] || _finalization_outcome_note "gh pr view returned a pull request state for #$pr_number that is not a state name"; pr_state="" ;; esac
   _finalization_outcome_sha "$pr_head" || { [ -z "$pr_head" ] || _finalization_outcome_note "gh pr view returned a head for pull request #$pr_number that is not a commit id"; pr_head=""; }
-  case "$checks" in green|failing|pending|none|unknown) ;; *) checks="unknown" ;; esac
+  case "$checks" in
+    green|failing|pending|none|unknown) ;;
+    *) _finalization_outcome_note "the check rollup of pull request #$pr_number did not classify, so the class is unknown; the states themselves are in check_states"; checks="unknown" ;;
+  esac
   _finalization_outcome_descends "$dir" "$branch" "$pr_head" \
     pr_head_descends_local_head "head of pull request #$pr_number"
 }
@@ -163,7 +168,14 @@ _finalization_outcome_collect() {
   local dir="${1:-}" ref="${3:-}" origin="" scratch="" list="" live_branch="" count=""
   branch="${2:-}"
   declared_remote_host="$(_finalization_outcome_clean "${4:-}")"
-  case "$declared_remote_host" in *[!A-Za-z0-9_.-]*) declared_remote_host="other" ;; esac
+  # A recorded host name outside the shape is not quietly renamed to a real
+  # one: it reads "other" and says that the run's own value was unusable, so a
+  # reader can tell it from a run that really recorded "other".
+  case "$declared_remote_host" in
+    *[!A-Za-z0-9_.-]*)
+      declared_remote_host="other"
+      _finalization_outcome_note "the remote host type this run recorded is not a host name, so it is reported as other" ;;
+  esac
 
   if ! command -v git >/dev/null 2>&1; then
     _finalization_outcome_note "the run outcome could not be read because git is unavailable"; return 0
@@ -271,7 +283,7 @@ finalization_outcome_facts() {
   local declared_remote_host="" remote_head="" remote_head_descends_local_head=""
   local open_pr_count="" pr_number="" pr_url="" pr_state="" pr_draft=""
   local pr_head="" pr_head_ref="" pr_cross_repository=""
-  local pr_head_descends_local_head="" checks="" unread=""
+  local pr_head_descends_local_head="" checks="" check_states="" unread=""
 
   command -v jq >/dev/null 2>&1 || { printf '%s\n' "$_FINALIZATION_OUTCOME_NO_JQ"; return 0; }
   _finalization_outcome_collect "${1:-}" "${2:-}" "${3:-}" "${4:-}" || :
@@ -279,6 +291,6 @@ finalization_outcome_facts() {
     "$declared_remote_host" "$remote_head" "$remote_head_descends_local_head" \
     "$open_pr_count" "$pr_number" "$pr_url" "$pr_state" "$pr_draft" "$pr_head" \
     "$pr_head_ref" "$pr_cross_repository" "$pr_head_descends_local_head" \
-    "$checks" "$unread"
+    "$checks" "$check_states" "$unread"
   return 0
 }

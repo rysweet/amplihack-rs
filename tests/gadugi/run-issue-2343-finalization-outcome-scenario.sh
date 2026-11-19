@@ -56,6 +56,20 @@
 #                                   it has no terminal state and exits 1, which
 #                                   is what sends it to its recovery agent. It
 #                                   never fills a verdict in from the facts.
+#   pr_less_success_is_refused      the healthy fixture with a decision of
+#                                   EXISTING_OPEN_PR that names no pull
+#                                   request: the step refuses to publish a
+#                                   success that showed none, and ends with no
+#                                   decision instead (issue 2819)
+#
+# What these cases do NOT cover: the assessment itself. Every case supplies the
+# decision through `finalization_assessment`, because deciding it is an LLM
+# call and nothing in CI can stand in for one. What is under test here is what
+# the shipped steps do with a decision -- which is also why no case is named
+# for the outcome it was handed. The chain around the assessment (the step is
+# attempted on every outcome, and neither its failure nor the sub-recipe's ends
+# the run) is covered by running the shipped step through the real runner in
+# tests/integration/issue_2343_finalization_outcome/wiring.rs.
 #
 # Every scenario command runs under `env -i` with an explicit allowlist: no
 # token, GH_* setting, SSH_AUTH_SOCK or GIT_ASKPASS reaches it, and
@@ -418,8 +432,41 @@ else
   [ -f "$WORK/case-nodecision/setup.log" ] && tail -n 10 "$WORK/case-nodecision/setup.log" | sed 's/^/    setup: /'
 fi
 
+# --- case D: a success whose decision names no pull request (issue 2819) -----
+# EXISTING_OPEN_PR IS a pull request open at the run's head, so a decision that
+# reports it while naming none has shown nothing. The shipped validation body
+# must refuse to publish it and end with no decision, exactly as case C does,
+# rather than exiting 0 with an empty pr_number.
+if read -r dir local_sha _pr_sha <<<"$(new_case prless local)"; then
+  run_case "$dir" "$(assessment EXISTING_OPEN_PR "")"
+  rc=$?
+  problems=()
+  [ "$rc" -eq 0 ] || problems+=("recipe run exit code $rc")
+  expect_field "$dir" terminal_state FAILED_MISSING_TERMINAL_EVIDENCE
+  expect_field "$dir" terminal_success false
+  expect_field "$dir" pr_number ""
+  expect_exit "$dir" 1
+  reason="$(field "$dir" terminal_reason)"
+  case "$reason" in *EXISTING_OPEN_PR*pr_number*) ;; *) problems+=("terminal_reason does not quote what came back: $reason") ;; esac
+  # The facts were gathered and the pull request was read; what is missing is
+  # the decision naming it, so the refusal is about the decision, not the run.
+  evidence="$(field "$dir" evidence_used)"
+  for fact in "$local_sha" "outcome.pr=7"; do
+    case "$evidence" in *"$fact"*) ;; *) problems+=("evidence_used does not carry '$fact': $evidence") ;; esac
+  done
+  no_mutation "$dir"
+  if [ "${#problems[@]}" -eq 0 ]; then
+    pass "pr_less_success_is_refused - a success naming no pull request is no decision"
+  else
+    flunk "pr_less_success_is_refused: ${problems[*]}" "$dir"
+  fi
+else
+  flunk "pr_less_success_is_refused: cannot set up the case" "$WORK/case-prless"
+  [ -f "$WORK/case-prless/setup.log" ] && tail -n 10 "$WORK/case-prless/setup.log" | sed 's/^/    setup: /'
+fi
+
 echo "cases passed: $passed"
-if [ "$fail" -eq 0 ] && [ "$passed" -eq 3 ]; then
+if [ "$fail" -eq 0 ] && [ "$passed" -eq 4 ]; then
   echo "issue 2343 finalization outcome contract green"
   echo "ALL_CASES_PASSED"
   exit 0

@@ -5,9 +5,14 @@
 //! asserts a verdict, a relation label or a terminal state, because the reader
 //! produces none: a case here that started asserting one would be asserting
 //! that the classifier came back.
+//!
+//! Nothing here reads the reader'"'"'s source. That it names no terminal state is
+//! asserted by running it over the outcomes a classifier would have split on
+//! and looking at what it printed, which is the only place a decision could
+//! go.
 
 use super::fixture_ext::*;
-use crate::issue_1641_finalization_open_pr::builders::{green_rollup, open_pr};
+use crate::issue_1641_finalization_open_pr::builders::{check_run_named, green_rollup, open_pr};
 use crate::issue_1641_finalization_open_pr::fixture::*;
 use serde_json::{Value, json};
 
@@ -29,11 +34,12 @@ const FIELDS: &[&str] = &[
     "pr_cross_repository",
     "pr_head_descends_local_head",
     "checks",
+    "check_states",
     "unread",
 ];
 
 fn assert_shape(value: &Value) {
-    assert_eq!(value["schema_version"], json!(2), "schema version: {value}");
+    assert_eq!(value["schema_version"], json!(3), "schema version: {value}");
     for field in FIELDS {
         assert!(
             value[*field].is_string(),
@@ -232,29 +238,112 @@ fn a_foreign_pull_request_reference_reads_nothing_and_never_falls_back_to_a_sear
     fx.assert_gh_not_called("a reference for another repository is never asked about");
 }
 
+/// How one case arranges the fixture into the outcome it is named for.
+type Arrange = fn(&Fixture);
+
+// The reader's whole contract, driven rather than read: over the four
+// outcomes a classifier used to split on, it exits 0, prints one object of
+// facts, and names no terminal state anywhere in it. A reader that started
+// deciding would have to put the decision somewhere, and the only place it
+// could go is the object asserted here.
 #[test]
-fn the_reader_names_no_terminal_state_and_ends_nothing() {
-    // Code only: the header says in prose that the reader reaches no verdict,
-    // which is the point, not a violation of it.
-    let text: String = tool_text("workflow_finalization_outcome.sh")
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for forbidden in [
+fn no_outcome_makes_the_reader_name_a_terminal_state_or_end_anything() {
+    let published_states = [
         "EXISTING_OPEN_PR",
+        "IMPLEMENTED_VERIFIED",
+        "ALLOW_NO_OP",
+        "NO_DIFF_SUCCESS",
         "BLOCKED_CI",
-        "terminal_state",
-        "classify_",
-        "verdict",
-    ] {
+        "FAILED_IMPLEMENTATION",
+        "FAILED_REPORTING",
+        "HOLLOW_SUCCESS",
+        "FAILED_MEANINGFUL_DIFF",
+        "FAILED_CLOSED_UNMERGED",
+        "FAILED_PR_METADATA_UNAVAILABLE",
+    ];
+    // What the run produced, in the four shapes a classifier would have split
+    // on. Named so a failure says which outcome made the reader speak.
+    let outcomes: [(&str, Arrange); 4] = [
+        ("open green pull request at the pushed head", |fx| {
+            fx.push();
+            fx.gh_pr_at(&fx.head(), green_rollup());
+        }),
+        ("a failing check", |fx| {
+            fx.push();
+            fx.gh_pr_at(&fx.head(), failing_rollup());
+        }),
+        ("nothing pushed and no pull request", Fixture::gh_no_pr),
+        ("a pull request at an unrelated commit", |fx| {
+            fx.push();
+            let other = fx.unrelated_commit();
+            fx.gh_pr_at(&other, green_rollup());
+        }),
+    ];
+
+    for (what, arrange) in outcomes {
+        let fx = Fixture::new();
+        fx.with_remote();
+        arrange(&fx);
+
+        let (value, outcome) = fx.facts(BRANCH, None);
+
         assert!(
-            !text.contains(forbidden),
-            "the facts reader must not contain `{forbidden}`"
+            outcome.success(),
+            "{what}: the reader ends nothing\n{}",
+            outcome.describe()
+        );
+        assert_shape(&value);
+        let text = value.to_string();
+        for state in published_states {
+            assert!(
+                !text.contains(state),
+                "{what}: the reader named the terminal state `{state}`: {text}"
+            );
+        }
+        assert!(
+            value["terminal_state"].is_null() && value["terminal_success"].is_null(),
+            "{what}: the reader reports facts, not a terminal state: {text}"
         );
     }
-    assert!(
-        !std::path::Path::new(&tool_path("workflow_finalization_outcome_classify.sh")).exists(),
-        "the bash outcome classifier must stay deleted (#2343)"
-    );
+}
+
+// #2819 R6: the rollup class is a reading, so the states it was computed from
+// are reported beside it. A reader handed only `failing` cannot see which
+// check failed.
+#[test]
+fn the_check_states_are_reported_beside_the_class_that_rolls_them_up() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    let mut body = open_pr(json!([
+        check_run_named("unit", "COMPLETED", json!("FAILURE")),
+        check_run_named("lint", "IN_PROGRESS", Value::Null),
+    ]));
+    body["headRefOid"] = json!(fx.head());
+    fx.gh_view(&body);
+    fx.gh_list(&json!([{"number": 7, "url": PR_URL, "isCrossRepository": false}]));
+
+    let (value, _) = fx.facts(BRANCH, None);
+
+    assert_eq!(value["checks"], "failing", "the class is still reported");
+    let states = value["check_states"].as_str().expect("a String");
+    for named in ["unit=COMPLETED/FAILURE", "lint=IN_PROGRESS"] {
+        assert!(
+            states.contains(named),
+            "the states gh reported must reach the reader: {states}"
+        );
+    }
+}
+
+#[test]
+fn a_pull_request_with_no_checks_reports_no_check_states() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), json!([]));
+
+    let (value, _) = fx.facts(BRANCH, None);
+
+    assert_eq!(value["checks"], "none");
+    assert_eq!(value["check_states"], "");
 }

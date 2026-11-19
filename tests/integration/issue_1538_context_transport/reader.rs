@@ -113,15 +113,37 @@ fn reader_empty_scalar_key_still_reads_as_empty_success() {
     assert!(r.stdout.is_empty());
 }
 
+// A file that was selected and carried nothing is still absence for every key
+// -- status 2, nothing on stdout, no stale alias consulted -- and since #2819
+// it also says so, once, naming the path and why. Without that line a consumer
+// downstream reports only that its producer "produced no output" and nothing
+// anywhere names the file that went missing. The wording is not asserted; the
+// path, the variable and the status are.
 #[test]
-fn reader_missing_context_file_is_absent_for_every_key_kind() {
+fn reader_missing_context_file_is_absent_for_every_key_kind_and_says_why() {
+    const PATH: &str = "/missing/issue2343/context.json";
     for key in ["verdict_json", "worktree_setup", "branch_name"] {
         let r = Fixture::new()
-            .env("AMPLIHACK_CONTEXT_FILE", "/missing/issue2343/context.json")
+            .env("AMPLIHACK_CONTEXT_FILE", PATH)
             .run(&script(&format!("workflow_context_read {key}")));
         r.exit(2);
         assert!(r.stdout.is_empty());
-        assert!(r.stderr.is_empty(), "{key}: {}", r.stderr);
+        assert!(
+            r.stderr.contains(PATH) && r.stderr.contains("AMPLIHACK_CONTEXT_FILE"),
+            "{key}: the warning must name the variable and the path: {}",
+            r.stderr
+        );
+        assert!(
+            !r.stderr.contains("invalid authoritative workflow context"),
+            "{key}: it is absence, not invalid data: {}",
+            r.stderr
+        );
+        assert_eq!(
+            r.stderr.lines().filter(|l| l.contains(PATH)).count(),
+            1,
+            "{key}: the file's state is decided once, so it is reported once: {}",
+            r.stderr
+        );
     }
 }
 

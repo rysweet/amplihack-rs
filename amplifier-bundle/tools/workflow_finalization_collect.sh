@@ -85,6 +85,25 @@ collect_evidence() {
     missing_tooling="${missing_tooling}${missing_tooling:+,}gh"
   fi
 
+  # #2819 R4: what the run was asked to do, and what the implementation step
+  # returned. Two success states are defined by the task -- ALLOW_NO_OP ("the
+  # task asked for no change") and NO_DIFF_SUCCESS ("did what was asked") --
+  # and HOLLOW_SUCCESS is about a run that produced nothing. Without these the
+  # assessment is asked for a judgement it has no input for, so it must either
+  # fail every no-change task or approve them blind. Both are collected as
+  # facts: this file does not decide what an empty output or an empty task
+  # means.
+  task_description="$(workflow_finalization_metadata task_description || :)"
+  implementation_output="unread"
+  if implementation_text="$(workflow_context_read implementation 2>/dev/null)"; then
+    if [ -n "$(printf '%s' "$implementation_text" | tr -d '[:space:]')" ]; then
+      implementation_output="present"
+    else
+      implementation_output="empty"
+    fi
+  fi
+  unset implementation_text
+
   implementation_completed="$(resolve_implementation_completed)"
   verification_completed="$(resolve_verification_completed)"
   publish_state_reached="$(resolve_publish_state_reached)"
@@ -152,7 +171,7 @@ collect_evidence() {
   {
     printf '{'
     separator=''
-    for field in schema_version repo_path worktree_path repo_valid branch_name head_sha base_ref dirty_worktree meaningful_diff commits_ahead missing_tooling remote_host_type github_remote gh_required pr_url pr_number publish_status implementation_completed verification_completed publish_state_reached terminal_no_op allow_no_op prior_terminal_state prior_terminal_success prior_terminal_reason branch_diff_status observed_phases; do
+    for field in schema_version repo_path worktree_path repo_valid branch_name head_sha base_ref dirty_worktree meaningful_diff commits_ahead missing_tooling remote_host_type github_remote gh_required pr_url pr_number publish_status implementation_completed verification_completed publish_state_reached terminal_no_op allow_no_op prior_terminal_state prior_terminal_success prior_terminal_reason branch_diff_status observed_phases task_description implementation_output; do
       printf '%s"%s":' "$separator" "$field"
       printf '%s' "${!field}" | jq -n --rawfile value /dev/stdin '$value'
       separator=','
@@ -186,6 +205,8 @@ collect_evidence() {
     .prior_terminal_reason as $prior_terminal_reason |
     .branch_diff_status as $branch_diff_status |
     .observed_phases as $observed_phases |
+    .task_description as $task_description |
+    .implementation_output as $implementation_output |
     {
       schema_version: ($schema_version | tonumber),
       git: {
@@ -233,7 +254,19 @@ collect_evidence() {
         terminal_reason: $prior_terminal_reason
       },
       observed_phases: ($observed_phases | split(",")),
+      task: {
+        # The run'"'"'s own task text, as data. Capped so the assessment prompt
+        # stays bounded, and any fence of three or more backticks is defanged
+        # so task text cannot close the evidence fence it is quoted inside.
+        description: ($task_description
+          | if length > 4000 then .[0:4000] + " [...truncated]" else . end
+          | gsub("`{3,}"; "'"'''"'")),
+        description_read: (if $task_description == "" then "false" else "true" end)
+      },
       agent_outputs: {
+        implementation_output: $implementation_output,
+        # A typed flag another producer may set. Nothing in this pipeline sets
+        # it, so it reads "unknown": not collected, which is not "false".
         hollow_success_signals: "unknown"
       },
       outcome: (

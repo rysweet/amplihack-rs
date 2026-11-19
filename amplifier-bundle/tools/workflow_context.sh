@@ -5,23 +5,56 @@
 #
 # Absence and corruption are separate answers (#2343). A context file that is
 # missing, unreadable, a symlink, a directory or not one JSON object carries no
-# data at all, so every read of it reports absence (status 2) and says nothing
-# on stderr; the run's real outcome, not this file, then decides the result. A
-# value that IS present but unparseable, of the wrong type, or carrying a NUL
-# byte is corrupt data and keeps status 3 with its diagnostic, so a typo in a
-# key name can never read as absence. The file's state is decided once, here,
-# and every reader follows that one decision without re-checking the file.
+# data at all, so every read of it reports absence (status 2); the run's real
+# outcome, not this file, then decides the result. A value that IS present but
+# unparseable, of the wrong type, or carrying a NUL byte is corrupt data and
+# keeps status 3 with its diagnostic, so a typo in a key name can never read as
+# absence. The file's state is decided once, here, and every reader follows
+# that one decision without re-checking the file.
+#
+# Deciding it once is also the one place that can say WHY the file carried
+# nothing (#2819 R2), so this prints exactly one line naming the path and the reason when
+# a file was selected and could not be read. The status stays 2: a reader that
+# got no data still reads the run's real outcome instead of ending the run.
+# Without the line, a consumer such as workflow_enforce_verdict.sh reports that
+# its producer "produced no output" and nothing anywhere names the file that
+# actually went missing. Absence that no one selected -- AMPLIHACK_CONTEXT_FILE
+# unset -- is not a diagnostic and says nothing.
 _workflow_context_has_file=${AMPLIHACK_CONTEXT_FILE+x}
 # 0 = one readable JSON object; 2 = nothing readable at that path.
 _workflow_context_file_status=2
 _workflow_context_file_snapshot=''
 if [[ ${AMPLIHACK_CONTEXT_FILE+x} ]]; then
+  _workflow_context_file_reason=''
   # A symlink's target is never opened, and a directory is never read (#1538).
-  if [[ -n $AMPLIHACK_CONTEXT_FILE && -f $AMPLIHACK_CONTEXT_FILE && ! -L $AMPLIHACK_CONTEXT_FILE ]] && command -v jq >/dev/null 2>&1; then
-    if _workflow_context_file_snapshot=$(jq -cs 'if length == 1 and (.[0]|type) == "object" then .[0] else error("context") end' 2>/dev/null < "$AMPLIHACK_CONTEXT_FILE"); then
-      _workflow_context_file_status=0
-    fi
+  if [[ -z $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='the variable is set to an empty path'
+  elif [[ -L $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='the path is a symbolic link, whose target is never opened'
+  elif [[ -d $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='the path is a directory'
+  elif [[ ! -e $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='no file exists at that path'
+  elif [[ ! -f $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='the path is not a regular file'
+  elif [[ ! -r $AMPLIHACK_CONTEXT_FILE ]]; then
+    _workflow_context_file_reason='the file is not readable'
+  elif ! command -v jq >/dev/null 2>&1; then
+    _workflow_context_file_reason='jq is unavailable, so no JSON could be parsed'
+  elif _workflow_context_file_snapshot=$(jq -cs 'if length == 1 and (.[0]|type) == "object" then .[0] else error("context") end' 2>/dev/null < "$AMPLIHACK_CONTEXT_FILE"); then
+    _workflow_context_file_status=0
+  else
+    _workflow_context_file_snapshot=''
+    _workflow_context_file_reason='the file does not hold exactly one JSON object'
   fi
+  if [[ -n $_workflow_context_file_reason ]]; then
+    # The path is printed as data: control characters out, length capped, so a
+    # hostile value cannot forge further log lines.
+    printf 'WARN: AMPLIHACK_CONTEXT_FILE carried no workflow context: %s: %s; every context read reports absence and the run'"'"'s own outcome is read instead\n' \
+      "$(LC_ALL=C printf '%s' "$AMPLIHACK_CONTEXT_FILE" | LC_ALL=C tr -d '\001-\037\177' | LC_ALL=C cut -c1-400)" \
+      "$_workflow_context_file_reason" >&2
+  fi
+  unset _workflow_context_file_reason
 fi
 
 # Snapshot only this private contract's names, never unrelated environment data.

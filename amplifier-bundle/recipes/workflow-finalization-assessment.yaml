@@ -62,6 +62,26 @@ steps:
       {{finalizer_step_status}}
       ```
 
+      ## What the run was asked to do
+
+      `task.description` is the run's own task text, as data. `ALLOW_NO_OP`
+      and `NO_DIFF_SUCCESS` are both judgements about it, so read it before
+      choosing either: a task that asked for a change is not satisfied by a
+      run that made none, whatever its booleans say. `completion.allow_no_op`
+      and `completion.terminal_no_op` are what earlier steps recorded about
+      the same question; they are two more facts, not the answer.
+
+      When `task.description_read` is `false` the task text did not reach this
+      step. You then have no basis for `ALLOW_NO_OP` or `NO_DIFF_SUCCESS`:
+      choose the state the published artifacts support, and say in `reason`
+      that the task text was unavailable.
+
+      `agent_outputs.implementation_output` is whether the implementation step
+      returned anything at all -- `present`, `empty`, or `unread` when the
+      transport carried nothing. `agent_outputs.hollow_success_signals` is a
+      typed flag another producer may set; `unknown` means nobody set it,
+      which is not `false`.
+
       ## The facts under `outcome`
 
       They are what git and gh printed, nothing more. `unread` names each fact
@@ -72,6 +92,10 @@ steps:
         and is empty when the remote has no such branch.
       - `pr_number`, `pr_state`, `pr_draft`, `pr_head`, `pr_cross_repository`
         and `checks` are that pull request as `gh pr view` reported it.
+      - `checks` is a rollup of the whole check set into one word, and a
+        rollup is already a reading. `check_states` is what gh actually
+        reported, check by check, so judge on that where the two could differ
+        -- which check is failing, and whether a pending one matters.
       - `remote_head_descends_local_head` and `pr_head_descends_local_head` are
         what `git merge-base --is-ancestor` answered, or empty when the commit
         could not be obtained to ask about.
@@ -89,25 +113,35 @@ steps:
         at the local head, or at a commit the local head is an ancestor of.
         This is the success whether its checks are green, pending, or have not
         reported at all: a pull request open at the run's head is finished work
-        waiting on CI, and it is handed on, named, with its number.
+        waiting on CI, and it is handed on, named, with its number. You must
+        return that number in `pr_number`, as digits. This state asserts a
+        pull request, so reporting it without one shows nothing: finalization
+        refuses to publish it, reports that it has no decision, and the run
+        goes to the recovery agent.
       - `IMPLEMENTED_VERIFIED` — the work was done and there is no GitHub pull
         request to read it from, because the remote is not a github.com
         repository (`github_origin` is `false`).
-      - `ALLOW_NO_OP` — the task asked for no change, and no change was made.
-      - `NO_DIFF_SUCCESS` — the run did what was asked and left nothing to
-        publish, so there is no branch or pull request to find.
+      - `ALLOW_NO_OP` — `task.description` asked for no change, and no change
+        was made.
+      - `NO_DIFF_SUCCESS` — `task.description` asked for something the run
+        did, and doing it left nothing to publish, so there is no branch or
+        pull request to find.
 
       Failures:
 
       - `BLOCKED_CI` — that pull request exists and a check of it is failing.
       - `FAILED_IMPLEMENTATION` — nothing was published, there is no pull
         request, or the only pull request is at a commit unrelated to the local
-        head, and the task did ask for a change.
+        head, and `task.description` did ask for a change.
       - `FAILED_REPORTING` — the work is published as above but the reporting
         step failed (`reporting_failure` is `true`). Durable implementation and
         verification evidence survives; only the narrative is missing.
-      - `HOLLOW_SUCCESS` — `agent_outputs.hollow_success_signals` is `true` and
-        nothing published contradicts it, so the run may have produced nothing.
+      - `HOLLOW_SUCCESS` — the run produced nothing while
+        `task.description` asked for something:
+        `agent_outputs.implementation_output` is `empty`,
+        `git.meaningful_diff` is `false`, and nothing was published. A
+        `agent_outputs.hollow_success_signals` of `true` says the same thing
+        and is enough on its own when nothing published contradicts it.
       - `FAILED_CLOSED_UNMERGED`, `FAILED_MEANINGFUL_DIFF`,
         `FAILED_PR_METADATA_UNAVAILABLE` — only when the facts show exactly
         that.

@@ -1352,6 +1352,11 @@ fn agentic_finalization_ignores_adversarial_finalizer_prose() {
 // its exit status follows that state alone. The typed completion context is
 // set to the opposite of what each state would imply, so any residue of the
 // classifier #2343 removed would show here as a different state or exit status.
+//
+// `EXISTING_OPEN_PR` is the one state whose definition is a pull request, so
+// the decision that names it has to name one (#2819 R1); every other state
+// asserts nothing about a pull request and names none. The PR-less case is
+// covered in `issue_2343_finalization_outcome::terminal_states`.
 #[test]
 fn agentic_finalization_reports_each_published_state_exactly_as_the_assessment_named_it() {
     const SUCCESSES: [&str; 4] = [
@@ -1376,7 +1381,8 @@ fn agentic_finalization_reports_each_published_state_exactly_as_the_assessment_n
         .chain(FAILURES.map(|state| (state, false)));
     for (state, success) in named {
         let flag = if success { "false" } else { "true" };
-        let mut envs = assessed_env(&fx.repo_path(), state, "");
+        let pr = if state == "EXISTING_OPEN_PR" { "7" } else { "" };
+        let mut envs = assessed_env(&fx.repo_path(), state, pr);
         envs.extend(typed_context(flag, flag, success));
 
         let outcome = fx.validate(&as_refs(&envs));

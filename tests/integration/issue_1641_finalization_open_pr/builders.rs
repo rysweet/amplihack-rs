@@ -82,7 +82,13 @@ pub fn assert_no_decision(outcome: &Outcome, why: &str) {
 }
 
 pub fn check_run(status: &str, conclusion: Value) -> Value {
-    json!({"__typename": "CheckRun", "name": "ci", "status": status, "conclusion": conclusion})
+    check_run_named("ci", status, conclusion)
+}
+
+/// A check run under its own name, for cases that assert which check the
+/// reader reported.
+pub fn check_run_named(name: &str, status: &str, conclusion: Value) -> Value {
+    json!({"__typename": "CheckRun", "name": name, "status": status, "conclusion": conclusion})
 }
 
 pub fn status_context(state: &str) -> Value {

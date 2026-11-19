@@ -7,8 +7,10 @@
 //! decides nothing. `terminal_states.rs` drives the whole
 //! `workflow_agentic_finalization.sh validate` step and asserts the end state
 //! it reports for the terminal state `assess-finalization` decided.
-//! `recovery.rs` covers the case with no decision at all, and `security.rs`
-//! the trust boundary around everything the step is handed.
+//! `recovery.rs` covers the case with no decision at all, `wiring.rs` runs the
+//! two steps as the recipe runs them -- the assessment through the real
+//! runner, the validator through its own `command:` -- and `security.rs`
+//! covers the trust boundary around everything the step is handed.
 //!
 //! Everything runs under `env_clear()` with a private HOME, a local bare repo
 //! standing in for the GitHub remote (via the #1641 `insteadOf` rewrite) and a
@@ -25,3 +27,5 @@ mod recovery;
 mod security;
 #[path = "issue_2343_finalization_outcome/terminal_states.rs"]
 mod terminal_states;
+#[path = "issue_2343_finalization_outcome/wiring.rs"]
+mod wiring;

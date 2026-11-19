@@ -16,6 +16,8 @@
 #
 #   _finalization_state_allowed / _finalization_state_is_success
 #                     the published terminal vocabulary, as two predicates
+#   _finalization_state_names_pr
+#                     the states whose definition IS an open pull request
 #   emit_without_jq   the literal object for a host with no jq
 #   emit_result       one complete, validated JSON object on stdout
 #   fail_result       emit a non-success result, announce it, exit 1
@@ -88,6 +90,20 @@ _finalization_state_allowed() {
 _finalization_state_is_success() {
   case "${1-}" in
     EXISTING_OPEN_PR|IMPLEMENTED_VERIFIED|ALLOW_NO_OP|NO_DIFF_SUCCESS) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# #2819 R1. The states whose published definition IS a pull request: the state
+# says one is open, so a result reporting it has to name which. This is still not a
+# judgement about the run -- it does not ask whether the pull request should
+# exist, only whether the decision named the thing it asserts. The other
+# successes assert the opposite and name none: IMPLEMENTED_VERIFIED is for a
+# remote with no GitHub pull request to read, ALLOW_NO_OP and NO_DIFF_SUCCESS
+# for a run that published nothing because nothing was asked for.
+_finalization_state_names_pr() {
+  case "${1-}" in
+    EXISTING_OPEN_PR) return 0 ;;
     *) return 1 ;;
   esac
 }

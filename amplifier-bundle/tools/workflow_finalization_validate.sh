@@ -8,7 +8,9 @@
 #   2. confirm that the facts of the run's outcome were gathered -- the ones
 #      collect-finalization-evidence recorded, or one live read when it
 #      recorded none;
-#   3. report the terminal state assess-finalization decided on those facts.
+#   3. report the terminal state assess-finalization decided on those facts,
+#      refusing to certify only the one decision that contradicts its own
+#      definition: a state that IS an open pull request, naming none.
 #
 # What it does NOT do: compare the local head with a remote head or a pull
 # request head, read a check class as a success or a failure, infer a terminal
@@ -40,7 +42,7 @@ validate_finalization() {
   local outcome_present="false" outcome_branch="" outcome_local_head="" outcome_remote=""
   local outcome_remote_head="" outcome_pr_number="" outcome_pr_url="" outcome_pr_state=""
   local outcome_pr_head="" outcome_checks="" outcome_unread=""
-  local assessment_state="" assessment_action="" assessment_pr="" assessment_reason="" assessment_next=""
+  local assessment_state="" assessment_action="" assessment_pr="" assessment_pr_raw="" assessment_reason="" assessment_next=""
   finalization_evidence="$(workflow_context_read finalization_evidence || :)"
   # A selected field that is present but corrupt is not absence. It is not a
   # terminal state of its own and it never ends the run; it is reported beside
@@ -195,6 +197,12 @@ FIELDS
   assessment_reason="$(_finalization_outcome_clean "$(workflow_finalization_field finalization_assessment reason || :)")"
   assessment_next="$(_finalization_outcome_clean "$(workflow_finalization_field finalization_assessment next_action || :)")"
   case "$assessment_action" in ''|none) assessment_action="none" ;; *) assessment_action="$(_finalization_outcome_clean "$assessment_action")" ;; esac
+  # What came back, kept only to quote it back when it is not a pull request
+  # number, the way an unusable terminal_state is quoted below: cleaned of
+  # control characters and cut to 40 characters, since a pull request number is
+  # at most ten digits. It is a sentence for a human and reaches no identity
+  # field of the result.
+  assessment_pr_raw="$(LC_ALL=C printf '%s' "$(_finalization_outcome_clean "$assessment_pr")" | LC_ALL=C cut -c1-40)"
   # The result names the pull request the assessment judged. A value that is
   # not a pull request number names none, and an assessment that names none is
   # taken at its word, so a decision about no pull request is never handed to
@@ -218,6 +226,25 @@ FIELDS
   if _finalization_state_allowed "$assessment_state"; then
     [ -n "$assessment_reason" ] || assessment_reason="assess-finalization reported $assessment_state on the run's outcome"
     [ -n "$assessment_next" ] || assessment_next="See the finalization assessment."
+    # #2819 R1: a state whose definition is an open pull request, reported
+    # without one, has not been shown. open_pr_confirmed_number is set only from a pull
+    # request number the assessment itself returned in canonical form, so this
+    # refuses exactly the decision that contradicts its own definition; it
+    # does not re-judge the facts, and it never substitutes a number from the
+    # run's own bookkeeping for the one the assessment was asked to read back.
+    # That is no decision, which is the recovery agent's to close, not a
+    # verdict about the run.
+    if _finalization_state_names_pr "$assessment_state" && [ -z "$open_pr_confirmed_number" ]; then
+      no_decision="assess-finalization reported $assessment_state, which is a pull request open at this run's head, but named none"
+      if [ -n "$assessment_pr_raw" ]; then
+        no_decision="$no_decision: it returned pr_number \"$assessment_pr_raw\", which is not a pull request number"
+      else
+        no_decision="$no_decision: it returned an empty pr_number"
+      fi
+      fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" "$no_decision" \
+        "Re-run assess-finalization and have it report the number of the open pull request it read, or the state the facts do support." \
+        "$evidence_used"
+    fi
     if _finalization_state_is_success "$assessment_state"; then
       classify_success "$assessment_state" "$assessment_reason" "$assessment_next" "$evidence_used"
     fi

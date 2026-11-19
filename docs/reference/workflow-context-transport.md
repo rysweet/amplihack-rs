@@ -347,15 +347,19 @@ instead. See
 Newlines and other non-NUL control characters remain data and cannot hide later
 blocker fields.
 
-Validation reads the real outcome first. It preserves `FAILED_DIRTY_WORKTREE`,
-`FAILED_MISSING_TOOLING` and blocked terminal states. Finalization no longer
-produces `FAILED_INVALID_EVIDENCE` or `HOLLOW_SUCCESS`; both remain recognised
-in the vocabulary. A reporting failure beside a PR confirmed at the pushed head
-is a success; without a confirmed PR it is `FAILED_REPORTING`, otherwise
-`FAILED_IMPLEMENTATION`.
-Only both completion fields true authorize `IMPLEMENTED_VERIFIED`; explicit
-`allow_no_op` plus implementation `terminal_no_op` authorize `ALLOW_NO_OP`.
-These paths remain subject to every existing hard blocker.
+Validation answers the blockers about the local checkout first
+(`FAILED_DIRTY_WORKTREE`, `FAILED_MISSING_TOOLING`, a prior deterministic
+terminal probe), gathers the facts of the run's outcome, and then reports the
+terminal state `assess-finalization` decided on them. Since #2809 it applies no
+rule of its own to reach a state: there is no reporting-failure rule, no
+completion-field rule and no no-op rule in bash. `FAILED_REPORTING`,
+`IMPLEMENTED_VERIFIED`, `ALLOW_NO_OP` and `HOLLOW_SUCCESS` are decisions the
+assessment reaches on the facts, which include the typed `finalizer_step_status`
+and the completion fields; `FAILED_INVALID_EVIDENCE` is no longer produced at
+all. Every such state remains subject to the blockers above, which precede the
+decision, and a state whose definition is an open pull request is not published
+when the decision names none (#2819). See
+[Terminal Classification](./default-workflow-agentic-finalization.md#terminal-classification).
 
 Validation emits one complete JSON Object with exactly these 19 String fields:
 `terminal_success`, `terminal_state`, `terminal_reason`, `required_next_action`,
@@ -396,12 +400,15 @@ validation to make file transport appear successful.
 ## Absence and corruption (#2343)
 
 The reader distinguishes a value that is not there from a value that is wrong.
-Only the second is a diagnostic.
+Only the second is a bad-data status (`3`). Both can be reported: a context
+file that was selected and carried nothing still reads as absence, and still
+says once why it carried nothing.
 
 | Situation | Status | Stdout | Stderr |
 | --- | --- | --- | --- |
-| `AMPLIHACK_CONTEXT_FILE` set and the file is missing, unreadable, a symlink or a directory | `2` | empty | empty |
-| `AMPLIHACK_CONTEXT_FILE` set, a regular file that is not a single JSON object | `2` | empty | empty |
+| `AMPLIHACK_CONTEXT_FILE` set and the file is missing, unreadable, a symlink or a directory | `2` | empty | one `WARN` naming the path and the reason, at source time |
+| `AMPLIHACK_CONTEXT_FILE` set, a regular file that is not a single JSON object, or `jq` unavailable | `2` | empty | one `WARN` naming the path and the reason, at source time |
+| `AMPLIHACK_CONTEXT_FILE` not set at all | `2` | empty | empty |
 | Object-typed canonical key (`verdict_json`, `worktree_setup`, `pr_publish_result`, `finalization_assessment` and the like) declared with an empty default and not yet set (#1726) | `2` | empty | empty |
 | Field absent from a valid source | `2` | empty | empty |
 | Value present but unparseable, or containing a NUL byte | `3` | empty | the existing warning |
@@ -412,10 +419,21 @@ it holds one readable JSON object, or it carries no data at all. Every reader
 follows that single decision: `workflow_context_read`, the `workflow_finalization_metadata`
 keys and the `workflow_finalization_context` allowlist. No reader re-checks the
 file. A missing file therefore reads as status `2` for a metadata key as it does
-for any other key. Nothing is written to stderr for absence, at source time or
-at the read call: a path that carries no data is not a diagnostic. What is
-wrong with a file that was expected to hold data is answered by the run's real
-outcome, which finalization reads instead.
+for any other key. Nothing is written to stderr at a read call: the file's
+state was already decided and reported, so repeating it per key would say the
+same thing a hundred times.
+
+Because that decision is made once, it is also the one place that can say why
+the file carried nothing, and since #2819 it does: one `WARN` line naming the
+path (control characters removed, capped at 400 characters) and the reason --
+an empty path, a symlink, a directory, no such file, not a regular file, not
+readable, `jq` unavailable, or not exactly one JSON object. The status stays
+`2`: a reader that got no data still reads the run's real outcome and decides
+from that, and nothing ends the run. Absence nobody selected -- the variable
+unset -- is not a diagnostic and says nothing. Without the line, a consumer
+such as `workflow_enforce_verdict.sh` or `workflow_implementation_evidence.sh`
+reports only that its producer "produced no output", and the file that actually
+went missing is named nowhere.
 
 Absence never grants success. A caller takes status `2` as "no data", reads the
 run's real outcome, and decides from that. Status `3` is kept for corrupt data

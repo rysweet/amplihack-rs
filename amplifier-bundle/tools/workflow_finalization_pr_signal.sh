@@ -123,6 +123,32 @@ _finalization_pr_rollup_class() {
     2>/dev/null || printf 'unknown'
 }
 
+# _finalization_pr_check_states < view.json -> the check states themselves
+# (#2819 R6).
+# The class above is a rollup, and a rollup is a reading. A reader that is
+# handed only `failing` cannot see WHICH check failed or that the one pending
+# check is an unrelated optional job, so this prints the states gh reported,
+# `name=STATUS/CONCLUSION` for a CheckRun and `name=STATE` for a
+# StatusContext, separated by `; `, in the order gh listed them. At most 40
+# entries, with a final `...` when there were more. Empty for a view that
+# carried no rollup; never fails.
+_finalization_pr_check_states() {
+  jq -r '
+    def one:
+      if type != "object" then "?=unknown"
+      else ((.name // .context // "?") | tostring
+            | gsub("[[:cntrl:];=]"; " ") | .[0:60]) as $n
+        | if .__typename == "StatusContext" then $n + "=" + ((.state // "") | tostring)
+          else $n + "=" + ((.status // "") | tostring)
+               + (if (.conclusion // null) == null then "" else "/" + (.conclusion | tostring) end)
+          end
+      end;
+    if type == "object" and ((.statusCheckRollup // []) | type) == "array"
+    then ((.statusCheckRollup // []) | (.[0:40] | map(one) | join("; "))
+          + (if length > 40 then "; ..." else "" end))
+    else "" end' 2>/dev/null || printf ''
+}
+
 # _finalization_pr_checks <branch> <number> <url> <head_sha> < view.json
 #   -> checks class.
 # Fails (no output) unless the PR is OPEN, on <branch>, same-repo (literal

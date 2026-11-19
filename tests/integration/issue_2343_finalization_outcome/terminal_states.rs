@@ -5,6 +5,13 @@
 //! whole step and assert what it ends as. Nothing here reads the text of a
 //! shell file, and nothing here asserts an intermediate classification,
 //! because there no longer is one.
+//!
+//! What they can and cannot show follows from that split. Deciding the state
+//! is an LLM call, so a case that needs a decision supplies one and the state
+//! it supplies is a control, not a result: what is under test is everything
+//! else -- which facts reach the record, which blockers precede the decision,
+//! which decisions are published at all, and what a lost context file costs.
+//! No case here is named for an outcome it was handed.
 
 use super::fixture_ext::*;
 use crate::issue_1641_finalization_open_pr::builders::{as_refs, assessment, green_rollup};
@@ -54,7 +61,7 @@ fn assert_fails_naming(outcome: &Outcome, state: &str, facts: &[&str]) {
 // is finished work waiting on CI. It is the deputy's first outcome case: the
 // run ends a success that hands the pull request on, named.
 #[test]
-fn a_pending_ci_pull_request_ends_as_a_hand_on_success() {
+fn pending_checks_do_not_stop_the_decided_success_from_naming_its_pull_request() {
     let fx = Fixture::new();
     fx.with_remote();
     fx.push();
@@ -118,7 +125,7 @@ fn a_lost_context_file_still_gathers_the_facts_and_names_the_real_gap() {
 // The production shape of the same transport: the context FILE carries the
 // assessment, and the run ends as the state it decided.
 #[test]
-fn a_context_file_carrying_the_assessment_ends_the_run_as_that_state() {
+fn a_context_file_carrying_the_assessment_publishes_the_state_it_decided() {
     let fx = Fixture::new();
     fx.with_remote();
     fx.push();
@@ -150,7 +157,7 @@ fn a_context_file_carrying_the_assessment_ends_the_run_as_that_state() {
 }
 
 #[test]
-fn a_run_with_no_context_file_at_all_ends_as_a_success() {
+fn a_run_with_no_context_file_at_all_still_publishes_the_decided_success() {
     let fx = Fixture::new();
     fx.with_remote();
     fx.push();
@@ -176,7 +183,7 @@ fn the_end_state_does_not_depend_on_verification_completed() {
 }
 
 #[test]
-fn a_failing_check_ends_blocked_ci_and_names_the_pull_request() {
+fn a_blocked_ci_decision_is_reported_against_the_failing_check_and_the_request() {
     let fx = Fixture::new();
     fx.with_remote();
     fx.push();
@@ -193,10 +200,13 @@ fn a_failing_check_ends_blocked_ci_and_names_the_pull_request() {
     assert_eq!(outcome.field("pr_url"), PR_URL);
 }
 
-// A pull request at a commit unrelated to the local head. The facts carry both
-// heads, so the failure the assessment decides is reported against them.
+// What this shows is the reporting, not the classification: the decision is
+// supplied, and what is asserted is that the result is reported against the
+// facts the run really produced -- both heads reach the record, and the facts
+// the assessment was given carry the divergence. Which state those facts
+// deserve is `assess-finalization`'s, and no test here can stand in for it.
 #[test]
-fn a_pull_request_at_an_unrelated_head_ends_failed_implementation() {
+fn a_failure_decided_on_a_diverged_pull_request_is_reported_against_both_heads() {
     let fx = Fixture::new();
     fx.with_remote();
     fx.push();
@@ -213,7 +223,7 @@ fn a_pull_request_at_an_unrelated_head_ends_failed_implementation() {
 }
 
 #[test]
-fn a_branch_that_was_never_pushed_ends_failed_implementation_naming_the_branch() {
+fn a_failure_decided_with_nothing_pushed_names_the_branch_and_no_pull_request() {
     let fx = Fixture::new();
     fx.with_remote();
     fx.gh_no_pr();
@@ -238,9 +248,190 @@ fn a_branch_that_was_never_pushed_ends_failed_implementation_naming_the_branch()
     );
 }
 
+// #2819 R1: `EXISTING_OPEN_PR` is defined as a pull request open at the run's
+// head. A decision that reports it while naming no pull request has shown
+// nothing, so finalization refuses to publish it: that is no decision, and the
+// run goes to the recovery agent with the reason quoting what came back. This
+// is not the validator judging the facts -- it never asks whether the pull
+// request should exist, only whether the decision named the one it asserts.
+#[test]
+fn an_open_pull_request_success_that_names_no_pull_request_is_no_decision() {
+    for returned in ["", "abc", "7 OR 1=1", "0"] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.gh_no_pr();
+
+        let outcome = fx.validate(&as_refs(&decided_resumed(
+            &fx,
+            "EXISTING_OPEN_PR",
+            returned,
+        )));
+
+        assert!(
+            !outcome.success(),
+            "pr_number `{returned}`: a success naming no pull request must not be published\n{}",
+            outcome.describe()
+        );
+        assert_eq!(
+            outcome.field("terminal_state"),
+            "FAILED_MISSING_TERMINAL_EVIDENCE",
+            "pr_number `{returned}`\n{}",
+            outcome.describe()
+        );
+        assert_eq!(outcome.field("terminal_success"), "false");
+        assert_eq!(outcome.field("finalizer_confidence"), "low");
+        assert_eq!(outcome.field("pr_number"), "");
+        let reason = outcome.field("terminal_reason");
+        assert!(
+            reason.contains("EXISTING_OPEN_PR") && reason.contains("pr_number"),
+            "the reason must quote what was returned: {reason}"
+        );
+        if !returned.is_empty() {
+            assert!(
+                reason.contains(returned),
+                "the reason must quote `{returned}`: {reason}"
+            );
+        }
+    }
+}
+
+// The same decision, with the pull request the facts really carry named back:
+// that is the case the refusal above must not touch.
+#[test]
+fn the_same_success_is_published_when_the_decision_names_the_pull_request() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+
+    assert_hands_pr_on(&fx.validate(&as_refs(&decided(&fx, "EXISTING_OPEN_PR", "7"))));
+}
+
+// The successes that are not about a pull request are untouched: they assert
+// that there is none to name.
+#[test]
+fn a_success_that_asserts_no_pull_request_is_published_without_one() {
+    for state in ["IMPLEMENTED_VERIFIED", "ALLOW_NO_OP", "NO_DIFF_SUCCESS"] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.gh_no_pr();
+
+        let outcome = fx.validate(&as_refs(&decided_resumed(&fx, state, "")));
+
+        assert!(outcome.success(), "{state}: {}", outcome.describe());
+        assert_eq!(outcome.field("terminal_state"), state);
+        assert_eq!(outcome.field("terminal_success"), "true");
+        assert_eq!(outcome.field("pr_number"), "");
+    }
+}
+
+// The ordering guarantee, as behaviour: a decision is never applied to facts
+// that were not gathered. Without a recorded worktree the outcome cannot be
+// read at all, and the success the assessment decided is not published.
+#[test]
+fn a_decision_is_not_published_when_the_facts_could_not_be_gathered() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+    // No REPO_PATH and no worktree_setup: nothing says where to read.
+    let envs = vec![
+        ("BRANCH_NAME", BRANCH.to_owned()),
+        ("FINALIZER_STEP_STATUS", "ok".to_owned()),
+        assessment("EXISTING_OPEN_PR", "none", "7"),
+    ];
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert!(!outcome.success(), "{}", outcome.describe());
+    assert_eq!(
+        outcome.field("terminal_state"),
+        "FAILED_MISSING_TERMINAL_EVIDENCE"
+    );
+    assert_eq!(outcome.field("terminal_success"), "false");
+    assert!(
+        outcome
+            .field("terminal_reason")
+            .contains("could not be gathered"),
+        "the reason must name the gap: {}",
+        outcome.field("terminal_reason")
+    );
+    assert!(
+        outcome
+            .field("evidence_used")
+            .contains("outcome=ungathered"),
+        "the record must say the facts were never gathered: {}",
+        outcome.field("evidence_used")
+    );
+}
+
+// #2819 R2: a context file that was selected and carried nothing says so,
+// once, naming the path and why. Without that line a consumer downstream
+// reports only that its producer "produced no output" and nothing anywhere
+// names the file. The status is unchanged -- absence, not a failure -- so the
+// run still ends on its own facts.
+#[test]
+fn a_context_file_that_carried_nothing_says_so_and_still_does_not_end_the_run() {
+    for (file, write) in [("absent/context.json", false), ("context.json", true)] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.push();
+        fx.gh_pr_at(&fx.head(), green_rollup());
+        let path = fx.tmp.path().join(file);
+        if write {
+            std::fs::write(&path, "{ not json").expect("write");
+        }
+        let mut envs = decided(&fx, "EXISTING_OPEN_PR", "7");
+        envs.push(("AMPLIHACK_CONTEXT_FILE", path.display().to_string()));
+
+        let outcome = fx.validate(&as_refs(&envs));
+
+        assert!(
+            outcome.stderr.contains(&path.display().to_string()),
+            "{file}: the warning must name the path that carried nothing\n{}",
+            outcome.describe()
+        );
+        assert!(
+            outcome.stderr.contains("AMPLIHACK_CONTEXT_FILE"),
+            "{file}: the warning must name the variable\n{}",
+            outcome.describe()
+        );
+        assert!(
+            !outcome.stderr.contains(INVALID_CONTEXT_WARNING),
+            "{file}: it is absence, not invalid data\n{}",
+            outcome.describe()
+        );
+        assert!(
+            outcome
+                .field("evidence_used")
+                .contains("outcome.checks=green"),
+            "{file}: the run's own facts are still read: {}",
+            outcome.field("evidence_used")
+        );
+    }
+}
+
+// Nothing selected is not a diagnostic.
+#[test]
+fn a_run_that_selected_no_context_file_is_told_nothing_about_one() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+
+    let outcome = fx.validate(&as_refs(&decided(&fx, "EXISTING_OPEN_PR", "7")));
+
+    assert!(
+        !outcome.stderr.contains("AMPLIHACK_CONTEXT_FILE"),
+        "an unselected context file is not a diagnostic\n{}",
+        outcome.describe()
+    );
+}
+
 // Typed completion booleans and finalizer prose are not evidence of anything.
 // They cannot reach a success on their own, and they cannot overturn the
-// decision that was made.
+// decision that was made. The decision is held fixed and they are varied, so
+// the result moving would be the classifier #2343 removed coming back.
 #[test]
 fn typed_success_booleans_and_prose_cannot_overturn_the_decision() {
     let fx = Fixture::new();
@@ -291,7 +482,7 @@ fn a_recorded_outcome_is_reported_without_reading_the_remote_again() {
         "prior_terminal_state": {"terminal_state": ""},
         "agent_outputs": {"hollow_success_signals": "unknown"},
         "outcome": {
-            "schema_version": 2,
+            "schema_version": 3,
             "branch": BRANCH,
             "local_head": fx.head(),
             "remote": REPO,

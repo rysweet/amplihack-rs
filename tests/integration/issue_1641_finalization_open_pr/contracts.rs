@@ -86,14 +86,6 @@ fn open_pr_path_uses_only_typed_evidence_and_bounded_read_only_gh() {
             "the facts reader must reuse `{required}` rather than restate its rule"
         );
     }
-    let validate = tool_text("workflow_finalization_validate.sh");
-    for (name, text) in [("reader", &outcome), ("validator", &validate)] {
-        assert!(
-            !text.contains("agentic_finalizer_narrative") && !text.contains("precommit_results"),
-            "the outcome {name} must not read prose or raw precommit reports"
-        );
-    }
-
     let context = tool_text("workflow_finalization_context.sh");
     assert!(
         !context.contains("statusCheckRollup") && !context.contains("precommit_results"),
@@ -101,83 +93,24 @@ fn open_pr_path_uses_only_typed_evidence_and_bounded_read_only_gh() {
     );
 }
 
-// #2343: collecting the facts and deciding what they mean are different files.
-// The reader names no terminal state at all, and the validator reaches none of
-// its own: it reports the one assess-finalization decided.
+// The two cases that sat here grepped the reader and the validator for
+// forbidden words, and compared the byte offsets of `gather_outcome_facts` and
+// `finalization_assessment terminal_state` inside the validator. Both are now
+// run rather than read: `issue_2343_finalization_outcome::facts` drives the
+// reader over every outcome a classifier would have split on and asserts it
+// names none, and `issue_2343_finalization_outcome::terminal_states` asserts
+// that a blocker beats a decision and that a decision is never applied to
+// facts that were not gathered -- which is what the ordering was for.
+//
+// The deleted classifier stays deleted because nothing sources it; the
+// dispatcher case above is what would fail if anything did.
 #[test]
-fn the_facts_reader_names_no_terminal_state_and_the_validator_decides_none() {
-    let outcome = tool_text("workflow_finalization_outcome.sh");
-    for forbidden in [
-        "EXISTING_OPEN_PR",
-        "BLOCKED_CI",
-        "terminal_state",
-        "verdict=",
-    ] {
-        assert!(
-            !outcome.contains(forbidden),
-            "the facts reader reports facts; it must not contain `{forbidden}`"
-        );
-    }
-
-    let validate = tool_text("workflow_finalization_validate.sh");
-    for forbidden in [
-        "EXISTING_OPEN_PR",
-        "classify_confirmed_outcome",
-        "read_live_outcome",
-    ] {
-        assert!(
-            !validate.contains(forbidden),
-            "the validator must classify no outcome of its own; it must not contain `{forbidden}`"
-        );
-    }
-    assert!(
-        validate.contains("finalization_assessment terminal_state"),
-        "the validator must take the terminal state from the assessment"
-    );
-
-    // The classifier the deputy asked to be removed is gone, and nothing
-    // sources it.
+fn nothing_sources_the_deleted_outcome_classifier() {
     assert!(
         !workspace_root()
             .join("amplifier-bundle/tools/workflow_finalization_outcome_classify.sh")
             .exists(),
-        "workflow_finalization_outcome_classify.sh must be deleted"
-    );
-    assert!(
-        !tool_text("workflow_agentic_finalization.sh").contains("outcome_classify"),
-        "nothing may source the deleted classifier"
-    );
-}
-
-// #2343 ordering: the blockers about the local checkout run first, because no
-// published outcome can answer them; the facts are gathered next; the decision
-// is read last, so it can never be applied to facts that were not gathered.
-#[test]
-fn blockers_precede_the_facts_which_precede_the_decision() {
-    let validate = tool_text("workflow_finalization_validate.sh");
-    let body = validate
-        .split_once("validate_finalization() {")
-        .expect("validate_finalization must be defined")
-        .1;
-    let dirty = body
-        .find("\"FAILED_DIRTY_WORKTREE\"")
-        .expect("dirty-worktree blocker");
-    let prior = body
-        .find("deterministic terminal probe reported")
-        .expect("prior terminal probe blocker");
-    let facts = body
-        .find("\n  gather_outcome_facts")
-        .expect("the facts are gathered");
-    let decision = body
-        .find("finalization_assessment terminal_state")
-        .expect("the decision is read");
-    assert!(
-        dirty < facts && prior < facts,
-        "every blocker precedes the outcome read"
-    );
-    assert!(
-        facts < decision,
-        "the facts are gathered before the decision is read"
+        "workflow_finalization_outcome_classify.sh must stay deleted (#2343)"
     );
 }
 
@@ -190,48 +123,10 @@ fn complete_helper_lists_existing_open_pr_in_vocabulary() {
     );
 }
 
-// Every state the validator may report, and every state it calls a success,
-// must be one workflow-complete publishes.
-#[test]
-fn the_validators_vocabulary_stays_inside_the_published_one() {
-    let published = tool_text("workflow_finalization_complete.sh");
-    let result = tool_text("workflow_finalization_result.sh");
-    let states = |function: &str| -> Vec<String> {
-        let body = result
-            .split_once(&format!("{function}() {{"))
-            .unwrap_or_else(|| panic!("{function} must be defined"))
-            .1;
-        let guard = body
-            .split_once("esac")
-            .expect("the predicate must close its case")
-            .0;
-        guard
-            .lines()
-            .filter_map(|line| line.trim().strip_suffix(") return 0 ;;"))
-            .flat_map(|names| names.split('|'))
-            .map(|name| name.trim().to_owned())
-            .filter(|name| !name.is_empty() && name != "${1-}")
-            .collect()
-    };
-    let allowed = states("_finalization_state_allowed");
-    let successes = states("_finalization_state_is_success");
-    assert!(
-        allowed.len() >= 8,
-        "the allowed vocabulary must not have quietly shrunk: {allowed:?}"
-    );
-    for state in allowed.iter().chain(successes.iter()) {
-        assert!(
-            published.contains(&format!("\"{state}\"")),
-            "`{state}` is not in workflow-complete's terminal_vocabulary"
-        );
-    }
-    for state in &successes {
-        assert!(
-            allowed.contains(state),
-            "`{state}` is a success but not an allowed state"
-        );
-    }
-}
+// The vocabulary the validator publishes and the one workflow-complete
+// reports must agree. That used to be asserted by parsing the predicate bodies
+// out of the shell source; it is asserted by running both steps over every
+// state in `issue_2343_finalization_outcome::wiring`.
 
 #[test]
 fn module_budget_guards_the_finalization_helpers() {

@@ -5,7 +5,9 @@ use std::fs;
 use serde_json::{Value, json};
 
 use crate::issue_1641_finalization_open_pr::builders::{check_run, open_pr};
-use crate::issue_1641_finalization_open_pr::fixture::{BRANCH, Fixture, PR_URL};
+use crate::issue_1641_finalization_open_pr::fixture::{
+    BRANCH, Fixture, Outcome, PR_URL, workspace_root, write_executable,
+};
 
 /// Phrase the old transport emitted for absence. Its presence on stderr means
 /// absence was still being treated as invalidity.
@@ -132,4 +134,55 @@ pub fn decided_resumed(
         crate::issue_1641_finalization_open_pr::builders::assessment(terminal_state, "none", pr),
     );
     envs
+}
+
+/// Where `stub_step_recovery_driver` records the calls it was given.
+pub const DRIVER_LOG: &str = "driver-calls.log";
+
+/// A stand-in `amplihack` for the fixture's PATH. It records every argv it was
+/// called with, then runs whatever followed `--`, the way `step-recovery run`
+/// runs the body it was handed. With it in place a step's real `command:` can
+/// be executed and the call it makes to the driver observed.
+const DRIVER_STUB: &str = r#"#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_FIXTURE_DIR/driver-calls.log"
+for ((i = 1; i <= $#; i++)); do
+  if [ "${!i}" = "--" ]; then shift "$i"; exec "$@"; fi
+done
+exit 0
+"#;
+
+impl Fixture {
+    pub fn stub_step_recovery_driver(&self) {
+        write_executable(&self.tmp.path().join("bin/amplihack"), DRIVER_STUB);
+    }
+
+    /// Every argv the stub recorded, in call order.
+    pub fn driver_calls(&self) -> Vec<String> {
+        fs::read_to_string(self.tmp.path().join(DRIVER_LOG))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Run `command` under bash with the fixture's isolation and `envs`, the
+    /// way the recipe runner runs a step's `command:`.
+    pub fn run_step(&self, command: &str, envs: &[(&str, &str)]) -> Outcome {
+        let mut process = std::process::Command::new("bash");
+        self.isolate(&mut process);
+        process
+            .arg("-c")
+            .arg(command)
+            .arg("step")
+            .env("AMPLIHACK_HOME", workspace_root());
+        for (key, value) in envs {
+            process.env(key, value);
+        }
+        let output = process.output().expect("run the step command");
+        Outcome {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            output,
+        }
+    }
 }

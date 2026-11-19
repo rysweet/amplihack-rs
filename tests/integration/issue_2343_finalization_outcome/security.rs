@@ -106,7 +106,37 @@ fn a_malformed_pull_request_number_names_no_pull_request() {
     // recorded, which is the reporting default and predates this change.
     assert_eq!(outcome.field("pr_number"), "");
     assert_eq!(outcome.field("pr_url"), PR_URL);
-    assert_absent(&outcome, "1=1", "a malformed pull request number");
+    // The value is quoted back once, in the human reason, exactly as an
+    // unusable `terminal_state` is (#2819 R1 asked for a reason that names
+    // what came back). That is assessment text, which `terminal_reason` has
+    // always carried: cleaned of control characters and cut to 40 characters.
+    // What must not happen is that it becomes an identity, and it does not --
+    // it reaches neither `pr_number` nor `pr_url`, and gh is never asked about
+    // it.
+    let reason = outcome.field("terminal_reason");
+    assert!(reason.contains("7 OR 1=1"), "{reason}");
+    assert!(
+        !outcome.field("evidence_used").contains("1=1"),
+        "the record of the facts is not the assessment's text: {}",
+        outcome.field("evidence_used")
+    );
+    for call in fx.gh_calls() {
+        assert!(
+            !call.contains("1=1"),
+            "a malformed number must never reach gh: {call}"
+        );
+    }
+    // Because the state it claimed IS an open pull request, a decision that
+    // named none of them is not published at all. The run goes to its recovery
+    // agent instead of ending a success that showed nothing.
+    assert!(!outcome.success(), "{}", outcome.describe());
+    assert_eq!(
+        outcome.field("terminal_state"),
+        "FAILED_MISSING_TERMINAL_EVIDENCE",
+        "{}",
+        outcome.describe()
+    );
+    assert_eq!(outcome.field("terminal_success"), "false");
     // The facts still carry the request that was read, so the record shows
     // which one the decision was made beside.
     assert!(
