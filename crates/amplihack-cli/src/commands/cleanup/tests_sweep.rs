@@ -741,8 +741,9 @@ fn remove_target_refuses_a_shape_change_at_apply() {
 //   `<reason>` is `has uncommitted changes`, or the text of
 //   [`unpushed_reason`] (`has unpushed commits`, `has no upstream and
 //   commits on no remote branch`), or `cannot check for unpushed commits:
-//   <detail>`. No control character appears in it, and it never contains
-//   `still in use`.
+//   <detail>`. No character that [`needs_escape`] names appears in it (the
+//   controls, and the format and separator characters), and it never
+//   contains `still in use`.
 // - `pub(super) fn judge_unsaved_work(dir: &Path, owner: u32) ->
 //   Option<KeepReason>`: the judgement with no output. `owner` is the uid a
 //   folder and its `.git` must belong to; production passes `euid()`.
@@ -1069,30 +1070,33 @@ fn a_dirty_clone_whose_name_is_not_utf8_is_kept() {
     assert_eq!(kept(&outer).worktree, clone);
 }
 
-/// A name with a newline or a terminal escape cannot forge a second line, and
-/// the text is the same everywhere it is shown (stderr, the table, JSON).
+/// A name with a newline, a terminal escape or a right-to-left override
+/// cannot forge a second line, send an escape sequence or reorder what is
+/// shown, and the text is the same everywhere it is shown (stderr, the
+/// table, JSON).
 #[test]
 fn a_hostile_folder_name_cannot_break_the_message_into_lines_or_send_escapes() {
     let s = Scratch::new();
     let outer = s.root.join("outer");
-    let clone = outer.join("we\nird\u{1b}[2Jname");
+    let clone = outer.join("we\nird\u{1b}[2J\u{202e}name");
     s.origin.clone_to(&clone);
     make_dirty(&clone);
 
     let text = kept(&outer).to_string();
 
-    assert!(!text.chars().any(char::is_control), "{text:?}");
+    assert!(!text.chars().any(needs_escape), "{text:?}");
     assert!(text.starts_with("work tree \""), "{text}");
     assert!(text.ends_with(&format!(": {UNCOMMITTED}")), "{text}");
 }
 
 /// Git's own error names the `.git` it refused, and so carries the folder's
 /// name with it, escape included. The detail after `cannot check for unpushed
-/// commits:` is escaped the same way as a path.
+/// commits:` is escaped the same way as a path: controls, and the format and
+/// separator characters that reorder or hide the text around them.
 #[test]
-fn a_git_error_that_carries_a_control_character_is_escaped_too() {
+fn a_git_error_that_carries_an_unsafe_character_is_escaped_too() {
     let s = Scratch::new();
-    let dir = s.root.join("broken\u{1b}[31m-escape");
+    let dir = s.root.join("broken\u{1b}[31m\u{202e}\u{200b}-escape");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join(".git"), "gitdir: /nonexistent\n").unwrap();
 
@@ -1103,7 +1107,11 @@ fn a_git_error_that_carries_a_control_character_is_escaped_too() {
         text.len() > CANNOT_CHECK.len(),
         "Git's error follows the prefix: {text:?}"
     );
-    assert!(!text.chars().any(char::is_control), "{text:?}");
+    assert!(!text.chars().any(needs_escape), "{text:?}");
+    assert!(
+        text.contains("\\u{202e}"),
+        "the override is written out: {text}"
+    );
 }
 
 /// Git refuses to run in a repository another user owns, and a nested one

@@ -794,7 +794,9 @@ Anything cleanup cannot settle is kept, with
 - One folder holds more than eight work trees. The detail is
   `more work trees than can be checked`. Only the `.git` entries described
   above count: an ignored empty `.git` folder and a candidate that is a
-  symbolic link do not. Eight are judged; a ninth keeps the folder.
+  symbolic link do not. The cap is reached while the work trees are being
+  found, before any of them is judged, so more than eight keeps the folder
+  without judging any of them.
 
 A folder kept for one of these reasons stays until a person fixes the
 repository or removes the folder by hand. Cleanup does not retry, wait for an
@@ -851,8 +853,10 @@ Rules for the line:
   `AMPLIHACK_CLEANUP_ON_EXIT=0` is set or another cleanup holds the lock. A
   later `amplihack cleanup` is another pass. A folder that still holds unsaved
   work is reported by each pass that reaches it.
-- **Paths are quoted and escaped.** A folder name with a newline or a terminal
-  escape in it cannot start a second line or change your terminal.
+- **Paths are quoted and escaped.** A folder name with a newline, a terminal
+  escape or a right-to-left override in it cannot start a second line, change
+  your terminal, or reverse the line it appears in. The same escaping is
+  applied to Git's words in the detail.
 - **Only paths and the reason.** The line never shows a remote URL, a commit id,
   a branch name or any other Git output. The detail after
   `cannot check for unpushed commits:` has credentials in URLs removed and is

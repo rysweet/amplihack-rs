@@ -461,7 +461,8 @@ pub(super) struct KeepReason {
     folder: PathBuf,
     /// The work tree the reason is about: `folder` itself, or one below it.
     pub(super) worktree: PathBuf,
-    /// Free of control characters, so it is safe wherever it is shown.
+    /// Free of control, format and separator characters, so it is safe
+    /// wherever it is shown.
     reason: String,
 }
 
@@ -470,7 +471,7 @@ impl KeepReason {
         Self {
             folder: folder.to_path_buf(),
             worktree: worktree.to_path_buf(),
-            reason: escape_controls(reason.as_ref()),
+            reason: escape_unsafe(reason.as_ref()),
         }
     }
 
@@ -497,13 +498,32 @@ impl std::fmt::Display for KeepReason {
     }
 }
 
-/// `text` with every control character written as an escape. Folder names
-/// are attacker-influenced and Git quotes them back in its errors: a newline
-/// would forge a second line, and an escape sequence would reach a terminal.
-fn escape_controls(text: &str) -> String {
+/// A character that must not reach a terminal or a log viewer as itself:
+/// the C0 and C1 controls, and the format and separator characters that
+/// reorder or hide the text around them. Characters outside this set are
+/// left alone, so a folder name in a non-Latin script still reads as one.
+fn needs_escape(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{FEFF}'
+            | '\u{E0000}'..='\u{E007F}')
+}
+
+/// `text` with every character [`needs_escape`] names written as an escape.
+/// Folder names are attacker-influenced and Git quotes them back in its
+/// errors: a newline would forge a second line, an escape sequence would
+/// reach a terminal, and a right-to-left override would reorder the line
+/// around it.
+fn escape_unsafe(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
-        if c.is_control() {
+        if needs_escape(c) {
             out.extend(c.escape_debug());
         } else {
             out.push(c);
@@ -1168,11 +1188,14 @@ impl Collector<'_> {
                             "in use by a running process",
                             Some(id),
                         ));
-                    } else if let Some(keep) = keep_and_report_unsaved_work(dir) {
+                    } else if let Some(keep) = keep_and_report_unsaved_work(&canonical_or_self(dir))
+                    {
                         // Issue #2785: a step left a repository copy here
                         // with work that is in no commit, or in no commit
                         // that is on a remote. Removing the folder would
-                        // destroy it, so it is kept and said once.
+                        // destroy it, so it is kept and said once. The
+                        // canonical path is judged, as apply time judges
+                        // `item.canonical`, so the two sites agree.
                         self.items.push(Item::skip(
                             Category::RunTmp,
                             dir,
