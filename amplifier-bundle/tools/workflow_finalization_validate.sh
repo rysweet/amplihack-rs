@@ -30,11 +30,13 @@
 # finalization_assessment, the facts and the blockers from
 # finalization_evidence -- so a second run of the same body reads the same
 # values and reaches the same end. Nothing the agent is permitted to do
-# changes them: it may make no GitHub write, so it cannot push the branch or
-# open the pull request the facts are missing, and may start no recipe, so it
+# changes them: it may make no GitHub write, and may start no recipe, so it
 # cannot produce an assessment where there was none. Repairing the run's
-# outcome belongs to assess-finalization, which is allowed exactly those two
-# actions and then decides on what it did.
+# outcome belongs to assess-finalization. #2819 R3: retrying THAT step is the
+# recipe's job -- assessment-decision-status asks whether it produced a
+# decision and reassess-finalization runs it once more when it did not, both
+# upstream of here, so a failed model call costs a second call rather than a
+# finished run.
 #
 # The facts themselves are obtained and rendered by
 # workflow_finalization_facts.sh, which this file requires to be sourced
@@ -274,8 +276,18 @@ FIELDS
   #    finalization itself, not a verdict about the run. The step is left
   #    failing for its recovery agent, whose move is to hand off with this
   #    reason: no repair it may make can put a decision here (#2819 R2).
-  no_decision="assess-finalization reported no terminal state for this run's outcome"
-  [ -z "$assessment_state" ] || no_decision="$no_decision; it returned \"$(_finalization_outcome_clean "$assessment_state")\", which is not a state finalization publishes"
+  #
+  #    The two gaps are named apart (#2819 R3): an answer naming a state
+  #    finalization does not publish is quoted back, while an absent one is
+  #    reported as the step having delivered nothing, which is what the
+  #    operator has to act on. The absent case is reached only after
+  #    assessment-status gave that step a second attempt through
+  #    reassess-finalization, so both attempts came back empty.
+  if [ -n "$assessment_state" ]; then
+    no_decision="assess-finalization reported no terminal state for this run's outcome; it returned \"$(_finalization_outcome_clean "$assessment_state")\", which is not a state finalization publishes"
+  else
+    no_decision="assess-finalization delivered no terminal state for this run's outcome: neither it nor the re-run after it returned an answer a state could be read from, so the run was never judged"
+  fi
   [ -z "$outcome_unread" ] || no_decision="$no_decision; the facts it would have judged are incomplete: $outcome_unread"
   fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" "$no_decision" \
     "Run finalization again so assess-finalization decides on the gathered outcome, or report why it cannot; re-running this step alone reads the same recorded answer." \

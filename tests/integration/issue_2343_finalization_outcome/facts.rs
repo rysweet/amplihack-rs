@@ -347,3 +347,108 @@ fn a_pull_request_with_no_checks_reports_no_check_states() {
     assert_eq!(value["checks"], "none");
     assert_eq!(value["check_states"], "");
 }
+
+// #2819 R3: no branch name is refused for being a default branch. `main`,
+// `master` and `HEAD` were blanked by name here, so a run recorded on one of
+// them read as having produced nothing -- a decision taken in the collector,
+// without the assessment, and one that never covered a repository whose
+// default branch is `trunk`.
+#[test]
+fn a_run_branch_named_like_a_default_branch_is_read_like_any_other() {
+    for name in ["master", "main"] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.git(&["checkout", "-q", "-B", name]);
+        fx.git(&["push", "-q", "origin", name]);
+        let head = fx.head();
+        fx.gh_pr_at(&head, green_rollup());
+
+        let (value, _) = fx.facts(name, None);
+
+        assert_eq!(value["branch"], name, "the branch is reported: {value}");
+        assert_eq!(value["remote_head"], head, "its remote is read: {value}");
+        assert_eq!(value["pr_number"], "7", "its pull request is read: {value}");
+        assert_eq!(
+            value["unread"], "",
+            "a branch is not unread for its name: {value}"
+        );
+    }
+}
+
+// A branch name an argument parser would read as an option is still refused,
+// and that is not a narrowing: it never reaches a git or gh argument.
+#[test]
+fn a_branch_name_that_looks_like_an_option_is_reported_unread() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.gh_no_pr();
+
+    let (value, _) = fx.facts("--upload-pack=touch /tmp/pwned", None);
+
+    assert_eq!(value["branch"], "", "{value}");
+    assert!(
+        value["unread"]
+            .as_str()
+            .expect("a String")
+            .contains("not a valid branch name"),
+        "the reason must name the gap: {value}"
+    );
+}
+
+// #2819 R3: a state gh printed is reported, not blanked for failing a shape
+// the collector invented. Which state names gh may return is the assessment's
+// business; a reader handed an empty `pr_state` cannot tell a state it did not
+// recognise from a pull request it could not read.
+#[test]
+fn a_pull_request_state_outside_the_old_shape_is_reported_as_gh_printed_it() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    let head = fx.head();
+    let mut body = open_pr(green_rollup());
+    body["headRefOid"] = json!(head);
+    body["state"] = json!("Open");
+    fx.gh_view(&body);
+    fx.gh_list(&json!([{"number": 7, "url": PR_URL, "isCrossRepository": false}]));
+
+    let (value, _) = fx.facts(BRANCH, None);
+
+    assert_eq!(
+        value["pr_state"], "Open",
+        "the state is reported as gh printed it: {value}"
+    );
+    assert_eq!(
+        value["unread"], "",
+        "a state that was read is not an unread fact: {value}"
+    );
+}
+
+// #2819 R3: the host the run declared is reported as recorded, never renamed
+// to `other`. The gate below it is unchanged -- anything but github is not
+// asked for a pull request -- but a reader can now tell an unusable recorded
+// value from a run that really recorded `other`.
+#[test]
+fn a_declared_remote_host_is_reported_as_the_run_recorded_it() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+
+    let (value, _) = fx.facts_for_host(BRANCH, None, "azure devops");
+
+    assert_eq!(
+        value["declared_remote_host"], "azure devops",
+        "the recorded value reaches the reader: {value}"
+    );
+    assert_eq!(
+        value["pr_number"], "",
+        "a non-github remote is still never asked for a pull request: {value}"
+    );
+    assert!(
+        value["unread"]
+            .as_str()
+            .expect("a String")
+            .contains("azure devops"),
+        "the reason must quote what the run recorded: {value}"
+    );
+}

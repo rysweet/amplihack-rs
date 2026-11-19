@@ -3,9 +3,11 @@
 //! Since the decision is `assess-finalization`'s, a run that reaches
 //! `validate-agentic-finalization` with no usable decision has a gap in
 //! finalization, not a verdict about the run. The step is left failing, which
-//! is what sends it to its own recovery agent: that agent repairs and
-//! validates again, or stops with the reason
-//! (docs/reference/step-failure-recovery.md).
+//! is what sends it to its own recovery agent. That agent does not repair:
+//! the step is wired `--no-repair`, because every input was recorded before
+//! it ran and nothing the agent may do would change them. It stops with the
+//! reason (docs/reference/step-failure-recovery.md). Re-running the decision
+//! is `reassess-finalization`'s job, upstream of this step.
 //!
 //! These cases drive the step. The wiring that carries their exit to a
 //! recovery agent is asserted by running that wiring, in `wiring.rs`.
@@ -82,6 +84,43 @@ fn a_finished_run_with_no_assessment_also_ends_with_no_decision() {
             .contains("outcome.checks=green"),
         "the facts were gathered: {}",
         outcome.field("evidence_used")
+    );
+}
+
+// #2819 R3: the two gaps are not the same gap, so they are not reported in
+// the same words. An answer naming a state finalization does not publish is
+// quoted back. An absent one is reported as the assessment having delivered
+// nothing -- after `reassess-finalization` upstream also produced nothing --
+// which is what the operator acts on: the model call is what to look at, not
+// the run's artifacts.
+#[test]
+fn an_absent_answer_and_an_unpublishable_one_are_reported_as_different_gaps() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+
+    let absent = fx.validate(&as_refs(&finished_env(&fx.repo_path())));
+    let unpublishable = fx.validate(&as_refs(&decided(&fx, "TOTALLY_FINE", "7")));
+
+    assert_no_decision(&absent, "nothing was delivered");
+    assert_no_decision(&unpublishable, "what was delivered is not published");
+    assert!(
+        absent.field("terminal_reason").contains("re-run"),
+        "an absent answer must say both attempts came back empty: {}",
+        absent.field("terminal_reason")
+    );
+    assert!(
+        !absent.field("terminal_reason").contains("re-run")
+            || !unpublishable.field("terminal_reason").contains("re-run"),
+        "a delivered answer must not be reported as an undelivered one"
+    );
+    assert!(
+        unpublishable
+            .field("terminal_reason")
+            .contains("TOTALLY_FINE"),
+        "an unpublishable answer must be quoted back: {}",
+        unpublishable.field("terminal_reason")
     );
 }
 

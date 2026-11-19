@@ -31,6 +31,7 @@ context:
   terminal_adjudication: ""
   finalizer_step_status: ""
   finalization_assessment: ""  # #2343/#2809: assess-finalization's structured answer, when it ran
+  finalization_assessment_status: ""  # #2819 R3: whether that answer carries a decision
   workflow_result: ""
   issue_number: ""
   pr_number: ""
@@ -330,37 +331,36 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      set -euo pipefail
-      # Issue #969: typed {status, reporting_failure}, so the classifier tells an implementation
-      # failure from a reporting failure WITHOUT parsing the agent narrative; an empty
-      # narrative means the reporting step failed to produce its human-readable output.
-      command -v jq >/dev/null 2>&1 || { echo "ERROR: finalizer-step-status requires jq" >&2; exit 2; }
-      # An explicit framework root is authoritative, including missing assets.
-      if [ -n "${AMPLIHACK_HOME:-}" ]; then
-        CONTEXT_HELPER="$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_context.sh"
-      else
-        CONTEXT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_context.sh"
-        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_context.sh"
-        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_context.sh"
-        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_context.sh"
-      fi
-      [ -f "$CONTEXT_HELPER" ] || { echo "ERROR: workflow_context.sh not found at selected framework root" >&2; exit 2; }
-      . "$CONTEXT_HELPER"
-      narrative="$(workflow_context_read agentic_finalizer_narrative || :)"
-      status="ok"
-      reporting_failure="false"
-      trimmed="$(printf '%s' "$narrative" | tr -d '[:space:]')"
-      if [ -z "$trimmed" ]; then
-        status="failed"
-        reporting_failure="true"
-      fi
-      jq -nc --arg status "$status" --arg reporting_failure "$reporting_failure" \
-        '{status: $status, reporting_failure: $reporting_failure}'
+      # The body of this step lives in amplifier-bundle/tools/finalize_step_status.sh,
+      # extracted for the brick budget (#2819 R3). It is unchanged and reads
+      # the same RECIPE_VAR_* variables the runner exports.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/finalize_step_status.sh" ] && { H="$c/amplifier-bundle/tools/finalize_step_status.sh"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: finalize_step_status.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      bash "$H"
     output: "finalizer_step_status"
   - id: "assess-finalization"  # decides the terminal state (#2343, #2809); runs on every outcome, see docs/reference/default-workflow-agentic-finalization.md#the-assessment-step
     type: "recipe"
     recipe: "workflow-finalization-assessment"
     continue_on_error: true
+  - id: "assessment-decision-status"  # is there a decision to report? (#2819 R3)
+    type: "bash"
+    parse_json: true
+    command: |
+      set -euo pipefail
+      FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
+      bash "$FINALIZER_HELPER" assessment-status
+    output: "finalization_assessment_status"
+  # One more attempt at the decision, and only when the first produced none:
+  # a rate-limited, crashed or prose-answering model call would otherwise end
+  # a finished run with no decision, and the validator's recovery agent cannot
+  # close that gap -- it may start no recipe (#2847 item 1, #2819 R3). A
+  # second failure changes nothing: the step is continue_on_error like the
+  # first, and validate-agentic-finalization then reports the gap as before.
+  - id: "reassess-finalization"
+    type: "recipe"
+    recipe: "workflow-finalization-assessment"
+    continue_on_error: true
+    condition: "finalization_assessment_status.usable == 'false'"
   - id: "validate-agentic-finalization"
     type: "bash"
     parse_json: true

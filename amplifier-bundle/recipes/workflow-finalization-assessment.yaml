@@ -13,8 +13,13 @@ tags: ["development", "finalize", "terminal-state"]
 # one, and there is no longer any code that could.
 #
 # The step runs with continue_on_error: true, so a failure here never ends the
-# run by itself. It leaves validate-agentic-finalization with no decision to
-# report, which fails that step for its own recovery agent
+# run by itself. #2819 R3: the caller then asks assessment-decision-status
+# whether an answer with a decision in it was recorded, and runs this recipe
+# once more when none was, so a rate-limited, crashed or prose-answering call
+# costs a second call rather than a finished run (#2847 item 1). Only when
+# that second attempt also produces nothing does
+# validate-agentic-finalization report that there is no decision, which fails
+# that step for its own recovery agent
 # (docs/reference/step-failure-recovery.md).
 
 recursion:

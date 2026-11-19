@@ -78,6 +78,21 @@ impl Run {
 /// stands for everything after it, with `evidence` as the run's outcome.
 /// `with_sub_recipe` decides whether the shipped sub-recipe is reachable.
 fn run_assessment_chain(evidence: &str, with_sub_recipe: bool) -> Run {
+    run_shipped_chain(evidence, with_sub_recipe, &["assess-finalization"], false)
+}
+
+/// The same over the shipped `workflow-finalize` steps named by `steps`, with
+/// no agent on the host, so every agent call inside them fails.
+/// `framework_home` points `AMPLIHACK_HOME` and `REPO_PATH` at this checkout,
+/// which a bash step in the chain needs to find its helper -- and which also
+/// gives the runner a second place to resolve a sub-recipe from, so the case
+/// that needs an unresolvable one leaves it false.
+fn run_shipped_chain(
+    evidence: &str,
+    with_sub_recipe: bool,
+    steps: &[&str],
+    framework_home: bool,
+) -> Run {
     let dir = tempfile::TempDir::new().expect("tempdir");
     if with_sub_recipe {
         let name = "workflow-finalization-assessment";
@@ -85,6 +100,18 @@ fn run_assessment_chain(evidence: &str, with_sub_recipe: bool) -> Run {
             .expect("stage the shipped sub-recipe beside the run");
     }
     let marker = dir.path().join("reached-the-validator");
+    let mut chain: Vec<Value> = steps
+        .iter()
+        .map(|id| {
+            serde_yaml::from_value::<Value>(shipped_step("workflow-finalize", id))
+                .expect("the shipped step is representable as JSON")
+        })
+        .collect();
+    chain.push(json!({
+        "id": "after-the-assessment",
+        "type": "bash",
+        "command": format!("touch {}", marker.display()),
+    }));
     let recipe = json!({
         "name": "issue-2819-assessment-chain",
         "version": "1.0.0",
@@ -93,29 +120,28 @@ fn run_assessment_chain(evidence: &str, with_sub_recipe: bool) -> Run {
             "finalization_evidence": evidence,
             "finalizer_step_status": r#"{"status":"ok","reporting_failure":"false"}"#,
             "finalization_assessment": "",
+            "finalization_assessment_status": "",
         },
-        "steps": [
-            serde_yaml::from_value::<Value>(shipped_step("workflow-finalize", "assess-finalization"))
-                .expect("the shipped step is representable as JSON"),
-            {
-                "id": "after-the-assessment",
-                "type": "bash",
-                "command": format!("touch {}", marker.display()),
-            },
-        ],
+        "steps": chain,
     });
     let path = dir.path().join("chain.yaml");
     fs::write(&path, serde_yaml::to_string(&recipe).expect("serialize")).expect("write recipe");
 
-    let output = crate::isolated_amplihack::isolated(pinned_runner().to_str().expect("runner"))
+    let mut command =
+        crate::isolated_amplihack::isolated(pinned_runner().to_str().expect("runner"));
+    command
         .arg(&path)
         .arg("--working-dir")
         .arg(dir.path())
         .args(["--no-auto-stage", "--output-format", "json"])
         .env("HOME", dir.path())
-        .env("TMPDIR", dir.path())
-        .output()
-        .expect("run the pinned runner");
+        .env("TMPDIR", dir.path());
+    if framework_home {
+        command
+            .env("AMPLIHACK_HOME", workspace_root())
+            .env("REPO_PATH", workspace_root());
+    }
+    let output = command.output().expect("run the pinned runner");
     let result: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
         panic!(
             "the runner must serialize its result: {e}\nstdout:\n{}\nstderr:\n{}",
@@ -210,7 +236,14 @@ done
 file="$(printf '%s' "$prompt_arg" | sed -n 's/^.*instructions in the file \(.*\)\. Its contents.*$/\1/p')"
 if [ -n "$file" ] && [ -f "$file" ]; then cat "$file" > "$AGENT_STUB_PROMPT"
 else printf '%s' "$prompt_arg" > "$AGENT_STUB_PROMPT"; fi
-answer="$(cat "$AGENT_STUB_ANSWER")"
+# A second recorded answer, for the case that drives the one re-run of the
+# assessment. It is selected by a marker the chain creates between the two
+# sub-recipe calls, not by counting calls: the runner retries an agent step
+# whose answer does not parse as JSON, so a call count would depend on how
+# many times it chose to do that.
+answer_file="$AGENT_STUB_ANSWER"
+[ ! -f "$AGENT_STUB_ANSWER.2" ] || [ ! -f "$AGENT_STUB_ANSWER.switch" ] || answer_file="$AGENT_STUB_ANSWER.2"
+answer="$(cat "$answer_file")"
 [ -z "$out" ] || printf '%s' "$answer" > "$out"
 printf '%s\n' "$answer"
 "#;
@@ -243,6 +276,15 @@ impl Assessed {
 /// Run the shipped `assess-finalization` step -- the real sub-recipe, with its
 /// real prompt -- over `evidence`, with an agent that answers `answer`.
 fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
+    run_recorded_chain(evidence, &[answer], &["assess-finalization"])
+}
+
+/// The same, over a chain of shipped `workflow-finalize` steps named by
+/// `steps`. The agent answers `answers[0]`; when a second answer is given, a
+/// test-only step inserted after `assessment-decision-status` switches the
+/// agent to it, so the re-run of the assessment gets a different answer from
+/// the attempt that produced none. Nothing about the shipped steps changes.
+fn run_recorded_chain(evidence: &str, answers: &[&str], steps: &[&str]) -> Assessed {
     let dir = tempfile::TempDir::new().expect("tempdir");
     let name = "workflow-finalization-assessment";
     fs::copy(bundle_recipe(name), dir.path().join(format!("{name}.yaml")))
@@ -254,9 +296,32 @@ fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
     write_executable(&launcher, LAUNCHER_STUB);
     let prompt_file = dir.path().join("prompt.md");
     let answer_file = dir.path().join("answer.txt");
-    fs::write(&answer_file, answer).expect("record the answer");
+    fs::write(&answer_file, answers[0]).expect("record the answer");
+    if let Some(second) = answers.get(1) {
+        fs::write(dir.path().join("answer.txt.2"), second).expect("record the second answer");
+    }
 
     let marker = dir.path().join("reached-the-validator");
+    let switch = dir.path().join("answer.txt.switch");
+    let mut chain: Vec<Value> = Vec::new();
+    for id in steps {
+        chain.push(
+            serde_yaml::from_value::<Value>(shipped_step("workflow-finalize", id))
+                .expect("the shipped step is representable as JSON"),
+        );
+        if answers.len() > 1 && *id == "assessment-decision-status" {
+            chain.push(json!({
+                "id": "switch-the-recorded-answer",
+                "type": "bash",
+                "command": format!("touch {}", switch.display()),
+            }));
+        }
+    }
+    chain.push(json!({
+        "id": "after-the-assessment",
+        "type": "bash",
+        "command": format!("touch {}", marker.display()),
+    }));
     let recipe = json!({
         "name": "issue-2819-recorded-assessment",
         "version": "1.0.0",
@@ -265,16 +330,9 @@ fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
             "finalization_evidence": evidence,
             "finalizer_step_status": r#"{"status":"ok","reporting_failure":"false"}"#,
             "finalization_assessment": "",
+            "finalization_assessment_status": "",
         },
-        "steps": [
-            serde_yaml::from_value::<Value>(shipped_step("workflow-finalize", "assess-finalization"))
-                .expect("the shipped step is representable as JSON"),
-            {
-                "id": "after-the-assessment",
-                "type": "bash",
-                "command": format!("touch {}", marker.display()),
-            },
-        ],
+        "steps": chain,
     });
     let path = dir.path().join("chain.yaml");
     fs::write(&path, serde_yaml::to_string(&recipe).expect("serialize")).expect("write recipe");
@@ -286,6 +344,8 @@ fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
         .args(["--no-auto-stage", "--output-format", "json"])
         .env("HOME", dir.path())
         .env("TMPDIR", dir.path())
+        .env("AMPLIHACK_HOME", workspace_root())
+        .env("REPO_PATH", workspace_root())
         .env("AMPLIHACK_AGENT_BINARY", &agent)
         .env("AMPLIHACK_LAUNCHER_BINARY", &launcher)
         .env("AGENT_STUB_PROMPT", &prompt_file)
@@ -790,6 +850,206 @@ fn a_state_the_vocabulary_does_not_carry_is_never_published() {
             outcome.field("terminal_state"),
             "FAILED_MISSING_TERMINAL_EVIDENCE",
             "`{invented}` must not be published\n{}",
+            outcome.describe()
+        );
+    }
+}
+
+/// The three shipped steps that produce a decision: the assessment, the check
+/// of whether it produced one, and the one re-run when it did not.
+const DECISION_CHAIN: &[&str] = &[
+    "assess-finalization",
+    "assessment-decision-status",
+    "reassess-finalization",
+];
+
+// #2819 R3 / #2847 item 1: a model call that fails or answers with prose no
+// longer ends a finished run. `assessment-decision-status` reads the recorded
+// answer, and `reassess-finalization` runs the shipped assessment once more
+// when it carries no decision. Driven with a recorded agent whose first answer
+// is prose and whose second is the object the prompt asked for, so what is
+// asserted is that the second attempt happens and that its answer is what the
+// run carries on to the validator.
+#[test]
+fn a_first_answer_with_no_decision_in_it_is_assessed_once_more() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let decision = json!({
+        "terminal_state": "EXISTING_OPEN_PR",
+        "action_taken": "none",
+        "pr_number": "7",
+        "reason": "gh pr view 7 reports the request open at the run's head",
+        "next_action": "Wait for CI on PR #7.",
+    })
+    .to_string();
+
+    let assessed = run_recorded_chain(
+        &finished_evidence(&fx.head()),
+        &["Looks finished to me; PR #7 is open and green.", &decision],
+        DECISION_CHAIN,
+    );
+
+    assert_eq!(
+        assessed.run.status("assessment-decision-status"),
+        "completed",
+        "the check must run: {}",
+        assessed.run.result
+    );
+    assert_ne!(
+        assessed.run.status("reassess-finalization"),
+        "skipped",
+        "prose carries no decision, so the assessment must be run again: {}",
+        assessed.run.result
+    );
+
+    // The second attempt's answer is what the run carries, and the validator
+    // publishes it instead of reporting that nothing decided.
+    let carried = assessed.assessment();
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(("RECIPE_VAR_finalization_assessment", carried.clone()));
+    let published = fx.validate(&as_refs(&envs));
+
+    assert!(
+        published.success(),
+        "the second answer decides the run: carried={carried}\n{}",
+        published.describe()
+    );
+    assert_eq!(published.field("terminal_state"), "EXISTING_OPEN_PR");
+    assert_eq!(published.field("pr_number"), "7");
+}
+
+// The failure crusty's round 3 named: the model call itself fails -- a rate
+// limit, a crash, no agent on the host at all -- and the step records nothing.
+// That is the same gap as prose, and it gets the same second attempt, rather
+// than ending a run whose pull request is open and green.
+#[test]
+fn an_assessment_that_failed_outright_is_also_assessed_once_more() {
+    let run = run_shipped_chain(
+        &json!({"schema_version": 1, "outcome": {"pr_number": "7", "pr_state": "OPEN"}})
+            .to_string(),
+        true,
+        DECISION_CHAIN,
+        true,
+    );
+
+    assert_eq!(
+        run.result["context"]["finalization_assessment"], "",
+        "the case needs the agent call to record nothing: {}",
+        run.result
+    );
+    assert_eq!(
+        run.result["context"]["finalization_assessment_status"]["usable"], "false",
+        "an empty answer carries no decision: {}",
+        run.result
+    );
+    assert_eq!(
+        run.status("assessment-decision-status"),
+        "completed",
+        "the check runs on a failed assessment: {}",
+        run.result
+    );
+    assert_ne!(
+        run.status("reassess-finalization"),
+        "skipped",
+        "a failed call leaves no decision, so the assessment must be run again: {}",
+        run.result
+    );
+    assert_eq!(
+        run.result["success"], true,
+        "a second failure still must not end the run: {}",
+        run.result
+    );
+    assert_eq!(run.status("after-the-assessment"), "completed");
+}
+
+// The other half: a first answer that does decide is not thrown away and not
+// paid for twice. The re-run is skipped, so the retry costs a model call only
+// when there is nothing to report.
+#[test]
+fn a_first_answer_that_decides_is_not_assessed_again() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let decision = json!({
+        "terminal_state": "BLOCKED_CI",
+        "action_taken": "none",
+        "pr_number": "7",
+        "reason": "the unit check of pull request 7 is failing",
+        "next_action": "Fix the failing check.",
+    })
+    .to_string();
+
+    let assessed = run_recorded_chain(
+        &finished_evidence(&fx.head()),
+        &[
+            &decision,
+            r#"{"terminal_state":"EXISTING_OPEN_PR","pr_number":"7"}"#,
+        ],
+        DECISION_CHAIN,
+    );
+
+    assert_eq!(
+        assessed.run.status("reassess-finalization"),
+        "skipped",
+        "a decided run must not be assessed twice: {}",
+        assessed.run.result
+    );
+    let carried: Value =
+        serde_json::from_str(&assessed.assessment()).expect("the first answer is carried as JSON");
+    assert_eq!(
+        carried["terminal_state"], "BLOCKED_CI",
+        "the first decision survives: {carried}"
+    );
+}
+
+// The check itself, driven directly over the answers it has to tell apart. It
+// asks the same two questions `validate-agentic-finalization` refuses on,
+// through the same predicates, so a retry is spent exactly when the validator
+// would otherwise have reported no decision.
+#[test]
+fn the_decision_check_reports_exactly_what_the_validator_would_refuse() {
+    let fx = Fixture::new();
+    for (answer, usable, why) in [
+        ("", "false", "a step that produced nothing"),
+        ("the run looks finished", "false", "prose"),
+        (
+            r#"{"terminal_state":"TOTALLY_FINE"}"#,
+            "false",
+            "an unpublished state",
+        ),
+        (
+            r#"{"terminal_state":"EXISTING_OPEN_PR","pr_number":""}"#,
+            "false",
+            "an open-PR state naming no pull request",
+        ),
+        (
+            r#"{"terminal_state":"EXISTING_OPEN_PR","pr_number":"7"}"#,
+            "true",
+            "a decision with its pull request",
+        ),
+        (
+            r#"{"terminal_state":"BLOCKED_CI","pr_number":""}"#,
+            "true",
+            "a failure state, which names no pull request",
+        ),
+    ] {
+        let outcome = fx.run_dispatcher(
+            "assessment-status",
+            &[("RECIPE_VAR_finalization_assessment", answer)],
+        );
+
+        assert!(
+            outcome.output.status.success(),
+            "{why}: the check must never end the run\n{}",
+            outcome.describe()
+        );
+        assert_eq!(
+            outcome.json()["usable"],
+            usable,
+            "{why}\n{}",
             outcome.describe()
         );
     }

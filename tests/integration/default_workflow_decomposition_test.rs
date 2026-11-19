@@ -356,6 +356,11 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // brick, immediately before the step that reports it. There is no longer a
     // bash classification for it to come before.
     "assess-finalization",
+    // Issue #2819 R3 / #2847 item 1: whether that step produced a decision,
+    // and one more attempt at it when it did not, so a failed or non-JSON
+    // model call does not end a finished run.
+    "assessment-decision-status",
+    "reassess-finalization",
     "validate-agentic-finalization",
     // Issue #2539: a recorded handoff ends the run here, before completion.
     "step-recovery-report",

@@ -5,10 +5,12 @@
 #
 # Collection, not judgement. This file reaches no verdict, derives no relation
 # between two commits, names no terminal state and ends no run. It reports what
-# git and gh printed and stops there, bar two small readings #2844 tracks: a
-# shape check per value, so none carries a newline into a JSON field, and the
-# check-set rollup reported beside the states themselves. Deciding what any of
-# it means is assess-finalization's job, in
+# git and gh printed and stops there. Values are cleaned of control characters
+# so none carries a newline into a JSON field; nothing else narrows one. #2819
+# R3 removed what did: the shape coercions that blanked a value or renamed it,
+# and the `main|master|HEAD` list that decided here, asking nobody, that a run
+# on one of those branches had no readable outcome. Deciding what any of it
+# means is assess-finalization's job, in
 # amplifier-bundle/recipes/workflow-finalization-assessment.yaml.
 #
 # It always exits 0 and always prints exactly one compact JSON object, so a
@@ -24,19 +26,17 @@
 # number, URL, state, draft flag, head, branch and cross-repository flag; its
 # statusCheckRollup both as the shared _finalization_pr_rollup_class and as the
 # check states gh reported, so a reader is never handed only the rollup; what
-# `git merge-base --is-ancestor` answered for the remote head and the pull
-# request head; the remote host type the run declared; and `unread`.
+# `git merge-base --is-ancestor` answered for the two heads; the remote host
+# type the run declared; and `unread`.
 #
 # The two `*_descends_local_head` fields are what `git merge-base` answered,
-# recorded like any other tool output; they are not a relation this file
-# derived. What the answer means -- whether the branch was pushed, whether the
-# pull request is this run's, whether any of it is a success -- is the reader's
-# business, and this file says none of it.
+# recorded like any other tool output, not a relation this file derived. What
+# the answer means is the reader's business, and this file says none of it.
 #
 # No wait, poll, retry or timer: every state is read exactly once. The origin
 # URL never appears in the output or on stderr: the remote is reported as
 # owner/repo through parse_github_repo_identity, which discards any userinfo,
-# and git and gh stderr is discarded for the same reason.
+# and git and gh stderr is discarded too.
 #
 # This file only DEFINES functions; sourcing it has no other side effects. It
 # must be sourced after workflow_finalization_pr_signal.sh, whose
@@ -150,14 +150,16 @@ _finalization_outcome_view() {
   # already a reading; a reader handed only `failing` cannot see which check
   # failed. Both are reported and neither is a verdict.
   check_states="$(_finalization_outcome_clean "$(printf '%s' "$view" | _finalization_pr_check_states)")"
-  # Field shapes, so no value can carry a newline into the result. A value
-  # outside its shape is reported as unread, never coerced to another value.
-  case "$pr_state" in ''|*[!A-Z_]*) [ -z "$pr_state" ] || _finalization_outcome_note "gh pr view returned a pull request state for #$pr_number that is not a state name"; pr_state="" ;; esac
+  # #2819 R3: the state and the rollup class are reported as they came back,
+  # cleaned and not narrowed. Blanking a state gh returned, and renaming a
+  # class outside the shared rule's five to `unknown`, answered the reader's
+  # questions here and cost it the only sign of either.
+  pr_state="$(_finalization_outcome_clean "$pr_state")"
+  checks="$(_finalization_outcome_clean "$checks")"
+  # pr_head is the exception and is not a narrowing: the descends field below
+  # is a `git merge-base` answer about this commit, so a value that is not a
+  # commit id has nothing to ask about and is reported unread.
   _finalization_outcome_sha "$pr_head" || { [ -z "$pr_head" ] || _finalization_outcome_note "gh pr view returned a head for pull request #$pr_number that is not a commit id"; pr_head=""; }
-  case "$checks" in
-    green|failing|pending|none|unknown) ;;
-    *) _finalization_outcome_note "the check rollup of pull request #$pr_number did not classify, so the class is unknown; the states themselves are in check_states"; checks="unknown" ;;
-  esac
   _finalization_outcome_descends "$dir" "$branch" "$pr_head" \
     pr_head_descends_local_head "head of pull request #$pr_number"
 }
@@ -169,15 +171,11 @@ _finalization_outcome_view() {
 _finalization_outcome_collect() {
   local dir="${1:-}" ref="${3:-}" origin="" scratch="" list="" live_branch="" count=""
   branch="${2:-}"
+  # Reported as the run recorded it (#2819 R3). It was renamed to "other" when
+  # it did not look like a host name, which a reader could not tell from a run
+  # that really recorded "other"; the gate below treats anything but github
+  # the same way either way.
   declared_remote_host="$(_finalization_outcome_clean "${4:-}")"
-  # A recorded host name outside the shape is not quietly renamed to a real
-  # one: it reads "other" and says that the run's own value was unusable, so a
-  # reader can tell it from a run that really recorded "other".
-  case "$declared_remote_host" in
-    *[!A-Za-z0-9_.-]*)
-      declared_remote_host="other"
-      _finalization_outcome_note "the remote host type this run recorded is not a host name, so it is reported as other" ;;
-  esac
 
   if ! command -v git >/dev/null 2>&1; then
     _finalization_outcome_note "the run outcome could not be read because git is unavailable"; return 0
@@ -213,14 +211,17 @@ _finalization_outcome_collect() {
   esac
 
   # The branch is validated before it reaches any git or gh argument, and is
-  # passed as one argument. A name git itself rejects is reported unread. A
-  # default branch is never a run branch, so it is never asked about.
-  case "$branch" in ''|main|master|HEAD|-*) branch="" ;; esac
+  # passed as one argument. Empty, a leading `-` an argument parser would read
+  # as an option, or a name git itself rejects is reported unread. No name is
+  # refused for being a default branch (#2819 R3): blanking `main`, `master`
+  # and `HEAD` decided that a run recorded on one of them had produced nothing
+  # readable, and left a repository whose default branch is `trunk` uncovered.
+  case "$branch" in ''|-*) branch="" ;; esac
   if [ -n "$branch" ] && ! git -C "$dir" check-ref-format "refs/heads/$branch" >/dev/null 2>&1; then
     branch=""
   fi
   if [ -z "$branch" ]; then
-    _finalization_outcome_note "the recorded run branch is empty, a default branch, or not a valid branch name, so no branch or pull request could be read for it; the local head is $local_head"
+    _finalization_outcome_note "the recorded run branch is empty or not a valid branch name, so no branch or pull request could be read for it; the local head is $local_head"
     return 0
   fi
   # #1762: the run branch of an alias worktree is <B>, not <B>--wt-<n>. A
