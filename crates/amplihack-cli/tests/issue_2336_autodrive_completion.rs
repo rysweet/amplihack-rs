@@ -403,3 +403,172 @@ fn unavailable_rust_helper_fails_preflight_before_spending_a_review() {
         show(&o)
     );
 }
+
+/// Set up one round whose review disagrees with the commit the loop measured,
+/// and return the finding the record writer should leave open (#2814).
+fn head_disagreement(d: &Drive, kind: &str) -> &'static str {
+    d.set("review.json", r#"{"crusty_verdict":"CLEAN","concerns":[]}"#);
+    match kind {
+        "mismatch" => {
+            d.git(&d.repo, &["commit", "--allow-empty", "-qm", "other"]);
+            let other = d.head();
+            d.git(&d.repo, &["reset", "-q", "--hard", "HEAD~1"]);
+            d.set("review-head", &other);
+            "crusty-head-claim-mismatch"
+        }
+        "missing" => {
+            d.set("review-head", "");
+            "crusty-head-claim-missing"
+        }
+        _ => {
+            d.set("measured-head", "");
+            "crusty-head-unmeasured"
+        }
+    }
+}
+
+/// #2814: the record writer appends a `crusty-head-*` finding after the
+/// verdict has been classified, so a CLEAN record can carry an open finding.
+/// Dispatch must read the same sidecar the evidence check reads: while
+/// `complete` ignored it, such a round met `complete` here and failed it there,
+/// so neither action was valid and the loop ended INVALID_DECISION instead of
+/// reaching the evaluator.
+#[test]
+fn an_open_head_finding_on_a_clean_record_reaches_the_evaluator() {
+    for kind in ["mismatch", "missing", "unmeasured"] {
+        let d = Drive::new();
+        let finding = head_disagreement(&d, kind);
+        d.record(1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&d.read("crusty-round-1.json")).unwrap()["crusty_verdict"],
+            "CLEAN",
+            "{kind}: the shape that matters is a clean verdict with an open finding"
+        );
+        assert!(
+            d.read("crusty-round-1.json.findings").contains(finding),
+            "{kind}: the writer must leave {finding} open"
+        );
+        let p = d.prepare(1, "");
+        d.decide(&p, "evaluate");
+        let o = d.dispatch(&p, 0);
+        let v = json_output(&o);
+        assert_eq!(
+            v["evaluator_invoked"],
+            true,
+            "{kind}: evaluate must be a valid action for an open head finding: {}",
+            show(&o)
+        );
+        assert_eq!(v["source"], "evaluator", "{kind}: {}", show(&o));
+        assert_eq!(d.evaluators().len(), 1, "{kind}: {}", show(&o));
+    }
+}
+
+/// The other half of the same agreement: the round may not complete either, and
+/// the refusal names the open findings rather than the head (#2814).
+#[test]
+fn an_open_head_finding_refuses_completion_and_says_why() {
+    for kind in ["mismatch", "missing", "unmeasured"] {
+        let d = Drive::new();
+        head_disagreement(&d, kind);
+        d.record(1);
+        let p = d.prepare(1, "");
+        d.decide(&p, "complete");
+        let o = d.dispatch(&p, 0);
+        assert!(
+            !o.status.success(),
+            "{kind}: an open finding must not complete: {}",
+            show(&o)
+        );
+        assert!(
+            stderr(&o).contains("unresolved findings"),
+            "{kind}: the refusal must name the open findings: {}",
+            show(&o)
+        );
+        assert!(d.evaluators().is_empty(), "{kind}");
+    }
+}
+
+/// End to end: a round whose review names another commit ends with the
+/// evaluator's own verdict, not the loop's generic INVALID_DECISION, and the
+/// reason the loop records names what dispatch refused (#2814).
+#[test]
+fn a_disagreeing_review_does_not_end_the_drive_with_an_invalid_decision() {
+    let d = Drive::new();
+    head_disagreement(&d, "mismatch");
+    d.set("action", "evaluate");
+    // The fixture evaluator answers STUCK, which ends the loop on its own
+    // verdict. What matters here is which verdict ends it.
+    let o = d.run_loop();
+    assert!(
+        !stderr(&o).contains("INVALID_DECISION"),
+        "a head finding must reach the evaluator, not stop the drive: {}",
+        show(&o)
+    );
+    assert!(
+        d.read("crusty-round-1.json.findings")
+            .contains("crusty-head-claim-mismatch"),
+        "{}",
+        show(&o)
+    );
+    assert!(!d.evaluators().is_empty(), "{}", show(&o));
+}
+
+/// #2814: the `Crusty verdict:` comment is the merge round's criterion-3
+/// evidence, so step-03c names the commit the loop measured — the same one the
+/// round record carries — and posts nothing when the review names another or
+/// none. Before this, the record used the measured commit while the comment
+/// still took the reviewer's claim.
+#[test]
+fn the_posted_verdict_names_the_loop_measured_commit() {
+    let head = recipe(ROUND)["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "step-03c-post-verdict")
+        .expect("the round posts the verdict")["prompt"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        head.contains("{{reviewed_head_sha}}"),
+        "the comment's head must be the loop-measured value: {head}"
+    );
+    assert!(
+        !head.contains("the reviewer actually identifies"),
+        "the comment's head must not be the reviewer's own claim: {head}"
+    );
+    for required in [
+        "Post nothing",
+        "names no `reviewed_head_sha`",
+        "differs from `{{reviewed_head_sha}}`",
+    ] {
+        assert!(
+            head.contains(required),
+            "a disagreeing or unmeasured head must post nothing ({required}): {head}"
+        );
+    }
+}
+
+/// #2814: a dispatch refusal ends the drive, so the reason the loop records
+/// names what the helper refused. "The completion decision or evidence was
+/// invalid" on its own left the operator to work out which of the two it was,
+/// and from a run that had already stopped.
+#[test]
+fn an_invalid_decision_records_what_dispatch_refused() {
+    let d = Drive::new();
+    d.set("review.json", &json!({"crusty_verdict":"CONCERNS", "concerns":[{
+        "id":"wrong-result", "severity":"major", "summary":"Wrong return value", "evidence":"lib.rs:4"
+    }]}).to_string());
+    // The next-action agent claims a completion the evidence cannot carry.
+    d.set("action", "complete");
+    let o = d.run_loop();
+    assert!(!o.status.success(), "{}", show(&o));
+    let v = json_output(&o);
+    assert_eq!(v["loop_result"], "INVALID_DECISION", "{}", show(&o));
+    let reason = v["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("unresolved findings"),
+        "the recorded reason must name what dispatch refused: {reason:?} {}",
+        show(&o)
+    );
+}

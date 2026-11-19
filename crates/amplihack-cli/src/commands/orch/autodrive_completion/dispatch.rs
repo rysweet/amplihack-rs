@@ -37,11 +37,25 @@ pub fn run(args: Dispatch) -> Result<i32> {
         &snapshot,
         matches!(decision.action, Action::Complete),
     )?;
+    // #2814: an open finding is part of what "complete" means here, and this
+    // predicate has to say the same thing as `evidence::validate`, the
+    // next-action prompt and the record writer. The writer appends
+    // `crusty-head-claim-missing`, `crusty-head-claim-mismatch` or
+    // `crusty-head-unmeasured` to the findings sidecar after the verdict has
+    // been classified, so a CLEAN or MINOR_ONLY record can carry an open
+    // finding. Reading the sidecar here is what keeps `evaluate` reachable for
+    // such a round: `validate` refuses to complete it, and without this an
+    // `evaluate` for the same round failed the `!complete` check below, leaving
+    // the round with no valid action and ending the drive INVALID_DECISION.
+    let findings_empty = snapshot.sidecars["findings"]
+        .as_ref()
+        .is_some_and(|v| v.iter().all(u8::is_ascii_whitespace));
     let complete = matches!(
         record["crusty_verdict"].as_str(),
         Some("CLEAN" | "MINOR_ONLY")
     ) && record["reviewed_head_sha"] == record["head_sha"]
         && record["commits_this_round"].as_u64() == Some(0)
+        && findings_empty
         && args.child_exit_code == 0;
     let (result, code) = match decision.action {
         Action::Complete => {

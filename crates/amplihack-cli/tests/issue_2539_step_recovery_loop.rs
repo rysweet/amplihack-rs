@@ -72,6 +72,9 @@ c="$(git -C "$wd" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "
 git -C "$wd" update-ref HEAD "$c"
 printf '{"merge_ready_verdict":"CONCERNS","head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s"}\n' "$c" "$c" "$label" > "$record"
 printf 'item-%s\n' "$label" > "$record.findings"
+# #2808 SR-10 / #2814: the round's pre-review baseline, beside the round
+# record, so a test can see which rounds the loop reclaims one for.
+mkdir -p "$(dirname -- "$record")/pre-review.$label" || exit 2
 if grep -qx "$label" "$S/handoff-rounds" "$S/stop-rounds" 2>/dev/null; then
   "$REAL_AMPLIHACK" orch helper step-recovery record --dir "$srd" --step-id step-02-merge-ready-assessment \
     --reason "the assessment failed twice with the same error" --owner run-requester \
@@ -195,6 +198,17 @@ impl Loop {
             .expect("spawn autodrive_loop.sh")
     }
 
+    /// The `pre-review.*` baselines still in the state directory, sorted.
+    fn baselines(&self) -> Vec<String> {
+        let mut found: Vec<String> = fs::read_dir(self.root.join("state"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("pre-review."))
+            .collect();
+        found.sort();
+        found
+    }
+
     fn lines(&self, name: &str) -> Vec<String> {
         fs::read_to_string(self.stub.join(name))
             .unwrap_or_default()
@@ -294,4 +308,42 @@ fn without_a_handoff_the_loop_runs_on_to_the_evaluators_stop() {
     );
     assert_eq!(l.lines("evaluator-calls").len(), 3);
     assert_ne!(loop_result(&o)["loop_result"], "STEP_RECOVERY_HANDOFF");
+}
+
+/// #2814: the loop reclaims a round's `pre-review.*` baseline once that round
+/// has returned and the loop goes on. A round that ends the run on a recorded
+/// handoff keeps its baseline: there the reviewer was interrupted, and the
+/// baseline is the only record of what the worktree held before it ran, which
+/// is what `docs/reference/step-failure-recovery.md` promises the operator.
+#[test]
+fn a_round_that_ends_the_run_on_a_handoff_keeps_its_pre_review_baseline() {
+    let l = Loop::new();
+    fs::write(l.stub.join("handoff-rounds"), "round-2\n").unwrap();
+    let o = l.run();
+    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
+    assert_eq!(
+        l.baselines(),
+        ["pre-review.round-2"],
+        "the handoff round keeps its baseline and the round before it does not: {}",
+        show(&o)
+    );
+}
+
+/// The same rule read the other way: a round the loop goes on from leaves no
+/// baseline behind, whatever its verdict (#2808 SR-10).
+#[test]
+fn rounds_the_loop_goes_on_from_leave_no_pre_review_baseline() {
+    let l = Loop::new();
+    let o = l.run();
+    assert!(
+        !l.lines("round-calls").is_empty(),
+        "the fixture must run rounds: {}",
+        show(&o)
+    );
+    assert!(
+        l.baselines().is_empty(),
+        "every completed round's baseline must be reclaimed: {:?} {}",
+        l.baselines(),
+        show(&o)
+    );
 }

@@ -136,10 +136,14 @@ The baseline holds the contents of untracked files, so it can hold secrets that
 the worktree carried. It is created under `AUTODRIVE_STATE_DIR` as
 `pre-review.XXXXXX` with `umask 077` and mode `0700`. Nothing outside the round
 reads it, so `autodrive_loop.sh` removes every `pre-review.*` in the state
-directory as soon as the round that took it returns, whether that round
-succeeded or failed. The rest of the state directory — round records, sidecars
-and logs — is untouched. The baseline is never attached to a PR or written to
-logs.
+directory once the round that took it has returned and the loop is going on,
+whether that round succeeded or failed. The removal runs after the loop's
+stops, so a round that ends the run — orphaned, a policy refusal, a usage
+limit, or a recorded step-recovery handoff — leaves its baseline behind: there
+the reviewer was interrupted, and the baseline is the only record of what the
+worktree held before it ran. The next run's first round reclaims those too.
+The rest of the state directory — round records, sidecars and logs — is
+untouched. The baseline is never attached to a PR or written to logs.
 
 Within the round, the baseline remains associated with its reviewer invocation
 across recovery. Resuming an interrupted reviewer does not overwrite it with a

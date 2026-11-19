@@ -55,9 +55,21 @@ jq -cn --arg pr "${PR_NUMBER:-}" --arg head "$head" --arg resolved "$resolved" \
 pub const ROUND_SCRIPT: &str = r#"set -euo pipefail
 export RECIPE_VAR_crusty_round_context="$(bash "$FIXTURE/context.sh")"
 # A reviewer names the commit it read (#2814). This double reads the one the
-# loop measured and asked for, as an uninterrupted round does.
-export RECIPE_VAR_crusty_review="$(jq -c --arg s "${RECIPE_VAR_reviewed_head_sha:-}" \
-  '. + {reviewed_head_sha:$s}' "$FIXTURE/review.json")"
+# loop measured and asked for, as an uninterrupted round does. $FIXTURE/review-head
+# replaces that claim: its contents become the reported reviewed_head_sha, and an
+# empty file omits the field, so a round whose review disagrees with the loop can
+# be driven through the record writer and dispatch.
+# $FIXTURE/measured-head replaces what the loop measured, so a round that
+# reached the writer without one can be driven too.
+[ ! -f "$FIXTURE/measured-head" ] || export RECIPE_VAR_reviewed_head_sha="$(cat "$FIXTURE/measured-head")"
+claim="${RECIPE_VAR_reviewed_head_sha:-}"
+[ ! -f "$FIXTURE/review-head" ] || claim="$(cat "$FIXTURE/review-head")"
+if [ -n "$claim" ]; then
+  export RECIPE_VAR_crusty_review="$(jq -c --arg s "$claim" \
+    '. + {reviewed_head_sha:$s}' "$FIXTURE/review.json")"
+else
+  export RECIPE_VAR_crusty_review="$(jq -c 'del(.reviewed_head_sha)' "$FIXTURE/review.json")"
+fi
 export RECIPE_VAR_crusty_verdict="$(bash "$FIXTURE/classify.sh")"
 bash "$FIXTURE/record.sh"
 if [ -n "${AUTODRIVE_COMPLETION_STATE:-}" ]; then

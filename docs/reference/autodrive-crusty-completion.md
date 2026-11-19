@@ -118,6 +118,22 @@ Each is an open finding, so the round cannot complete: the agent chooses
 completion claim whose `.findings` sidecar is not empty. The check never
 fails the round by itself; the round's own outcome is unchanged.
 
+Dispatch reads the same sidecar when it decides whether the objective is
+complete, so a `CLEAN` or `MINOR_ONLY` record carrying one of these findings
+is not complete and `evaluate` is the action that passes. The three readers of
+"complete" — the record writer, the next-action prompt and the dispatcher —
+have to agree on this. While the dispatcher's own test ignored the sidecar, a
+record in this shape met `complete` there and failed it in the evidence check,
+so neither action was valid and the loop ended `INVALID_DECISION` instead of
+reaching the evaluator (#2814).
+
+Step-03c names the same measured commit in the `Crusty verdict:` comment it
+posts on the PR, which the merge round reads for criterion 3. It posts nothing
+when the measured value is not a full commit, or when the review names no
+commit or a different one: there is then nothing to attribute the verdict to.
+`autodrive_crusty_posted.sh` records the round's posted-verdict line only for a
+post at the measured commit, and names the mismatch otherwise.
+
 `CONCERNS` always means `evaluate`, whatever the head SHAs or sidecars say.
 After a round with commits, `reviewed_head_sha` differing from `head_sha` is
 expected and is not invalid evidence; it only means the new head has not been

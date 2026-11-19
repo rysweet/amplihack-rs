@@ -230,19 +230,6 @@ while :; do
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
       ${COMPLETION_CTX[@]+"${COMPLETION_CTX[@]}"} ${PRIOR_CTX[@]+"${PRIOR_CTX[@]}"} "${ROUND_CTX[@]}" -c "repo_path=${REPO}" -c "reviewed_head_sha=${REVIEWED_SHA}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
-  # #2808 SR-10: the round's pre-review baseline holds the contents of the
-  # worktree's untracked files. Every round takes its own and nothing outside
-  # the round reads one, so reclaim them here, as soon as the round that took
-  # them has returned. Best effort: this never changes the round's outcome.
-  for BASELINE_DIR in "$STATE_DIR"/pre-review.*; do
-    [ -d "$BASELINE_DIR" ] && [ ! -L "$BASELINE_DIR" ] || continue
-    # The baseline may hold the contents of untracked files, so a removal that
-    # failed is said out loud: what is left behind is named, and the operator
-    # decides. The round's outcome is unchanged either way (#2814).
-    rm -rf -- "$BASELINE_DIR" 2>"${STATE_DIR}/.baseline-rm.err" \
-      || echo "WARNING: the round's pre-review baseline ${BASELINE_DIR} could not be removed ($(tr -d '\000' < "${STATE_DIR}/.baseline-rm.err" | tr '\n' ' ' | cut -c1-200)); it may hold untracked file contents, so remove it by hand." >&2
-    rm -f -- "${STATE_DIR}/.baseline-rm.err"
-  done
   tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 
   if terminal_refusal "$ROUND_RC" "$LOG"; then
@@ -257,6 +244,24 @@ while :; do
     echo "INFO: ${ROUND_LABEL} child failed: ${ROUND_CHILD}; not a policy refusal, continuing" >&2
   fi
   recovery_stop # #2539: a handoff recorded in this round ends the loop here (also when the round exited 81)
+
+  # #2808 SR-10: the round's pre-review baseline holds the contents of the
+  # worktree's untracked files, and nothing outside the round reads one, so
+  # reclaim them once the round has returned and the loop goes on. Best
+  # effort: this never changes the round's outcome. #2814: it sits after the
+  # stops above on purpose. A round that ends the run — orphaned, refused,
+  # usage-limited, or holding a recorded handoff — keeps its baseline, the
+  # only record of what the worktree held before an interrupted reviewer ran;
+  # the next run's first round reclaims every pre-review.* left here.
+  for BASELINE_DIR in "$STATE_DIR"/pre-review.*; do
+    [ -d "$BASELINE_DIR" ] && [ ! -L "$BASELINE_DIR" ] || continue
+    # The baseline may hold the contents of untracked files, so a removal that
+    # failed is said out loud: what is left behind is named, and the operator
+    # decides. The round's outcome is unchanged either way (#2814).
+    rm -rf -- "$BASELINE_DIR" 2>"${STATE_DIR}/.baseline-rm.err" \
+      || echo "WARNING: the round's pre-review baseline ${BASELINE_DIR} could not be removed ($(tr -d '\000' < "${STATE_DIR}/.baseline-rm.err" | tr '\n' ' ' | cut -c1-200)); it may hold untracked file contents, so remove it by hand." >&2
+    rm -f -- "${STATE_DIR}/.baseline-rm.err"
+  done
 
   # Preserve the round and its manifest before accepting any next action.
   . "${LOOP_HOME}/autodrive_loop_record.sh" || exit 1
@@ -278,23 +283,30 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
   assert_ceiling_untouched
   HEALTH_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-health.log"; T0=$SECONDS
   if [ "$LOOP_NAME" = crusty ]; then
-    DISPATCH="$(AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger evaluator)" \
+    # #2814: a dispatch refusal ends the drive, so keep the text naming what
+    # the helper refused; the generic reason alone left the operator guessing.
+    DISPATCH_ERR="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-dispatch.err"
+    DISPATCH="$(umask 077; AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger evaluator)" \
       "$AMPLIHACK_BIN" orch helper autodrive-completion-dispatch \
-      --private-state "$AUTODRIVE_COMPLETION_STATE" --child-exit-code "$ROUND_RC")"
+      --private-state "$AUTODRIVE_COMPLETION_STATE" --child-exit-code "$ROUND_RC" \
+      2>"$DISPATCH_ERR")"
     HEALTH_RC=$?
+    [ ! -s "$DISPATCH_ERR" ] || cat -- "$DISPATCH_ERR" >&2
     INVOKED="$(field "$DISPATCH" evaluator_invoked '')"
     if [ "$INVOKED" = false ] && [ "$HEALTH_RC" -eq 0 ]; then
+      rm -f -- "$DISPATCH_ERR"
       record_result "$DISPATCH"
       exit 0
     fi
     if [ "$INVOKED" != true ]; then
       # A dispatch error after launching still spent evaluator usage.
       if [ -f "$HEALTH_LOG" ]; then usage_add evaluator "$T0"; fi
+      DISPATCH_WHY="$(tr -d '\000' < "$DISPATCH_ERR" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 1 | tr '\n' ' ' | cut -c1-300)"
       echo "ERROR: completion dispatch rejected the next action; no evaluator fallback" >&2
-      escalate INVALID_DECISION "completion decision or evidence was invalid"
+      escalate INVALID_DECISION "completion decision or evidence was invalid (dispatch exit ${HEALTH_RC}${DISPATCH_WHY:+: ${DISPATCH_WHY}})"
       case "$HEALTH_RC" in 79|75) exit "$HEALTH_RC" ;; *) exit 1 ;; esac
     fi
-    usage_add evaluator "$T0"
+    usage_add evaluator "$T0"; rm -f -- "$DISPATCH_ERR"
   else
   # #2582: agent output and log text reach the evaluator by file, not argv (eval_ctx_write).
   eval_ctx_write; eval_ctx_rc=$?  # rc 2 = bad bundle, other non-zero = write failure

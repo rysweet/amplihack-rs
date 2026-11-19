@@ -15,6 +15,11 @@
 //! else about the checkout — its worktrees, its index, its files — is
 //! touched.
 //!
+//! A reading that could not be taken at all ([`Bare::Unknown`]) is not a
+//! value, on either side of the comparison: neither an unreadable checkout
+//! before the run nor one after it is reported as a flip, and neither is
+//! written to.
+//!
 //! The run calls [`CheckoutBare::restore`] as a release step, so a restore
 //! that does not take becomes the run's error. Dropping the value runs the
 //! same check once if that step never ran, which covers an early return on a
@@ -83,6 +88,24 @@ impl CheckoutBare {
         if after == self.before {
             return None;
         }
+        // The same rule as the pre-run value above, on the other side of the
+        // comparison (#2814). `Unknown` is "the question could not be asked",
+        // not a value git reported: the directory is gone, is no longer a
+        // repository, or git could not run. There is nothing to compare it
+        // with and nothing that could be written back, so this is said once
+        // and left alone. Treating it as a flip warned about a change nobody
+        // observed, attempted a `git config` that could not work, and turned
+        // an otherwise successful run into an error naming the wrong cause.
+        if after == Bare::Unknown {
+            eprintln!(
+                "WARNING: core.bare in the named checkout {} could not be read after the run \
+                 (it read {:?} before it). Nothing is compared or written there; check that \
+                 the directory is still a readable repository (issues #964, #2814).",
+                self.dir.display(),
+                self.before
+            );
+            return None;
+        }
         let dir = self.dir.display();
         eprintln!(
             "WARNING: the run changed core.bare in the named checkout {dir} \
@@ -124,5 +147,74 @@ impl Drop for CheckoutBare {
         if let Some(message) = self.restore() {
             eprintln!("ERROR: {message}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A repository with a born HEAD, or `None` when git is unavailable here.
+    fn repo(dir: &Path) -> bool {
+        let git = |args: &[&str]| {
+            amplihack_git::command_in(dir)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        std::fs::create_dir_all(dir).is_ok() && git(&["init", "-q", "-b", "main", "."])
+    }
+
+    /// #2814: a checkout git can no longer read after the run has nothing to
+    /// compare, so it is reported and left alone rather than reported as a
+    /// flip whose restore then fails the run.
+    #[test]
+    fn an_unreadable_checkout_after_the_run_is_not_a_flip() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("checkout");
+        if !repo(&dir) {
+            eprintln!("skipping: git unavailable");
+            return;
+        }
+        let snapshot = CheckoutBare::snapshot(&dir);
+        assert_ne!(
+            snapshot.before,
+            Bare::Unknown,
+            "the fixture must be readable before the run"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            read(&dir),
+            Bare::Unknown,
+            "the fixture must now be unreadable"
+        );
+        assert!(
+            snapshot.restore().is_none(),
+            "an unreadable post-run checkout must not become the run's error"
+        );
+    }
+
+    /// The flip the module exists for is still reported and put back.
+    #[test]
+    fn a_flipped_value_is_restored() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("checkout");
+        if !repo(&dir) {
+            eprintln!("skipping: git unavailable");
+            return;
+        }
+        let snapshot = CheckoutBare::snapshot(&dir);
+        let before = snapshot.before.clone();
+        assert!(
+            amplihack_git::command_in(&dir)
+                .args(["config", "--local", "core.bare", "true"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(snapshot.restore().is_none(), "the restore must take");
+        assert_eq!(read(&dir), before, "the pre-run value must be back");
     }
 }

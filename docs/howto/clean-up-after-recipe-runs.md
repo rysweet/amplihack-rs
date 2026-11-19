@@ -1016,10 +1016,12 @@ longer need them.
 
 An auto-drive loop killed part way through a round can likewise leave a
 `pre-review.*` baseline directory in its state directory, mode `0700` with
-`0600` contents. `autodrive_loop.sh` removes the baseline as soon as the round
-returns, so one survives only an interrupted round. No cleanup category covers
-that path, and the directory holds the contents of the worktree's untracked
-files, so remove it by hand once no recovery needs it. See
+`0600` contents. `autodrive_loop.sh` removes the baseline once the round
+returns and the loop goes on, so one survives an interrupted round, and also a
+round that ended the run on an orphaned driver, a policy refusal, a usage limit
+or a recorded step-recovery handoff; the next run's first round reclaims it. No
+cleanup category covers that path, and the directory holds the contents of the
+worktree's untracked files, so remove it by hand once no recovery needs it. See
 [pre-review evidence](../reference/recipe-checkout-isolation.md#pre-review-evidence).
 
 ## Build output: CACHEDIR.TAG and target names

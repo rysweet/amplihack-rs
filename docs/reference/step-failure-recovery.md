@@ -89,6 +89,15 @@ replace the baseline with partial reviewer changes. Pre-existing staged,
 unstaged, and untracked work remains recoverable. There are no
 `review_launch_dir` or private review-generation context values.
 
+That retention holds across the round and past its end. The loop reclaims the
+round's `pre-review.*` baseline only once the round has returned and the loop
+is going on; the reclaim runs after `orphan_stop`, the terminal-refusal check,
+`usage_limit_stop` and `recovery_stop`, so a round that ends the run — and in
+particular one that ends it on a recorded handoff — leaves its baseline in
+place for the operator who has to act on it. The next run's first round
+reclaims every `pre-review.*` in the state directory. See
+[pre-review evidence](recipe-checkout-isolation.md#pre-review-evidence).
+
 `workflow-worktree` `step-04-setup-worktree` writes the build's branch to
 `build-branch.txt` in the recovery directory. A retried build passes it as
 `existing_branch`, so the retry continues the first attempt's branch and PR.
