@@ -15,16 +15,21 @@
 #
 #   Handed off (FINALIZATION_HANDOFF_STATES):
 #     BLOCKED_CI             the PR exists and its checks are red.
-#     FAILED_IMPLEMENTATION  the PR exists and was confirmed live by the
-#                            open-PR check (open, same-repo, run branch,
-#                            head at or fast-forward of the local HEAD), but
-#                            this run's own evidence does not prove the work
-#                            complete. The crusty loop reviews exactly that.
-#     FAILED_REPORTING       implementation and verification succeeded, the
-#                            reporting step failed, and the open-PR check
-#                            confirmed the PR as above. The reporting
+#     FAILED_IMPLEMENTATION  assess-finalization decided the work is not
+#                            complete, and named a pull request while doing
+#                            so. The crusty loop reviews exactly that.
+#     FAILED_REPORTING       assess-finalization decided the work is
+#                            published and only the reporting step failed,
+#                            and named the pull request. The reporting
 #                            narrative has no effect on the PR the loops
 #                            review and fix.
+#   Since #2343 the open-PR check that once had to confirm the request live
+#   (open, same-repo, run branch, head at or a fast-forward of the local HEAD)
+#   is gone, with the rest of the bash classifier. open_pr_confirmed_number is
+#   now the number the assessment itself returned, in canonical form: the
+#   agent read the request back after deciding, and that reading is what the
+#   loops are handed. The live state is checked again downstream by
+#   autodrive_build_handoff below, which refuses a PR that is not OPEN.
 #   Never handed off: FAILED_DIRTY_WORKTREE and FAILED_WRONG_BRANCH (the
 #   local checkout is not the PR's), FAILED_MISSING_TOOLING,
 #   FAILED_INVALID_EVIDENCE, FAILED_INVALID_INPUT and
@@ -34,7 +39,8 @@
 #   worth reviewing), FAILED_PR_METADATA_UNAVAILABLE (the PR is unknown)
 #   and INCOMPLETE. Success states need no hand-off. FAILED_IMPLEMENTATION
 #   and FAILED_REPORTING are handed off only through the *_open_pr
-#   functions, which require a PR the open-PR check confirmed.
+#   functions, which require the pull request number the assessment
+#   returned (open_pr_confirmed_number).
 #
 #   finalization_handoff_allowed <state>
 #       Return 0 only for exactly one of FINALIZATION_HANDOFF_STATES.
@@ -45,7 +51,7 @@
 #       Drop-in for fail_result; callable only inside validate_finalization.
 #       Hands off with the validator's current pr_number.
 #   finalization_fail_or_handoff_open_pr <state> <reason> <next> <evidence>
-#       As above, but hands off only when the open-PR check confirmed a PR
+#       As above, but hands off only when the assessment named a pull request
 #       (open_pr_confirmed_number/url/facts, set by the validator); otherwise it
 #       fails closed with the run's own PR evidence.
 #   finalization_try_handoff_open_pr <state> <reason> <next> <evidence>

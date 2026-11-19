@@ -352,8 +352,9 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "collect-finalization-evidence",
     "agentic-finalizer",
     "finalizer-step-status",
-    // Issues #2343/#2809: judgement on an outcome the mechanical read could not
-    // settle, in its own brick, immediately before the classification.
+    // Issues #2343/#2809: the step that decides the terminal state, in its own
+    // brick, immediately before the step that reports it. There is no longer a
+    // bash classification for it to come before.
     "assess-finalization",
     "validate-agentic-finalization",
     // Issue #2539: a recorded handoff ends the run here, before completion.

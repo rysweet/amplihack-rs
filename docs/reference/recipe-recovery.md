@@ -268,11 +268,21 @@ in every autodrive recipe that wraps a step: `auto-drive-to-merge`,
 because the value is a path chosen by the enclosing run.
 
 `validate-agentic-finalization` is recovered with `--essential
---stop-on-handoff` rather than `--guard`, because a real finalization failure
-(nothing pushed, no PR, a PR at another head, failing CI) should be repairable
-and not merely reportable. `--guard` withholds `retry_after_repair`, so the
-recovery agent could only stop; without it the agent may fix the run's outcome
-and validate again, or hand off with the reason. A finished run no longer
+--stop-on-handoff --no-repair`. It is not a `--guard` -- a guard is also denied
+the declared alternatives, and reports a check rather than a result -- but it
+does withhold `retry_after_repair`, and since #2819 that is deliberate rather
+than an oversight. The step reports a decision made before it ran. Its inputs
+are all recorded values (`finalization_assessment`,
+`finalization_evidence`), and the recovery agent is forbidden both actions
+that would change what they say: it may make no GitHub write, so it cannot
+push the branch or open the pull request a `FAILED_IMPLEMENTATION` is missing,
+and it may start no recipe, so it cannot produce an assessment where there is
+none (see `amplifier-bundle/recipes/step-failure-recovery.yaml`). A retry
+would re-read the same values and fail identically, so the step offers the
+agent the move it can actually make: hand off with the reason. Repairing the
+run's outcome belongs one step earlier, to `assess-finalization`, which is
+allowed exactly those two actions -- push the run branch, open the pull
+request -- and then decides the terminal state on what it did. A finished run no longer
 reaches recovery in error: the step reports the terminal state
 `assess-finalization` decided on the pushed head, the open pull request and its
 checks, which is a success with the request handed on when CI is still pending.

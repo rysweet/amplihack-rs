@@ -550,7 +550,7 @@ expressions, trimming or case folding.
 | State | Allowed | Reason |
 | --- | --- | --- |
 | `BLOCKED_CI` | Yes | A PR exists and needs only merge-ready work on its checks. |
-| `FAILED_IMPLEMENTATION` | Yes, only on a PR the open-PR check confirmed | The PR is open, on the run branch and contains every local commit; this run's own evidence does not prove the work complete, which the crusty loop reviews. With no confirmed PR it fails closed. |
+| `FAILED_IMPLEMENTATION` | Yes, only on a PR the assessment named | `assess-finalization` decided the work is not complete and named the pull request it read, which the crusty loop reviews. Naming none fails closed. |
 | `FAILED_CLOSED_UNMERGED` | No | The PR is closed. |
 | `FAILED_PR_METADATA_UNAVAILABLE` | No | No PR could be identified. |
 | `FAILED_MEANINGFUL_DIFF` | No | There is no diff worth reviewing. |
@@ -559,7 +559,7 @@ expressions, trimming or case folding.
 | `FAILED_INVALID_INPUT` | No | The evidence cannot be read. |
 | `FAILED_INVALID_EVIDENCE` | No | The evidence cannot be read. |
 | `FAILED_MISSING_TERMINAL_EVIDENCE` | No | The evidence cannot be read. |
-| `FAILED_REPORTING` | Yes, only on a PR the open-PR check confirmed | Implementation and verification succeeded and only the reporting step failed; the reporting narrative has no effect on the PR the loops review and fix. With no confirmed PR it fails closed. |
+| `FAILED_REPORTING` | Yes, only on a PR the assessment named | `assess-finalization` decided the work is published and only the reporting step failed; the reporting narrative has no effect on the PR the loops review and fix. Naming none fails closed. |
 | `FAILED_MISSING_TOOLING` | No | The tooling to read the evidence is missing. |
 | `HOLLOW_SUCCESS` | No | The agent output is empty, so the PR may be too. |
 | `INCOMPLETE` | No | The run did not finish. |
@@ -723,7 +723,9 @@ probe:
   [`workflow_pr_head_fetch.sh`](../../amplifier-bundle/tools/workflow_pr_head_fetch.sh).
   That fetches the PR head commit once if it is missing, non-interactively and
   with bounded time, writing no ref and no `FETCH_HEAD`. It is the same
-  function the finalization open-PR check uses, so the two cannot disagree;
+  function `workflow_finalization_outcome.sh` records
+  `pr_head_descends_local_head` from, so the probe and the facts the
+  assessment is given cannot disagree;
 - keeps the rewind guard above: every value `origin/<branch>` held must be an
   ancestor of the PR head;
 - prints

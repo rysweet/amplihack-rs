@@ -448,8 +448,8 @@ whether or not the file turned out to hold anything.
 
 An unset empty object key is the common case on a run that never reached
 worktree setup or publish. Before this change it read as invalid context and
-disabled finalization's open-PR check; it now reads as empty and the run's real
-outcome is read instead.
+disabled the open-PR check finalization had then (deleted by #2343); it now
+reads as empty and the run's real outcome is read instead.
 
 Status `2` on an empty value applies only to object-typed canonical keys. An
 empty scalar key such as `branch_name` is a value and reads as empty with

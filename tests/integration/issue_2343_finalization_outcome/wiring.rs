@@ -200,13 +200,17 @@ fn validator_step_command() -> String {
         .to_owned()
 }
 
-// Recovery on the validator step must offer repair, not only a stop. Asserted
-// by running the step with a stub in `amplihack`'s place and reading the call
-// it made: `--guard` and `--no-repair` both withhold `retry_after_repair`
-// (docs/reference/step-failure-recovery.md#the-four-choices), which would
-// leave an agent that can only give up on a gap it could close.
+// Recovery on the validator step offers a stop, not a repair (#2819 R2).
+// Asserted by running the step with a stub in `amplihack`'s place and reading
+// the call it made. `--no-repair` withholds `retry_after_repair`
+// (docs/reference/step-failure-recovery.md#the-four-choices), which is right
+// here because a retry re-runs the same body against the same recorded
+// decision and the same recorded evidence: the case below repairs the world
+// between two runs and gets the same answer twice. `--guard` would also
+// withhold the declared alternatives and make this a check rather than a
+// report, so the step is not one.
 #[test]
-fn a_no_decision_exit_reaches_a_recovery_agent_that_may_repair_and_validate_again() {
+fn a_no_decision_exit_reaches_a_recovery_agent_that_can_only_stop_with_the_reason() {
     let fx = Fixture::new();
     fx.with_remote();
     fx.push();
@@ -226,15 +230,13 @@ fn a_no_decision_exit_reaches_a_recovery_agent_that_may_repair_and_validate_agai
         call.contains("--step-id validate-agentic-finalization"),
         "recovery must be recorded against this step: {call}"
     );
-    for required in ["--essential", "--stop-on-handoff"] {
+    for required in ["--essential", "--stop-on-handoff", "--no-repair"] {
         assert!(call.contains(required), "{required} is missing: {call}");
     }
-    for withholding in ["--guard", "--no-repair"] {
-        assert!(
-            !call.contains(withholding),
-            "`{withholding}` withholds retry_after_repair, so the agent could only stop: {call}"
-        );
-    }
+    assert!(
+        !call.contains("--guard"),
+        "the step reports a decision rather than checking one, so it is not a guard: {call}"
+    );
     // And what reached it is the gap, not a verdict: the body the driver ran
     // reported that nothing decided, and failed.
     assert_eq!(
@@ -253,6 +255,130 @@ fn a_no_decision_exit_reaches_a_recovery_agent_that_may_repair_and_validate_agai
         outcome.field("terminal_state"),
         "FAILED_IMPLEMENTATION",
         "the validator must not reach a verdict of its own"
+    );
+}
+
+/// The evidence `collect-finalization-evidence` records, carrying the facts of
+/// the run's outcome under `outcome` the way a real run does.
+fn recorded_evidence(dirty: &str, outcome: Value) -> (&'static str, String) {
+    (
+        "RECIPE_VAR_finalization_evidence",
+        json!({
+            "schema_version": 1,
+            "git": {"dirty_worktree": dirty},
+            "tooling": {"missing": "", "gh_required": "false"},
+            "prior_terminal_state": {"terminal_state": ""},
+            "agent_outputs": {"hollow_success_signals": "unknown"},
+            "outcome": outcome,
+        })
+        .to_string(),
+    )
+}
+
+// Why `--no-repair` is the honest flag, shown rather than argued (#2819 R2).
+// `retry_after_repair` re-runs the same body with the same environment. Every
+// input this body reads was recorded before the first attempt, so repairing
+// the world between the two runs changes nothing it reads.
+//
+// Each case starts from a real failure a recovery agent would be tempted to
+// repair, applies the repair that would fix the run, and runs the shipped
+// step's own `command:` again. The two results must be identical, field for
+// field. (The agent is in fact forbidden both repairs below -- it may make no
+// GitHub write and may not rewrite history -- which is the other half of the
+// argument; this half holds even for an agent that could.)
+#[test]
+fn repairing_the_run_between_two_runs_of_the_step_changes_nothing_it_reports() {
+    // Nothing on the remote and no pull request: the assessment decided
+    // FAILED_IMPLEMENTATION on exactly that, and the facts were recorded.
+    // The repair is the one the goal text used to invite -- push the branch
+    // and open the request.
+    assert_a_repair_is_invisible(
+        "nothing was pushed",
+        "FAILED_IMPLEMENTATION",
+        |fx| {
+            fx.with_remote();
+            fx.gh_no_pr();
+            let mut envs = finished_env(&fx.repo_path());
+            envs.push(recorded_evidence(
+                "false",
+                json!({"branch": BRANCH, "local_head": fx.head(), "remote": REPO,
+                       "remote_head": "", "pr_number": "", "unread": ""}),
+            ));
+            envs.push(assessed("FAILED_IMPLEMENTATION", ""));
+            envs
+        },
+        |fx| {
+            fx.push();
+            fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+        },
+    );
+
+    // A dirty worktree, recorded as such, under a decision that would
+    // otherwise be a success. The repair is to commit what was uncommitted.
+    assert_a_repair_is_invisible(
+        "the worktree was dirty",
+        "FAILED_DIRTY_WORKTREE",
+        |fx| {
+            fx.with_remote();
+            fx.push();
+            fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+            fs::write(fx.repo.join("scratch.txt"), "uncommitted\n").expect("dirty the worktree");
+            let mut envs = finished_env(&fx.repo_path());
+            envs.push(recorded_evidence(
+                "true",
+                json!({"branch": BRANCH, "local_head": fx.head(), "remote": REPO,
+                       "remote_head": fx.head(), "pr_number": "7", "pr_state": "OPEN",
+                       "pr_head": fx.head(), "checks": "green", "unread": ""}),
+            ));
+            envs.push(assessed("EXISTING_OPEN_PR", "7"));
+            envs
+        },
+        |fx| {
+            fx.git(&["add", "scratch.txt"]);
+            fx.git(&["commit", "-q", "-m", "commit the scratch file"]);
+        },
+    );
+}
+
+fn assessed(terminal_state: &str, pr: &str) -> (&'static str, String) {
+    crate::issue_1641_finalization_open_pr::builders::assessment(terminal_state, "none", pr)
+}
+
+/// Set a run up, run the shipped step, repair the world, run it again, and
+/// require the two results to be the same object.
+fn assert_a_repair_is_invisible(
+    what: &str,
+    state: &str,
+    setup: impl Fn(&Fixture) -> Vec<(&'static str, String)>,
+    repair: impl Fn(&Fixture),
+) {
+    let fx = Fixture::new();
+    fx.stub_step_recovery_driver();
+    let envs = setup(&fx);
+
+    let before = fx.run_step(&validator_step_command(), &as_refs(&envs));
+    assert_eq!(
+        before.field("terminal_state"),
+        state,
+        "{what}: the first run must report {state}\n{}",
+        before.describe()
+    );
+
+    repair(&fx);
+    let after = fx.run_step(&validator_step_command(), &as_refs(&envs));
+
+    assert_eq!(
+        after.json(),
+        before.json(),
+        "{what}: the repair is invisible to a retry, so the result is the same object. \
+         That is why the step is wired --no-repair.\nbefore: {}\nafter: {}",
+        before.describe(),
+        after.describe()
+    );
+    assert_eq!(
+        after.output.status.code(),
+        before.output.status.code(),
+        "{what}: and it exits the same way"
     );
 }
 

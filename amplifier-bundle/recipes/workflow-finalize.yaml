@@ -371,12 +371,15 @@ steps:
       # assess-finalization decided on the collected facts; it derives none of
       # its own and never reads the agent narrative. The vocabulary is in
       # workflow_finalization_result.sh. A non-success ends the run with exit 1;
-      # no decision at all leaves the step failing for its recovery agent,
-      # which repairs and validates again, or stops with the reason.
+      # no decision at all leaves the step failing for its recovery agent.
+      # #2819 R2: --no-repair -- a retry re-reads the same recorded decision
+      # and evidence, and the recovery agent may make no GitHub write and no
+      # recipe, so no repair it can make would show. Repairing the outcome is
+      # assess-finalization's job. See docs/reference/step-failure-recovery.md.
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
       bash "$FINALIZER_HELPER" validate
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Report the terminal state assess-finalization decided for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}, repairing the run's outcome if it is the gap" -- bash -c "$STEP_BODY" validate-agentic-finalization
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --essential --stop-on-handoff --no-repair --dir "$RECIPE_VAR_step_recovery_dir" --goal "Report the terminal state assess-finalization decided for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}; every input is already recorded, so name the owner of the gap rather than trying to repair it" -- bash -c "$STEP_BODY" validate-agentic-finalization
     output: "workflow_result"
   - id: "step-recovery-report"  # #2539: a recorded handoff ends the run here with exit 81; with recovery off the output says so
     type: "bash"

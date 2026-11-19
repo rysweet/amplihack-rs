@@ -5,8 +5,10 @@
 #
 # Collection, not judgement. This file reaches no verdict, derives no relation
 # between two commits, names no terminal state and ends no run. It reports what
-# git and gh printed and stops there. Deciding what that means is
-# assess-finalization's job, in
+# git and gh printed and stops there, bar two small readings #2844 tracks: a
+# shape check per value, so none carries a newline into a JSON field, and the
+# check-set rollup reported beside the states themselves. Deciding what any of
+# it means is assess-finalization's job, in
 # amplifier-bundle/recipes/workflow-finalization-assessment.yaml.
 #
 # It always exits 0 and always prints exactly one compact JSON object, so a

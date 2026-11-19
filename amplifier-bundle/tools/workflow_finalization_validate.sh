@@ -22,8 +22,19 @@
 # workflow_finalization_result.sh's. Every exit from here that is not the
 # assessment's own answer is a failure to reach a decision, not a decision: it
 # leaves validate-agentic-finalization failing for its recovery agent, which
-# repairs and validates again or stops with the reason
-# (docs/reference/step-failure-recovery.md).
+# stops with the reason (docs/reference/step-failure-recovery.md).
+#
+# #2819 R2: that recovery agent cannot repair its way out, and the step is
+# wired `--no-repair` so it is never offered the attempt. Everything this file
+# decides on was recorded before the step first ran -- the decision from
+# finalization_assessment, the facts and the blockers from
+# finalization_evidence -- so a second run of the same body reads the same
+# values and reaches the same end. Nothing the agent is permitted to do
+# changes them: it may make no GitHub write, so it cannot push the branch or
+# open the pull request the facts are missing, and may start no recipe, so it
+# cannot produce an assessment where there was none. Repairing the run's
+# outcome belongs to assess-finalization, which is allowed exactly those two
+# actions and then decides on what it did.
 #
 # The facts themselves are obtained and rendered by
 # workflow_finalization_facts.sh, which this file requires to be sourced
@@ -242,7 +253,7 @@ FIELDS
         no_decision="$no_decision: it returned an empty pr_number"
       fi
       fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" "$no_decision" \
-        "Re-run assess-finalization and have it report the number of the open pull request it read, or the state the facts do support." \
+        "Run finalization again so assess-finalization reports the number of the open pull request it read, or the state the facts do support; re-running this step alone reads the same recorded answer." \
         "$evidence_used"
     fi
     if _finalization_state_is_success "$assessment_state"; then
@@ -253,11 +264,12 @@ FIELDS
 
   # 5. No decision. The facts were gathered and nothing judged them: a gap in
   #    finalization itself, not a verdict about the run. The step is left
-  #    failing for its recovery agent.
+  #    failing for its recovery agent, whose move is to hand off with this
+  #    reason: no repair it may make can put a decision here (#2819 R2).
   no_decision="assess-finalization reported no terminal state for this run's outcome"
   [ -z "$assessment_state" ] || no_decision="$no_decision; it returned \"$(_finalization_outcome_clean "$assessment_state")\", which is not a state finalization publishes"
   [ -z "$outcome_unread" ] || no_decision="$no_decision; the facts it would have judged are incomplete: $outcome_unread"
   fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" "$no_decision" \
-    "Re-run assess-finalization on the gathered outcome, or report why it cannot decide." \
+    "Run finalization again so assess-finalization decides on the gathered outcome, or report why it cannot; re-running this step alone reads the same recorded answer." \
     "$evidence_used"
 }

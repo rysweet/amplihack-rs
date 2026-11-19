@@ -30,6 +30,14 @@ pub fn assessment(terminal_state: &str, action: &str, pr: &str) -> (&'static str
     )
 }
 
+/// The same answer, exactly as written. `assessment` renders every leaf as a
+/// string; this takes the object so a case can write a leaf the way a model
+/// actually would -- `gh` reports `"number": 7`, and an agent asked to report
+/// the pull request it read back copies the integer (#2819 R3).
+pub fn assessment_raw(answer: Value) -> (&'static str, String) {
+    ("RECIPE_VAR_finalization_assessment", answer.to_string())
+}
+
 /// Collected evidence in the canonical `RECIPE_VAR_finalization_evidence`
 /// transport, the shape `collect-finalization-evidence` writes. A run that
 /// carries any `RECIPE_VAR_*` is on the canonical context tier, where the flat

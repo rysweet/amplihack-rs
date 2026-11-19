@@ -12,9 +12,17 @@
 //! else -- which facts reach the record, which blockers precede the decision,
 //! which decisions are published at all, and what a lost context file costs.
 //! No case here is named for an outcome it was handed.
+//!
+//! Two cases below still read as outcome tests even so -- the diverged pull
+//! request and the nothing-pushed run inject `FAILED_IMPLEMENTATION` and
+//! assert it comes back. What they really show is the reporting, which their
+//! comments say; #2844 tracks either renaming them or testing the decision
+//! where it is made, against `workflow-finalization-assessment.yaml`.
 
 use super::fixture_ext::*;
-use crate::issue_1641_finalization_open_pr::builders::{as_refs, assessment, green_rollup};
+use crate::issue_1641_finalization_open_pr::builders::{
+    as_refs, assessment, assessment_raw, green_rollup,
+};
 use crate::issue_1641_finalization_open_pr::fixture::*;
 
 fn assert_hands_pr_on(outcome: &Outcome) {
@@ -305,6 +313,101 @@ fn the_same_success_is_published_when_the_decision_names_the_pull_request() {
     fx.gh_pr_at(&fx.head(), green_rollup());
 
     assert_hands_pr_on(&fx.validate(&as_refs(&decided(&fx, "EXISTING_OPEN_PR", "7"))));
+}
+
+// #2819 R3: and when that number came back as a JSON number rather than a
+// string. `gh` reports `"number": 7`, so an agent told to read the pull
+// request back and report its number returns the integer it was shown. A type
+// gate in bash would read that as a wrong type, reach the caller as an empty
+// value, and refuse a correct decision with a reason -- "it returned an empty
+// pr_number" -- that is not true of what came back. Every leaf of the answer
+// is read the same way, so the other three are here too.
+#[test]
+fn a_decision_whose_leaves_are_json_numbers_or_booleans_is_read_as_written() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(assessment_raw(serde_json::json!({
+        "terminal_state": "EXISTING_OPEN_PR",
+        "action_taken": "none",
+        "pr_number": 7,
+        "reason": "gh pr view 7 reports the request open at the run's head",
+        "next_action": "Wait for CI on PR #7.",
+    })));
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert_hands_pr_on(&outcome);
+    assert!(
+        !outcome.stderr.contains(INVALID_CONTEXT_WARNING),
+        "a number is a value, not invalid context\n{}",
+        outcome.describe()
+    );
+}
+
+// The same leniency, on the other side of the transport: a recorded outcome
+// whose `pr_number` is a JSON number is the pull request the facts carry, not
+// an unreadable field.
+#[test]
+fn a_recorded_outcome_whose_pr_number_is_a_json_number_is_read_as_written() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push((
+        "RECIPE_VAR_finalization_evidence",
+        serde_json::json!({
+            "schema_version": 1,
+            "git": {"dirty_worktree": "false"},
+            "tooling": {"missing": "", "gh_required": "false"},
+            "outcome": {"branch": BRANCH, "local_head": fx.head(), "remote": REPO,
+                        "remote_head": fx.head(), "pr_number": 7, "pr_state": "OPEN",
+                        "checks": "green", "unread": ""},
+        })
+        .to_string(),
+    ));
+    envs.push(assessment("EXISTING_OPEN_PR", "none", "7"));
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert_hands_pr_on(&outcome);
+    assert!(
+        outcome.field("evidence_used").contains("outcome.pr=7"),
+        "the recorded number must reach the record: {}",
+        outcome.field("evidence_used")
+    );
+}
+
+// A leaf that is a container still has no scalar to render, so it stays a
+// wrong type and the decision is refused -- the leniency is about how a value
+// was written, never about what the allowlist admits.
+#[test]
+fn a_decision_whose_pr_number_is_a_container_is_still_no_decision() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.gh_no_pr();
+    let mut envs = crate::issue_1641_finalization_open_pr::builders::resumed_env(&fx.repo_path());
+    envs.push(assessment_raw(serde_json::json!({
+        "terminal_state": "EXISTING_OPEN_PR",
+        "action_taken": "none",
+        "pr_number": [7],
+        "reason": "r",
+        "next_action": "n",
+    })));
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert!(!outcome.success(), "{}", outcome.describe());
+    assert_eq!(
+        outcome.field("terminal_state"),
+        "FAILED_MISSING_TERMINAL_EVIDENCE",
+        "{}",
+        outcome.describe()
+    );
+    assert_eq!(outcome.field("pr_number"), "");
 }
 
 // The successes that are not about a pull request are untouched: they assert
