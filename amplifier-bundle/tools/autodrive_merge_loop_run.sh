@@ -127,12 +127,13 @@ rm -f -- "$RESULT_FILE"
 #
 # Write only into a state directory that is already there, is not a symbolic
 # link and is ours. This runs before the driver re-checks the directory, and
-# both the create and `tee` would otherwise follow a planted link. Whatever is
-# at the name is removed first and the file created new (an exclusive create
-# under umask 077), so a foreign file keeps neither its content nor its mode
-# and a link is replaced, never written through. A directory there cannot be
-# removed, so the create fails and no copy is made. The tool never creates the
-# state directory: autodrive_private_dir stays the only authority for that.
+# both the create and the append below would otherwise follow a planted link.
+# Whatever is at the name is removed first and the file created new (an
+# exclusive create under umask 077), so a foreign file keeps neither its
+# content nor its mode and a link is replaced, never written through. A
+# directory there cannot be removed, so the create fails and no copy is made.
+# The tool never creates the state directory: autodrive_private_dir stays the
+# only authority for that.
 KEPT="${DIR%/}/merge-ready-driver.err"
 if [ -d "$DIR" ] && [ ! -L "${DIR%/}" ] && [ -O "$DIR" ]; then
   rm -f -- "$KEPT" 2>/dev/null
