@@ -101,8 +101,10 @@ pub fn set_branch(envs: &mut [(&'static str, String)], branch: &str) {
     entry.1 = branch.to_owned();
 }
 
-/// Proves the open-PR path really ran (one live `pr view 7`) and names why it
-/// failed, so a guard that bailed out early cannot pass as the intended check.
+/// Proves the open-PR path really ran (one live `pr view 7`) and that the
+/// result names why it failed, so a guard that bailed out early cannot pass as
+/// the intended check. Since #2343 the reason is the result's own
+/// `terminal_reason`, which carries the facts, rather than a stderr warning.
 pub fn assert_rejected_after_pr_view(fx: &Fixture, outcome: &Outcome, reason: &str, why: &str) {
     let views = fx
         .gh_calls()
@@ -115,9 +117,10 @@ pub fn assert_rejected_after_pr_view(fx: &Fixture, outcome: &Outcome, reason: &s
         "{why}: exactly one live pr view\n{}",
         outcome.describe()
     );
+    let named = outcome.field("terminal_reason");
     assert!(
-        outcome.stderr.contains(reason),
-        "{why}: stderr must name `{reason}`\n{}",
+        named.contains(reason),
+        "{why}: the result must name `{reason}`: {named}\n{}",
         outcome.describe()
     );
 }

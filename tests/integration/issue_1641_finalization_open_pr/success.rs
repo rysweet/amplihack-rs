@@ -8,7 +8,7 @@ use serde_json::json;
 use super::fixture::*;
 
 const EVIDENCE_GREEN: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=7,all_checks=green";
-const EVIDENCE_PRECOMMIT_PREFIX: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=7,precommit_passed=true,all_checks=";
+const EVIDENCE_CHECKS_PREFIX: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=7,all_checks=";
 
 fn assert_existing_open_pr(outcome: &Outcome, evidence: &str) {
     assert!(
@@ -26,15 +26,16 @@ fn assert_existing_open_pr(outcome: &Outcome, evidence: &str) {
     assert_eq!(outcome.field("pr_number"), "7");
     assert_eq!(outcome.field("pr_url"), PR_URL);
     assert_eq!(outcome.field("evidence_used"), evidence);
-    // Only all-green CI is done; pre-commit-only success must hand CI on.
+    // Only all-green CI is done; a PR whose checks have not reported is handed
+    // on, named, so the next reader knows to watch it (#2784).
     let next_action = outcome.field("required_next_action");
-    if evidence.contains("precommit_passed=true") {
-        assert!(
-            next_action.starts_with("Watch CI on PR #7:") && next_action.contains("BLOCKED_CI"),
-            "pre-commit-only success must tell the next step to watch CI: {next_action}"
-        );
-    } else {
+    if evidence.ends_with("all_checks=green") {
         assert_eq!(next_action, "No action required.");
+    } else {
+        assert!(
+            next_action.starts_with("Watch CI on PR #7") && next_action.contains("BLOCKED_CI"),
+            "a PR whose checks have not reported must be handed on to watch: {next_action}"
+        );
     }
     assert!(
         !outcome.stderr.contains("failed closed"),
@@ -131,8 +132,12 @@ fn lowercase_existing_open_pr_status_without_url_uses_pr_list_fallback() {
 // CI has not reported yet (pending or no checks), but this run's typed
 // precommit verification passed. A failing check is never in this set: it is
 // BLOCKED_CI whatever verification_completed says (see blocked_ci.rs).
+// #2784, #2343: a published PR at the run's head whose checks have not
+// reported is finished work waiting on CI, not an implementation failure. It
+// succeeds and hands the PR on with or without this run's own verification
+// boolean, which is no longer consulted.
 #[test]
-fn pending_or_absent_checks_with_typed_verification_evidence_succeed_as_precommit_passed() {
+fn pending_or_absent_checks_hand_the_pr_on_whatever_this_run_claims() {
     for (rollup, checks) in [
         (json!([check_run("IN_PROGRESS", json!(null))]), "pending"),
         (
@@ -144,15 +149,24 @@ fn pending_or_absent_checks_with_typed_verification_evidence_succeed_as_precommi
         ),
         (json!([]), "none"),
     ] {
-        let fx = Fixture::new();
-        fx.gh_view(&open_pr(rollup.clone()));
-        let mut envs = resumed_env(&fx.repo_path());
-        envs.push(("PR_URL", PR_URL.to_owned()));
-        envs.push(("VERIFICATION_COMPLETED", "true".to_owned()));
+        for verification in ["", "true", "false"] {
+            let fx = Fixture::new();
+            fx.gh_view(&open_pr(rollup.clone()));
+            let mut envs = resumed_env(&fx.repo_path());
+            envs.push(("PR_URL", PR_URL.to_owned()));
+            if !verification.is_empty() {
+                envs.push(("VERIFICATION_COMPLETED", verification.to_owned()));
+            }
 
-        let outcome = fx.validate(&as_refs(&envs));
-        assert!(outcome.success(), "rollup {rollup}\n{}", outcome.describe());
-        assert_existing_open_pr(&outcome, &format!("{EVIDENCE_PRECOMMIT_PREFIX}{checks}"));
+            let outcome = fx.validate(&as_refs(&envs));
+            assert!(outcome.success(), "rollup {rollup}\n{}", outcome.describe());
+            assert_existing_open_pr(&outcome, &format!("{EVIDENCE_CHECKS_PREFIX}{checks}"));
+            assert!(
+                outcome.field("required_next_action").contains('7'),
+                "rollup {rollup}: the next action must name the PR to watch\n{}",
+                outcome.describe()
+            );
+        }
     }
 }
 

@@ -33,10 +33,10 @@ fn expected(pr_url: &str, pr_number: &str) -> Value {
     json!({
         "terminal_success": "true",
         "terminal_state": "IMPLEMENTED_VERIFIED",
-        "terminal_reason": "implementation and verification evidence is complete",
+        "terminal_reason": "implementation and verification evidence is complete, and the finalization worktree has no GitHub remote whose published outcome could be read",
         "required_next_action": "No action required.",
         "hollow_success_detected": "false",
-        "evidence_used": "implementation_completed=true,verification_completed=true",
+        "evidence_used": "implementation_completed=true,verification_completed=true,github_origin=false",
         "finalizer_schema_version": "1",
         "finalizer_confidence": "high",
         "finalizer_output_valid": "true",

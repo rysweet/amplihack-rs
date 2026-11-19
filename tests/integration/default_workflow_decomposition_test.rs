@@ -352,6 +352,9 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "collect-finalization-evidence",
     "agentic-finalizer",
     "finalizer-step-status",
+    // Issues #2343/#2809: judgement on an outcome the mechanical read could not
+    // settle, in its own brick, immediately before the classification.
+    "assess-finalization",
     "validate-agentic-finalization",
     // Issue #2539: a recorded handoff ends the run here, before completion.
     "step-recovery-report",

@@ -27,7 +27,6 @@ use super::ancestor::{
     FLAG, drop_pushed_branch, has_object, merge_main_on_pushed, origin_remote, pending, prune,
 };
 use super::fixture::*;
-use crate::issue_1641_finalization_open_pr::fixture::assert_failed_implementation;
 
 /// One `gh pr view`/`pr list` answer that satisfies both the probe's scope
 /// helper and the open-PR check.
@@ -191,23 +190,24 @@ fn a_merge_already_on_the_pr_before_finalize_ends_existing_open_pr() {
     }
 }
 
-// CI not reported and no verification evidence of this run's own:
-// FAILED_IMPLEMENTATION, handed to the loops only inside auto-drive.
+// CI not reported and no verification evidence of this run's own. Since #2343
+// and #2784 that is finished work waiting on CI, not an implementation
+// failure: the probe still continues, and the validator hands the open pull
+// request on, inside auto-drive and standalone alike.
 #[test]
-fn pending_checks_end_failed_implementation_handed_off_only_in_auto_drive() {
+fn pending_checks_hand_the_open_pr_on_with_or_without_auto_drive() {
     let (fx, _, pr_head) = merged_on_remote_before_finalize();
     answer(&fx, &pr_head, pending());
     let json = assert_probe_continues(&probe(&fx, true, true), "pending");
 
-    let outcome = validate_after(&fx, &json, true);
-    assert!(outcome.success(), "{}", outcome.describe());
-    assert_eq!(outcome.field("terminal_state"), "FAILED_IMPLEMENTATION");
-    assert_eq!(outcome.field("handoff"), "merge_ready_loop");
-    assert_eq!(outcome.field("pr_number"), "7");
-
-    let outcome = validate_after(&fx, &json, false);
-    assert_failed_implementation(&outcome, "standalone");
-    assert_no_handoff_key(&outcome, "standalone");
+    for auto_drive in [true, false] {
+        let outcome = validate_after(&fx, &json, auto_drive);
+        assert!(outcome.success(), "auto_drive={auto_drive}\n{}", outcome.describe());
+        assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
+        assert_eq!(outcome.field("terminal_success"), "true");
+        assert_eq!(outcome.field("pr_number"), "7");
+        assert_no_handoff_key(&outcome, "a success needs no hand-off");
+    }
 }
 
 // A red check on a head that holds the run's work is BLOCKED_CI from the

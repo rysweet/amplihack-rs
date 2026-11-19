@@ -267,6 +267,14 @@ in every autodrive recipe that wraps a step: `auto-drive-to-merge`,
 `autodrive-merge-loop` and `autodrive-merge-round`. The quoting is required,
 because the value is a path chosen by the enclosing run.
 
+`validate-agentic-finalization` is guarded because a real finalization failure
+(nothing pushed, no PR, a PR at another head, failing CI) should be recoverable.
+A finished run no longer reaches the guard in error: the step reads the pushed
+head, the open PR and its checks, and reports success with the PR handed on when
+CI is still pending. The new conditional `assess-finalization` step runs with
+`continue_on_error: true` and takes no recovery guard, because it cannot end the
+run. See [Outcome-First Classification](./default-workflow-agentic-finalization.md#outcome-first-classification-2343).
+
 No step in `workflow-prep` or `workflow-design` reads the key, and both persist
 it regardless. That is the point of the entry rather than an oversight: the
 pinned runner counts a context key as an input of every bash and recipe step

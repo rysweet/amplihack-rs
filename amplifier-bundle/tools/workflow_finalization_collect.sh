@@ -121,6 +121,25 @@ collect_evidence() {
     gh_required="true"
   fi
 
+  # #2343: what the run actually produced. The reader always exits 0 and
+  # always writes one JSON object, so this never aborts collection; when it
+  # cannot run at all the evidence carries an UNRECORDED outcome and the
+  # validator reads the outcome live instead. The object is spliced in from a
+  # private 0600 file, so none of its fields pass through argv.
+  outcome_tmp=""
+  outcome_tmp="$(mktemp "${TMPDIR:-/tmp}/workflow-finalization-outcome.XXXXXX" 2>/dev/null)" || outcome_tmp=""
+  if [ -n "$outcome_tmp" ]; then
+    chmod 600 "$outcome_tmp" 2>/dev/null || :
+    if declare -F finalization_outcome_facts >/dev/null 2>&1; then
+      finalization_outcome_facts "$target_dir" "$branch_name" "${pr_url:-$pr_number}" \
+        > "$outcome_tmp" 2>/dev/null || :
+    fi
+    [ -s "$outcome_tmp" ] || { rm -f -- "$outcome_tmp"; outcome_tmp=""; }
+  fi
+  outcome_flag="--slurpfile"
+  outcome_value="$outcome_tmp"
+  if [ -z "$outcome_tmp" ]; then outcome_flag="--argjson"; outcome_value="[]"; fi
+
   # --rawfile preserves UTF-8 across jq raw-parser chunk boundaries.
   # Serialize scalar observations on stdin too: a file-spilled value must
   # not re-enter argv and hit its per-argument limit. Keys are a fixed list.
@@ -128,6 +147,7 @@ collect_evidence() {
   repo_path="$(workflow_finalization_metadata repo_path || :)"
   worktree_path="$target_dir"
   observed_phases="workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-refactor-review,workflow-precommit-test,workflow-publish,workflow-pr-review,workflow-finalize"
+  evidence_json="$(
   {
     printf '{'
     separator=''
@@ -137,7 +157,7 @@ collect_evidence() {
       separator=','
     done
     printf '}'
-  } | jq '
+  } | jq "$outcome_flag" outcome "$outcome_value" '
     .schema_version as $schema_version |
     .repo_path as $repo_path |
     .worktree_path as $worktree_path |
@@ -214,6 +234,17 @@ collect_evidence() {
       observed_phases: ($observed_phases | split(",")),
       agent_outputs: {
         hollow_success_signals: "unknown"
-      }
+      },
+      outcome: (
+        if ($outcome | length) == 1 and ($outcome[0] | type) == "object"
+           and ($outcome[0].verdict | type) == "string"
+        then $outcome[0]
+        else {schema_version: 1, verdict: "UNRECORDED",
+              gap: "the run outcome reader did not run during evidence collection"}
+        end
+      )
     }'
+  )" || { rm -f -- "$outcome_tmp"; echo "ERROR: collect-finalization-evidence could not assemble its JSON evidence" >&2; exit 2; }
+  rm -f -- "$outcome_tmp"
+  printf '%s\n' "$evidence_json"
 }

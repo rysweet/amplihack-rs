@@ -8,6 +8,10 @@ workflow_finalization_field() {
   local root=$1 field=$2 legacy=${3:-} second=${4:-} tier name raw status
   case "$root:$field" in
     implementation_terminal_evidence:implementation_completed|implementation_terminal_evidence:terminal_no_op|verification_terminal_evidence:verification_completed|finalizer_step_status:status|finalizer_step_status:reporting_failure|finalization_evidence:git.dirty_worktree|finalization_evidence:tooling.missing|finalization_evidence:tooling.gh_required|finalization_evidence:prior_terminal_state.terminal_state|finalization_evidence:agent_outputs.hollow_success_signals) ;;
+    # #2343: the leaves of the recorded run outcome the validator classifies on.
+    finalization_evidence:outcome.verdict|finalization_evidence:outcome.gap|finalization_evidence:outcome.github_origin|finalization_evidence:outcome.branch_pushed|finalization_evidence:outcome.pr_head_relation|finalization_evidence:outcome.checks|finalization_evidence:outcome.pr_number|finalization_evidence:outcome.pr_url) ;;
+    # #2343: the leaves of the assess-finalization step's structured answer.
+    finalization_assessment:verdict|finalization_assessment:gap|finalization_assessment:action_taken|finalization_assessment:explanation|finalization_assessment:pr_number|finalization_assessment:pr_url) ;;
     workflow_result:terminal_success|workflow_result:terminal_state|workflow_result:terminal_reason|workflow_result:required_next_action|workflow_result:hollow_success_detected|workflow_result:evidence_used|workflow_result:finalizer_schema_version|workflow_result:finalizer_confidence|workflow_result:finalizer_output_valid|workflow_result:reporting_failure|workflow_result:terminal_failure|workflow_result:pr_url) ;;
     *) _workflow_context_invalid; return 3 ;;
   esac

@@ -81,7 +81,6 @@ fi
 # validate_finalization. It reuses the pr-signal helpers above, so it is
 # sourced after them and before the validator's open-PR check below.
 . "$here/workflow_finalization_outcome.sh"
-. "$here/workflow_finalization_open_pr.sh"
 . "$here/workflow_finalization_handoff.sh"
 . "$here/workflow_finalization_validate.sh"
 . "$here/workflow_finalization_complete.sh"

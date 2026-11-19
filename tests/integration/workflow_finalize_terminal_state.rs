@@ -310,10 +310,13 @@ fn validation_step_classifies_from_typed_evidence_not_agent_prose() {
     }
 
     // It must classify from typed deterministic evidence and typed markers.
+    // `FAILED_INVALID_EVIDENCE` left this list with the classification itself
+    // (#2343): evidence that cannot be read no longer ends a run, so the step
+    // reads the run's real outcome instead of naming that state.
     for required in [
         "finalization_evidence",
         "finalizer_step_status",
-        "FAILED_INVALID_EVIDENCE",
+        "EXISTING_OPEN_PR",
         "FAILED_REPORTING",
         "FAILED_IMPLEMENTATION",
         "exit 1",

@@ -342,6 +342,13 @@ Behaviour change: a failure at `step-20b-push-cleanup`, `step-21-pr-ready` or
 `validate-agentic-finalization` now ends the run with exit 81 and a record,
 where it used to exit 1.
 
+`validate-agentic-finalization` ends the run only on a failure the run really
+has: a branch that was not pushed, no open PR, a PR at a different head, a
+failing check, a dirty worktree or missing `git`/`jq`. A missing or unreadable
+context file, an unset empty object key and pending CI no longer produce a
+failure, so they never reach the guard (#2343, #1726). See
+[Outcome-First Classification](./default-workflow-agentic-finalization.md#outcome-first-classification-2343).
+
 ## Recovery directory
 
 One directory per top-level run, shared with every child recipe and loop

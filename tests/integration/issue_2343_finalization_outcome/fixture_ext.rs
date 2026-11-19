@@ -47,11 +47,15 @@ impl Fixture {
             .to_owned()
     }
 
-    /// Canned `gh pr view` for PR #7 with an explicit head and rollup.
+    /// Canned `gh pr view` for PR #7 with an explicit head and rollup, plus the
+    /// matching `gh pr list` answer. The list is what the check falls back to
+    /// when the run carries no PR reference of its own, as it does when the
+    /// context file is unreadable and the legacy `PR_URL` alias is suppressed.
     pub fn gh_pr_at(&self, head: &str, rollup: Value) {
         let mut body = open_pr(rollup);
         body["headRefOid"] = json!(head);
         self.gh_view(&body);
+        self.gh_list(&json!([{"number": 7, "url": PR_URL, "isCrossRepository": false}]));
     }
 
     pub fn gh_no_pr(&self) {

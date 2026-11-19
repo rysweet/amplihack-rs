@@ -57,16 +57,11 @@ fn failing_check_is_blocked_ci_even_with_typed_verification_evidence() {
                 "No action required.",
                 "{why}"
             );
-            let expected_verification = if verification.is_empty() {
-                "false"
-            } else {
-                "true"
-            };
+            // #2343: the run's own verification boolean is not consulted at
+            // all, so it is no longer among the facts a red check is read on.
             assert_eq!(
                 outcome.field("evidence_used"),
-                format!(
-                    "{FACTS},all_checks=failing,verification_completed={expected_verification}"
-                ),
+                format!("{FACTS},all_checks=failing"),
                 "{why}"
             );
             assert!(
@@ -95,10 +90,14 @@ fn unclassifiable_check_with_typed_verification_evidence_fails_closed() {
 
         let outcome = fx.validate(&as_refs(&envs));
 
+        // #2343: an unreadable check class is an unread fact, and an unread
+        // fact against a GitHub origin is a gap that names itself, never a
+        // success borrowed from this run's own pre-commit evidence.
         assert_failed_implementation(&outcome, &format!("rollup {rollup}"));
+        let reason = outcome.field("terminal_reason");
         assert!(
-            outcome.stderr.contains("no passing verification signal"),
-            "rollup {rollup}\n{}",
+            reason.contains("check") && reason.contains('7'),
+            "rollup {rollup}: the reason must name the unread check state of the PR\n{}",
             outcome.describe()
         );
     }

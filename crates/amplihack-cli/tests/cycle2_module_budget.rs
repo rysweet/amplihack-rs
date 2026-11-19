@@ -46,7 +46,7 @@ fn cycle2_new_test_targets_and_extracted_helpers_obey_300_line_boundary() {
         "tests/issue_1437_final_marker.rs",
         "../../amplifier-bundle/tools/workflow_finalization_pr_signal.sh",
         "../../amplifier-bundle/tools/workflow_finalization_handoff.sh",
-        "../../amplifier-bundle/tools/workflow_finalization_open_pr.sh",
+        "../../amplifier-bundle/tools/workflow_finalization_outcome.sh",
         "../../tests/integration/issue_1641_finalization_open_pr.rs",
         "../../tests/integration/issue_1714_finalization_handoff.rs",
         "src/commands/install/tests/codex_plugin_tests.rs",

@@ -13,42 +13,39 @@ fn with_url(fx: &Fixture) -> Vec<(&'static str, String)> {
 }
 
 // Core regression for #1641 (must still hold): nothing published, no evidence.
+// Since #2343 the check no longer waits for the run to claim it published
+// something before looking, so the fixture publishes nothing at all: no open
+// PR for the branch, and no PR to view.
 #[test]
 fn run_with_no_pr_and_no_evidence_is_still_failed_implementation() {
     let fx = Fixture::new();
-    fx.gh_view(&open_pr(green_rollup()));
-    fx.gh_list(&json!([{"number": 7, "url": PR_URL, "isCrossRepository": false}]));
+    fx.gh_list(&json!([]));
+    fx.gh_fail("view", 1);
 
     let outcome = fx.validate(&as_refs(&resumed_env(&fx.repo_path())));
 
-    assert_failed_implementation(&outcome, "no publish signal");
+    assert_failed_implementation(&outcome, "nothing published");
     assert_eq!(outcome.field("publish_state_reached"), "false");
-    fx.assert_gh_not_called("without a publish signal the validator must not search GitHub");
+    assert_eq!(outcome.field("pr_number"), "");
+    fx.assert_gh_reads_only();
 }
 
-// An open PR is implementation proof only; it still needs green checks or
-// typed verification evidence. Failing checks are BLOCKED_CI (blocked_ci.rs).
+// An open PR at the run's head whose checks cannot be classified is an unread
+// fact, and an unread fact is a gap the result names. Checks that are merely
+// pending, or not reported at all, are no longer among them: #2343 and #2784
+// hand that PR on instead (success.rs). Failing checks are BLOCKED_CI
+// (blocked_ci.rs).
 #[test]
-fn open_pr_without_a_passing_verification_signal_fails_closed() {
+fn open_pr_with_an_unclassifiable_check_fails_closed() {
     for rollup in [
-        json!([check_run("IN_PROGRESS", json!(null))]),
-        json!([check_run("QUEUED", json!(null))]),
         json!([check_run("COMPLETED", json!(null))]),
-        json!([status_context("PENDING")]),
         json!([{"__typename": "MysteryCheck", "state": "SUCCESS"}]),
-        json!([]),
-        Value::Null,
     ] {
         let fx = Fixture::new();
         fx.gh_view(&open_pr(rollup.clone()));
         let outcome = fx.validate(&as_refs(&with_url(&fx)));
         assert_failed_implementation(&outcome, &format!("rollup {rollup}"));
-        assert_rejected_after_pr_view(
-            &fx,
-            &outcome,
-            "no passing verification signal",
-            &format!("rollup {rollup}"),
-        );
+        assert_rejected_after_pr_view(&fx, &outcome, "check", &format!("rollup {rollup}"));
     }
 }
 
@@ -82,7 +79,7 @@ fn pr_that_is_not_the_runs_open_same_repo_pr_fails_closed() {
         fx.gh_view(&view);
         let outcome = fx.validate(&as_refs(&with_url(&fx)));
         assert_failed_implementation(&outcome, name);
-        assert_rejected_after_pr_view(&fx, &outcome, "no open-PR signal: PR is not open", name);
+        assert_rejected_after_pr_view(&fx, &outcome, "pull request", name);
         assert_eq!(
             outcome.field("pr_number"),
             "",
@@ -97,12 +94,7 @@ fn gh_failure_or_malformed_json_is_no_signal_and_does_not_leak() {
     failing.gh_fail("view", 1);
     let outcome = failing.validate(&as_refs(&with_url(&failing)));
     assert_failed_implementation(&outcome, "gh pr view exit 1");
-    assert_rejected_after_pr_view(
-        &failing,
-        &outcome,
-        "no open-PR signal: gh pr view failed",
-        "gh exit 1",
-    );
+    assert_rejected_after_pr_view(&failing, &outcome, "could not be read", "gh exit 1");
     assert_no_leak(&outcome);
 
     for body in ["not json", "{\"number\":", "[]", "\"OPEN\""] {
@@ -113,7 +105,7 @@ fn gh_failure_or_malformed_json_is_no_signal_and_does_not_leak() {
         assert_rejected_after_pr_view(
             &fx,
             &outcome,
-            "no open-PR signal: PR is not open",
+            "pull request",
             &format!("malformed view body {body:?}"),
         );
     }
@@ -266,5 +258,7 @@ fn ambient_publish_state_override_cannot_spoof_publication() {
     let outcome = fx.validate(&as_refs(&envs));
     assert_failed_implementation(&outcome, "spoofed override");
     assert_eq!(outcome.field("publish_state_reached"), "false");
-    fx.assert_gh_not_called("spoofed override");
+    // #2343: the check reads the remote whether or not the run claims to have
+    // published. What it may not do is let the claim stand in for the answer.
+    fx.assert_gh_reads_only();
 }

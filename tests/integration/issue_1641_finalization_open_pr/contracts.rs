@@ -60,25 +60,29 @@ fn open_pr_path_uses_only_typed_evidence_and_bounded_read_only_gh() {
         "workflow_finalization_pr_signal.sh must stay within the 300-line budget"
     );
 
-    // The open-PR check lives in its own brick (#1714) and the validator
-    // calls it; neither reads prose or raw pre-commit reports.
-    let open_pr = tool_text("workflow_finalization_open_pr.sh");
+    // #2343: the outcome reader replaced the open-PR check. It reuses the pr
+    // signal helper's rules for "is this PR this run's PR" rather than
+    // restating them, and neither it nor the validator reads prose or raw
+    // pre-commit reports.
+    let outcome = tool_text("workflow_finalization_outcome.sh");
+    for required in ["_finalization_pr_checks", "_finalization_pr_head_descends"] {
+        assert!(
+            outcome.contains(required),
+            "the outcome reader must reuse `{required}` rather than restate its rule"
+        );
+    }
     assert!(
-        open_pr.contains("finalization_open_pr_signal"),
-        "the open-PR check must use the pr signal helper"
+        !outcome.contains("agentic_finalizer_narrative") && !outcome.contains("precommit_results"),
+        "the outcome reader must not read prose or raw precommit reports"
     );
     assert!(
-        !open_pr.contains("agentic_finalizer_narrative") && !open_pr.contains("precommit_results"),
-        "the open-PR check must not read prose or raw precommit reports"
+        outcome.contains("EXISTING_OPEN_PR"),
+        "the outcome reader must classify EXISTING_OPEN_PR"
     );
     let validate = tool_text("workflow_finalization_validate.sh");
     assert!(
-        validate.contains("confirm_open_pr"),
-        "validator must use the open-PR check"
-    );
-    assert!(
-        validate.contains("EXISTING_OPEN_PR"),
-        "validator must classify EXISTING_OPEN_PR"
+        validate.contains("classify_confirmed_outcome"),
+        "validator must classify from the run's real outcome"
     );
     assert!(
         !validate.contains("agentic_finalizer_narrative")
@@ -93,24 +97,39 @@ fn open_pr_path_uses_only_typed_evidence_and_bounded_read_only_gh() {
     );
 }
 
+// #2343 inverted one pair here: the run's real outcome is read BEFORE the
+// typed completion booleans, so a published pull request decides the result
+// and the booleans are only a fallback for a run with no such pull request to
+// read. Every blocker still precedes both, and the gap-bearing failure is
+// still last.
 #[test]
-fn open_pr_path_runs_after_no_op_and_before_the_default_failure() {
+fn the_outcome_read_runs_after_every_blocker_and_before_the_bookkeeping_fallback() {
     let validate = tool_text("workflow_finalization_validate.sh");
+    let outcome = validate
+        .find("classify_confirmed_outcome \"\"")
+        .expect("the outcome classification");
     let no_op = validate
         .find("classify_success \"ALLOW_NO_OP\"")
         .expect("ALLOW_NO_OP success path");
-    let open_pr = validate
-        .find("classify_success \"EXISTING_OPEN_PR\"")
-        .expect("EXISTING_OPEN_PR success path");
+    let verified = validate
+        .find("classify_success \"IMPLEMENTED_VERIFIED\"")
+        .expect("IMPLEMENTED_VERIFIED success path");
     let default = validate
         .rfind("finalization_fail_or_handoff_open_pr \"FAILED_IMPLEMENTATION\"")
         .expect("default FAILED_IMPLEMENTATION (#1714 routes it through the hand-off brick)");
     let hollow = validate
         .find("\"HOLLOW_SUCCESS\"")
         .expect("hollow-success blocker");
+    let dirty = validate
+        .find("\"FAILED_DIRTY_WORKTREE\"")
+        .expect("dirty-worktree blocker");
     assert!(
-        hollow < no_op && no_op < open_pr && open_pr < default,
-        "EXISTING_OPEN_PR must sit after every blocker and ALLOW_NO_OP, before the default"
+        dirty < hollow && hollow < outcome,
+        "every blocker precedes the outcome read"
+    );
+    assert!(
+        outcome < verified && verified < no_op && no_op < default,
+        "the outcome read precedes the bookkeeping fallback, which precedes the default"
     );
 }
 

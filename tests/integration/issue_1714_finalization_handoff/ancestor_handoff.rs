@@ -12,10 +12,13 @@ use super::fixture::*;
 use crate::issue_1641_finalization_open_pr::fixture::assert_failed_implementation;
 
 // The mistt #138 history while CI has not reported and this run has no
-// verification evidence: inside auto-drive the confirmed PR is handed to the
-// loops as FAILED_IMPLEMENTATION; a standalone run still fails closed.
+// verification evidence. Since #2343 and #2784 this is not an implementation
+// failure at all: the pull request is open at a head that carries the run's
+// work, so the run succeeds and hands that request on, named, with or without
+// auto-drive. The hand-off path is unneeded here, because `autodrive_build_handoff`
+// returns cleanly on a success and the merge-ready loop is reached anyway.
 #[test]
-fn failed_implementation_on_a_confirmed_open_pr_is_handed_off_only_in_auto_drive() {
+fn pending_checks_on_a_confirmed_open_pr_hand_the_pr_on_with_or_without_auto_drive() {
     let fx = Fixture::new();
     let (_, pr_head) = merge_main_on_pushed(&fx);
     drop_pushed_branch(&fx);
@@ -24,43 +27,28 @@ fn failed_implementation_on_a_confirmed_open_pr_is_handed_off_only_in_auto_drive
     let envs = pr_env(&fx);
     let mut with_flag = as_refs(&envs);
     with_flag.push(FLAG);
-    let outcome = validate(&fx, &with_flag);
-    assert!(
-        outcome.success(),
-        "the hand-off exits 0\n{}",
-        outcome.describe()
-    );
-    assert_eq!(outcome.field("terminal_state"), "FAILED_IMPLEMENTATION");
-    assert_eq!(outcome.field("terminal_success"), "false");
-    assert_eq!(outcome.field("terminal_failure"), "true");
-    assert_eq!(outcome.field("finalizer_output_valid"), "false");
-    assert_eq!(outcome.field("pr_number"), "7");
-    assert_eq!(outcome.field("pr_url"), PR_URL);
-    assert_eq!(outcome.field("handoff"), "merge_ready_loop");
-    let evidence = outcome.field("evidence_used");
-    assert!(
-        evidence.contains("pr_state=OPEN")
-            && evidence.contains("pr_head_fast_forwards_local_head=true")
-            && evidence.contains("all_checks=pending"),
-        "the hand-off records the confirmed PR facts: {evidence}"
-    );
-    assert!(
-        outcome
-            .stderr
-            .contains(&format!("{FI_HANDOFF_INFO} (PR #7)")),
-        "{}",
-        outcome.describe()
-    );
+    for (refs, why) in [(with_flag, "auto-drive"), (as_refs(&envs), "standalone")] {
+        let outcome = validate(&fx, &refs);
+        assert!(outcome.success(), "{why}\n{}", outcome.describe());
+        assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR", "{why}");
+        assert_eq!(outcome.field("terminal_success"), "true", "{why}");
+        assert_eq!(outcome.field("pr_number"), "7", "{why}");
+        assert_eq!(outcome.field("pr_url"), PR_URL, "{why}");
+        assert_no_handoff_key(&outcome, why);
+        let evidence = outcome.field("evidence_used");
+        assert!(
+            evidence.contains("pr_state=OPEN")
+                && evidence.contains("pr_head_fast_forwards_local_head=true")
+                && evidence.contains("all_checks=pending"),
+            "{why}: the result records the confirmed PR facts: {evidence}"
+        );
+        assert!(
+            outcome.field("required_next_action").contains('7'),
+            "{why}: the next action names the PR to watch\n{}",
+            outcome.describe()
+        );
+    }
     fx.assert_gh_reads_only();
-
-    let outcome = validate(&fx, &as_refs(&envs));
-    assert_failed_implementation(&outcome, "standalone");
-    assert_no_handoff_key(&outcome, "standalone");
-    assert_eq!(
-        outcome.field("pr_number"),
-        "",
-        "a standalone failure keeps the run's own PR evidence"
-    );
 }
 
 // The same history with a red check is BLOCKED_CI, handed off as before.

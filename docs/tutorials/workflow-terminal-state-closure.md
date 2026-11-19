@@ -132,6 +132,11 @@ it is not a completed code-change task.
 
 ## 5. Understand Hollow Success
 
+> `HOLLOW_SUCCESS` is still recognised, but finalization no longer emits it
+> (#2343). A run with no pushed head or open PR now ends as `INCOMPLETE`. The
+> record below is what an earlier run produced. See
+> [Outcome-First Classification](../reference/default-workflow-agentic-finalization.md#outcome-first-classification-2343).
+
 If earlier phases exit `0` after empty agent output, inaccessible-codebase
 messages, or setup-only progress, finalization makes the overall recipe fail:
 

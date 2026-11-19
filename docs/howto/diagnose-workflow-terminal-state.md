@@ -1,7 +1,7 @@
 # How to Diagnose Workflow Terminal-State Failures
 
 Use this guide when `default-workflow` or `smart-orchestrator` exits nonzero
-with `FAILED_MISSING_TERMINAL_EVIDENCE`, `FAILED_INVALID_EVIDENCE`, or another
+with `FAILED_MISSING_TERMINAL_EVIDENCE`, `FAILED_INVALID_EVIDENCE` (recorded by earlier runs), or another
 terminal-state error.
 
 ## Before you start
@@ -113,7 +113,14 @@ for the full rules.
 
 ## Fix `FAILED_INVALID_EVIDENCE`
 
-This means the workflow produced terminal markers, but they were not trustworthy.
+Finalization no longer emits this state (#2343); it is still recognised so older
+run records and other producers read correctly. Finalization now classifies on
+the pushed head and the open PR, see
+[Outcome-First Classification](../reference/default-workflow-agentic-finalization.md#outcome-first-classification-2343).
+The checks below apply to a record that carries the state from an earlier run
+or another producer.
+
+The workflow produced terminal markers, but they were not trustworthy.
 
 Check for:
 
@@ -194,6 +201,10 @@ prove closure.
 ---
 
 ## Fix `HOLLOW_SUCCESS`
+
+Finalization no longer emits `HOLLOW_SUCCESS` (#2343); it is still recognised for
+older run records. See
+[Outcome-First Classification](../reference/default-workflow-agentic-finalization.md#outcome-first-classification-2343).
 
 `HOLLOW_SUCCESS` means a workflow path looked complete at the process level but
 did not produce meaningful terminal evidence. This often follows setup-only,

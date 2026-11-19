@@ -46,7 +46,7 @@ _workflow_context_get() {
   done
   return 2
 }
-_workflow_context_roots='verdict_json implementation allow_no_op doc_review_feedback precommit_results local_testing_gate agentic_finalizer_narrative implementation_terminal_evidence verification_terminal_evidence finalizer_step_status finalization_evidence workflow_result repo_path worktree_setup branch_name base_ref remote_host_type terminal_state pr_publish_result pr_url pr_number task_description issue_number publish_state_reached publish_terminal_evidence'
+_workflow_context_roots='verdict_json implementation allow_no_op doc_review_feedback precommit_results local_testing_gate agentic_finalizer_narrative implementation_terminal_evidence verification_terminal_evidence finalizer_step_status finalization_evidence finalization_assessment workflow_result repo_path worktree_setup branch_name base_ref remote_host_type terminal_state pr_publish_result pr_url pr_number task_description issue_number publish_state_reached publish_terminal_evidence'
 for _wc_key in $_workflow_context_roots; do
   _wc_name="$(_workflow_context_upper "$_wc_key")"
   if [[ ${!_wc_name+x} ]]; then _workflow_context_store "$_wc_name" "${!_wc_name}"; fi
@@ -81,7 +81,7 @@ _workflow_context_contract() {
     publish_state_reached) _wc_cohort=metadata; _wc_type=bool; _wc_legacy=PUBLISH_STATE_REACHED ;;
     worktree_setup|terminal_state|pr_publish_result|publish_terminal_evidence)
       _wc_cohort=metadata; _wc_type=object; _wc_legacy=$(_workflow_context_upper "$1") ;;
-    implementation_terminal_evidence|verification_terminal_evidence|finalizer_step_status|finalization_evidence|workflow_result)
+    implementation_terminal_evidence|verification_terminal_evidence|finalizer_step_status|finalization_evidence|finalization_assessment|workflow_result)
       _wc_cohort=finalization; _wc_type=object; _wc_legacy=$(_workflow_context_upper "$1") ;;
     *) return 3 ;;
   esac
@@ -97,7 +97,7 @@ _workflow_context_tier() {
     verification) keys='precommit_results local_testing_gate allow_no_op' ;;
     reporting) keys='agentic_finalizer_narrative' ;;
     metadata) keys='repo_path worktree_setup branch_name base_ref remote_host_type terminal_state pr_publish_result pr_url pr_number task_description issue_number publish_state_reached publish_terminal_evidence' ;;
-    finalization) keys='implementation_terminal_evidence verification_terminal_evidence allow_no_op finalization_evidence finalizer_step_status workflow_result' ;;
+    finalization) keys='implementation_terminal_evidence verification_terminal_evidence allow_no_op finalization_evidence finalization_assessment finalizer_step_status workflow_result' ;;
     *) return 3 ;;
   esac
   for key in $keys; do

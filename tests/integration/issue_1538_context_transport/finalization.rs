@@ -261,14 +261,17 @@ fn validator_legacy_hard_blockers_are_not_bypassed_by_completion() {
             1,
         );
     }
-    validate(
-        Fixture::new()
-            .env("FINALIZATION_EVIDENCE", "{bad")
-            .env("IMPLEMENTATION_COMPLETED", "true")
-            .env("VERIFICATION_COMPLETED", "true"),
-        "FAILED_INVALID_EVIDENCE",
-        1,
-    );
+    // #2343: evidence that cannot be read is no longer a terminal state of its
+    // own. It is still never bypassed by positive completion: the run fails,
+    // and the reason names what could not be read.
+    let r = Fixture::new()
+        .env("FINALIZATION_EVIDENCE", "{bad")
+        .env("IMPLEMENTATION_COMPLETED", "true")
+        .env("VERIFICATION_COMPLETED", "true")
+        .finalizer("validate");
+    r.exit(1);
+    assert_eq!(r.json()["terminal_success"], "false");
+    assert_ne!(r.json()["terminal_state"], "IMPLEMENTED_VERIFIED");
 }
 #[test]
 fn validator_file_dirty_blocker_cannot_be_overridden_by_stale_clean_evidence() {

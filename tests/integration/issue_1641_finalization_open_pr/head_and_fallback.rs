@@ -27,9 +27,10 @@ fn local_head_ahead_of_the_pr_head_fails_closed() {
     let outcome = fx.validate(&as_refs(&green_env(&fx)));
     assert_failed_implementation(&outcome, "local HEAD ahead of PR head");
     assert_eq!(outcome.field("pr_number"), "");
+    let reason = outcome.field("terminal_reason");
     assert!(
-        outcome.stderr.contains("head at the local HEAD"),
-        "stderr must name the head mismatch\n{}",
+        reason.contains(&fx.head()) && reason.contains("descendant"),
+        "the result must name the head mismatch: {reason}\n{}",
         outcome.describe()
     );
 
@@ -119,8 +120,8 @@ fn valid_pr_number_takes_precedence_over_a_malformed_pr_url() {
     let outcome = fx.validate(&as_refs(&envs));
     assert_failed_implementation(&outcome, "malformed url, no number");
     assert!(
-        outcome.stderr.contains("no open-PR signal: PR reference"),
-        "stderr must name the URL check\n{}",
+        outcome.field("terminal_reason").contains("no open pull request"),
+        "the result must name the URL check\n{}",
         outcome.describe()
     );
     fx.assert_gh_not_called("malformed url, no number");
@@ -186,9 +187,7 @@ fn failing_pr_list_is_no_signal() {
     let outcome = fx.validate(&as_refs(&envs));
     assert_failed_implementation(&outcome, "pr list exit 1");
     assert!(
-        outcome
-            .stderr
-            .contains("no open-PR signal: gh pr list failed"),
+        outcome.field("terminal_reason").contains("could not be read"),
         "{}",
         outcome.describe()
     );
@@ -214,9 +213,7 @@ fn git_dir_target_is_not_a_worktree() {
     assert!(!outcome.success(), "{}", outcome.describe());
     assert_ne!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
     assert!(
-        outcome
-            .stderr
-            .contains("no open-PR signal: target directory is not a git worktree"),
+        outcome.field("terminal_reason").contains("not a git worktree"),
         "{}",
         outcome.describe()
     );
