@@ -242,7 +242,10 @@ category, review-generation allocation or retirement, launch-folder manifests,
 or review-folder ownership commands. Removing that machinery does not authorize
 sweeping legacy directories: they may hold recoverable work. Unrelated runtime
 cleanup remains separate; see
-[cleanup and retention](../howto/clean-up-after-recipe-runs.md).
+[cleanup and retention](../howto/clean-up-after-recipe-runs.md). Before cleanup
+removes a run folder or temporary folder, it keeps any folder that holds a Git
+work tree with uncommitted changes or unpushed commits; see
+[folders with unsaved work are kept](../howto/clean-up-after-recipe-runs.md#folders-with-unsaved-work-are-kept).
 
 ## Configuration and migration
 

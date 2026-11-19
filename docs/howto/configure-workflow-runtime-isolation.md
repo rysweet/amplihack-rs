@@ -33,7 +33,8 @@ child recipes, agents, provenance logging, publish helpers, and finalization
 helpers. `TMPDIR`, `TMP` and `TEMP` point at its `tmp/` subfolder.
 
 The runner removes the runtime root when the run ends, whether it succeeded or
-failed, unless a running process still uses it. Before removing it, the runner
+failed, unless a running process still uses it or it holds a Git work tree with
+unsaved work. Before removing it, the runner
 gives the owner back read, write and search access on every folder in it that
 the run owns, so a test fixture left at mode `000` or `0500` does not block the
 removal. Entries the run does not own, or that sit on another filesystem, are
@@ -42,8 +43,11 @@ left unchanged and named in a warning; the warning never fails the run. See
 The run report `run.json`
 stays in the run folder. A runtime root left by a killed run, or kept because
 a process still used it, is removed by a later sweep or by `amplihack cleanup`
-(category `run-tmp`) once no process uses it. See
-[Clean Up After Recipe Runs](clean-up-after-recipe-runs.md) for the full
+(category `run-tmp`) once no process uses it. A runtime root that holds
+uncommitted changes or unpushed commits in a Git work tree is kept instead,
+with a line on stderr, until you save the work or remove the folder by hand; see
+[Folders with unsaved work are kept](clean-up-after-recipe-runs.md#folders-with-unsaved-work-are-kept).
+See [Clean Up After Recipe Runs](clean-up-after-recipe-runs.md) for the full
 layout and the work root settings.
 
 ## Override the runtime root
