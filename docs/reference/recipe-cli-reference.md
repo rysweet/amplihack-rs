@@ -283,10 +283,12 @@ run's pointer line is kept in `<session>.log` in
 The first match is used, in this order:
 
 1. **Issue URL.** A target of the form `https://github.com/<owner>/<repo>/issues/<number>`
-   is looked up as an issue: the pointer line whose `issue_url` matches, or
-   whose `issue_number` matches with the same owner and repository. This rule
-   never creates the state folder. If no recorded run names the issue, the
-   command exits 1 and nothing is tried further.
+   is looked up as an issue: the pointer line whose `issue_url` names the same
+   owner, repository and number, comparing owner and repository whole and
+   without case. A run that recorded only an `issue_number`, and so names no
+   repository, is not matched here; rule 5 reaches it. This rule never creates
+   the state folder. If no recorded run names the issue, the command exits 1
+   and nothing is tried further.
 2. **Pull request URL.** A `/pull/<number>` URL goes to the pull request's
    state folder. Any other target that contains `://` (a URL that is neither
    an issue URL nor a pull request URL) exits 2 and nothing else is tried.
@@ -340,8 +342,10 @@ Checks applied to a recorded folder before it is written to:
   current user (uid equals euid) and are not writable by group or others.
 - The log directory passes the same trust check. A failure is reported as a
   note.
-- `run.json` parses and agrees with the match: it lists the ID, session or
-  issue that selected the folder, and its `run_id` agrees with the folder.
+- `run.json` parses, its `run_id` is the folder's own name, and the `run_id`
+  the pointer line recorded is either that name or the correlation ID of one
+  of the attempts it lists. A log planted beside the real ones therefore
+  cannot point the entry at another run's folder.
 - The work root implied by the folder (the parent of `runs`) passes the same
   work root validation that `AMPLIHACK_WORK_ROOT` does.
 
@@ -384,7 +388,7 @@ EOF
 ```
 
 ```text
-guidance appended: /srv/builds/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15/guidance/20261112T100241.007311204Z-49102-0.md (72 bytes, operator)
+guidance appended: /srv/builds/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15/guidance/20261112T100241.007311204Z-49102-0.md (75 bytes, run)
 ```
 
 ### Giving the text
@@ -736,8 +740,8 @@ does not read this folder; see [Known limits](#known-limits).
 | Code | Meaning | Example message on stderr |
 | --- | --- | --- |
 | `0` | The entry was written | |
-| `1` | No run matches the target. One line names the target and each place looked at: the session log path, the log directory, the recorded run folder if one was named but is absent, and `<work root>/runs/` | `recipe guide: no recipe run or detached session named "nightly-fix"; looked at session log /home/alice/.amplihack/recipe-logs/nightly-fix.log (not found), pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s), none names it), /home/alice/.amplihack/work/runs (no run folder or run.json with that ID)` |
-| `1` | An issue URL that no recorded run names. Nothing is created under the state folder | `recipe guide: no recipe run or detached session named "https://github.com/rysweet/amplihack-rs/issues/2783"; looked at pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s), none names it)` |
+| `1` | No run matches the target. One line names the target and each place looked at: the session log path, the log directory, the recorded run folder if one was named but is absent, and `<work root>/runs/` | `recipe guide: no recipe run or detached session named "nightly-fix"; looked at session log /home/alice/.amplihack/recipe-logs/nightly-fix.log (not found), pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s)), /home/alice/.amplihack/work/runs (no run folder or run.json with that ID)` |
+| `1` | An issue URL that no recorded run names. Nothing is created under the state folder | `recipe guide: no recipe run or detached session named "https://github.com/rysweet/amplihack-rs/issues/2783"; looked at pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s))` |
 | `1` | The target could be a run ID, but the work root cannot be resolved | `recipe guide: cannot look for run "nightly-fix": HOME is not set, so the default work root cannot be resolved` |
 | `1` | `AMPLIHACK_STATE_DIR` (or `HOME`) is set to a relative path, for a pull request URL target | `recipe guide: cannot find the state folder: AMPLIHACK_STATE_DIR is not an absolute path` |
 | `1` | The session's log has no pointer line | `recipe guide: /home/alice/.amplihack/recipe-logs/nightly-fix.log has no amplihack.recipe.log_pointer line` |
@@ -760,10 +764,11 @@ The not-found line reports the number of pointer records read and how many
 logs were skipped. When `HOME` is unset the comparison with the home folder is
 skipped, and the line says that the work root could not be resolved. A folder
 a record named that was not used is listed after `not used:`, at most three of
-them, followed by `, and <n> more` with the exact number left out. Control
-characters in text taken from a log are escaped as `\u{..}`, as are the
-bidirectional marks and the line and paragraph separators, so a crafted log
-cannot add lines or terminal sequences to the message.
+them, followed by `, and <n> more` counting the rest, whose reasons are left
+out so the line stays bounded. Control characters in text taken from a log are
+escaped as `\u{..}`, as are the bidirectional marks and the line and paragraph
+separators, so a crafted log cannot add lines or terminal sequences to the
+message.
 
 ### Known limits
 

@@ -17,10 +17,10 @@ description: >
   matching nothing exits 1 and names the target, the log directory and the
   runs directory. Everything runs under `env -i` with the scenario's own HOME;
   the real ~/.claude and ~/.amplihack are never read or written, and nothing
-  reaches the network. This file is not wired into a CI job: the driver has
-  not been run yet, and the same contract is covered under CI by
-  crates/amplihack-cli/tests/issue_2783_recipe_guide_work_root.rs. Run it
-  through gadugi-test, or the script directly, before adding a job for it.
+  reaches the network. The driver runs in CI, in the host-install job, after
+  the pinned recipe runner is installed; the same contract is covered from
+  inside the crate by
+  crates/amplihack-cli/tests/issue_2783_recipe_guide_work_root.rs.
 version: "1.0"
 config:
   timeout: 900000

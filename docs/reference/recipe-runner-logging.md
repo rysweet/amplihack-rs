@@ -73,8 +73,9 @@ Final pointer:
 amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","status":"success","worktree":"/home/user/src/myapp","branch":"main","child_pid":41822,"exit_code":0,"runner_path":"/home/user/.local/bin/recipe-runner-rs","log_paths":{"jsonl":"/tmp/default-workflow.jsonl"},"timestamp":"2026-06-12T04:21:39Z"}
 ```
 
-Pointer events include only explicit known metadata. The early pointer's `run_dir` is how `amplihack recipe guide` finds a run without the work-root environment. Missing branch, issue, PR,
-child PID, and log path fields are omitted. See
+Pointer events include only explicit known metadata. Missing branch, issue, PR,
+child PID, and log path fields are omitted. The early pointer's `run_dir` is how
+`amplihack recipe guide` finds a run without the work-root environment. See
 [Recipe Run Correlation Reference](./recipe-run-correlation.md) for the complete
 schema.
 

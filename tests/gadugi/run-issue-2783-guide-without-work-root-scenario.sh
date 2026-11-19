@@ -55,13 +55,11 @@ ISSUE="2783"
 # that `recipe guide` applies (no group or other write).
 umask 022
 
-for c in jq; do
-  p="$(command -v "$c" 2>/dev/null)"
-  case "$p" in
-    /*) ;;
-    *) echo "FAIL: $c is required"; echo "SCENARIO_FAILED"; exit 1 ;;
-  esac
-done
+JQ="$(command -v jq 2>/dev/null)"
+case "$JQ" in
+  /*) ;;
+  *) echo "FAIL: jq is required"; echo "SCENARIO_FAILED"; exit 1 ;;
+esac
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/issue-2783-qa.XXXXXX")" || {
   echo "FAIL: cannot create a temporary directory"; echo "SCENARIO_FAILED"; exit 1
@@ -103,9 +101,17 @@ HOME_DIR="$WORK/home"
 ALT_WORK="$WORK/factory-lane/work"
 LOG_DIR="$HOME_DIR/.amplihack/recipe-logs"
 RUN_CWD="$WORK/cwd"
-mkdir -p -m 700 "$HOME_DIR/.amplihack" "$ALT_WORK" "$LOG_DIR" "$RUN_CWD" || {
-  echo "FAIL: cannot create the scenario folders"; echo "SCENARIO_FAILED"; exit 1
+# `mkdir -p -m` sets the mode of the deepest folder only, so every level is
+# made and then chmod'ed: `recipe guide` checks each one on the way down.
+private_dir() {
+  mkdir -p -- "$1" && chmod 700 "$1"
 }
+for d in "$HOME_DIR" "$HOME_DIR/.amplihack" "$LOG_DIR" \
+         "$WORK/factory-lane" "$ALT_WORK" "$RUN_CWD" "$WORK/tmp"; do
+  private_dir "$d" || {
+    echo "FAIL: cannot create the scenario folders"; echo "SCENARIO_FAILED"; exit 1
+  }
+done
 
 cat > "$WORK/recipe.yaml" <<'YAML'
 name: "issue-2783-guide-qa"
@@ -118,7 +124,7 @@ steps:
     command: "true"
 YAML
 
-CASE_PATH="$(dirname -- "$(command -v jq)"):/usr/local/bin:/usr/bin:/bin"
+CASE_PATH="$(dirname -- "$JQ"):/usr/local/bin:/usr/bin:/bin"
 
 fail=0
 passed=0
@@ -136,7 +142,7 @@ flunk() {
 # work-root variable in sight. stdout and stderr are kept per case.
 guide() {
   local name="$1" target="$2" dir="$WORK/case-$1"
-  mkdir -p -m 700 "$dir"
+  private_dir "$dir"
   printf 'Keep the public API; this is the %s case.\n' "$name" \
     | env -i \
         HOME="$HOME_DIR" \
@@ -154,7 +160,6 @@ guide() {
 }
 
 # --- the run, with its stderr kept where a detached run keeps it ------------
-mkdir -p -m 700 "$WORK/tmp"
 RUN_LOG="$LOG_DIR/$SESSION.log"
 : > "$RUN_LOG"
 chmod 600 "$RUN_LOG"
@@ -193,12 +198,16 @@ case "$RUN_DIR" in
   "$ALT_WORK"/runs/*) pass "run_dir_is_under_the_alternative_work_root - $RUN_DIR" ;;
   *) flunk "run_dir '$RUN_DIR' is not under $ALT_WORK/runs" "$RUN_LOG" ;;
 esac
-[ -f "$RUN_DIR/run.json" ] \
-  && pass "the_recorded_folder_holds_run_json" \
-  || flunk "the recorded folder has no run.json" "$RUN_LOG"
-[ "$RECORDED_ISSUE" = "$ISSUE" ] \
-  && pass "the_pointer_records_the_issue" \
-  || flunk "the pointer records issue '$RECORDED_ISSUE', not $ISSUE" "$RUN_LOG"
+if [ -f "$RUN_DIR/run.json" ]; then
+  pass "the_recorded_folder_holds_run_json"
+else
+  flunk "the recorded folder has no run.json" "$RUN_LOG"
+fi
+if [ "$RECORDED_ISSUE" = "$ISSUE" ]; then
+  pass "the_pointer_records_the_issue"
+else
+  flunk "the pointer records issue '$RECORDED_ISSUE', not $ISSUE" "$RUN_LOG"
+fi
 
 RUN_FOLDER="$(basename -- "$RUN_DIR")"
 
@@ -214,7 +223,7 @@ check_lands_in_run() {
   fi
   line="$(head -n 1 "$dir/stdout")"
   case "$line" in
-    "guidance appended: $RUN_DIR/guidance/"*" (run)")
+    "guidance appended: $RUN_DIR/guidance/"*" bytes, run)")
       pass "$name - $line" ;;
     *)
       flunk "$name: the entry did not land in $RUN_DIR/guidance (stdout: $line)" "$dir/stderr" ;;

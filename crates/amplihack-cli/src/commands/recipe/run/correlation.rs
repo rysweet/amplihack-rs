@@ -293,19 +293,15 @@ impl RecipeRunCorrelation {
     }
 
     fn emit(&self, event: LogPointerEvent<'_>) {
-        match event_line(&event) {
-            Some(line) => {
-                let _ = writeln!(io::stderr(), "{line}");
-            }
-            None => {
-                tracing::warn!("failed to serialize recipe log pointer");
-            }
+        // `event_line` reports a failure to serialize; nothing is written.
+        if let Some(line) = event_line(&event) {
+            let _ = writeln!(io::stderr(), "{line}");
         }
     }
 }
 
 /// One `amplihack.recipe.log_pointer` line, without its newline. `None` when
-/// the event cannot be serialized, which is reported by the caller.
+/// the event cannot be serialized, which it reports on the tracing log.
 fn event_line(event: &LogPointerEvent<'_>) -> Option<String> {
     match serde_json::to_string(event) {
         Ok(payload) => Some(format!("{LOG_POINTER_PREFIX}{payload}")),

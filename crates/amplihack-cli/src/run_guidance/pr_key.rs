@@ -58,6 +58,51 @@ fn prefix_problem(url: &str) -> &'static str {
     }
 }
 
+/// Parses `https://github.com/<owner>/<repo>/<segment>/<number>`, with an
+/// optional trailing slash, query or fragment. `noun` names the number in
+/// the reason returned, which the caller turns into its own refusal.
+///
+/// One parser for both forms, so the issue form and the pull request form
+/// cannot drift apart in what they accept (issue #2783).
+fn parse_github_ref(url: &str, segment: &str, noun: &str) -> Result<PrRef, String> {
+    let shape = || format!("the path must be /<owner>/<repo>/{segment}/<number>");
+    let Some(rest) = url.strip_prefix(GITHUB_HTTPS) else {
+        return Err(prefix_problem(url).to_string());
+    };
+    let path = rest.split(['?', '#']).next().unwrap_or_default();
+    if path.contains('%') {
+        return Err("percent escapes are not accepted".to_string());
+    }
+    let path = path.strip_suffix('/').unwrap_or(path);
+    let parts: Vec<&str> = path.split('/').collect();
+    let [owner, repo, found, number] = parts.as_slice() else {
+        return Err(shape());
+    };
+    if found != &segment {
+        return Err(shape());
+    }
+    if !valid_owner(owner) {
+        return Err("the owner is not a GitHub account name".to_string());
+    }
+    if !valid_repo(repo) {
+        return Err("the repository is not a GitHub repository name".to_string());
+    }
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("the {noun} number is not a number"));
+    }
+    let number: u64 = number
+        .parse()
+        .map_err(|_| format!("the {noun} number is too large"))?;
+    if number == 0 {
+        return Err(format!("the {noun} number is zero"));
+    }
+    Ok(PrRef {
+        owner: (*owner).to_string(),
+        repo: (*repo).to_string(),
+        number,
+    })
+}
+
 /// Parses `https://github.com/<owner>/<repo>/pull/<n>`, with an optional
 /// trailing slash, query or fragment.
 ///
@@ -69,70 +114,17 @@ fn prefix_problem(url: &str) -> &'static str {
 /// `..`, a number that is zero or does not fit in 64 bits, or extra path
 /// segments.
 pub(crate) fn parse_pr_url(url: &str) -> Result<PrRef, GuideError> {
-    let Some(rest) = url.strip_prefix(GITHUB_HTTPS) else {
-        return Err(bad_url(prefix_problem(url)));
-    };
-    let path = rest.split(['?', '#']).next().unwrap_or_default();
-    if path.contains('%') {
-        return Err(bad_url("percent escapes are not accepted"));
-    }
-    let path = path.strip_suffix('/').unwrap_or(path);
-    let parts: Vec<&str> = path.split('/').collect();
-    let [owner, repo, "pull", number] = parts.as_slice() else {
-        return Err(bad_url("the path must be /<owner>/<repo>/pull/<number>"));
-    };
-    if !valid_owner(owner) {
-        return Err(bad_url("the owner is not a GitHub account name"));
-    }
-    if !valid_repo(repo) {
-        return Err(bad_url("the repository is not a GitHub repository name"));
-    }
-    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(bad_url("the pull request number is not a number"));
-    }
-    let number: u64 = number
-        .parse()
-        .map_err(|_| bad_url("the pull request number is too large"))?;
-    if number == 0 {
-        return Err(bad_url("the pull request number is zero"));
-    }
-    Ok(PrRef {
-        owner: (*owner).to_string(),
-        repo: (*repo).to_string(),
-        number,
-    })
+    parse_github_ref(url, "pull", "pull request").map_err(|reason| bad_url(&reason))
 }
 
-/// Parses `https://github.com/<owner>/<repo>/issues/<number>`, with an
-/// optional trailing slash, query or fragment, under the same bounds as
-/// [`parse_pr_url`].
+/// Parses `https://github.com/<owner>/<repo>/issues/<number>`, under the
+/// same bounds as [`parse_pr_url`].
 ///
 /// Returns `None`, never an error, for anything else: the caller tries the
 /// pull request form next, and a URL that is neither gets that form's
 /// refusal (issue #2783).
 pub(crate) fn parse_issue_url(url: &str) -> Option<PrRef> {
-    let rest = url.strip_prefix(GITHUB_HTTPS)?;
-    let path = rest.split(['?', '#']).next().unwrap_or_default();
-    if path.contains('%') {
-        return None;
-    }
-    let path = path.strip_suffix('/').unwrap_or(path);
-    let parts: Vec<&str> = path.split('/').collect();
-    let [owner, repo, "issues", number] = parts.as_slice() else {
-        return None;
-    };
-    if !valid_owner(owner) || !valid_repo(repo) {
-        return None;
-    }
-    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    let number: u64 = number.parse().ok()?;
-    (number != 0).then(|| PrRef {
-        owner: (*owner).to_string(),
-        repo: (*repo).to_string(),
-        number,
-    })
+    parse_github_ref(url, "issues", "issue").ok()
 }
 
 /// Whether two GitHub references name the same issue. Owner and repository
