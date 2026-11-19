@@ -119,7 +119,12 @@ impl Env {
                 off_in_ci: false,
             }),
             watch,
-            true,
+            // A prompt in argv: nothing on stdin for the retry to need.
+            super::claude_args::ClaudeArgs {
+                print: true,
+                prompt: true,
+                stream_stdin: false,
+            },
             Box::new(|| false),
             Box::new(|| true),
         )
@@ -175,11 +180,63 @@ fn a_capacity_wait_still_leaves_a_retry_move() {
         e.rotator("a");
         let mut w = e.waiter();
         w.note_attempt_login();
-        let after = w.after_limit(capacity(), 1, &signals(), &|_, _| false);
+        let after = w.after_limit(capacity(), 1, &signals(), &|_, _| false, &mut || None);
         assert!(matches!(after, AfterLimit::Finish(_)));
         assert!(
             w.retry_move().is_some(),
             "a capacity wait's retry may move: #1801"
+        );
+    });
+}
+
+/// Issue #2816: a retry is announced only when the step's prompt can be
+/// given to it, on both of the paths that announce one.
+///
+/// `after_limit` asks `replay` the moment before it logs `resume`. A step
+/// whose prompt came on a pipe is replayed from the copy the supervisor
+/// kept (#2815), and when there is no whole copy — lost, or still arriving
+/// on a pipe the caller has not closed — the retry cannot run. Announcing
+/// it anyway would put `resume attempt=2` in the run log for an attempt
+/// that never happens, which is the false diagnostic this wait already
+/// refuses to write elsewhere. The wait ends with `Finish` and the
+/// `skipped` event instead, and the caller passes the limited attempt's own
+/// result up.
+///
+/// Both announcing paths are covered: the retry-before-wait return, taken
+/// when the login changed while the attempt was failing, and the end of a
+/// wait that ran.
+#[test]
+fn a_retry_is_not_announced_when_the_step_has_no_prompt_to_give_it() {
+    // The retry-before-wait return: a roomy step timeout, so it is taken.
+    guarded_with(ROOMY_STEP_TIMEOUT, None, || {
+        let e = env();
+        e.rotator("a");
+        let mut w = e.waiter();
+        w.note_attempt_login();
+        e.rotator("b"); // the login changed while the attempt was failing
+        let mut asked = 0;
+        let after = w.after_limit(login_change(), 2, &signals(), &|_, _| false, &mut || {
+            asked += 1;
+            Some("this step's prompt is still arriving".to_string())
+        });
+        assert_eq!(asked, 1, "the question is asked exactly once");
+        assert!(
+            matches!(after, AfterLimit::Finish(None)),
+            "no retry is announced for an attempt that cannot run"
+        );
+    });
+    // A wait that ran to its own deadline and would otherwise retry.
+    guarded(|| {
+        let e = env();
+        e.rotator("a");
+        let mut w = e.waiter();
+        w.note_attempt_login();
+        let after = w.after_limit(capacity(), 1, &signals(), &|_, _| false, &mut || {
+            Some("the copy of this step's prompt could not be written".to_string())
+        });
+        assert!(
+            matches!(after, AfterLimit::Finish(None)),
+            "no retry is announced after a wait with no prompt to replay"
         );
     });
 }
@@ -201,7 +258,7 @@ fn the_retry_before_a_wait_carries_no_earlier_waits_retry_move() {
         // First wait: a capacity wait on login `a`, ended at its first poll
         // by a login with room, which is what sets the field.
         w.note_attempt_login();
-        let _ = w.after_limit(capacity(), 1, &signals(), &|_, _| true);
+        let _ = w.after_limit(capacity(), 1, &signals(), &|_, _| true, &mut || None);
         assert!(w.retry_move().is_some(), "the state this test starts from");
 
         // The attempt that follows is launched on `b` and, while it is
@@ -210,7 +267,7 @@ fn the_retry_before_a_wait_carries_no_earlier_waits_retry_move() {
         w.note_attempt_login();
         e.rotator("c");
 
-        let after = w.after_limit(login_change(), 2, &signals(), &|_, _| false);
+        let after = w.after_limit(login_change(), 2, &signals(), &|_, _| false, &mut || None);
         assert!(
             matches!(after, AfterLimit::Retry),
             "the login already changed: there is nothing left to wait for"
@@ -232,14 +289,14 @@ fn a_later_wait_that_earns_no_move_clears_the_earlier_ones() {
         e.rotator("a");
         let mut w = e.waiter();
         w.note_attempt_login();
-        let _ = w.after_limit(capacity(), 1, &signals(), &|_, _| false);
+        let _ = w.after_limit(capacity(), 1, &signals(), &|_, _| false, &mut || None);
         assert!(w.retry_move().is_some(), "the state this test starts from");
 
         // A second wait on another login, this time a login-change wait that
         // reaches its deadline: no capacity wait, and no reading ended it.
         e.rotator("b");
         w.note_attempt_login();
-        let _ = w.after_limit(login_change(), 2, &signals(), &|_, _| false);
+        let _ = w.after_limit(login_change(), 2, &signals(), &|_, _| false, &mut || None);
         assert!(
             w.retry_move().is_none(),
             "nothing about this wait says the retry may move"
@@ -262,7 +319,7 @@ fn the_wait_that_returns_early_still_records_its_mark() {
         w.note_attempt_login();
         e.rotator("b");
         assert!(matches!(
-            w.after_limit(login_change(), 1, &signals(), &|_, _| false),
+            w.after_limit(login_change(), 1, &signals(), &|_, _| false, &mut || None),
             AfterLimit::Retry
         ));
         assert!(
@@ -277,7 +334,7 @@ fn the_wait_that_returns_early_still_records_its_mark() {
         e.rotator("b");
         assert!(
             matches!(
-                w.after_limit(login_change(), 2, &signals(), &|_, _| false),
+                w.after_limit(login_change(), 2, &signals(), &|_, _| false, &mut || None),
                 AfterLimit::Finish(_)
             ),
             "a login that comes round twice ends the chain"
@@ -313,7 +370,7 @@ fn a_fallback_reading_does_not_start_the_retry_before_the_wait() {
         // the swap record and names `b`, with no swap in between.
         fs::set_permissions(dir.join("ledger.json"), fs::Permissions::from_mode(0o622)).unwrap();
 
-        let after = w.after_limit(login_change(), 1, &signals(), &|_, _| false);
+        let after = w.after_limit(login_change(), 1, &signals(), &|_, _| false, &mut || None);
         assert!(
             matches!(after, AfterLimit::Finish(_)),
             "the readings are not comparable, so the step waits as it would \
