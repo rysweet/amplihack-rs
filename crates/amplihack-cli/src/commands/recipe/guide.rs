@@ -74,7 +74,7 @@ use crate::command_error::exit_error;
 use crate::commands::cleanup::run_dir::{RUN_JSON, RunReport};
 use crate::commands::cleanup::work_root;
 use crate::commands::recipe::run_id::validate_run_id;
-use crate::run_guidance::fs_safety::{check_dir, ensure_private_chain, euid, untrusted_reason};
+use crate::run_guidance::fs_safety::{check_dir, ensure_private_chain, untrusted_reason};
 use crate::run_guidance::pr_key::{
     PrRef, parse_issue_url, parse_pr_url, pr_guidance_parent, pr_key, same_repo_ref, state_root,
 };
@@ -87,7 +87,6 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{ErrorKind, Read};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// The most raw bytes read from stdin or a file: room for surrounding white
@@ -308,7 +307,8 @@ struct Destination {
     dir: PathBuf,
     /// Which kind of folder it is, which the printed line names.
     source: Source,
-    /// Discovery evidence printed on stderr after a successful append.
+    /// Printed on stderr after the append, when more than one recorded run
+    /// matched an issue and the newest was taken.
     warning: Option<String>,
 }
 
@@ -435,10 +435,19 @@ fn records_issue_number(recorded: Option<&str>, number: u64) -> bool {
     })
 }
 
-/// Check a recorded path's type and ownership without following links.
-/// Mode disagreements are evidence during discovery; the destination is
-/// still checked by `append_entry` before writing.
-fn check_recorded_path(path: &Path, want_dir: bool) -> Result<Option<String>, String> {
+/// Check a recorded path against the one trust rule, without following
+/// links: not a symbolic link, the expected type, owned by this process's
+/// effective user and not writable by group or others.
+///
+/// Every failure is a refusal, the mode included. The folder is accepted
+/// here and written to later, so a folder another user can write to can be
+/// renamed aside and replaced in between, which would land the entry in a
+/// folder that user controls (CWE-367). `append_entry` rechecks only the
+/// run folder and the guidance folder, never `runs` or the work root, so
+/// nothing downstream makes up for accepting a writable ancestor. A refusal
+/// here costs nothing: the reason goes into the not-found line and the next
+/// rule still gets its turn (issue #2809).
+fn check_recorded_path(path: &Path, want_dir: bool) -> Result<(), String> {
     let meta = fs::symlink_metadata(path).map_err(|e| {
         if e.kind() == ErrorKind::NotFound {
             format!("{} no longer exists", path.display())
@@ -447,23 +456,15 @@ fn check_recorded_path(path: &Path, want_dir: bool) -> Result<Option<String>, St
         }
     })?;
     match untrusted_reason(&meta, want_dir) {
-        Some(reason)
-            if meta.file_type().is_symlink()
-                || meta.is_dir() != want_dir
-                || (!want_dir && !meta.is_file())
-                || meta.uid() != euid() =>
-        {
-            Err(format!("refusing {}: {reason}", path.display()))
-        }
-        Some(reason) => Ok(Some(format!("{}: {reason}", path.display()))),
-        None => Ok(None),
+        Some(reason) => Err(format!("refusing {}: {reason}", path.display())),
+        None => Ok(()),
     }
 }
 
 /// The checks that depend only on a recorded folder's work root, remembered
 /// across one resolution.
 ///
-/// [`work_root::validate_location`] canonicalises three paths and the two `lstat`
+/// [`work_root::validate`] canonicalises three paths and the two `lstat`
 /// calls above the run folder repeat per folder, yet every folder under one
 /// work root gets the same answer. A sweep over the folders of a log
 /// directory is almost always a sweep over one or two work roots, so this
@@ -475,12 +476,12 @@ fn check_recorded_path(path: &Path, want_dir: bool) -> Result<Option<String>, St
 /// defeats both. What stands between a swapped link and the entry is the
 /// check on the destination at write time, which is unchanged.
 #[derive(Default)]
-struct RootChecks(HashMap<PathBuf, Result<Vec<String>, String>>);
+struct RootChecks(HashMap<PathBuf, Result<(), String>>);
 
 impl RootChecks {
     /// The work root and `runs` folder of `runs` are usable. Computed once
     /// per distinct `runs` folder.
-    fn check(&mut self, runs: &Path, root: &Path) -> Result<Vec<String>, String> {
+    fn check(&mut self, runs: &Path, root: &Path) -> Result<(), String> {
         if let Some(seen) = self.0.get(runs) {
             return seen.clone();
         }
@@ -489,47 +490,53 @@ impl RootChecks {
         answer
     }
 
-    fn compute(runs: &Path, root: &Path) -> Result<Vec<String>, String> {
+    fn compute(runs: &Path, root: &Path) -> Result<(), String> {
         // An unset HOME skips the comparison with the home folder rather
         // than refusing; the not-found line still names what could not be
         // resolved.
         let home = crate::user_config::home_dir().unwrap_or_default();
-        if let Err(e) = work_root::validate_location(root, &home) {
+        if let Err(e) = work_root::validate(root, &home) {
             return Err(format!(
                 "has a work root that is not usable: {}",
                 one_line(&e)
             ));
         }
-        // Keep path/type/ownership safety, but retain mode evidence.
-        let mut warnings = Vec::new();
+        // `lstat` at each level above the run folder, so a link swapped in
+        // there is seen rather than followed, and a level another user can
+        // write to is refused rather than written under.
         for level in [root, runs] {
-            if let Some(warning) = check_recorded_path(level, true)
-                .map_err(|reason| format!("cannot be used: {reason}"))?
-            {
-                warnings.push(warning);
-            }
+            check_recorded_path(level, true)
+                .map_err(|reason| format!("cannot be used: {reason}"))?;
         }
-        Ok(warnings)
+        Ok(())
     }
 }
 
-/// Recover a recorded folder while preserving naming and identity
-/// disagreements as evidence. Path, type and ownership failures remain
-/// unusable; destination write checks are enforced by `append_entry`.
-/// `run.json` is also returned so a search for a later attempt can match
-/// its IDs independently of the pointer's stale metadata.
+/// Whether a folder a record named may be written to.
+///
+/// Every reason it returns is a refusal, never a note: a record is a claim,
+/// and a claim that does not hold must not be written to. A refusal is not
+/// the end of the search -- it becomes a line in the not-found message and
+/// a later rule still gets its turn (issue #2809).
+///
+/// `run_id` is the correlation id the record carried, which the folder's own
+/// `run.json` must agree with, so a log planted beside the real ones cannot
+/// point the entry at somebody else's run.
+///
+/// The folder's `run.json` is returned with it, so rule 4's second stage can
+/// match the target against the attempts the report lists without asking
+/// this function to conflate "the record is trustworthy" with "this folder
+/// holds the target" (issue #2818).
 fn accept_recorded(
     recorded: &str,
     run_id: Option<&str>,
     roots: &mut RootChecks,
-) -> Result<(Destination, RunReport), String> {
+) -> Result<(PathBuf, RunReport), String> {
     let shown = quoted(recorded);
-    let unusable = |reason: String| Err(reason);
-    let mut warnings = Vec::new();
     // A lossy conversion stands for bytes that are not UTF-8, so the string
     // cannot name the folder it came from.
     if recorded.contains('\u{fffd}') {
-        return unusable(format!(
+        return Err(format!(
             "the recorded run folder {shown} holds U+FFFD and cannot name a real folder"
         ));
     }
@@ -538,11 +545,10 @@ fn accept_recorded(
     // work root, none of which reads the characters of a name, so a folder
     // such as `/x/<ESC>]0;title<BEL>/runs/<uuid>` would otherwise be accepted
     // and then printed on the success path, where the operator never typed it
-    // (issue #2818, CWE-150). This is a note, not a refusal: the record is a
-    // claim, and a later rule still gets its turn (issue #2809). No run
-    // folder `recipe run` creates holds one of these characters.
+    // (issue #2818, CWE-150). No run folder `recipe run` creates holds one of
+    // these characters.
     if let Some(c) = recorded.chars().find(|c| needs_escape(*c)) {
-        return unusable(format!(
+        return Err(format!(
             "the recorded run folder {shown} has {} in its path",
             escaped(c)
         ));
@@ -550,72 +556,64 @@ fn accept_recorded(
     // The raw string, not `Path::components`, which drops empty and `.`
     // segments before they can be seen.
     let Some(rest) = recorded.strip_prefix('/') else {
-        return unusable(format!(
+        return Err(format!(
             "the recorded run folder {shown} is not an absolute path"
         ));
     };
     if rest.split('/').any(|part| matches!(part, "" | "." | "..")) {
-        return unusable(format!(
+        return Err(format!(
             "the recorded run folder {shown} has an empty, `.` or `..` segment"
         ));
     }
     let dir = PathBuf::from(recorded);
     let name = dir.file_name().and_then(OsStr::to_str).unwrap_or_default();
     if !validate_run_id(name) {
-        warnings.push(format!(
+        return Err(format!(
             "the recorded run folder {shown} is not named like a run"
         ));
     }
     let Some(runs) = dir.parent() else {
-        return unusable(format!("the recorded run folder {shown} has no parent"));
+        return Err(format!("the recorded run folder {shown} has no parent"));
     };
     if runs.file_name() != Some(OsStr::new("runs")) {
-        return unusable(format!(
+        return Err(format!(
             "the recorded run folder {shown} is not inside a `runs` folder"
         ));
     }
     let Some(root) = runs.parent() else {
-        return unusable(format!("the recorded run folder {shown} has no work root"));
+        return Err(format!("the recorded run folder {shown} has no work root"));
     };
     // The work root and the `runs` folder above it, checked once per
     // distinct `runs` folder however many recorded folders share it.
-    warnings.extend(
-        roots
-            .check(runs, root)
-            .map_err(|reason| format!("the recorded run folder {shown} {reason}"))?,
-    );
-    // `lstat` on the run folder itself, so a link swapped in for it is seen
-    // rather than followed.
-    if let Some(warning) = check_recorded_path(&dir, true)? {
-        warnings.push(warning);
-    }
+    roots
+        .check(runs, root)
+        .map_err(|reason| format!("the recorded run folder {shown} {reason}"))?;
+    // `lstat` on the run folder itself and on `run.json`, so a link swapped
+    // in for either is seen rather than followed.
+    check_recorded_path(&dir, true)?;
     let report_path = dir.join(RUN_JSON);
-    if let Some(warning) = check_recorded_path(&report_path, false)? {
-        warnings.push(warning);
-    }
+    check_recorded_path(&report_path, false)?;
     let report = RunReport::read(&dir)
         .map_err(|e| format!("cannot read {}: {}", report_path.display(), one_line(&e)))?;
     if report.run_id != name {
-        warnings.push(format!(
-            "{} names run {}, not folder {}",
+        return Err(format!(
+            "{} names run {}, not {}",
             report_path.display(),
             quoted(&report.run_id),
             quoted(name)
         ));
     }
     if let Some(id) = run_id
-        && id != report.run_id
         && id != name
         && !report.attempts.iter().any(|a| a.correlation_id == id)
     {
-        warnings.push(format!(
-            "{} does not record pointer run {}",
+        return Err(format!(
+            "{} does not record run {}",
             report_path.display(),
             quoted(id)
         ));
     }
-    let warning = (!warnings.is_empty()).then(|| warnings.join("; "));
-    Ok((Destination::run(&dir, warning), report))
+    Ok((dir, report))
 }
 
 /// One target being resolved: the places it can be looked for, and what
@@ -706,7 +704,7 @@ impl<'a> Resolver<'a> {
     /// last written, newest first. A record that fails a check becomes a
     /// note here and the search goes on.
     fn issue_destination(&mut self, url: Option<&PrRef>, number: u64) -> Option<Destination> {
-        let mut matched: Vec<Destination> = Vec::new();
+        let mut matched: Vec<PathBuf> = Vec::new();
         for record in self.records() {
             let names_it = match url {
                 Some(wanted) => record
@@ -726,26 +724,20 @@ impl<'a> Resolver<'a> {
                 continue;
             };
             match accept_recorded(recorded, record.run_id.as_deref(), &mut self.roots) {
-                Ok((destination, _)) if !matched.iter().any(|d| d.dir == destination.dir) => {
-                    matched.push(destination);
-                }
+                Ok((dir, _)) if !matched.contains(&dir) => matched.push(dir),
                 Ok(_) => {}
                 Err(why) => self.reject(why),
             }
         }
-        let count = matched.len();
-        let mut chosen = matched.into_iter().next()?;
-        if count > 1 {
-            let warning = format!(
-                "{count} recorded runs name issue {number}; the newest, {}, was used",
-                quoted(&chosen.dir.parent()?.display().to_string())
-            );
-            chosen.warning = Some(match chosen.warning {
-                Some(evidence) => format!("{evidence}; {warning}"),
-                None => warning,
-            });
-        }
-        Some(chosen)
+        let chosen = matched.first()?;
+        let warning = (matched.len() > 1).then(|| {
+            format!(
+                "{} recorded runs name issue {number}; the newest, {}, was used",
+                matched.len(),
+                quoted(&chosen.display().to_string())
+            )
+        });
+        Some(Destination::run(chosen, warning))
     }
 
     /// Rule 3: a detached session name. The session log is something the
@@ -772,7 +764,7 @@ impl<'a> Resolver<'a> {
         };
         if let Some(recorded) = record.run_dir.as_deref() {
             match accept_recorded(recorded, record.run_id.as_deref(), &mut self.roots) {
-                Ok((destination, _)) => return Ok(Some(destination)),
+                Ok((dir, _)) => return Ok(Some(Destination::run(&dir, None))),
                 Err(why) => self.reject(why),
             }
         }
@@ -826,7 +818,7 @@ impl<'a> Resolver<'a> {
                 continue;
             }
             match accept_recorded(recorded, record.run_id.as_deref(), &mut self.roots) {
-                Ok((destination, _)) => return Ok(Some(destination)),
+                Ok((dir, _)) => return Ok(Some(Destination::run(&dir, None))),
                 Err(why) => self.reject(why),
             }
         }
@@ -856,15 +848,15 @@ impl<'a> Resolver<'a> {
     /// the `AMPLIHACK_RECIPE_RUN_ID` the agent steps carry are the running
     /// attempt's (issue #2818). The folder is what the attempts share, so it
     /// is the folder that is indexed here: `run.json` lists every attempt's
-    /// correlation id. Matching that list is independent of the pointer's
-    /// naming and identity warnings.
+    /// correlation id, and the target is matched against that list after
+    /// [`accept_recorded`] has accepted the record on its own terms. The two
+    /// questions stay apart, so a folder that was never opened is not
+    /// counted as one whose `run.json` was read.
     ///
     /// Only on a miss, and each distinct folder once. The checks above the
     /// run folder are shared through [`Resolver::roots`], so a sweep over
     /// one work root pays them once and each folder costs two `lstat` calls
     /// and one small `run.json`.
-    ///
-    /// Count reports actually read; retain safety/read failures as evidence.
     fn recorded_attempt_destination(&mut self) -> Option<Destination> {
         let target = self.target;
         let mut tried: HashSet<String> = HashSet::new();
@@ -877,11 +869,11 @@ impl<'a> Resolver<'a> {
                 continue;
             }
             match accept_recorded(&recorded, record.run_id.as_deref(), &mut self.roots) {
-                Ok((destination, report)) => {
+                Ok((dir, report)) => {
                     if report.run_id == target
                         || report.attempts.iter().any(|a| a.correlation_id == target)
                     {
-                        return Some(destination);
+                        return Some(Destination::run(&dir, None));
                     }
                     read += 1;
                 }
@@ -1237,7 +1229,7 @@ mod tests {
             (format!("/x/a\u{2028}b/runs/{run}"), "\\u{2028}"),
         ] {
             let reason = accept_recorded(&path, None, &mut RootChecks::default())
-                .map(|(d, _)| d.dir.display().to_string())
+                .map(|(d, _)| d.display().to_string())
                 .unwrap_err();
             assert!(reason.contains(shown), "{path:?}: {reason}");
             assert!(reason.contains("in its path"), "{path:?}: {reason}");
@@ -1253,7 +1245,7 @@ mod tests {
     /// The memo of the work-root checks answers for the second folder under
     /// a `runs` directory exactly as it did for the first, refusal included.
     /// A sweep over a log directory is a sweep over a handful of work roots,
-    /// and this is what lets it cost a handful of `work_root::validate_location`
+    /// and this is what lets it cost a handful of `work_root::validate`
     /// calls rather than one per folder (issue #2818).
     #[test]
     fn the_work_root_memo_answers_the_same_for_every_folder_under_one_root() {
@@ -1271,7 +1263,7 @@ mod tests {
             // under a work root that is itself fine.
             reasons.push(
                 accept_recorded(&recorded, None, &mut roots)
-                    .map(|(d, _)| d.dir.display().to_string())
+                    .map(|(d, _)| d.display().to_string())
                     .unwrap_err(),
             );
         }
@@ -1291,7 +1283,7 @@ mod tests {
         // `/` is refused as a work root, so `/runs/<id>` has nowhere to live.
         for _ in 0..2 {
             let reason = accept_recorded(&format!("/runs/{run}"), None, &mut roots)
-                .map(|(d, _)| d.dir.display().to_string())
+                .map(|(d, _)| d.display().to_string())
                 .unwrap_err();
             assert!(
                 reason.contains("work root") || reason.contains("is gone"),
@@ -1300,12 +1292,22 @@ mod tests {
         }
         assert_eq!(roots.0.len(), 1);
     }
+    /// A recorded path fails the one trust rule in every one of its four
+    /// ways, and each is a refusal. The mode case is the one a writable
+    /// ancestor reaches: the folder is accepted here and written to later,
+    /// so accepting it would leave room for a rename in between
+    /// (CWE-367, issue #2818).
     #[test]
-    fn recorded_paths_still_require_the_expected_type_and_current_owner() {
-        use crate::run_guidance::fs_safety::with_euid_override;
+    fn a_recorded_path_is_refused_for_type_owner_and_mode() {
+        use crate::run_guidance::fs_safety::{euid, with_euid_override};
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("run.json");
         fs::write(&file, "{}").unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(check_recorded_path(dir.path(), true).is_ok());
+        assert!(check_recorded_path(&file, false).is_ok());
         assert!(
             check_recorded_path(&file, true)
                 .unwrap_err()
@@ -1323,5 +1325,23 @@ mod tests {
                 assert!(reason.contains("owned by uid"), "{reason}");
             }
         });
+        // Group write and other write, on the folder and on the file.
+        for (path, want_dir, mode) in [
+            (dir.path(), true, 0o770),
+            (dir.path(), true, 0o707),
+            (file.as_path(), false, 0o660),
+            (file.as_path(), false, 0o606),
+        ] {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+            let reason = check_recorded_path(path, want_dir).unwrap_err();
+            assert!(reason.contains("writable by group or others"), "{reason}");
+            assert!(reason.starts_with("refusing "), "{reason}");
+        }
+        // Nothing here changed what it refused.
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o606
+        );
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
     }
 }

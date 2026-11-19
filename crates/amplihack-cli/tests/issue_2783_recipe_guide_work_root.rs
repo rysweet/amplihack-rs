@@ -657,8 +657,12 @@ fn a_run_dir_that_others_can_write_to_is_not_used() {
     assert_refused_and_nothing_written(&o, &run);
 }
 
+/// A log planted beside the real ones, naming a run folder whose `run.json`
+/// knows nothing of the id the pointer carries. The record is a claim about
+/// somebody else's folder, so it is not used, whichever way it is addressed,
+/// and the reason names the folder and the id.
 #[test]
-fn a_record_whose_run_id_disagrees_with_the_report_is_used_with_evidence() {
+fn a_record_whose_run_id_disagrees_with_the_report_is_not_used() {
     let f = GuideFixture::new();
     let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
     let other = "0e9d8c7b-6a5f-4e3d-8c2b-1a0f9e8d7c6b";
@@ -667,70 +671,80 @@ fn a_record_whose_run_id_disagrees_with_the_report_is_used_with_evidence() {
     f.session_log_from_pointer(SESSION, &pointer);
     for target in [SESSION, other, RUN_FOLDER, ISSUE_URL, "2783"] {
         let o = f.guide_without_work_root(&[target], "recover the recorded run");
-        assert_lands_in(&o, &run);
-        let warning = stderr(&o);
-        assert!(warning.contains("does not record pointer run"), "{warning}");
-        assert!(warning.contains(other), "{warning}");
-        assert!(warning.contains(&run.display().to_string()), "{warning}");
+        assert_refused_and_nothing_written(&o, &run);
+        let line = one_line_error(&o);
+        assert!(line.contains("does not record run"), "{target}: {line}");
+        assert!(line.contains(other), "{target}: {line}");
     }
 }
 
+/// A report whose own `run_id` is not the folder it sits in names a run that
+/// is not the one addressed, so the folder is not used.
 #[test]
-fn a_renamed_folder_and_stale_report_id_remain_discoverable() {
+fn a_report_that_names_another_run_is_not_used() {
     let f = GuideFixture::new();
-    let original = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
-    // A safe folder name outside the run-ID grammar, keeping its old report.
-    let run = original.with_file_name("recovered run");
-    fs::rename(&original, &run).unwrap();
-    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
-    for target in [SESSION, CORRELATION, RUN_FOLDER, ISSUE_URL, "2783"] {
-        let o = f.guide_without_work_root(&[target], "recover the renamed run");
-        assert_lands_in(&o, &run);
-        let warning = stderr(&o);
-        assert!(warning.contains("is not named like a run"), "{warning}");
-        assert!(warning.contains("names run"), "{warning}");
-        assert!(warning.contains(RUN_FOLDER), "{warning}");
-        assert!(warning.contains("recovered run"), "{warning}");
-    }
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    let report = run.join("run.json");
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&report).unwrap()).unwrap();
+    let other = "0e9d8c7b-6a5f-4e3d-8c2b-1a0f9e8d7c6b";
+    value["run_id"] = other.into();
+    fs::write(&report, serde_json::to_string(&value).unwrap()).unwrap();
+    f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&run)));
+    let o = f.guide_without_work_root(&[SESSION], "text");
+    assert_refused_and_nothing_written(&o, &run);
+    let line = one_line_error(&o);
+    assert!(line.contains("names run"), "{line}");
+    assert!(line.contains(other), "{line}");
 }
 
+/// A work root, `runs` folder or `run.json` that group or others can write
+/// to is not used, and the reason is a line in the not-found message rather
+/// than a warning beside a write that went ahead.
+///
+/// The folder is checked here and appended to later, and `append_entry`
+/// rechecks only the run folder and the guidance folder beneath it. So a
+/// user who can write to `runs` could rename the run folder aside between
+/// the two and put their own in its place, and the entry would land in it
+/// (CWE-367). Trying the next rule costs nothing; accepting this does.
 #[test]
-fn a_later_attempt_is_found_despite_stale_pointer_and_folder_metadata() {
-    let f = GuideFixture::new();
-    let original = retried_run(&f);
-    let run = original.with_file_name("recovered run");
-    fs::rename(&original, &run).unwrap();
-    let stale = "stale-pointer-id";
-    f.session_log_from_pointer(SESSION, &GuideFixture::pointer(stale, Some(&run)));
-    let o = f.guide_without_work_root(&[RETRY_CORRELATION], "recover later attempt");
-    assert_lands_in(&o, &run);
-    let warning = stderr(&o);
-    assert!(warning.contains("does not record pointer run"), "{warning}");
-    assert!(warning.contains(stale), "{warning}");
-    assert!(warning.contains("names run"), "{warning}");
-}
-
-#[test]
-fn writable_ancestor_and_report_modes_are_reported_as_recovery_evidence() {
-    for level in ["root", "runs", "run.json"] {
+fn a_writable_work_root_runs_folder_or_report_is_not_used() {
+    for (level, mode) in [
+        ("root", 0o770),
+        ("root", 0o707),
+        ("runs", 0o770),
+        ("runs", 0o707),
+        ("run", 0o770),
+        ("run.json", 0o660),
+    ] {
         let f = GuideFixture::new();
         let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
         let path = match level {
             "root" => f.alt_work.clone(),
             "runs" => f.alt_work.join("runs"),
+            "run" => run.clone(),
             _ => run.join("run.json"),
         };
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o770)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
         f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&run)));
-        let o = f.guide_without_work_root(&[SESSION], "recover with mode evidence");
-        assert_lands_in(&o, &run);
-        let warning = stderr(&o);
-        assert!(warning.contains(&path.display().to_string()), "{warning}");
-        assert!(warning.contains("mode 0770"), "{warning}");
+        let o = f.guide_without_work_root(&[SESSION], "no write under a writable path");
+        assert_refused_and_nothing_written(&o, &run);
+        let line = one_line_error(&o);
+        assert!(
+            line.contains(&path.display().to_string()),
+            "{level} {mode:04o}: {line}"
+        );
+        assert!(
+            line.contains("writable by group or others"),
+            "{level} {mode:04o}: {line}"
+        );
+        // Nothing changed the permissions it refused.
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o770
+            mode,
+            "{level}"
         );
+        fs::set_permissions(&f.alt_work, fs::Permissions::from_mode(0o700)).unwrap();
     }
 }
 
