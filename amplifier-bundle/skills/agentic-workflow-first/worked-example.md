@@ -63,7 +63,8 @@ steps:
       set -euo pipefail
       export EXPECTED_NONCE="{{nonce}}"                 # complete the freshness handshake the reader requires (AP-1)
       export ALLOWED_DECISIONS="urgent normal ignore"   # allowlist the reader enforces before we route (defense-in-depth)
-      decision=$("{{repo_path}}/scripts/read_record.sh" "$RECORD_PATH")  # integrity-checked
+      # under `set -e` a failed read would end the run; send it to the `*)` branch instead
+      decision=$("{{repo_path}}/scripts/read_record.sh" "$RECORD_PATH") || decision="unreadable"  # integrity-checked
       case "$decision" in
         urgent) gh issue create --label urgent --title "signal: urgent" ;;
         normal) echo "queued: normal" ;;
@@ -88,7 +89,9 @@ imperative *judgment* — the `case` merely routes on a typed field.
 
 **Step 6 — verify:** run the recipe; confirm a record with a valid `decision` is
 written `0o600`, the router branches correctly, no stdout scraping is involved, and
-an unrecognized value reaches `adjudicate` rather than ending the run.
+an unrecognized value reaches `adjudicate` rather than ending the run. Check the
+same holds when the reader exits non-zero: the rail's reason goes to stderr and
+`route` still reaches `adjudicate`.
 
 **Contrast:** judgment moved from brittle Rust branches into an explainable prompt;
 adding a class is a prompt edit, not a recompile; the rail shrank to an integrity
