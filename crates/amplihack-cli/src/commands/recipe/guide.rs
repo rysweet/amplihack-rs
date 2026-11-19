@@ -327,8 +327,10 @@ struct Destination {
     dir: PathBuf,
     /// Which kind of folder it is, which the printed line names.
     source: Source,
-    /// Printed on stderr after the append, when more than one recorded run
-    /// matched an issue and the newest was taken.
+    /// Printed on stderr after the append, on one line. It carries what a
+    /// rule raised -- more than one recorded run matched an issue and the
+    /// newest was taken -- and what [`Resolver::with_passed_over`] adds:
+    /// the records that named this target and were not used.
     warning: Option<String>,
 }
 
@@ -677,7 +679,9 @@ struct Resolver<'a> {
     roots: RootChecks,
 }
 
-/// The most rejection reasons shown; the rest are counted.
+/// The most reasons shown, in the not-found line and in the warning a
+/// success prints; the rest are counted. One bound, so neither line grows
+/// with the number of records a sweep met.
 const MAX_SHOWN_REJECTIONS: usize = 3;
 
 impl<'a> Resolver<'a> {
@@ -780,8 +784,11 @@ impl<'a> Resolver<'a> {
     }
 
     /// The recorded runs that name this issue, in the order their logs were
-    /// last written, newest first. A record that fails a check becomes a
-    /// note here and the search goes on.
+    /// last written, newest first. A record that fails a check is passed
+    /// over and the search goes on: its reason joins the not-found line,
+    /// and, because the newest match wins, it also joins the warning this
+    /// destination carries, so an operator who is given an older run is
+    /// told which newer one was left out (issue #2818).
     fn issue_destination(&mut self, url: Option<&PrRef>, number: u64) -> Option<Destination> {
         let mut matched: Vec<PathBuf> = Vec::new();
         for record in self.records() {
