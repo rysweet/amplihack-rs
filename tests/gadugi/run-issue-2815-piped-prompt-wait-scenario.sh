@@ -292,22 +292,26 @@ fi
 # it must not stop the step. A FIFO nothing writes to stands in for that
 # caller, which never writes and never closes; the agent is told not to read
 # its stdin ($SKIP_STDIN), as a real agent given its prompt in argv does not.
-# The step is given 120 s, far longer than it needs.
 rm -f -- "$RECORDS"/count.* "$RECORDS"/call.* "$RECORDS"/stdin.* 2>/dev/null
 FIFO="$WORK/held.fifo"
-if mkfifo -- "$FIFO" 2>/dev/null; then
-  # A writer that holds the pipe open for the whole of the step and never
-  # writes: the shell keeps the descriptor until the subshell is stopped.
-  sleep 120 > "$FIFO" &
-  HOLDER=$!
+# The scenario holds the write end itself, for exactly as long as the step
+# runs and not a second longer or shorter: no holder process, and no clock
+# deciding how long "as long as the step runs" is. `<>` opens the FIFO
+# without waiting for a reader, which a plain `>` would do; a `>` that found
+# no reader, or a reader that found no writer, would wait on the other.
+if mkfifo -- "$FIFO" 2>/dev/null && exec 9<>"$FIFO"; then
+  # The ceiling is a hang detector and nothing else: no check below reads the
+  # clock, and the step needs about a second, because the wait runs on the
+  # scenario's test clock. It is deliberately far above anything load can
+  # cause, as docs/bugfixes/bugfix-937-recipe-runner-timeout-test-flake.md
+  # settled on for the same problem; without it a step that hung would hang
+  # the scenario with nothing naming the case that hung.
   # `env -i` resolves `timeout` with the scenario's own PATH, so the ceiling
   # is inside the isolated environment rather than outside it.
   SKIP_STDIN=1 scenario_env timeout 120 "$BIN" claude --subprocess-safe -- -p step \
     <"$FIFO" >"$WORK/held.out" 2>"$WORK/held.err"
   HELD_RC=$?
-  # Only the holder this scenario started, by the pid it recorded.
-  kill "$HOLDER" 2>/dev/null
-  wait "$HOLDER" 2>/dev/null
+  exec 9>&-
   HELD_CALLS="$(cat "$RECORDS/count.0" 2>/dev/null || echo 0)"
   if [ "$HELD_RC" -eq 0 ] && [ "$HELD_CALLS" = 2 ]; then
     pass held_open_stdin_does_not_hang "an argv prompt with stdin held open still waited and ran again"
@@ -315,7 +319,7 @@ if mkfifo -- "$FIFO" 2>/dev/null; then
     fl held_open_stdin_does_not_hang "rc=$HELD_RC calls=$HELD_CALLS (124 is the 120 s timeout); held.err tail: $(tail -n 8 "$WORK/held.err" 2>/dev/null | tr '\n' ' ')"
   fi
 else
-  fl held_open_stdin_does_not_hang "could not create a FIFO for the held-open case"
+  fl held_open_stdin_does_not_hang "could not create or hold open a FIFO for the held-open case"
 fi
 
 # --- case 3: the same limit in a real recipe step, through the runner ------

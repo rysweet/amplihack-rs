@@ -10874,8 +10874,17 @@ Before a rerun the supervisor joins the copier and checks that the whole
 prompt was stored. It then opens the file read-only at offset 0 and gives it
 to Claude as stdin, so every attempt reads byte-identical input and the step
 continues the usage-limit wait or auto-switch rerun it would have had with the
-prompt in `-p`. A write to an attempt that has already exited (`EPIPE`) is
-ignored, and does not stop the copy or the step.
+prompt in `-p`.
+
+A write to an attempt that has already exited (`EPIPE`) is ignored: it stops
+neither the copy nor the step, the capture still receives the whole prompt,
+and every later attempt still reads it whole. It is reported, on stderr, as
+`this step stopped reading its prompt before all of it had been delivered`.
+The recipe runner says as much when it writes a task straight to an agent
+that exits early; a supervised step puts the copier between the two and the
+copier always drains the runner's write, so the runner's own warning cannot
+fire for such a step and this line takes its place. Like the runner's it is
+diagnostic: it names no part of the prompt and changes no exit code.
 
 Four failures differ in what they do. The first three cost the rerun; the
 fourth costs the prompt itself, and is the only one the attempt in hand can

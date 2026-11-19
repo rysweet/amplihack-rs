@@ -8,11 +8,14 @@
 //! rather than in argv, [`capture_prompt`] starts a copier thread that
 //! pumps that pipe into a private `<pid>-0.in` file in the rerun directory
 //! and into the first attempt's own stdin pipe. The copier stops at end of
-//! file, absorbs the first attempt's `EPIPE`, and is joined only when a
-//! rerun needs the stored prompt; the supervisor's main loop never waits
-//! on it. Of the two sinks the attempt's comes first in standing: a file
-//! that cannot be written costs the rerun, never a byte of the prompt the
-//! attempt in hand is reading.
+//! file, absorbs the first attempt's `EPIPE` — saying so on stderr, because
+//! the runner's own warning about an agent that exited before its whole
+//! task was written cannot fire once this copier is what the runner writes
+//! to (issue #2816) — and is joined only when a rerun needs the stored
+//! prompt; the supervisor's main loop never waits on it. Of the two sinks
+//! the attempt's comes first in standing: a file that cannot be written
+//! costs the rerun, never a byte of the prompt the attempt in hand is
+//! reading.
 //!
 //! The two sinks fail differently because only one of those failures can be
 //! told to the attempt. A capture file that cannot be written costs the
@@ -257,6 +260,11 @@ pub(super) struct CopyState {
     /// set together with `lost`, and always before the attempt's pipe is
     /// dropped.
     cut_short: AtomicBool,
+    /// Set when a write of the prompt to the attempt's own stdin fails
+    /// while the source still has prompt to come: whatever was reading it
+    /// closed its end early. Neither the capture nor any later attempt
+    /// loses anything, so this is a report and not a failure.
+    reader_gone: AtomicBool,
 }
 
 impl CopyState {
@@ -302,6 +310,31 @@ impl CopyState {
     pub(super) fn was_cut_short(&self) -> bool {
         self.cut_short.load(Ordering::SeqCst)
     }
+
+    /// The attempt's end of the prompt pipe closed with prompt still to
+    /// come: it exited, or stopped reading, before the whole task reached
+    /// it.
+    ///
+    /// Nothing is lost here — the capture still gets every byte and so does
+    /// any later attempt — but the step did its work on part of its task,
+    /// and that is worth a line. The recipe runner says as much when it
+    /// writes a task straight to an agent that exits early; a supervised
+    /// step takes that writer's place, always drains it, and so always
+    /// lets the runner's write succeed, which would leave the case silent
+    /// (issue #2816). This is the supervisor's own version of it, and like
+    /// the runner's it is diagnostic: it names no part of the prompt and
+    /// changes no exit code.
+    fn reader_gone(&self) {
+        self.reader_gone.store(true, Ordering::SeqCst);
+        eprintln!(
+            "amplihack: this step stopped reading its prompt before all of it had been \
+             delivered, so it ran on part of its task; the rest went to the stored copy"
+        );
+    }
+
+    pub(super) fn reader_is_gone(&self) -> bool {
+        self.reader_gone.load(Ordering::SeqCst)
+    }
 }
 
 /// One copy of the step's piped prompt.
@@ -343,6 +376,7 @@ impl std::fmt::Debug for Capture {
             .field("complete", &self.state.is_complete())
             .field("failed", &self.lost())
             .field("cut_short", &self.cut_short())
+            .field("reader_gone", &self.state.reader_is_gone())
             .finish()
     }
 }
@@ -519,9 +553,10 @@ fn read_back(path: &Path, writer: &fs::File) -> io::Result<fs::File> {
 /// The prompt is opaque bytes throughout: never decoded, never held whole
 /// in memory and never printed. A first attempt that exits without reading
 /// closes its end, and the `EPIPE` that follows only stops the copy to the
-/// child; the file still receives all of it. Any error on the file is the
-/// copy failing, and a rerun is refused rather than given part of a
-/// prompt.
+/// child; the file still receives all of it, and
+/// [`CopyState::reader_gone`] reports the early close. Any error on the
+/// file is the copy failing, and a rerun is refused rather than given part
+/// of a prompt.
 ///
 /// The capture is secondary to the attempt in hand. An error on the file
 /// stops the copy to the file and nothing else: the source is still drained
@@ -548,8 +583,15 @@ fn read_back(path: &Path, writer: &fs::File) -> io::Result<fs::File> {
 /// these flags when it decides whether a rerun is possible at all, so a
 /// capture already known to be lost refuses the rerun then and there,
 /// rather than after a wait of hours.
-pub(super) fn copy_prompt(
-    source: &mut fs::File,
+///
+/// `source` is the step's own stdin, an `fs::File`. It is taken by bound
+/// rather than by type only so that a test can see the reads as they
+/// happen: whether the `EAGAIN` arm below is reached at all otherwise
+/// depends on when the copier and the writer are scheduled, and a test of
+/// it would be a test of that. `wait_readable` still polls the descriptor
+/// `AsRawFd` yields, which is the source's own.
+pub(super) fn copy_prompt<S: Read + AsRawFd>(
+    source: &mut S,
     mut file: fs::File,
     child: std::io::PipeWriter,
     state: &CopyState,
@@ -595,10 +637,13 @@ pub(super) fn copy_prompt(
         if let Some(w) = &mut child
             && w.write_all(&buf[..k]).is_err()
         {
-            // The attempt is gone, or stopped reading. Its prompt is still
-            // stored; closing our end lets it see end of file if it is
-            // somehow still there.
+            // The attempt is gone, or stopped reading, with prompt still
+            // to come. Its prompt is still stored; closing our end lets it
+            // see end of file if it is somehow still there. The early
+            // close is reported, since the runner's own warning for it
+            // cannot fire for a supervised step (issue #2816).
             child = None;
+            state.reader_gone();
         }
     }
     if let Some(e) = file_err {
@@ -623,7 +668,7 @@ pub(super) fn copy_prompt(
 /// blocking read would have. `POLLHUP` and `POLLERR` both satisfy the poll,
 /// and the read that follows then returns the end of file or the error
 /// itself.
-fn wait_readable(source: &fs::File) -> io::Result<()> {
+fn wait_readable(source: &impl AsRawFd) -> io::Result<()> {
     let mut fds = libc::pollfd {
         fd: source.as_raw_fd(),
         events: libc::POLLIN,

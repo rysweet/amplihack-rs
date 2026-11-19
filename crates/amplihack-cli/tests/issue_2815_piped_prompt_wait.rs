@@ -172,12 +172,68 @@ fn a_limit_still_failing_after_the_wait_ends_the_step_and_leaves_no_capture() {
 
 /// Runs `child` with a ceiling, so a step that hangs fails the test instead
 /// of the whole suite. The returned value is the finished `Output`.
+///
+/// Nothing in these tests is timed. No assertion depends on how long a run
+/// takes, and none of them needs more than about a second: the wait itself
+/// runs on the test clock the runner already has. The ceiling is only a
+/// hang detector, and is deliberately far above anything load can cause,
+/// which is what
+/// `docs/bugfixes/bugfix-937-recipe-runner-timeout-test-flake.md` settled
+/// on for the same problem. A tighter one would flake on a busy runner; no
+/// ceiling at all would turn one stuck step into a stuck suite with
+/// nothing naming the step that stuck.
 fn finish(child: Child, what: &str) -> Output {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || tx.send(child.wait_with_output()));
     rx.recv_timeout(Duration::from_secs(120))
         .unwrap_or_else(|_| panic!("{what}"))
         .unwrap()
+}
+
+/// Issue #2816: a step that stops reading its prompt is reported.
+///
+/// The recipe runner warns when it writes a task straight to an agent that
+/// exits before taking all of it. A supervised step puts the copier
+/// between the two, and the copier always drains the runner's write, so
+/// that warning can no longer fire for such a step. The supervisor makes
+/// the report instead, and the step itself is unaffected: it still waits
+/// out its limit and still runs again on the whole stored prompt.
+///
+/// `SKIP_STDIN=1` is an agent that never reads its stdin. The prompt is
+/// several times what a pipe holds, so the copier must meet the closed end
+/// whatever the scheduling. The rerun joins the copier before it starts,
+/// so the line is on stderr before the run can end.
+#[test]
+fn a_step_that_stops_reading_its_prompt_is_reported() {
+    let f = Fixture::new();
+    let bytes = prompt();
+    let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
+    c.env("SKIP_STDIN", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().expect("start amplihack");
+    let feeder = feed(&mut child, bytes);
+    let out = finish(child, "the step hung after its reader closed");
+    feeder.join().unwrap();
+
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(
+        f.count("0"),
+        2,
+        "the step still waited and ran again\n{}",
+        describe(&out)
+    );
+    assert!(
+        text(&out.stderr).contains("stopped reading its prompt"),
+        "the early close was reported\n{}",
+        describe(&out)
+    );
+    assert_eq!(
+        leftovers(&f),
+        Vec::<String>::new(),
+        "no capture left behind"
+    );
 }
 
 /// Issue #2816: the supervisor stands down after the copier has started.

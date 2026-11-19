@@ -17,19 +17,6 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Polls `cond` until it holds, or fails after 30 s. Used where a copier
-/// thread publishes something the caller is meant to read without joining.
-fn until(what: &str, mut cond: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
-    while !cond() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for {what}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
 fn mode(p: &Path) -> u32 {
     fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777
 }
@@ -289,6 +276,21 @@ fn capture_file(dir: &Path) -> PathBuf {
     dir.join(format!("{}-0.in", std::process::id()))
 }
 
+/// A capture sink that refuses every write, standing in for the `ENOSPC`
+/// or `EIO` of a real file.
+///
+/// A read-only description of a real file, so the refusal is `EBADF` and it
+/// is the same on every run. A pipe whose reader has been dropped refuses
+/// too, but not reliably in this binary: these tests run beside others that
+/// fork, and between a fork and its exec the child holds a copy of every
+/// descriptor open at the time, the dropped read end included. A write in
+/// that window succeeds, and the test then sees no loss to publish.
+fn refusing_sink(dir: &Path) -> fs::File {
+    let path = dir.join("read-only-sink");
+    fs::write(&path, b"").unwrap();
+    fs::File::open(&path).unwrap()
+}
+
 #[test]
 fn every_attempt_of_a_captured_prompt_reads_the_same_bytes_from_offset_zero() {
     let (_t, dir) = rerun();
@@ -394,9 +396,15 @@ fn a_failed_copy_is_an_error_for_a_rerun_never_a_partial_prompt() {
     assert!(matches!(policy, RerunStdin::Captured(_)), "{policy:?}");
     // Issue #2816: the loss is readable without joining the copier, which
     // is what lets the supervisor refuse the rerun before the wait rather
-    // than after it.
-    until("the lost capture to be published", || policy.capture_lost());
-    assert!(policy.for_attempt(2).is_err(), "no partial replay");
+    // than after it. Nothing here is timed: the copier publishes the loss
+    // before it drops the attempt's pipe, so draining that pipe to its end
+    // puts this test after the publication rather than beside it.
+    assert_eq!(cat(policy.for_attempt(1).unwrap()), b"");
+    assert!(policy.capture_lost(), "published without a join");
+    // The refusal says why, so a caller is never left to guess.
+    let why = policy.for_attempt(2).unwrap_err().to_string();
+    assert!(why.contains("was not stored whole"), "{why}");
+    assert!(why.contains("attempt 2"), "{why}");
 }
 
 /// Issue #2816: a read of the source that fails is published as a prompt
@@ -432,6 +440,31 @@ fn a_failed_source_read_is_published_as_a_prompt_cut_short() {
     assert!(policy.for_attempt(2).is_err(), "no partial replay");
 }
 
+/// A source that reports every `EAGAIN` it hands back, so a test can wait
+/// for the copier to meet one rather than guess when it will. The
+/// descriptor is the pipe's own, so `copy_prompt` polls what it polls in
+/// production.
+struct ReportsEagain {
+    inner: fs::File,
+    met: std::sync::mpsc::Sender<()>,
+}
+
+impl Read for ReportsEagain {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let r = self.inner.read(buf);
+        if matches!(&r, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock) {
+            let _ = self.met.send(());
+        }
+        r
+    }
+}
+
+impl std::os::fd::AsRawFd for ReportsEagain {
+    fn as_raw_fd(&self) -> std::os::fd::RawFd {
+        self.inner.as_raw_fd()
+    }
+}
+
 /// Issue #2816: an empty non-blocking source is waited on, not taken for
 /// the end of the prompt.
 ///
@@ -440,39 +473,67 @@ fn a_failed_source_read_is_published_as_a_prompt_cut_short() {
 /// it. A read of the empty pipe then fails with `EAGAIN`. Retrying only
 /// `EINTR` would end the copy there and hand the attempt a prompt of
 /// whatever had arrived — here, nothing at all.
+///
+/// Nothing is timed and nothing is assumed about scheduling. The source
+/// reports each `EAGAIN`, and not one byte is written until a report has
+/// arrived, so the retry is always the path taken: against the previous
+/// behaviour the copier has already given up by then, and the join below
+/// returns that error.
 #[test]
 fn an_empty_non_blocking_source_is_waited_on_not_taken_for_the_end() {
     let (_t, dir) = rerun();
+    let capture = dir.join("capture");
+    let sink = fs::File::create(&capture).unwrap();
     let (reader, mut writer) = std::io::pipe().unwrap();
-    let mut source = fs::File::from(OwnedFd::from(reader));
+    let mut inner = fs::File::from(OwnedFd::from(reader));
     // SAFETY: an open descriptor this test owns; `F_SETFL` takes an
     // integer argument and writes nothing back.
-    let rc = unsafe { libc::fcntl(source.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+    let rc = unsafe { libc::fcntl(inner.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
     assert_eq!(rc, 0, "the source could not be made non-blocking");
     // The setup is the point of the test, so it is checked rather than
     // assumed: the pipe is empty and reading it now refuses.
     assert_eq!(
-        source.read(&mut [0u8; 1]).unwrap_err().kind(),
+        inner.read(&mut [0u8; 1]).unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock,
         "the source must refuse an empty read for this test to mean anything"
     );
-    let prompt = awkward_prompt();
-    let bytes = prompt.clone();
-    // The copier therefore meets `EAGAIN` on its very first read, well
-    // before a byte of the prompt exists.
-    let feeder = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(50));
-        writer.write_all(&bytes).unwrap();
+    let (met, eagain) = std::sync::mpsc::channel();
+    let mut source = ReportsEagain { inner, met };
+
+    // The attempt's stdin, drained as the copier writes it.
+    let (mut child_read, child_write) = std::io::pipe().unwrap();
+    let drain = std::thread::spawn(move || {
+        let mut got = Vec::new();
+        child_read.read_to_end(&mut got).unwrap();
+        got
     });
-    let mut policy = capture_prompt(&dir, source);
-    assert_eq!(cat(policy.for_attempt(1).unwrap()), prompt, "attempt 1");
-    feeder.join().unwrap();
+    let state = Arc::new(CopyState::default());
+    let published = Arc::clone(&state);
+    let copier =
+        std::thread::spawn(move || copy_prompt(&mut source, sink, child_write, &published));
+
+    // The pipe is empty, so the copier's first read refuses. Only once it
+    // has said so does the prompt exist at all.
+    eagain
+        .recv()
+        .expect("the copier must meet EAGAIN on the empty source");
+    let prompt = awkward_prompt();
+    writer.write_all(&prompt).unwrap();
+    drop(writer);
+
+    copier.join().unwrap().expect("EAGAIN is not a failed copy");
+    assert_eq!(drain.join().unwrap(), prompt, "the attempt's whole prompt");
+    assert_eq!(fs::read(&capture).unwrap(), prompt, "and the capture's");
     assert!(
-        !policy.prompt_cut_short(),
+        !state.was_cut_short(),
         "an empty non-blocking pipe is not a prompt that failed"
     );
-    assert!(!policy.capture_lost(), "nor a capture that was lost");
-    assert_eq!(cat(policy.for_attempt(2).unwrap()), prompt, "the rerun");
+    assert!(!state.is_lost(), "nor a capture that was lost");
+    assert!(state.is_complete(), "the whole prompt reached both sinks");
+    assert!(
+        !state.reader_is_gone(),
+        "the attempt read its prompt to the end"
+    );
 }
 
 /// Issue #2816: the copier publishes a lost capture while it is still
@@ -481,29 +542,32 @@ fn an_empty_non_blocking_source_is_waited_on_not_taken_for_the_end() {
 /// wait; a flag set only at the end would be read only after one.
 #[test]
 fn a_lost_capture_is_published_while_the_copy_is_still_running() {
+    let (_t, dir) = rerun();
     // A source the test holds open, so the copier cannot reach end of file.
     let (reader, mut writer) = std::io::pipe().unwrap();
     let mut source = fs::File::from(OwnedFd::from(reader));
-    // A capture sink that fails on the first write: a pipe with no reader,
-    // standing in for the `ENOSPC` or `EIO` of a real file.
-    let (dead, sink) = std::io::pipe().unwrap();
-    drop(dead);
-    let sink = fs::File::from(OwnedFd::from(sink));
-    // The attempt's stdin, drained, so nothing blocks on that sink either.
+    // A capture sink that fails on the first write (see `refusing_sink`).
+    let sink = refusing_sink(&dir);
+    // The attempt's stdin, read here rather than on a thread: the copier
+    // tries the capture file and publishes what became of it before it
+    // forwards a block to the attempt, so reading that block back is proof
+    // the flag is already set. No clock, and no join.
     let (mut child_read, child_write) = std::io::pipe().unwrap();
-    let drain = std::thread::spawn(move || {
-        let mut got = Vec::new();
-        let _ = child_read.read_to_end(&mut got);
-        got
-    });
 
     let state = Arc::new(CopyState::default());
     let published = Arc::clone(&state);
     let copier =
         std::thread::spawn(move || copy_prompt(&mut source, sink, child_write, &published));
 
-    writer.write_all(b"the first block of the prompt").unwrap();
-    until("the lost capture to be published", || state.is_lost());
+    let block = b"the first block of the prompt";
+    writer.write_all(block).unwrap();
+    let mut got = vec![0u8; block.len()];
+    child_read.read_exact(&mut got).unwrap();
+    assert_eq!(got, block, "the attempt still received every byte");
+    assert!(
+        state.is_lost(),
+        "the loss is published before that block is"
+    );
     assert!(!state.is_complete(), "a lost capture is never complete");
     assert!(
         !state.was_cut_short(),
@@ -514,11 +578,9 @@ fn a_lost_capture_is_published_while_the_copy_is_still_running() {
     // copier was still running.
     drop(writer);
     assert!(copier.join().unwrap().is_err());
-    assert_eq!(
-        drain.join().unwrap(),
-        b"the first block of the prompt",
-        "the attempt still received every byte"
-    );
+    let mut rest = Vec::new();
+    child_read.read_to_end(&mut rest).unwrap();
+    assert!(rest.is_empty(), "the block was all that was written");
 }
 
 /// Issue #2816: `hand_back` is only for the one kind of stdin the
@@ -562,19 +624,15 @@ fn a_capture_reports_that_stdin_was_drained() {
 /// The capture is secondary to the attempt in hand: a file that cannot be
 /// written costs the rerun, never a byte of the first attempt's prompt.
 ///
-/// The capture sink here is a pipe whose read end has been dropped, so the
-/// first write fails with `EPIPE`, which stands in for the `ENOSPC` or
-/// `EIO` a real file would give. The prompt is larger than `COPY_BUF`, so
-/// the failure lands well before the last chunk.
+/// The capture sink here refuses every write (see [`refusing_sink`]), so
+/// the first chunk is already lost. The prompt is larger than `COPY_BUF`,
+/// so the copy runs on for several chunks after that.
 #[test]
 fn a_capture_that_cannot_be_written_still_hands_the_attempt_its_whole_prompt() {
+    let (_t, dir) = rerun();
     let prompt = awkward_prompt();
     let (mut source, feeder) = fed_pipe(prompt.clone());
-
-    // A file handle onto a pipe nobody is reading: every write is EPIPE.
-    let (dead, sink) = std::io::pipe().unwrap();
-    drop(dead);
-    let sink = fs::File::from(OwnedFd::from(sink));
+    let sink = refusing_sink(&dir);
 
     // The attempt's stdin, drained as the copier writes it.
     let (mut child_read, child_write) = std::io::pipe().unwrap();
@@ -604,6 +662,47 @@ fn a_capture_that_cannot_be_written_still_hands_the_attempt_its_whole_prompt() {
     // Last: a copier that stopped early would leave the feeder blocked on a
     // pipe nobody is draining, and the assertions above say so first.
     feeder.join().unwrap();
+}
+
+/// Issue #2816: an attempt that closes its stdin before the whole prompt
+/// has been delivered is reported, not passed over in silence.
+///
+/// The recipe runner says as much when it writes a task straight to an
+/// agent that exits early. A supervised step takes that writer's place and
+/// always drains it, so the runner's write always succeeds and its own
+/// warning can no longer fire; the copier makes the report instead.
+/// Nothing is lost by the close: the capture, and so every later attempt,
+/// still receives all of it.
+#[test]
+fn an_attempt_that_closes_its_stdin_early_is_reported() {
+    let (_t, dir) = rerun();
+    let capture = dir.join("capture");
+    let sink = fs::File::create(&capture).unwrap();
+    let prompt = awkward_prompt();
+    let (mut source, feeder) = fed_pipe(prompt.clone());
+    // The attempt's stdin, closed before a byte of it is read. The prompt
+    // is larger than a pipe holds several times over, so the copier must
+    // meet that closed end: not even the fork of a neighbouring test,
+    // which briefly copies the dropped read end, can take more than one
+    // pipeful before its exec closes the copy again.
+    let (child_read, child_write) = std::io::pipe().unwrap();
+    drop(child_read);
+
+    let state = CopyState::default();
+    copy_prompt(&mut source, sink, child_write, &state).unwrap();
+    feeder.join().unwrap();
+
+    assert!(state.reader_is_gone(), "the early close is reported");
+    assert!(
+        state.is_complete(),
+        "the capture still has the whole prompt"
+    );
+    assert!(
+        !state.is_lost(),
+        "an attempt that stops reading costs no rerun"
+    );
+    assert!(!state.was_cut_short(), "nor is this a prompt cut short");
+    assert_eq!(fs::read(&capture).unwrap(), prompt);
 }
 
 #[test]
