@@ -420,12 +420,15 @@ impl GuideFixture {
         self.work.join("runs")
     }
 
-    /// A run folder `<work>/runs/<folder_id>/` with a `run.json` naming
-    /// `correlation_id` as its attempt, as `recipe run` writes it.
-    pub fn make_run(&self, folder_id: &str, correlation_id: &str) -> PathBuf {
-        let dir = self.runs().join(folder_id);
-        private_dir(&self.work);
-        private_dir(&self.runs());
+    /// A run folder `<work_root>/runs/<folder_id>/` with a `run.json` naming
+    /// `correlation_id` as its attempt, as `recipe run` writes it. Every
+    /// level is created 0700, so the folder passes the trust rule
+    /// `recipe guide` applies on the way down.
+    pub fn make_run_in(&self, work_root: &Path, folder_id: &str, correlation_id: &str) -> PathBuf {
+        let runs = work_root.join("runs");
+        let dir = runs.join(folder_id);
+        private_dir(work_root);
+        private_dir(&runs);
         private_dir(&dir);
         let report = serde_json::json!({
             "schema_version": 1,
@@ -440,6 +443,11 @@ impl GuideFixture {
         });
         private_file(&dir.join("run.json"), report.to_string());
         dir
+    }
+
+    /// A run folder under the default work root, `$HOME/.amplihack/work`.
+    pub fn make_run(&self, folder_id: &str, correlation_id: &str) -> PathBuf {
+        self.make_run_in(&self.work.clone(), folder_id, correlation_id)
     }
 
     /// `<recipe-logs>/<session>.log` whose first pointer line names `run_id`.
@@ -456,23 +464,7 @@ impl GuideFixture {
     /// Like [`Self::make_run`], but under [`Self::alt_work`], the work root a
     /// run started with `AMPLIHACK_WORK_ROOT` set would use.
     pub fn make_run_in_alt_work(&self, folder_id: &str, correlation_id: &str) -> PathBuf {
-        let dir = self.alt_work.join("runs").join(folder_id);
-        private_dir(&self.alt_work);
-        private_dir(&self.alt_work.join("runs"));
-        private_dir(&dir);
-        let report = serde_json::json!({
-            "schema_version": 1,
-            "run_id": folder_id,
-            "recipe": "smart-orchestrator",
-            "pid": 0,
-            "cwd": self.root.display().to_string(),
-            "started_at": "2026-11-12T09:12:00Z",
-            "outcome": "running",
-            "attempts": [{"correlation_id": correlation_id}],
-            "steps": [],
-        });
-        private_file(&dir.join("run.json"), report.to_string());
-        dir
+        self.make_run_in(&self.alt_work.clone(), folder_id, correlation_id)
     }
 
     /// The early pointer object a run writes at start, with `run_dir` when

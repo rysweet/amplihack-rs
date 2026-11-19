@@ -36,6 +36,11 @@
 #   unmatched_names_where a target that matches nothing exits 1 and the line
 #                         names the log directory and the runs directory
 #
+# Between and after them, checks on what the run recorded and on what must not
+# happen, and a last case that holds the scenario descriptor beside this script
+# to the set of PASS lines this run actually emitted. CI runs this script
+# directly, so without that last case a descriptor left behind costs nothing.
+#
 # Every command runs under `env -i` with an explicit allowlist, and everything
 # is created under one mktemp folder that the EXIT trap removes. The real
 # ~/.claude and ~/.amplihack are never read or written: HOME is the scenario's
@@ -135,7 +140,16 @@ CASE_PATH="$(dirname -- "$JQ"):/usr/local/bin:/usr/bin:/bin"
 
 fail=0
 passed=0
-pass() { echo "PASS: $1"; passed=$((passed + 1)); }
+# Every case name this run emitted, one per line, kept so the last case can
+# check the scenario descriptor against what actually ran. The ` - <detail>`
+# some cases append is stripped: the name is the part the descriptor asserts.
+CASE_NAMES="$WORK/emitted-case-names"
+: > "$CASE_NAMES"
+pass() {
+  echo "PASS: $1"
+  passed=$((passed + 1))
+  printf '%s\n' "${1%% - *}" >> "$CASE_NAMES"
+}
 flunk() {
   echo "FAIL: $1"
   shift
@@ -328,6 +342,33 @@ else
     flunk "unmatched_names_where: the line omits$missing: $guide_line"
   else
     pass "unmatched_names_where - $guide_line"
+  fi
+fi
+
+# --- the descriptor states this scenario in full ----------------------------
+# The YAML beside this script is read as the scenario's specification, but CI
+# runs the script directly, so a case added here and not asserted there fails
+# nothing and the descriptor quietly understates what runs. That is what
+# happened to the two #2818 cases. Every name this run emitted, this one
+# included, must appear in the descriptor.
+DESCRIPTOR="$REPO_ROOT/tests/gadugi/scenarios/issue-2783-recipe-guide-without-work-root.yaml"
+DESCRIPTOR_CASE="every_case_this_run_emitted_is_asserted_by_the_descriptor"
+printf '%s\n' "$DESCRIPTOR_CASE" >> "$CASE_NAMES"
+if [ ! -f "$DESCRIPTOR" ]; then
+  flunk "the scenario descriptor is missing: $DESCRIPTOR"
+else
+  sort -u -- "$CASE_NAMES" > "$CASE_NAMES.sorted"
+  undescribed=""
+  while IFS= read -r case_name; do
+    [ -n "$case_name" ] || continue
+    if ! grep -qF -- "PASS: $case_name" "$DESCRIPTOR"; then
+      undescribed="$undescribed $case_name"
+    fi
+  done < "$CASE_NAMES.sorted"
+  if [ -n "$undescribed" ]; then
+    flunk "the descriptor does not assert:$undescribed"
+  else
+    pass "$DESCRIPTOR_CASE"
   fi
 fi
 

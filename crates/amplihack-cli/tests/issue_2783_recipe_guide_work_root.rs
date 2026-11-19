@@ -10,7 +10,7 @@
 #![cfg(unix)]
 
 use crate::support::recipe_guide::{
-    GuideFixture, one_line_error, parse_appended, private_dir, show, stdout,
+    GuideFixture, one_line_error, parse_appended, private_dir, show, stderr, stdout,
 };
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -790,4 +790,98 @@ fn a_target_that_could_never_be_a_session_name_says_which_character_stopped_it()
         assert!(line.contains("no session log ("), "{line}");
         assert!(line.contains(needle), "{target}: {line}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// The success path is escaped too (issue #2818, CWE-150)
+// ---------------------------------------------------------------------------
+
+/// An ancestor named with a terminal title sequence: user-owned, so every
+/// trust and ownership check on the way down passes.
+const HOSTILE_ANCESTOR: &str = "x\u{1b}]0;pwned\u{7}y";
+
+/// Issue #2818: the success path prints the folder the entry was written to.
+/// It used to print it raw, and only the failure path went through
+/// `sanitize_line`, so a destination whose ancestor is named with a terminal
+/// sequence reached the terminal as itself.
+///
+/// The destination here comes from `AMPLIHACK_WORK_ROOT`, which no check
+/// reads the characters of, so the folder really is used: this pins the
+/// escaping of the printed line, not a refusal standing in for it.
+#[test]
+fn the_success_line_escapes_a_control_character_in_the_folder_it_names() {
+    let f = GuideFixture::new();
+    let hostile_root = f.root.join(HOSTILE_ANCESTOR).join("work");
+    let run = f.make_run_in(&hostile_root, RUN_FOLDER, CORRELATION);
+
+    let mut c = f.amplihack(&["recipe", "guide", RUN_FOLDER, "-"]);
+    c.env("AMPLIHACK_WORK_ROOT", &hostile_root);
+    let o = f.run_with_stdin(c, Some(b"guide the run"));
+
+    assert!(o.status.success(), "{}", show(&o));
+    // The entry landed in the folder, so the line names it: nothing was
+    // refused and no other folder stood in for it.
+    assert_eq!(f.entries(&guidance_of(&run)).len(), 1, "{}", show(&o));
+    let out = stdout(&o);
+    assert_eq!(out.lines().count(), 1, "{}", show(&o));
+    assert!(
+        out.contains("\\u{001b}") && out.contains("\\u{0007}"),
+        "{out}"
+    );
+    assert!(
+        !out.contains('\u{1b}') && !out.contains('\u{7}'),
+        "a terminal sequence reached stdout: {out:?}"
+    );
+    assert_no_bidi_or_separators(&out);
+    assert_no_bidi_or_separators(&stderr(&o));
+    // The contract of the line is otherwise unchanged.
+    let (path, _, source) = parse_appended(&o);
+    assert_eq!(source, "run");
+    assert!(path.to_string_lossy().contains("\\u{001b}"), "{path:?}");
+}
+
+/// The same hostile ancestor, reached the other way: a record claims it.
+/// `accept_recorded` now refuses the claim on its characters, before any of
+/// the checks that read only the last two components and the work root. It
+/// stays a note, so the rest of rule 3 still reaches the real run through the
+/// work root in the environment (issue #2809).
+#[test]
+fn a_recorded_run_folder_with_a_control_character_in_an_ancestor_is_passed_over() {
+    let f = GuideFixture::new();
+    let real = f.make_run(RUN_FOLDER, CORRELATION);
+    let planted = f.root.join(HOSTILE_ANCESTOR).join("work");
+    let claimed = f.make_run_in(&planted, RUN_FOLDER, CORRELATION);
+    f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&claimed)));
+
+    let o = f.guide_without_work_root(&[SESSION], "text");
+
+    assert_lands_in(&o, &real);
+    assert!(
+        !claimed.join("guidance").exists(),
+        "wrote into the folder the record claimed"
+    );
+    assert_no_bidi_or_separators(&stdout(&o));
+    assert_no_bidi_or_separators(&stderr(&o));
+}
+
+/// With nothing left to fall back to, the claim becomes a reason in the
+/// not-found line, and the character that stopped it is named as an escape.
+#[test]
+fn a_rejected_hostile_run_folder_is_named_in_the_not_found_line_as_an_escape() {
+    let f = GuideFixture::new();
+    let planted = f.root.join(HOSTILE_ANCESTOR).join("work");
+    let claimed = f.make_run_in(&planted, RUN_FOLDER, CORRELATION);
+    // No run of that correlation id under the work root in the environment,
+    // so the second half of rule 3 finds nothing either.
+    f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&claimed)));
+
+    let o = f.guide_without_work_root(&[SESSION], "text");
+
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert!(stdout(&o).is_empty(), "{}", show(&o));
+    let line = one_line_error(&o);
+    assert!(line.contains("\\u{001b}"), "{line}");
+    assert!(line.contains("in its path"), "{line}");
+    assert_no_bidi_or_separators(&line);
+    assert!(!claimed.join("guidance").exists());
 }

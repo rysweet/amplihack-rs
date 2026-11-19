@@ -341,6 +341,12 @@ Checks applied to a recorded folder before it is written to:
   can remove them.
 - The recorded path does not contain U+FFFD (the replacement character that
   stands for bytes that are not valid UTF-8).
+- No part of the recorded path, the ancestors included, holds a control
+  character, a bidirectional or zero-width mark, or a line or paragraph
+  separator. The checks below read only the last two components and the work
+  root, so without this one a folder such as
+  `/x/<ESC>]0;title<BEL>/runs/<run id>` would pass them all and then be
+  printed back on the success path.
 - Its parent is named `runs` and its name is a valid run ID.
 - Neither the folder nor `run.json` is a symbolic link, and neither `runs`
   nor the work root is a symbolic link (checked with `lstat`, so a link is
@@ -363,8 +369,13 @@ many were skipped (not a regular file, unreadable, untrusted, holding no
 pointer line, or past the cap). A log that cannot be read or is not
 trusted is skipped; a log you name as a session is refused with an error.
 
-**Session names.** A session name containing `/` is refused. If the log is
-missing or has no pointer line yet, the command exits 1 and names the log
+**Session names.** Nothing is refused here. A target that breaks the rule in
+step 3 above -- too long, or holding `/`, `:`, `.`, `#` or a control
+character -- is simply not looked up as a session: the not-found line names
+the session log among the places it did not reach, giving the reason in
+brackets, and the later rules still get their turn. The command then exits 1
+only if none of them matches either. If the name passes the rule and the log
+is missing or has no pointer line yet, the command exits 1 and names the log
 path it tried. A pointer line of up to 32 KiB, within the first 64 KiB of the
 log, is read. Reading stops at that line, so the size of a log beyond it does
 not affect the cost of a scan.
@@ -777,6 +788,12 @@ out so the line stays bounded. Control characters in text taken from a log are
 escaped as `\u{..}`, as are the bidirectional marks and the line and paragraph
 separators, so a crafted log cannot add lines or terminal sequences to the
 message.
+
+The same escaping applies to every line the command prints, on stdout as well
+as stderr and on success as well as failure. The success line names the folder
+the entry was written to, and that folder is no longer taken only from the
+caller's own environment, so it is escaped in the same way: a path printed back
+is never a way for a terminal sequence to reach the terminal.
 
 ### Known limits
 

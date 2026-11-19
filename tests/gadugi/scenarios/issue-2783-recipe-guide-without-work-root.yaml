@@ -1,7 +1,7 @@
 name: issue-2783-recipe-guide-without-work-root
 description: >
-  Outside-in QA for issue #2783 (first piece). `amplihack recipe guide`
-  resolved a target only under `<work root>/runs/`, taken from
+  Outside-in QA for issue #2783 (first piece) and issue #2818. `amplihack
+  recipe guide` resolved a target only under `<work root>/runs/`, taken from
   AMPLIHACK_WORK_ROOT in the caller's own environment, so a run started by a
   factory lane with a work root of its own could not be addressed from an
   ordinary shell. A run now records `run_dir` in its
@@ -11,14 +11,37 @@ description: >
   tests/gadugi/run-issue-2783-guide-without-work-root-scenario.sh) starts a
   one-step recipe through `amplihack recipe run` and the pinned recipe runner
   with AMPLIHACK_WORK_ROOT set to a folder of its own, keeps the run's stderr
-  where a detached run keeps it, and then guides that run four ways from a
-  shell with no work-root variable: by session name, by run folder name, by
-  correlation id and by issue number. A fifth case checks that a target
-  matching nothing exits 1 and names the target, the log directory and the
-  runs directory. Everything runs under `env -i` with the scenario's own HOME;
-  the real ~/.claude and ~/.amplihack are never read or written, and nothing
-  reaches the network. The driver runs in CI, in the host-install job, after
-  the pinned recipe runner is installed; the same contract is covered from
+  where a detached run keeps it, and then guides that run from a shell with no
+  work-root variable.
+
+  Thirteen cases, each asserted below. Three on what the run recorded:
+  `run_dir_is_under_the_alternative_work_root`,
+  `the_recorded_folder_holds_run_json` and `the_pointer_records_the_issue`.
+  Five targets that must reach the recorded folder: `by_session_name`,
+  `by_long_session_name` (a 65-character auto-drive session name, past the 64
+  of the rule for a name tmux is asked to create and within the 85 `recipe run
+  --detach` can create -- the defect of issue #2818, where the lookup held
+  itself to the creation rule and skipped such a session in silence),
+  `by_run_folder_name`, `by_correlation_id` and `by_issue_number`. Two on the
+  bound itself: `the_long_session_name_is_the_65_characters_of_the_reported_case`,
+  so the case cannot drift back under the old bound and leave the suite green,
+  and `over_the_session_bound_says_the_session_rule_was_not_tried`, where a
+  name past 85 is not looked up as a session and the not-found line says so
+  rather than leaving the skipped rule unexplained. Two on what must not
+  happen: `nothing_written_under_the_default_work_root`, and
+  `unmatched_names_where`, where a target matching nothing exits 1 and names
+  the target, the log directory and the runs directory. And one on this file:
+  `every_case_this_run_emitted_is_asserted_by_the_descriptor`, which fails the
+  scenario when a case the script emits has no assertion here. CI runs the
+  script directly, so without that check a descriptor left behind costs
+  nothing and quietly understates what runs.
+
+  Everything runs under `env -i` with the scenario's own HOME; the real
+  ~/.claude and ~/.amplihack are never read or written, and nothing reaches
+  the network. The driver runs in CI, in the host-install job, after the
+  pinned recipe runner is installed. The same contract, and the hostile
+  inputs this scenario leaves out -- a planted log, a recorded folder that
+  fails a check, and the escaping of every line printed -- are covered from
   inside the crate by
   crates/amplihack-cli/tests/issue_2783_recipe_guide_work_root.rs.
 version: "1.0"
@@ -31,9 +54,9 @@ agents:
     type: cli
     config: {}
 metadata:
-  tags: [cli, qa-team, recipe-guide, work-root, regression]
+  tags: [cli, qa-team, recipe-guide, work-root, session-name, regression]
   priority: high
-  issues: ["2783"]
+  issues: ["2783", "2818"]
 steps:
   - name: run-issue-2783-guide-cases
     agent: cli-agent
@@ -46,6 +69,9 @@ steps:
     action: validate_exit_code
     params:
       expected: 0
+# One assertion per PASS line the script emits, so the descriptor states the
+# scenario in full rather than a subset of it. A case added to the script
+# without a line here leaves the descriptor understating what runs.
 assertions:
   - name: all-cases-passed
     type: output_contains
@@ -57,11 +83,36 @@ assertions:
     params:
       target: stdout
       expected: "PASS: run_dir_is_under_the_alternative_work_root - "
+  - name: the-recorded-folder-holds-run-json
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: the_recorded_folder_holds_run_json"
+  - name: the-pointer-records-the-issue
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: the_pointer_records_the_issue"
   - name: session-name-resolves-without-the-work-root
     type: output_contains
     params:
       target: stdout
       expected: "PASS: by_session_name - "
+  - name: the-long-session-name-is-the-reported-length
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: the_long_session_name_is_the_65_characters_of_the_reported_case"
+  - name: a-sixty-five-character-session-name-resolves
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: by_long_session_name - "
+  - name: a-name-past-the-bound-says-the-rule-was-not-tried
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: over_the_session_bound_says_the_session_rule_was_not_tried"
   - name: run-folder-name-resolves-without-the-work-root
     type: output_contains
     params:
@@ -77,8 +128,18 @@ assertions:
     params:
       target: stdout
       expected: "PASS: by_issue_number - "
+  - name: nothing-written-under-the-default-work-root
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: nothing_written_under_the_default_work_root"
   - name: an-unmatched-target-names-where-it-looked
     type: output_contains
     params:
       target: stdout
       expected: "PASS: unmatched_names_where - "
+  - name: this-descriptor-asserts-every-case-the-script-emits
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: every_case_this_run_emitted_is_asserted_by_the_descriptor"

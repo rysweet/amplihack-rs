@@ -55,6 +55,12 @@
 //! Every failure prints one line on stderr and writes nothing. The not-found
 //! line names the target and every place that was looked at, so a miss says
 //! what was searched rather than only that it failed.
+//!
+//! Every line printed, on either stream and on success as well as failure,
+//! goes through `sanitize_line` first. The destination no longer comes only
+//! from the caller's own environment, so a path printed back can carry a name
+//! chosen by whoever wrote the log, and a success line is as much a terminal
+//! sequence's way in as a failure line (issue #2818, CWE-150).
 
 use super::detach::MAX_DETACHED_SESSION_CHARS;
 use super::guide_records::{self, Pointer};
@@ -148,16 +154,29 @@ fn guide(
         Source::Pr => "guidance saved for pull request",
         _ => "guidance appended",
     };
+    // Success goes through `sanitize_line` as failure does. The destination
+    // is no longer only the caller's own environment: a log's `run_dir` can
+    // steer it (issue #2783), and the threat model of that lookup is a
+    // same-uid process planting a log. `accept_recorded` passes over a
+    // recorded folder whose path holds one of these characters, so a log
+    // cannot reach this line; the escaping here also covers a work root or a
+    // state folder the operator named (issue #2818).
     println!(
-        "{verb}: {} ({} bytes, {})",
-        appended.path.display(),
-        appended.bytes,
-        source.label()
+        "{}",
+        sanitize_line(&format!(
+            "{verb}: {} ({} bytes, {})",
+            appended.path.display(),
+            appended.bytes,
+            source.label()
+        ))
     );
     if source == Source::Pr {
         println!(
-            "written to {}; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.",
-            dir.display()
+            "{}",
+            sanitize_line(&format!(
+                "written to {}; it is read at the next agent step of each run started with this pull request in its context (pr_url or pr_number), such as a later auto-drive round. A run that opened this pull request itself does not read it; address that run by its run ID or session name.",
+                dir.display()
+            ))
         );
     }
     // After the append, so a failed append still prints exactly one line.
@@ -165,7 +184,12 @@ fn guide(
         eprintln!("recipe guide: warning: {}", sanitize_line(&warning));
     }
     if let Some(error) = appended.log_error {
-        eprintln!("recipe guide: warning: the entry was added but guidance.log was not: {error}");
+        // The message holds the `guidance.log` path, so it carries whatever
+        // the destination's ancestors are named.
+        eprintln!(
+            "recipe guide: warning: the entry was added but guidance.log was not: {}",
+            sanitize_line(&error)
+        );
     }
     Ok(())
 }
@@ -319,9 +343,10 @@ fn escaped(c: char) -> String {
     format!("\\u{{{:04x}}}", c as u32)
 }
 
-/// The last pass over a message before it is printed. Paths reach it from
-/// `check_dir`, the work root validator and `run.json`, which build their
-/// own text, so the escaping is applied once here to all of it.
+/// The last pass over a line before it is printed, on stdout as well as
+/// stderr. Paths reach it from `check_dir`, the work root validator and
+/// `run.json`, which build their own text, so the escaping is applied once
+/// here to all of it.
 fn sanitize_line(message: &str) -> String {
     let mut out = String::with_capacity(message.len());
     for c in message.chars() {
@@ -417,6 +442,20 @@ fn accept_recorded(recorded: &str, run_id: Option<&str>) -> Result<PathBuf, Stri
     if recorded.contains('\u{fffd}') {
         return Err(format!(
             "the recorded run folder {shown} holds U+FFFD and cannot name a real folder"
+        ));
+    }
+    // The whole string, so an ancestor is checked as well as the run folder
+    // itself. The later checks look only at the last two components and the
+    // work root, none of which reads the characters of a name, so a folder
+    // such as `/x/<ESC>]0;title<BEL>/runs/<uuid>` would otherwise be accepted
+    // and then printed on the success path, where the operator never typed it
+    // (issue #2818, CWE-150). This is a note, not a refusal: the record is a
+    // claim, and a later rule still gets its turn (issue #2809). No run
+    // folder `recipe run` creates holds one of these characters.
+    if let Some(c) = recorded.chars().find(|c| needs_escape(*c)) {
+        return Err(format!(
+            "the recorded run folder {shown} has {} in its path",
+            escaped(c)
         ));
     }
     // The raw string, not `Path::components`, which drops empty and `.`
@@ -955,7 +994,9 @@ mod tests {
     /// the report -- so a change at either end fails a test, not a drive.
     #[test]
     fn every_name_detach_can_produce_is_accepted_by_the_lookup() {
-        use super::super::detach::{MAX_CLAIM_SUFFIX_CHARS, session_name as detached};
+        use super::super::detach::{
+            MAX_CLAIM_SUFFIX_CHARS, MAX_CLAIM_TRIES, nth_claim_name, session_name as detached,
+        };
 
         // The reported case: the default pattern, an auto-drive recipe and
         // a per-PR worktree. 65 characters, so the 64 of the creation rule
@@ -980,9 +1021,10 @@ mod tests {
         // The longest name detach can emit: a pattern at the truncation
         // bound, plus the longest suffix `claim_session` adds when the name
         // is already taken. That suffix is the part a bound of 80 alone
-        // would still have cut off.
+        // would still have cut off. Both come from detach's own builders,
+        // never from a literal spelled out here.
         let truncated = detached("{repo}", "r", &"a".repeat(500), "t");
-        let longest = format!("{truncated}-1000");
+        let longest = nth_claim_name(&truncated, MAX_CLAIM_TRIES);
         assert_eq!(longest.chars().count(), MAX_DETACHED_SESSION_CHARS);
         assert_eq!(
             longest.chars().count() - truncated.chars().count(),
@@ -1018,5 +1060,43 @@ mod tests {
             assert!(!reason.contains('\u{1b}'), "{reason:?}");
         }
         assert!(lookup_session_name("amp-smart-orchestrator-myapp-1").is_ok());
+    }
+
+    /// Issue #2818: the checks that follow read only the last two path
+    /// components and the work root, so a control character or a
+    /// bidirectional mark in an ancestor passed them all and was then
+    /// printed on the success path. It is stopped before any of that, at
+    /// the string, and reported as a note (CWE-150).
+    ///
+    /// No filesystem is needed: the check runs before the first `lstat`, so
+    /// each of these fails on its characters and not on the folder being
+    /// absent -- the reason text is what says which.
+    #[test]
+    fn a_recorded_run_folder_with_a_control_character_in_an_ancestor_is_not_used() {
+        let run = "3f1b7c2a-5d4e-4a90-8b61-7e2c9d0a4f18";
+        for (path, shown) in [
+            // The reported shape: a terminal title sequence in an ancestor.
+            (format!("/x/\u{1b}]0;pwned\u{7}/runs/{run}"), "\\u{001b}"),
+            // The run folder's own name, and the `runs` folder's.
+            (format!("/x/runs/{run}\u{9b}"), "\\u{009b}"),
+            (format!("/x/ru\u{85}ns/{run}"), "\\u{0085}"),
+            // A bidirectional override, which reorders what is shown
+            // without any control character at all.
+            (format!("/x/\u{202e}gnp.eslaf/runs/{run}"), "\\u{202e}"),
+            // A line separator, which would end the one line printed.
+            (format!("/x/a\u{2028}b/runs/{run}"), "\\u{2028}"),
+        ] {
+            let reason = accept_recorded(&path, None)
+                .map(|d| d.display().to_string())
+                .unwrap_err();
+            assert!(reason.contains(shown), "{path:?}: {reason}");
+            assert!(reason.contains("in its path"), "{path:?}: {reason}");
+            // The reason itself is printable: no character it refused
+            // survives into the line that reports it.
+            assert!(
+                !reason.chars().any(needs_escape),
+                "the reason is not printable: {reason:?}"
+            );
+        }
     }
 }
