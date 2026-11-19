@@ -124,7 +124,7 @@ _finalization_pr_rollup_class() {
 }
 
 # _finalization_pr_check_states < view.json -> the check states themselves
-# (#2819 R6).
+# (#2819).
 # The class above is a rollup, and a rollup is a reading. A reader that is
 # handed only `failing` cannot see WHICH check failed or that the one pending
 # check is an unrelated optional job, so this prints the states gh reported,

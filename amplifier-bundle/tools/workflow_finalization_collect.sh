@@ -40,6 +40,8 @@ collect_evidence() {
   remote_host_type="$(workflow_finalization_metadata remote_host_type || :)"
   [ -n "$remote_host_type" ] || remote_host_type=other
   meaningful_diff="unknown"
+  default_or_base_branches=""
+  run_branch_is_default_or_base="unknown"
   commits_ahead="$(workflow_finalization_metadata commits_ahead || :)"
   missing_tooling=""
   github_remote="false"
@@ -69,6 +71,17 @@ collect_evidence() {
       base_ref="$(git -C "$target_dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || printf '')"
     fi
     [ -n "$base_ref" ] || base_ref="origin/main"
+    # The branch names this run neither branched from nor owns: the
+    # repository's default branch and its own base. assess-finalization may
+    # push the run branch and open a pull request from it, and neither is a
+    # write any run may make to one of these (#2819). Facts, like everything
+    # else here: nothing is refused, and the run branch is reported whatever
+    # it is (#2343). The rule that reads them is the assessment prompt's.
+    default_or_base_branches="$(delivery_default_and_base_branches "$target_dir" "$base_ref")"
+    if [ -n "$branch_name" ] && [ -n "$default_or_base_branches" ]; then
+      run_branch_is_default_or_base="false"
+      case ",$default_or_base_branches," in *",$branch_name,"*) run_branch_is_default_or_base="true" ;; esac
+    fi
     if git -C "$target_dir" rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null; then
       if git -C "$target_dir" diff --quiet "${base_ref}..HEAD"; then
         meaningful_diff="false"
@@ -85,7 +98,7 @@ collect_evidence() {
     missing_tooling="${missing_tooling}${missing_tooling:+,}gh"
   fi
 
-  # #2819 R4: what the run was asked to do, and what the implementation step
+  # #2819: what the run was asked to do, and what the implementation step
   # returned. Two success states are defined by the task -- ALLOW_NO_OP ("the
   # task asked for no change") and NO_DIFF_SUCCESS ("did what was asked") --
   # and HOLLOW_SUCCESS is about a run that produced nothing. Without these the
@@ -171,7 +184,7 @@ collect_evidence() {
   {
     printf '{'
     separator=''
-    for field in schema_version repo_path worktree_path repo_valid branch_name head_sha base_ref dirty_worktree meaningful_diff commits_ahead missing_tooling remote_host_type github_remote gh_required pr_url pr_number publish_status implementation_completed verification_completed publish_state_reached terminal_no_op allow_no_op prior_terminal_state prior_terminal_success prior_terminal_reason branch_diff_status observed_phases task_description implementation_output; do
+    for field in schema_version repo_path worktree_path repo_valid branch_name head_sha base_ref default_or_base_branches run_branch_is_default_or_base dirty_worktree meaningful_diff commits_ahead missing_tooling remote_host_type github_remote gh_required pr_url pr_number publish_status implementation_completed verification_completed publish_state_reached terminal_no_op allow_no_op prior_terminal_state prior_terminal_success prior_terminal_reason branch_diff_status observed_phases task_description implementation_output; do
       printf '%s"%s":' "$separator" "$field"
       printf '%s' "${!field}" | jq -n --rawfile value /dev/stdin '$value'
       separator=','
@@ -185,6 +198,7 @@ collect_evidence() {
     .branch_name as $branch_name |
     .head_sha as $head_sha |
     .base_ref as $base_ref |
+    .default_or_base_branches as $default_or_base_branches | .run_branch_is_default_or_base as $run_branch_is_default_or_base |
     .dirty_worktree as $dirty_worktree |
     .meaningful_diff as $meaningful_diff |
     .commits_ahead as $commits_ahead |
@@ -216,6 +230,7 @@ collect_evidence() {
         branch_name: $branch_name,
         head_sha: $head_sha,
         base_ref: $base_ref,
+        default_or_base_branches: $default_or_base_branches, run_branch_is_default_or_base: $run_branch_is_default_or_base,
         dirty_worktree: $dirty_worktree,
         meaningful_diff: $meaningful_diff,
         branch_diff_status: $branch_diff_status,

@@ -3,7 +3,7 @@
 # amplifier-bundle/recipes/workflow-finalize.yaml.
 #
 # Extracted for the brick budget when that recipe gained the assessment-status
-# step and the one retry of the assessment (#2819 R3). The body is unchanged:
+# step and the one retry of the assessment (#2819). The body is unchanged:
 # the step runs it with `bash`, so it reads the same environment the recipe
 # runner exported and writes the same stdout the step's `output:` captures. It
 # is a file rather than an inline block so the recipe stays under its line

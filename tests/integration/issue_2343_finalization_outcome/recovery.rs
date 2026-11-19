@@ -87,7 +87,7 @@ fn a_finished_run_with_no_assessment_also_ends_with_no_decision() {
     );
 }
 
-// #2819 R3: the two gaps are not the same gap, so they are not reported in
+// #2819: the two gaps are not the same gap, so they are not reported in
 // the same words. An answer naming a state finalization does not publish is
 // quoted back. An absent one is reported as the assessment having delivered
 // nothing -- after `reassess-finalization` upstream also produced nothing --
@@ -142,9 +142,3 @@ fn a_state_outside_the_published_vocabulary_is_no_decision_and_is_quoted_back() 
         outcome.field("terminal_reason")
     );
 }
-
-// The four cases that used to sit here read recipe text and shell text: the
-// step's `--guard`/`--essential` flags, the assessment step's `condition:`,
-// the words the validator contains, and the byte order of the vocabulary
-// predicates. They are in `wiring.rs` now, as cases that run the shipped steps
-// and read what they did.

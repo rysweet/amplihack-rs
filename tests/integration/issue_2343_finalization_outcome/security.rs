@@ -107,7 +107,7 @@ fn a_malformed_pull_request_number_names_no_pull_request() {
     assert_eq!(outcome.field("pr_number"), "");
     assert_eq!(outcome.field("pr_url"), PR_URL);
     // The value is quoted back once, in the human reason, exactly as an
-    // unusable `terminal_state` is (#2819 R1 asked for a reason that names
+    // unusable `terminal_state` is (#2819 asked for a reason that names
     // what came back). That is assessment text, which `terminal_reason` has
     // always carried: cleaned of control characters and cut to 40 characters.
     // What must not happen is that it becomes an identity, and it does not --

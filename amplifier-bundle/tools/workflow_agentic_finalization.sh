@@ -72,6 +72,8 @@ if [ ! -f "$DELIVERY_INPUTS_HELPER" ] || [ ! -r "$DELIVERY_INPUTS_HELPER" ]; the
   exit 2
 fi
 # shellcheck source=workflow_delivery_inputs.sh disable=SC1090
+# Also delivery_default_and_base_branches (#2819), which the collector below
+# calls for the branch names the run neither branched from nor owns.
 . "$DELIVERY_INPUTS_HELPER"
 . "$here/workflow_finalization_metadata.sh"
 . "$here/workflow_finalization_collect.sh"
@@ -119,7 +121,7 @@ resolve_finalization_base() {
   fi
 }
 
-# assessment-status (#2819 R3): whether the answer assess-finalization
+# assessment-status (#2819): whether the answer assess-finalization
 # recorded carries a decision, as one JSON object on stdout. The recipe reads
 # `usable` to decide whether to run the assessment once more, so a model call
 # that failed or came back as prose costs a second attempt instead of ending a

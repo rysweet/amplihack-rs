@@ -7,10 +7,11 @@
 # between two commits, names no terminal state and ends no run. It reports what
 # git and gh printed and stops there. Values are cleaned of control characters
 # so none carries a newline into a JSON field; nothing else narrows one. #2819
-# R3 removed what did: the shape coercions that blanked a value or renamed it,
+# removed what did: the shape coercions that blanked a value or renamed it,
 # and the `main|master|HEAD` list that decided here, asking nobody, that a run
-# on one of those branches had no readable outcome. Deciding what any of it
-# means is assess-finalization's job, in
+# on one of those branches had no readable outcome. What any of it means --
+# including what may be written to a branch this file reports, which the
+# evidence names in `git.default_or_base_branches` -- is decided in
 # amplifier-bundle/recipes/workflow-finalization-assessment.yaml.
 #
 # It always exits 0 and always prints exactly one compact JSON object, so a
@@ -146,11 +147,11 @@ _finalization_outcome_view() {
   pr_head_ref="$(_finalization_outcome_clean "$pr_head_ref")"
   pr_cross_repository="$(printf '%s' "$view" | jq -r 'if type == "object" and (.isCrossRepository | type) == "boolean" then (.isCrossRepository | tostring) else "" end' 2>/dev/null || :)"
   checks="$(printf '%s' "$view" | _finalization_pr_rollup_class)"
-  # #2819 R6: the check states themselves, beside the class. A rollup is
+  # #2819: the check states themselves, beside the class. A rollup is
   # already a reading; a reader handed only `failing` cannot see which check
   # failed. Both are reported and neither is a verdict.
   check_states="$(_finalization_outcome_clean "$(printf '%s' "$view" | _finalization_pr_check_states)")"
-  # #2819 R3: the state and the rollup class are reported as they came back,
+  # #2819: the state and the rollup class are reported as they came back,
   # cleaned and not narrowed. Blanking a state gh returned, and renaming a
   # class outside the shared rule's five to `unknown`, answered the reader's
   # questions here and cost it the only sign of either.
@@ -171,7 +172,7 @@ _finalization_outcome_view() {
 _finalization_outcome_collect() {
   local dir="${1:-}" ref="${3:-}" origin="" scratch="" list="" live_branch="" count=""
   branch="${2:-}"
-  # Reported as the run recorded it (#2819 R3). It was renamed to "other" when
+  # Reported as the run recorded it (#2819). It was renamed to "other" when
   # it did not look like a host name, which a reader could not tell from a run
   # that really recorded "other"; the gate below treats anything but github
   # the same way either way.
@@ -213,7 +214,7 @@ _finalization_outcome_collect() {
   # The branch is validated before it reaches any git or gh argument, and is
   # passed as one argument. Empty, a leading `-` an argument parser would read
   # as an option, or a name git itself rejects is reported unread. No name is
-  # refused for being a default branch (#2819 R3): blanking `main`, `master`
+  # refused for being a default branch (#2819): blanking `main`, `master`
   # and `HEAD` decided that a run recorded on one of them had produced nothing
   # readable, and left a repository whose default branch is `trunk` uncovered.
   case "$branch" in ''|-*) branch="" ;; esac

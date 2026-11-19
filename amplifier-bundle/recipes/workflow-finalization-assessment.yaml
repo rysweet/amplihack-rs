@@ -13,7 +13,7 @@ tags: ["development", "finalize", "terminal-state"]
 # one, and there is no longer any code that could.
 #
 # The step runs with continue_on_error: true, so a failure here never ends the
-# run by itself. #2819 R3: the caller then asks assessment-decision-status
+# run by itself. #2819: the caller then asks assessment-decision-status
 # whether an answer with a decision in it was recorded, and runs this recipe
 # once more when none was, so a rate-limited, crashed or prose-answering call
 # costs a second call rather than a finished run (#2847 item 1). Only when
@@ -31,10 +31,13 @@ inputs:
     description: "The evidence collect-finalization-evidence produced, including the facts of what the run produced under `outcome`."
   - name: finalizer_step_status
     description: "The typed {status, reporting_failure} of the reporting step, from finalizer-step-status."
+  - name: prior_assessment_refusal
+    description: "Empty on the first attempt. On the re-run, the `reason` assessment-decision-status gave for refusing the first answer, so the second attempt is told what was wrong with the first instead of re-rolling blind."
 
 context:
   finalization_evidence: ""
   finalizer_step_status: ""
+  prior_assessment_refusal: ""
   finalization_assessment: ""
   # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
   repo_path: ""
@@ -66,6 +69,30 @@ steps:
       ```reporting-step
       {{finalizer_step_status}}
       ```
+
+      ```earlier-attempt-refused
+      {{prior_assessment_refusal}}
+      ```
+
+      ## If `earlier-attempt-refused` is empty, skip this section
+
+      An empty fence means this is the run's first and only call to this step.
+      Everything below applies as written.
+
+      A fence with something in it means an earlier call already answered and
+      finalization refused that answer, for the reason the fence carries: a
+      state it does not publish, or `EXISTING_OPEN_PR` with no pull request
+      number. This is then the second and last attempt. Read the reason and
+      answer differently -- repeating the refused answer spends the last
+      attempt and leaves the run with no decision at all.
+
+      The `evidence` fence was collected before that earlier attempt ran, so
+      it is a snapshot taken before any push or pull request that attempt may
+      have made. A branch or pull request the facts do not show may exist now.
+      Re-read the current state with `git` and `gh` before you decide, and
+      before you take either action below, so you neither repeat an action
+      that already succeeded nor report a state the repository no longer
+      supports.
 
       ## What the run was asked to do
 
@@ -167,6 +194,20 @@ steps:
          named in `outcome.remote`.
       2. Open a pull request from the run branch against the run's recorded
          base, in that same repository.
+
+      Neither action may touch a branch the run does not own. The run owns the
+      branch it was given to work on, and nothing else. It does not own the
+      repository's default branch, and it does not own its own base: a run
+      that commits onto one of those has not produced a change to propose, it
+      has written to a shared branch, and pushing it would publish that
+      writing to everyone. `git.default_or_base_branches` lists those names
+      for this repository and `git.run_branch_is_default_or_base` is `true`
+      when the run branch is one of them. When it is true, or when you work it
+      out yourself to be true, make no push and open no pull request: report
+      `FAILED_IMPLEMENTATION`, and say in `reason` that the run's branch is
+      the repository's default branch or its base, so there was nothing that
+      could be pushed or proposed. Treat `unknown` as a fact you must check
+      before acting, not as permission.
 
       Everything else is prohibited: force-pushing, rewriting history, deleting
       branches, touching any other branch, changing an existing pull request's

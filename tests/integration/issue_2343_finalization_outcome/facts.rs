@@ -307,7 +307,7 @@ fn no_outcome_makes_the_reader_name_a_terminal_state_or_end_anything() {
     }
 }
 
-// #2819 R6: the rollup class is a reading, so the states it was computed from
+// #2819: the rollup class is a reading, so the states it was computed from
 // are reported beside it. A reader handed only `failing` cannot see which
 // check failed.
 #[test]
@@ -348,7 +348,7 @@ fn a_pull_request_with_no_checks_reports_no_check_states() {
     assert_eq!(value["check_states"], "");
 }
 
-// #2819 R3: no branch name is refused for being a default branch. `main`,
+// #2819: no branch name is refused for being a default branch. `main`,
 // `master` and `HEAD` were blanked by name here, so a run recorded on one of
 // them read as having produced nothing -- a decision taken in the collector,
 // without the assessment, and one that never covered a repository whose
@@ -395,7 +395,7 @@ fn a_branch_name_that_looks_like_an_option_is_reported_unread() {
     );
 }
 
-// #2819 R3: a state gh printed is reported, not blanked for failing a shape
+// #2819: a state gh printed is reported, not blanked for failing a shape
 // the collector invented. Which state names gh may return is the assessment's
 // business; a reader handed an empty `pr_state` cannot tell a state it did not
 // recognise from a pull request it could not read.
@@ -423,7 +423,7 @@ fn a_pull_request_state_outside_the_old_shape_is_reported_as_gh_printed_it() {
     );
 }
 
-// #2819 R3: the host the run declared is reported as recorded, never renamed
+// #2819: the host the run declared is reported as recorded, never renamed
 // to `other`. The gate below it is unchanged -- anything but github is not
 // asked for a pull request -- but a reader can now tell an unusable recorded
 // value from a run that really recorded `other`.
@@ -450,5 +450,97 @@ fn a_declared_remote_host_is_reported_as_the_run_recorded_it() {
             .expect("a String")
             .contains("azure devops"),
         "the reason must quote what the run recorded: {value}"
+    );
+}
+
+// #2819: the evidence names the branches the run neither branched from nor
+// owns, so the step that may push and open a pull request is not left to
+// infer which those are. The collector refuses nothing for them -- the run
+// branch is reported whatever it is -- it reports the names and whether the
+// run is on one.
+//
+// Driven over a repository whose default branch is `trunk`, because that is
+// the case the deleted `main|master|HEAD` list never covered: a hard-coded
+// name list reads `trunk` as an ordinary branch and `main` as no branch at
+// all, and both readings are wrong.
+#[test]
+fn the_evidence_names_the_branches_this_run_does_not_own() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.with_default_branch("trunk");
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+
+    let repo = fx.repo_path();
+    let (evidence, outcome) = fx.collect(&[("REPO_PATH", &repo), ("BRANCH_NAME", BRANCH)], None);
+
+    assert_eq!(
+        evidence["git"]["default_or_base_branches"], "trunk",
+        "the repository's own default branch is the fact, not a name list: {evidence}"
+    );
+    assert_eq!(
+        evidence["git"]["run_branch_is_default_or_base"], "false",
+        "a run on its own branch owns it: {evidence}"
+    );
+    assert_eq!(evidence["git"]["branch_name"], BRANCH, "{evidence}");
+    fx.assert_gh_reads_only();
+    assert!(outcome.output.status.success(), "{}", outcome.describe());
+}
+
+// The branch the rule is about. A run recorded on the repository's default
+// branch is still read -- every fact about it is collected, and nothing here
+// decides anything -- and the evidence says plainly that it is a branch the
+// run does not own, which is what the assessment prompt forbids pushing.
+#[test]
+fn a_run_on_the_default_branch_is_read_and_reported_as_one_it_does_not_own() {
+    let fx = Fixture::on_branch("trunk");
+    fx.with_remote();
+    fx.with_default_branch("trunk");
+    let head = fx.head();
+    fx.gh_pr_at(&head, green_rollup());
+
+    let repo = fx.repo_path();
+    let (evidence, _) = fx.collect(&[("REPO_PATH", &repo), ("BRANCH_NAME", "trunk")], None);
+
+    assert_eq!(
+        evidence["git"]["run_branch_is_default_or_base"], "true",
+        "{evidence}"
+    );
+    assert_eq!(
+        evidence["git"]["default_or_base_branches"], "trunk",
+        "{evidence}"
+    );
+    // Round 3's rule still holds: the branch is a fact, not a refusal.
+    assert_eq!(evidence["git"]["branch_name"], "trunk", "{evidence}");
+    assert_eq!(evidence["outcome"]["branch"], "trunk", "{evidence}");
+    assert_eq!(evidence["outcome"]["local_head"], head, "{evidence}");
+}
+
+// The run's own base counts too, and it is not always the default branch: a
+// run based on `release/1` must not push to `release/1` either.
+#[test]
+fn the_runs_own_base_is_named_beside_the_default_branch() {
+    let fx = Fixture::on_branch("release/1");
+    fx.with_remote();
+    fx.with_default_branch("trunk");
+    fx.git(&["push", "-q", "origin", "release/1"]);
+    fx.gh_no_pr();
+
+    let repo = fx.repo_path();
+    let (evidence, _) = fx.collect(
+        &[("REPO_PATH", &repo), ("BRANCH_NAME", "release/1")],
+        Some("release/1"),
+    );
+
+    let named = evidence["git"]["default_or_base_branches"]
+        .as_str()
+        .expect("a String");
+    assert!(
+        named.split(',').any(|b| b == "trunk") && named.split(',').any(|b| b == "release/1"),
+        "both the default branch and the run's base must be named: {named}"
+    );
+    assert_eq!(
+        evidence["git"]["run_branch_is_default_or_base"], "true",
+        "{evidence}"
     );
 }

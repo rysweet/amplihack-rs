@@ -109,7 +109,7 @@ fn unusable_run_scope_is_never_read_and_never_decided() {
 // or `master`. The facts reader blanked those three names, which refused the
 // read before gh was asked -- a decision taken in the collector about what
 // the assessment is there to decide, and one that never covered a repository
-// whose default branch is `trunk` (#2819 R3). The branch is now read like any
+// whose default branch is `trunk` (#2819). The branch is now read like any
 // other, and what still holds is the part that was doing the work: reading
 // facts decides nothing, so with no assessment there is no decision, whatever
 // the branch is called.

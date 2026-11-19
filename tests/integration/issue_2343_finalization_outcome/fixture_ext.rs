@@ -186,3 +186,53 @@ impl Fixture {
         }
     }
 }
+
+impl Fixture {
+    /// Run `workflow_agentic_finalization.sh collect [--base <base>]` with
+    /// exactly `envs`, and parse the one evidence object it writes to stdout.
+    /// This is the step whose output `assess-finalization` reads, so a case
+    /// that asks what the deciding agent is told drives this rather than
+    /// writing the evidence by hand.
+    pub fn collect(&self, envs: &[(&str, &str)], base: Option<&str>) -> (Value, Outcome) {
+        let mut command = std::process::Command::new("bash");
+        self.isolate(&mut command);
+        command
+            .arg(crate::issue_1641_finalization_open_pr::fixture::tool_path(
+                "workflow_agentic_finalization.sh",
+            ))
+            .arg("collect");
+        if let Some(base) = base {
+            command.arg("--base").arg(base);
+        }
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+        let output = command.output().expect("run collect-finalization-evidence");
+        let outcome = Outcome {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            output,
+        };
+        let value: Value = serde_json::from_str(outcome.stdout.trim()).unwrap_or_else(|e| {
+            panic!(
+                "collect-finalization-evidence must print one JSON object: {e}\n{}",
+                outcome.describe()
+            )
+        });
+        (value, outcome)
+    }
+
+    /// Give `origin` a default branch of `name`: create it, push it, and point
+    /// `refs/remotes/origin/HEAD` at it, the way a clone of a repository whose
+    /// default branch is `name` looks.
+    pub fn with_default_branch(&self, name: &str) {
+        let here = self
+            .git(&["rev-parse", "--abbrev-ref", "HEAD"])
+            .trim()
+            .to_owned();
+        self.git(&["checkout", "-q", "-B", name]);
+        self.git(&["push", "-q", "origin", name]);
+        self.git(&["checkout", "-q", &here]);
+        self.git(&["remote", "set-head", "origin", name]);
+    }
+}

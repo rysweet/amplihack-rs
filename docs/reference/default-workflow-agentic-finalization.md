@@ -115,7 +115,7 @@ step status, not through an agent's stdout.
 | `agentic-finalizer` | Agentic | Produce a human-readable narrative explaining the run and the recommended next action for operators. | `agentic_finalizer_narrative` (opaque text artifact) |
 | `finalizer-step-status` | Deterministic shell/JSON | Record whether the narrative step itself completed or failed, as typed state. | `finalizer_step_status` (`{status, reporting_failure}`) |
 | `assess-finalization` | Agentic (sub-recipe) | Decide the run's terminal state from the collected facts, and close a gap with one of two additive actions when that is what is missing (#2809). | `finalization_assessment` (`{terminal_state, action_taken, pr_number, reason, next_action}`) |
-| `assessment-decision-status` | Deterministic shell/JSON | Report whether that answer carries a decision at all, so a failed or non-JSON model call can be given one more attempt (#2819 R3). | `finalization_assessment_status` (`{usable, reason}`) |
+| `assessment-decision-status` | Deterministic shell/JSON | Report whether that answer carries a decision at all, so a failed or non-JSON model call can be given one more attempt (#2819). | `finalization_assessment_status` (`{usable, reason}`) |
 | `reassess-finalization` | Agentic (sub-recipe) | The same assessment once more, and only when the first produced no decision. | `finalization_assessment`, replacing the answer that carried none |
 | `validate-agentic-finalization` | Deterministic shell/JSON | Apply the blockers about the local checkout, confirm the facts were gathered, and report the terminal state the assessment decided. | `workflow_result` (normalized terminal result) |
 | `workflow-complete` | Deterministic shell/JSON | Emit the human-readable summary and canonical result JSON, including the reporting-vs-implementation distinction. | `workflow_completion` |
@@ -180,7 +180,7 @@ metadata, but each reader sees a single JSON object.
 | `repo_path` | string | Repository root or workflow worktree used for local evidence. |
 | `branch_name` | string | Expected branch for the workflow-owned work. |
 | `base_ref` | string | Intended comparison base. |
-| `git` | object | Clean/dirty status, branch match, diff status, commits ahead, and base resolution details. |
+| `git` | object | Clean/dirty status, branch match, diff status, commits ahead, and base resolution details. `default_or_base_branches` is the comma-separated list of branch names this run neither branched from nor owns -- the repository's default branch and the run's own base -- and `run_branch_is_default_or_base` is `true`, `false`, or `unknown` when neither name could be read. Both are facts: nothing in bash refuses a run for them (#2819). |
 | `change_request` | object | Provider, URL, ID, state, merge evidence, source branch, base branch, head SHA, and identity-match booleans. Empty when no change request exists. |
 | `ci` | object | Required check state, failing checks, pending checks, and CI metadata availability. |
 | `implementation` | object | Whether code/docs/config work was applied and where that evidence came from. |
@@ -275,7 +275,7 @@ finalization_outcome_facts <target_dir> <branch> [<pr_ref>]
 | Argument | Meaning |
 | --- | --- |
 | `target_dir` | Worktree or repository path. |
-| `branch` | The run branch. It is checked with `git check-ref-format` before any git call, and a rejected name -- or one starting with `-`, which an argument parser would read as an option -- is reported unread, not as an error. No name is refused for being a default branch (#2819 R3). |
+| `branch` | The run branch. It is checked with `git check-ref-format` before any git call, and a rejected name -- or one starting with `-`, which an argument parser would read as an option -- is reported unread, not as an error. No name is refused for being a default branch (#2819). |
 | `pr_ref` | Optional PR number or exact GitHub PR URL. Without it the PR is found by head branch. A PR reference the run recorded is never widened to discovery, so another branch's pull request cannot be adopted. |
 
 It always exits `0` and always prints one compact JSON object. Every value but
@@ -306,7 +306,7 @@ It always exits `0` and always prints one compact JSON object. Every value but
 
 | Field | What it reports |
 | --- | --- |
-| `branch` | The run branch this read is about. Empty when the recorded name was unusable, or when the checkout is on another branch; `unread` then says which. A branch named `main`, `master` or `HEAD` is read like any other: it was once blanked by name, which decided in the collector that such a run had produced nothing readable and never covered a repository whose default branch is `trunk` (#2819 R3). |
+| `branch` | The run branch this read is about. Empty when the recorded name was unusable, or when the checkout is on another branch; `unread` then says which. A branch named `main`, `master` or `HEAD` is read like any other: it was once blanked by name, which decided in the collector that such a run had produced nothing readable and never covered a repository whose default branch is `trunk` (#2819). |
 | `local_head` | `git rev-parse HEAD^{commit}` in `target_dir`. |
 | `remote` | `origin` as `owner/repo`, through `parse_github_repo_identity`. The origin URL itself never appears, here or on stderr. |
 | `github_origin` | `true` when that parse succeeded. |
@@ -407,6 +407,26 @@ request's state, readiness, base or metadata. It must not run `env`,
 JSON. After an action it reads the result back with `gh` and reports the pull
 request number it read.
 
+Neither action may touch a branch the run does not own. A run owns the branch
+it was given and nothing else: not the repository's default branch, and not
+its own base. A run that committed onto one of those has not produced a change
+to propose, it has written to a shared branch, and pushing it would publish
+that writing to everyone. `git.default_or_base_branches` names those branches
+and `git.run_branch_is_default_or_base` says whether the run branch is one;
+the prompt tells the agent to make no push and open no pull request when it
+is, and to report `FAILED_IMPLEMENTATION` with that as the reason, and to
+treat `unknown` as a fact to check rather than as permission.
+
+This is guidance to the deciding step, not a gate in bash. The collector
+reports the run branch whatever it is (#2343, and #2819's removal of the
+`main|master|HEAD` refusal that had blanked it): blanking the branch decided,
+asking nobody, that a run recorded on a default branch had produced nothing
+readable, and it left a repository whose default branch is `trunk` uncovered.
+What the collector adds instead is the fact the rule is stated against, so the
+agent is not left to infer which branch names those are. GitHub branch
+protection remains the enforcement of last resort, and this repository relies
+on it for nothing.
+
 What it supplies is a state and words. It does not supply identity: the result's
 `pr_url` is always built as `https://github.com/<outcome.remote>/pull/<number>`,
 and `pr_number` is its own only when that is a canonical pull request number,
@@ -420,7 +440,7 @@ agent step inside the sub-recipe carry `continue_on_error: true`, so neither a
 declined assessment nor a failure of the sub-recipe itself (resolution, the
 recursion limit) ends the run by itself.
 
-#### One re-run when nothing was decided (#2819 R3)
+#### One re-run when nothing was decided (#2819)
 
 A model call that fails -- a rate limit, a crash, an answer in prose rather
 than the object the prompt asked for -- leaves `finalization_assessment`
@@ -435,8 +455,8 @@ Two steps sit between the assessment and the validator:
 
 | Step | What it does |
 | --- | --- |
-| `assessment-decision-status` | Runs `workflow_agentic_finalization.sh assessment-status`, which prints `{"usable","reason"}`. `usable` is `false` when the recorded answer names no state finalization publishes, or names `EXISTING_OPEN_PR` with no pull request number -- the two conditions the validator refuses on, asked through the same predicates, so a retry is spent exactly when the validator would otherwise have reported no decision. It reads only what the assessment recorded, makes no git or gh call, and always exits 0. |
-| `reassess-finalization` | The same assessment sub-recipe again, under `condition: finalization_assessment_status.usable == 'false'` and `continue_on_error: true`. It is skipped when the first attempt decided, so a decided run is never assessed twice. |
+| `assessment-decision-status` | Runs `workflow_agentic_finalization.sh assessment-status`, which prints `{"usable","reason"}`. `usable` is `false` when the recorded answer names no state finalization publishes, or names `EXISTING_OPEN_PR` with no pull request number. It asks `_finalization_assessment_decides` in `workflow_finalization_result.sh`, which is the only implementation of that question: `validate-agentic-finalization` refuses by calling the same function, so a retry is spent exactly when the validator would otherwise have reported no decision, and `reason` is the sentence the validator would have published. It reads only what the assessment recorded, makes no git or gh call, and always exits 0. |
+| `reassess-finalization` | The same assessment sub-recipe again, under `condition: finalization_assessment_status.usable == 'false'` and `continue_on_error: true`. It is skipped when the first attempt decided, so a decided run is never assessed twice. The step passes `prior_assessment_refusal: "{{finalization_assessment_status.reason}}"`, so the second attempt is told why the first answer was refused instead of re-rolling a systematic error blind, and the prompt tells it that the fenced evidence is a snapshot taken before the first attempt ran -- any push or pull request that attempt made is not in it -- so it re-reads the current state with `git` and `gh` before deciding or acting. |
 
 A second failure changes nothing: the validator reports that it has no
 decision, as before, and names the gap as the assessment having delivered
@@ -1427,7 +1447,7 @@ above: finalization reached no decision. Either no facts could be gathered
 (`terminal_reason` names what could not be read) or `assess-finalization`
 delivered no state. `terminal_reason` tells those last two apart: it quotes a
 state finalization does not publish, and says the assessment *delivered*
-nothing when the call itself produced no answer -- which, since #2819 R3,
+nothing when the call itself produced no answer -- which, since #2819,
 means both it and `reassess-finalization` came back empty, so the thing to
 look at is the model call rather than the run's artifacts. The step is left
 failing for its recovery agent, so check the step-recovery record and the two

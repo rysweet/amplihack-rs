@@ -303,7 +303,7 @@ fn agentic_finalizer_prompt_requests_human_narrative_not_machine_json() {
 /// end to end, and `workflow_finalize_resilience` for the typed completion
 /// booleans deciding nothing. A `contains` over the script text would pass on
 /// a token left in a comment and fail on a rewording, and would break the
-/// next time the file is split (#2819 R3,
+/// next time the file is split (#2819,
 /// docs/howto/keep-tests-passing-under-host-load.md).
 #[test]
 fn validation_step_runs_after_the_decision_and_masks_no_failure() {

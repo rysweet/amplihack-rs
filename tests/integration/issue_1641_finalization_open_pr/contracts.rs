@@ -1,17 +1,11 @@
 //! Static contracts: the typed-evidence-only rule (#969) and the field
 //! allowlist (#1538).
 //!
-//! #2819 R1: the three cases #2343 added here are gone -- the byte offsets of
-//! `source` lines inside the dispatcher, the grep of the facts reader for the
-//! helper names it reuses, and the read of `cycle2_module_budget.rs`'s own
-//! source for the files it lists. `docs/howto/keep-tests-passing-under-host-load.md`
-//! forbids asserting on how code is written: such a case fails when the
-//! wording moves and passes when the behaviour moves. What they stood for is
-//! run instead -- every case that calls `Fixture::validate` executes the real
-//! dispatcher, so a helper it fails to load, or loads too late to use, fails
-//! there; and the 300-line budget is enforced by `cycle2_module_budget.rs`
-//! measuring the files themselves, which needs no second test reading its
-//! list.
+//! These two cases are deliberately all that is read rather than run.
+//! `docs/howto/keep-tests-passing-under-host-load.md` forbids asserting on how
+//! code is written -- such a case fails when the wording moves and passes when
+//! the behaviour moves -- and every other contract this directory covers is
+//! executed instead, by the cases that call `Fixture::validate`.
 
 use super::fixture::*;
 
@@ -61,19 +55,6 @@ fn open_pr_path_uses_only_typed_evidence_and_bounded_read_only_gh() {
     );
 }
 
-// The cases that sat here grepped the reader and the validator for forbidden
-// words, compared the byte offsets of `gather_outcome_facts` and
-// `finalization_assessment terminal_state` inside the validator, and asserted
-// that a deleted file was still absent (#2819 R1, R4). All are now run rather
-// than read: `issue_2343_finalization_outcome::facts` drives the reader over
-// every outcome a classifier would have split on and asserts it names none,
-// and `issue_2343_finalization_outcome::terminal_states` asserts that a
-// blocker beats a decision and that a decision is never applied to facts that
-// were not gathered -- which is what the ordering was for. A re-added
-// classifier would have to be sourced to matter, and the dispatcher runs under
-// `set -e`, so a `.` of a file that is not there ends every case that
-// validates; the absence itself needed no case of its own.
-
 #[test]
 fn complete_helper_lists_existing_open_pr_in_vocabulary() {
     let complete = tool_text("workflow_finalization_complete.sh");
@@ -82,13 +63,3 @@ fn complete_helper_lists_existing_open_pr_in_vocabulary() {
         "EXISTING_OPEN_PR must follow FOLLOWUP_CREATED in terminal_vocabulary"
     );
 }
-
-// The vocabulary the validator publishes and the one workflow-complete
-// reports must agree. That used to be asserted by parsing the predicate bodies
-// out of the shell source; it is asserted by running both steps over every
-// state in `issue_2343_finalization_outcome::wiring`.
-//
-// The 300-line budget for the finalization helpers was asserted here too, by
-// reading `cycle2_module_budget.rs`'s own source for the paths it lists. That
-// test measures the files; this one only read its text, so it could pass with
-// the budget unenforced and fail with it enforced under a different spelling.
