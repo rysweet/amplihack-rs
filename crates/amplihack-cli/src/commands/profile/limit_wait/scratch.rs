@@ -10,7 +10,9 @@
 //! and into the first attempt's own stdin pipe. The copier stops at end of
 //! file, absorbs the first attempt's `EPIPE`, and is joined only when a
 //! rerun needs the stored prompt; the supervisor's main loop never waits
-//! on it.
+//! on it. Of the two sinks the attempt's comes first in standing: a file
+//! that cannot be written costs the rerun, never a byte of the prompt the
+//! attempt in hand is reading.
 //!
 //! The first attempt therefore inherits stdin unchanged, except for a
 //! captured prompt, which it reads from the copier's pipe. A rerun gets a
@@ -332,22 +334,38 @@ fn read_back(path: &Path, writer: &fs::File) -> io::Result<fs::File> {
 /// child; the file still receives all of it. Any error on the file is the
 /// copy failing, and a rerun is refused rather than given part of a
 /// prompt.
-fn copy_prompt(
+///
+/// The capture is secondary to the attempt in hand. An error on the file
+/// stops the copy to the file and nothing else: the source is still drained
+/// to end of file and the child still gets every byte, because a prompt cut
+/// short is a shortened task the attempt would act on, whereas a lost
+/// capture only costs a rerun. The error is returned once the source is
+/// spent, and `complete` is left unset, so a rerun is refused.
+pub(super) fn copy_prompt(
     source: &mut fs::File,
     mut file: fs::File,
     child: std::io::PipeWriter,
     complete: &AtomicBool,
 ) -> io::Result<()> {
     let mut child = Some(child);
+    let mut file_err: Option<io::Error> = None;
     let mut buf = vec![0u8; COPY_BUF];
     loop {
         let k = match source.read(&mut buf) {
+            // There are no further bytes to forward, so the source failing
+            // ends the copy for both sinks.
             Ok(0) => break,
             Ok(k) => k,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(e),
         };
-        file.write_all(&buf[..k])?;
+        if file_err.is_none()
+            && let Err(e) = file.write_all(&buf[..k])
+        {
+            // The capture is lost, so a rerun is refused. The attempt in
+            // hand still gets its whole prompt.
+            file_err = Some(e);
+        }
         if let Some(w) = &mut child
             && w.write_all(&buf[..k]).is_err()
         {
@@ -356,6 +374,9 @@ fn copy_prompt(
             // somehow still there.
             child = None;
         }
+    }
+    if let Some(e) = file_err {
+        return Err(e);
     }
     file.flush()?;
     complete.store(true, Ordering::SeqCst);

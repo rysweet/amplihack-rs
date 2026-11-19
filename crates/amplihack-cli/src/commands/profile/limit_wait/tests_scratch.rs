@@ -6,13 +6,15 @@
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_scratch;`.
 
 use super::super::auto_switch::{rerun_owner, sweep_rerun};
-use super::scratch::{RerunStdin, capture_prompt, home_rerun_dir};
+use super::scratch::{RerunStdin, capture_prompt, copy_prompt, home_rerun_dir};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 fn mode(p: &Path) -> u32 {
@@ -378,6 +380,45 @@ fn a_failed_copy_is_an_error_for_a_rerun_never_a_partial_prompt() {
     let mut policy = capture_prompt(&dir, source);
     assert!(matches!(policy, RerunStdin::Captured(_)), "{policy:?}");
     assert!(policy.for_attempt(2).is_err(), "no partial replay");
+}
+
+/// The capture is secondary to the attempt in hand: a file that cannot be
+/// written costs the rerun, never a byte of the first attempt's prompt.
+///
+/// The capture sink here is a pipe whose read end has been dropped, so the
+/// first write fails with `EPIPE`, which stands in for the `ENOSPC` or
+/// `EIO` a real file would give. The prompt is larger than `COPY_BUF`, so
+/// the failure lands well before the last chunk.
+#[test]
+fn a_capture_that_cannot_be_written_still_hands_the_attempt_its_whole_prompt() {
+    let prompt = awkward_prompt();
+    let (mut source, feeder) = fed_pipe(prompt.clone());
+
+    // A file handle onto a pipe nobody is reading: every write is EPIPE.
+    let (dead, sink) = std::io::pipe().unwrap();
+    drop(dead);
+    let sink = fs::File::from(OwnedFd::from(sink));
+
+    // The attempt's stdin, drained as the copier writes it.
+    let (mut child_read, child_write) = std::io::pipe().unwrap();
+    let drain = std::thread::spawn(move || {
+        let mut got = Vec::new();
+        child_read.read_to_end(&mut got).unwrap();
+        got
+    });
+
+    let complete = AtomicBool::new(false);
+    let err = copy_prompt(&mut source, sink, child_write, &complete);
+
+    assert!(err.is_err(), "the lost capture is reported: {err:?}");
+    assert_eq!(drain.join().unwrap(), prompt, "the attempt's whole prompt");
+    assert!(
+        !complete.load(Ordering::SeqCst),
+        "an unwritten capture is never complete, so a rerun is refused"
+    );
+    // Last: a copier that stopped early would leave the feeder blocked on a
+    // pipe nobody is draining, and the assertions above say so first.
+    feeder.join().unwrap();
 }
 
 #[test]
