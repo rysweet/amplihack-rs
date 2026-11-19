@@ -789,6 +789,13 @@ jobs:
       - name: "Outside-in: concurrent launches re-stage once (issue #1582)"
         shell: bash
         run: AMPLIHACK_1582_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1582-concurrent-launch-scenario.sh
+      # Issue #2785: when a run ends, cleanup keeps a temporary folder that holds
+      # unsaved Git work (a commit never pushed, a file never committed) and
+      # removes a clean one, against the binary installed above and the pinned
+      # runner. The "remote" is a folder; no live agent and no network.
+      - name: "Outside-in: cleanup keeps unsaved Git work (issue #2785)"
+        shell: bash
+        run: AMPLIHACK_2785_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2785-cleanup-keeps-unsaved-work-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing
