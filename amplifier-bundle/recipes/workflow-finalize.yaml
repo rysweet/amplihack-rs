@@ -305,8 +305,8 @@ steps:
       Write a concise, human-readable narrative that explains the default
       workflow's terminal outcome for an operator reading the run log. This is
       an explanatory ARTIFACT for humans — it is never parsed and never drives
-      control flow. Deterministic recipe steps own the machine-readable terminal
-      classification; do not attempt to encode machine state here.
+      control flow. The `assess-finalization` step owns the machine-readable
+      terminal classification (#2343); do not encode machine state here.
 
       ## Structured evidence
       {{finalization_evidence}}

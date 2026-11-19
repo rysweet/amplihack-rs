@@ -61,28 +61,18 @@ fn open_pr_path_uses_only_typed_evidence_and_bounded_read_only_gh() {
     );
 }
 
-// The two cases that sat here grepped the reader and the validator for
-// forbidden words, and compared the byte offsets of `gather_outcome_facts` and
-// `finalization_assessment terminal_state` inside the validator. Both are now
-// run rather than read: `issue_2343_finalization_outcome::facts` drives the
-// reader over every outcome a classifier would have split on and asserts it
-// names none, and `issue_2343_finalization_outcome::terminal_states` asserts
-// that a blocker beats a decision and that a decision is never applied to
-// facts that were not gathered -- which is what the ordering was for.
-//
-// The classifier stays deleted because nothing sources it: the dispatcher
-// runs under `set -e`, so a `.` of a file that is not there ends it, and
-// every case that validates would fail. This asserts only that the file is
-// absent, which no run can show.
-#[test]
-fn nothing_sources_the_deleted_outcome_classifier() {
-    assert!(
-        !workspace_root()
-            .join("amplifier-bundle/tools/workflow_finalization_outcome_classify.sh")
-            .exists(),
-        "workflow_finalization_outcome_classify.sh must stay deleted (#2343)"
-    );
-}
+// The cases that sat here grepped the reader and the validator for forbidden
+// words, compared the byte offsets of `gather_outcome_facts` and
+// `finalization_assessment terminal_state` inside the validator, and asserted
+// that a deleted file was still absent (#2819 R1, R4). All are now run rather
+// than read: `issue_2343_finalization_outcome::facts` drives the reader over
+// every outcome a classifier would have split on and asserts it names none,
+// and `issue_2343_finalization_outcome::terminal_states` asserts that a
+// blocker beats a decision and that a decision is never applied to facts that
+// were not gathered -- which is what the ordering was for. A re-added
+// classifier would have to be sourced to matter, and the dispatcher runs under
+// `set -e`, so a `.` of a file that is not there ends every case that
+// validates; the absence itself needed no case of its own.
 
 #[test]
 fn complete_helper_lists_existing_open_pr_in_vocabulary() {

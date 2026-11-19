@@ -377,9 +377,11 @@ that rather than filling one in.
 `assess-finalization` is a sub-recipe step between `finalizer-step-status` and
 `validate-agentic-finalization`, whose one agent step lives in
 [`workflow-finalization-assessment.yaml`](../../amplifier-bundle/recipes/workflow-finalization-assessment.yaml).
-It runs on every outcome. It carried a `condition:` that skipped it for the
-verdicts the bash classifier exited on; the verdicts, the classifier and the
-two-file set that had to agree are all gone.
+It runs on every outcome, with no `condition:` and no verdict that skips it:
+before #2343 the states it now decides were reached by bash rules in
+`workflow_finalization_validate.sh` and `workflow_finalization_open_pr.sh`,
+which exited the run before any agent was asked. Those rules and that second
+file are gone.
 
 Its answer is stored as `finalization_assessment`:
 
@@ -437,6 +439,12 @@ Evaluation order:
    terminal probe that already named a blocker is answered from its own record,
    without asking the remote again. These precede everything else, so no
    decision can mask them.
+
+   The dirty-worktree blocker is the one of the three with two sources, so its
+   precedence is explicit: the collected `git.dirty_worktree` is believed when
+   it says exactly `true` or exactly `false`, and in every other case -- unread,
+   `unknown`, `yes`, `1` -- the worktree is probed live, because none of those
+   values answers the question and the worktree always can (#2819).
 4. **The facts.** The recorded outcome, or one live read when none was
    recorded. Nothing here reads them as a success or a failure. When no facts
    could be gathered at all the result is `FAILED_MISSING_TERMINAL_EVIDENCE`,
@@ -616,7 +624,8 @@ terminal state.
    [The Run's Real Outcome](#the-runs-real-outcome-2343)).
    Evidence with no usable `outcome` is not invalid: the outcome is read live.
 2. A dirty worktree and missing `git` or `jq` still end the run. A missing `gh`
-   does not; it routes to the assessment.
+   does not; it routes to the assessment. A collected `dirty_worktree` that is
+   neither `true` nor `false` is not a negative: the worktree is probed.
 3. No terminal state is derived from empty or generic agent output.
 4. Reporting failure (`finalizer_step_status.reporting_failure=true`) is a
    typed fact passed to `assess-finalization` and carried into the result; it

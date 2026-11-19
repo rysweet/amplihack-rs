@@ -59,8 +59,10 @@ validate_finalization() {
   # terminal state of its own and it never ends the run; it is reported beside
   # the result so the reason says the evidence could not be read. That is safe
   # because no blocker rests on this record alone: a dirty_worktree that does
-  # not read as exactly "true" is probed live against the worktree below, git
-  # and jq are proven present by this script running at all, and
+  # not read as exactly "true" or exactly "false" is probed live against the
+  # worktree below -- the probe fires on an unread field for the same reason it
+  # fires on "yes" or "1", because none of them is an answer (R4) -- git and jq
+  # are proven present by this script running at all, and
   # prior_terminal_state falls back to the run's own metadata. The terminal
   # state itself is decided by assess-finalization on facts collected fresh,
   # not on this record, which is the whole point of #2343: a bookkeeping
@@ -156,9 +158,15 @@ FIELDS
   [ -n "$target_dir" ] || target_dir="$(workflow_finalization_metadata repo_path || :)"
   target_dir_explicit="true"
   [ -n "$target_dir" ] || { target_dir="."; target_dir_explicit="false"; }
-  # Live worktree probe only when the collected evidence reported no
-  # dirty-worktree signal; collected evidence is authoritative (#969, R2).
-  if [ -z "$evidence_dirty_worktree" ] || [ "$evidence_dirty_worktree" = "unknown" ]; then
+  # Live worktree probe unless the collected record answered the question, and
+  # it answers it only by saying exactly "true" (handled above) or exactly
+  # "false" (#969, R2, R4). Anything else is not an answer and never stands in
+  # for one: empty, "unknown", "yes", "1", a JSON number rendered as "0". R4
+  # reproduced the cost of treating one of those as a negative -- a worktree
+  # with uncommitted changes whose record read "1" published EXISTING_OPEN_PR
+  # -- so a record that does not say true or false sends the question to the
+  # worktree, which can always answer it.
+  if [ "$evidence_dirty_worktree" != "false" ]; then
     if command -v git >/dev/null 2>&1 && [ -d "$target_dir" ] && git -C "$target_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       if [ -n "$(git -C "$target_dir" status --porcelain)" ]; then
         fail_result "FAILED_DIRTY_WORKTREE" "dirty worktree prevents terminal success" "Commit, stash, or remove uncommitted changes before finalization." "git.dirty_worktree=true"

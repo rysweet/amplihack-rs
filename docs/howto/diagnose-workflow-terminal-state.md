@@ -43,7 +43,7 @@ Look for these fields:
 | `terminal_reason` | Human-readable explanation and next action. |
 | `required_next_action` | The action the finalizer expects before the workflow can close. |
 | `hollow_success_detected` | Whether the run appeared successful but lacked real completion evidence. |
-| `evidence_used` | Typed evidence keys used by the deterministic classifier. |
+| `evidence_used` | Typed evidence keys the reported decision was made on; since #2343 `assess-finalization` makes it, not a deterministic classifier. |
 | `reporting_failure` | Whether a reporting step failed after successful implementation (produces `FAILED_REPORTING`, durable evidence preserved). |
 | `observed_phases` | Last workflow phases that produced evidence. |
 | `missing_evidence` | Required proof that was absent. |

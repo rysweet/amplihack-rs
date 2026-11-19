@@ -337,7 +337,17 @@ signals. Preserve Git/tool probes and publish/PR ownership boundaries.
 Before delimiter extraction, validation checks all five selected evidence fields:
 `git.dirty_worktree`, `tooling.missing`, `tooling.gh_required`,
 `prior_terminal_state.terminal_state` and `agent_outputs.hollow_success_signals`.
-Strings and Booleans are supported; absent/null fields remain conservative.
+Strings and Booleans are supported; absent/null fields remain conservative. A
+JSON number is a wrong type in all five, and in every other selected leaf but
+two: `finalization_assessment.pr_number` and `finalization_evidence.outcome.pr_number`
+also accept one, and render it as jq printed it (#2819). That exception is per
+key, as it already was for `pr_number` and `commits_ahead` in
+`workflow_finalization_metadata.sh`, and it is per key for a reason this PR
+reproduced: `git.dirty_worktree` is a blocker whose value is compared with the
+word `true`, so a JSON `1` there rendered as `"1"`, matched neither the blocker
+nor the empty value the live probe used to fire on, and let a worktree with
+uncommitted changes publish `EXISTING_OPEN_PR`. A blocker must not get weaker
+as a side effect of a type gate widening somewhere else.
 Wrong field/container types, malformed selected transport and embedded NUL in
 any extracted String no longer end the run (#2343). The field is treated as
 unread, stale aliases do not repair it, and positive completion and explicit
@@ -350,7 +360,11 @@ blocker fields.
 Validation answers the blockers about the local checkout first
 (`FAILED_DIRTY_WORKTREE`, `FAILED_MISSING_TOOLING`, a prior deterministic
 terminal probe), gathers the facts of the run's outcome, and then reports the
-terminal state `assess-finalization` decided on them. Since #2809 it applies no
+terminal state `assess-finalization` decided on them. The collected
+`git.dirty_worktree` record stands in for the live probe only when it says
+exactly `true` (the blocker) or exactly `false` (believed, and the probe is
+skipped). Every other value -- unread, `unknown`, `yes`, `1` -- is not an
+answer, so the worktree itself is asked, which it can always answer. Since #2809 it applies no
 rule of its own to reach a state: there is no reporting-failure rule, no
 completion-field rule and no no-op rule in bash. `FAILED_REPORTING`,
 `IMPLEMENTED_VERIFIED`, `ALLOW_NO_OP` and `HOLLOW_SUCCESS` are decisions the

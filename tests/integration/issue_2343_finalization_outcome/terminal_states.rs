@@ -16,8 +16,13 @@
 //! Two cases below still read as outcome tests even so -- the diverged pull
 //! request and the nothing-pushed run inject `FAILED_IMPLEMENTATION` and
 //! assert it comes back. What they really show is the reporting, which their
-//! comments say; #2844 tracks either renaming them or testing the decision
-//! where it is made, against `workflow-finalization-assessment.yaml`.
+//! comments say. Where the decision is made is covered in `wiring`, by
+//! `the_facts_reach_the_deciding_agent_and_its_answer_is_what_gets_published`
+//! and `an_agent_that_answers_with_prose_leaves_the_run_with_no_decision`:
+//! those drive the shipped `workflow-finalization-assessment.yaml` against an
+//! agent whose answer is recorded, so the facts reaching the prompt and the
+//! answer reaching the published state are both run rather than assumed.
+//! #2844 tracks renaming the two cases here.
 
 use super::fixture_ext::*;
 use crate::issue_1641_finalization_open_pr::builders::{
@@ -318,12 +323,15 @@ fn the_same_success_is_published_when_the_decision_names_the_pull_request() {
 // #2819 R3: and when that number came back as a JSON number rather than a
 // string. `gh` reports `"number": 7`, so an agent told to read the pull
 // request back and report its number returns the integer it was shown. A type
-// gate in bash would read that as a wrong type, reach the caller as an empty
+// gate on that key would read it as a wrong type, reach the caller as an empty
 // value, and refuse a correct decision with a reason -- "it returned an empty
-// pr_number" -- that is not true of what came back. Every leaf of the answer
-// is read the same way, so the other three are here too.
+// pr_number" -- that is not true of what came back.
+//
+// The exception is `pr_number`'s alone (R4). It was briefly every leaf's, and
+// `a_numeric_blocker_field_on_a_dirty_worktree_still_blocks` below is what
+// that cost.
 #[test]
-fn a_decision_whose_leaves_are_json_numbers_or_booleans_is_read_as_written() {
+fn a_decision_whose_pr_number_is_a_json_number_is_read_as_written() {
     let fx = Fixture::new();
     fx.with_remote();
     fx.push();
@@ -378,6 +386,134 @@ fn a_recorded_outcome_whose_pr_number_is_a_json_number_is_read_as_written() {
         outcome.field("evidence_used").contains("outcome.pr=7"),
         "the recorded number must reach the record: {}",
         outcome.field("evidence_used")
+    );
+}
+
+// #2819 R4, the regression the broad form of the above caused and the guard
+// against it returning. `git.dirty_worktree` is a blocker: a worktree with
+// uncommitted changes must never reach a terminal success. The validator fails
+// on exactly `true` and trusts exactly `false`; every other value is not an
+// answer, so the question goes to the worktree, which can always answer it.
+//
+// While a number was readable in every leaf, a recorded `1` rendered as the
+// string "1", which is not the `true` the blocker tests for and is not empty
+// either, so the live probe was skipped and the run published
+// `EXISTING_OPEN_PR` over a dirty worktree -- with `evidence_used` ending
+// `finalization_evidence=unreadable`, naming as unreadable the very value it
+// had just acted on. The cases below are each a recorded value that is not
+// `true` or `false`, over a worktree that really is dirty.
+#[test]
+fn a_numeric_blocker_field_on_a_dirty_worktree_still_blocks() {
+    for recorded in [
+        serde_json::json!(1),
+        serde_json::json!(0),
+        serde_json::json!("1"),
+        serde_json::json!("yes"),
+        serde_json::json!("unknown"),
+        serde_json::json!(null),
+    ] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.push();
+        fx.gh_pr_at(&fx.head(), green_rollup());
+        std::fs::write(fx.repo.join("scratch.txt"), "uncommitted\n").expect("dirty the worktree");
+        let mut envs = finished_env(&fx.repo_path());
+        envs.push((
+            "RECIPE_VAR_finalization_evidence",
+            serde_json::json!({
+                "schema_version": 1,
+                "git": {"dirty_worktree": recorded},
+                "tooling": {"missing": "", "gh_required": "false"},
+                "outcome": {"branch": BRANCH, "local_head": fx.head(), "remote": REPO,
+                            "remote_head": fx.head(), "pr_number": "7", "pr_state": "OPEN",
+                            "pr_head": fx.head(), "checks": "green", "unread": ""},
+            })
+            .to_string(),
+        ));
+        envs.push(assessment("EXISTING_OPEN_PR", "none", "7"));
+
+        let outcome = fx.validate(&as_refs(&envs));
+
+        assert!(
+            !outcome.success(),
+            "dirty_worktree {recorded} must not publish a success\n{}",
+            outcome.describe()
+        );
+        assert_eq!(
+            outcome.field("terminal_state"),
+            "FAILED_DIRTY_WORKTREE",
+            "dirty_worktree {recorded}\n{}",
+            outcome.describe()
+        );
+        assert_eq!(outcome.field("terminal_success"), "false");
+    }
+}
+
+// The other half of the same guarantee: a record that really says `false` is
+// still believed, so a clean run is not made to pay for the fix above. The
+// worktree here is clean, which is what the record says, and the probe that
+// now also runs for a `false` record would find nothing either way; what this
+// pins is that nothing about the blocker moved for a well-formed record.
+#[test]
+fn a_recorded_clean_worktree_is_still_believed() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push((
+        "RECIPE_VAR_finalization_evidence",
+        serde_json::json!({
+            "schema_version": 1,
+            "git": {"dirty_worktree": "false"},
+            "tooling": {"missing": "", "gh_required": "false"},
+            "outcome": {"branch": BRANCH, "local_head": fx.head(), "remote": REPO,
+                        "remote_head": fx.head(), "pr_number": "7", "pr_state": "OPEN",
+                        "pr_head": fx.head(), "checks": "green", "unread": ""},
+        })
+        .to_string(),
+    ));
+    envs.push(assessment("EXISTING_OPEN_PR", "none", "7"));
+
+    assert_hands_pr_on(&fx.validate(&as_refs(&envs)));
+}
+
+// And the narrowing itself, in a fact where the two rules give different
+// records. A pull request state is a name, so a JSON number in
+// `outcome.pr_state` is a malformed fact: it is reported unread rather than
+// carried into the record as "7". While every leaf took a number, that same
+// evidence produced `outcome.pr_state=7` -- a fact invented out of a type
+// error, which is what a reader of `evidence_used` would then be deciding on.
+#[test]
+fn a_numeric_fact_that_is_not_a_pull_request_number_is_reported_unread() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push((
+        "RECIPE_VAR_finalization_evidence",
+        serde_json::json!({
+            "schema_version": 1,
+            "git": {"dirty_worktree": "false"},
+            "tooling": {"missing": "", "gh_required": "false"},
+            "outcome": {"branch": BRANCH, "local_head": fx.head(), "remote": REPO,
+                        "remote_head": fx.head(), "pr_number": 7, "pr_state": 7,
+                        "pr_head": fx.head(), "checks": "green", "unread": ""},
+        })
+        .to_string(),
+    ));
+    envs.push(assessment("EXISTING_OPEN_PR", "none", "7"));
+
+    let evidence = fx.validate(&as_refs(&envs)).field("evidence_used");
+
+    assert!(
+        evidence.contains("outcome.pr_state=unread"),
+        "a state that is not a name must be unread, never rendered: {evidence}"
+    );
+    assert!(
+        evidence.contains("outcome.pr=7"),
+        "the pull request number is the one key the exception covers: {evidence}"
     );
 }
 

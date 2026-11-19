@@ -192,6 +192,305 @@ fn an_assessment_the_run_cannot_even_resolve_still_lets_the_run_continue() {
     assert_eq!(run.status("after-the-assessment"), "completed");
 }
 
+/// A stand-in for the agent CLI the runner starts for an agent step. It
+/// records the prompt it was handed and answers with the decision the case
+/// recorded, so the shipped assessment recipe can be driven end to end
+/// without an LLM (#2819 R4). The runner passes the prompt by path -- `-p
+/// "Read and follow the complete instructions in the file <path>. ..."` -- so
+/// the path is taken out of that sentence and the file copied where the case
+/// can read it.
+const AGENT_STUB: &str = r#"#!/usr/bin/env bash
+prompt_arg=""; out=""
+for ((i = 1; i <= $#; i++)); do
+  case "${!i}" in
+    -p) j=$((i + 1)); prompt_arg="${!j}" ;;
+    --output-last-message) j=$((i + 1)); out="${!j}" ;;
+  esac
+done
+file="$(printf '%s' "$prompt_arg" | sed -n 's/^.*instructions in the file \(.*\)\. Its contents.*$/\1/p')"
+if [ -n "$file" ] && [ -f "$file" ]; then cat "$file" > "$AGENT_STUB_PROMPT"
+else printf '%s' "$prompt_arg" > "$AGENT_STUB_PROMPT"; fi
+answer="$(cat "$AGENT_STUB_ANSWER")"
+[ -z "$out" ] || printf '%s' "$answer" > "$out"
+printf '%s\n' "$answer"
+"#;
+
+/// The runner starts an agent step through the `amplihack` launcher, which it
+/// invokes as `amplihack <agent binary> -- <args>`. This stands in for that
+/// launcher and runs what it was told to run.
+const LAUNCHER_STUB: &str = r#"#!/usr/bin/env bash
+exec "$@"
+"#;
+
+/// What a run of the shipped assessment recipe produced: the prompt the agent
+/// was given, and the outer run it happened in.
+struct Assessed {
+    prompt: String,
+    run: Run,
+}
+
+impl Assessed {
+    /// `finalization_assessment` as the outer run carries it after the
+    /// sub-recipe returned, serialized the way a step's `RECIPE_VAR_` is.
+    fn assessment(&self) -> String {
+        match &self.run.result["context"]["finalization_assessment"] {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        }
+    }
+}
+
+/// Run the shipped `assess-finalization` step -- the real sub-recipe, with its
+/// real prompt -- over `evidence`, with an agent that answers `answer`.
+fn assess_with_recorded_agent(evidence: &str, answer: &str) -> Assessed {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let name = "workflow-finalization-assessment";
+    fs::copy(bundle_recipe(name), dir.path().join(format!("{name}.yaml")))
+        .expect("stage the shipped sub-recipe beside the run");
+    let agent = dir.path().join("bin/agent");
+    let launcher = dir.path().join("bin/launcher");
+    fs::create_dir_all(dir.path().join("bin")).expect("bin dir");
+    write_executable(&agent, AGENT_STUB);
+    write_executable(&launcher, LAUNCHER_STUB);
+    let prompt_file = dir.path().join("prompt.md");
+    let answer_file = dir.path().join("answer.txt");
+    fs::write(&answer_file, answer).expect("record the answer");
+
+    let marker = dir.path().join("reached-the-validator");
+    let recipe = json!({
+        "name": "issue-2819-recorded-assessment",
+        "version": "1.0.0",
+        "description": "the shipped assess-finalization step, driven by a recorded agent",
+        "context": {
+            "finalization_evidence": evidence,
+            "finalizer_step_status": r#"{"status":"ok","reporting_failure":"false"}"#,
+            "finalization_assessment": "",
+        },
+        "steps": [
+            serde_yaml::from_value::<Value>(shipped_step("workflow-finalize", "assess-finalization"))
+                .expect("the shipped step is representable as JSON"),
+            {
+                "id": "after-the-assessment",
+                "type": "bash",
+                "command": format!("touch {}", marker.display()),
+            },
+        ],
+    });
+    let path = dir.path().join("chain.yaml");
+    fs::write(&path, serde_yaml::to_string(&recipe).expect("serialize")).expect("write recipe");
+
+    let output = crate::isolated_amplihack::isolated(pinned_runner().to_str().expect("runner"))
+        .arg(&path)
+        .arg("--working-dir")
+        .arg(dir.path())
+        .args(["--no-auto-stage", "--output-format", "json"])
+        .env("HOME", dir.path())
+        .env("TMPDIR", dir.path())
+        .env("AMPLIHACK_AGENT_BINARY", &agent)
+        .env("AMPLIHACK_LAUNCHER_BINARY", &launcher)
+        .env("AGENT_STUB_PROMPT", &prompt_file)
+        .env("AGENT_STUB_ANSWER", &answer_file)
+        .output()
+        .expect("run the pinned runner");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "the runner must serialize its result: {e}\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    assert!(
+        marker.exists(),
+        "the steps after the assessment must still run: {result}"
+    );
+    let prompt = fs::read_to_string(&prompt_file).unwrap_or_default();
+    Assessed {
+        prompt,
+        run: Run { dir, result },
+    }
+}
+
+/// The evidence of a finished run: pushed at `head`, pull request #7 open at
+/// it, checks green, worktree clean.
+fn finished_evidence(head: &str) -> String {
+    json!({
+        "schema_version": 1,
+        "git": {"dirty_worktree": "false", "meaningful_diff": "true"},
+        "tooling": {"missing": "", "gh_required": "false"},
+        "task": {"description": "Fix the finalization outcome reader", "description_read": "true"},
+        "agent_outputs": {"implementation_output": "present", "hollow_success_signals": "unknown"},
+        "outcome": {
+            "schema_version": 3, "branch": BRANCH, "local_head": head, "remote": REPO,
+            "github_origin": "true", "remote_head": head,
+            "remote_head_descends_local_head": "true", "open_pr_count": "1",
+            "pr_number": "7", "pr_url": PR_URL, "pr_state": "OPEN", "pr_draft": "false",
+            "pr_head": head, "pr_cross_repository": "false",
+            "pr_head_descends_local_head": "true", "checks": "green",
+            "check_states": "ci=SUCCESS", "unread": "",
+        },
+    })
+    .to_string()
+}
+
+// #2819 R4: the decision, tested where it is made. Every other case in this
+// directory hands the validator a decision and asserts the reporting; this one
+// runs the shipped `workflow-finalization-assessment.yaml`, with its shipped
+// prompt, against an agent whose answer is recorded, and follows that answer
+// out of the sub-recipe and into the state finalization publishes.
+//
+// What it can show is the wiring, which is what broke in #2343: that the facts
+// `collect-finalization-evidence` recorded reach the prompt the deciding agent
+// reads, that the object the agent returns is what the outer run carries as
+// `finalization_assessment`, and that the validator publishes that decision
+// and no other. What no test can show is the judgement itself: choosing the
+// state is an LLM call, so the answer here is a control.
+#[test]
+fn the_facts_reach_the_deciding_agent_and_its_answer_is_what_gets_published() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let head = fx.head();
+
+    let assessed = assess_with_recorded_agent(
+        &finished_evidence(&head),
+        &json!({
+            "terminal_state": "EXISTING_OPEN_PR",
+            "action_taken": "none",
+            "pr_number": 7,
+            "reason": "gh pr view 7 reports the request open at the run's head",
+            "next_action": "Wait for CI on PR #7.",
+        })
+        .to_string(),
+    );
+
+    assert_eq!(
+        assessed.run.status("assess-finalization"),
+        "completed",
+        "the shipped assessment must run: {}",
+        assessed.run.result
+    );
+
+    // 1. The facts reached the prompt the deciding agent read. Each of these
+    //    is a fact an assessment of this run has to have: without them the
+    //    agent is deciding on the prompt's prose alone.
+    for fact in [
+        head.as_str(),
+        BRANCH,
+        REPO,
+        r#""pr_number":"7""#,
+        r#""checks":"green""#,
+        r#""dirty_worktree":"false""#,
+        "Fix the finalization outcome reader",
+    ] {
+        assert!(
+            assessed.prompt.contains(fact),
+            "the deciding agent must be given `{fact}`; prompt was:\n{}",
+            assessed.prompt
+        );
+    }
+    // And the instruction that makes it the decider, from the shipped recipe.
+    assert!(
+        assessed.prompt.contains("Choose one terminal state"),
+        "the prompt must be the shipped assessment prompt:\n{}",
+        assessed.prompt
+    );
+
+    // 2. Its answer is what the outer run carries.
+    let carried = assessed.assessment();
+    let parsed: Value = serde_json::from_str(&carried)
+        .unwrap_or_else(|e| panic!("the assessment must arrive as JSON ({e}): {carried}"));
+    assert_eq!(parsed["terminal_state"], "EXISTING_OPEN_PR", "{carried}");
+    assert_eq!(parsed["pr_number"], 7, "{carried}");
+
+    // 3. And the validator publishes that decision, from the value the real
+    //    sub-recipe produced rather than one written here.
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(("RECIPE_VAR_finalization_assessment", carried));
+    let published = fx.validate(&as_refs(&envs));
+
+    assert!(published.success(), "{}", published.describe());
+    assert_eq!(published.field("terminal_state"), "EXISTING_OPEN_PR");
+    assert_eq!(published.field("terminal_success"), "true");
+    assert_eq!(published.field("pr_number"), "7");
+    assert_eq!(
+        published.field("terminal_reason"),
+        "gh pr view 7 reports the request open at the run's head",
+        "the published reason is the agent's own sentence"
+    );
+}
+
+// The other end of the same wire, and the mechanism #2847 item 1 is about: an
+// agent that answers with prose rather than the one JSON object leaves the run
+// with facts and no decision. The run does not end at the assessment -- the
+// step is `continue_on_error: true` -- and the prose is carried as it was
+// written, neither dropped nor repaired into something that reads like a
+// decision. `validate-agentic-finalization` then refuses it: an answer that is
+// not the object the prompt asked for names no state, and the validator
+// reports that it has no decision rather than inventing one about a run whose
+// pull request is open and green. Driven with a recorded agent so what fails
+// is the real answer, not a missing CLI.
+#[test]
+fn an_agent_that_answers_with_prose_leaves_the_run_with_no_decision() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup_for_tests());
+    let prose = "The run looks finished to me; PR #7 is open and green.";
+
+    let assessed = assess_with_recorded_agent(&finished_evidence(&fx.head()), prose);
+
+    assert_eq!(
+        assessed.run.result["success"], true,
+        "a declined assessment must not end the run: {}",
+        assessed.run.result
+    );
+    assert_eq!(
+        assessed.run.status("after-the-assessment"),
+        "completed",
+        "{}",
+        assessed.run.result
+    );
+    let carried = assessed.assessment();
+    assert_eq!(
+        carried, prose,
+        "the answer is carried as written, so the refusal below is about what \
+         the agent really returned"
+    );
+
+    // What finalization does with it: no decision, and no verdict of its own.
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(("RECIPE_VAR_finalization_assessment", carried));
+    let published = fx.validate(&as_refs(&envs));
+
+    assert!(!published.success(), "{}", published.describe());
+    assert_eq!(
+        published.field("terminal_state"),
+        "FAILED_MISSING_TERMINAL_EVIDENCE",
+        "{}",
+        published.describe()
+    );
+    assert_ne!(
+        published.field("terminal_state"),
+        "FAILED_IMPLEMENTATION",
+        "the #2343 symptom: a finished run must not be classed as unimplemented"
+    );
+    assert!(
+        published
+            .field("terminal_reason")
+            .contains("no terminal state"),
+        "the reason must say the assessment decided nothing: {}",
+        published.field("terminal_reason")
+    );
+    // The facts are still reported, so the operator sees the run that was
+    // finished rather than only the gap in finalization.
+    assert!(
+        published.field("evidence_used").contains("outcome.pr=7"),
+        "the facts must survive the missing decision: {}",
+        published.field("evidence_used")
+    );
+}
+
 /// The shipped `validate-agentic-finalization` step's own `command:`.
 fn validator_step_command() -> String {
     shipped_step("workflow-finalize", "validate-agentic-finalization")["command"]

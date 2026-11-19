@@ -158,8 +158,8 @@ canonical strings.
 | `verification_summary` | string/object | Verification completed | Commands or checks that satisfied verification. |
 | `required_next_action` | string | Finalization output | Operator or agent action needed after the terminal decision. |
 | `hollow_success_detected` | boolean | Finalization output | Whether finalization detected a success-looking run without meaningful completion evidence. |
-| `evidence_used` | list/string | Finalization output | Stable typed-evidence keys used by the deterministic classifier. |
-| `reporting_failure` | boolean | Finalization output | `true` when a reporting/finalization step itself failed (from that step's exit status). The classifier combines it with implementation/verification evidence to produce `FAILED_REPORTING` while durable evidence is preserved. |
+| `evidence_used` | list/string | Finalization output | Stable typed-evidence keys the reported decision was made on. Since #2343 finalization has no deterministic classifier: `assess-finalization` decides the state and these are the facts it was given. |
+| `reporting_failure` | boolean | Finalization output | `true` when a reporting/finalization step itself failed (from that step's exit status). It is a fact passed to `assess-finalization`, which may combine it with implementation/verification evidence to decide `FAILED_REPORTING` while durable evidence is preserved; no bash rule produces that state. |
 
 ### Terminal State Vocabulary
 
