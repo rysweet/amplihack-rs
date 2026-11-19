@@ -359,7 +359,8 @@ trusted is skipped; a log you name as a session is refused with an error.
 **Session names.** A session name containing `/` is refused. If the log is
 missing or has no pointer line yet, the command exits 1 and names the log
 path it tried. A pointer line of up to 32 KiB, within the first 64 KiB of the
-log, is read.
+log, is read. Reading stops at that line, so the size of a log beyond it does
+not affect the cost of a scan.
 
 **Pull request URLs.** The URL must have the form
 `https://github.com/<owner>/<repo>/pull/<number>`. A trailing `/`, a query
