@@ -100,7 +100,7 @@ See `reference.md` for the four named anti-patterns and their replacements:
 
 ## Templates & Example
 
-- `templates.md` — copy-ready recipe, prompt, typed-record, and record-integrity-reader
+- `templates.md`: copy-ready recipe, prompt, typed-record, and record-integrity-reader
   skeletons matching the repo's real shapes.
 - `worked-example.md` — one behavior (classify + route a signal) built as recipe +
   prompt + typed record + ~10-line rail, contrasted with a naive hardcoded function.

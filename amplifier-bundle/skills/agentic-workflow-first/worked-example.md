@@ -97,7 +97,7 @@ same holds when the reader exits non-zero: the rail's reason goes to stderr and
 adding a class is a prompt edit, not a recompile; the rail shrank to an integrity
 reader plus a `case`; an unexpected value goes to an agent step, not to an exit.
 
-## Second example — step-21 pr-ready without a script that judges
+## Second example: step-21 pr-ready without a script that judges
 
 **Brittle form:** `workflow_pr_scope.sh` decides whether the pull request matches the
 run, and the step ends the run when its exact-format check does not match. Each new
