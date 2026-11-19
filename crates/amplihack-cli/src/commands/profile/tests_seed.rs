@@ -143,29 +143,60 @@ fn issue_2522_excluded_directory_entries_do_not_consume_the_exact_5000_budget() 
 
 /// No CI target builds for a non-Unix platform, so the portable walker that
 /// those platforms seed with is compiled under `cfg(test)` and driven directly
-/// here. It must exclude the same two paths, without charging them.
+/// here, where the descriptor-relative walker would otherwise be the only one
+/// any test reaches.
+///
+/// Two phases over one tree. First: the same two paths are excluded, without
+/// charging the budget, while a user-owned sibling is copied. Then the 5,001
+/// excluded entries are renamed into a folder that is not excluded, and the
+/// sibling removed, so the same walker overruns the budget on a tree whose
+/// shape is known: `skills` charges only the `vendored` entry, and
+/// `skills/vendored` charges the 5,000 files that reach the limit. Rolling the
+/// half-written profile back belongs to `ProfileStore::add`, not to either
+/// walker, and is asserted by
+/// `excessive_entry_count_fails_closed_and_names_the_folders_that_spent_it`.
 #[test]
-fn issue_2522_portable_walker_excludes_the_same_account_caches() {
+fn issue_2522_portable_walker_excludes_the_caches_and_charges_the_rest() {
     let d = tempfile::tempdir().unwrap();
     let source = d.path().join("main-claude");
-    let destination = d.path().join("profile");
+    let included = d.path().join("profile-included");
     numbered_files(&source.join("skills/synced"), 5_001);
     numbered_files(&source.join("skills/.trash"), 3);
     fs::create_dir_all(source.join("skills/custom")).unwrap();
     fs::write(source.join("skills/custom/SKILL.md"), b"custom\n").unwrap();
-    fs::create_dir_all(&destination).unwrap();
+    fs::create_dir_all(&included).unwrap();
 
-    super::store::portable_seed_shared_assets(&source, &destination)
+    super::store::portable_seed_shared_assets(&source, &included)
         .expect("excluded caches use no copy budget");
 
     assert_eq!(
-        fs::read(destination.join("skills/custom/SKILL.md")).unwrap(),
+        fs::read(included.join("skills/custom/SKILL.md")).unwrap(),
         b"custom\n"
     );
     for relative in ["skills/synced", "skills/.trash"] {
-        assert!(fs::symlink_metadata(destination.join(relative)).is_err());
+        assert!(fs::symlink_metadata(included.join(relative)).is_err());
         assert!(source.join(relative).is_dir());
     }
+
+    fs::rename(source.join("skills/synced"), source.join("skills/vendored")).unwrap();
+    fs::remove_dir_all(source.join("skills/custom")).unwrap();
+    let overrun = d.path().join("profile-overrun");
+    fs::create_dir_all(&overrun).unwrap();
+
+    let error = super::store::portable_seed_shared_assets(&source, &overrun).unwrap_err();
+
+    let ProfileError::SharedAssetLimit(detail) = error else {
+        panic!("expected an entry-limit error, got {error:?}");
+    };
+    let vendored = format!("{:?}", Path::new("skills").join("vendored"));
+    assert_eq!(
+        detail,
+        format!(
+            "more than 5000 entries; charged before stopping: \
+             {vendored} 5000, \"skills\" 1"
+        )
+    );
+    assert!(fs::symlink_metadata(overrun.join("skills/.trash")).is_err());
 }
 
 #[test]
@@ -373,25 +404,38 @@ fn excessive_depth_fails_closed_and_rolls_back() {
     assert!(!store.root().join("work").exists());
 }
 
+/// The budget is aggregate, so no single folder here exceeds it and the folder
+/// holding the 5,001st entry is simply where the walk stopped. The diagnostic
+/// therefore names the folders that spent the budget, largest first, at the
+/// granularity of one subtree of one allowlisted directory: `skills/vendored`,
+/// which a user can move or delete, rather than `skills`, which they cannot.
+/// Walk order is `agents`, `commands`, `output-styles`, `rules`, `skills`, so
+/// the counts below are fixed: the first four folders are walked whole, and
+/// `skills` is cut short at the limit after its `vendored` entry (1) and 1,500
+/// of that subtree's 1,600 files.
 #[test]
-fn excessive_entry_count_fails_closed_and_rolls_back() {
+fn excessive_entry_count_fails_closed_and_names_the_folders_that_spent_it() {
     let (_d, source, store) = fixture();
-    // The budget is aggregate across the shared folders, so neither folder
-    // exceeds it alone and the diagnostic has to account for both. Naming
-    // only the folder holding the 5,001st entry would blame "commands", which
-    // is simply where the walk stopped, and would quote the constant 5,000
-    // rather than either folder's own count.
-    numbered_files(&source.join("agents"), 2_501);
-    numbered_files(&source.join("commands"), 2_500);
+    numbered_files(&source.join("agents"), 1_400);
+    numbered_files(&source.join("commands"), 1_300);
+    numbered_files(&source.join("output-styles"), 600);
+    numbered_files(&source.join("rules"), 200);
+    numbered_files(&source.join("skills/vendored"), 1_600);
 
     let error = store.add(&n("work")).unwrap_err();
 
     let ProfileError::SharedAssetLimit(detail) = error else {
         panic!("expected an entry-limit error, got {error:?}");
     };
+    // `output-styles` 600, `rules` 200 and `skills` 1 are the three folders
+    // past the three named.
+    let vendored = format!("{:?}", Path::new("skills").join("vendored"));
     assert_eq!(
         detail,
-        r#"more than 5000 entries; per folder: "agents" 2501, "commands" 2500"#
+        format!(
+            "more than 5000 entries; charged before stopping: \
+             {vendored} 1500, \"agents\" 1400, \"commands\" 1300, and 3 more"
+        )
     );
     assert!(!store.root().join("work").exists());
 }

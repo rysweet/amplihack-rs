@@ -3773,16 +3773,18 @@ Rules:
   and counts directory entries as well as files. More than 5,000 entries beneath
   `skills/synced` alone therefore do not prevent profile creation; more than
   5,000 included entries still do.
-- An entry-limit error reports what each allowlisted directory charged against
-  the budget, for example
-  `more than 5000 entries; per folder: "agents" 2501, "commands" 2500`.
-  Because the budget is aggregate, the directory holding the entry that
-  overruns it is usually not the directory that spent it, so the error names
-  every directory that contributed rather than that one. The copy stops at the
-  limit, so the last directory listed may hold more entries than it was
-  charged; the earlier ones hold exactly their count. The names come from the
-  allowlist, never from the source tree, so no name out of `$HOME/.claude`
-  reaches the message.
+- An entry-limit error names the folders that spent the budget, largest charge
+  first, for example
+  `more than 5000 entries; charged before stopping: "skills/vendored" 1500, "agents" 1400, "commands" 1300, and 3 more`.
+  Because the budget is aggregate, the folder holding the entry that overruns
+  it is usually not the folder that spent it, so the error names the spenders
+  rather than that one. Each entry is charged to the folder holding it, cut to
+  the first two components of its path relative to `$HOME/.claude`, so the
+  error points at one subtree of one allowlisted directory, which the user can
+  move or delete. At most three folders are named and the rest are counted.
+  Every number is exactly what that folder had charged when the copy stopped at
+  the limit. A folder name below the top level comes from the source tree, so
+  it is quoted, escaped and cut at 120 characters.
 - Special files are skipped without being opened, so a FIFO cannot block the
   copy.
 - Excluded entirely: `.credentials.json`, `.claude.json`, `history*`,

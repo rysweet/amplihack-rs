@@ -314,7 +314,7 @@ impl ProfileError {
             Self::InvalidSharedSettings(_) => "repair ~/.claude/settings.json and retry",
             Self::InvalidSharedSource(_) => "ensure ~/.claude is a directory and retry",
             Self::SharedAssetLimit(_) => {
-                "reduce oversized files or directories under ~/.claude and retry"
+                "under ~/.claude, shrink what the message reports: the entries of a named folder, an oversized file, or the nesting depth"
             }
             Self::SharedSourceContainsRoot(_) => "choose a profile root outside ~/.claude",
             Self::SeedCleanupFailed { .. } => {

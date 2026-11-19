@@ -3,6 +3,7 @@
 use super::name::ProfileName;
 use super::{ProfileError, pointer};
 use fs4::fs_std::FileExt;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -613,29 +614,59 @@ fn is_excluded_shared_path(relative: &Path) -> bool {
     relative == Path::new("skills/synced") || relative == Path::new("skills/.trash")
 }
 
+/// How many folders an entry-limit error names, largest charge first.
+const MAX_REPORTED_FOLDERS: usize = 3;
+/// How long a folder name may be in that error. The name comes out of the
+/// source tree, so a very long one would otherwise flood the message.
+const MAX_REPORTED_NAME_CHARS: usize = 120;
+
+/// The folder an entry is charged to: the directory holding it, cut to the
+/// first two components of its path relative to the shared source. Every entry
+/// anywhere below `skills/custom` is therefore charged to `skills/custom`,
+/// which is a subtree the user can move or delete, unlike `skills` itself.
+fn charged_folder(holder: &Path) -> &Path {
+    holder
+        .ancestors()
+        .find(|ancestor| ancestor.components().count() == 2)
+        .unwrap_or(holder)
+}
+
+/// A relative path for a diagnostic: `Debug` quotes it and escapes anything
+/// non-printable, and a long one is cut, because its last component is a name
+/// out of the source tree rather than a constant.
+fn for_diagnostic(path: &Path) -> String {
+    let shown = format!("{path:?}");
+    match shown.char_indices().nth(MAX_REPORTED_NAME_CHARS) {
+        Some((cut, _)) => format!("{}...\"", &shown[..cut]),
+        None => shown,
+    }
+}
+
 /// The copy budget is aggregate across the allowlisted shared directories, so
-/// the directory holding the entry that overruns it is usually not the
-/// directory that spent it, and within one directory it is decided by
-/// `readdir` order. The budget therefore charges each entry to the top-level
-/// shared folder being walked and reports every folder's own count.
+/// the folder holding the entry that overruns it is usually not the folder
+/// that spent it: that one is decided by walk order. The budget therefore
+/// charges every entry to [`charged_folder`] and names the folders that
+/// charged the most, which is what an operator has to shrink.
 #[derive(Default)]
 struct CopyBudget {
     counted: usize,
-    /// `(folder, entries charged)`, in `SHARED_ASSET_DIRS` order.
-    folders: Vec<(&'static str, usize)>,
+    /// Entries charged per folder, keyed by the relative path from
+    /// [`charged_folder`].
+    folders: HashMap<PathBuf, usize>,
 }
 
 impl CopyBudget {
-    /// Starts charging to one of the allowlisted shared directories.
-    fn enter(&mut self, folder: &'static str) {
-        self.folders.push((folder, 0));
-    }
-
-    /// Charges one directory entry; fails once the aggregate budget is spent.
-    fn charge(&mut self) -> Result<(), ProfileError> {
+    /// Charges one directory entry to `holder`, the directory that holds it,
+    /// as a path relative to the shared source. Fails once the aggregate
+    /// budget is spent.
+    fn charge(&mut self, holder: &Path) -> Result<(), ProfileError> {
         self.counted += 1;
-        if let Some((_, count)) = self.folders.last_mut() {
-            *count += 1;
+        let folder = charged_folder(holder);
+        match self.folders.get_mut(folder) {
+            Some(count) => *count += 1,
+            None => {
+                self.folders.insert(folder.to_path_buf(), 1);
+            }
         }
         if self.counted > MAX_COPY_ENTRIES {
             return Err(self.exceeded());
@@ -643,25 +674,62 @@ impl CopyBudget {
         Ok(())
     }
 
-    /// Names every shared folder that charged entries, with its count. The
-    /// walk stops at the limit, so the folder being walked when it stopped may
-    /// hold more than its count; folders already walked hold exactly theirs.
-    /// The names come from `SHARED_ASSET_DIRS`, never from the source tree, so
-    /// no source-controlled text reaches the diagnostic.
+    /// Names the folders that charged the most entries, each as its path
+    /// relative to the shared source. Every count is exactly what that folder
+    /// had charged when the walk stopped at the limit; folders the walk never
+    /// reached are absent rather than reported as zero.
     fn exceeded(&self) -> ProfileError {
-        let counts: Vec<String> = self
+        let mut folders: Vec<(&Path, usize)> = self
             .folders
             .iter()
-            .filter(|(_, count)| *count > 0)
-            .map(|(folder, count)| format!("{folder:?} {count}"))
+            .map(|(folder, count)| (folder.as_path(), *count))
             .collect();
-        if counts.is_empty() {
-            return ProfileError::SharedAssetLimit(format!("more than {MAX_COPY_ENTRIES} entries"));
-        }
+        folders.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let named: Vec<String> = folders
+            .iter()
+            .take(MAX_REPORTED_FOLDERS)
+            .map(|(folder, count)| format!("{} {count}", for_diagnostic(folder)))
+            .collect();
+        // `charge` records the folder before it calls this, so at least one
+        // folder is always named.
+        let rest = match folders.len() - named.len() {
+            0 => String::new(),
+            more => format!(", and {more} more"),
+        };
         ProfileError::SharedAssetLimit(format!(
-            "more than {MAX_COPY_ENTRIES} entries; per folder: {}",
-            counts.join(", ")
+            "more than {MAX_COPY_ENTRIES} entries; charged before stopping: {}{rest}",
+            named.join(", ")
         ))
+    }
+}
+
+/// The two rules the entry-limit message rests on. Both are cheap to state
+/// here and would otherwise need a 5,000-entry tree to reach.
+#[cfg(test)]
+mod budget_naming_tests {
+    use super::{MAX_REPORTED_NAME_CHARS, charged_folder, for_diagnostic};
+    use std::path::Path;
+
+    #[test]
+    fn an_entry_is_charged_to_the_first_two_components_of_its_folder() {
+        for (holder, charged) in [
+            ("skills", "skills"),
+            ("skills/custom", "skills/custom"),
+            ("skills/custom/deep/deeper", "skills/custom"),
+        ] {
+            assert_eq!(charged_folder(Path::new(holder)), Path::new(charged));
+        }
+    }
+
+    #[test]
+    fn a_named_folder_is_quoted_escaped_and_cut() {
+        assert_eq!(for_diagnostic(Path::new("skills/a b")), r#""skills/a b""#);
+        assert_eq!(for_diagnostic(Path::new("skills/a\nb")), r#""skills/a\nb""#);
+        let long = format!("skills/{}", "v".repeat(200));
+        let cut = for_diagnostic(Path::new(&long));
+        assert_eq!(cut.chars().count(), MAX_REPORTED_NAME_CHARS + 4);
+        assert!(cut.starts_with(r#""skills/vvv"#), "{cut}");
+        assert!(cut.ends_with("...\""), "{cut}");
     }
 }
 
@@ -679,7 +747,6 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
 
     let mut budget = CopyBudget::default();
     for name in SHARED_ASSET_DIRS {
-        budget.enter(name);
         copy_allowlisted_tree(&root, name, &destination.join(name), 0, &mut budget)?;
     }
     let dst = fdwalk::open_dir(libc::AT_FDCWD, destination)?
@@ -723,7 +790,6 @@ pub(super) fn portable_seed_shared_assets(
 
     let mut budget = CopyBudget::default();
     for name in SHARED_ASSET_DIRS {
-        budget.enter(name);
         portable_copy_allowlisted_tree(
             &source.join(name),
             &destination.join(name),
@@ -770,7 +836,7 @@ fn portable_copy_allowlisted_tree(
         if is_excluded_shared_path(&path) {
             continue;
         }
-        budget.charge()?;
+        budget.charge(shown)?;
         let source_path = entry.path();
         let destination_path = destination.join(&name);
         let kind = entry.file_type()?;
@@ -1055,7 +1121,7 @@ pub(super) mod fdwalk {
             if super::is_excluded_shared_path(&path) {
                 continue;
             }
-            budget.charge()?;
+            budget.charge(shown)?;
             let kind = match file_type(src.as_raw_fd(), &name) {
                 Ok(k) => k,
                 Err(e) if skippable(&e) => continue,
@@ -1133,6 +1199,11 @@ pub(super) mod fdwalk {
     }
 }
 
+/// The path-based file copy the portable walker uses, served by
+/// [`open_source_nofollow`] and, for `settings.json`, by
+/// `copy_filtered_settings`. On Unix all three are compiled only for the
+/// `cfg(test)` build of [`portable_seed_shared_assets`]; production on Unix
+/// copies through `fdwalk` and never reaches them.
 #[cfg(any(not(unix), test))]
 fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
@@ -1153,7 +1224,11 @@ fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileErr
     copy_limited(input, &mut output)
 }
 
-/// Best-effort on non-Unix: no descriptor-relative open is available.
+/// Best-effort on non-Unix: no descriptor-relative open is available. Only
+/// the Windows branch holds the final component against a swap; the
+/// `cfg(test)` build on Unix falls through to a plain open, so driving the
+/// portable walker there proves nothing about symlink handling. On Unix that
+/// is `fdwalk`'s to prove, and its own tests do.
 #[cfg(any(not(unix), test))]
 fn open_source_nofollow(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
