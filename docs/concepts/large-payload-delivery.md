@@ -298,9 +298,13 @@ with the file path as its prompt. There is no fallback to argv.
   than v0.7.0 reaches the refusal. Values that grow past that size inside a run, such
   as step outputs, reach bash steps intact.
 - Remote and admiral runs support auto mode only.
-- An auto-switch [usage-limit rerun](../reference/profile-command.md#usage-limit-reruns)
-  of `amplihack claude -p` whose prompt was piped on stdin by hand starts with
-  an empty stdin; see
+- A prompt piped into `amplihack claude -p` on stdin, which is how the recipe
+  runner delivers every Claude agent step's task, is copied aside by the
+  supervisor and replayed on a
+  [usage-limit rerun](../reference/profile-command.md#usage-limit-reruns). The
+  copy is a private file that is removed when the step ends. Where it cannot
+  be made, the rerun starts with an empty stdin and the step is run once
+  instead; see
   [Supervised reruns and stdin](../reference/large-payload-delivery.md#supervised-reruns-and-stdin).
 - File-reference delivery depends on the agent reading the file. It is used
   only for tools with no stdin channel.

@@ -1693,9 +1693,21 @@ While a step is supervised this way, its error output streams as usual but
 its standard output is held back and printed when the last attempt finishes.
 The recipe runner's heartbeat therefore reports such a step as idle until
 it ends; that is expected, and nothing is stopped because of it.
-Piped standard input is copied once, before the first attempt, to a private
-file, and every attempt reads that copy, so a rerun gets the same prompt as
-the first attempt. Input from a terminal is passed through and not copied.
+A prompt that arrives on standard input is copied to a private file as it
+arrives, and every attempt reads that copy, so a rerun gets the same prompt
+as the first attempt. The first attempt is not delayed by the copy: it reads
+each block as the copier passes it on. Input from a terminal, and standard
+input of any kind on a launch whose prompt is already in its arguments, is
+passed through and not copied.
+The copy starts when the first attempt does, so a supervisor that cannot
+start at all leaves standard input untouched for the plain launch that
+follows. If standard input cannot be read to its end, the attempt has been
+handed less than the prompt that was sent, which it cannot tell from a whole
+one. amplihack says so on standard error and the step fails, rather than
+report that attempt's result as the step's. If the caller never closes the
+pipe, there is no whole copy to replay: amplihack refuses the rerun with a
+named reason and the step ends with the attempt's own result, rather than
+waiting on a pipe nobody closes.
 If the step is stopped (SIGINT, SIGTERM or SIGHUP), it is not rerun: the
 attempt's output is passed back and amplihack exits with `128` plus the
 signal number.
@@ -2259,8 +2271,12 @@ The run ends as before, with no wait, when:
 - the step uses an explicit `CLAUDE_CONFIG_DIR`, an inherited profile with
   auto-switch off, or a `.default` profile that is not the rotator's live
   one, and the limit is weekly or states no readable reset;
-- the prompt came on a pipe (auto-switch then does not rerun it under
-  another profile either).
+- the prompt came on a pipe and could not be copied aside, so no attempt
+  after the first could read it (auto-switch then does not rerun the step
+  under another profile either). A piped prompt that was copied is replayed
+  and does not stop the wait;
+- standard input is an `--input-format` channel rather than a prompt, which
+  is read for as long as the session and cannot be replayed to a retry.
 
 Model output that merely mentions a usage limit never starts a wait.
 
@@ -2500,10 +2516,13 @@ and the variables in
 - **Standard output is held back.** While the wait is on, a recipe step's
   standard output is printed when the step ends, even for steps that never
   hit a limit. Error output still streams.
-- **Piped input is not replayed.** The rerun reads a file given as stdin
-  again from the start, but gets nothing from a pipe, whose contents went
-  to the first attempt. Recipe steps pass their prompt as an argument, so
-  this only matters for hand-built pipelines.
+- **Piped input is replayed from a copy, when one can be made.** A recipe
+  agent step is given its prompt on stdin, so the supervisor copies that
+  prompt to a private file as it arrives and gives every attempt the same
+  bytes. The rerun reads a file given as stdin again from the start. Where
+  the copy cannot be made, or the caller never closes the pipe so there is
+  no whole copy of the prompt to replay, the rerun is refused with a named
+  reason and the step ends with the limited attempt's own result.
 - **`~/.amplihack` must be private.** Held-back output goes under
   `~/.amplihack/rerun/` (or `<root>/.auto-switch.d/rerun/` with
   auto-switch on). If `~/.amplihack` is not owned by you or others can
