@@ -205,8 +205,10 @@ pub(crate) struct Waiter {
     parent: libc::pid_t,
     /// Why no wait can help this step, whatever the limit says.
     blocked: Option<NoWait>,
-    /// Claude's arguments carry the prompt (else it may be on stdin).
-    prompt_in_args: bool,
+    /// What this step's Claude arguments ask for, which is how the
+    /// supervisor knows whether stdin carries anything it must keep and
+    /// whether that thing is a prompt at all (issues #2815, #2816).
+    args: claude_args::ClaudeArgs,
     /// Whether another login could take over this `$HOME/.claude` step
     /// (#1801), called only when a limit is seen. Always false for a step
     /// with an explicit login or an inherited profile.
@@ -224,7 +226,7 @@ impl Waiter {
     pub(crate) fn new(
         settings: Option<WaitSettings>,
         watch: Watch,
-        prompt_in_args: bool,
+        args: claude_args::ClaudeArgs,
         home_takeover: Box<dyn Fn() -> bool>,
         home_rotator: Box<dyn Fn() -> bool>,
     ) -> Self {
@@ -248,7 +250,7 @@ impl Waiter {
             // SAFETY: getppid(2) has no preconditions.
             parent: unsafe { libc::getppid() },
             blocked: None,
-            prompt_in_args,
+            args,
             home_takeover,
             home_rotator,
             retry_move: None,
@@ -298,9 +300,23 @@ impl Waiter {
         self.blocked.map(WaitFor::Skip)
     }
 
-    /// Whether Claude's arguments carry the prompt.
+    /// Whether Claude's arguments carry the prompt, so stdin holds nothing
+    /// this step needs.
     pub(crate) fn prompt_in_args(&self) -> bool {
-        self.prompt_in_args
+        self.args.prompt
+    }
+
+    /// Whether stdin is a control channel rather than a prompt that ends:
+    /// `--input-format` with anything but `text` (issue #2816).
+    ///
+    /// Such a channel is read for as long as the session and its caller
+    /// holds it open on purpose, so there is no end of it to copy and no
+    /// replaying it to a retry. A step reading one keeps the conduct it had
+    /// before #2815: nothing is copied, and a usage limit ends it with
+    /// `skipped reason=piped_prompt` rather than waiting for a reset it
+    /// could not use.
+    pub(crate) fn stdin_is_a_channel(&self) -> bool {
+        self.args.stream_stdin
     }
 
     /// Whether another login could take over this `$HOME/.claude` step.
@@ -342,12 +358,22 @@ impl Waiter {
     /// may move at all is `probe`'s own decision and belongs nowhere else:
     /// it is false for a step with no auto-switch candidate, which is how a
     /// step on `$HOME/.claude` or under an explicit login stays put.
+    ///
+    /// `replay()` is asked, at the moment a retry is about to be announced,
+    /// why the step's prompt cannot be given to one; `None` means it can
+    /// (issue #2816). It is asked here, and not before the wait, because a
+    /// prompt still arriving on a pipe when the limit is seen has normally
+    /// arrived by the time a wait of hours ends: a refusal before the wait
+    /// would throw away the rerun that waiting earns. A refusal here ends
+    /// the step with the limit result and `skipped reason=piped_prompt`,
+    /// rather than announcing a retry that cannot run.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
         n: u32,
         signals: &Signals,
         probe: &dyn Fn(i64, i64) -> bool,
+        replay: &mut dyn FnMut() -> Option<String>,
     ) -> AfterLimit {
         let Some(settings) = self.settings else {
             return AfterLimit::Finish(None);
@@ -434,6 +460,9 @@ impl Waiter {
                 return AfterLimit::Finish(None);
             }
             emit(&Event::End(End::LoginChanged), account);
+            if no_prompt_for_a_retry(replay) {
+                return AfterLimit::Finish(None);
+            }
             log(&Event::Resume {
                 attempt: n.saturating_add(1),
             });
@@ -492,6 +521,9 @@ impl Waiter {
             | End::LoginChanged
             | End::RotatorCapacity
             | End::OtherCapacity => {
+                if no_prompt_for_a_retry(replay) {
+                    return AfterLimit::Finish(None);
+                }
                 log(&Event::Resume {
                     attempt: n.saturating_add(1),
                 });
@@ -499,6 +531,25 @@ impl Waiter {
             }
         }
     }
+}
+
+/// Whether the retry this wait earned has no prompt to read, asked of
+/// `replay` the moment before the retry would be announced (issue #2816).
+///
+/// A step whose prompt arrives on a pipe is replayed from the copy the
+/// supervisor kept (issue #2815), and there are two ways that copy can be
+/// missing when the wait ends: it was lost, or the caller never finished
+/// writing the prompt and so there is no whole copy of it to give. Either
+/// way the retry cannot run, and the wait's own vocabulary already has the
+/// word for it. The reason is printed because `piped_prompt` alone does not
+/// say which of the two it was.
+fn no_prompt_for_a_retry(replay: &mut dyn FnMut() -> Option<String>) -> bool {
+    let Some(why) = replay() else {
+        return false;
+    };
+    eprintln!("amplihack: no retry after the wait: this step's prompt {why}");
+    log(&Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)));
+    true
 }
 
 /// Whether the login changed between `was`, read before the attempt, and
@@ -546,7 +597,7 @@ pub(crate) fn supervise_unprofiled(
     settings: WaitSettings,
     store: Option<&ProfileStore>,
     default: Option<&super::name::ProfileName>,
-    prompt_in_args: bool,
+    args: claude_args::ClaudeArgs,
 ) -> Result<Option<i32>> {
     let path = |name: &str| {
         std::env::var_os(name)
@@ -563,12 +614,6 @@ pub(crate) fn supervise_unprofiled(
     let home_rotator = super::auto_switch::takeover::home_rotator(home_store);
     super::auto_switch::rerun::run(
         None,
-        Waiter::new(
-            Some(settings),
-            watch,
-            prompt_in_args,
-            home_takeover,
-            home_rotator,
-        ),
+        Waiter::new(Some(settings), watch, args, home_takeover, home_rotator),
     )
 }

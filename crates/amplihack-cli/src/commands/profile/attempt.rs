@@ -10,6 +10,7 @@ use super::PROFILE_ENV;
 use super::auto_switch::SUPERVISED_ENV;
 use super::fsx;
 use super::limit_wait::plan::{self, WaitFor};
+use super::limit_wait::scratch::RerunStdin;
 use super::name::ProfileName;
 use crate::commands::recipe::run::limit_patterns::{self, Harness};
 use crate::commands::recipe::run::{FailureClass, classify_failure_text};
@@ -127,19 +128,57 @@ impl Drop for Signals {
     }
 }
 
+/// Debug-only seam for issue #2816: `AMPLIHACK_TEST_FAIL_ATTEMPT=<n>` makes
+/// attempt `n` fail to start, as a replaced binary, `EMFILE` or a refused
+/// output buffer would. The supervisor's answer to a first attempt that
+/// never started is to stand down and let a plain launch follow, and the
+/// only way to exercise that from the outside is to make one fail on
+/// demand.
+///
+/// Compiled out of release builds, as the usage-limit wait's test clock is,
+/// so no installed binary reads this variable.
+#[cfg(debug_assertions)]
+fn forced_attempt_failure(n: u32) -> Option<std::io::Error> {
+    let want: u32 = std::env::var("AMPLIHACK_TEST_FAIL_ATTEMPT")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    (want == n)
+        .then(|| std::io::Error::other(format!("AMPLIHACK_TEST_FAIL_ATTEMPT refused attempt {n}")))
+}
+
+#[cfg(not(debug_assertions))]
+fn forced_attempt_failure(_n: u32) -> Option<std::io::Error> {
+    None
+}
+
 /// Runs attempt `n`. `env` is a profile to switch to and its directory;
 /// `None` keeps the inherited environment.
+///
+/// `stdin` is the step's stdin policy rather than a ready-made `Stdio`
+/// because the two are not one step (issue #2816): this asks it for the
+/// attempt's stdin, and tells it when the child that is to read it exists.
+/// A captured prompt starts copying the caller's pipe only on that second
+/// call, so an attempt that never starts leaves fd 0 untouched for the
+/// plain launch that follows, and a write that fails on the attempt's end
+/// of the pipe always means a step that stopped reading.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_attempt_with_recovery(
     exe: &Path,
     args: &[std::ffi::OsString],
     rerun_dir: &Path,
     env: Option<(&ProfileName, &Path)>,
-    stdin: std::io::Result<Stdio>,
+    stdin: &mut RerunStdin,
     n: u32,
     signals: &Signals,
     recovery: Option<&recipe_runner_rs::recovery::ipc::Client>,
 ) -> Result<Attempt> {
+    if let Some(e) = forced_attempt_failure(n) {
+        // Before the output buffer is opened, which is where a real
+        // refusal of this shape lands first.
+        return Err(e).context("failed to start the supervised launch");
+    }
     let stdout_path = rerun_dir.join(format!("{}-{n}.out", std::process::id()));
     let mut opts = fs::OpenOptions::new();
     opts.read(true)
@@ -155,7 +194,7 @@ pub(crate) fn run_attempt_with_recovery(
             client.environment()?,
         );
     }
-    let spawned = stdin.and_then(|input| {
+    let spawned = stdin.for_attempt(n).and_then(|input| {
         cmd.args(args)
             .env(SUPERVISED_ENV, "1")
             .stdin(input)
@@ -175,6 +214,10 @@ pub(crate) fn run_attempt_with_recovery(
             return Err(e).context("failed to start the supervised launch");
         }
     };
+    // The child holds the far end of a captured prompt's pipe, so the copy
+    // off this process's stdin may begin (issue #2816). Nothing before this
+    // point has read a byte of it.
+    stdin.attempt_started();
     let mut pipe = child.stderr.take().context("no stderr pipe")?;
     let reader = std::thread::spawn(move || {
         let mut tail: Vec<u8> = Vec::new();
