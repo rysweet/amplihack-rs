@@ -282,14 +282,18 @@ uncommitted and unpushed work. The retained worktree helper accepts a valid
 worktree and refuses invalid registration, branch, or intended-head evidence.
 Completion coverage follows the existing rules described above.
 
-The end-to-end CI scenario in
-[#2806](https://github.com/rysweet/amplihack-rs/issues/2806) is a landing
-dependency: it lands first or together with this removal. Its expectations
-use named-checkout execution and retain pending-check finalization and
-retained-work coverage. `tests/gadugi` scenarios run exclusively in CI.
-Validation records distinguish behavioral stubs from live agent execution;
-source-text or prompt-phrase tests do not establish this contract. Results
-belong in CI logs and the delivery PR.
+That coverage lands with this change, as the `issue_2808` contracts under
+`crates/amplihack-cli/tests`. They run in the workspace suite against hermetic
+Git fixtures, the real runner library and real shell steps; only the hosting
+evidence and the agents are scripted. They therefore establish checkout
+selection, preflight routing, tier delivery and Git-visible effects, not live
+model judgment. A whole build and a whole drive under live agents stay outside
+this change and are tracked in
+[#2806](https://github.com/rysweet/amplihack-rs/issues/2806), which this change
+does not depend on. `tests/gadugi` scenarios run exclusively in CI. Validation
+records distinguish behavioral stubs from live agent execution; source-text or
+prompt-phrase tests do not establish this contract. Results belong in CI logs
+and the delivery PR.
 
 The owner decision in
 [#2808](https://github.com/rysweet/amplihack-rs/issues/2808) supersedes the
