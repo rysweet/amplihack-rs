@@ -71,8 +71,9 @@ pub(crate) fn resolve_from_env() -> Result<WorkRoot> {
     )
 }
 
-/// Refuses a work root that cleanup could not safely manage.
-pub(crate) fn validate(path: &Path, home: &Path) -> Result<()> {
+/// Refuses a work root in a location cleanup could not safely manage.
+/// Ownership and permissions are checked separately by each caller.
+pub(crate) fn validate_location(path: &Path, home: &Path) -> Result<()> {
     if !path.is_absolute() {
         bail!("work root {} must be an absolute path", path.display());
     }
@@ -123,6 +124,14 @@ pub(crate) fn validate(path: &Path, home: &Path) -> Result<()> {
             bail!("work root {} is the root of a git checkout", path.display());
         }
     }
+    Ok(())
+}
+
+/// Validate a work root's location, ownership and write permissions before
+/// using it to create run artifacts. Discovery can use `validate_location`
+/// and report existing mode disagreements as evidence instead.
+pub(crate) fn validate(path: &Path, home: &Path) -> Result<()> {
+    validate_location(path, home)?;
     match fs::symlink_metadata(path) {
         Ok(meta) => {
             let meta = if meta.file_type().is_symlink() {

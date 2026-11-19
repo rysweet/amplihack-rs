@@ -658,14 +658,80 @@ fn a_run_dir_that_others_can_write_to_is_not_used() {
 }
 
 #[test]
-fn a_record_whose_run_id_disagrees_with_the_folder_run_json_is_not_used() {
-    // A shadow log naming a real folder with another run's correlation id.
+fn a_record_whose_run_id_disagrees_with_the_report_is_used_with_evidence() {
     let f = GuideFixture::new();
     let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
     let other = "0e9d8c7b-6a5f-4e3d-8c2b-1a0f9e8d7c6b";
-    f.session_log_from_pointer(SESSION, &GuideFixture::pointer(other, Some(&run)));
-    let o = f.guide_without_work_root(&[SESSION], "text");
-    assert_refused_and_nothing_written(&o, &run);
+    let mut pointer = issue_pointer(&f, &run);
+    pointer["run_id"] = other.into();
+    f.session_log_from_pointer(SESSION, &pointer);
+    for target in [SESSION, other, RUN_FOLDER, ISSUE_URL, "2783"] {
+        let o = f.guide_without_work_root(&[target], "recover the recorded run");
+        assert_lands_in(&o, &run);
+        let warning = stderr(&o);
+        assert!(warning.contains("does not record pointer run"), "{warning}");
+        assert!(warning.contains(other), "{warning}");
+        assert!(warning.contains(&run.display().to_string()), "{warning}");
+    }
+}
+
+#[test]
+fn a_renamed_folder_and_stale_report_id_remain_discoverable() {
+    let f = GuideFixture::new();
+    let original = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    // A safe folder name outside the run-ID grammar, keeping its old report.
+    let run = original.with_file_name("recovered run");
+    fs::rename(&original, &run).unwrap();
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    for target in [SESSION, CORRELATION, RUN_FOLDER, ISSUE_URL, "2783"] {
+        let o = f.guide_without_work_root(&[target], "recover the renamed run");
+        assert_lands_in(&o, &run);
+        let warning = stderr(&o);
+        assert!(warning.contains("is not named like a run"), "{warning}");
+        assert!(warning.contains("names run"), "{warning}");
+        assert!(warning.contains(RUN_FOLDER), "{warning}");
+        assert!(warning.contains("recovered run"), "{warning}");
+    }
+}
+
+#[test]
+fn a_later_attempt_is_found_despite_stale_pointer_and_folder_metadata() {
+    let f = GuideFixture::new();
+    let original = retried_run(&f);
+    let run = original.with_file_name("recovered run");
+    fs::rename(&original, &run).unwrap();
+    let stale = "stale-pointer-id";
+    f.session_log_from_pointer(SESSION, &GuideFixture::pointer(stale, Some(&run)));
+    let o = f.guide_without_work_root(&[RETRY_CORRELATION], "recover later attempt");
+    assert_lands_in(&o, &run);
+    let warning = stderr(&o);
+    assert!(warning.contains("does not record pointer run"), "{warning}");
+    assert!(warning.contains(stale), "{warning}");
+    assert!(warning.contains("names run"), "{warning}");
+}
+
+#[test]
+fn writable_ancestor_and_report_modes_are_reported_as_recovery_evidence() {
+    for level in ["root", "runs", "run.json"] {
+        let f = GuideFixture::new();
+        let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+        let path = match level {
+            "root" => f.alt_work.clone(),
+            "runs" => f.alt_work.join("runs"),
+            _ => run.join("run.json"),
+        };
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o770)).unwrap();
+        f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&run)));
+        let o = f.guide_without_work_root(&[SESSION], "recover with mode evidence");
+        assert_lands_in(&o, &run);
+        let warning = stderr(&o);
+        assert!(warning.contains(&path.display().to_string()), "{warning}");
+        assert!(warning.contains("mode 0770"), "{warning}");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o770
+        );
+    }
 }
 
 #[test]
@@ -750,10 +816,9 @@ fn a_deeply_nested_pointer_line_is_skipped_not_fatal() {
 }
 
 #[test]
-fn an_oversize_pointer_line_is_skipped_not_fatal() {
+fn a_pointer_line_over_the_old_size_limit_is_found() {
     let f = GuideFixture::new();
     let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
-    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
     let mut big = GuideFixture::pointer(CORRELATION, Some(&run));
     big["issue_number"] = "2783".into();
     big["cwd"] = "x".repeat(200_000).into();
@@ -768,8 +833,7 @@ fn an_oversize_pointer_line_is_skipped_not_fatal() {
 
 #[test]
 fn a_long_recorded_field_does_not_prevent_a_match_on_another_field() {
-    // Per-field caps: a 20 KiB pr_url must not be held or matched, yet the
-    // 20 KiB-bearing line (under the 32 KiB line limit) still yields its run_dir.
+    // Unknown fields do not interfere with recovery of run_dir.
     let f = GuideFixture::new();
     let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
     let mut p = issue_pointer(&f, &run);

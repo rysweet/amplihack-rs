@@ -337,8 +337,9 @@ pointer line.
 The command treats two kinds of input differently.
 
 - **A recorded claim** is a `run_dir`, session or issue taken from a pointer
-  line or a `run.json`. A claim that fails a check below is not used. It
-  becomes a note in the not-found message, and the next rule is still tried.
+  line or a `run.json`. Unsafe paths and ownership failures become notes
+  in the not-found message, and the next rule is still tried. Naming, ID
+  and mode disagreements are retained as warnings when a candidate is used.
 - **An operator-named input** is something you typed: the target and the
   `--file` path. These are refused with an error when they fail: a malformed
   pull request URL, a session log you named that is a symbolic link or not
@@ -358,27 +359,35 @@ Checks applied to a recorded folder before it is written to:
   root, so without this one a folder such as
   `/x/<ESC>]0;title<BEL>/runs/<run id>` would pass them all and then be
   printed back on the success path.
-- Its parent is named `runs` and its name is a valid run ID.
+- Its parent is named `runs`. A name outside the run-ID grammar is reported
+  as evidence without discarding the folder.
 - Neither the folder nor `run.json` is a symbolic link, and neither `runs`
   nor the work root is a symbolic link (checked with `lstat`, so a link is
   seen rather than followed).
-- `run.json`, the run folder, `runs` and the log files are owned by the
-  current user (uid equals euid) and are not writable by group or others.
+- The work root, `runs`, run folder and `run.json` are owned by the current
+  user (uid equals euid). Group or other write permissions are reported as
+  discovery evidence. Before appending, the run folder and guidance files
+  still pass the existing destination checks, including the restriction on
+  group or other write permissions. No permissions are changed.
+- Log files are owned by the current user and are not writable by group or
+  others.
 - The log directory passes the same trust check. A failure is reported as a
   note.
-- `run.json` parses, its `run_id` is the folder's own name, and the `run_id`
-  the pointer line recorded is either that name or the correlation ID of one
-  of the attempts it lists. A log planted beside the real ones therefore
-  cannot point the entry at another run's folder.
-- The work root implied by the folder (the parent of `runs`) passes the same
-  work root validation that `AMPLIHACK_WORK_ROOT` does.
+- `run.json` exists and parses. A report ID that differs from the folder
+  name, or a pointer ID absent from the report, is printed in the success
+  warning with the path and IDs. These disagreements do not discard the
+  candidate. A later attempt can still be found through the report's IDs.
+- The work root implied by the folder (the parent of `runs`) passes the
+  location checks used for `AMPLIHACK_WORK_ROOT`. Discovery reports mode
+  disagreements; creation and cleanup retain their stricter mode checks.
 
 Logs are searched newest first. A run ID or a session name stops at the first
 match; an issue keeps looking, so a run that is named more than once can be
-reported. At most 10,000 logs are scanned; the not-found message reports how
-many were skipped (not a regular file, unreadable, untrusted, holding no
-pointer line, or past the cap). A log that cannot be read or is not
-trusted is skipped; a log you name as a session is refused with an error.
+reported. All regular `*.log` files are searched, with no log-count cap.
+The not-found message counts skipped logs and explains read, trust and JSON
+parse failures, including serde_json's recursion limit. Symlinks and special
+files are never opened. A log that cannot be read or is not trusted is
+skipped; a log you name as a session is refused with an error.
 
 **Session names.** Nothing is refused here. A target that breaks the rule in
 step 3 above -- too long, or holding `/`, `:`, `.`, `#` or a control
@@ -387,9 +396,12 @@ the session log among the places it did not reach, giving the reason in
 brackets, and the later rules still get their turn. The command then exits 1
 only if none of them matches either. If the name passes the rule and the log
 is missing or has no pointer line yet, the command exits 1 and names the log
-path it tried. A pointer line of up to 32 KiB, within the first 64 KiB of the
-log, is read. Reading stops at that line, so the size of a log beyond it does
-not affect the cost of a scan.
+path it tried. Logs are read one line at a time until the first pointer
+line or EOF, with no byte-offset, pointer-length or field-length cutoff.
+Reading stops at that line, so the size of a log beyond it does not affect
+the cost of a scan. Long prefixes or lines therefore cost more to read, but
+do not hide a run. Invalid JSON is reported as an unusable pointer with its
+parse error, rather than as an absent pointer.
 
 **Pull request URLs.** The URL must have the form
 `https://github.com/<owner>/<repo>/pull/<number>`. A trailing `/`, a query

@@ -25,45 +25,21 @@
 //!   pointer line or holds one that will not parse is counted and skipped,
 //!   and the count reaches the caller in [`Scan::skipped`].
 //!
-//! A record is a claim, not a fact. Every string it yields is bounded here,
-//! and the folder it names is checked by `guide.rs` before anything is
-//! written to it.
+//! A record is a claim, not a fact. The folder it names is checked by
+//! `guide.rs` before anything is written to it. Discovery has no log-count,
+//! byte-offset, line-length or field-length cutoff; logs are read one line
+//! at a time and the search stops at the first pointer line.
 
-use crate::commands::recipe::run_id::MAX_RUN_ID;
 use crate::run_guidance::GuideError;
 use crate::run_guidance::fs_safety::{check_dir, untrusted_reason};
+use std::collections::BTreeMap;
 use std::fs;
-use std::io::{ErrorKind, Read};
+use std::io::{BufRead, BufReader, ErrorKind};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::SystemTime;
 
 pub(super) const LOG_POINTER_PREFIX: &str = "amplihack.recipe.log_pointer ";
-
-/// How much of a log is read while looking for its pointer line. This is
-/// the bound on a log that holds no pointer line, not what is normally
-/// read: the search stops at the first complete one, and the only output a
-/// run can put ahead of it is a warning line of its own, so it lies in the
-/// first few hundred bytes. A longer prefix costs reads, not correctness:
-/// the search carries on chunk by chunk to this bound.
-const MAX_LOG_HEAD: u64 = 64 * 1024;
-/// How much is asked for at a time while looking for that line. A scan
-/// reads one of these per log and stops, rather than the whole head: a
-/// recipe log grows to megabytes, so the difference is the cost of the
-/// scan. Wide enough to hold a pointer line carrying a 4 KiB `run_dir`
-/// without a second read.
-const READ_CHUNK: usize = 8 * 1024;
-/// The longest pointer line accepted. A line holds every recorded value,
-/// including a `task_description` and a `run_dir` of up to 4 KiB each.
-const MAX_POINTER_LINE: usize = 32 * 1024;
-/// Per-field bounds, so one field of a long line cannot hold the whole line
-/// for every record scanned.
-const MAX_RECORDED_PATH: usize = 4096;
-const MAX_RECORDED_NUMBER: usize = 32;
-const MAX_RECORDED_URL: usize = 512;
-/// The most logs examined in one scan, newest first. The rest are counted
-/// as skipped and named in the not-found message.
-const MAX_SCANNED_LOGS: usize = 10_000;
 
 /// The fields of a pointer line that name a run. Every one is optional: a
 /// record written before a field existed, or by a run that had no folder,
@@ -89,9 +65,9 @@ pub(super) struct Scan {
     pub(super) records: Vec<Pointer>,
     /// Logs that were listed but yielded no record, with the reason folded
     /// into a count: unreadable, untrusted, not a regular file, no pointer
-    /// line, an unparseable or oversize one, or past [`MAX_SCANNED_LOGS`].
+    /// line, or an unparseable one.
     pub(super) skipped: usize,
-    /// Why the directory itself yielded nothing, when it did.
+    /// Directory failure or explanations for skipped logs, including parser limits.
     pub(super) note: Option<String>,
 }
 
@@ -106,75 +82,55 @@ impl Scan {
 
     /// How the scan is described in the not-found message.
     pub(super) fn summary(&self) -> String {
-        match &self.note {
-            Some(note) => note.clone(),
-            None => {
-                let read = self.records.len();
-                let mut summary = format!("{read} pointer record(s)");
-                if self.skipped > 0 {
-                    summary.push_str(&format!(", {} log(s) skipped", self.skipped));
-                }
-                summary
-            }
+        if self.records.is_empty()
+            && self.skipped == 0
+            && let Some(note) = &self.note
+        {
+            return note.clone();
         }
+        let read = self.records.len();
+        let mut summary = format!("{read} pointer record(s)");
+        if self.skipped > 0 {
+            summary.push_str(&format!(", {} log(s) skipped", self.skipped));
+        }
+        if let Some(note) = &self.note {
+            summary.push_str(&format!(": {note}"));
+        }
+        summary
     }
 }
 
-/// One bounded string field, or `None` when it is absent, of the wrong JSON
-/// type, empty or longer than `max`. A wrong type never fails the read: the
-/// pointer schema may gain a field of another shape, and a record is never
-/// allowed to decide that a command stops.
-fn field(value: &serde_json::Value, key: &str, max: usize) -> Option<String> {
+/// One nonempty string field. Unknown fields and fields of another JSON
+/// type do not prevent the other fields from being recovered.
+fn field(value: &serde_json::Value, key: &str) -> Option<String> {
     value
         .get(key)
         .and_then(serde_json::Value::as_str)
-        .filter(|v| !v.is_empty() && v.len() <= max)
+        .filter(|v| !v.is_empty())
         .map(str::to_string)
 }
 
-/// The record a pointer line carries, or `None` when the line is over
-/// [`MAX_POINTER_LINE`] or does not parse. serde_json's default recursion
-/// limit is what stops a deeply nested line; it is deliberately left in
-/// place.
-fn parse_line(line: &[u8]) -> Option<Pointer> {
-    if line.len() > MAX_POINTER_LINE {
-        return None;
-    }
-    let body = line.strip_prefix(LOG_POINTER_PREFIX.as_bytes())?;
-    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
-    Some(Pointer {
-        run_id: field(&value, "run_id", MAX_RUN_ID),
-        run_dir: field(&value, "run_dir", MAX_RECORDED_PATH),
-        issue_number: field(&value, "issue_number", MAX_RECORDED_NUMBER),
-        issue_url: field(&value, "issue_url", MAX_RECORDED_URL),
+/// Parse a pointer line. Parse errors retain serde_json's explanation,
+/// including its recursion limit, rather than claiming no line was found.
+fn parse_line(line: &[u8]) -> Result<Pointer, String> {
+    let body = line
+        .strip_prefix(LOG_POINTER_PREFIX.as_bytes())
+        .ok_or_else(|| "not a pointer line".to_string())?;
+    let value: serde_json::Value = serde_json::from_slice(body).map_err(|e| e.to_string())?;
+    Ok(Pointer {
+        run_id: field(&value, "run_id"),
+        run_dir: field(&value, "run_dir"),
+        issue_number: field(&value, "issue_number"),
+        issue_url: field(&value, "issue_url"),
     })
-}
-
-/// The first pointer line in `head` that a newline closes, searching from
-/// `from`. `Err` carries the start of the trailing line that no newline has
-/// closed yet, which is where the next read continues the search, so a line
-/// straddling two reads is still found whole and no byte is scanned twice.
-fn complete_pointer_line(head: &[u8], from: usize) -> Result<&[u8], usize> {
-    let mut start = from;
-    while let Some(end) = head[start..].iter().position(|b| *b == b'\n') {
-        let line = &head[start..start + end];
-        if line.starts_with(LOG_POINTER_PREFIX.as_bytes()) {
-            return Ok(line);
-        }
-        start += end + 1;
-    }
-    Err(start)
 }
 
 /// The first pointer line of `log`, read through one handle that is opened
 /// without following a link, cannot block on a FIFO, and is checked by its
 /// own metadata rather than by a separate look at the path.
 ///
-/// Reading stops at that line rather than at [`MAX_LOG_HEAD`]. A log whose
-/// head holds no pointer line is read to the bound and yields `None`, as is
-/// one whose last line is cut off by the bound: that truncated line is
-/// returned and [`parse_line`] rejects it, which is what a short head has
-/// always done.
+/// Reading stops at the first pointer line or EOF. Only the current line
+/// is kept, so a long prefix of unrelated output does not accumulate.
 fn read_pointer_line(log: &Path) -> Result<Option<Vec<u8>>, GuideError> {
     let file = fs::OpenOptions::new()
         .read(true)
@@ -198,19 +154,13 @@ fn read_pointer_line(log: &Path) -> Result<Option<Vec<u8>>, GuideError> {
             log.display()
         )));
     }
-    let mut reader = file.take(MAX_LOG_HEAD);
-    let mut head = Vec::new();
-    let mut from = 0;
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
     loop {
-        let filled = head.len();
-        head.resize(filled + READ_CHUNK, 0);
-        let read = match reader.read(&mut head[filled..]) {
+        line.clear();
+        let read = match reader.read_until(b'\n', &mut line) {
             Ok(read) => read,
-            // What `read_to_end` does with a signal, kept here.
-            Err(e) if e.kind() == ErrorKind::Interrupted => {
-                head.truncate(filled);
-                continue;
-            }
+            Err(e) if e.kind() == ErrorKind::Interrupted => continue,
             Err(e) => {
                 return Err(GuideError::Io(format!(
                     "cannot read {}: {e}",
@@ -218,18 +168,11 @@ fn read_pointer_line(log: &Path) -> Result<Option<Vec<u8>>, GuideError> {
                 )));
             }
         };
-        head.truncate(filled + read);
         if read == 0 {
-            // The end of the log, or of the head. What is left after `from`
-            // is one line that no newline closed.
-            let last = &head[from..];
-            return Ok(last
-                .starts_with(LOG_POINTER_PREFIX.as_bytes())
-                .then(|| last.to_vec()));
+            return Ok(None);
         }
-        match complete_pointer_line(&head, from) {
-            Ok(line) => return Ok(Some(line.to_vec())),
-            Err(next) => from = next,
+        if line.starts_with(LOG_POINTER_PREFIX.as_bytes()) {
+            return Ok(Some(line));
         }
     }
 }
@@ -256,7 +199,12 @@ pub(super) fn read_named(log: &Path) -> Result<Option<Pointer>, GuideError> {
         ))
     };
     let line = found.ok_or_else(missing)?;
-    parse_line(&line).map(Some).ok_or_else(missing)
+    parse_line(&line).map(Some).map_err(|reason| {
+        GuideError::NotFound(format!(
+            "{} has an unusable amplihack.recipe.log_pointer line: {reason}",
+            log.display()
+        ))
+    })
 }
 
 /// One log worth opening: a regular file named `*.log`, with the time it
@@ -300,28 +248,38 @@ pub(super) fn scan(log_dir: &Path) -> Scan {
         Ok(false) => return Scan::unread(format!("{} does not exist", log_dir.display())),
         Err(e) => return Scan::unread(e.to_string()),
     }
-    let mut logs = match listed_logs(log_dir) {
+    let logs = match listed_logs(log_dir) {
         Ok(logs) => logs,
         Err(e) => return Scan::unread(e.to_string()),
     };
-    let mut skipped = logs.len().saturating_sub(MAX_SCANNED_LOGS);
-    logs.truncate(MAX_SCANNED_LOGS);
+    let mut skipped = 0;
+    let mut reasons = BTreeMap::<String, usize>::new();
     let mut records = Vec::with_capacity(logs.len());
     for (_, log) in logs {
-        match read_pointer_line(&log)
-            .ok()
-            .flatten()
-            .as_deref()
-            .and_then(parse_line)
-        {
-            Some(record) => records.push(record),
-            None => skipped += 1,
+        let record = match read_pointer_line(&log) {
+            Ok(Some(line)) => parse_line(&line),
+            Ok(None) => Err("no pointer line".to_string()),
+            Err(e) => Err(e.to_string()),
+        };
+        match record {
+            Ok(record) => records.push(record),
+            Err(reason) => {
+                skipped += 1;
+                *reasons.entry(reason).or_default() += 1;
+            }
         }
     }
+    let note = (!reasons.is_empty()).then(|| {
+        reasons
+            .into_iter()
+            .map(|(reason, count)| format!("{count}: {reason}"))
+            .collect::<Vec<_>>()
+            .join("; ")
+    });
     Scan {
         records,
         skipped,
-        note: None,
+        note,
     }
 }
 
@@ -346,38 +304,33 @@ mod tests {
     }
 
     #[test]
-    fn a_field_of_the_wrong_type_or_over_its_bound_reads_as_absent() {
-        let long = "a".repeat(MAX_RECORDED_PATH + 1);
+    fn long_fields_are_retained_and_wrong_types_or_empty_fields_are_absent() {
+        let long = "a".repeat(5000);
         let p = parse_line(&line(&format!(
             r#"{{"run_id":["r1"],"run_dir":"{long}","issue_number":""}}"#
         )))
         .unwrap();
-        assert_eq!(p, Pointer::default());
+        assert_eq!(p.run_dir.as_deref(), Some(long.as_str()));
+        assert_eq!(p.run_id, None);
+        assert_eq!(p.issue_number, None);
     }
 
     #[test]
-    fn an_oversize_or_unparseable_line_yields_no_record() {
-        assert!(parse_line(&line(&"x".repeat(MAX_POINTER_LINE))).is_none());
-        assert!(parse_line(&line("{not json")).is_none());
+    fn long_lines_parse_and_unparseable_lines_report_the_cause() {
+        let long = "x".repeat(200_000);
+        let p = parse_line(&line(&format!(r#"{{"run_dir":"{long}"}}"#))).unwrap();
+        assert_eq!(p.run_dir.as_deref(), Some(long.as_str()));
+        assert!(parse_line(&line("{not json")).is_err());
         let nested = format!("{}1{}", "[".repeat(5000), "]".repeat(5000));
-        assert!(parse_line(&line(&nested)).is_none());
-        assert!(parse_line(b"some other output").is_none());
+        assert!(
+            parse_line(&line(&nested))
+                .unwrap_err()
+                .contains("recursion limit")
+        );
+        assert!(parse_line(b"some other output").is_err());
     }
 
-    /// A retried run writes a pointer line per attempt, each with its own
-    /// correlation id and all naming the one folder it started with. Only
-    /// the first is read, so the record carries the first attempt's id and
-    /// the shared folder; `guide.rs` reaches the later attempts through the
-    /// `attempts[]` of the `run.json` in that folder (issue #2818).
-    #[test]
-    fn the_first_pointer_line_of_a_head_is_the_one_used() {
-        let head = b"starting\namplihack.recipe.log_pointer {\"run_id\":\"a\",\"run_dir\":\"/w/runs/r\"}\namplihack.recipe.log_pointer {\"run_id\":\"b\",\"run_dir\":\"/w/runs/r\"}\n";
-        let p = parse_line(complete_pointer_line(head, 0).unwrap()).unwrap();
-        assert_eq!(p.run_id.as_deref(), Some("a"));
-        assert_eq!(p.run_dir.as_deref(), Some("/w/runs/r"));
-    }
-
-    /// The same two attempts through the reader rather than the splitter:
+    /// A retried run writes one pointer per attempt.
     /// what a scan indexes for a retried run is one record, the first
     /// attempt's id with the folder every attempt of it uses.
     #[test]
@@ -399,23 +352,14 @@ mod tests {
         assert_eq!(record.run_dir.as_deref(), Some("/w/runs/r"));
     }
 
-    #[test]
-    fn a_line_no_newline_has_closed_yet_is_where_the_next_read_resumes() {
-        let head = b"starting\namplihack.recipe.log_pointer {\"run_id\"";
-        // Not a line yet, so the search says where to carry on from, and
-        // the bytes before it are never looked at again.
-        assert_eq!(complete_pointer_line(head, 0), Err(9));
-        assert_eq!(complete_pointer_line(b"no newline here", 0), Err(0));
-    }
-
     /// A log whose pointer line falls past the first read: the reader must
     /// ask for more and still return the line whole.
     #[test]
     fn a_pointer_line_beyond_the_first_read_is_found_whole() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("s.log");
-        let mut body = "filler\n".repeat(READ_CHUNK / 7 + 1);
-        assert!(body.len() > READ_CHUNK);
+        let mut body = "filler\n".repeat(8192 / 7 + 1);
+        assert!(body.len() > 8192);
         body.push_str(&format!(
             "{LOG_POINTER_PREFIX}{{\"run_id\":\"late\",\"run_dir\":\"/w/runs/late\"}}\nmore\n"
         ));
@@ -440,15 +384,58 @@ mod tests {
         assert_eq!(parse_line(&line).unwrap().run_id.as_deref(), Some("open"));
     }
 
-    /// A log whose head holds no pointer line is read to the bound and
-    /// yields nothing, rather than yielding a line from further down.
+    /// A pointer beyond the old 64 KiB cutoff is still found.
     #[test]
-    fn a_log_with_no_pointer_line_in_its_head_yields_none() {
+    fn a_pointer_beyond_64_kib_is_found() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("s.log");
-        let mut body = "filler\n".repeat(MAX_LOG_HEAD as usize / 7 + 64);
+        let mut body = "filler\n".repeat(64 * 1024 / 7 + 64);
         body.push_str(&format!("{LOG_POINTER_PREFIX}{{\"run_id\":\"deep\"}}\n"));
         std::fs::write(&log, &body).unwrap();
-        assert!(read_pointer_line(&log).unwrap().is_none());
+        assert_eq!(
+            read_named(&log).unwrap().unwrap().run_id.as_deref(),
+            Some("deep")
+        );
+    }
+    #[test]
+    fn more_than_ten_thousand_logs_are_searched() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in 0..10_001 {
+            let log = dir.path().join(format!("{n:05}.log"));
+            fs::write(
+                &log,
+                format!("{LOG_POINTER_PREFIX}{{\"run_id\":\"r{n}\"}}\n"),
+            )
+            .unwrap();
+            if n == 0 {
+                fs::File::open(&log)
+                    .unwrap()
+                    .set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+                    .unwrap();
+            }
+        }
+        let found = scan(dir.path());
+        assert_eq!(found.records.len(), 10_001);
+        assert_eq!(found.skipped, 0);
+        assert!(
+            found
+                .records
+                .iter()
+                .any(|p| p.run_id.as_deref() == Some("r0"))
+        );
+    }
+
+    #[test]
+    fn parser_limits_are_explained_in_named_and_scan_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("s.log");
+        let nested = format!("{}1{}", "[".repeat(5000), "]".repeat(5000));
+        fs::write(&log, line(&nested)).unwrap();
+        let error = read_named(&log).unwrap_err().to_string();
+        assert!(error.contains("recursion limit"), "{error}");
+        assert!(!error.contains("has no"), "{error}");
+        let summary = scan(dir.path()).summary();
+        assert!(summary.contains("1 log(s) skipped"), "{summary}");
+        assert!(summary.contains("recursion limit"), "{summary}");
     }
 }
