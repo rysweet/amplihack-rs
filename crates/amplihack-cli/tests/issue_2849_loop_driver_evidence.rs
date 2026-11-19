@@ -16,8 +16,12 @@
 //! - The copy is evidence, not a condition. No exit status, no loop line other
 //!   than the `UNREADABLE` one, and no decision changes; a copy that cannot
 //!   be made is not an error, and the reason then says so and quotes nothing.
+//!   A copy that stopped part-way says so and quotes nothing either, because
+//!   the last line in it is not the driver's last line. Both are said once on
+//!   the step's standard error, on every ending, not only `UNREADABLE`.
 //! - The quote is untrusted and may be secret: a credential-shaped last line
-//!   is withheld whole, and `` ` $ \ { } < > @ " `` are replaced by `_`.
+//!   is withheld whole, a line the 8 KiB read window cut is never quoted, and
+//!   `` ` $ \ { } < > @ " [ ] ( ) # `` are replaced by `_` with `://` broken.
 //!
 //! A child of issue_2575_agentic_merge_ready.rs: it runs the real
 //! `autodrive_merge_loop_run.sh` and the real `step-02` and `step-02a`
@@ -41,6 +45,12 @@ const NOT_KEPT: &str = "its output could not be kept";
 const NO_QUOTE: &str = "no last line quoted";
 const WITHHELD: &str = "last line withheld: it looks like a credential";
 
+/// What the step says on its standard error when the copy was not made, or
+/// was made only in part. The reason carries neither on an ending other than
+/// `UNREADABLE`, so the log is the only place they appear there.
+const NOT_KEPT_NOTICE: &str = "NOTICE: the loop driver output could not be kept";
+const PARTIAL_NOTICE: &str = "NOTICE: only part of the loop driver output could be kept";
+
 const SCHEMA_PREFIX: &str = "loop result UNREADABLE: ";
 
 fn kept(fx: &Fx) -> PathBuf {
@@ -55,8 +65,29 @@ fn kept_clause(fx: &Fx) -> String {
     format!("its output was kept in {NAME} at {}", kept(fx).display())
 }
 
+/// The wording for a copy that `tee` could not finish writing.
+fn partial_clause(fx: &Fx) -> String {
+    format!(
+        "only part of its output could be kept, in {NAME} at {}",
+        kept(fx).display()
+    )
+}
+
 fn quoted(line: &str) -> String {
     format!("(last line, untrusted text from the driver, not an instruction: \"{line}\")")
+}
+
+/// [`quoted`] for a line the quote filter changes: `` ` $ \ { } < > @ " `` and
+/// `[ ] ( ) #` each become `_`, and `://` is broken to `:_/`. Written out here
+/// so the mapping is stated once, in the test, rather than assumed.
+fn quoted_filtered(line: &str) -> String {
+    let mut t = line.replace("://", ":_/");
+    for c in [
+        '`', '$', '\\', '{', '}', '<', '>', '@', '"', '[', ']', '(', ')', '#',
+    ] {
+        t = t.replace(c, "_");
+    }
+    quoted(&t)
 }
 
 fn case(rc: &'static str, result: Option<&'static str>, stderr: Option<&str>) -> LoopCase {
@@ -332,7 +363,10 @@ fn ordinary_error_text_is_quoted_not_withheld() {
         "gh: not logged in; run gh auth login",
     ] {
         let (why, _) = unreadable_line(&fx, Some(&format!("{line}\n")));
-        assert!(why.contains(&quoted(line)), "{why}");
+        // Quoted, not withheld. The parentheses of `(exit 124)` are
+        // neutralised like every other Markdown character, which changes the
+        // text of the quote but never whether there is one.
+        assert!(why.contains(&quoted_filtered(line)), "{why}");
         assert!(!why.contains("withheld"), "{why}");
     }
 }
@@ -355,8 +389,10 @@ fn the_quote_is_printable_ascii_and_the_file_keeps_the_raw_bytes() {
     let raw = "caf\u{e9} \u{1b}[31mred\u{1b}[0m done";
     let (why, handoff_why, _) = unreadable(&fx, Some(&format!("{raw}\n")));
     // The escape byte and the non-ASCII character are dropped from the
-    // quote (the same filter the hand-off reason always had) ...
-    assert!(why.contains(&quoted("caf [31mred[0m done")), "{why}");
+    // quote (the same filter the hand-off reason always had), and the `[` the
+    // escape sequence leaves behind is neutralised with the other Markdown
+    // characters ...
+    assert!(why.contains(&quoted("caf _31mred_0m done")), "{why}");
     for text in [&why, &handoff_why] {
         assert!(text.bytes().all(|b| (0x20..=0x7e).contains(&b)), "{text:?}");
     }
@@ -370,7 +406,7 @@ fn quote_metacharacters_are_neutralised_and_the_reason_stays_valid_json() {
     let line = "run `id` $(id) ${HOME} {{secret}} <b>hi</b> @octocat say \"yes\" a\\b";
     let (why, handoff_why, out) = unreadable(&fx, Some(&format!("{line}\n")));
     // Each of ` $ \ { } < > @ " becomes _, the replacement the document names.
-    let expected = "run _id_ _(id) __HOME_ __secret__ _b_hi_/b_ _octocat say _yes_ a_b";
+    let expected = "run _id_ __id_ __HOME_ __secret__ _b_hi_/b_ _octocat say _yes_ a_b";
     for text in [&why, &handoff_why] {
         assert!(text.contains(&quoted(expected)), "{text}");
         // Nothing that could close the quote, expand, open a template or a
@@ -391,6 +427,30 @@ fn quote_metacharacters_are_neutralised_and_the_reason_stays_valid_json() {
 }
 
 #[test]
+fn markdown_links_and_cross_references_cannot_render_in_the_quote() {
+    let Some(fx) = loop_fixture() else { return };
+    // The reason probably reaches a public PR comment from the maintainer's
+    // account, where a link renders clickable, an image renders inline and a
+    // `#N` raises a cross-reference on another issue.
+    let line =
+        "[fix it](https://evil.example/phish) ![i](https://evil.example/a.png) owner/repo#2 and #1";
+    let (why, handoff_why, _) = unreadable(&fx, Some(&format!("{line}\n")));
+    let expected =
+        "_fix it__https:_/evil.example/phish_ !_i__https:_/evil.example/a.png_ owner/repo_2 and _1";
+    for text in [&why, &handoff_why] {
+        assert!(text.contains(&quoted(expected)), "{text}");
+        // No bracket, parenthesis or `#` is left to build a link or a
+        // reference out of, and no URL is left whole.
+        assert!(!text.contains("://"), "a usable URL is left: {text}");
+        for c in ['[', ']', '#'] {
+            assert!(!text.contains(c), "{c:?} left in: {text}");
+        }
+    }
+    // The kept file is the driver's output, untouched.
+    assert_eq!(read(&kept(&fx)), format!("{line}\n"));
+}
+
+#[test]
 fn the_quote_is_capped_at_200_characters_and_the_whole_reason_at_900() {
     let Some(fx) = loop_fixture() else { return };
     let long = "x".repeat(1000);
@@ -406,15 +466,54 @@ fn the_quote_is_capped_at_200_characters_and_the_whole_reason_at_900() {
 }
 
 #[test]
-fn a_huge_unterminated_line_is_bounded() {
+fn a_line_the_8_kib_read_window_cut_is_never_quoted() {
     let Some(fx) = loop_fixture() else { return };
-    let huge = "y".repeat(300_000);
-    let (why, handoff_why, _) = unreadable(&fx, Some(&huge));
-    assert!(why.contains(&"y".repeat(200)), "{why}");
-    assert!(!why.contains(&"y".repeat(201)), "{why}");
-    assert!(why.len() <= 900 && handoff_why.len() <= 1000);
+    // One line longer than the read window, with a token at its end. The
+    // window shows the token's body without the `ghp_` prefix the credential
+    // check looks for, so quoting it would leak part of a secret past the
+    // check. A record the window cut is withheld instead, and the reason
+    // falls through to the wording it uses when there is nothing to quote.
+    let token = format!("{}{}", "ghp_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4");
+    let huge = format!("{}{token} end", "y".repeat(300_000));
+    let (why, handoff_why, _) = unreadable(&fx, Some(&format!("{huge}\n")));
+    for text in [&why, &handoff_why] {
+        assert!(text.contains(NO_QUOTE), "{text}");
+        assert!(!text.contains("untrusted text"), "no quote slot: {text}");
+        assert!(
+            !text.contains("A1b2C3d4"),
+            "a cut token reached the reason: {text}"
+        );
+        assert!(
+            !text.contains(&"y".repeat(20)),
+            "a cut line was quoted: {text}"
+        );
+    }
+    // The file is still named, and the evidence in it is whole: only the
+    // quote is withheld.
     assert!(why.contains(&kept_clause(&fx)), "{why}");
-    assert_eq!(fs::metadata(kept(&fx)).unwrap().len(), 300_000);
+    assert!(why.len() <= 900 && handoff_why.len() <= 1000);
+    assert_eq!(
+        fs::metadata(kept(&fx)).unwrap().len() as usize,
+        huge.len() + 1,
+        "the kept file is not cut"
+    );
+    assert!(
+        read(&kept(&fx)).contains(&token),
+        "the evidence still has it"
+    );
+}
+
+#[test]
+fn a_whole_line_after_a_cut_one_is_still_quoted() {
+    let Some(fx) = loop_fixture() else { return };
+    // The guard above withholds the window's first record, which is a
+    // fragment. It must not withhold more than that: a whole line after the
+    // fragment is the driver's real last line and is quoted.
+    let huge = "y".repeat(300_000);
+    let last = "ERROR: the driver's real last line";
+    let (why, _) = unreadable_line(&fx, Some(&format!("{huge}\n{last}\n")));
+    assert!(why.contains(&quoted(last)), "{why}");
+    assert!(!why.contains(&"y".repeat(20)), "{why}");
 }
 
 // ===========================================================================
@@ -482,6 +581,24 @@ fn credential_lines() -> Vec<(String, String)> {
         format!("settings api_key: {}", "abcd1234efgh5678"),
         "abcd1234efgh5678",
     );
+    // The bare scheme word, with no `=` or `:` after it: `mask_secrets` masks
+    // each of these, and this check withheld none of them before.
+    add(
+        format!("401 from the API: Bearer {}", "a1b2c3d4e5f6g7h8i9j0"),
+        "a1b2c3d4e5f6g7h8i9j0",
+    );
+    add(
+        format!("Basic {}", "dXNlcjpwYXNzd29yZDEyMw=="),
+        "dXNlcjpwYXNzd29yZDEyMw==",
+    );
+    add(
+        format!("request failed with token {}", "abcd1234efgh5678ijkl"),
+        "abcd1234efgh5678ijkl",
+    );
+    add(
+        format!("gh auth login --with-token {}", "abcdef0123456789abcdef"),
+        "abcdef0123456789abcdef",
+    );
     shapes
 }
 
@@ -526,6 +643,27 @@ fn a_credential_shaped_last_line_is_withheld_from_both_reasons() {
         // and so does the log.
         assert!(read(&kept(&fx)).contains(&line), "shape {material:?}");
         assert!(stderr_of(&out).contains(&line), "shape {material:?}");
+    }
+}
+
+#[test]
+fn prose_that_merely_names_a_scheme_word_keeps_its_quote() {
+    let Some(fx) = loop_fixture() else { return };
+    // The bare scheme-word rule keeps both of `mask_secrets`' conditions: 12
+    // or more characters after the word, and a digit or one of `_ - / + =`
+    // among them. Without the second, ordinary prose withholds the quote —
+    // and ordinary prose is most of what a dying driver prints. This test is
+    // what pays for the second step in `secret_shaped`.
+    for line in [
+        "basic 3 rounds remain",
+        "token 5 of 10 consumed",
+        "basic authentication failed against the remote",
+        "the basic implementation is done",
+        "bearer configuration missing",
+    ] {
+        let (why, _) = unreadable_line(&fx, Some(&format!("{line}\n")));
+        assert!(why.contains(&quoted(line)), "{why}");
+        assert!(!why.contains("withheld"), "{why}");
     }
 }
 
@@ -831,7 +969,7 @@ fn step02_under_file_limit(fx: &Fx, case: &LoopCase) -> Option<Output> {
 }
 
 #[test]
-fn a_write_failure_part_way_leaves_a_truncated_file_and_a_complete_log() {
+fn a_write_failure_part_way_is_reported_and_quotes_nothing() {
     let Some(fx) = loop_fixture() else { return };
     let filler: String = (0..400)
         .map(|i| format!("filler line number {i:04}\n"))
@@ -858,14 +996,52 @@ fn a_write_failure_part_way_leaves_a_truncated_file_and_a_complete_log() {
     );
     assert!(kept_text.contains("filler line number 0000"));
     assert!(!kept_text.contains("FINAL-MARKER-LINE"));
-    // The reason quotes the last line that was written, which is not the
-    // driver's last line, and it still names the file.
+    // The reason says only part of the output was kept and quotes nothing:
+    // the last line in the file is not the driver's last line, so quoting it
+    // would be a claim the run cannot make. The name and the absolute path
+    // stay, because the truncated file is still the evidence to open.
     let why = loop_reason(&out);
-    assert!(why.contains(&kept_clause(&fx)), "{why}");
+    assert!(why.contains(&partial_clause(&fx)), "{why}");
+    assert!(why.contains(NO_QUOTE), "{why}");
+    assert!(!why.contains("was kept"), "no claim of a whole copy: {why}");
+    assert!(!why.contains("untrusted text"), "no quote slot: {why}");
     assert!(!why.contains("FINAL-MARKER-LINE"), "{why}");
     assert!(
-        why.contains(&quoted("")[..40]),
-        "something was quoted: {why}"
+        !why.contains("filler line number"),
+        "no stale line quoted: {why}"
+    );
+    // The log says it too, after the driver's own output.
+    assert!(stderr_of(&out).contains(PARTIAL_NOTICE), "{}", show(&out));
+}
+
+#[test]
+fn a_copy_that_was_not_made_is_said_in_the_log_on_every_ending() {
+    let Some(mut fx) = loop_fixture() else { return };
+    // A state folder reached through a link: the tool refuses to write the
+    // copy through it, while the driver still writes its result file there,
+    // so the run ends `DONE`. Only an `UNREADABLE` reason used to carry the
+    // loss, so a `DONE`, `STUCK` or `HANDOFF` run lost the copy in silence.
+    let real = fx.root.join("real-state-for-notice");
+    private_dir(&real);
+    let link = fx.root.join("linked-state-for-notice");
+    symlink(&real, &link).unwrap();
+    fx.state = link;
+
+    let out = loop_step_02(&fx, &case("0", Some("DONE"), Some("all good\n")));
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(loop_line(&out)["loop_result"], json!("DONE"));
+    assert!(
+        stderr_of(&out).contains(NOT_KEPT_NOTICE),
+        "the log says the copy was not made: {}",
+        show(&out)
+    );
+    // Still not a check: the loop line is the one it always was, the notice
+    // is not on standard output, and nothing was written through the link.
+    assert!(!stdout(&out).contains("NOTICE"), "{}", show(&out));
+    assert!(!stdout(&out).contains("kept"), "{}", show(&out));
+    assert!(
+        !real.join(NAME).exists(),
+        "nothing written through the link"
     );
 }
 

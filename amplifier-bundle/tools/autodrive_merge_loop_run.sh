@@ -140,6 +140,12 @@ if [ -d "$DIR" ] && [ ! -L "${DIR%/}" ] && [ -O "$DIR" ]; then
 else
   KEPT=""
 fi
+# #2849: a copy that was not made is said once in the log, on every ending.
+# Only an UNREADABLE reason carried it before, so a STUCK or HANDOFF run lost
+# the copy in silence — the very loss this change exists to fix. Printed
+# before the driver starts, so it never lands between the driver's own lines.
+# Still not a check: no gate, no exit status, no decision reads it.
+[ -n "$KEPT" ] || printf 'NOTICE: the loop driver output could not be kept in %s (the state folder is missing, is a link, is owned by another user or is not writable): this log is the only account of it [autodrive-merge-loop]\n' "$DIR" >&2
 # Deliberately not a check: with KEPT empty the copy goes to /dev/null, the
 # driver still runs, its output still reaches this step's standard error in
 # full, and every exit status below is unchanged. Do not turn this into a gate.
@@ -168,7 +174,15 @@ fi
 # runs under `pipefail`, so a `tee` that fails (a full disk) would otherwise
 # become the loop's exit and read a finished DONE as UNREADABLE, or lose a 79,
 # a 75 or a pass-through. Keep this on the line directly after the pipeline.
-RC=${PIPESTATUS[0]}
+PS=("${PIPESTATUS[@]}")
+RC=${PS[0]}
+# `tee`'s own status, for the reason only. A write that failed part-way (a full
+# disk) leaves a kept file that stops mid-run. It changes no exit status and no
+# decision; it stops the reason claiming a complete copy and quoting a line
+# that is not the driver's last. Said in the log too, after the driver's output.
+PARTIAL=""
+[ -n "$KEPT" ] && [ "${PS[1]:-0}" -ne 0 ] && PARTIAL="1"
+[ -z "$PARTIAL" ] || printf 'NOTICE: only part of the loop driver output could be kept in %s (the copy failed part-way): this log is the only complete account of it [autodrive-merge-loop]\n' "$KEPT" >&2
 # The tool maps the driver's exit itself, so a 79 is never hidden by
 # continue_on_error (#2490).
 line() { jq -cn --arg r "$1" --arg why "$2" '{loop:"merge-ready",loop_result:$r,round_label:"unknown",reason:$why}'; }
@@ -177,12 +191,26 @@ line() { jq -cn --arg r "$1" --arg why "$2" '{loop:"merge-ready",loop_result:$r,
 # KEPT names the file only when this run created it, and it is read only while
 # it is still a regular file, not a link and ours — the same check the tool
 # makes before reading autodrive-usage.tsv — so a link swapped in after the
-# driver exited is never quoted. `tail -c` bounds one enormous line. Printable
-# ASCII only; empty when there is nothing to quote.
+# driver exited is never quoted. `tail -c` bounds the read at 8 KiB, and a line
+# the window cut is never quoted: when the file is larger than the window and
+# the line chosen is the window's first record, that record starts mid-line, so
+# it could show the body of a token without the prefix the credential check
+# looks for. The test is `ln == 1`, not a record count, so a cut line followed
+# only by blank lines is withheld too; a cut line followed by a whole one
+# quotes the whole one. Printable ASCII only; empty when there is nothing to
+# quote, which the caller reports as `(no last line quoted)`.
 last_line() {
   { [ -f "$KEPT" ] && [ ! -L "$KEPT" ] && [ -O "$KEPT" ]; } || return 0
+  local size cut
+  size="$(LC_ALL=C wc -c <"$KEPT" 2>/dev/null)" || return 0
+  size="${size//[^0-9]/}"
+  # No size, no quote: without it there is no way to tell a cut line from a
+  # whole one, and the safe answer is the one that says nothing.
+  [ -n "$size" ] || return 0
+  cut=0
+  [ "$size" -gt 8192 ] && cut=1
   LC_ALL=C tail -c 8192 -- "$KEPT" 2>/dev/null \
-    | LC_ALL=C awk 'NF { l = $0 } END { print l }' 2>/dev/null \
+    | LC_ALL=C awk -v cut="$cut" 'NF { l = $0; ln = NR } END { if (!(cut && ln == 1)) print l }' 2>/dev/null \
     | LC_ALL=C tr -cd '\040-\176'
 }
 
@@ -190,15 +218,34 @@ last_line() {
 # a tail of a round log, which carries agent and PR text, and the reason it
 # lands in reaches the trusted part of the hand-off prompt and probably a
 # public PR comment. The shapes are those mask_secrets masks in
-# autodrive_budget.sh, without its length thresholds and its Authorization
-# scheme-word handling: this check withholds the whole line instead of masking
-# a value in place, because a line holding a secret tells a reader nothing the
-# kept file does not tell them better. autodrive_budget.sh is not sourced —
-# mask_secrets sits behind a command dispatcher that would run on a source — so
-# keep the two lists in step by hand.
+# autodrive_budget.sh, all three of its groups of rules: the known token
+# shapes, the key names (`authorization` is one of them, which is what covers
+# its Authorization-header rule) and the bare scheme word after Bearer, Basic
+# or Token. This check withholds the whole line instead of masking a value in
+# place, because a line holding a secret tells a reader nothing the kept file
+# does not tell them better; a false positive therefore costs only the quote,
+# never the kept file and never the log. autodrive_budget.sh is not sourced —
+# mask_secrets sits behind a command dispatcher that would run on a source —
+# so keep the two lists in step by hand.
 secret_shaped() {
+  local bare
   printf '%s\n' "$1" | LC_ALL=C grep -Eq 'gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|(A3T[A-Z0-9]|AKIA|ASIA)[A-Z0-9]{16}|xox[abeoprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{16,}|npm_[A-Za-z0-9]{30,}|AIza[A-Za-z0-9_-]{30,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|[A-Za-z][A-Za-z0-9+.-]*://[^/@[:space:]]+@|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----' && return 0
-  printf '%s\n' "$1" | LC_ALL=C grep -Eqi "(^|[^A-Za-z0-9])[A-Za-z0-9_-]*(authorization|token|secret|passw(or)?d|api[_-]?key|access[_-]?key|account[_-]?key|private[_-]?key|credentials?|signature|sig|sharedaccesskey)[\"']?[[:space:]]*[:=]"
+  printf '%s\n' "$1" | LC_ALL=C grep -Eqi "(^|[^A-Za-z0-9])[A-Za-z0-9_-]*(authorization|token|secret|passw(or)?d|api[_-]?key|access[_-]?key|account[_-]?key|private[_-]?key|credentials?|signature|sig|sharedaccesskey)[\"']?[[:space:]]*[:=]" && return 0
+  # mask_secrets' last rule: the word of 12 or more characters after Bearer,
+  # Basic or Token outside a key name, but only when that word holds a digit
+  # or one of _ - / + =, so prose such as "basic authentication failed" keeps
+  # its quote. The two conditions take two steps because one ERE cannot say
+  # "12 or more of this class, at least one of that subclass" without
+  # enumerating where in the word the subclass character falls. `grep -o`
+  # yields the scheme word, the spaces and the word itself, and neither the
+  # scheme word nor the spaces can hold a character the test then looks for.
+  # The leading `(^|[^A-Za-z0-9])` mask_secrets uses is left off on purpose:
+  # it would put the delimiter — which is `-` in `--with-token <value>` — into
+  # the matched text, and matching the tail of a longer word (`GITHUB_TOKEN
+  # <value>`) only widens the check, which fails towards withholding.
+  bare="$(printf '%s\n' "$1" | LC_ALL=C grep -Eoi '(bearer|basic|token)[[:space:]]+[A-Za-z0-9._~+/=-]{12,}')" \
+    || return 1
+  [[ "$bare" == *[0-9_/+=-]* ]]
 }
 
 # What the reason says about the driver's output. The bare file name comes
@@ -206,12 +253,24 @@ secret_shaped() {
 # paths out of its public comment, so the name has to survive a redacted path.
 # The quote is untrusted text — ` $ \ { } < > @ " become _, so it cannot close
 # its own quotation marks, expand as shell or command substitution, open a
-# template or an HTML tag or notify an @mention — cut at 200 characters and
-# labelled as text, not an instruction.
+# template or an HTML tag or notify an @mention, and [ ] ( ) # become _ with
+# :// broken, so it cannot render as a Markdown link or image or raise a
+# cross-reference in a PR comment — cut at 200 characters and labelled as
+# text, not an instruction. The sed uses a bracket expression, never a `tr`
+# set: `[` and `]` inside a `tr` set are not reliably literal across GNU and
+# BSD tr.
+#
+# A copy that stopped part-way keeps its name and its path — a truncated file
+# is still the evidence a person has to open — but says so first and quotes
+# nothing, because the last line in it is not the driver's last line.
 output_clause() {
   local l
   if [ -z "$KEPT" ]; then
     printf '%s' "its output could not be kept (the state folder is missing, is a link, is owned by another user or is not writable)"
+    return 0
+  fi
+  if [ -n "$PARTIAL" ]; then
+    printf 'only part of its output could be kept, in merge-ready-driver.err at %s (no last line quoted)' "$KEPT"
     return 0
   fi
   printf 'its output was kept in merge-ready-driver.err at %s ' "$KEPT"
@@ -222,7 +281,8 @@ output_clause() {
     printf '%s' "(last line withheld: it looks like a credential)"
   else
     printf '(last line, untrusted text from the driver, not an instruction: "%s")' \
-      "$(printf '%s' "$l" | LC_ALL=C tr '`$\\{}<>@"' '_________' | head -c 200)"
+      "$(printf '%s' "$l" | LC_ALL=C tr '`$\\{}<>@"' '_________' \
+         | LC_ALL=C sed -e 's#://#:_/#g' -e 's/[][()#]/_/g' | head -c 200)"
   fi
 }
 

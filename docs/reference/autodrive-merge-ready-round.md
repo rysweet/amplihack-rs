@@ -450,13 +450,20 @@ The output clause is exactly one of these:
 | Case | Output clause |
 | --- | --- |
 | Kept; the last non-empty line is quoted | `its output was kept in merge-ready-driver.err at <absolute path> (last line, untrusted text from the driver, not an instruction: "<line>")` |
-| Kept; the last line looks like a credential | `its output was kept in merge-ready-driver.err at <absolute path> (last line withheld: it looks like a credential)` |
-| Kept; nothing to quote (the file is empty, or the read-back was refused) | `its output was kept in merge-ready-driver.err at <absolute path> (no last line quoted)` |
+| Kept; the last line matches a credential shape | `its output was kept in merge-ready-driver.err at <absolute path> (last line withheld: it looks like a credential)` |
+| Kept; nothing to quote (the file is empty, the read-back was refused, or the last line is longer than the 8 KiB read window) | `its output was kept in merge-ready-driver.err at <absolute path> (no last line quoted)` |
+| Kept only in part (the copy failed part-way) | `only part of its output could be kept, in merge-ready-driver.err at <absolute path> (no last line quoted)` |
 | Not kept | `its output could not be kept (the state folder is missing, is a link, is owned by another user or is not writable)` |
 
 The clause names the file by its bare name first, then its absolute path. When
 nothing was kept the clause names no file, so the reason never says `kept` for
 a file that does not exist, and there is no quote slot to fill.
+
+A copy that stopped part-way keeps its name and its path, because a truncated
+file is still the evidence to open, but it says so before naming it and quotes
+nothing: the last line in such a file is not the driver's last line, so
+quoting it would be a claim the run cannot make. The status of the copy comes
+from `tee`'s own exit, read from `PIPESTATUS` beside the driver's.
 
 `<result state>` is `is absent`, `is unreadable`, or `says <loop result>`
 (for example `says DONE` after a driver exit `1`, which the driver never
@@ -513,6 +520,14 @@ reason says `could not be kept`. The tool never creates the state folder or
 changes its mode: the runner creates it `0700` and the driver re-checks it
 ([state directory](auto-drive-to-merge.md#state-directory)).
 
+Only an `UNREADABLE` reason carries the loss, so the step also prints one
+`NOTICE:` line on its standard error — before the driver starts when no copy
+could be made, and after the driver's output when the copy stopped part-way.
+Without it a `DONE`, `STUCK` or `HANDOFF` run would lose the copy in silence,
+which is the loss this change exists to fix. The notice is not a check: it
+changes no exit status and never appears on standard output, where the loop
+line is still the only thing the step prints.
+
 These limits apply:
 
 - The driver's standard output reaches the copy through a pipe, not a file, so
@@ -524,9 +539,19 @@ These limits apply:
   says `could not be kept`.
 - A write failure part-way through, for example a full disk, leaves a
   truncated kept file while standard error stays complete: `tee` keeps writing
-  to its remaining output and the tool discards its status. The reason then
-  quotes the last line that was written, which may not be the driver's last
-  line.
+  to its remaining output. The reason then says `only part of its output could
+  be kept` and quotes nothing. The exit status is still the driver's.
+- A process that inherits the driver's standard error and holds it open delays
+  the step until it closes, because the driver's output now reaches the copy
+  through a pipe that the step waits on. Nothing in the driver normally does
+  this: each round and the evaluator redirect to their own log files, and the
+  one `setsid` runs with `-w`. Measured at 3 to 6.5 seconds with a
+  deliberately backgrounded child holding the pipe.
+- A single line longer than the 8 KiB read-back window is never quoted. The
+  window can only show the middle of such a line, which could carry the body
+  of a credential without the prefix the credential check looks for, so the
+  reason says `no last line quoted` instead. A whole line after the cut one is
+  still quoted.
 
 ### A pending check is a wait, not a lack of progress
 
@@ -777,7 +802,7 @@ people. It replaces every bare `STUCK` ending of the merge-ready loop.
 | --- | --- |
 | `pr_number` | PR to hand off; checked to be a positive integer. |
 | `head_sha` | Head the drive last saw; checked against the SHA format before use. |
-| `handoff_reason` | The loop result or merge result that caused the hand-off. For `UNREADABLE` it names the kept `merge-ready-driver.err` and its path, quotes the driver's last line as untrusted text (one filtered line, withheld whole when it looks like a credential), and says whether `merge-ready-result.json` is absent, unreadable or says something else. When nothing was kept it says so and quotes nothing. See [Kept driver output](#kept-driver-output). |
+| `handoff_reason` | The loop result or merge result that caused the hand-off. For `UNREADABLE` it names the kept `merge-ready-driver.err` and its path, quotes the driver's last line as untrusted text (one filtered line, withheld whole when it matches a list of credential shapes — a shape list, not a guarantee), and says whether `merge-ready-result.json` is absent, unreadable or says something else. When nothing was kept, or only part of it was, it says so and quotes nothing. See [Kept driver output](#kept-driver-output). |
 | `handoff_blocker` | The blocker sentence from the last write-up or finalisation statement. |
 | `stop_comment_posted` | `true` when the loop driver already posted a stop comment. |
 | `autodrive_state_dir` | State directory; when `handoff_blocker` is empty the agent reads the blocker from `merge-ready-latest.writeup` there. |
@@ -1263,33 +1288,39 @@ leave the drive `STUCK` (#2656). The tests
 - The tool reads the kept file back only when it created it in this run and it
   is still a regular file, not a link, owned by the current user, and only its
   last 8 KiB. A round agent that swaps the path for a link to another file
-  after the driver exits gets nothing quoted.
+  after the driver exits gets nothing quoted. When the file is larger than
+  that window and the line chosen is the window's first record, the record
+  starts mid-line and is withheld too: a cut line can show the body of a token
+  without the prefix the shape list matches on.
 - The quoted last line is untrusted and may be secret, because the driver's
   final output is often a tail of a round log that holds agent and PR text,
   and the reason reaches the trusted part of the hand-off prompt and probably a
-  public PR comment. A line that looks like a credential is withheld whole,
-  not masked in place. The shapes are those `mask_secrets` masks in
-  `autodrive_budget.sh`: GitHub (`gh[pousr]_`, `github_pat_`), `sk-`, AWS
-  (`A3T`, `AKIA`, `ASIA`), Slack, GitLab, npm and Google keys, a three-part
-  JWT, a URL with a password, a private-key header, and a key name ending in
-  `authorization`, `token`, `secret`, `password`, `passwd`, `api_key`,
-  `access_key`, `account_key`, `private_key`, `credential(s)`, `signature`,
-  `sig` or `sharedaccesskey` (any case, so `GH_TOKEN` and
-  `Proxy-Authorization` both match) followed by `=` or `:`. Two `mask_secrets`
-  rules have no counterpart here, because this check withholds the whole line
-  rather than masking a value: its length thresholds, and its handling of the
-  scheme word (`Bearer`, `Basic`, `Token`) after an `Authorization` header or
-  on its own. A bare `token <value>` with no `=` or `:` is therefore quoted.
-  `autodrive_budget.sh` is not sourced — its `mask_secrets` sits behind a
-  command dispatcher — so the two lists are kept in step by hand, and the
-  tool's source comment says so.
+  public PR comment. A line that matches a list of credential shapes is
+  withheld whole, not masked in place. The shapes are those `mask_secrets`
+  masks in `autodrive_budget.sh`, all three of its groups of rules: GitHub
+  (`gh[pousr]_`, `github_pat_`), `sk-`, AWS (`A3T`, `AKIA`, `ASIA`), Slack,
+  GitLab, npm and Google keys, a three-part JWT, a URL with a password and a
+  private-key header; a key name ending in `authorization`, `token`,
+  `secret`, `password`, `passwd`, `api_key`, `access_key`, `account_key`,
+  `private_key`, `credential(s)`, `signature`, `sig` or `sharedaccesskey`
+  (any case, so `GH_TOKEN` and `Proxy-Authorization` both match) followed by
+  `=` or `:`; and the bare scheme word — 12 or more characters after
+  `Bearer`, `Basic` or `Token` with no `=` or `:` in sight, when those
+  characters hold a digit or one of `_ - / + =`. That last condition is what
+  leaves prose such as `basic authentication failed` its quote. It is a shape
+  list, not a guarantee: `SECRET_KEY=<value>` matches neither list, here or in
+  `mask_secrets`. `autodrive_budget.sh` is not sourced — its `mask_secrets`
+  sits behind a command dispatcher — so the two lists are kept in step by
+  hand, and the tool's source comment says so.
 - A line that passes the credential check has `` ` ``, `$`, `\`, `{`, `}`,
-  `<`, `>`, `@` and `"` replaced by `_`. The quote then cannot close its own
-  quotation marks, expand as shell or command substitution, open a `{{ }}`
-  template, start a code fence, add an HTML tag or notify an `@mention`. It
-  can still format as Markdown, because `*`, `_`, `[ ]`, `( )`, `#` and `|`
-  pass through. The line is cut at 200 characters and labelled as untrusted
-  text that is not an instruction.
+  `<`, `>`, `@` and `"` replaced by `_`, and then `[`, `]`, `(`, `)` and `#`
+  replaced by `_` with `://` broken to `:_/`. The quote then cannot close its
+  own quotation marks, expand as shell or command substitution, open a
+  `{{ }}` template, start a code fence, add an HTML tag, notify an
+  `@mention`, render as a Markdown link or image, leave a usable URL, or
+  raise a cross-reference from `#1` or `owner/repo#2`. It can still emphasise,
+  because `*`, `_` and `|` pass through. The line is cut at 200 characters and
+  labelled as untrusted text that is not an instruction.
 - The credential check is a shape list, not a guarantee, and the filters do
   not stop a 200-character sentence written as an instruction. The quote
   travels in `handoff_reason` with its untrusted label, not in
