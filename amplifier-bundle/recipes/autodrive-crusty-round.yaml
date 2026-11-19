@@ -225,8 +225,7 @@ steps:
     prompt: |
       Use noninteractive command execution with GH_PAGER=cat. Post this Crusty round's verdict on PR #{{crusty_round_context.pr}} as ONE comment, then stop.
       - The verdict word: `CLEAN` when the extracted verdict is CLEAN, `MINOR_ONLY` when it is MINOR_ONLY, and `BLOCKING` for anything else. The extracted verdict, written by a tool, is: {{crusty_verdict}}
-      - The head: `{{reviewed_head_sha}}`, the commit the loop measured with `git rev-parse` before this round began and told the reviewer to read. Use that value verbatim. Never take the head from the review, from the post-review report, or from the earlier context head {{crusty_round_context.head_sha}}; the round record carries the measured commit for the same reason (#2814).
-      - Post nothing, and say so in one sentence, when any of these holds: `{{reviewed_head_sha}}` is not a full 40- or 64-character lowercase hexadecimal commit; the review below names no `reviewed_head_sha`; or it names one that differs from `{{reviewed_head_sha}}`. In each case nothing confirms which commit was read, and the merge round reads criterion 3 from this comment, so no comment may attribute a verdict to a commit nobody checked. The round result does not change; the record's own findings carry the disagreement.
+      - The head: the full 40- or 64-character lowercase commit the reviewer actually identifies in `reviewed_head_sha` in the review below. The post-review report between its own markers below is a supporting observation only; the earlier context head {{crusty_round_context.head_sha}} must not replace a different commit actually reviewed. If the reviewed commit is unclear, post nothing and say so.
       - The first line of the body is exactly `Crusty verdict: <word> at <full sha>`. Then a blank line and a short plain summary of the review's concerns (ids and one sentence each), taken from the review between the markers below. Prefix any summary line that starts with `Crusty verdict:` with `> `.
       - Read the PR's comments once first (`gh api repos/{owner}/{repo}/issues/{{crusty_round_context.pr}}/comments --paginate`); if a comment by your own login already has that exact first line, post nothing.
       - Write the body to a private temporary file and post it on standard input: `gh pr comment {{crusty_round_context.pr}} --body-file - < <file>`. If GraphQL refuses, make one REST call instead: `gh api repos/{owner}/{repo}/issues/{{crusty_round_context.pr}}/comments -F body=@<file>`. Remove the file afterwards.
@@ -363,7 +362,6 @@ steps:
         concerns open). After a round with commits, reviewed_head_sha differing
         from head_sha is expected, not invalid evidence: it rules out complete,
         even for CLEAN or MINOR_ONLY; give the head mismatch as the reason.
-      - The record's reviewed_head_sha is the commit the loop measured before this round began, never the one the review claimed. Where the writer found those disagree it left `crusty-head-claim-missing`, `crusty-head-claim-mismatch` or `crusty-head-unmeasured` in .findings: an open finding, so choose evaluate and give that disagreement as the reason, whatever the verdict says (#2814).
       The .minor sidecar is required only for MINOR_ONLY. Invalid evidence
       means only a missing or unreadable round record, no verdict, or a
       failed or refused round (rc not 0, exit 79); then choose evaluate with

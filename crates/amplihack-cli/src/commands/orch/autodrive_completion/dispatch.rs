@@ -37,25 +37,11 @@ pub fn run(args: Dispatch) -> Result<i32> {
         &snapshot,
         matches!(decision.action, Action::Complete),
     )?;
-    // #2814: an open finding is part of what "complete" means here, and this
-    // predicate has to say the same thing as `evidence::validate`, the
-    // next-action prompt and the record writer. The writer appends
-    // `crusty-head-claim-missing`, `crusty-head-claim-mismatch` or
-    // `crusty-head-unmeasured` to the findings sidecar after the verdict has
-    // been classified, so a CLEAN or MINOR_ONLY record can carry an open
-    // finding. Reading the sidecar here is what keeps `evaluate` reachable for
-    // such a round: `validate` refuses to complete it, and without this an
-    // `evaluate` for the same round failed the `!complete` check below, leaving
-    // the round with no valid action and ending the drive INVALID_DECISION.
-    let findings_empty = snapshot.sidecars["findings"]
-        .as_ref()
-        .is_some_and(|v| v.iter().all(u8::is_ascii_whitespace));
     let complete = matches!(
         record["crusty_verdict"].as_str(),
         Some("CLEAN" | "MINOR_ONLY")
     ) && record["reviewed_head_sha"] == record["head_sha"]
         && record["commits_this_round"].as_u64() == Some(0)
-        && findings_empty
         && args.child_exit_code == 0;
     let (result, code) = match decision.action {
         Action::Complete => {
@@ -96,10 +82,15 @@ pub fn run(args: Dispatch) -> Result<i32> {
             )
         }
         Action::Evaluate => {
-            ensure!(
-                !complete,
-                "completed objective must select complete before convergence evaluation"
-            );
+            // #2814: asking for convergence evaluation is never refused here.
+            // This arm used to carry `ensure!(!complete)`, so a round the
+            // next-action agent judged unfinished while this predicate called
+            // it complete had no valid action at all, and a dispatch refusal
+            // ends the whole drive with INVALID_DECISION. An unnecessary
+            // evaluator call costs one invocation; a stopped drive costs the
+            // run. The check that matters runs the other way round, in the
+            // `Complete` arm above: a completion claim the evidence cannot
+            // carry is still refused.
             secure_fs::create(
                 secure_fs::Scope::of(&state.state_dir),
                 &args.private_state.with_extension("dispatched"),

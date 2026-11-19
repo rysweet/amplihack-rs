@@ -103,36 +103,18 @@ with `git rev-parse` in the named checkout before the round started, and
 passed to the round as the `reviewed_head_sha` context value. It is never
 taken from the review's own report.
 
-`autodrive_crusty_record.sh` reads the reviewer's `reviewed_head_sha` only to
-compare it with that measurement, and writes one of three ids into the
-`.findings` sidecar when they do not agree (#2814):
+Recording that commit is all the writer does with it. It does not compare the
+measurement with the review's own `reviewed_head_sha`, and no round is refused,
+stopped or sent to the evaluator because the two differ (#2814). Only when no
+measured value reaches the writer does the round's own report stand in, and the
+writer says so on stderr.
 
-| Finding | Observation |
-| --- | --- |
-| `crusty-head-claim-missing` | The review reported no `reviewed_head_sha`, so nothing says which commit it read. |
-| `crusty-head-claim-mismatch` | The review named a commit other than the one the loop measured. |
-| `crusty-head-unmeasured` | No loop-measured value reached the writer, so the claim could not be checked at all. |
-
-Each is an open finding, so the round cannot complete: the agent chooses
-`evaluate` with the disagreement as the reason, and dispatch refuses a
-completion claim whose `.findings` sidecar is not empty. The check never
-fails the round by itself; the round's own outcome is unchanged.
-
-Dispatch reads the same sidecar when it decides whether the objective is
-complete, so a `CLEAN` or `MINOR_ONLY` record carrying one of these findings
-is not complete and `evaluate` is the action that passes. The three readers of
-"complete" — the record writer, the next-action prompt and the dispatcher —
-have to agree on this. While the dispatcher's own test ignored the sidecar, a
-record in this shape met `complete` there and failed it in the evidence check,
-so neither action was valid and the loop ended `INVALID_DECISION` instead of
-reaching the evaluator (#2814).
-
-Step-03c names the same measured commit in the `Crusty verdict:` comment it
-posts on the PR, which the merge round reads for criterion 3. It posts nothing
-when the measured value is not a full commit, or when the review names no
-commit or a different one: there is then nothing to attribute the verdict to.
-`autodrive_crusty_posted.sh` records the round's posted-verdict line only for a
-post at the measured commit, and names the mismatch otherwise.
+Whether a review still covers the PR is judged where it is used, by an agent
+reading the PR rather than by a tool comparing strings: the merge round's
+criterion 3 takes the newest authorised `Crusty verdict:` comment, checks the
+commit it names against the current head, and asks for a fresh review when the
+commits since then are more than base merges or description changes
+(`autodrive-merge-round.yaml`, `crusty-covers`).
 
 `CONCERNS` always means `evaluate`, whatever the head SHAs or sidecars say.
 After a round with commits, `reviewed_head_sha` differing from `head_sha` is

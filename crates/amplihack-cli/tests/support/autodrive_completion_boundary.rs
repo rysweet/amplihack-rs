@@ -56,12 +56,8 @@ pub const ROUND_SCRIPT: &str = r#"set -euo pipefail
 export RECIPE_VAR_crusty_round_context="$(bash "$FIXTURE/context.sh")"
 # A reviewer names the commit it read (#2814). This double reads the one the
 # loop measured and asked for, as an uninterrupted round does. $FIXTURE/review-head
-# replaces that claim: its contents become the reported reviewed_head_sha, and an
-# empty file omits the field, so a round whose review disagrees with the loop can
-# be driven through the record writer and dispatch.
-# $FIXTURE/measured-head replaces what the loop measured, so a round that
-# reached the writer without one can be driven too.
-[ ! -f "$FIXTURE/measured-head" ] || export RECIPE_VAR_reviewed_head_sha="$(cat "$FIXTURE/measured-head")"
+# replaces that claim with another commit, so a round whose review disagrees with
+# the loop can be driven end to end.
 claim="${RECIPE_VAR_reviewed_head_sha:-}"
 [ ! -f "$FIXTURE/review-head" ] || claim="$(cat "$FIXTURE/review-head")"
 if [ -n "$claim" ]; then

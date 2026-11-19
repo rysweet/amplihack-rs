@@ -23,7 +23,11 @@ The public CLI is `amplihack orch helper autodrive-completion-{prepare,seal,writ
   `MINOR_ONLY` completion returns `DONE`, `source=objective-completion` and
   `evaluator_invoked=false`. An atomic receipt prevents repeat dispatch.
 
-`evaluate` requires an unresolved review. The evaluator runs with typed process
+`evaluate` is never refused: a round that this module's own predicate would
+have completed still reaches the evaluator, which costs one invocation, where
+refusing it ended the whole drive with `INVALID_DECISION` (#2814). The check
+runs in the other direction only, on a completion claim the evidence cannot
+carry. The evaluator runs with typed process
 arguments, file-backed context, the captured sibling depth and inherited policy
 ceiling. Its log parser follows the runner formatter contract; terminal refusal,
 usage-limit and orphaning classifications retain their meanings. An evaluator

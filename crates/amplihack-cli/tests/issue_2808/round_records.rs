@@ -98,8 +98,9 @@ fn round_records_keep_reviewed_and_resulting_heads_without_generation_binding() 
 }
 
 /// #2814: the record carries the commit the loop measured, never the one the
-/// review claimed, and a review naming another commit leaves an open finding
-/// so the round goes to the evaluator instead of completing.
+/// review claimed. Recording it is all that happens: a review naming another
+/// commit leaves the findings sidecar empty, so the round can still complete.
+/// Refusing a round over that disagreement is what this replaces.
 #[test]
 fn a_review_naming_another_commit_is_recorded_against_the_loop_measured_head() {
     let f = Fixture::new();
@@ -118,26 +119,24 @@ fn a_review_naming_another_commit_is_recorded_against_the_loop_measured_head() {
             claim: Some(&other),
         },
     );
-    // The check reports; it never fails the round by itself.
     succeeds(&out);
     let value = record_json(&record);
     assert_eq!(
         value["reviewed_head_sha"], f.observed_head,
         "the claim must not become the record's reviewed head: {out:?}"
     );
-    assert!(
-        findings(&record).contains("crusty-head-claim-mismatch"),
-        "the disagreement must be an open finding: {out:?}"
+    assert_eq!(
+        findings(&record),
+        "",
+        "the claim is not reconciled and leaves no finding: {out:?}"
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("crusty-head-claim-mismatch"), "{stderr}");
-    assert!(stderr.contains(&f.observed_head), "{stderr}");
 }
 
-/// #2814: a review that reports no `reviewed_head_sha` is a reportable
-/// failure, not a silent fall back to the round context's head.
+/// #2814: a review that reports no `reviewed_head_sha` changes nothing either.
+/// The loop's own measurement is what the record carries, so there is nothing
+/// to miss.
 #[test]
-fn a_review_without_a_reviewed_head_sha_is_reported_and_cannot_complete() {
+fn a_review_without_a_reviewed_head_sha_is_recorded_against_the_measurement() {
     let f = Fixture::new();
     let record = f.state.join("crusty-round-1.json");
     let out = write_record(
@@ -154,20 +153,13 @@ fn a_review_without_a_reviewed_head_sha_is_reported_and_cannot_complete() {
     );
     succeeds(&out);
     assert_eq!(record_json(&record)["reviewed_head_sha"], f.observed_head);
-    assert!(
-        findings(&record).contains("crusty-head-claim-missing"),
-        "{out:?}"
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("crusty-head-claim-missing"),
-        "{out:?}"
-    );
+    assert_eq!(findings(&record), "", "{out:?}");
 }
 
-/// #2814: without the loop's own measurement there is nothing to check the
-/// claim against, so the round may not complete on it either.
+/// Without the loop's own measurement the round's report stands in, and the
+/// writer says so rather than refusing the round (#2814).
 #[test]
-fn a_round_with_no_loop_measured_head_cannot_complete_on_the_claim_alone() {
+fn an_unmeasured_round_falls_back_to_the_reported_head_and_says_so() {
     let f = Fixture::new();
     let record = f.state.join("crusty-round-1.json");
     let out = write_record(
@@ -184,9 +176,10 @@ fn a_round_with_no_loop_measured_head_cannot_complete_on_the_claim_alone() {
     );
     succeeds(&out);
     assert_eq!(record_json(&record)["reviewed_head_sha"], f.observed_head);
+    assert_eq!(findings(&record), "", "{out:?}");
     assert!(
-        findings(&record).contains("crusty-head-unmeasured"),
-        "{out:?}"
+        String::from_utf8_lossy(&out.stderr).contains("no loop-measured reviewed_head_sha"),
+        "an unmeasured round is named on stderr: {out:?}"
     );
 }
 

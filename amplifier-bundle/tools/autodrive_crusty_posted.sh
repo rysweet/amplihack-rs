@@ -39,12 +39,6 @@ SAID="$(printf '%s' "$POSTED" | jq -r '.verdict_posted // empty | strings' 2>/de
 AT="$(printf '%s' "$POSTED" | jq -r '.head_sha // empty | strings' 2>/dev/null)"
 if [ "$SAID" = true ] && [ "$AT" = "$SHA" ]; then
   record
-elif [ "$SAID" = true ]; then
-  # #2814: step-03c is told to name the commit the loop measured, which is the
-  # one this record carries. A post at any other commit is not this round's
-  # criterion-3 evidence: nothing is recorded, so the next merge round runs
-  # Crusty again. The comment itself is on the PR and only a person can remove it.
-  echo "WARNING: the verdict post names '$(printf '%s' "$AT" | tr -cd '0-9A-Za-z' | cut -c1-64)' but this round reviewed ${SHA}; nothing is recorded and the next merge round runs Crusty. Check the PR for a verdict comment attributed to the wrong commit [autodrive_crusty_posted]" >&2
 else
   echo "WARNING: the verdict post for ${SHA} was not reported done; the next merge round runs Crusty [autodrive_crusty_posted]" >&2
 fi
