@@ -59,13 +59,6 @@ fn quoted(line: &str) -> String {
     format!("(last line, untrusted text from the driver, not an instruction: \"{line}\")")
 }
 
-/// The replacement the document names for the quote's metacharacters.
-fn neutralised(line: &str) -> String {
-    line.chars()
-        .map(|c| if "`$\\{}<>@\"".contains(c) { '_' } else { c })
-        .collect()
-}
-
 fn case(rc: &'static str, result: Option<&'static str>, stderr: Option<&str>) -> LoopCase {
     LoopCase {
         rc,
@@ -223,34 +216,52 @@ fn what_the_driver_prints_reaches_the_log_unchanged_and_in_order() {
 // ===========================================================================
 
 #[test]
-fn every_driver_ending_keeps_its_output_and_its_exit_status() {
+fn every_driver_ending_is_unchanged_and_keeps_its_output() {
     let Some(fx) = loop_fixture() else { return };
+    let stub = |r: &str| {
+        format!(
+            r#"{{"loop":"merge-ready","loop_result":"{r}","round_label":"round-2","reason":"fixture stop"}}"#
+        )
+    };
+    let refusal = r#"{"loop":"merge-ready","loop_result":"TERMINAL_REFUSAL","round_label":"unknown","reason":"the merge-ready loop exited 79"}"#;
+    // Driver exit, its result file, the step's exit, and the loop line the
+    // step prints. `None` is the UNREADABLE line, whose reason is this
+    // change's one new text and is asserted on throughout the rest of this
+    // file; every other line must come out byte for byte as it did before.
+    //
     // The exit status is the driver's, with the copy in the pipeline. (A copy
-    // that itself fails is the next test's case; with a copy that works, the
-    // step's `pipefail` makes the pipeline's status the driver's anyway.)
-    for (n, (rc, result, expected)) in [
-        ("79", None, 79),
-        ("79", Some("DONE"), 79),
-        ("1", Some("USAGE_LIMIT"), 1),
-        ("75", Some("ORPHANED"), 75),
-        ("2", None, 2),
-        ("3", None, 3),
-        ("0", Some("DONE"), 0),
-        ("0", Some("WAITING"), 0),
-        ("0", None, 0),
-        ("1", Some("STUCK"), 0),
-        ("1", Some("BUDGET_EXHAUSTED"), 0),
-        ("1", Some("HANDOFF"), 0),
-        ("1", None, 0),
+    // that itself fails is `a_failing_copy_never_changes_...` below; with a
+    // copy that works, the step's `pipefail` makes the pipeline's status the
+    // driver's anyway.)
+    for (n, (rc, result, exit, printed)) in [
+        ("79", None, 79, Some(refusal.to_string())),
+        ("79", Some("DONE"), 79, Some(refusal.to_string())),
+        ("1", Some("USAGE_LIMIT"), 1, Some(stub("USAGE_LIMIT"))),
+        ("75", Some("ORPHANED"), 75, Some(stub("ORPHANED"))),
+        ("2", None, 2, None),
+        ("3", None, 3, None),
+        ("0", Some("DONE"), 0, Some(stub("DONE"))),
+        ("0", Some("WAITING"), 0, Some(stub("WAITING"))),
+        ("0", None, 0, None),
+        ("1", Some("STUCK"), 0, Some(stub("STUCK"))),
+        (
+            "1",
+            Some("BUDGET_EXHAUSTED"),
+            0,
+            Some(stub("BUDGET_EXHAUSTED")),
+        ),
+        ("1", Some("HANDOFF"), 0, Some(stub("HANDOFF"))),
+        ("1", None, 0, None),
     ]
     .into_iter()
     .enumerate()
     {
+        // A marker no other run writes, so the kept file is this run's alone.
         let marker = format!("marker-{n}-for-driver-exit-{rc}\n");
         let (out, _) = loop_step(&fx, &case(rc, result, Some(&marker)));
         assert_eq!(
             out.status.code(),
-            Some(expected),
+            Some(exit),
             "driver {rc}/{result:?}: {}",
             show(&out)
         );
@@ -259,40 +270,16 @@ fn every_driver_ending_keeps_its_output_and_its_exit_status() {
             Some(marker.as_str()),
             "driver {rc}/{result:?} keeps its output, and only this run's"
         );
-    }
-}
-
-#[test]
-fn loop_lines_other_than_unreadable_are_byte_identical() {
-    let Some(fx) = loop_fixture() else { return };
-    let stub = |r: &str| {
-        format!(
-            r#"{{"loop":"merge-ready","loop_result":"{r}","round_label":"round-2","reason":"fixture stop"}}"#
-        )
-    };
-    let noise = Some("a last line that must not leak into any other loop line\n");
-    for (rc, result, expected) in [
-        ("0", Some("DONE"), stub("DONE")),
-        ("0", Some("WAITING"), stub("WAITING")),
-        ("1", Some("STUCK"), stub("STUCK")),
-        ("1", Some("BUDGET_EXHAUSTED"), stub("BUDGET_EXHAUSTED")),
-        ("1", Some("HANDOFF"), stub("HANDOFF")),
-        ("1", Some("USAGE_LIMIT"), stub("USAGE_LIMIT")),
-        ("75", Some("ORPHANED"), stub("ORPHANED")),
-        (
-            "79",
-            None,
-            r#"{"loop":"merge-ready","loop_result":"TERMINAL_REFUSAL","round_label":"unknown","reason":"the merge-ready loop exited 79"}"#
-                .to_string(),
-        ),
-    ] {
-        let (out, _) = loop_step(&fx, &case(rc, result, noise));
-        assert_eq!(
-            stdout(&out).trim_end(),
-            expected,
-            "driver {rc}/{result:?}: {}",
-            show(&out)
-        );
+        // Where there is a line other than UNREADABLE it is byte-identical,
+        // which is also what keeps the driver's output out of it.
+        if let Some(line) = printed {
+            assert_eq!(
+                stdout(&out).trim_end(),
+                line,
+                "driver {rc}/{result:?}: {}",
+                show(&out)
+            );
+        }
     }
 }
 
@@ -373,13 +360,10 @@ fn quote_metacharacters_are_neutralised_and_the_reason_stays_valid_json() {
     let Some(fx) = loop_fixture() else { return };
     let line = "run `id` $(id) ${HOME} {{secret}} <b>hi</b> @octocat say \"yes\" a\\b";
     let (why, handoff_why, out) = unreadable(&fx, Some(&format!("{line}\n")));
-    let expected = neutralised(line);
-    assert_eq!(
-        expected,
-        "run _id_ _(id) __HOME_ __secret__ _b_hi_/b_ _octocat say _yes_ a_b"
-    );
+    // Each of ` $ \ { } < > @ " becomes _, the replacement the document names.
+    let expected = "run _id_ _(id) __HOME_ __secret__ _b_hi_/b_ _octocat say _yes_ a_b";
     for text in [&why, &handoff_why] {
-        assert!(text.contains(&quoted(&expected)), "{text}");
+        assert!(text.contains(&quoted(expected)), "{text}");
         // Nothing that could close the quote, expand, open a template or a
         // tag, or notify a user is left in the reason.
         for c in ['`', '$', '\\', '{', '}', '<', '>', '@'] {
@@ -811,48 +795,12 @@ fn a_directory_at_the_kept_name_is_left_alone_and_the_run_goes_on() {
 /// raises ignored, so a write past it fails the way a full disk does. The
 /// stub driver ends with `case`. `None` when this shell cannot set the limit.
 fn step02_under_file_limit(fx: &Fx, case: &LoopCase) -> Option<Output> {
-    write_executable(
-        &fx.tools().join("autodrive_loop.sh"),
-        FAKE_LOOP_DRIVER,
-        0o755,
-    );
-    for f in [
-        "loop_stdout",
-        "loop_stderr",
-        "loop_result",
-        "loop_result_raw",
-        "loop_swap_to",
-    ] {
-        let _ = fs::remove_file(fx.fake.join(f));
-    }
-    let _ = fs::remove_file(result_path(fx));
-    fx.set("loop_rc", case.rc);
-    if let Some(r) = case.result {
-        fx.set("loop_result", r);
-    }
-    if let Some(e) = &case.stderr {
-        fx.set("loop_stderr", e);
-    }
-    let preflight = json!({
-        "should_run": "true", "pr": PR, "pr_url": "", "pr_state": "OPEN",
-        "branch": "feat/issue-2575", "head_sha": SHA_A, "base_branch": "main",
-        "base_sha": SHA_B, "state_dir": fx.state, "repo": fx.repo,
-        "reason": "fixture", "blockers": [], "attempts": []
-    })
-    .to_string();
+    stage_loop_driver(fx, case);
     let mut c = fx.bash();
     c.arg("-c")
         .arg("ulimit -f 2 || exit 77; trap '' XFSZ; exec bash -c \"$STEP\"")
-        .env("STEP", command_of("autodrive-merge-loop", "step-02"))
-        .env("RECIPE_VAR_merge_loop_preflight", &preflight)
-        .env("RECIPE_VAR_task_description", "issue 2849 fixture task")
-        .env("RECIPE_VAR_autodrive_state_dir", &fx.state)
-        .env("RECIPE_VAR_pr_number", PR)
-        .env("RECIPE_VAR_no_merge", "false")
-        .env("RECIPE_VAR_autodrive_dry_run", "false")
-        .env("REPO_PATH", &fx.repo)
-        .current_dir(&fx.repo)
-        .stdin(Stdio::null());
+        .env("STEP", command_of("autodrive-merge-loop", "step-02"));
+    loop_env(&mut c, fx, &loop_preflight(fx));
     let out = c.output().expect("run step-02 under a file size limit");
     if out.status.code() == Some(77) {
         eprintln!("SKIP: this shell cannot limit file size");

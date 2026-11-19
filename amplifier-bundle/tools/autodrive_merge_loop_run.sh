@@ -121,9 +121,10 @@ rm -f -- "$RESULT_FILE"
 # outlive the drive. Keep a copy beside the result file, in the PR's state
 # directory. The copy is evidence, never a condition: nothing reads it to
 # decide anything, and a copy that cannot be made is not an error.
-ERR_FILE="${DIR%/}/merge-ready-driver.err"
-CAPTURE=/dev/null
-CAPTURED=0
+# KEPT holds the file's path while the copy is this run's to write and read,
+# and is emptied the moment it is not, so nothing below can name, write or
+# quote a file this run did not create.
+#
 # Write only into a state directory that is already there, is not a symbolic
 # link and is ours. This runs before the driver re-checks the directory, and
 # both the create and `tee` would otherwise follow a planted link. Whatever is
@@ -132,16 +133,16 @@ CAPTURED=0
 # and a link is replaced, never written through. A directory there cannot be
 # removed, so the create fails and no copy is made. The tool never creates the
 # state directory: autodrive_private_dir stays the only authority for that.
+KEPT="${DIR%/}/merge-ready-driver.err"
 if [ -d "$DIR" ] && [ ! -L "${DIR%/}" ] && [ -O "$DIR" ]; then
-  rm -f -- "$ERR_FILE" 2>/dev/null
-  if (umask 077; set -C; : > "$ERR_FILE") 2>/dev/null; then
-    CAPTURE="$ERR_FILE"
-    CAPTURED=1
-  fi
+  rm -f -- "$KEPT" 2>/dev/null
+  (umask 077; set -C; : > "$KEPT") 2>/dev/null || KEPT=""
+else
+  KEPT=""
 fi
-# Deliberately not a check: when the capture target stays /dev/null the driver
-# still runs, its output still reaches this step's standard error in full, and
-# every exit status below is unchanged. Do not turn this into a gate.
+# Deliberately not a check: with KEPT empty the copy goes to /dev/null, the
+# driver still runs, its output still reaches this step's standard error in
+# full, and every exit status below is unchanged. Do not turn this into a gate.
 { bash "$LOOP_HELPER" --task-file "$TASK_IN" \
   --loop-name "merge-ready" \
   --before-round "$REREVIEW" \
@@ -162,7 +163,7 @@ fi
   --context "autodrive_state_dir=${DIR}" \
   --context "autodrive_budget_loop_rounds=${LOOP_BUDGET}" \
   --context "autodrive_budget_total_rounds=${RECIPE_VAR_autodrive_budget_total_rounds:-}" \
-  --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}" 2>&1; } | tee -a -- "$CAPTURE" >&2
+  --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}" 2>&1; } | tee -a -- "${KEPT:-/dev/null}" >&2
 # The driver's own status, never the pipeline's, and never `$?`: this step
 # runs under `pipefail`, so a `tee` that fails (a full disk) would otherwise
 # become the loop's exit and read a finished DONE as UNREADABLE, or lose a 79,
@@ -173,15 +174,14 @@ RC=${PIPESTATUS[0]}
 line() { jq -cn --arg r "$1" --arg why "$2" '{loop:"merge-ready",loop_result:$r,round_label:"unknown",reason:$why}'; }
 
 # #2849: the driver's last non-empty output line, for the UNREADABLE reason.
-# Read back only from the file this run created, and only while it is still a
-# regular file, not a link and ours — the same check the tool makes before
-# reading autodrive-usage.tsv — so a link swapped in after the driver exited is
-# never quoted. `tail -c` bounds one enormous line. Printable ASCII only;
-# empty when there is nothing to quote.
+# KEPT names the file only when this run created it, and it is read only while
+# it is still a regular file, not a link and ours — the same check the tool
+# makes before reading autodrive-usage.tsv — so a link swapped in after the
+# driver exited is never quoted. `tail -c` bounds one enormous line. Printable
+# ASCII only; empty when there is nothing to quote.
 last_line() {
-  [ "$CAPTURED" = 1 ] || return 0
-  { [ -f "$ERR_FILE" ] && [ ! -L "$ERR_FILE" ] && [ -O "$ERR_FILE" ]; } || return 0
-  LC_ALL=C tail -c 8192 -- "$ERR_FILE" 2>/dev/null \
+  { [ -f "$KEPT" ] && [ ! -L "$KEPT" ] && [ -O "$KEPT" ]; } || return 0
+  LC_ALL=C tail -c 8192 -- "$KEPT" 2>/dev/null \
     | LC_ALL=C awk 'NF { l = $0 } END { print l }' 2>/dev/null \
     | LC_ALL=C tr -cd '\040-\176'
 }
@@ -210,11 +210,11 @@ secret_shaped() {
 # labelled as text, not an instruction.
 output_clause() {
   local l
-  if [ "$CAPTURED" != 1 ]; then
+  if [ -z "$KEPT" ]; then
     printf '%s' "its output could not be kept (the state folder is missing, is a link, is owned by another user or is not writable)"
     return 0
   fi
-  printf 'its output was kept in merge-ready-driver.err at %s ' "$ERR_FILE"
+  printf 'its output was kept in merge-ready-driver.err at %s ' "$KEPT"
   l="$(last_line)"
   if [ -z "$l" ]; then
     printf '%s' "(no last line quoted)"

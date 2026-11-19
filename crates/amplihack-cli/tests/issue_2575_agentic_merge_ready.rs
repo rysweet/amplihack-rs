@@ -1334,16 +1334,18 @@ struct LoopCase {
     stderr: Option<String>,
 }
 
-fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
+/// Puts the stub loop driver in the copied bundle and sets its fixture files
+/// for one run, clearing what the run before left behind.
+fn stage_loop_driver(fx: &Fx, case: &LoopCase) {
     write_executable(
         &fx.tools().join("autodrive_loop.sh"),
         FAKE_LOOP_DRIVER,
         0o755,
     );
     fx.set("loop_rc", case.rc);
-    let _ = std::fs::remove_file(fx.fake.join("loop_result"));
-    let _ = std::fs::remove_file(fx.fake.join("loop_stdout"));
-    let _ = std::fs::remove_file(fx.fake.join("loop_stderr"));
+    for f in ["loop_result", "loop_stdout", "loop_stderr"] {
+        let _ = std::fs::remove_file(fx.fake.join(f));
+    }
     let _ = std::fs::remove_file(fx.state.join("merge-ready-result.json"));
     if let Some(r) = case.result {
         fx.set("loop_result", r);
@@ -1354,32 +1356,43 @@ fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
     if let Some(e) = &case.stderr {
         fx.set("loop_stderr", e);
     }
-    let preflight = json!({
+}
+
+/// The preflight JSON a loop step reads its PR, repo and state directory from.
+fn loop_preflight(fx: &Fx) -> String {
+    json!({
         "should_run": "true", "pr": PR, "pr_url": "", "pr_state": "OPEN",
         "branch": "feat/issue-2575", "head_sha": SHA_A, "base_branch": "main",
         "base_sha": SHA_B, "state_dir": fx.state, "repo": fx.repo,
         "reason": "fixture", "blockers": [], "attempts": []
     })
-    .to_string();
-    let env = |c: &mut Command| {
-        c.env("RECIPE_VAR_merge_loop_preflight", &preflight)
-            .env("RECIPE_VAR_task_description", "issue 2575 fixture task")
-            .env("RECIPE_VAR_autodrive_state_dir", &fx.state)
-            .env("RECIPE_VAR_pr_number", PR)
-            .env("RECIPE_VAR_no_merge", "false")
-            .env("RECIPE_VAR_autodrive_dry_run", "false")
-            .env(
-                "RECIPE_VAR_autodrive_invocation_file",
-                fx.state.join("invocation.json"),
-            )
-            .env("REPO_PATH", &fx.repo)
-            .current_dir(&fx.repo)
-            .stdin(Stdio::null());
-    };
+    .to_string()
+}
+
+/// The environment and working directory every loop-step run needs.
+fn loop_env(c: &mut Command, fx: &Fx, preflight: &str) {
+    c.env("RECIPE_VAR_merge_loop_preflight", preflight)
+        .env("RECIPE_VAR_task_description", "issue 2575 fixture task")
+        .env("RECIPE_VAR_autodrive_state_dir", &fx.state)
+        .env("RECIPE_VAR_pr_number", PR)
+        .env("RECIPE_VAR_no_merge", "false")
+        .env("RECIPE_VAR_autodrive_dry_run", "false")
+        .env(
+            "RECIPE_VAR_autodrive_invocation_file",
+            fx.state.join("invocation.json"),
+        )
+        .env("REPO_PATH", &fx.repo)
+        .current_dir(&fx.repo)
+        .stdin(Stdio::null());
+}
+
+fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
+    stage_loop_driver(fx, case);
+    let preflight = loop_preflight(fx);
     let mut c = fx.bash();
     c.arg("-c")
         .arg(command_of("autodrive-merge-loop", "step-02"));
-    env(&mut c);
+    loop_env(&mut c, fx, &preflight);
     let out = c.output().expect("run merge loop step-02");
     if out.status.code() != Some(0) {
         return (out, None);
@@ -1388,7 +1401,7 @@ fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
     c.arg("-c")
         .arg(command_of("autodrive-merge-loop", "step-02a"))
         .env("RECIPE_VAR_merge_loop_result", stdout(&out));
-    env(&mut c);
+    loop_env(&mut c, fx, &preflight);
     let classified = c.output().expect("run merge loop step-02a");
     (out, Some(classified))
 }
