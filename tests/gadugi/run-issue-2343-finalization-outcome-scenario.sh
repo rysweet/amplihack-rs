@@ -17,11 +17,12 @@
 # collect-finalization-evidence and validate-agentic-finalization bodies (read
 # from amplifier-bundle/recipes/workflow-finalize.yaml with the awk extractor,
 # the same way run-issue-2784-existing-pr-other-base-scenario.sh reads step-16)
-# and every shipped finalization helper they call. The validation body runs in
-# a subshell so its result and its exit code are both recorded in the case
-# folder: it exits 1 on a non-success classification, which in production ends
-# the run, so neither its stdout nor a later step can be relied on to carry the
-# result out.
+# and every shipped finalization helper they call. The collection body is
+# inlined in the generated recipe; the validation body is written to a file and
+# run from it, byte for byte, because it carries a heredoc whose terminator
+# must stay at column 0. Its result and its exit code are both recorded in the
+# case folder, since it exits 1 on a non-success classification, which in
+# production ends the run.
 #
 # Fixtures, per case: a local bare repository whose HEAD is `main`; a clone on
 # the run branch, pushed to it; the clone's origin URL set to
@@ -182,24 +183,25 @@ steps:
     command: |
 HEAD
   printf '%s\n' "$COLLECT_BODY" | sed '/./s/^/      /'
-  cat <<'MID'
+  cat <<'TAIL'
     output: "finalization_evidence"
 
-  # The shipped validation body, unchanged, inside a subshell: its `exec` then
-  # replaces the subshell rather than the step, so the two lines after it run.
+  # The shipped validation body, byte for byte, run from a file. It carries a
+  # heredoc whose terminator must stay at column 0, so it cannot be indented
+  # into a nested block; and it exits 1 on a non-success classification, which
+  # in production ends the run, so neither its stdout nor a later step can be
+  # relied on to carry the result out. Running it as a script keeps its bytes
+  # and records both.
   - id: "validate-agentic-finalization"
     type: "bash"
     command: |
       set +e
-      (
-MID
-  printf '%s\n' "$VALIDATE_BODY" | sed '/./s/^/        /'
-  cat <<'TAIL'
-      ) > "$QA_RESULT_FILE" 2> "$QA_CASE_DIR/validate.err"
+      bash "$QA_VALIDATE_BODY" > "$QA_RESULT_FILE" 2> "$QA_CASE_DIR/validate.err"
       printf '%s' "$?" > "$QA_CASE_DIR/validate.exit"
       exit 0
 TAIL
 } > "$WORK/finalize-qa.yaml"
+printf '%s\n' "$VALIDATE_BODY" > "$WORK/validate-body.sh"
 
 git_env() {
   local dir="$1"; shift
@@ -276,6 +278,7 @@ run_case() {
       AMPLIHACK_LAUNCHER_BINARY="$BIN" AMPLIHACK_AGENT_BINARY=claude \
       RECIPE_RUNNER_RS_PATH="$RUNNER" RECIPE_RUNNER_NO_UPDATE_CHECK=1 \
       QA_CASE_DIR="$dir" QA_RESULT_FILE="$dir/workflow-result.json" \
+      QA_VALIDATE_BODY="$WORK/validate-body.sh" \
       "$BIN" recipe run "$WORK/finalize-qa.yaml" -w "$dir/launch" --no-detach \
       -c "worktree_setup=$setup" -c "repo_path=$dir/clone" -c "branch_name=$BRANCH" \
       -c "finalizer_step_status={\"status\":\"ok\",\"reporting_failure\":\"false\"}" \
