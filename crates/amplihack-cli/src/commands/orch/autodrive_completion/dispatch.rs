@@ -32,11 +32,17 @@ pub fn run(args: Dispatch) -> Result<i32> {
             && decision.round_record_hash == snapshot.record_hash,
         "decision identity or record hash mismatch"
     );
-    let record = evidence::validate(&state, &snapshot)?;
+    let record = evidence::validate(
+        &state,
+        &snapshot,
+        matches!(decision.action, Action::Complete),
+    )?;
     let complete = matches!(
         record["crusty_verdict"].as_str(),
         Some("CLEAN" | "MINOR_ONLY")
-    );
+    ) && record["reviewed_head_sha"] == record["head_sha"]
+        && record["commits_this_round"].as_u64() == Some(0)
+        && args.child_exit_code == 0;
     let (result, code) = match decision.action {
         Action::Complete => {
             // #2769: `--child-exit-code` is `ROUND_RC` in `autodrive_loop.sh`,
@@ -76,10 +82,15 @@ pub fn run(args: Dispatch) -> Result<i32> {
             )
         }
         Action::Evaluate => {
-            ensure!(
-                !complete,
-                "completed objective must select complete before convergence evaluation"
-            );
+            // #2814: asking for convergence evaluation is never refused here.
+            // This arm used to carry `ensure!(!complete)`, so a round the
+            // next-action agent judged unfinished while this predicate called
+            // it complete had no valid action at all, and a dispatch refusal
+            // ends the whole drive with INVALID_DECISION. An unnecessary
+            // evaluator call costs one invocation; a stopped drive costs the
+            // run. The check that matters runs the other way round, in the
+            // `Complete` arm above: a completion claim the evidence cannot
+            // carry is still refused.
             secure_fs::create(
                 secure_fs::Scope::of(&state.state_dir),
                 &args.private_state.with_extension("dispatched"),

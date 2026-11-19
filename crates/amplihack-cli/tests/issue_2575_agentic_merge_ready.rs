@@ -141,16 +141,12 @@ exit 0
 
 /// A fake `amplihack`: `orch helper autodrive authorization` answers from
 /// `auth_out` / `auth_rc`; `extract-json` / `extract-field` are jq-based.
-/// `internal review-allocate` makes and prints `review-gen` in the fake state
-/// (#2290); `internal review-release` succeeds. Every call is logged to
-/// `amplihack.log`.
+/// Every call is logged to `amplihack.log`.
 const FAKE_AMPLIHACK: &str = r#"#!/usr/bin/env bash
 set -u
 S="$FAKE_STATE"
 ( IFS=$'\037'; printf '%s\n' "$*" ) >> "$S/amplihack.log"
 case "${1:-} ${2:-}" in
-  "internal review-allocate") mkdir -p "$S/review-gen" && printf '%s\n' "$S/review-gen"; exit 0 ;;
-  "internal review-release") exit 0 ;;
 esac
 case "${1:-} ${2:-} ${3:-} ${4:-}" in
   "orch helper autodrive authorization")
@@ -1345,13 +1341,11 @@ fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
     if let Some(p) = &case.printed {
         fx.set("loop_stdout", p);
     }
-    let review = fx.root.join("review");
-    std::fs::create_dir_all(&review).unwrap();
     let preflight = json!({
         "should_run": "true", "pr": PR, "pr_url": "", "pr_state": "OPEN",
         "branch": "feat/issue-2575", "head_sha": SHA_A, "base_branch": "main",
         "base_sha": SHA_B, "state_dir": fx.state, "repo": fx.repo,
-        "review_dir": review, "reason": "fixture", "blockers": [], "attempts": []
+        "reason": "fixture", "blockers": [], "attempts": []
     })
     .to_string();
     let env = |c: &mut Command| {
@@ -1536,22 +1530,10 @@ fn step02a_reason_is_bounded() {
 /// real `autodrive_round_word` and `autodrive_round_file`; the evaluator
 /// answers DONE when the round file says MERGE_READY and CONTINUE otherwise,
 /// and STUCK after six calls so a broken driver cannot loop for ever.
-/// `internal review-allocate` and `review-next` add a detached worktree of the
-/// PR worktree's HEAD as the next private review generation (#2290);
-/// `review-launch` prints a separate launch directory, `review-head` the
-/// generation's HEAD, and `review-release` succeeds.
 const DRIVER_AMPLIHACK: &str = r#"#!/usr/bin/env bash
 set -u
 S="$STUB_STATE"
 case "${1:-} ${2:-}" in
-  "internal review-allocate"|"internal review-next")
-    n="$(( $(cat "$S/review-gens" 2>/dev/null || echo 0) + 1 ))"; printf '%s' "$n" > "$S/review-gens"
-    g="$S/review-gen-$n"
-    git -C "$3" worktree add -q --detach "$g" HEAD >/dev/null 2>&1 || exit 1
-    printf '%s\n' "$g"; exit 0 ;;
-  "internal review-launch") mkdir -p "$S/launch" && printf '%s\n' "$S/launch"; exit 0 ;;
-  "internal review-head") exec git -C "$3" rev-parse --verify HEAD ;;
-  "internal review-release") exit 0 ;;
   "recipe show") exit 0 ;;
   "orch helper")
     in="$(cat)"

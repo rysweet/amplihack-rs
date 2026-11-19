@@ -243,7 +243,6 @@ IT="${WORK}/it"; mkdir -p "${IT}/state"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "BIN %s\n" "$*" >> "$AB_LOG"' \
   'case "${1:-} ${2:-}" in' \
   '  "orch helper") STUB_STATE="$AB_STATE" exec "$AB_STUB" "$@" ;;' \
-  '  "internal review-bind-record") cat -- "$4"; exit 0 ;;' \
   'esac' 'exit 0' > "${IT}/alt"
 chmod 0755 "${IT}/alt"
 : > "${IT}/log"
@@ -252,7 +251,7 @@ SHA40="$(printf 'a%.0s' $(seq 40))"
 exec 3<"${IT}/payload"
 AB_LOG="${IT}/log" AB_STATE="${IT}/state" AB_STUB="$STUB_EXE" REAL_AMPLIHACK="" \
   AMPLIHACK_BIN="${IT}/alt" \
-  AUTODRIVE_ROUND_RECORD="${IT}/record.json" REVIEW_DIR="${IT}/gen" AUTODRIVE_ROUND_LABEL=round-1 \
+  AUTODRIVE_ROUND_RECORD="${IT}/record.json" AUTODRIVE_ROUND_LABEL=round-1 \
   RECIPE_VAR_crusty_verdict='{"crusty_verdict":"CLEAN","concern_count":0}' \
   RECIPE_VAR_crusty_round_context="{\"head_sha\":\"${SHA40}\"}" \
   RECIPE_VAR_crusty_fix_evidence='{"commits":0}' \

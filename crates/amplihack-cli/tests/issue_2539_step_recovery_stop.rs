@@ -138,58 +138,6 @@ fn a_handoff_on_pr_ready_ends_the_recipe_with_81_and_the_ci_step_never_runs() {
 }
 
 #[test]
-fn a_handoff_on_the_crusty_review_dir_guard_ends_the_round_before_step_01() {
-    let f = Fixture::new();
-    f.choose(1, handoff());
-    let empty = f.root.join("no-tools");
-    private_dir(&empty);
-    let guard = via_stub(&bundle_command(
-        "autodrive-crusty-round",
-        "step-00-review-dir-guard",
-    ));
-    let steps = vec![
-        bash_step("step-00-review-dir-guard", &guard),
-        marker_step(&f, "step-01-round-context"),
-        marker_step(&f, "step-02-crusty-review"),
-    ];
-    let tools = empty.to_str().unwrap();
-    let o = run_recipe(&f, steps, &[("AUTODRIVE_LAUNCH_TOOLS", tools)]);
-    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
-    for later in ["step-01-round-context", "step-02-crusty-review"] {
-        assert!(!f.root.join(later).exists(), "{later} ran:\n{}", show(&o));
-    }
-    let evidence = f.evidence(1);
-    assert_eq!(evidence["guard"], true);
-    assert_eq!(evidence["allowed_choices"], json!(["handoff"]));
-}
-
-#[test]
-fn a_guard_step_refuses_a_repair_and_hands_off_with_81() {
-    let f = Fixture::new();
-    let tool = f.tool(
-        "guard",
-        "#!/bin/sh\necho 'STOP: review dir changed' >&2\nexit 1\n",
-    );
-    f.choose(
-        1,
-        json!({"choice": "retry_after_repair", "reason": "restore the review dir",
-        "repair": "git checkout the review dir"}),
-    );
-    let o = f.run(
-        "step-02b-review-dir-unchanged",
-        &["--guard"],
-        &[tool.to_str().unwrap()],
-    );
-    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
-    let line = outcome(&o);
-    assert_eq!(line["choice"], "handoff");
-    assert_eq!(line["source"], "validator");
-    let reason = f.records("step-02b-review-dir-unchanged")[0]["reason"].clone();
-    assert!(reason.as_str().unwrap().contains("check 3"), "{reason}");
-    assert_eq!(f.agent_calls().len(), 1, "the guard step never ran again");
-}
-
-#[test]
 fn stop_on_handoff_still_exits_0_on_continue_and_without_the_flag_a_handoff_exits_0() {
     let f = Fixture::new();
     let tool = f.tool("fails", "#!/bin/sh\nexit 1\n");

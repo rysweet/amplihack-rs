@@ -1,3 +1,10 @@
+---
+title: Set Recipe Model Tiers
+description: Configure model mappings and step overrides, and remove obsolete auto-drive entry-gate overrides after deployment.
+doc_type: howto
+last_updated: 2026-11-18
+---
+
 # How to Put Recipe Steps on Model Tiers
 
 A recipe step declares how much model it needs, `fast`, `standard` or `strong`,
@@ -221,3 +228,26 @@ differ was lowered by the column's `max_effort`.
   `review.*` keys and the `amplihack config` command
 - [Recipe Command](../reference/recipe-command.md), for `amplihack recipe run`
   and its output formats
+
+## Remove deployed auto-drive entry-gate overrides
+
+After deploying named-checkout execution, remove the obsolete host overrides
+for these three step IDs from `[step_tiers]` in
+`~/.amplihack/model-tiers.toml`:
+
+- `step-01-build-preflight`
+- `step-01-crusty-loop-preflight`
+- `step-01-merge-loop-preflight`
+
+Remove only those entries, retaining `version = 1`, all model mappings, and
+unrelated step overrides. Keep the file private. This is a post-shipment
+operator action; installation and recipe execution do not edit host
+configuration automatically. Do not delete the whole file to remove three
+entries.
+
+Run subsequent drives with the same named checkout and PR-worktree selection.
+Inspect the run summary's model-tier section to confirm each gate uses its
+recipe-declared `fast` tier rather than a `strong` override. Also account for
+other explicit model settings when inspecting the effective model. The repair
+is repository routing, not a stronger model or a raised timeout. See
+[named-checkout configuration](../reference/recipe-checkout-isolation.md#configuration-and-migration).

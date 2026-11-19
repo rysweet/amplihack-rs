@@ -14,7 +14,7 @@ completion_context loop_ci_signal_previous "$PREV_CI" &&
 completion_context loop_clean_token "$TOKEN_SAFE" || { rm -rf -- "$CTX_DIR"; return 2; }
 PREPARED="$("$AMPLIHACK_BIN" orch helper autodrive-completion-prepare \
   --state-dir "$STATE_DIR" --round-label "$ROUND_LABEL" --record "$RECORD" \
-  --repo "$REPO" --review-dir "$REVIEW_REAL" --launch-tools "$LOOP_HOME" "${CTX_FILES[@]}")"
+  --repo "$REPO" --launch-tools "$LOOP_HOME" "${CTX_FILES[@]}")"
 CTX_RC=$?
 rm -rf -- "$CTX_DIR"
 [ "$CTX_RC" -eq 0 ] || return 2

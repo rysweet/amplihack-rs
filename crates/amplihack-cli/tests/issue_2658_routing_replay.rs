@@ -372,10 +372,7 @@ printf '%s\n' '{{"status":"OK","requires_api_design":"true","requires_database_d
 /// worktree phase, and a trailing step to stop at.
 ///
 /// The stand-in emits the object the worktree phase would, which is what lets
-/// `workflow-design`'s repository resources resolve. It has to produce the
-/// path rather than carry it as a context default: the run executes in a
-/// private checkout, and a context value that embeds the caller's checkout
-/// path inside wider text is refused rather than rewritten.
+/// `workflow-design`'s repository resources resolve in the selected checkout.
 ///
 /// The two keys the fixture's own additions need are added to the persist
 /// list when the shipped recipe does not already carry them, so that what

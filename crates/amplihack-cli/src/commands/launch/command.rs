@@ -270,32 +270,12 @@ pub(super) fn build_command_for_dir(
     // gets `--sandbox danger-full-access` and the hook-trust bypass, the same
     // trust as Claude's `--dangerously-skip-permissions` (#2317), unless the
     // caller chose a sandbox. Interactive argv is unchanged.
-    // Issue #2788: this branch makes one decision, and it reads the
-    // filesystem to make it: whether the child's execution directory (the
-    // caller supplies it) is the recorded launch directory of a live review
-    // generation. Only that grants `--skip-git-repo-check`, and a Codex
-    // directory override must resolve to the same owned directory. The argv
-    // check runs first and rejects every argv without `exec`/`e` without
-    // touching the filesystem, so interactive launches never scan for
-    // review manifests.
-    // Issue #2010: one stderr line names what was added. The notice and the
-    // argv are both derived from the same Boolean by the pure module, so they
-    // cannot disagree, and the line names `--skip-git-repo-check` whenever it
-    // is added. Nothing is written to stdout.
+    // The recipe runs in a real checkout; Codex performs its normal Git check.
     if binary.name == "codex" {
-        let owned_review_launch = add_dir_override.is_some_and(|directory| {
-            super::codex_exec_args::directory_override_matches(extra_args, directory)
-                && crate::runner_validation::is_owned_review_launch_dir(directory)
-        });
-        if let Some(line) =
-            codex_agent_step::codex_agent_step_notice(extra_args, owned_review_launch)
-        {
+        if let Some(line) = codex_agent_step::codex_agent_step_notice(extra_args) {
             eprintln!("{line}");
         }
-        cmd.args(codex_agent_step::codex_agent_step_args(
-            extra_args,
-            owned_review_launch,
-        ));
+        cmd.args(codex_agent_step::codex_agent_step_args(extra_args));
     } else {
         cmd.args(extra_args);
     }

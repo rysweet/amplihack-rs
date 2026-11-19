@@ -99,8 +99,14 @@ has "an unreadable lookup is not read as no PR" \
   "Do not equate inability to read with absence of a PR."
 has "an ambiguous lookup does not guess main or the launch checkout" \
   "report a named blocker rather than guessing main or the current checkout"
-has "the launch checkout is not used as the run's worktree" \
-  "Do not use the launch checkout"
+# #2808 retired the blanket "Do not use the launch checkout": rounds now run in
+# the checkout named by repo_path. The duty that replaced it is narrower and is
+# what this case pins - that checkout is used only when it IS the verified PR
+# linked worktree, and otherwise the PR's own registered worktree is.
+has "the run's worktree is the verified PR linked worktree, never merely the named checkout" \
+  "If it is already the verified PR linked worktree, use it. Otherwise use its registered PR worktree"
+has "a dirty worktree is never replaced" \
+  "Never replace a dirty worktree."
 
 # 5. #1561: worktree_setup only from its JSON value.
 has "worktree_setup is read only from its JSON value (#1561)" \

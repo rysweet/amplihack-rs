@@ -8,7 +8,7 @@ mod execute {
     pub(super) use super::super::execute::{
         CONTEXT_ENV_BUDGET_OVERRIDE_ENV, ENV_ENTRY_OVERHEAD_BYTES, MAX_ARG_STRLEN_BYTES,
         ReleaseStep, context_env_budget, context_env_pairs, parse_recipe_output, pass_context,
-        refuse_descriptor_inside, release_in_order, resolve_context_env_budget,
+        release_in_order, resolve_context_env_budget,
     };
     pub(super) use super::execute_recipe_via_rust_for_test as execute_recipe_via_rust;
 }
@@ -4353,11 +4353,10 @@ fn test_2582_authorization_keys_are_written_after_the_context_and_carried_by_the
 }
 
 // -------------------------------------------------------------------------
-// Issue #2096: release order and the recovery descriptor's location
+// Runtime finalization and error propagation
 // -------------------------------------------------------------------------
 
-/// Every release step runs, in the order given (checkout, recording,
-/// admission, workspace), even after an earlier one fails, and each sees the
+/// Every finalization step runs in order (admission, context, report), even after an earlier one fails, and each sees the
 /// result so far.
 #[test]
 fn release_runs_every_step_in_order_after_an_early_failure() {
@@ -4384,31 +4383,31 @@ fn release_runs_every_step_in_order_after_an_early_failure() {
             ..Default::default()
         }),
         vec![
-            step("execution release", true),
-            step("Git recording", false),
             step("recovery admission finish", true),
+            step("recipe context file", false),
             step("run report", true),
         ],
     );
     assert_eq!(
         *log.borrow(),
         [
-            ("execution release", true),
-            ("Git recording", false),
-            ("recovery admission finish", false),
+            ("recovery admission finish", true),
+            ("recipe context file", false),
             ("run report", false),
         ],
         "every step ran, in order; the ones after the first failure saw it"
     );
     let chain = format!("{:#}", result.expect_err("a failed release fails the run"));
     for part in [
-        "execution release broke",
-        "recovery admission finish also failed: recovery admission finish broke",
+        "recovery admission finish broke",
         "run report also failed: run report broke",
     ] {
         assert!(chain.contains(part), "{part:?} missing from {chain}");
     }
-    assert!(!chain.contains("Git recording also failed"), "{chain}");
+    assert!(
+        !chain.contains("recipe context file also failed"),
+        "{chain}"
+    );
 }
 
 /// A run that had already failed keeps its own error first; release
@@ -4419,20 +4418,23 @@ fn release_failures_are_chained_onto_the_runs_own_error() {
         Err(anyhow::anyhow!("the runner failed")),
         vec![
             (
-                "execution release",
-                Box::new(|_| anyhow::bail!("checkout kept")),
+                "recovery admission finish",
+                Box::new(|_| anyhow::bail!("admission kept")),
             ),
-            ("Git recording", Box::new(|_| anyhow::bail!("record kept"))),
+            (
+                "recipe context file",
+                Box::new(|_| anyhow::bail!("context kept")),
+            ),
         ],
     );
     let error = result.expect_err("the run failed");
     let chain = format!("{error:#}");
     assert!(
-        chain.starts_with("Git recording also failed: record kept"),
+        chain.starts_with("recipe context file also failed: context kept"),
         "{chain}"
     );
     assert!(
-        chain.contains("execution release also failed: checkout kept"),
+        chain.contains("recovery admission finish also failed: admission kept"),
         "{chain}"
     );
     assert_eq!(
@@ -4440,31 +4442,4 @@ fn release_failures_are_chained_onto_the_runs_own_error() {
         "the runner failed",
         "the run's own error stays the primary cause"
     );
-}
-
-/// S-AZ4: a recovery descriptor whose folder resolves inside the private
-/// checkout, directly or through a symlink, is refused; one outside passes.
-#[test]
-fn a_recovery_descriptor_inside_the_private_checkout_is_refused() {
-    let root = tempfile::tempdir().unwrap();
-    let checkout = root.path().join("checkout");
-    let runs = root.path().join("runs");
-    std::fs::create_dir_all(checkout.join("state")).unwrap();
-    std::fs::create_dir_all(&runs).unwrap();
-    std::os::unix::fs::symlink(checkout.join("state"), root.path().join("alias")).unwrap();
-
-    execute::refuse_descriptor_inside(&runs.join("descriptor.json"), &checkout).unwrap();
-    for inside in [
-        checkout.join("state/descriptor.json"),
-        root.path().join("alias/descriptor.json"),
-    ] {
-        let error = execute::refuse_descriptor_inside(&inside, &checkout)
-            .expect_err("a descriptor inside the checkout must be refused");
-        assert!(
-            error
-                .to_string()
-                .contains("resolves inside the run's private checkout"),
-            "{error:#}"
-        );
-    }
 }

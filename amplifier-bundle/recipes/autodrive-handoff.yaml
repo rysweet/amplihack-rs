@@ -14,7 +14,6 @@ tags:
   - "auto-drive"
   - "hand-off"
 context:
-  review_dir: "."
   pr_number: ""
   head_sha: ""
   handoff_reason: ""
@@ -29,7 +28,7 @@ steps:
     type: "agent"
     agent: "amplihack:core:builder"
     model: "fast"
-    working_dir: "{{review_dir}}"
+    working_dir: "{{repo_path}}"
     parse_json: false
     prompt: |
       Hand PR #{{pr_number}} back to people. First check that `{{pr_number}}` is a positive integer and that `{{head_sha}}` is empty or 40 or 64 lowercase hex characters; if either check fails, do nothing on GitHub and say why.

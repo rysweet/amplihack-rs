@@ -104,8 +104,8 @@ fn repo_with_worktree(root: &Path) -> (PathBuf, PathBuf) {
     (main, wt)
 }
 
-/// The two read-only views of a checkout that the review-dir stamp is built
-/// from.
+/// Two read-only views of a checkout: its index entries and its status. A
+/// hook that leaves both unchanged has not touched the checkout.
 #[derive(Debug, PartialEq, Eq)]
 struct Snapshot {
     stage: String,
