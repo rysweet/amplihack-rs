@@ -81,16 +81,6 @@ exec 9>&-
 printf '%s\0' "$@" > "$STUB_LOG/call-$(printf '%05d' "$n")"
 case "${1:-} ${2:-}" in
   "recipe show") exit 0 ;;
-  "internal review-allocate"|"internal review-next")
-    g2=$(( $(cat "$STUB_STATE/review-gens" 2>/dev/null || echo 0) + 1 ))
-    printf '%s' "$g2" > "$STUB_STATE/review-gens"
-    gen="$STUB_STATE/review-gen-$g2"
-    git -C "$3" worktree add -q --detach "$gen" HEAD >/dev/null 2>&1 || exit 1
-    printf '%s\n' "$gen"; exit 0 ;;
-  "internal review-launch")
-    mkdir -p -- "$STUB_STATE/launch" && printf '%s\n' "$STUB_STATE/launch"; exit 0 ;;
-  "internal review-head") exec git -C "$3" rev-parse --verify HEAD ;;
-  "internal review-release") exit 0 ;;
   "orch helper")
     cat >/dev/null
     if [ "${3:-}" = "extract-field" ]; then
@@ -157,8 +147,8 @@ case "${1:-} ${2:-}" in
       fi
       prev=$a
     done
-    # Never the review dir: #1528 stops the loop if a round changes its index
-    # or HEAD. A round's own commits land in the PR worktree.
+    # A round's own commits land in the PR worktree, the only checkout the
+    # round has since #2808.
     if [ -n "$rd" ] && [ -d "$rd/.git" -o -f "$rd/.git" ]; then
       t="$(git -C "$rd" write-tree)"
       c="$(git -C "$rd" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "stub round $n")"

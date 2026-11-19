@@ -65,13 +65,8 @@ fn a_git_clone_and_a_git_ls_remote_outside_any_repository_do_not_affect_the_run(
         "git ls-remote did not list the remote's branches"
     );
 
-    // The run itself is untouched: its own checkout is still private, and the
-    // caller's checkout is unchanged.
+    // Git outside the repository leaves the selected checkout unchanged.
     let cwd = f.observed_str("outside", "cwd");
-    assert_ne!(Path::new(&cwd), f.repo.as_path());
-    assert!(
-        !Path::new(&cwd).starts_with(&f.repo),
-        "the run's checkout must not be inside the caller's checkout"
-    );
+    assert_eq!(Path::new(&cwd), f.repo.as_path());
     assert_eq!(f.snapshot(), before, "the caller's checkout is unchanged");
 }

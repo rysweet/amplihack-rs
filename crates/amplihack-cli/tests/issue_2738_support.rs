@@ -54,7 +54,6 @@ while [ $# -gt 0 ]; do
 done
 cd "$dir"
 printf '%s' "$(pwd -P)" > "$out/cwd"
-printf '%s' "${AMPLIHACK_RUN_CHECKOUT:-}" > "$out/run_checkout"
 git rev-parse HEAD > "$out/head"
 git symbolic-ref -q HEAD > "$out/branch" || true
 # Issue #2737: Git started outside any repository while the run is in flight.

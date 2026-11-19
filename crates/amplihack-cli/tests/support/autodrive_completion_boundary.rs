@@ -27,7 +27,9 @@ fi
 [ "$name" = autodrive-crusty-round ] || exit 2
 while [ $# -gt 0 ]; do
   case "$1" in
-    -c) key="$(printf '%s' "${2%%=*}" | tr '[:lower:]' '[:upper:]')"; val="${2#*=}"; export "$key=$val"; shift 2 ;;
+    # The runner exports both forms of every context key: RECIPE_VAR_<key>
+    # always, and the uppercase alias (recipe-runner-rs context.rs).
+    -c) key="$(printf '%s' "${2%%=*}" | tr '[:lower:]' '[:upper:]')"; val="${2#*=}"; export "$key=$val" "RECIPE_VAR_${2%%=*}=$val"; shift 2 ;;
     --working-dir) cd "$2" || exit 1; shift 2 ;;
     *) shift ;;
   esac
@@ -51,10 +53,19 @@ jq -cn --arg pr "${PR_NUMBER:-}" --arg head "$head" --arg resolved "$resolved" \
 "#;
 
 pub const ROUND_SCRIPT: &str = r#"set -euo pipefail
-export RECIPE_VAR_review_index="$(bash "$FIXTURE/guard.sh")"
 export RECIPE_VAR_crusty_round_context="$(bash "$FIXTURE/context.sh")"
-export RECIPE_VAR_crusty_review="$(cat "$FIXTURE/review.json")"
-bash "$FIXTURE/guard-check.sh"
+# A reviewer names the commit it read (#2814). This double reads the one the
+# loop measured and asked for, as an uninterrupted round does. $FIXTURE/review-head
+# replaces that claim with another commit, so a round whose review disagrees with
+# the loop can be driven end to end.
+claim="${RECIPE_VAR_reviewed_head_sha:-}"
+[ ! -f "$FIXTURE/review-head" ] || claim="$(cat "$FIXTURE/review-head")"
+if [ -n "$claim" ]; then
+  export RECIPE_VAR_crusty_review="$(jq -c --arg s "$claim" \
+    '. + {reviewed_head_sha:$s}' "$FIXTURE/review.json")"
+else
+  export RECIPE_VAR_crusty_review="$(jq -c 'del(.reviewed_head_sha)' "$FIXTURE/review.json")"
+fi
 export RECIPE_VAR_crusty_verdict="$(bash "$FIXTURE/classify.sh")"
 bash "$FIXTURE/record.sh"
 if [ -n "${AUTODRIVE_COMPLETION_STATE:-}" ]; then

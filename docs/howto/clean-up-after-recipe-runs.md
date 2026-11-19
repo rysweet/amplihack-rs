@@ -2,16 +2,21 @@
 title: Clean up after recipe runs
 description: Locate, retain, remove, or archive run-owned files and recovery state.
 doc_type: howto
-last_updated: 2026-11-16
+last_updated: 2026-11-18
 ---
 
 # Clean Up After Recipe Runs
 
-Each real run removes its own execution checkout when it ends, after checking
-the ownership manifest and the device and inode of every owned path. A path
-that changed is kept and the run fails. Private repository metadata stays when
-a durable worktree depends on it. See
-[ownership and release](../reference/recipe-checkout-isolation.md#ownership-and-release).
+Recipe steps run in the named checkout and its task or PR worktree. The
+runner does not create or release a private execution repository or review
+launch folder. Interrupted runs retain uncommitted and unpushed work, branches,
+and worktree registration. Runtime files and recoverable repository data are
+separate; see [execution and retention](../reference/recipe-checkout-isolation.md#recovery-and-cleanup).
+
+Legacy private execution/review directories may contain recoverable work.
+Removal of their ownership and release machinery does not authorize sweeping
+those directories. Inspect and preserve their contents before any operator
+cleanup.
 
 Use this guide to find what a recipe run leaves on disk, to choose where it
 goes, and to remove or archive it with `amplihack cleanup`.
@@ -120,7 +125,6 @@ The runner creates one folder per run:
 │       ├── recovery/             # private completions and required artifact copies
 │       ├── procs/                # one record per running attempt, for recipe stop (Linux)
 │       └── runtime/              # removed when the run ends
-│           ├── checkout/         # the run's detached worktree (git runs only)
 │           ├── tmp/              # TMPDIR, TMP and TEMP for every step
 │           ├── context/          # 0700; holds the run's 0600 context file
 │           └── artifacts/        # AMPLIHACK_WORKFLOW_ARTIFACT_DIR
@@ -386,14 +390,8 @@ When `amplihack recipe run` finishes, whether the run succeeded, failed or
 panicked, the runner does these steps in order. Each step runs even when an
 earlier one failed, and the final error names every failure.
 
-1. Removes the execution checkout (`checkout.remove()`). It deletes only paths
-   its `owner.json` proves the run owns and never follows symlinks. It does
-   not change the caller's worktree list. A substituted path is kept and the
-   run fails. When a durable worktree depends on the private repository, the
-   repository stays and is listed in `durable-dependencies`.
-2. Finishes the recovery admission with an outcome judged from the run and
-   the first step.
-3. Finishes the workspace (`finish_workspace`):
+1. Finishes the recovery admission with an outcome judged from the run.
+2. Finishes the workspace (`finish_workspace`):
    1. Removes `<run dir>/runtime/`, including everything steps wrote to
       `TMPDIR` and `artifacts/`, unless a running process still uses it.
       Durable `recovery/` state and copied artifacts remain outside that
@@ -412,7 +410,11 @@ earlier one failed, and the final error names every failure.
       the same sweep, whether the run recorded it as `created` or `reused`; see
       [When a target is removed](#when-a-target-is-removed).
 
-`AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 3.3. Everything
+There is no execution-copy release step. The selected checkout and retained
+task or PR worktree remain available for recovery; legacy execution and review
+directories are not swept by this finalization.
+
+`AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 2.3. Everything
 before it always runs.
 
 A run that fails before its first step, for example on an unborn `HEAD`,
@@ -469,7 +471,7 @@ language server or a background job a test left behind. If the runner removed
 `runtime/` under such a process, the process, and any agent that inherited its
 `TMPDIR`, would be left pointing at a folder that no longer exists.
 
-So before step 3.1 removes `runtime/`, the runner checks the process table once.
+So before step 2.1 removes `runtime/`, the runner checks the process table once.
 The folder is in use if any running process other than the runner itself:
 
 - has its working folder inside it;
@@ -610,7 +612,7 @@ run fails with:
 runtime resource identity changed; replacement retained at /home/ryan/.amplihack/work/r/3f0c9a526d1e
 ```
 
-See step 3.1 in [What happens when a run ends](#what-happens-when-a-run-ends).
+See step 2.1 in [What happens when a run ends](#what-happens-when-a-run-ends).
 
 The open folder does not count as "in use" when the run ends, because the runner
 skips its own process. Step processes do not inherit it, because it is opened
@@ -995,7 +997,6 @@ amplihack cleanup --apply --skip-logs
 | `run-tmp` | `<work root>/runs/<id>/runtime` (or `<work root>/r/<short id>`) left by a run that is no longer active, such as one that was killed. The keep period does not apply: the folder is removed as soon as the run is inactive and no running process (such as a child the killed run left behind) uses it. | remove |
 | `run-worktree` | Worktrees recorded in a run's `owned-paths`, under `<work root>/worktrees/` or `<main checkout>/worktrees/`, once the run is eligible. | `git worktree remove`; the branch is kept |
 | `run-target` | Targets recorded in a run's `owned-paths`: on the events in [When a target is removed](#when-a-target-is-removed), or for legacy lines once the run is eligible. Also the target removed by `--worktree-target`. A linked target loses both its destination and the link. | remove |
-| `run-exec` | Folders directly under `<work root>/exec/`: the stable execution storage of runs with a recovery identity ([checkout isolation](../reference/recipe-checkout-isolation.md)). One is collected when the run named in its `claim.json` has ended and no worktree registered in its private repository still exists outside it; an empty folder with no claim, and a `.reclaim-*` folder an interrupted reclaim moved aside, are collected too. A symlink is never followed. The keep period does not apply. A relaunch with the same identity applies the same rules before it reuses the path. | remove |
 | `untagged-target` | Folders directly under `<work root>/targets/`, and `amplihack-precommit-target-*` folders in the hook cache base, that no run recorded and that have not been modified within the keep period. | remove |
 | `tmp-leftover` | Top-level `replay-*`, `release-*` and `amplihack-workflow-*` folders in the system temporary folder that you own, that are older than the keep period, that hold no `pid` marker naming a live process, and that no running process has as its working folder, holds a file open in, or has as its `TMPDIR`, `TMP` or `TEMP`. | remove |
 | `recipe-log` | Files in `recipe.log_dir` older than `--log-days`. | archive |
@@ -1012,6 +1013,16 @@ when the system temporary folder is neither owned by you nor sticky.
 Clones under `<work root>/clones/` belong to no category. They are never
 recorded in `owned-paths` and never swept; remove them by hand when you no
 longer need them.
+
+An auto-drive loop killed part way through a round can likewise leave a
+`pre-review.*` baseline directory in its state directory, mode `0700` with
+`0600` contents. `autodrive_loop.sh` removes the baseline once the round
+returns and the loop goes on, so one survives an interrupted round, and also a
+round that ended the run on an orphaned driver, a policy refusal, a usage limit
+or a recorded step-recovery handoff; the next run's first round reclaims it. No
+cleanup category covers that path, and the directory holds the contents of the
+worktree's untracked files, so remove it by hand once no recovery needs it. See
+[pre-review evidence](../reference/recipe-checkout-isolation.md#pre-review-evidence).
 
 ## Build output: CACHEDIR.TAG and target names
 
@@ -1211,11 +1222,10 @@ expects:
 - the `tmp-leftover` folders described above;
 - log originals, after their archive is verified.
 
-The `owned-paths` rules below apply to this cleanup command only. They are
-separate from the release a recipe run does at its end: that release deletes
-only paths its `owner.json` manifest proves the run created, with matching
-identities. See
-[ownership and release](../reference/recipe-checkout-isolation.md#ownership-and-release).
+The `owned-paths` rules below apply to runtime cleanup and recorded legitimate
+worktrees/targets. There is no execution-copy ownership manifest or end-of-run
+release of a private repository. The retired `run-exec` category is not swept;
+legacy execution and review directories remain for recovery.
 
 An entry in `owned-paths` is a request, not a permission. A recorded path
 outside these folders is reported as skipped.
@@ -1433,73 +1443,17 @@ removed. `git worktree remove` run by hand does not remove the target; call
 the default path is over 80 bytes; a very long `AMPLIHACK_WORK_ROOT` can still
 exceed the socket limit, so choose a shorter one.
 
-**An auto-drive printed `review storage identity changed; retained`.** The
-review generation's storage directory is not the one the drive recorded, so
-nothing under it was deleted and the path is left for a person to look at.
-The check compares three recorded pairs of device and inode number: the
-storage directory itself, the `repository.git` inside it, and the `launch`
-directory inside it. A mismatch in any of the three stops the removal,
-including a recorded child that has been removed, replaced, or turned into a
-symbolic link.
-
-Two causes account for most of these. A retirement that stopped partway
-removed one child and then failed, so the rest is kept rather than finished.
-Or the directory at the path is not the drive's at all. Look before removing
-anything:
-
-```bash
-# the path from the message, under the drive's state directory
-DIR="$HOME/.amplihack/state/auto-drive/pr-2340/review-Qx81Lm/review-generation-5e6f7a8b"
-ls -la "$DIR"
-stat -c '%d %i %N' "$DIR" "$DIR/repository.git" "$DIR/launch" 2>&1
-```
-
-`stat` does not follow symbolic links here, so a link shows as a link rather
-than as its target. The manifest beside the generation's checkout,
-`<checkout>.review-owner.json`, holds the four pairs recorded when the
-generation was made, in the order storage, `repository.git`, checkout,
-`launch`. Compare its first, second and fourth pairs with the output above to
-see which one moved.
-
-When the directory holds only what the drive made, remove it yourself.
-`amplihack cleanup` does not remove it, because it cannot tell a retained
-directory from a replacement:
-
-```bash
-rm -rf "$DIR"
-```
-
-See [Superseded generations are
-retired](../reference/recipe-checkout-isolation.md#superseded-generations-are-retired)
-for what each pair is checked against and why one pair is not enough.
-
-**An auto-drive printed `review generation resource identity changed;
-retained for recovery`.** This is the other identity message, and it reports
-a different thing. It comes from the check made whenever a live
-generation is read, before any removal is attempted, so nothing was deleted
-and the record is still live. Four pairs are compared here rather than three,
-the checkout being the fourth, and any command that uses the generation can
-report it, `review-next` included: that one stops before it provisions a
-successor, so no retirement begins.
-
-Read the two apart this way. `review storage identity changed; retained`
-means a removal was attempted and refused, and a directory is left behind
-that `amplihack cleanup` will not take. `review generation resource identity
-changed; retained for recovery` means no removal was attempted at all: the
-generation is intact on disk, and every command that reads it refuses until
-the path that moved is accounted for.
-A recorded path that is absent, is a symbolic link or is no longer a
-directory gives a third message, `review resource is not an owned directory`
-and the path, and is investigated the same way.
-
-Inspect it with the `stat` command above, adding the checkout, and compare
-all four pairs in `<checkout>.review-owner.json` in their recorded order:
-storage, `repository.git`, checkout, `launch`. Remove nothing on this
-message; the generation may still be in use.
+**An older run left private execution or review directories.** Those resources
+are no longer allocated, retired, or released by recipe runs. They are not
+collected by a replacement cleanup category. They can contain uncommitted
+files, staged content, unpushed commits, or repositories on which linked
+worktrees depend. Preserve them and inspect their Git state before deciding
+whether any data can be removed. Do not infer that a directory is disposable
+from an old ownership record or an inactive run.
 
 ## Related documentation
 
 - [Hygiene Cleanup](../operations/hygiene-cleanup.md) - Opt-in cleanup of stale worktrees, detached Cargo targets and session artifacts outside recipe runs
 - [Configure Workflow Runtime Isolation](configure-workflow-runtime-isolation.md) - Where workflow runtime output is written
 - [Correlate Recipe Runs with Logs](correlate-recipe-runs.md) - Match a run id to its logs and processes
-- [Recipe Run and Auto-Drive Checkout Isolation](../reference/recipe-checkout-isolation.md) - What a run and a review generation own, and the identity checks that decide what is removed
+- [Recipe Execution in Named Checkouts](../reference/recipe-checkout-isolation.md) - Working directories and retained repository data

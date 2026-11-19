@@ -838,14 +838,6 @@ impl RunWorkspace {
         }
     }
 
-    /// The work root of a durable run, or `None` for a dry run.
-    pub(crate) fn work_root_path(&self) -> Option<PathBuf> {
-        match self {
-            Self::Scoped { scope, .. } => Some(scope.work_root.path.clone()),
-            Self::Legacy { .. } => None,
-        }
-    }
-
     /// Re-creates this run's own `<runtime>/tmp` and `<runtime>/artifacts`
     /// before an attempt, at the same path every time (issue #2486), so a
     /// step never starts with a TMPDIR that no longer exists. A real folder

@@ -83,7 +83,7 @@ pub fn run(
         ("loop_repo_path", state.repo.to_string_lossy().into_owned()),
         (
             "loop_agent_working_dir",
-            state.review_dir.to_string_lossy().into_owned(),
+            state.repo.to_string_lossy().into_owned(),
         ),
         ("loop_child_exit_code", child_rc.to_string()),
         (
@@ -138,8 +138,8 @@ pub fn run(
                 .join("../recipes/loop-health-evaluator.yaml"),
         )
         .arg("--working-dir")
-        .arg(&state.review_dir)
-        .current_dir(&state.review_dir);
+        .arg(&state.repo)
+        .current_dir(&state.repo);
     // Preserve the launcher's policy ceilings and sibling depth, never values
     // from agent output or context. No shell evaluates any of these arguments.
     for (key, value) in [
@@ -177,10 +177,6 @@ pub fn run(
     )?;
     let log = String::from_utf8_lossy(&log);
     eprint!("{log}");
-    ensure!(
-        evidence::review_stamp(&state.launch_tools, &state.review_dir)? == state.review_stamp,
-        "loop-health evaluator changed the trusted review directory"
-    );
     let rc = status.code().unwrap_or(1);
     let (result, code) = classify_exit(rc, &log);
     let evaluator_verdict = result;

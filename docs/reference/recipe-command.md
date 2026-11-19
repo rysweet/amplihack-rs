@@ -2,7 +2,7 @@
 title: amplihack recipe reference
 description: Commands and options for inspecting and executing recipes.
 doc_type: reference
-last_updated: 2026-11-17
+last_updated: 2026-11-18
 ---
 
 # amplihack recipe — Reference
@@ -213,6 +213,10 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--fresh] [--verbose]
   [--governor-class <CLASS>] [--workstream <ID>]
 ```
 
+The runner executes in the named checkout. Recipes use `repo_path` and step
+`working_dir` to select their task or PR worktree; paths are not remapped into
+a private repository. See [execution locations](recipe-checkout-isolation.md#execution-locations).
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `<FILE>` | (required) | Path to the recipe YAML file |
@@ -221,7 +225,7 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--fresh] [--verbose]
 | `--fresh` | false | Bypass historical recovery for this launch and its delegated execution; preserve existing history |
 | `--verbose` | false, or [`recipe.verbose`](./user-config.md#recipeverbose) | Increase progress detail on stderr; basic step progress is emitted by default. On when either the flag or `recipe.verbose = true` is set |
 | `--format <FORMAT>` | `table` | Output format for results: `table`, `json`, or `yaml` |
-| `--working-dir <DIR>` | `.` | Working directory for step execution |
+| `-w`, `--working-dir <DIR>` | `.` | Runner working directory, used directly; explicit recipe/step directory selection still applies. No private execution copy is created. |
 | `--detach` | false, or [`recipe.detach`](./user-config.md#recipedetach) `= "tmux"` | Run in a new tmux session with a private log, print the session and log path, and return. See [Detached runs](#detached-runs) |
 | `--no-detach` | | Run in the foreground even when `recipe.detach = "tmux"` |
 | `--governor-wait <DURATION>` | `AMPLIHACK_GOVERNOR_WAIT`, then `governor.wait_secs`, else `10m` | Longest time to wait for the [capacity governor](./capacity-governor.md) to admit the run. `0` means do not wait |

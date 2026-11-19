@@ -3652,6 +3652,19 @@ constants:
 
 Rules:
 
+- `add` omits exactly `skills/synced` (Claude Code's per-account skill cache)
+  and `skills/.trash` (deleted skill state), relative to `$HOME/.claude`.
+  The descriptor-relative copy used on Unix and the path-based copy used on
+  other platforms both skip these paths before examining their type, opening
+  them, creating destination entries, descending or counting towards the copy
+  limit, so neither an excluded entry nor any of its descendants consumes the
+  budget.
+  Their source contents remain intact; Claude Code syncs account skills again
+  for each login.
+- Exclusions use exact, case-sensitive path components. User-owned skills
+  continue to be copied, with their file contents preserved. Names elsewhere,
+  including `agents/synced`, `skills/custom/.trash` and `skills/custom/synced`,
+  follow the usual copy rules. The allowlists above are otherwise unchanged.
 - `settings.json` is parsed and only `SHARED_SETTINGS_KEYS` are written to the
   profile's `settings.json`. If nothing survives the filter, no file is
   written. `env`, `apiKeyHelper` and all unknown keys are dropped.
@@ -3753,9 +3766,27 @@ Rules:
 - The profile root cannot be inside the shared source tree. This is checked
   before the root is created, including for missing path suffixes, to prevent
   recursive seeding.
-- Caps: nesting is limited to 16 levels, a seed to 5,000 entries, each file to
-  64 MiB, and `settings.json` to 1 MiB; exceeding a cap is an error. Special
-  files are skipped without being opened, so a FIFO cannot block the copy.
+- Caps: nesting is limited to 16 levels, the recursive shared-asset copy to
+  5,000 entries in total across all five allowlisted directories, each file to
+  64 MiB, and `settings.json` to 1 MiB; exceeding a cap is an error. The entry
+  budget is shared across directories, rather than reset for each directory,
+  and counts directory entries as well as files. More than 5,000 entries beneath
+  `skills/synced` alone therefore do not prevent profile creation; more than
+  5,000 included entries still do.
+- An entry-limit error names the folders that spent the budget, largest charge
+  first, for example
+  `more than 5000 entries; charged before stopping: "skills/vendored" 1500, "agents" 1400, "commands" 1300, and 3 more`.
+  Because the budget is aggregate, the folder holding the entry that overruns
+  it is usually not the folder that spent it, so the error names the spenders
+  rather than that one. Each entry is charged to the folder holding it, cut to
+  the first two components of its path relative to `$HOME/.claude`, so the
+  error points at one subtree of one allowlisted directory, which the user can
+  move or delete. At most three folders are named and the rest are counted.
+  Every number is exactly what that folder had charged when the copy stopped at
+  the limit. A folder name below the top level comes from the source tree, so
+  it is quoted, escaped and cut at 120 characters.
+- Special files are skipped without being opened, so a FIFO cannot block the
+  copy.
 - Excluded entirely: `.credentials.json`, `.claude.json`, `history*`,
   `sessions`, `todos`, `statsig`, `shell-snapshots`, `ide`,
   and every other entry not on the allowlists (so plugins and MCP server

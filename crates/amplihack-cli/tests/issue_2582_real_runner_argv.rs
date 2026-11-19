@@ -277,14 +277,8 @@ impl Fixture {
         }
         fs::write(agents.join("builder.md"), AGENT_MD).unwrap();
 
-        // Both runs work in `project`, a real Git repository: since #2096 the
-        // checkout discovery fails closed without one, and #2176's Git
-        // recording otherwise ends the run with "required observer did not
-        // finalize". It is its own directory rather than `root` because the
-        // work root holds each run's private checkout, and a work root inside
-        // the repository being isolated is refused ("unsupported local
-        // input ... checkout/"). This fixture is about argv, not Git, so it
-        // takes the shared helper's repository and nothing more.
+        // Both runs use the same named Git checkout, with workflow state
+        // outside it. The fixture measures argv and context transport.
         let project = root.join("project");
         crate::support::git_fixture::init_with_commit(&project);
         fs::set_permissions(&project, fs::Permissions::from_mode(0o700)).unwrap();

@@ -854,6 +854,25 @@ mod issue_1976_removed_keys {
         }
     }
 
+    /// #2814: #2808 removed the separate review checkout, so a run given
+    /// `review_dir` or `review_launch_dir` would accept and ignore it.
+    #[test]
+    fn the_retired_review_checkout_keys_are_refused_not_ignored() {
+        for key in ["review_dir", "review_launch_dir"] {
+            assert!(
+                REMOVED_CONTEXT_KEYS
+                    .iter()
+                    .any(|(listed, _)| *listed == key),
+                "{key} is not listed: {REMOVED_CONTEXT_KEYS:?}"
+            );
+            let (code, out) = reject(&["task_description=x", &format!("{key}=/tmp/anywhere")]);
+            assert_eq!(code, Some(1), "{out}");
+            assert!(out.contains(key), "{out}");
+            assert!(out.contains("#2808"), "{out}");
+            assert!(!out.contains("/tmp/anywhere"), "the value is echoed: {out}");
+        }
+    }
+
     #[test]
     fn whitespace_around_the_key_is_trimmed() {
         for arg in [

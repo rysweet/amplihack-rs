@@ -14,7 +14,7 @@ use crate::support::step_recovery::{Fixture, HANDOFF_EXIT, bundle_recipes, show}
 /// `(recipe, step whose command runs the driver, recorded step id)`. Bash
 /// steps are wrapped in place; an agent or sub-recipe step keeps its type,
 /// gets `continue_on_error`, and is recovered by the bash step after it.
-const CONVERTED: [(&str, &str, &str); 11] = [
+const CONVERTED: [(&str, &str, &str); 7] = [
     (
         "autodrive-crusty-loop",
         "step-02-crusty-loop",
@@ -24,26 +24,6 @@ const CONVERTED: [(&str, &str, &str); 11] = [
         "autodrive-crusty-loop",
         "step-03r-record-crusty-phase-recovery",
         "step-03-record-crusty-phase",
-    ),
-    (
-        "autodrive-crusty-round",
-        "step-00-review-dir-guard",
-        "step-00-review-dir-guard",
-    ),
-    (
-        "autodrive-crusty-round",
-        "step-02b-review-dir-unchanged",
-        "step-02b-review-dir-unchanged",
-    ),
-    (
-        "autodrive-merge-round",
-        "step-00-review-dir-guard",
-        "step-00-review-dir-guard",
-    ),
-    (
-        "autodrive-merge-round",
-        "step-02b-review-dir-unchanged",
-        "step-02b-review-dir-unchanged",
     ),
     (
         "autodrive-merge-loop",
@@ -143,26 +123,6 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
         (
             "workflow-finalize",
             "validate-agentic-finalization",
-            "--guard",
-        ),
-        (
-            "autodrive-crusty-round",
-            "step-00-review-dir-guard",
-            "--guard",
-        ),
-        (
-            "autodrive-crusty-round",
-            "step-02b-review-dir-unchanged",
-            "--guard",
-        ),
-        (
-            "autodrive-merge-round",
-            "step-00-review-dir-guard",
-            "--guard",
-        ),
-        (
-            "autodrive-merge-round",
-            "step-02b-review-dir-unchanged",
             "--guard",
         ),
         (

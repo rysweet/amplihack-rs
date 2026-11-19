@@ -22,6 +22,28 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
+/// Git's tracing namespace, which routes diagnostic output to a caller-chosen
+/// file descriptor or path. Deliberately not in `amplihack_git::scrub`, whose
+/// list is repository selection: that list is unset wholesale by
+/// `tests/issue_1278_git_env_isolation.sh` and shared with every other caller.
+pub(super) const CALLER_TRACE_VARS: &[&str] = &[
+    "GIT_TRACE2",
+    "GIT_TRACE2_CONFIG_PARAMS",
+    "GIT_TRACE2_ENV_VARS",
+    "GIT_TRACE2_EVENT",
+    "GIT_TRACE2_PERF",
+    "GIT_TRACE2_REDACT",
+];
+
+/// Remove inherited Git routing and tracing after building all other environment.
+/// User credentials, global/system configuration and identity remain inherited.
+pub(super) fn scrub_runner_git_environment(command: &mut Command) {
+    for var in CALLER_TRACE_VARS {
+        command.env_remove(var);
+    }
+    amplihack_git::scrub(command);
+}
+
 const STDERR_TAIL_LINES: usize = 5;
 const CAPTURED_STDERR_LINES: usize = 200;
 const RECIPE_RUNNER_DEFAULT_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
@@ -748,6 +770,11 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // lookup, temp dirs, bundle copies, spawn) so no descendant is ever
     // created past the limit.
     let guard = enforce_recursion_depth_guard(working_dir)?;
+    // Issues #964/#1903/#2814: read the named checkout's `core.bare` before
+    // anything else runs, so the release step below can tell a flip from the
+    // value it started with. Taken here, after the depth guard and before the
+    // bundle, spawn and every step.
+    let checkout_bare = super::checkout_bare::CheckoutBare::snapshot(working_dir);
     let launch = if let Some(auth) = &mut authorization {
         let env = EnvBuilder::new().with_amplihack_home_from(working_dir);
         let home = env
@@ -773,6 +800,14 @@ pub(super) fn execute_recipe_via_rust_fresh(
         let recipe = super::parse_recipe_from_path(recipe_path)?;
         let (mut expanded, inferred) =
             super::infer_missing_context(&recipe.context, explicit_inputs);
+        // Entry resolved an explicitly selected repo_path against the caller's
+        // directory. Keep that derived path when expanding the trusted recipe,
+        // while authorization continues to read the untouched operator inputs.
+        if explicit_inputs.contains_key("repo_path")
+            && let Some(repo) = context.get("repo_path")
+        {
+            expanded.insert("repo_path".into(), repo.clone());
+        }
         // Recovery identity is normalised on this derived copy only, never on
         // `explicit_inputs`, which stays the raw source of authority.
         super::recovery::normalize(&mut expanded, working_dir);
@@ -910,104 +945,8 @@ pub(super) fn execute_recipe_via_rust_fresh(
     let authorization = authorization;
     let context = &invocation_context;
 
-    // Prepare private Git metadata outside disposable runtime/ before any
-    // executable step. An unborn or unsupported caller state rejects launch.
-    let scratch = workspace.borrow().runtime_dir().to_path_buf();
-    // A run with a recovery identity (its own admission, or a nested run under
-    // its parent's delegated recovery) prepares each attempt's fresh checkout
-    // at a path derived from that identity, so a relaunch presents the same
-    // repository path and replay can reuse checkout-dependent steps (#2493).
-    let recovering = admission.is_some() || delegated.is_some();
-    let stable_path = match (recovering, workspace.borrow().work_root_path()) {
-        (true, Some(root)) => {
-            super::recovery::identity(recipe_path, &recipe_name, working_dir, context).map(
-                |identity| {
-                    root.join(crate::commands::cleanup::work_root::EXEC_DIR)
-                        .join(&identity[..identity.len().min(32)])
-                },
-            )
-        }
-        _ => None,
-    };
-    let owner_run_dir = workspace.borrow().run_dir().map(Path::to_path_buf);
-    let stable_storage = match (&stable_path, &owner_run_dir) {
-        (Some(path), Some(owner_run_dir)) => Some(super::run_checkout::StableStorage {
-            path,
-            owner_run_dir,
-            owner_ended: crate::commands::cleanup::eligibility::run_has_ended,
-        }),
-        _ => None,
-    };
-    let mut checkout = match super::run_checkout::RunCheckout::prepare_with_inputs(
-        working_dir,
-        &scratch,
-        dry_run,
-        &[recipe_path.to_path_buf()],
-        stable_storage,
-    ) {
-        Ok(checkout) => checkout,
-        Err(error) => {
-            return fail_before_execution(
-                workspace.into_inner(),
-                admission.as_ref(),
-                error,
-                dry_run,
-            );
-        }
-    };
-    let exec_dir = checkout.exec_dir().to_path_buf();
-    // The recovery descriptor lives in the run folder; one inside the private
-    // checkout would be state a step could rewrite (S-AZ4). A run outside Git
-    // executes in the caller's own directory, which may hold the work root,
-    // so only a private checkout is checked.
-    let descriptor_outside_checkout = || -> Result<()> {
-        if let Some(admission) = &admission
-            && matches!(checkout, super::run_checkout::RunCheckout::Private { .. })
-        {
-            refuse_descriptor_inside(&admission.descriptor_path(), &exec_dir)?;
-        }
-        Ok(())
-    };
-    let mapped = descriptor_outside_checkout().and_then(|()| {
-        checkout.map_path(recipe_path).and_then(|recipe| {
-            checkout
-                .map_context(context)
-                .map(|context| (recipe, context))
-        })
-    });
-    let (mapped_recipe, mapped_context) = match mapped {
-        Ok(mapped) => mapped,
-        Err(mut error) => {
-            if let Err(release) = checkout.remove() {
-                error = error.context(format!("execution release also failed: {release:#}"));
-            }
-            return fail_before_execution(
-                workspace.into_inner(),
-                admission.as_ref(),
-                error,
-                dry_run,
-            );
-        }
-    };
-    let context = &mapped_context;
-
-    // Issue #2582: when the runner reports `context_file_v1`, the context
-    // goes to it in a 0600 file under the run's private runtime folder and
-    // argv holds only `--context-file <path>`; otherwise the `--set` path
-    // runs, which only a runner older than the pin supplied through
-    // `RECIPE_RUNNER_RS_PATH` takes. Written once and reused by every retry.
-    //
-    // It is chosen here, after `map_context`, so the file holds the same
-    // values the runner would have been given as `--set` pairs: the mapped
-    // paths, not the caller's. It is also after the auto-drive authorization
-    // keys are written, so the file carries what that step produced.
-    //
-    // A failed write (or a reserved key, normally refused earlier at intake)
-    // ends the run as a failure and never falls back to `--set`. The checkout
-    // is released first, as on every other preparation error here.
-    // Owned before the match: a `workspace.borrow()` temporary in the
-    // scrutinee would still be live in the error arm, where the workspace is
-    // moved into `fail_before_execution`.
+    // Run in the checkout selected by the caller. Recovery and context
+    // transport retain their ordinary durable state outside disposable runtime.
     let context_runtime_dir = workspace.borrow().runtime_dir().to_path_buf();
     let transport = match super::context_transport::ContextTransport::choose(
         &runner_report,
@@ -1015,10 +954,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         context,
     ) {
         Ok(transport) => transport,
-        Err(mut error) => {
-            if let Err(release) = checkout.remove() {
-                error = error.context(format!("execution release also failed: {release:#}"));
-            }
+        Err(error) => {
             return fail_before_execution(
                 workspace.into_inner(),
                 admission.as_ref(),
@@ -1064,7 +1000,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // reported and the run continues on the recipes as written: a tier
     // preference must never stop a run.
     let staged_recipes =
-        stage_step_tier_overrides(workspace.borrow().run_dir(), search_dirs, &mapped_recipe);
+        stage_step_tier_overrides(workspace.borrow().run_dir(), search_dirs, recipe_path);
     // Issue #2783: the folder this run uses, recorded in every pointer line
     // it writes, so `recipe guide` finds the run from what it recorded at
     // start rather than from the caller's work-root variables. Cloned once:
@@ -1093,19 +1029,16 @@ pub(super) fn execute_recipe_via_rust_fresh(
             .as_ref()
             .and_then(|staged| staged.top_level.as_ref());
         let recipe_arg = match staged_top_level {
-            Some(path) => checkout.map_path(path)?,
-            None => mapped_recipe.clone(),
+            Some(path) => path.clone(),
+            None => recipe_path.to_path_buf(),
         };
         command
-            .current_dir(&exec_dir)
+            .current_dir(working_dir)
             .arg(&recipe_arg)
             .arg("--output-format")
             .arg("json")
             .arg("-C")
-            .arg(&exec_dir);
-        // Issue #2096: no inherited GIT_DIR, GIT_INDEX_FILE or git config
-        // override may send the run's git commands back to the caller.
-        checkout.apply_to(&mut command);
+            .arg(working_dir);
 
         if fresh {
             command.arg("--fresh");
@@ -1121,7 +1054,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         // offered after it is outranked by the recipe it was patched from.
         let mut recipe_dir_args: Vec<PathBuf> = Vec::new();
         if let Some(staged) = &staged_recipes {
-            recipe_dir_args.push(checkout.map_path(&staged.dir)?);
+            recipe_dir_args.push(staged.dir.clone());
         }
         // Issue #494: forward sub-recipe search dirs as -R flags so
         // recipe-runner-rs can resolve sub-recipes the same way amplihack
@@ -1130,7 +1063,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
             if dir.as_os_str().is_empty() {
                 continue;
             }
-            recipe_dir_args.push(checkout.map_path(dir)?);
+            recipe_dir_args.push(dir.clone());
             tracing::debug!(dir = %dir.display(), "forwarding -R to recipe-runner-rs");
         }
         // Issue #1619: substituting the positional argument moves the
@@ -1141,10 +1074,10 @@ pub(super) fn execute_recipe_via_rust_fresh(
         // cannot shadow anything that already ranked above it, so a
         // repository-local file still does not displace a bundled one.
         if staged_top_level.is_some()
-            && let Some(parent) = mapped_recipe.parent()
+            && let Some(parent) = recipe_path.parent()
             && !parent.as_os_str().is_empty()
         {
-            let parent = checkout.map_path(parent)?;
+            let parent = parent.to_path_buf();
             if !recipe_dir_args.contains(&parent) {
                 recipe_dir_args.push(parent);
             }
@@ -1287,7 +1220,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         command.env_remove(super::orphan_record::AUTODRIVE_STATE_DIR_ENV);
         // Apply repository selection last so inherited environment builders
         // cannot reintroduce caller routing or configuration injection.
-        checkout.apply_to(&mut command);
+        scrub_runner_git_environment(&mut command);
 
         Ok(command)
     };
@@ -1496,12 +1429,19 @@ pub(super) fn execute_recipe_via_rust_fresh(
         }
         Err(error) => Err(error),
     };
-    // Release order: the private checkout, then the recovery admission
-    // (judged from the result after it), then the run folder.
+    // Finish recovery admission and context transport before the run report.
     release_in_order(
         final_result,
         vec![
-            ("execution release", Box::new(|_| checkout.remove())),
+            // First, so the checkout is usable again before any later step —
+            // or the operator — runs git in it (#964, #2814).
+            (
+                "named checkout git state",
+                Box::new(|_| match checkout_bare.restore() {
+                    None => Ok(()),
+                    Some(message) => Err(anyhow::anyhow!(message)),
+                }),
+            ),
             (
                 "recovery admission finish",
                 Box::new(|result| {
@@ -1560,29 +1500,6 @@ pub(super) fn release_in_order(
         }
     }
     result
-}
-
-/// The recovery descriptor lives in the run folder; one whose folder resolves
-/// inside the private checkout would be state a step could rewrite (S-AZ4).
-pub(super) fn refuse_descriptor_inside(descriptor: &Path, exec_dir: &Path) -> Result<()> {
-    let parent = descriptor
-        .parent()
-        .context("recovery descriptor path has no parent folder")?;
-    let resolved = parent
-        .canonicalize()
-        .with_context(|| format!("cannot resolve {}", parent.display()))?;
-    let checkout_root = exec_dir
-        .canonicalize()
-        .with_context(|| format!("cannot resolve {}", exec_dir.display()))?;
-    if resolved.starts_with(&checkout_root) {
-        anyhow::bail!(
-            "recovery descriptor {} resolves inside the run's private checkout {}; \
-             refusing to launch",
-            descriptor.display(),
-            exec_dir.display()
-        );
-    }
-    Ok(())
 }
 
 /// The recovery outcome for a finished run (#2334): `None` for a run stopped

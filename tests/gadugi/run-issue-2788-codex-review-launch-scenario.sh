@@ -127,15 +127,15 @@ if [ "$directory_set" = 1 ]; then
   cd -- "$directory"
 fi
 prompt="$(cat)"
-if grep -qF 'Read PR #' <<< "$prompt"; then
-  label=context
-elif grep -qF 'You are standing in for the maintainer.' <<< "$prompt"; then
-  label=review
-elif grep -qF 'Assess whether this Crusty review objective is complete' <<< "$prompt"; then
-  label=decision
-else
-  echo 'unexpected Codex step' >&2; exit 43
-fi
+# The shipped round's declared agent sequence; no prompt text controls the fixture.
+n="$(if [ -f "$W/launches/events.jsonl" ]; then jq -s length "$W/launches/events.jsonl"; else printf 0; fi)"
+case "$n" in
+  0) label=context ;;
+  1) label=review ;;
+  2) label=assessor ;;
+  3) label=decision ;;
+  *) echo 'unexpected Codex invocation' >&2; exit 43 ;;
+esac
 printf '%s\000' "${argv[@]}" > "$W/launches/$label.argv"
 in_git=false
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then in_git=true; fi
@@ -149,6 +149,7 @@ head="$(cat "$W/head")"
 case "$label" in
   context)
     result="$(jq -cn --arg head "$head" '{pr:"7",head_sha:$head,resolved_concerns:"",round_label:"round-1",blockers:[],attempts:[]}')" ;;
+  assessor) result='{"assessment":"unchanged; preserve prior work and continue"}' ;;
   review)
     result="$(jq -cn --arg head "$head" '{crusty_verdict:"CLEAN",concerns:[],summary:("Reviewed commit " + $head),reviewed_head_sha:$head}')" ;;
   decision)
@@ -186,14 +187,13 @@ chmod 700 "$WORK/bin/codex" "$WORK/bin/gh" "$WORK/bin/codex-code-mode-host" "$WO
 
 TOOLS="$REPO_ROOT/amplifier-bundle/tools"
 RECIPE="$REPO_ROOT/amplifier-bundle/recipes/autodrive-crusty-round.yaml"
-REVIEW="$(scenario_env "$BIN" internal review-allocate "$WORK/pr" "$WORK/state")" ||
-  fail 'review-allocate'
-LAUNCH="$(scenario_env "$BIN" internal review-launch "$REVIEW")" || fail 'review-launch'
+REVIEW="$WORK/pr"
+LAUNCH="$WORK/pr"
 HEAD_SHA="$(cat "$WORK/head")"
 RECORD="$WORK/state/crusty-round-1.json"
 scenario_env "$BIN" orch helper autodrive-completion-prepare \
   --state-dir "$WORK/state" --round-label round-1 --record "$RECORD" \
-  --repo "$WORK/pr" --review-dir "$REVIEW" --launch-tools "$TOOLS" > "$WORK/prepared.json" ||
+  --repo "$WORK/pr" --launch-tools "$TOOLS" > "$WORK/prepared.json" ||
   fail 'autodrive-completion-prepare'
 PRIVATE_STATE="$(jq -er .private_state "$WORK/prepared.json")" ||
   fail 'autodrive-completion-prepare printed no private_state'
@@ -205,7 +205,7 @@ PRIVATE_STATE="$(jq -er .private_state "$WORK/prepared.json")" ||
 (
   cd -- "$WORK/main" || exit 1
   scenario_env "$BIN" recipe run "$RECIPE" --working-dir "$WORK/main" --no-detach \
-    -c "repo_path=$WORK/pr" -c "review_dir=$REVIEW" -c "review_launch_dir=$LAUNCH" \
+    -c "repo_path=$WORK/pr" \
     -c "reviewed_head_sha=$HEAD_SHA" -c "autodrive_launch_tools=$TOOLS" \
     -c pr_number=7 -c pr_url=https://github.com/example/fixture/pull/7 \
     -c 'task_description=Verify Codex review launch execution for issue 2788' \
@@ -214,19 +214,18 @@ PRIVATE_STATE="$(jq -er .private_state "$WORK/prepared.json")" ||
 ) > "$WORK/round.out" 2> "$WORK/round.err" || fail 'recipe run autodrive-crusty-round'
 
 jq -se --arg launch "$LAUNCH" '
-  (map(.label) == ["context","review","decision"]) and
-  all(.[]; .cwd == $launch and .git_checkout == false and .skip_count == 1)
+  (map(.label) == ["context","review","assessor","decision"]) and
+  all(.[]; .cwd == $launch and .git_checkout == true and .skip_count == 0)
 ' "$WORK/launches/events.jsonl" >/dev/null ||
-  fail "codex_context_review_and_decision_in_owned_launch (launch $LAUNCH)"
-echo 'PASS: codex_context_review_and_decision_in_owned_launch'
-OWNER="$(jq -er .owner "${REVIEW}.review-owner.json")" || fail 'review owner manifest has no owner'
-jq -e --arg head "$HEAD_SHA" --arg owner "$OWNER" '
+  fail "codex_context_review_assessor_and_decision_in_pr_worktree (launch $LAUNCH)"
+echo 'PASS: codex_context_review_assessor_and_decision_in_pr_worktree'
+jq -e --arg head "$HEAD_SHA" '
   .crusty_verdict == "CLEAN" and .reviewed_head_sha == $head and .head_sha == $head and
-  .review_generation == $owner and .commits_this_round == 0 and .concern_count == 0
-' "$RECORD" >/dev/null || fail "clean_verdict_matches_head_and_generation (head $HEAD_SHA)"
+  .commits_this_round == 0 and .concern_count == 0
+' "$RECORD" >/dev/null || fail "clean_verdict_matches_reviewed_head (head $HEAD_SHA)"
 [ ! -s "$RECORD.findings" ] && [ ! -e "$RECORD.minor" ] && [ ! -e "$RECORD.severity" ] ||
-  fail 'clean_verdict_matches_head_and_generation: unexpected findings, minor or severity sidecar'
-echo 'PASS: clean_verdict_matches_head_and_generation'
+  fail 'clean_verdict_matches_reviewed_head: unexpected findings, minor or severity sidecar'
+echo 'PASS: clean_verdict_matches_reviewed_head'
 
 # The loop normally publishes these copies after a round. Reproduce that
 # publication, then validate completion through the production dispatcher.

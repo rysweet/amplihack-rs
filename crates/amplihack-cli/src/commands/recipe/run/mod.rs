@@ -2,6 +2,8 @@ use super::*;
 use crate::commands::governor::{self, AdmitRequest, Denied, GovernorArgs};
 
 mod binary;
+/// Issues #964/#1903/#2814 — the named checkout's `core.bare`, before and after.
+mod checkout_bare;
 /// Issue #1570: `--context-file` and `--context-from-file`.
 pub(crate) mod context_sources;
 /// Issue #2582: recipe context reaches the runner in a 0600 file when it can.
@@ -25,8 +27,6 @@ mod recovery;
 pub(crate) mod removed_keys;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
-/// Issue #2096 — each recipe run works in a checkout of its own.
-pub(crate) mod run_checkout;
 /// Issue #1619 — an instance overrides the model tier of one named step.
 pub(crate) mod step_tiers;
 /// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
@@ -255,7 +255,16 @@ fn run_recipe_with_options(
         return Err(exit_error(1));
     }
 
-    let working_dir = working_dir.unwrap_or(".");
+    // An explicit -w wins. Otherwise repo_path names the execution checkout,
+    // resolved against the invoking directory before the runner starts.
+    let context_checkout = working_dir
+        .is_none()
+        .then(|| context.get("repo_path"))
+        .flatten()
+        .filter(|path| !path.is_empty());
+    let working_dir = working_dir
+        .or(context_checkout.map(String::as_str))
+        .unwrap_or(".");
     let abs_working_dir = validate_path(working_dir, false)?;
     // Issue #1606: `recipe.verbose` turns --verbose on; it cannot turn it off.
     let verbose = verbose || crate::user_config::recipe_verbose(&abs_working_dir);
@@ -279,6 +288,14 @@ fn run_recipe_with_options(
         } else {
             infer_missing_context(&recipe.context, &context)
         };
+    if context_checkout.is_some() {
+        // Preserve raw explicit inputs for authorization. Derived context uses
+        // the same resolved path as cwd, so a relative path is not joined twice.
+        merged_context.insert(
+            "repo_path".into(),
+            abs_working_dir.to_string_lossy().into_owned(),
+        );
+    }
     if verbose {
         writeln!(io::stderr(), "Executing recipe: {}", recipe.name)?;
         if dry_run {
@@ -514,7 +531,7 @@ mod tests_parent_watch;
 #[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]
-mod tests_run_checkout_trace_vars;
+mod tests_runner_git_environment;
 #[cfg(test)]
 mod tests_step_tiers;
 #[cfg(test)]

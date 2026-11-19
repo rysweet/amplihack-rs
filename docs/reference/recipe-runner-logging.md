@@ -2,7 +2,7 @@
 title: Recipe Runner Logging Reference
 description: Progress output, correlation, and the JSON and JSONL a recipe run emits.
 doc_type: reference
-last_updated: 2026-11-17
+last_updated: 2026-11-18
 ---
 
 # Recipe Runner Logging Reference
@@ -12,9 +12,9 @@ snippets, run correlation pointers, and additive JSON fields emitted by
 `amplihack recipe run`.
 
 A run logs its own progress. It does not trace, journal or attribute the Git
-commands its runner, steps, agents and hooks launch, on any platform. What
-keeps a run out of your checkout is the private clone it works in, described in
-[Recipe run and auto-drive checkout isolation](recipe-checkout-isolation.md).
+commands its runner, steps, agents and hooks launch, on any platform. Steps
+work in the named checkout and its task or PR worktree, described in
+[Recipe execution in named checkouts](recipe-checkout-isolation.md).
 
 ## Contents
 
@@ -316,9 +316,10 @@ else. There is no `git-commands.jsonl`, no `git-trace2/` directory, no
 `git-recording.json` and no `diagnostics/git/` directory in a run folder, and
 `run.json` carries no `git_recording` field.
 
-What keeps a run out of your checkout is the private clone it works in, not a
-record of what it did. See
-[Recipe run and auto-drive checkout isolation](recipe-checkout-isolation.md).
+Steps run in the caller-selected checkout or the workflow's legitimate task
+or PR worktree. A separate read-only pre-review baseline supports agentic
+assessment of reviewer changes; it is not a Git-command journal. See
+[execution and review evidence](recipe-checkout-isolation.md).
 
 ### Caller Git trace variables are cleared
 
@@ -378,7 +379,7 @@ still carry a `git_recording` object. Nothing writes or reads them now, and a
 Nothing removes them either. They sit at the top level of the run folder,
 outside the disposable `runtime/` directory the runner deletes when a run
 ends, and they belong to none of the categories the cleanup sweep collects
-(`run-tmp`, `run-worktree`, `run-target`, `run-exec`). Run folders themselves
+(`run-tmp`, `run-worktree`, `run-target`). Run folders themselves
 are never pruned, so an old recording stays until you delete its folder
 yourself. `git-commands.jsonl` recorded the full command line of every Git
 process the run started, which can carry credentials, so treat an old run
@@ -456,4 +457,4 @@ jq '.step_results[]
 - [RecipeResult Reference](./recipe-result.md) - Final result schema
 - [amplihack recipe Reference](./recipe-command.md) - Command-line flags
 - [Recipe Runner Architecture](../concepts/recipe-runner-architecture.md) - CLI and runner responsibility split
-- [Recipe Run and Auto-Drive Checkout Isolation](./recipe-checkout-isolation.md) - The run's own checkout and the auto-drive review directory
+- [Recipe Execution in Named Checkouts](./recipe-checkout-isolation.md) - Execution locations and PR-worktree review

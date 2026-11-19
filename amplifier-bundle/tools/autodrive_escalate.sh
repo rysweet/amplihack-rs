@@ -107,7 +107,7 @@ held_by_lines() {
   [ "$n" -le 10 ] || printf '  held by: reported (+%s more)\n' "$((n - 10))"
 }
 
-escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned|local_io|bad_bundle]
+escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned|local_io|bad_bundle|bad_checkout]
   echo "AUTO_DRIVE_LOOP: ${1} — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}'." >&2
   echo "  Reason: ${2}" >&2
   held_by_lines >&2
@@ -118,6 +118,7 @@ escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned|local_io|ba
     budget) echo "  This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round." >&2 ;;
     local_io) echo "  This is a local file write failure, not a judgement about progress. Check space and permissions in the state dir, then relaunch to resume from the recorded round." >&2 ;;
     bad_bundle) echo "  This is an incomplete tool bundle, not a judgement about progress and not a disk problem. Reinstall the amplifier bundle (amplihack install), then relaunch to resume from the recorded round." >&2 ;;
+    bad_checkout) echo "  This is a checkout that could not be read, not a judgement about progress. Check the named checkout (git status, git rev-parse HEAD) and relaunch to resume from the recorded round." >&2 ;;
     *) echo "  This is a judgement about absence of progress, not an attempt count." >&2 ;;
   esac
   local f=() v # JSON-escaped; control characters become spaces (#1801)
