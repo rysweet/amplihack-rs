@@ -34,7 +34,13 @@ never lower the bar.** Keep the validation and keep the loud failure. What chang
 what happens next. The failure, with its evidence and the step's purpose, goes to an
 agent step, which works out whether the change, the environment, the plan or the check
 itself is at fault, and then fixes the cause and revalidates, changes approach, or stops
-and states plainly what is blocked and why.
+and states plainly what is blocked and why. Recovery decides whether to go round again
+by whether it is making progress, not by a retry count: a pass that produces new
+information or a different failure is progress, and a pass that returns the same failure
+with nothing new learned is not. That is when it stops and states what is blocked. Do
+not gate recovery on an attempt counter: the repo's step-failure recovery has no
+timers, no waits and no attempt counter
+(`docs/reference/step-failure-recovery.md`).
 
 When a step or check fails, ask first why it failed. If the check was right, fix the
 cause. If the check was making a judgement, keep the validation and move the judgement
