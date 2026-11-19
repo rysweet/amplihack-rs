@@ -20,7 +20,7 @@ use super::state::{Ledger, State};
 use super::takeover::{capacity_candidate, profile_check};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
-    Limited, Signals, note_key_error, run_attempt_with_recovery, usage_limited,
+    Attempt, Limited, Signals, note_key_error, run_attempt_with_recovery, usage_limited,
 };
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
@@ -392,7 +392,9 @@ pub fn supervise(
 ///
 /// Every `Ok(None)` goes through [`unsupervised`], which hands the plain
 /// launch back whatever the prompt copier took off fd 0 before it stood
-/// down (issue #2816).
+/// down, and every result of an attempt goes through [`finish`], which
+/// refuses to report a success as the step's when the prompt that reached
+/// that attempt stopped short of the one that was sent (issue #2816).
 pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Option<i32>> {
     let on = switch.is_some();
     // Looks at stdin without reading it, so nothing here can block. It is
@@ -552,7 +554,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             switch.as_ref().map(|sw| sw.store.root()),
         );
         let Some(lim) = usage_limited(&attempt, waiter.now()) else {
-            return attempt.finish(None);
+            return finish(attempt, None, &stdin);
         };
         // Issue #2816: the copier knows at once when the capture file was
         // lost, but `for_attempt` only asks when a rerun is already due,
@@ -610,7 +612,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 } else {
                     if let Some(sig) = signals.received() {
                         eprintln!("auto-switch: no rerun: this step was told to stop");
-                        return attempt.finish(Some(128 + sig));
+                        return finish(attempt, Some(128 + sig), &stdin);
                     }
                     eprintln!(
                         "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?} (auto-switch)",
@@ -642,7 +644,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 inherited_has_capacity = false;
                 if let Some(sig) = signals.received() {
                     eprintln!("auto-switch: no rerun: this step was told to stop");
-                    return attempt.finish(Some(128 + sig));
+                    return finish(attempt, Some(128 + sig), &stdin);
                 }
                 eprintln!(
                     "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?}, which is over the auto-switch threshold but not limited (auto-switch)",
@@ -664,16 +666,50 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // With nothing blocking the wait there is no reset to wait for, and
         // the result is passed up.
         let Some(wait) = inherited_wait.or_else(|| waiter.blocked_skip()) else {
-            return attempt.finish(None);
+            return finish(attempt, None, &stdin);
         };
         match waiter.after_limit(wait, n, &signals, &probe) {
-            AfterLimit::Finish(code) => return attempt.finish(code),
+            AfterLimit::Finish(code) => return finish(attempt, code, &stdin),
             AfterLimit::Retry => {
                 attempt.discard();
                 profile = retry_profile(switch.as_ref(), &waiter);
             }
         }
     }
+}
+
+/// Ends the step with this attempt's result, unless the prompt that reached
+/// the attempt stopped short of the one that was sent (issue #2816).
+///
+/// The copier sits between the caller's pipe and the attempt, and closing a
+/// pipe is the only signal it can give its reader. A read of the source
+/// that fails therefore arrives at the attempt as a clean end of file: the
+/// attempt acts on whatever came before it, cannot tell that from a whole
+/// prompt, and may well exit 0. Reporting that as the step's success would
+/// put a result for part of a task where the result of the task belongs.
+///
+/// So the attempt's own output is still printed — nothing it produced is
+/// hidden — its exit code is kept when it already failed, and only a
+/// success is replaced, because only a success would be believed. The
+/// copier has already named the cause on stderr; this line names the
+/// consequence.
+///
+/// The flag is read without joining the copier, and for this case it cannot
+/// be missed: the copier publishes it before it drops the attempt's pipe,
+/// the attempt reaches end of file only once that pipe is dropped, and this
+/// runs after the attempt has exited. The one case it cannot see is a
+/// source that fails after an attempt which exited without reading to the
+/// end of its prompt, and there the copier's own line is the report.
+fn finish(attempt: Attempt, code: Option<i32>, stdin: &RerunStdin) -> Result<Option<i32>> {
+    let out = attempt.finish(code)?;
+    if !stdin.prompt_cut_short() {
+        return Ok(out);
+    }
+    eprintln!(
+        "amplihack: this step's prompt was cut short on its way to the attempt, so the \
+         attempt was not given the whole task and its result is not this step's result"
+    );
+    Ok(Some(out.filter(|c| *c != 0).unwrap_or(1)))
 }
 
 /// The profile the retry after a wait runs under; `None` keeps the inherited

@@ -11,8 +11,10 @@
 //! Issue #2816 adds the cases the capture path reaches on its own: a first
 //! attempt that never starts, after the copier has taken the prompt off
 //! stdin, with the copy usable and with it lost; a captured pipe the caller
-//! never closes; and a capture lost before the limit, which must refuse the
-//! rerun rather than wait first and fail after.
+//! never closes; a capture lost before the limit, which must refuse the
+//! rerun rather than wait first and fail after; and a source the copier
+//! cannot read, which reaches the attempt as a clean end of file and must
+//! not pass for a prompt it was given whole.
 
 #![cfg(unix)]
 
@@ -291,6 +293,67 @@ fn a_held_open_captured_pipe_does_not_hang_the_step() {
     );
 }
 
+/// Issue #2816: an attempt that succeeds on a prompt the copier could not
+/// read to its end does not make the step a success.
+///
+/// The step's stdin is the write end of a pipe: a pipe, so a copy starts,
+/// and unreadable, so the copier's first read fails. The attempt then meets
+/// a clean end of file, which it cannot tell from a whole prompt, and the
+/// stub exits 0 on it.
+///
+/// Before this change that 0 was the step's 0: the prompt had been silently
+/// shortened to nothing and no line anywhere said so, because the copier's
+/// error was observed only by a join that a successful step never makes.
+/// Now the copier names the cause as it happens, the supervisor names the
+/// consequence, and the step fails — with the attempt's own output still
+/// printed, since nothing it produced is hidden.
+#[test]
+fn an_attempt_that_succeeds_on_a_cut_short_prompt_does_not_make_the_step_succeed() {
+    let f = Fixture::new();
+    let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
+    let (_read, write) = std::io::pipe().expect("a pipe");
+    c.env("LIMIT_CALLS", "0")
+        .stdin(Stdio::from(std::os::fd::OwnedFd::from(write)))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let child = c.spawn().expect("start amplihack");
+    let out = finish(child, "the step hung on a cut-short prompt");
+
+    assert!(
+        !out.status.success(),
+        "a success on part of a prompt is not the step's success\n{}",
+        describe(&out)
+    );
+    assert_eq!(f.count("0"), 1, "the attempt ran once\n{}", describe(&out));
+    assert_eq!(
+        f.call("0", 1)["STDIN"],
+        sha256_hex(b""),
+        "the attempt was given nothing but the end of file\n{}",
+        describe(&out)
+    );
+    let err = text(&out.stderr);
+    assert!(
+        err.contains("could not be read to its end"),
+        "the copier names the cause\n{}",
+        describe(&out)
+    );
+    assert!(
+        err.contains("not this step's result"),
+        "the supervisor names the consequence\n{}",
+        describe(&out)
+    );
+    assert!(
+        text(&out.stdout).contains("attempt 1 output"),
+        "the attempt's own output is still printed\n{}",
+        describe(&out)
+    );
+    assert_eq!(
+        leftovers(&f),
+        Vec::<String>::new(),
+        "no capture left behind"
+    );
+}
+
 /// Issue #2816: a capture already known to be lost refuses the rerun when
 /// the limit is seen, not after the wait.
 ///
@@ -298,6 +361,9 @@ fn a_held_open_captured_pipe_does_not_hang_the_step() {
 /// and unreadable, so the copier fails on its first read and publishes the
 /// loss at once. The first attempt still runs — it gets the copier's own
 /// pipe, which reaches end of file immediately — and reports a usage limit.
+/// That end of file is a prompt cut short, which issue #2816 also makes the
+/// copier say on stderr; the limit result is non-zero already, so what the
+/// step returns is unchanged by it.
 ///
 /// The supervisor must then do what it does for a capture that was never
 /// made: write `skipped reason=piped_prompt` and pass the limit result up,
@@ -327,6 +393,11 @@ fn a_capture_lost_before_the_limit_refuses_the_rerun_instead_of_waiting() {
     assert!(
         err.contains("skipped reason=piped_prompt"),
         "the refusal is logged\n{}",
+        describe(&out)
+    );
+    assert!(
+        err.contains("could not be read to its end"),
+        "the prompt the attempt was handed is named as cut short\n{}",
         describe(&out)
     );
     assert_eq!(

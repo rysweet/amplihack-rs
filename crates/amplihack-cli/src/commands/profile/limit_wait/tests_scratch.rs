@@ -6,16 +6,15 @@
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_scratch;`.
 
 use super::super::auto_switch::{rerun_owner, sweep_rerun};
-use super::scratch::{RerunStdin, capture_prompt, copy_prompt, home_rerun_dir};
+use super::scratch::{CopyState, RerunStdin, capture_prompt, copy_prompt, home_rerun_dir};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Polls `cond` until it holds, or fails after 30 s. Used where a copier
@@ -400,6 +399,82 @@ fn a_failed_copy_is_an_error_for_a_rerun_never_a_partial_prompt() {
     assert!(policy.for_attempt(2).is_err(), "no partial replay");
 }
 
+/// Issue #2816: a read of the source that fails is published as a prompt
+/// cut short, which is the one thing the attempt's own pipe cannot say.
+///
+/// Closing that pipe is the only signal it carries, and the attempt reads
+/// it as the end of the prompt. So the flag has to be set before the pipe
+/// is dropped, and it is: by the time anything can observe that end of
+/// file, `prompt_cut_short` already holds. Reading the attempt's stdin to
+/// its end before asking is how this test pins that order.
+#[test]
+fn a_failed_source_read_is_published_as_a_prompt_cut_short() {
+    let (_t, dir) = rerun();
+    // A write-only descriptor: the first read of it fails (EBADF).
+    let source = fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/null")
+        .unwrap();
+    let mut policy = capture_prompt(&dir, source);
+    assert_eq!(
+        cat(policy.for_attempt(1).unwrap()),
+        b"",
+        "the attempt is given the end of file it cannot tell from a prompt"
+    );
+    assert!(
+        policy.prompt_cut_short(),
+        "published before the attempt could reach that end of file"
+    );
+    assert!(
+        policy.capture_lost(),
+        "a prompt cut short is a lost capture as well"
+    );
+    assert!(policy.for_attempt(2).is_err(), "no partial replay");
+}
+
+/// Issue #2816: an empty non-blocking source is waited on, not taken for
+/// the end of the prompt.
+///
+/// `O_NONBLOCK` lives on the open file description, not on the descriptor,
+/// so a process sharing the description the step inherited on fd 0 can set
+/// it. A read of the empty pipe then fails with `EAGAIN`. Retrying only
+/// `EINTR` would end the copy there and hand the attempt a prompt of
+/// whatever had arrived — here, nothing at all.
+#[test]
+fn an_empty_non_blocking_source_is_waited_on_not_taken_for_the_end() {
+    let (_t, dir) = rerun();
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let mut source = fs::File::from(OwnedFd::from(reader));
+    // SAFETY: an open descriptor this test owns; `F_SETFL` takes an
+    // integer argument and writes nothing back.
+    let rc = unsafe { libc::fcntl(source.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) };
+    assert_eq!(rc, 0, "the source could not be made non-blocking");
+    // The setup is the point of the test, so it is checked rather than
+    // assumed: the pipe is empty and reading it now refuses.
+    assert_eq!(
+        source.read(&mut [0u8; 1]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "the source must refuse an empty read for this test to mean anything"
+    );
+    let prompt = awkward_prompt();
+    let bytes = prompt.clone();
+    // The copier therefore meets `EAGAIN` on its very first read, well
+    // before a byte of the prompt exists.
+    let feeder = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(50));
+        writer.write_all(&bytes).unwrap();
+    });
+    let mut policy = capture_prompt(&dir, source);
+    assert_eq!(cat(policy.for_attempt(1).unwrap()), prompt, "attempt 1");
+    feeder.join().unwrap();
+    assert!(
+        !policy.prompt_cut_short(),
+        "an empty non-blocking pipe is not a prompt that failed"
+    );
+    assert!(!policy.capture_lost(), "nor a capture that was lost");
+    assert_eq!(cat(policy.for_attempt(2).unwrap()), prompt, "the rerun");
+}
+
 /// Issue #2816: the copier publishes a lost capture while it is still
 /// draining the source, not only when it ends. The supervisor reads that
 /// flag when it decides whether a rerun is possible, which is before the
@@ -422,18 +497,17 @@ fn a_lost_capture_is_published_while_the_copy_is_still_running() {
         got
     });
 
-    let complete = Arc::new(AtomicBool::new(false));
-    let lost = Arc::new(AtomicBool::new(false));
-    let (c, l) = (Arc::clone(&complete), Arc::clone(&lost));
-    let copier = std::thread::spawn(move || copy_prompt(&mut source, sink, child_write, &c, &l));
+    let state = Arc::new(CopyState::default());
+    let published = Arc::clone(&state);
+    let copier =
+        std::thread::spawn(move || copy_prompt(&mut source, sink, child_write, &published));
 
     writer.write_all(b"the first block of the prompt").unwrap();
-    until("the lost capture to be published", || {
-        lost.load(Ordering::SeqCst)
-    });
+    until("the lost capture to be published", || state.is_lost());
+    assert!(!state.is_complete(), "a lost capture is never complete");
     assert!(
-        !complete.load(Ordering::SeqCst),
-        "a lost capture is never complete"
+        !state.was_cut_short(),
+        "the source is being read fine: only the capture was lost"
     );
 
     // Only now is the source closed, so the assertions above held while the
@@ -510,19 +584,22 @@ fn a_capture_that_cannot_be_written_still_hands_the_attempt_its_whole_prompt() {
         got
     });
 
-    let complete = AtomicBool::new(false);
-    let lost = AtomicBool::new(false);
-    let err = copy_prompt(&mut source, sink, child_write, &complete, &lost);
+    let state = CopyState::default();
+    let err = copy_prompt(&mut source, sink, child_write, &state);
 
     assert!(err.is_err(), "the lost capture is reported: {err:?}");
     assert_eq!(drain.join().unwrap(), prompt, "the attempt's whole prompt");
     assert!(
-        !complete.load(Ordering::SeqCst),
+        !state.is_complete(),
         "an unwritten capture is never complete, so a rerun is refused"
     );
     assert!(
-        lost.load(Ordering::SeqCst),
+        state.is_lost(),
         "issue #2816: the loss is published for a decision taken without joining"
+    );
+    assert!(
+        !state.was_cut_short(),
+        "the source was read to its end: the attempt's prompt is whole"
     );
     // Last: a copier that stopped early would leave the feeder blocked on a
     // pipe nobody is draining, and the assertions above say so first.

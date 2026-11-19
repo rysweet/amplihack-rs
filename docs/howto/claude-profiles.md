@@ -1699,6 +1699,10 @@ as the first attempt. The first attempt is not delayed by the copy: it reads
 each block as the copier passes it on. Input from a terminal, and standard
 input of any kind on a launch whose prompt is already in its arguments, is
 passed through and not copied.
+If standard input cannot be read to its end, the attempt has been handed
+less than the prompt that was sent, which it cannot tell from a whole one.
+amplihack says so on standard error and the step fails, rather than report
+that attempt's result as the step's.
 If the step is stopped (SIGINT, SIGTERM or SIGHUP), it is not rerun: the
 attempt's output is passed back and amplihack exits with `128` plus the
 signal number.

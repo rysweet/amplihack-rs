@@ -5188,7 +5188,9 @@ The launch runs Claude under a supervising amplihack process:
   [Stdin](#stdin-handling)). A rerun gets a regular file again from where
   the step started reading it, a terminal unchanged, and, for a piped
   prompt, a read-only regular file holding the stored copy, opened at
-  offset 0 (not a pipe). A socket or a closed descriptor gets `/dev/null`.
+  offset 0 (not a pipe). A closed descriptor gets `/dev/null`, as does a
+  pipe or a socket on a launch whose prompt is in the arguments instead,
+  since nothing was copied from it.
   The supervisor's main thread never reads stdin. The copier thread does,
   and the supervisor joins it before a rerun, and before standing down, so
   a pipe that never reaches end of file can delay either (see
@@ -10875,7 +10877,9 @@ continues the usage-limit wait or auto-switch rerun it would have had with the
 prompt in `-p`. A write to an attempt that has already exited (`EPIPE`) is
 ignored, and does not stop the copy or the step.
 
-Three failures differ in what they do:
+Four failures differ in what they do. The first three cost the rerun; the
+fourth costs the prompt itself, and is the only one the attempt in hand can
+be harmed by.
 
 - **The capture file cannot be created**, for instance because the rerun
   directory is missing. No byte of stdin has been consumed, so attempt one
@@ -10883,18 +10887,51 @@ Three failures differ in what they do:
   (`auto-switch: no rerun under profile …`) nor waited for
   (`skipped reason=piped_prompt`). `piped_prompt` therefore means that the
   prompt could not be stored, not that it was on a pipe.
-- **The copy fails while it is running**, through a write error on the
-  capture file or an error reading stdin. Attempt one is not affected and
-  still receives every byte that arrives. The copier publishes the loss as
-  soon as it happens, and the supervisor reads that when it classifies the
-  limit, before it plans anything: the step takes the same two refusals as a
-  capture that was never created, and the attempt's own result, its held-back
-  stdout included, is passed up. No wait is announced and none is served.
+- **The capture file cannot be written** while the copy runs, through
+  `ENOSPC` or `EIO`. Attempt one is not affected and still receives every
+  byte that arrives, because the capture is secondary to the attempt in
+  hand. The copier publishes the loss as soon as it happens, and the
+  supervisor reads that when it classifies the limit, before it plans
+  anything: the step takes the same two refusals as a capture that was never
+  created, and the attempt's own result, its held-back stdout included, is
+  passed up. No wait is announced and none is served.
 - **The loss lands too late to be read that way**: a copier that failed on
   its final flush, one that panicked, or one that had not yet reached the
   failing write when the limit was classified. The rerun then returns an
   error instead of starting. The prompt is never replayed from a partial
   file, and this case does not write `skipped reason=piped_prompt`.
+- **Stdin cannot be read to its end.** There are no further bytes to
+  forward, so the copy ends for both sinks and attempt one's stdin closes.
+  Closing it is the only signal a pipe gives its reader, and a reader takes
+  it for the end of the prompt: the attempt cannot tell the shortened prompt
+  from a whole one, acts on what it was given, and may well exit 0. So this
+  case is reported twice and ends the step:
+
+  - the copier writes one line naming the error as it happens
+    (`amplihack: this step's prompt could not be read to its end (…)`),
+    which is the record that survives even when nothing later asks about
+    the capture;
+  - the supervisor reads the flag before it passes the attempt's result up,
+    and refuses to report that attempt's success as the step's. The
+    attempt's own stdout is still printed and its exit code is kept when it
+    already failed; only a success is replaced, with exit `1` and a line
+    naming the consequence
+    (`amplihack: this step's prompt was cut short …`).
+
+  The flag is read without joining the copier, and it cannot be missed for
+  this case: it is published before the attempt's stdin is closed, and the
+  attempt reaches end of file only after that. An attempt that exits without
+  reading to the end of its prompt, where the source fails afterwards, is
+  the one case the second report cannot cover, and there the copier's own
+  line is the record. The loss is published as in the second case above, so
+  the rerun and the wait are refused too.
+
+  An empty non-blocking read is not such a failure. `O_NONBLOCK` lives on
+  the open file description, not on the descriptor, so a process sharing
+  the one the step inherited on fd 0 can set it, and a read of the empty
+  pipe then fails with `EAGAIN` rather than waiting. The copier waits for
+  the next byte with `poll(2)` and reads again, exactly as a blocking read
+  would have.
 
 The join has one cost. The copier ends only when the writer closes the pipe.
 If attempt one reports a usage limit without reading its prompt and the pipe
