@@ -558,15 +558,6 @@ fn classify_git_entry(dir: &Path) -> GitEntry {
     }
 }
 
-/// A folder that holds a `.git` entry shaped like a repository.
-struct WorkTreeCandidate {
-    /// How far below the judged folder it lies; 0 is the folder itself.
-    depth: usize,
-    path: PathBuf,
-    /// The folder and its `.git` both belong to this process's user.
-    owned: bool,
-}
-
 /// `dir` and its `.git` both belong to `owner`.
 ///
 /// A repository planted by another user can name programs for Git to run,
@@ -589,24 +580,22 @@ fn owned_by(dir: &Path, owner: u32) -> bool {
 ///
 /// `Err` when the folder must be kept without looking any further: something
 /// could not be inspected, or there are more work trees than can be checked.
-fn work_tree_candidates(dir: &Path, owner: u32) -> Result<Vec<WorkTreeCandidate>, KeepReason> {
-    let mut found: Vec<WorkTreeCandidate> = Vec::new();
+fn work_tree_candidates(dir: &Path) -> Result<Vec<PathBuf>, KeepReason> {
+    // Each is paired with its depth, which orders the answer and is then
+    // dropped: nothing downstream asks how deep a work tree lay.
+    let mut found: Vec<(usize, PathBuf)> = Vec::new();
     let mut queue = vec![(dir.to_path_buf(), 0usize)];
     while let Some((path, depth)) = queue.pop() {
         match classify_git_entry(&path) {
             GitEntry::Repository => {
                 if found.len() >= MAX_WORK_TREES {
-                    return Err(KeepReason::new(
+                    return Err(KeepReason::unchecked(
                         dir,
                         dir,
-                        format!("{CANNOT_CHECK}: more work trees than can be checked"),
+                        "more work trees than can be checked",
                     ));
                 }
-                found.push(WorkTreeCandidate {
-                    depth,
-                    owned: owned_by(&path, owner),
-                    path: path.clone(),
-                });
+                found.push((depth, path.clone()));
             }
             GitEntry::None => {}
             GitEntry::Unknown(detail) => return Err(KeepReason::unchecked(dir, &path, detail)),
@@ -614,28 +603,16 @@ fn work_tree_candidates(dir: &Path, owner: u32) -> Result<Vec<WorkTreeCandidate>
         if depth >= MAX_WORK_TREE_DEPTH {
             continue;
         }
+        let unlistable = |error: &std::io::Error| {
+            KeepReason::unchecked(dir, &path, format!("cannot list {path:?}: {error}"))
+        };
         let listing = match fs::read_dir(&path) {
             Ok(listing) => listing,
             Err(error) if is_absent(&error) => continue,
-            Err(error) => {
-                return Err(KeepReason::unchecked(
-                    dir,
-                    &path,
-                    format!("cannot list {path:?}: {error}"),
-                ));
-            }
+            Err(error) => return Err(unlistable(&error)),
         };
         for entry in listing {
-            let entry = match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    return Err(KeepReason::unchecked(
-                        dir,
-                        &path,
-                        format!("cannot list {path:?}: {error}"),
-                    ));
-                }
-            };
+            let entry = entry.map_err(|error| unlistable(&error))?;
             // From the directory entry, so a link is seen as a link and is
             // never followed.
             match entry.file_type() {
@@ -653,40 +630,32 @@ fn work_tree_candidates(dir: &Path, owner: u32) -> Result<Vec<WorkTreeCandidate>
             }
         }
     }
-    found.sort_by(|a, b| (a.depth, &a.path).cmp(&(b.depth, &b.path)));
-    Ok(found)
+    found.sort();
+    Ok(found.into_iter().map(|(_, path)| path).collect())
 }
 
-/// Whether Git agrees that a folder is itself the root of a work tree.
-enum WorkTreeRoot {
-    /// Git resolved this folder, and the root it named is this folder.
-    Confirmed,
-    /// Git could not be run, refused the folder, or named another folder as
-    /// the root. Which of those it was does not matter: none of them shows
-    /// the folder holds nothing unsaved.
-    Unknown(String),
-}
-
-/// Asks Git for the root of the work tree at `dir` and requires the answer
-/// to be `dir` itself. This is what bounds the search downwards: without it
-/// a folder inside a repository would answer for that repository.
+/// Confirms that Git names `dir` itself as the root of a work tree. This is
+/// what bounds the search downwards: without it a folder inside a repository
+/// would answer for that repository.
+///
+/// `Err` carries why it could not be confirmed — Git could not be run,
+/// refused the folder, or named another folder as the root. Which of those it
+/// was does not matter: none of them shows the folder holds nothing unsaved.
 ///
 /// The answer is compared as bytes. `trim` would equate a folder whose name
 /// ends in a space with a different folder, and a lossy decode would do the
 /// same to a name that is not UTF-8; either way the judgement would be about
 /// some other folder than the one that is about to be deleted.
-fn confirm_work_tree_root(dir: &Path) -> WorkTreeRoot {
+fn confirm_work_tree_root(dir: &Path) -> Result<(), String> {
     let mut command = hardened_git();
     command
         .arg("-C")
         .arg(dir)
         .args(["rev-parse", "--show-toplevel"]);
-    let output = match crate::util::run_output_with_timeout(command, GIT_TIMEOUT) {
-        Ok(output) => output,
-        Err(error) => return WorkTreeRoot::Unknown(format!("{error:#}")),
-    };
+    let output = crate::util::run_output_with_timeout(command, GIT_TIMEOUT)
+        .map_err(|error| format!("{error:#}"))?;
     if !output.status.success() {
-        return WorkTreeRoot::Unknown(sanitized_stderr_short(&output.stderr));
+        return Err(sanitized_stderr_short(&output.stderr));
     }
     let bytes = output
         .stdout
@@ -694,28 +663,27 @@ fn confirm_work_tree_root(dir: &Path) -> WorkTreeRoot {
         .unwrap_or(output.stdout.as_slice());
     let reported = PathBuf::from(std::ffi::OsStr::from_bytes(bytes));
     match (fs::canonicalize(&reported), fs::canonicalize(dir)) {
-        (Ok(root), Ok(here)) if root == here => WorkTreeRoot::Confirmed,
-        (Ok(root), Ok(_)) => WorkTreeRoot::Unknown(format!(
+        (Ok(root), Ok(here)) if root == here => Ok(()),
+        (Ok(root), Ok(_)) => Err(format!(
             "Git names {root:?} as the work tree root, not this folder"
         )),
-        _ => WorkTreeRoot::Unknown(format!(
+        _ => Err(format!(
             "the work tree root Git names, {reported:?}, cannot be resolved"
         )),
     }
 }
 
-/// Why the work tree at `candidate` keeps `dir`, or `None` when everything
-/// in it is committed and on a remote.
-fn judge_work_tree(dir: &Path, candidate: &WorkTreeCandidate) -> Option<KeepReason> {
-    let at = candidate.path.as_path();
-    if !candidate.owned {
+/// Why the work tree at `at` keeps `dir`, or `None` when everything in it is
+/// committed and on a remote.
+fn judge_work_tree(dir: &Path, at: &Path, owner: u32) -> Option<KeepReason> {
+    if !owned_by(at, owner) {
         return Some(KeepReason::unchecked(
             dir,
             at,
             "it is not owned by the current user",
         ));
     }
-    if let WorkTreeRoot::Unknown(detail) = confirm_work_tree_root(at) {
+    if let Err(detail) = confirm_work_tree_root(at) {
         return Some(KeepReason::unchecked(dir, at, detail));
     }
     // The same two checks, in the same order and with the same words, as the
@@ -733,26 +701,18 @@ fn judge_work_tree(dir: &Path, candidate: &WorkTreeCandidate) -> Option<KeepReas
 /// passes this process's effective uid. This never fails and never panics:
 /// it runs from `Drop`, where a panic during unwinding ends the process.
 pub(super) fn judge_unsaved_work(dir: &Path, owner: u32) -> Option<KeepReason> {
-    match fs::symlink_metadata(dir) {
-        // A link or a file is not judged: removal refuses it anyway.
-        Ok(meta) if !meta.file_type().is_dir() => return None,
-        Ok(_) => {}
-        Err(error) if is_absent(&error) => return None,
-        Err(error) => {
-            return Some(KeepReason::unchecked(
-                dir,
-                dir,
-                format!("cannot inspect {dir:?}: {error}"),
-            ));
-        }
+    // A link or a file is not judged: removal refuses it anyway. A folder
+    // that cannot be looked at is not answered here — the walk meets the same
+    // refusal and keeps it.
+    if fs::symlink_metadata(dir).is_ok_and(|meta| !meta.file_type().is_dir()) {
+        return None;
     }
-    let candidates = match work_tree_candidates(dir, owner) {
-        Ok(candidates) => candidates,
-        Err(keep) => return Some(keep),
-    };
-    candidates
-        .iter()
-        .find_map(|candidate| judge_work_tree(dir, candidate))
+    match work_tree_candidates(dir) {
+        Ok(candidates) => candidates
+            .iter()
+            .find_map(|at| judge_work_tree(dir, at, owner)),
+        Err(keep) => Some(keep),
+    }
 }
 
 /// [`judge_unsaved_work`] for this process's user, which says once why it
