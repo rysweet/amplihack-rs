@@ -8,7 +8,11 @@
 //! GitHub remote (via the #1641 `insteadOf` rewrite) and a stub `gh`. No
 //! network, no timers, no retries. Gaps are asserted by the SHAs, branch and PR
 //! number taken from the fixture at runtime, never by a fixed sentence.
+#[path = "issue_2343_finalization_outcome/assessment_skip.rs"]
+mod assessment_skip;
 #[path = "issue_2343_finalization_outcome/classification.rs"]
 mod classification;
 #[path = "issue_2343_finalization_outcome/fixture_ext.rs"]
 pub(crate) mod fixture_ext;
+#[path = "issue_2343_finalization_outcome/security.rs"]
+mod security;

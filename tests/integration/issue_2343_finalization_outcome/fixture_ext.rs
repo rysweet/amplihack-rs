@@ -84,3 +84,50 @@ pub fn finished_env(repo: &str) -> Vec<(&'static str, String)> {
 pub fn short(sha: &str) -> &str {
     &sha[..12]
 }
+
+/// A credential-bearing origin URL. `parse_github_repo_identity` accepts
+/// `https://<userinfo>@github.com/<owner>/<repo>`, so the secret reaches the
+/// outcome reader and must be discarded there rather than reported.
+pub const ORIGIN_USERINFO: &str = "ci-bot:ghp-s3cr3t-2343";
+
+impl Fixture {
+    /// Point `origin` at `url` without touching anything else.
+    pub fn set_origin(&self, url: &str) {
+        self.git(&["remote", "set-url", "origin", url]);
+    }
+
+    /// `origin` as a github.com URL carrying userinfo.
+    pub fn origin_with_userinfo(&self) {
+        self.set_origin(&format!(
+            "https://{ORIGIN_USERINFO}@github.com/rysweet/fixture.git"
+        ));
+    }
+
+    /// Make every `gh pr view`/`pr list` fail with credential-bearing stderr.
+    pub fn gh_unreachable(&self) {
+        self.gh_fail("view", 1);
+        self.gh_fail("list", 1);
+    }
+}
+
+/// The one sentence an assessment is allowed to contribute. Its presence in a
+/// result proves the record was read, so a case about what the assessment
+/// cannot do is not passing merely because the record was ignored.
+pub const ASSESSMENT_GAP: &str = "gh would not answer for this branch";
+
+/// The assessment record the agentic step would have written, as the recipe
+/// stores it. The validator must treat it as an explanation, never as proof.
+pub fn assessment_env(verdict: &str, action: &str) -> (&'static str, String) {
+    (
+        "RECIPE_VAR_finalization_assessment",
+        json!({
+            "verdict": verdict,
+            "action_taken": action,
+            "gap": ASSESSMENT_GAP,
+            "explanation": "pushed the branch and opened the pull request",
+            "pr_number": "7",
+            "pr_url": PR_URL,
+        })
+        .to_string(),
+    )
+}

@@ -321,9 +321,21 @@ of those are settled, and a `BLOCKED` outcome is a pull request already open at
 the run's head, so neither of the agent's two permitted actions applies and
 `validate-agentic-finalization` exits on `BLOCKED_CI` in
 `classify_confirmed_outcome` without ever reading an assessment. `GAP` and
-`UNCERTAIN` run, as does an outcome the reader never recorded. The step carries
-`continue_on_error: true`, so it cannot end the run whether it succeeds,
-declines or fails. Its output is stored as
+`UNCERTAIN` run, as does an outcome the reader never recorded.
+
+The skip is therefore coupled to that exit: should `classify_confirmed_outcome`
+stop exiting on `BLOCKED`, the condition has to be revisited, and
+`assessment_skip.rs` fails if the two sides drift apart. The condition is
+evaluated on the record as written, before `_finalization_outcome_narrow`
+demotes a `BLOCKED` whose `pr_number`, `pr_url` and `remote` disagree to
+`UNCERTAIN`; such a record skips the assessment and gets the mechanical gap
+sentence. The reader builds `pr_url` from the same validated values, so the
+three cannot diverge through its own code.
+
+Both the outer `assess-finalization` step in `workflow-finalize.yaml` and the
+agent step inside the sub-recipe carry `continue_on_error: true`, so neither a
+declined assessment nor a failure of the sub-recipe itself (resolution, the
+recursion limit) can end the run. The step's output is stored as
 `finalization_assessment`, a JSON object with these leaves:
 
 | Leaf | Meaning |
