@@ -1942,10 +1942,21 @@ section_h_dynamic() {
         "$(cat "${dir}/repo/run/reports/new/report.json")" '{"new":true}'
     expect_eq "H1d: untracked report bytes kept on disk" \
         "$(cat "${dir}/repo/run/reports/loose/report.json")" '{"loose":true}'
-    # The guard that runs after staging sees the index the commit is built
-    # from. The guard before staging still sees what the fixture pre-staged.
-    expect_eq "H1d: the post-staging guard saw no report staged" \
-        "$(grep 'artifact-guard staged=' "${dir}/stub/log" | tail -n 1 | grep -c 'run/reports/' || true)" "0"
+    # Step 18c calls the guard exactly twice: once before staging, once after.
+    # The second call sees the index the commit is built from; the first still
+    # sees what the fixture pre-staged. Both lines are pinned to their exact
+    # text, as H1 and H7 do, and the call count is pinned with them. A count of
+    # `run/reports/` matches instead would have read 0 — and passed — when no
+    # guard ran at all, when the helper was never reached, or when the stub's
+    # log format changed; pinning the text makes each of those a failure.
+    expect_eq "H1d: artifact-guard ran before staging and after it" \
+        "$(grep -c '^artifact-guard' "${dir}/stub/log" 2>/dev/null || true)" "2"
+    expect_eq "H1d: the pre-staging guard saw the report the fixture staged" \
+        "$(grep '^artifact-guard' "${dir}/stub/log" 2>/dev/null | sed -n 1p)" \
+        "artifact-guard staged=run/reports/new/report.json,"
+    expect_eq "H1d: the post-staging guard saw only the source file staged" \
+        "$(grep '^artifact-guard' "${dir}/stub/log" 2>/dev/null | sed -n 2p)" \
+        "artifact-guard staged=src.txt,"
     expect_file_contains "H1d: the pre-staged report is reported as unstaged" "${dir}/step.err" \
         "stage_workflow_changes: unstaged run/reports/new/report.json"
     expect_file_contains "H1d: the untracked report is reported as skipped" "${dir}/step.err" \
