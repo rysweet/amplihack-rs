@@ -17,8 +17,11 @@
 # collect-finalization-evidence and validate-agentic-finalization bodies (read
 # from amplifier-bundle/recipes/workflow-finalize.yaml with the awk extractor,
 # the same way run-issue-2784-existing-pr-other-base-scenario.sh reads step-16)
-# and every shipped finalization helper they call. A third generated step
-# writes the parsed workflow_result to a file in the case folder.
+# and every shipped finalization helper they call. The validation body runs in
+# a subshell so its result and its exit code are both recorded in the case
+# folder: it exits 1 on a non-success classification, which in production ends
+# the run, so neither its stdout nor a later step can be relied on to carry the
+# result out.
 #
 # Fixtures, per case: a local bare repository whose HEAD is `main`; a clone on
 # the run branch, pushed to it; the clone's origin URL set to
@@ -146,6 +149,7 @@ flunk() {
   local dir="${2-}"
   if [ -n "$dir" ]; then
     [ -f "$dir/stderr" ] && tail -n 20 "$dir/stderr" | sed 's/^/    stderr: /'
+    [ -f "$dir/validate.err" ] && tail -n 20 "$dir/validate.err" | sed 's/^/    validate: /'
     [ -f "$dir/gh.log" ] && sed 's/^/    gh: /' "$dir/gh.log"
   fi
   fail=1
@@ -181,20 +185,19 @@ HEAD
   cat <<'MID'
     output: "finalization_evidence"
 
+  # The shipped validation body, unchanged, inside a subshell: its `exec` then
+  # replaces the subshell rather than the step, so the two lines after it run.
   - id: "validate-agentic-finalization"
     type: "bash"
-    parse_json: true
-    continue_on_error: true
     command: |
+      set +e
+      (
 MID
-  printf '%s\n' "$VALIDATE_BODY" | sed '/./s/^/      /'
+  printf '%s\n' "$VALIDATE_BODY" | sed '/./s/^/        /'
   cat <<'TAIL'
-    output: "workflow_result"
-
-  - id: "record-workflow-result"
-    type: "bash"
-    command: |
-      printf '%s\n' "${RECIPE_VAR_workflow_result:-}" > "$QA_RESULT_FILE"
+      ) > "$QA_RESULT_FILE" 2> "$QA_CASE_DIR/validate.err"
+      printf '%s' "$?" > "$QA_CASE_DIR/validate.exit"
+      exit 0
 TAIL
 } > "$WORK/finalize-qa.yaml"
 
@@ -299,15 +302,25 @@ no_mutation() {
   [ ! -e "$1/unexpected" ] || problems+=("unexpected gh call: $(head -n 1 "$1/unexpected")")
 }
 
+# expect_exit <case dir> <want>: the exit code the shipped body chose.
+expect_exit() {
+  local got
+  got="$(cat "$1/validate.exit" 2>/dev/null)" || got="<missing>"
+  [ "$got" = "$2" ] || problems+=("validate exit '$got', want '$2'")
+}
+
 # --- case A: pull request open at the pushed head, checks still pending ------
-if read -r dir local_sha pr_sha <<<"$(new_case pending local)"; then
+if read -r dir _local_sha _pr_sha <<<"$(new_case pending local)"; then
   run_case "$dir"
+  rc=$?
   problems=()
+  [ "$rc" -eq 0 ] || problems+=("recipe run exit code $rc")
   expect_field "$dir" terminal_state EXISTING_OPEN_PR
   expect_field "$dir" terminal_success true
   expect_field "$dir" terminal_failure false
   expect_field "$dir" pr_number 7
   expect_field "$dir" pr_url https://github.com/owner/repo/pull/7
+  expect_exit "$dir" 0
   next="$(field "$dir" required_next_action)"
   case "$next" in *7*) ;; *) problems+=("required_next_action does not name the pull request: $next") ;; esac
   grep -q '^pr view 7 ' "$dir/gh.log" 2>/dev/null || problems+=("no pr view 7 call")
@@ -325,9 +338,12 @@ fi
 # --- case B: the pull request sits at an unrelated commit --------------------
 if read -r dir local_sha pr_sha <<<"$(new_case diverged unrelated)"; then
   run_case "$dir"
+  rc=$?
   problems=()
+  [ "$rc" -eq 0 ] || problems+=("recipe run exit code $rc")
   expect_field "$dir" terminal_success false
   expect_field "$dir" terminal_failure true
+  expect_exit "$dir" 1
   state="$(field "$dir" terminal_state)"
   case "$state" in EXISTING_OPEN_PR|IMPLEMENTED_VERIFIED|ALLOW_NO_OP) problems+=("a diverged pull request head reported success state $state") ;; esac
   reason="$(field "$dir" terminal_reason)"
