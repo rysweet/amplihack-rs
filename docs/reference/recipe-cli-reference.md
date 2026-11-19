@@ -271,10 +271,15 @@ run's pointer line is kept in `<session>.log` in
 [`recipe.log_dir`](./user-config.md#recipelog_dir) (default
 `~/.amplihack/recipe-logs`), which does not depend on the work root.
 
+A run that retries writes one pointer line per attempt, each carrying that
+attempt's own correlation ID and all naming the same `run_dir`. The folder is
+what identifies the run across its attempts, and the `attempts[]` of the
+`run.json` in it lists every correlation ID the run has used.
+
 | Form | Example | Where the instruction is stored |
 | --- | --- | --- |
 | Detached session name (up to 85 characters) | `amp-smart-orchestrator-myapp-20261112-091200` | The folder of the run started in that session |
-| Run ID: folder name (`AMPLIHACK_RUN_ID`) or correlation ID (`run_id`, `AMPLIHACK_RECIPE_RUN_ID`, the ID `recipe stop` takes) | `5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81` | That run's folder |
+| Run ID: folder name (`AMPLIHACK_RUN_ID`) or correlation ID (`run_id`, `AMPLIHACK_RECIPE_RUN_ID`, the ID `recipe stop` takes), including the ID of a later attempt of a run that retried | `5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81` | That run's folder |
 | Issue: `<number>`, `#<number>` or an issue URL | `2783`, `'#2783'`, `https://github.com/rysweet/amplihack-rs/issues/2783` | The folder of the run that recorded that issue |
 | Pull request URL | `https://github.com/rysweet/amplihack-rs/pull/2535` | The auto-drive state folder for that pull request |
 
@@ -302,9 +307,15 @@ The first match is used, in this order:
    `no session log (the name is 94 characters; a detached session name is at
    most 85)`.
 4. **Run ID.** The `run_dir` recorded by the pointer line that carries that
-   `run_id`, searched across the log directory. If no log records it, the ID
-   is looked up under `<work root>/runs/`, first as a folder name and then
-   as the correlation ID in each run's `run.json`.
+   `run_id`, searched across the log directory. Only the first pointer line
+   of each log is read, so a run that retried is recorded under its first
+   attempt's correlation ID alone; the ID of a later attempt, which is the
+   one `recipe stop` takes and the one that attempt's agent steps carry, is
+   found next in the `attempts[]` of the `run.json` of each recorded folder
+   (every attempt of a run shares the folder the first line recorded). If
+   nothing recorded names the ID, it is looked up under `<work root>/runs/`,
+   first as a folder name and then as the correlation ID in each run's
+   `run.json`.
 5. **Bare issue number.** `<number>` or `#<number>`, tried only after rules 3
    and 4 find nothing. It matches the pointer line's `issue_number` alone,
    without checking the repository. When more than one repository or run

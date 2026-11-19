@@ -14,7 +14,10 @@
 //! a run writes an `amplihack.recipe.log_pointer` line carrying `run_dir`,
 //! the absolute path of its own folder; for a detached run that line is kept
 //! in `<recipe log dir>/<session>.log`, a directory that does not depend on
-//! the work root. `guide_records` reads those lines back.
+//! the work root. `guide_records` reads those lines back. A run that retries
+//! writes one line per attempt, each with a correlation id of its own and
+//! all naming the one folder, so the folder is what identifies a run across
+//! its attempts and `run.json` there is what lists their ids (issue #2818).
 //!
 //! The target is resolved in this order; the first match wins:
 //!
@@ -30,8 +33,11 @@
 //!    tmux is asked to create, and a name this rule cannot read is named in
 //!    the not-found line rather than passed over in silence (issue #2818);
 //! 4. a run folder name or correlation id: the recorded `run_dir` of the
-//!    pointer line carrying it, then `<work root>/runs/` as a folder name
-//!    and then as `attempts[].correlation_id` in each run's `run.json`;
+//!    pointer line carrying it; then the `run.json` of each recorded folder,
+//!    whose `attempts[]` holds the correlation id of every attempt of that
+//!    run and not only the first one a log records (issue #2818); then
+//!    `<work root>/runs/` as a folder name and then as
+//!    `attempts[].correlation_id` there;
 //! 5. a bare issue number, `<n>` or `#<n>`: the recorded run that names that
 //!    issue number, whatever the repository.
 //!
@@ -77,6 +83,7 @@ use crate::run_guidance::{
     append_entry, caller_identity, check_text,
 };
 use anyhow::Result;
+use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{ErrorKind, Read};
@@ -718,7 +725,9 @@ impl<'a> Resolver<'a> {
     }
 
     /// Rule 4: a run folder name or a correlation id, through the record
-    /// that carries it first and the work root in the environment second.
+    /// that carries it first, the `run.json` of a recorded folder second
+    /// (the id of an attempt after the first, which no record carries) and
+    /// the work root in the environment third.
     fn run_destination(&mut self) -> Result<Option<Destination>, GuideError> {
         let target = self.target;
         if !validate_run_id(target) {
@@ -738,6 +747,9 @@ impl<'a> Resolver<'a> {
                 Err(reason) => self.reject(reason),
             }
         }
+        if let Some(found) = self.recorded_attempt_destination() {
+            return Ok(Some(found));
+        }
         if let Ok(runs) = self.runs.clone() {
             match find_run(&runs, target)? {
                 Some(dir) => return Ok(Some(Destination::run(&dir, None))),
@@ -748,6 +760,48 @@ impl<'a> Resolver<'a> {
             }
         }
         Ok(None)
+    }
+
+    /// Rule 4, second stage: the recorded folder whose `run.json` lists the
+    /// target among its attempts.
+    ///
+    /// A run has one folder but several correlation ids: each transient
+    /// retry builds a fresh `RecipeRunCorrelation` and writes its own
+    /// pointer line, all naming the one folder the run started with. A log
+    /// is read only as far as its first pointer line, so the index holds the
+    /// first attempt's id and no other, while the id `recipe stop` takes and
+    /// the `AMPLIHACK_RECIPE_RUN_ID` the agent steps carry are the running
+    /// attempt's (issue #2818). The folder is what the attempts share, so it
+    /// is the folder that is indexed here: `run.json` lists every attempt's
+    /// correlation id, and that list is what [`accept_recorded`] compares an
+    /// id against.
+    ///
+    /// Only on a miss, and each distinct folder once: the number of folders
+    /// is bounded by the scan that produced the records, and each costs the
+    /// checks down to the folder plus one small `run.json`. A folder that
+    /// does not list the target is the ordinary case rather than a fault, so
+    /// the misses are folded into one note instead of a rejection apiece.
+    fn recorded_attempt_destination(&mut self) -> Option<Destination> {
+        let target = self.target;
+        let mut tried: HashSet<String> = HashSet::new();
+        for record in self.records() {
+            let Some(recorded) = record.run_dir else {
+                continue;
+            };
+            if !tried.insert(recorded.clone()) {
+                continue;
+            }
+            if let Ok(dir) = accept_recorded(&recorded, Some(target)) {
+                return Some(Destination::run(&dir, None));
+            }
+        }
+        if !tried.is_empty() {
+            self.note(format!(
+                "the attempts in {RUN_JSON} of {} recorded run folder(s)",
+                tried.len()
+            ));
+        }
+        None
     }
 
     /// One line naming the target, the forms tried and each place looked at.

@@ -425,11 +425,29 @@ impl GuideFixture {
     /// level is created 0700, so the folder passes the trust rule
     /// `recipe guide` applies on the way down.
     pub fn make_run_in(&self, work_root: &Path, folder_id: &str, correlation_id: &str) -> PathBuf {
+        self.make_run_with_attempts(work_root, folder_id, &[correlation_id])
+    }
+
+    /// Like [`Self::make_run_in`], but with one `attempts[]` entry per
+    /// correlation id, as a run that was retried records it: `recipe run`
+    /// builds a fresh correlation id for each attempt and appends it to
+    /// `run.json`, while the folder stays the one the run started with
+    /// (issue #2818).
+    pub fn make_run_with_attempts(
+        &self,
+        work_root: &Path,
+        folder_id: &str,
+        correlation_ids: &[&str],
+    ) -> PathBuf {
         let runs = work_root.join("runs");
         let dir = runs.join(folder_id);
         private_dir(work_root);
         private_dir(&runs);
         private_dir(&dir);
+        let attempts: Vec<serde_json::Value> = correlation_ids
+            .iter()
+            .map(|id| serde_json::json!({"correlation_id": id}))
+            .collect();
         let report = serde_json::json!({
             "schema_version": 1,
             "run_id": folder_id,
@@ -438,7 +456,7 @@ impl GuideFixture {
             "cwd": self.root.display().to_string(),
             "started_at": "2026-11-12T09:12:00Z",
             "outcome": "running",
-            "attempts": [{"correlation_id": correlation_id}],
+            "attempts": attempts,
             "steps": [],
         });
         private_file(&dir.join("run.json"), report.to_string());
@@ -486,11 +504,25 @@ impl GuideFixture {
     /// `<recipe-logs>/<session>.log` whose body holds `pointer` as a real
     /// pointer line between other output.
     pub fn session_log_from_pointer(&self, session: &str, pointer: &serde_json::Value) -> PathBuf {
+        self.session_log_from_pointers(session, std::slice::from_ref(pointer))
+    }
+
+    /// `<recipe-logs>/<session>.log` holding one pointer line per pointer,
+    /// in the order given, as a run that retried writes one line per attempt
+    /// (issue #2818).
+    pub fn session_log_from_pointers(
+        &self,
+        session: &str,
+        pointers: &[serde_json::Value],
+    ) -> PathBuf {
         let log = self.recipe_logs.join(format!("{session}.log"));
-        private_file(
-            &log,
-            format!("starting run\namplihack.recipe.log_pointer {pointer}\nmore output\n"),
-        );
+        let mut body = String::from("starting run\n");
+        for pointer in pointers {
+            body.push_str(&format!(
+                "amplihack.recipe.log_pointer {pointer}\nmore output\n"
+            ));
+        }
+        private_file(&log, body);
         log
     }
 

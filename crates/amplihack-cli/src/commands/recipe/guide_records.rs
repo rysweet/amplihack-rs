@@ -1,11 +1,20 @@
 //! Issue #2783: the records a recipe run leaves at start, read back.
 //!
-//! A run writes one `amplihack.recipe.log_pointer` line on stderr before it
-//! spawns anything (see [`super::run`]). For a detached run that line lands
+//! A run writes an `amplihack.recipe.log_pointer` line on stderr as each
+//! attempt starts (see [`super::run`]). For a detached run that line lands
 //! in `<recipe log dir>/<session>.log`, which is resolved from `HOME` or
 //! `recipe.log_dir` and so does not depend on the work root. That directory
 //! is therefore the index `recipe guide` searches when the caller's
 //! environment says nothing about where the run put its folder.
+//!
+//! On the ordinary path the line is written after the runner has been
+//! probed and spawned, not before: what it precedes is any output of that
+//! runner, whose stderr is piped and relayed only afterwards. The one thing
+//! that can come ahead of it in a log is the wrapper's own output, a warning
+//! line or two at most. One record is read per log, so a run that retried is
+//! indexed by its first attempt's correlation id alone; the folder that
+//! record names is shared by every attempt, and `guide.rs` reads the ids of
+//! the later ones out of the `run.json` there.
 //!
 //! Two readers, one parser:
 //!
@@ -33,8 +42,10 @@ pub(super) const LOG_POINTER_PREFIX: &str = "amplihack.recipe.log_pointer ";
 
 /// How much of a log is read while looking for its pointer line. This is
 /// the bound on a log that holds no pointer line, not what is normally
-/// read: the search stops at the first complete one, and a run writes it
-/// before it spawns anything, so it lies in the first few hundred bytes.
+/// read: the search stops at the first complete one, and the only output a
+/// run can put ahead of it is a warning line of its own, so it lies in the
+/// first few hundred bytes. A longer prefix costs reads, not correctness:
+/// the search carries on chunk by chunk to this bound.
 const MAX_LOG_HEAD: u64 = 64 * 1024;
 /// How much is asked for at a time while looking for that line. A scan
 /// reads one of these per log and stops, rather than the whole head: a
@@ -59,7 +70,10 @@ const MAX_SCANNED_LOGS: usize = 10_000;
 /// simply does not carry it, which is never an error.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct Pointer {
-    /// The run's correlation id (`AMPLIHACK_RECIPE_RUN_ID`).
+    /// The correlation id (`AMPLIHACK_RECIPE_RUN_ID`) of the attempt that
+    /// wrote the line, which for a log read here is always the first: a run
+    /// that retried has further ids, and they are in `run.json` under
+    /// [`Self::run_dir`] rather than here.
     pub(super) run_id: Option<String>,
     /// `<work root>/runs/<run folder>`, exactly as recorded. Never turned
     /// into a path here: `guide.rs` checks the raw string first.
@@ -350,11 +364,39 @@ mod tests {
         assert!(parse_line(b"some other output").is_none());
     }
 
+    /// A retried run writes a pointer line per attempt, each with its own
+    /// correlation id and all naming the one folder it started with. Only
+    /// the first is read, so the record carries the first attempt's id and
+    /// the shared folder; `guide.rs` reaches the later attempts through the
+    /// `attempts[]` of the `run.json` in that folder (issue #2818).
     #[test]
     fn the_first_pointer_line_of_a_head_is_the_one_used() {
-        let head = b"starting\namplihack.recipe.log_pointer {\"run_id\":\"a\"}\namplihack.recipe.log_pointer {\"run_id\":\"b\"}\n";
+        let head = b"starting\namplihack.recipe.log_pointer {\"run_id\":\"a\",\"run_dir\":\"/w/runs/r\"}\namplihack.recipe.log_pointer {\"run_id\":\"b\",\"run_dir\":\"/w/runs/r\"}\n";
         let p = parse_line(complete_pointer_line(head, 0).unwrap()).unwrap();
         assert_eq!(p.run_id.as_deref(), Some("a"));
+        assert_eq!(p.run_dir.as_deref(), Some("/w/runs/r"));
+    }
+
+    /// The same two attempts through the reader rather than the splitter:
+    /// what a scan indexes for a retried run is one record, the first
+    /// attempt's id with the folder every attempt of it uses.
+    #[test]
+    fn a_retried_run_is_indexed_by_its_first_attempt_and_the_shared_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("s.log");
+        std::fs::write(
+            &log,
+            format!(
+                "starting run\n\
+                 {LOG_POINTER_PREFIX}{{\"run_id\":\"attempt-1\",\"run_dir\":\"/w/runs/r\"}}\n\
+                 transient failure; retrying\n\
+                 {LOG_POINTER_PREFIX}{{\"run_id\":\"attempt-2\",\"run_dir\":\"/w/runs/r\"}}\n"
+            ),
+        )
+        .unwrap();
+        let record = read_named(&log).unwrap().unwrap();
+        assert_eq!(record.run_id.as_deref(), Some("attempt-1"));
+        assert_eq!(record.run_dir.as_deref(), Some("/w/runs/r"));
     }
 
     #[test]

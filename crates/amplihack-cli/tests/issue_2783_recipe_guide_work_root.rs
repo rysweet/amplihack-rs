@@ -144,6 +144,66 @@ fn a_pull_request_url_still_writes_only_to_the_per_pr_folder() {
 }
 
 // ---------------------------------------------------------------------------
+// A run that retried has one folder and several correlation ids (issue #2818)
+// ---------------------------------------------------------------------------
+
+/// The correlation id of a second attempt: a transient retry builds a fresh
+/// one, which is the id `recipe stop` takes and the id the agent steps of
+/// that attempt carry.
+const RETRY_CORRELATION: &str = "c3e2a1b0-9f8e-4d7c-8b6a-5f4e3d2c1b0a";
+
+/// A run that retried, its log holding one pointer line per attempt and its
+/// `run.json` listing both, as `record_attempt_checked` writes them.
+fn retried_run(f: &GuideFixture) -> std::path::PathBuf {
+    let run = f.make_run_with_attempts(
+        &f.alt_work.clone(),
+        RUN_FOLDER,
+        &[CORRELATION, RETRY_CORRELATION],
+    );
+    f.session_log_from_pointers(
+        SESSION,
+        &[
+            GuideFixture::pointer(CORRELATION, Some(&run)),
+            GuideFixture::pointer(RETRY_CORRELATION, Some(&run)),
+        ],
+    );
+    run
+}
+
+#[test]
+fn the_correlation_id_of_a_later_attempt_resolves_through_the_recorded_folder() {
+    let f = GuideFixture::new();
+    let run = retried_run(&f);
+    // Only the first pointer line of a log is read, so the second attempt's
+    // id is in no record; the folder every attempt shares is, and its
+    // `run.json` lists that id.
+    let o = f.guide_without_work_root(&[RETRY_CORRELATION], "by the running attempt");
+    assert_lands_in(&o, &run);
+    // The first attempt's id and the folder name still resolve as before.
+    let o = f.guide_without_work_root(&[CORRELATION], "by the first attempt");
+    assert_lands_in(&o, &run);
+    let o = f.guide_without_work_root(&[RUN_FOLDER], "by folder name");
+    assert_lands_in(&o, &run);
+    assert_eq!(f.entries(&guidance_of(&run)).len(), 3);
+}
+
+#[test]
+fn an_id_no_recorded_folder_records_is_not_found_and_the_line_names_what_was_read() {
+    let f = GuideFixture::new();
+    let run = retried_run(&f);
+    let stranger = "7c6b5a49-3827-4615-9403-2e1d0c9b8a76";
+    let o = f.guide_without_work_root(&[stranger], "text");
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    let line = one_line_error(&o);
+    assert!(line.contains(stranger), "{line}");
+    assert!(
+        line.contains("the attempts in run.json of 1 recorded run folder(s)"),
+        "{line}"
+    );
+    assert!(f.entries(&guidance_of(&run)).is_empty());
+}
+
+// ---------------------------------------------------------------------------
 // A recorded path is untrusted
 // ---------------------------------------------------------------------------
 
@@ -368,6 +428,99 @@ fn a_real_run_records_its_run_dir_in_the_pointer_and_guide_finds_it() {
     f.session_log_from_pointer(SESSION, &v);
     let o = f.guide_without_work_root(&[SESSION], "after the fact");
     assert_lands_in(&o, run_dir);
+}
+
+/// The runner fails once with an unambiguously transient transport fault and
+/// succeeds when the wrapper runs it again, so the run really does retry.
+const FLAKY_RUNNER: &str = r#"
+attempts="$RECORD_DIR/runner.attempts"
+n=$(( $(cat "$attempts" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$n" > "$attempts"
+if [ "$n" -eq 1 ]; then
+  echo 'API Error: 529 Overloaded' >&2
+  printf '%s\n' '{"recipe_name":"issue-2535-guide","success":false,"status":"failed","step_results":[],"context":{}}'
+  exit 1
+fi
+"#;
+
+/// The early pointer records of `stderr`, in the order they were written.
+fn early_pointers(o: &std::process::Output) -> Vec<serde_json::Value> {
+    String::from_utf8_lossy(&o.stderr)
+        .lines()
+        .filter(|l| l.starts_with("amplihack.recipe.log_pointer "))
+        .filter_map(|l| {
+            serde_json::from_str::<serde_json::Value>(
+                l.trim_start_matches("amplihack.recipe.log_pointer "),
+            )
+            .ok()
+        })
+        .filter(|v| v["event"] == "early")
+        .collect()
+}
+
+/// A run that retried has one folder and a correlation id per attempt. The
+/// index holds one record per log, so the second attempt's id -- the id
+/// `recipe stop` takes and the id that attempt's agent steps carry -- is in
+/// no record; the folder every attempt shares is, and its `run.json` lists
+/// the id. Real run, real retry, real `run.json` (issue #2818).
+#[test]
+fn a_real_retried_run_is_found_by_the_correlation_id_of_its_second_attempt() {
+    let f = GuideFixture::new();
+    let alt = f.alt_work.display().to_string();
+    let o = f.recipe_run(
+        FLAKY_RUNNER,
+        &[],
+        &[
+            ("AMPLIHACK_WORK_ROOT", alt.as_str()),
+            ("AMPLIHACK_WORK_ROOT_EXPLICIT", "1"),
+        ],
+    );
+    assert!(o.status.success(), "{}", show(&o));
+    let pointers = early_pointers(&o);
+    assert_eq!(
+        pointers.len(),
+        2,
+        "one early pointer per attempt: {}",
+        show(&o)
+    );
+    let ids: Vec<&str> = pointers
+        .iter()
+        .map(|p| p["run_id"].as_str().expect("every pointer names its run"))
+        .collect();
+    assert_ne!(
+        ids[0], ids[1],
+        "each attempt has a correlation id of its own"
+    );
+    let run_dir = Path::new(
+        pointers[0]["run_dir"]
+            .as_str()
+            .expect("early pointer records run_dir"),
+    );
+    assert_eq!(
+        pointers[1]["run_dir"].as_str(),
+        Some(run_dir.to_str().unwrap()),
+        "both attempts name the one folder"
+    );
+
+    // What the folder itself records: every attempt, in order.
+    let report: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(run_dir.join("run.json")).unwrap()).unwrap();
+    let recorded: Vec<&str> = report["attempts"]
+        .as_array()
+        .expect("run.json lists attempts")
+        .iter()
+        .map(|a| a["correlation_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(recorded, ids, "run.json lists both attempts");
+
+    // The log a detached run leaves holds a pointer line per attempt; only
+    // the first is read back, so the second id resolves through `run.json`.
+    f.session_log_from_pointers(SESSION, &pointers);
+    let o = f.guide_without_work_root(&[ids[1]], "by the id of the running attempt");
+    assert_lands_in(&o, run_dir);
+    let o = f.guide_without_work_root(&[ids[0]], "by the id of the first attempt");
+    assert_lands_in(&o, run_dir);
+    assert_eq!(f.entries(&guidance_of(run_dir)).len(), 2);
 }
 
 // ---------------------------------------------------------------------------

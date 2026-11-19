@@ -37,10 +37,19 @@ run.
 ## stderr log pointer lines
 
 `amplihack recipe run` emits exactly two wrapper-owned pointer lines to
-`stderr`:
+`stderr` per attempt:
 
-1. An `early` pointer before spawning `recipe-runner-rs`.
+1. An `early` pointer as the attempt starts. On the ordinary path
+   `recipe-runner-rs` has been probed and spawned by then, and on the paths
+   where it is not spawned at all (a failed capability check, a failed spawn,
+   a stop signal) the pointer is still emitted. Nothing the runner prints can
+   precede it either way: its `stderr` is piped and relayed afterwards.
 2. A `final` pointer when the wrapper reaches a terminal status.
+
+A run that retries after a transient failure starts a new correlation ID for
+each attempt, so it emits one such pair per attempt. The `run_dir` is the
+same in all of them: the folder is what the attempts share, and its
+`run.json` lists every attempt's correlation ID under `attempts[]`.
 
 Each line starts with the stable prefix `amplihack.recipe.log_pointer ` followed
 by one JSON object:
