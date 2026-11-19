@@ -202,8 +202,9 @@ prove closure.
 
 ## Fix `HOLLOW_SUCCESS`
 
-Finalization no longer emits `HOLLOW_SUCCESS` (#2343); it is still recognised for
-older run records. See
+`HOLLOW_SUCCESS` is unchanged by #2343: empty or inaccessible agent output means
+the run may have produced nothing at all, so it stays a blocker ahead of any
+success classification. See
 [Outcome-First Classification](../reference/default-workflow-agentic-finalization.md#outcome-first-classification-2343).
 
 `HOLLOW_SUCCESS` means a workflow path looked complete at the process level but

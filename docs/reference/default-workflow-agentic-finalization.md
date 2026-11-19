@@ -438,7 +438,7 @@ failures that were not real.
 | `FAILED_IMPLEMENTATION` | No | Durable implementation or verification evidence is absent or failed while meaningful work remains. |
 | `FAILED_REPORTING` | No | Implementation succeeded but a reporting/finalization step failed. Durable evidence (`pr_url`, `pr_number`, implementation/verification markers) is preserved and reported. |
 | `FAILED_MISSING_TERMINAL_EVIDENCE` | No | Retired as an outcome of finalization (#2343); still recognised in the vocabulary. |
-| `HOLLOW_SUCCESS` | No | Retired as an outcome of finalization (#2343); still recognised in the vocabulary. The pushed head and the open PR answer what it was a proxy for. |
+| `HOLLOW_SUCCESS` | No | Empty or inaccessible agent output: the run may have produced nothing at all, so this precedes every success classification. Unchanged by #2343. |
 | `INCOMPLETE` | No | Work remains and no more specific terminal failure state applies. It is the default for a missing `workflow_result` in `workflow-complete`, with a plain reason. |
 
 `terminal_failure=true` is derived for all non-success states. Failure states

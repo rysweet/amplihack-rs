@@ -39,7 +39,7 @@ exposed these concrete failure modes:
 | Remaining meaningful diff | Branch changes remain but no valid PR, merge, follow-up, or verified implementation path proves closure. | Finalization returns `FAILED_MEANINGFUL_DIFF` rather than treating the branch as a no-op success. |
 | Missing tooling | Required `git`, `jq`, provider CLI, or provider auth is unavailable on a path that depends on it. | Finalization returns `FAILED_MISSING_TOOLING`, `FAILED_PR_METADATA_UNAVAILABLE`, or `BLOCKED_MANUAL_PROVIDER`; it does not silently skip required proof. |
 | Failed CI | Open PR has failing required checks but final output looks complete. | Finalization returns `BLOCKED_CI` with failing check evidence and nonzero exit. |
-| Hollow success | Workflow exits after setup, design, empty agent output, or inaccessible-codebase messages. | Finalization finds no pushed head or open PR and reports a gap (`INCOMPLETE` or a more specific failure). `HOLLOW_SUCCESS` and `FAILED_MISSING_TERMINAL_EVIDENCE` are still recognised, no longer emitted by finalization (#2343). |
+| Hollow success | Workflow exits after setup, design, empty agent output, or inaccessible-codebase messages. | Finalization returns `HOLLOW_SUCCESS`, which #2343 leaves unchanged. Where the agent output was not empty, the run is classified on its real outcome: no pushed head or open pull request is a failure naming that gap. |
 
 ## Publish behavior
 
@@ -204,4 +204,4 @@ or finalizer validation.
 | `BLOCKED_CI` | Required checks are pending, failed, or unavailable when required. | Fix CI or wait for checks; terminal-state resilience does not bypass CI. |
 | `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. | Resume `default-workflow` from implementation and verification, or choose a more specific failure state. |
 | `FAILED_REPORTING` | Implementation succeeded but a reporting/finalization step failed. Durable `pr_url`/`pr_number` and implementation/verification evidence are preserved. | Re-run the reporting step; the implementation is intact. Do not re-run the implementation. |
-| `HOLLOW_SUCCESS` | Still recognised, no longer emitted by finalization (#2343). Seen in older run records: the run looked successful but produced no implementation, verification, publish, or valid no-op evidence. | Resume `default-workflow` from the missing phase or emit a supported no-op state with evidence. |
+| `HOLLOW_SUCCESS` | The run looked successful but its agent output was empty or inaccessible, so it may have produced nothing at all. Unchanged by #2343, and still ahead of every success classification. | Resume `default-workflow` from the missing phase or emit a supported no-op state with evidence. |
