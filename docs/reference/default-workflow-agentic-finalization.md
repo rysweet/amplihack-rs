@@ -566,7 +566,7 @@ look like it only lacked evidence.
 | # | Condition | Source |
 | --- | --- | --- |
 | 1 | Evaluation-order steps 1–4 returned no result: no dirty worktree, missing tooling, prior blocker, hollow success or reporting-failure split. | Classifier order |
-| 2 | ~~**Publish signal.**~~ Removed by #2343. The run no longer has to claim it published something before the remote is asked. What the claim used to stand in for is now read directly, and a recorded `pr_number` is still never widened to discovery, so another branch's pull request cannot be adopted. | — |
+| 2 | ~~**Publish signal.**~~ Removed by #2343. The run no longer has to claim it published something before the remote is asked. What the claim used to stand in for is now read directly, and a recorded `pr_number` is still never widened to discovery, so another branch's pull request cannot be adopted. | Removed |
 | 2a | **Valid metadata.** None of `worktree_path`, `repo_path`, `pr_url`, `pr_number`, `publish_state_reached`, `prior_terminal_state`, `publish_status`, `branch_name` or `remote_host_type` holds a corrupt value (wrong JSON type, NUL byte). Absence is not corruption: a missing context file, or an unset empty object key, reads as empty and does not disable this path (#1726, #2343). | `workflow_finalization_metadata` status 3 |
 | 3 | **Explicit target directory.** `worktree_path` or `repo_path` resolved. The `.` fallback never qualifies. | Recipe metadata |
 | 4 | **GitHub remote.** `remote_host_type` is empty or `github` (any of `github`, `GitHub`, `GITHUB`), and `remote.origin.url` of the target directory parses to `owner/repo`. | Local git config |

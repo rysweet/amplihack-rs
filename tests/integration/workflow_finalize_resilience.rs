@@ -1343,7 +1343,7 @@ fn agentic_finalization_blocker_survives_embedded_newline_in_earlier_field() {
 // structured terminal_state, and would become a real fail-OPEN if `set -e` were
 // ever relaxed around that block. The single-pass guard must instead treat any
 // incompletely-read evidence as malformed and fail CLOSED with a clean
-// a non-success classification — never IMPLEMENTED_VERIFIED.
+// a non-success classification, never IMPLEMENTED_VERIFIED.
 #[test]
 fn agentic_finalization_fails_closed_when_nested_evidence_value_is_wrong_type() {
     let tmp = TempDir::new().expect("tempdir");
