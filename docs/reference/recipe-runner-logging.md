@@ -64,7 +64,7 @@ correlation pointer lines to `stderr`.
 Early pointer:
 
 ```text
-amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","branch":"main","task_description":"Add cache headers","runner_path":"/home/user/.local/bin/recipe-runner-rs","timestamp":"2026-06-12T03:55:11Z"}
+amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","run_dir":"/home/user/.amplihack/work/runs/5b60657b-76ef-4f49-8a22-8b89ed75f43e","branch":"main","task_description":"Add cache headers","runner_path":"/home/user/.local/bin/recipe-runner-rs","timestamp":"2026-06-12T03:55:11Z"}
 ```
 
 Final pointer:
@@ -74,7 +74,8 @@ amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b606
 ```
 
 Pointer events include only explicit known metadata. Missing branch, issue, PR,
-child PID, and log path fields are omitted. See
+child PID, and log path fields are omitted. The early pointer's `run_dir` is how
+`amplihack recipe guide` finds a run without the work-root environment. See
 [Recipe Run Correlation Reference](./recipe-run-correlation.md) for the complete
 schema.
 

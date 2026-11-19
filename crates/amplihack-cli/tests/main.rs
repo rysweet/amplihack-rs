@@ -403,6 +403,8 @@ mod issue_2539_step_recovery_validation;
 mod issue_2658_routing_replay;
 #[path = "issue_2731_login_change_wait.rs"]
 mod issue_2731_login_change_wait;
+#[path = "issue_2783_recipe_guide_work_root.rs"]
+mod issue_2783_recipe_guide_work_root;
 #[path = "issue_2815_piped_prompt_wait.rs"]
 mod issue_2815_piped_prompt_wait;
 #[path = "issue_439_no_per_step_timeout.rs"]

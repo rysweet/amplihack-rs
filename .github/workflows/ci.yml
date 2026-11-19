@@ -755,6 +755,12 @@ jobs:
       - name: "Outside-in - Existing pull request on another base (issue #2784)"
         shell: bash
         run: AMPLIHACK_2784_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2784-existing-pr-other-base-scenario.sh
+      # Issue #2783: `recipe guide` finding a run started under a non-default
+      # work root, from a shell with no work-root variable, through the pinned
+      # runner installed above. No live agent and no GitHub writes.
+      - name: "Outside-in - recipe guide without a work root (issue #2783)"
+        shell: bash
+        run: AMPLIHACK_2783_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2783-guide-without-work-root-scenario.sh
       # Issue #2815: a usage limit in a step whose prompt arrived on stdin, which
       # is how every recipe agent step is launched, against the binary installed
       # above. The limit states a past reset, so the real wait ends at once.

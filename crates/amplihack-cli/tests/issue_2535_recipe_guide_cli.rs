@@ -340,10 +340,14 @@ fn u6_unknown_target_is_exit_1_with_the_documented_message() {
     f.make_run(RUN_FOLDER, CORRELATION);
     let o = f.guide_text(&["nightly-fix"], "text");
     assert_eq!(o.status.code(), Some(1), "{}", show(&o));
-    assert_eq!(
-        one_line_error(&o),
-        "recipe guide: no recipe run or detached session named \"nightly-fix\""
+    // Issue #2783: the line also names every location consulted.
+    let line = one_line_error(&o);
+    assert!(
+        line.starts_with("recipe guide: no recipe run or detached session named \"nightly-fix\""),
+        "{line}"
     );
+    assert!(line.contains("nightly-fix.log"), "{line}");
+    assert!(line.contains(&f.runs().display().to_string()), "{line}");
     assert!(stdout(&o).is_empty());
 }
 
@@ -438,7 +442,6 @@ fn s6_malformed_pr_urls_are_exit_2_and_create_nothing() {
         "https://github.com:443/o/r/pull/7",
         "https://github.com/../r/pull/7",
         "https://github.com/o/r/pull/0",
-        "https://github.com/o/r/issues/7",
         "https://github.com/o/r/pull/7/files",
     ] {
         let o = f.guide_text(&[url], "text");
@@ -449,6 +452,17 @@ fn s6_malformed_pr_urls_are_exit_2_and_create_nothing() {
             "{url}: {line}"
         );
     }
+    assert!(!f.state.exists(), "nothing created under the state folder");
+}
+
+#[test]
+fn s6_an_unmatched_issue_url_is_exit_1_and_creates_nothing() {
+    let f = GuideFixture::new();
+    let o = f.guide_text(&["https://github.com/o/r/issues/7"], "text");
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    let line = one_line_error(&o);
+    assert!(line.starts_with("recipe guide: "), "{line}");
+    assert!(line.contains("https://github.com/o/r/issues/7"), "{line}");
     assert!(!f.state.exists(), "nothing created under the state folder");
 }
 

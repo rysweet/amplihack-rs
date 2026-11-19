@@ -475,8 +475,11 @@ when nothing matches.
 amplihack recipe guide <TARGET> [-] [--file <PATH>] [--from-step]
 ```
 
-Adds an instruction to a running recipe run. `<TARGET>` is a run ID, a
-detached session name, or a GitHub pull request URL for an auto-drive. The
+Adds an instruction to a running recipe run. Builds (`smart-orchestrator` and
+similar) and drives (`auto-drive`) are both recipe runs, and both take guidance.
+`<TARGET>` is a detached session name, a run ID, an issue (`<number>`,
+`'#<number>'` or an issue URL), or a GitHub pull request URL. The run is found
+from what it recorded at start, whatever the work root in your environment. The
 instruction is read from stdin, or from `--file <PATH>`; text given on the
 command line is refused with exit 2. It is stored as one private file in the
 run's `guidance/` folder, and every agent step that starts afterwards

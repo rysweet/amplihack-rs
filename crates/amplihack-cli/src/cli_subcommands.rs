@@ -607,10 +607,21 @@ pub enum RecipeCommands {
     },
     /// Add an instruction that every later agent step of a recipe run
     /// receives after its own prompt
+    ///
+    /// Builds (smart-orchestrator, default-workflow and the like) and drives
+    /// (auto-drive) are both recipe runs, and both take guidance this way.
+    ///
+    /// The run is found from what it recorded when it started, so this works
+    /// from any shell, whatever AMPLIHACK_WORK_ROOT is set to.
     Guide {
-        /// Run folder name, correlation id, detached session name, or the
-        /// pull request URL of an auto-drive
-        /// (https://github.com/<owner>/<repo>/pull/<n>)
+        /// The run to guide, in any of these forms: a detached session name;
+        /// a run ID, either the run folder name or the correlation id that
+        /// `recipe stop` takes; a GitHub issue, as <number>, #<number> or an
+        /// issue URL; or the pull request URL of an auto-drive
+        /// (https://github.com/<owner>/<repo>/pull/<n>).
+        ///
+        /// Quote #<number>, which most shells read as a comment: '#2783'. A
+        /// bare number is tried as a run ID before an issue number.
         target: String,
         /// `-` reads the instruction from stdin, as does giving nothing.
         /// Any other value here is refused: instruction text is never
