@@ -23,6 +23,13 @@
 # Cases, each a `recipe guide` run under `env -i` with HOME and PATH only, so
 # neither AMPLIHACK_WORK_ROOT nor AMPLIHACK_WORK_ROOT_EXPLICIT is set:
 #   by_session_name       the detached session name
+#   by_long_session_name  a 65-character auto-drive session name, past the 64
+#                         of the rule for a name tmux is asked to create and
+#                         within the 85 `recipe run --detach` can create
+#                         (issue #2818)
+#   over_the_session_bound a name past 85 is not looked up as a session, and
+#                         the not-found line says so rather than leaving the
+#                         skipped rule unexplained
 #   by_run_folder_name    the run folder under the alternative work root
 #   by_correlation_id     the pointer line's run_id
 #   by_issue_number       the issue the run recorded in its context
@@ -181,7 +188,12 @@ env -i \
   > "$WORK/run.stdout" 2>> "$RUN_LOG"
 run_status=$?
 
-POINTER="$(grep -m 1 -a '^amplihack\.recipe\.log_pointer ' "$RUN_LOG" | sed 's/^amplihack\.recipe\.log_pointer //')"
+# One awk over the whole log, keeping the first pointer line: no pipeline
+# stage that stops before its producer is done (issue #1434). awk reads the
+# bytes as they are, so the `-a` that grep needed here is not needed.
+POINTER="$(awk -v p='amplihack.recipe.log_pointer ' \
+  'n == 0 && index($0, p) == 1 { line = substr($0, length(p) + 1); n = 1 } END { if (n) print line }' \
+  "$RUN_LOG")"
 if [ -z "$POINTER" ]; then
   flunk "the run left no amplihack.recipe.log_pointer line (recipe run exited $run_status)" "$RUN_LOG"
   echo "SCENARIO_FAILED"; exit 1
@@ -231,6 +243,56 @@ check_lands_in_run() {
 }
 
 check_lands_in_run by_session_name "$SESSION"
+
+# Issue #2818: the session names an auto-drive is actually given run past the
+# 64 characters of the rule for a name tmux is asked to create. `recipe run
+# --detach` truncates a pattern at 80 and may add a `-<n>` collision suffix,
+# so it can create 85, and the lookup takes that bound. The log here is the
+# same artefact under the name detach would have left it as.
+LONG_SESSION="amp-auto-drive-to-merge-amplihack-rs-drive-pr2814-20261119-000213"
+if [ "${#LONG_SESSION}" -eq 65 ]; then
+  pass "the_long_session_name_is_the_65_characters_of_the_reported_case"
+else
+  flunk "LONG_SESSION is ${#LONG_SESSION} characters, not the 65 this case is about"
+fi
+cp -- "$RUN_LOG" "$LOG_DIR/$LONG_SESSION.log"
+chmod 600 "$LOG_DIR/$LONG_SESSION.log"
+check_lands_in_run by_long_session_name "$LONG_SESSION"
+
+# Past 85 the rule cannot run. The not-found line must say that, not list
+# only the places it did reach: silence there is what made the original
+# report look like an absent log.
+TOO_LONG_SESSION="$LONG_SESSION-with-twenty-four-more-ch"
+guide over_the_session_bound "$TOO_LONG_SESSION"
+bound_status="$(cat "$WORK/case-over_the_session_bound/status")"
+bound_err="$(cat "$WORK/case-over_the_session_bound/stderr")"
+if [ "${#TOO_LONG_SESSION}" -le 85 ]; then
+  flunk "TOO_LONG_SESSION is ${#TOO_LONG_SESSION} characters, which is not past the bound"
+elif [ "$bound_status" != "1" ]; then
+  flunk "over_the_session_bound: expected exit 1, got $bound_status" \
+    "$WORK/case-over_the_session_bound/stderr"
+else
+  bound_missing=""
+  case "$bound_err" in
+    *'no session log ('*) ;;
+    *) bound_missing="$bound_missing skipped-rule" ;;
+  esac
+  case "$bound_err" in
+    *"${#TOO_LONG_SESSION} characters"*) ;;
+    *) bound_missing="$bound_missing name-length" ;;
+  esac
+  case "$bound_err" in
+    *'at most 85'*) ;;
+    *) bound_missing="$bound_missing bound" ;;
+  esac
+  if [ -n "$bound_missing" ]; then
+    flunk "over_the_session_bound: the line does not name:$bound_missing" \
+      "$WORK/case-over_the_session_bound/stderr"
+  else
+    pass "over_the_session_bound_says_the_session_rule_was_not_tried"
+  fi
+fi
+
 check_lands_in_run by_run_folder_name "$RUN_FOLDER"
 check_lands_in_run by_correlation_id "$CORRELATION"
 check_lands_in_run by_issue_number "$ISSUE"
@@ -246,7 +308,11 @@ fi
 guide unmatched_names_where "nightly-fix-2783"
 status="$(cat "$WORK/case-unmatched_names_where/status")"
 err="$(cat "$WORK/case-unmatched_names_where/stderr")"
-guide_line="$(printf '%s\n' "$err" | grep -m 1 '^recipe guide: ' || true)"
+# awk reads all of `err` and prints the first matching line at END, so the
+# producer is never writing into a closed pipe and no `|| true` is needed to
+# hide a status (issue #1434). An empty result means no such line.
+guide_line="$(printf '%s\n' "$err" |
+  awk 'n == 0 && index($0, "recipe guide: ") == 1 { line = $0; n = 1 } END { if (n) print line }')"
 if [ "$status" != "1" ]; then
   flunk "unmatched_names_where: expected exit 1, got $status" "$WORK/case-unmatched_names_where/stderr"
 elif [ -s "$WORK/case-unmatched_names_where/stdout" ]; then

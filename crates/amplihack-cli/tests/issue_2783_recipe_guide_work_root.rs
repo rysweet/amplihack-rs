@@ -675,3 +675,119 @@ fn an_unset_home_is_reported_in_the_not_found_line_not_refused() {
     let line = one_line_error(&o);
     assert!(line.to_lowercase().contains("home"), "{line}");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2818: the session name a detached run was actually given
+//
+// `recipe detach` builds session names with `.take(80)` and may add a `-<n>`
+// collision suffix on top, so it emits up to 85 characters. The lookup used
+// to apply the 64 of the rule for a name tmux is asked to create, so every
+// detached session named past 64 characters fell through the session rule,
+// and fell through it silently. These exercise the real binary with both
+// work-root variables unset, on names of exactly that shape.
+// ---------------------------------------------------------------------------
+
+/// The session name the drive in the original report ran under: the default
+/// `amp-{recipe}-{repo}-{ts}` pattern, an auto-drive recipe and a per-PR
+/// worktree. 65 characters, one past the creation rule.
+const DRIVE_SESSION: &str = "amp-auto-drive-to-merge-amplihack-rs-drive-pr2814-20261119-000213";
+
+/// A name at the 85 detach can emit: the 80 `session_name` truncates to,
+/// plus the longest `-<n>` suffix `claim_session` adds on a collision.
+const SESSION_AT_BOUND: &str =
+    "amp-auto-drive-to-merge-amplihack-rs-drive-pr2814-20261119-000213-abcdefghijklmn-1000";
+
+#[test]
+fn the_sessions_these_tests_use_are_the_lengths_they_claim() {
+    assert_eq!(DRIVE_SESSION.chars().count(), 65);
+    assert_eq!(SESSION_AT_BOUND.chars().count(), 85);
+    // The guard against a future edit trimming these back under the old
+    // bound, which would leave the suite green and the bug alive.
+    assert!(SESSION.chars().count() <= 64);
+}
+
+#[test]
+fn a_sixty_five_character_drive_session_resolves_through_its_recorded_run_dir() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    f.session_log_from_pointer(
+        DRIVE_SESSION,
+        &GuideFixture::pointer(CORRELATION, Some(&run)),
+    );
+    let o = f.guide_without_work_root(&[DRIVE_SESSION], "guide the drive");
+    assert_lands_in(&o, &run);
+    assert_eq!(f.entries(&guidance_of(&run)).len(), 1);
+    assert!(
+        !f.runs().join(RUN_FOLDER).exists(),
+        "wrote under the default root"
+    );
+}
+
+#[test]
+fn a_session_at_the_detach_bound_resolves_too() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    f.session_log_from_pointer(
+        SESSION_AT_BOUND,
+        &GuideFixture::pointer(CORRELATION, Some(&run)),
+    );
+    let o = f.guide_without_work_root(&[SESSION_AT_BOUND], "guide the drive");
+    assert_lands_in(&o, &run);
+}
+
+/// A long session also resolves through the work root in the environment,
+/// the second half of rule 3, so the bound is not fixed on one path only.
+#[test]
+fn a_sixty_five_character_session_with_no_recorded_run_dir_resolves_through_the_environment() {
+    let f = GuideFixture::new();
+    let run = f.make_run(RUN_FOLDER, CORRELATION);
+    f.session_log_from_pointer(DRIVE_SESSION, &GuideFixture::pointer(CORRELATION, None));
+    let o = f.guide_without_work_root(&[DRIVE_SESSION], "guide the drive");
+    assert_lands_in(&o, &run);
+}
+
+#[test]
+fn a_long_session_whose_log_is_absent_names_the_log_it_looked_for() {
+    let f = GuideFixture::new();
+    f.make_run(RUN_FOLDER, CORRELATION);
+    let o = f.guide_without_work_root(&[DRIVE_SESSION], "text");
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    let line = one_line_error(&o);
+    let log = f.recipe_logs.join(format!("{DRIVE_SESSION}.log"));
+    assert!(line.contains(&log.display().to_string()), "{line}");
+}
+
+/// Past the bound the rule cannot run, and the not-found line says so
+/// rather than listing only the places it did reach.
+#[test]
+fn a_name_past_the_detach_bound_says_the_session_rule_was_not_tried() {
+    let f = GuideFixture::new();
+    f.make_run(RUN_FOLDER, CORRELATION);
+    let too_long = format!("{SESSION_AT_BOUND}-and-more");
+    assert_eq!(too_long.chars().count(), 94);
+    let o = f.guide_without_work_root(&[&too_long], "text");
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    let line = one_line_error(&o);
+    assert!(line.contains("no session log ("), "{line}");
+    assert!(line.contains("94 characters"), "{line}");
+    assert!(line.contains("at most 85"), "{line}");
+    // The miss is still a miss, and still names everywhere else it looked.
+    assert!(
+        line.contains(&f.recipe_logs.display().to_string()),
+        "{line}"
+    );
+    assert!(stdout(&o).is_empty());
+}
+
+#[test]
+fn a_target_that_could_never_be_a_session_name_says_which_character_stopped_it() {
+    let f = GuideFixture::new();
+    f.make_run(RUN_FOLDER, CORRELATION);
+    for (target, needle) in [("runs/nightly", "\"/\""), ("amp:one", "\":\"")] {
+        let o = f.guide_without_work_root(&[target], "text");
+        assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+        let line = one_line_error(&o);
+        assert!(line.contains("no session log ("), "{line}");
+        assert!(line.contains(needle), "{target}: {line}");
+    }
+}

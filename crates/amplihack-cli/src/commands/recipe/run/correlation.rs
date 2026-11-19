@@ -500,9 +500,16 @@ mod tests_issue_2783 {
         serde_json::from_str(line.trim().trim_start_matches(LOG_POINTER_PREFIX)).unwrap()
     }
 
+    /// The pointer line is a format other programs parse -- `recipe guide`
+    /// reads it back through `guide_records` -- so the field name and its
+    /// value are the contract, not the constant. Asserting the constant
+    /// against its own literal could not fail; this fails if the field is
+    /// renamed, dropped or emitted as something other than the number 1.
     #[test]
-    fn schema_version_is_unchanged() {
-        assert_eq!(SCHEMA_VERSION, 1);
+    fn the_pointer_line_declares_schema_version_1() {
+        let v = pointer_json(&correlation());
+        assert_eq!(v["schema_version"], JsonValue::from(1));
+        assert_eq!(v["event"], "early");
     }
 
     #[test]

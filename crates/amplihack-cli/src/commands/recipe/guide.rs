@@ -24,7 +24,11 @@
 //!    refusal): the per-PR state folder, created when absent;
 //! 3. a detached session name: the pointer line of
 //!    `<recipe log dir>/<session>.log`, through its recorded `run_dir` first
-//!    and the work root in the environment second;
+//!    and the work root in the environment second. The name is bounded by
+//!    `detach::MAX_DETACHED_SESSION_CHARS`, the longest name
+//!    `recipe run --detach` can create, not by the shorter rule for a name
+//!    tmux is asked to create, and a name this rule cannot read is named in
+//!    the not-found line rather than passed over in silence (issue #2818);
 //! 4. a run folder name or correlation id: the recorded `run_dir` of the
 //!    pointer line carrying it, then `<work root>/runs/` as a folder name
 //!    and then as `attempts[].correlation_id` in each run's `run.json`;
@@ -52,6 +56,7 @@
 //! line names the target and every place that was looked at, so a miss says
 //! what was searched rather than only that it failed.
 
+use super::detach::MAX_DETACHED_SESSION_CHARS;
 use super::guide_records::{self, Pointer};
 use crate::command_error::exit_error;
 use crate::commands::cleanup::run_dir::{RUN_JSON, RunReport};
@@ -334,6 +339,51 @@ fn one_line(e: &anyhow::Error) -> String {
     format!("{e:#}").replace(['\n', '\r'], " ")
 }
 
+/// Whether `name` can be the stem of a detached session's log file.
+///
+/// Accepts every name `recipe run --detach` can create, and refuses only
+/// what would make `<log dir>/<name>.log` name something else or carry an
+/// unprintable character into a message.
+///
+/// The length bound is [`MAX_DETACHED_SESSION_CHARS`], imported from the
+/// module that creates the names rather than restated here, so one
+/// identifier has one bound. It is deliberately not the 64 of
+/// [`crate::commands::agent::validate::session_name`]: that rule bounds a
+/// name tmux is about to be asked to create, this one a name tmux already
+/// created. Holding the lookup to the creation rule skipped every session
+/// detach named past 64 characters -- among them the auto-drive sessions,
+/// whose recipe, repository and timestamp run past it together -- and
+/// skipped it in silence, so the miss looked like an absent log (#2818).
+///
+/// The returned reason goes in the brackets of the note
+/// `no session log (<reason>)`, so it is phrased to sit beside the other
+/// places the not-found line lists.
+fn lookup_session_name(name: &str) -> Result<(), String> {
+    let n = name.chars().count();
+    if n == 0 {
+        return Err("the name is empty".to_string());
+    }
+    if n > MAX_DETACHED_SESSION_CHARS {
+        return Err(format!(
+            "the name is {n} characters; a detached session name is at most {MAX_DETACHED_SESSION_CHARS}"
+        ));
+    }
+    if name.chars().any(needs_escape) {
+        return Err("the name has a control character".to_string());
+    }
+    // `/` first, and on its own: it is the one that would leave the log
+    // directory, and it is what a path mistyped as a target carries.
+    if name.contains('/') {
+        return Err("the name has a \"/\"".to_string());
+    }
+    // tmux rewrites `:` and `.` and expands `#`, so a live session was
+    // never named with one of them whatever the log directory holds.
+    if let Some(c) = name.chars().find(|c| matches!(c, ':' | '.' | '#')) {
+        return Err(format!("the name has a {}", quoted(&c.to_string())));
+    }
+    Ok(())
+}
+
 /// The issue number a bare target names: `<n>` or `#<n>`, ASCII digits only
 /// so neither a sign nor white space is read as a number.
 fn bare_issue_number(target: &str) -> Option<u64> {
@@ -574,7 +624,11 @@ impl<'a> Resolver<'a> {
     /// holds no pointer line is refused rather than passed over.
     fn session_destination(&mut self) -> Result<Option<Destination>, GuideError> {
         let target = self.target;
-        if crate::commands::agent::validate::session_name(target).is_err() || target.contains('/') {
+        // A name this rule cannot read is a place that was not looked at, so
+        // it says so (issue #2818). Silence here is what made the original
+        // report look like an absent log rather than a skipped rule.
+        if let Err(reason) = lookup_session_name(target) {
+            self.note(format!("no session log ({reason})"));
             return Ok(None);
         }
         let log_dir = match self.log_dir.clone() {
@@ -893,5 +947,76 @@ mod tests {
             assert!(!records_issue_number(Some(value), 2783), "{value:?}");
         }
         assert!(!records_issue_number(None, 2783));
+    }
+
+    /// Issue #2818: the lookup must accept every name `recipe run --detach`
+    /// can create. It takes detach's own bound, and this checks the bound
+    /// against the names detach actually builds -- including the one from
+    /// the report -- so a change at either end fails a test, not a drive.
+    #[test]
+    fn every_name_detach_can_produce_is_accepted_by_the_lookup() {
+        use super::super::detach::{MAX_CLAIM_SUFFIX_CHARS, session_name as detached};
+
+        // The reported case: the default pattern, an auto-drive recipe and
+        // a per-PR worktree. 65 characters, so the 64 of the creation rule
+        // refused it and the session rule was never tried.
+        let reported = detached(
+            "amp-{recipe}-{repo}-{ts}",
+            "auto-drive-to-merge",
+            "amplihack-rs-drive-pr2814",
+            "20261119-000213",
+        );
+        assert_eq!(
+            reported,
+            "amp-auto-drive-to-merge-amplihack-rs-drive-pr2814-20261119-000213"
+        );
+        assert_eq!(reported.chars().count(), 65);
+        assert!(lookup_session_name(&reported).is_ok(), "{reported}");
+        assert!(
+            crate::commands::agent::validate::session_name(&reported).is_err(),
+            "the creation rule is what used to skip this name"
+        );
+
+        // The longest name detach can emit: a pattern at the truncation
+        // bound, plus the longest suffix `claim_session` adds when the name
+        // is already taken. That suffix is the part a bound of 80 alone
+        // would still have cut off.
+        let truncated = detached("{repo}", "r", &"a".repeat(500), "t");
+        let longest = format!("{truncated}-1000");
+        assert_eq!(longest.chars().count(), MAX_DETACHED_SESSION_CHARS);
+        assert_eq!(
+            longest.chars().count() - truncated.chars().count(),
+            MAX_CLAIM_SUFFIX_CHARS
+        );
+        assert!(lookup_session_name(&longest).is_ok(), "{longest}");
+
+        // One past it is refused, and the reason names both numbers.
+        let over = format!("{longest}x");
+        let reason = lookup_session_name(&over).unwrap_err();
+        assert!(
+            reason.contains(&format!("{} characters", over.chars().count())),
+            "{reason}"
+        );
+        assert!(
+            reason.contains(&format!("at most {MAX_DETACHED_SESSION_CHARS}")),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn a_name_that_could_not_be_a_session_log_stem_says_why() {
+        for (name, needle) in [
+            ("", "empty"),
+            ("../../etc/passwd", "\"/\""),
+            ("amp:one", "\":\""),
+            ("amp.one", "\".\""),
+            ("amp#one", "\"#\""),
+            ("amp\u{1b}one", "control character"),
+        ] {
+            let reason = lookup_session_name(name).unwrap_err();
+            assert!(reason.contains(needle), "{name:?}: {reason}");
+            assert!(!reason.contains('\u{1b}'), "{reason:?}");
+        }
+        assert!(lookup_session_name("amp-smart-orchestrator-myapp-1").is_ok());
     }
 }

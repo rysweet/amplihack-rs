@@ -273,7 +273,7 @@ run's pointer line is kept in `<session>.log` in
 
 | Form | Example | Where the instruction is stored |
 | --- | --- | --- |
-| Detached session name | `amp-smart-orchestrator-myapp-20261112-091200` | The folder of the run started in that session |
+| Detached session name (up to 85 characters) | `amp-smart-orchestrator-myapp-20261112-091200` | The folder of the run started in that session |
 | Run ID: folder name (`AMPLIHACK_RUN_ID`) or correlation ID (`run_id`, `AMPLIHACK_RECIPE_RUN_ID`, the ID `recipe stop` takes) | `5b9d0f6e-77a2-4f0b-b1c4-0e3a9d2c6f81` | That run's folder |
 | Issue: `<number>`, `#<number>` or an issue URL | `2783`, `'#2783'`, `https://github.com/rysweet/amplihack-rs/issues/2783` | The folder of the run that recorded that issue |
 | Pull request URL | `https://github.com/rysweet/amplihack-rs/pull/2535` | The auto-drive state folder for that pull request |
@@ -293,7 +293,14 @@ The first match is used, in this order:
    state folder. Any other target that contains `://` (a URL that is neither
    an issue URL nor a pull request URL) exits 2 and nothing else is tried.
 3. **Session name.** The pointer line in `<session>.log`. If it records
-   `run_dir`, that folder is used.
+   `run_dir`, that folder is used. The name may be up to 85 characters --
+   the 80 `recipe run --detach` truncates a pattern to, plus the longest
+   `-<n>` suffix it appends when that name is already taken -- and may not
+   contain `/`, `:`, `.`, `#` or a control character. A target that fails
+   this is not looked up as a session, and the not-found line names the
+   session log among the places it did not reach:
+   `no session log (the name is 94 characters; a detached session name is at
+   most 85)`.
 4. **Run ID.** The `run_dir` recorded by the pointer line that carries that
    `run_id`, searched across the log directory. If no log records it, the ID
    is looked up under `<work root>/runs/`, first as a folder name and then
