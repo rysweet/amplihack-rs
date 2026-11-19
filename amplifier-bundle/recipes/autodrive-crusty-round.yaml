@@ -124,6 +124,16 @@ steps:
 
       Correctness, hidden operational cost, ownership burden, failure modes this change makes likelier, tests that do not test the thing, docs that describe something else, complexity with no payer. Be specific. A vague warning is not a concern and must not be emitted as one.
 
+      Ask these of every diff. 1. Does this change validate its result, and does a failure report itself with evidence? 2. When validation fails, does
+      the workflow give an agent the evidence and room to diagnose and fix, or does it end the run, or make the check pass by special-casing the new
+      case? 3. Does any path hide a failure or lower the bar, with a skipped or weakened check, a silent retry, or a success that has not been shown?
+      That one is `blocking`. 4. Is a judgement made by a script that pattern-matches, where an agent step with guidance should decide? Report a finding
+      from 2 or 4 with `severity` set to `major`, or `blocking` if the diff warrants it.
+
+      Those four ask what happens after a failure, not whether checking code grew. Added validation, a loud failure and the regression tests that pin
+      them are not concerns; do not raise one for them. A step that refuses in order to protect data (never delete unpushed work, never force-push) is
+      correct, and the only question about it is whether its refusal is loud and reaches recovery.
+
       ## Output contract (REQUIRED)
 
       Write your normal review in the skill's usual structure — framing, sharp

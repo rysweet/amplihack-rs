@@ -184,6 +184,21 @@ steps:
       - Zero-BS: No stubs, faked data, swallowed exceptions?
       - Modular Design: Clean boundaries?
       - Test-Driven: Adequate coverage?
+      - Validation: does this change validate its result, and does a failure
+        report itself with evidence?
+      - Recovery: when validation fails, does the workflow give an agent the
+        evidence and room to diagnose and fix, or does it end the run, or
+        make the check pass by special-casing the new case?
+      - Lowered bar: does any path hide a failure or lower the bar, with a
+        skipped or weakened check, a silent retry, or a success that has not
+        been shown? That is a blocking concern.
+      - Judgement: is a judgement made by a script that pattern-matches,
+        where an agent step with guidance should decide?
+
+      Those four ask what happens after a failure, not whether checking code
+      grew. Added validation and the regression tests that pin it are not
+      findings. A refusal that protects data is correct; check only that it
+      is loud and reaches recovery.
 
       Report any philosophy violations.
     output: "philosophy_review"
@@ -231,6 +246,15 @@ steps:
       - [ ] Zero-BS: no stubs, faked data or swallowed exceptions
       - [ ] Modular design: clean boundaries
       - [ ] Test-driven: adequate coverage
+      - [ ] Validation: the change validates its result, and a failure
+            reports itself with evidence
+      - [ ] Recovery: a failure reaches an agent with the evidence and room
+            to diagnose and fix, rather than ending the run or being
+            special-cased past
+      - [ ] No lowered bar (blocking): no skipped or weakened check, no
+            silent retry, no success that has not been shown
+      - [ ] Judgement: no script pattern-matches where an agent step with
+            guidance should decide
 
       End with the issues found and what you recommend for each.
     output: "combined_review"
