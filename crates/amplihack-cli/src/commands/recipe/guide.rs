@@ -849,4 +849,49 @@ mod tests {
             "{e}"
         );
     }
+
+    /// Issue #2783: nothing taken from a log reaches stderr as itself.
+    #[test]
+    fn quoting_escapes_every_character_that_could_rewrite_the_line() {
+        assert_eq!(quoted("/w/runs/a-1"), "\"/w/runs/a-1\"");
+        assert_eq!(
+            quoted("a\u{202e}b\u{2028}c\u{1b}d\u{9b}e\u{2069}f"),
+            "\"a\\u{202e}b\\u{2028}c\\u{001b}d\\u{009b}e\\u{2069}f\""
+        );
+        assert_eq!(quoted("say \"x\"\\y"), "\"say \\\"x\\\"\\\\y\"");
+        // A replacement character is printable and is shown as itself; it is
+        // `accept_recorded` that refuses a path holding one.
+        assert_eq!(quoted("a\u{fffd}b"), "\"a\u{fffd}b\"");
+    }
+
+    #[test]
+    fn a_message_is_one_line_however_it_was_built() {
+        let built = "refusing /w/a\nb\r\u{2029}c: it is a symbolic link";
+        let shown = sanitize_line(built);
+        assert!(!shown.contains('\n') && !shown.contains('\r'), "{shown}");
+        assert!(!shown.contains('\u{2029}'), "{shown}");
+        assert!(
+            shown.contains("\\u{000a}") && shown.contains("\\u{2029}"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn a_bare_issue_number_is_ascii_digits_with_an_optional_hash() {
+        assert_eq!(bare_issue_number("2783"), Some(2783));
+        assert_eq!(bare_issue_number("#2783"), Some(2783));
+        for value in ["+2783", "27 83", "", "#", "2783x", "٢٧٨٣", "-1"] {
+            assert_eq!(bare_issue_number(value), None, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn a_recorded_issue_number_matches_only_as_digits() {
+        assert!(records_issue_number(Some("2783"), 2783));
+        assert!(records_issue_number(Some("02783"), 2783));
+        for value in ["+2783", " 2783", "2783 ", "", "2784"] {
+            assert!(!records_issue_number(Some(value), 2783), "{value:?}");
+        }
+        assert!(!records_issue_number(None, 2783));
+    }
 }
