@@ -3654,9 +3654,11 @@ Rules:
 
 - `add` omits exactly `skills/synced` (Claude Code's per-account skill cache)
   and `skills/.trash` (deleted skill state), relative to `$HOME/.claude`.
-  Both walkers skip these paths before examining their type, opening them,
-  creating destination entries, descending or counting towards the copy limit,
-  so neither an excluded entry nor any of its descendants consumes the budget.
+  The descriptor-relative copy used on Unix and the path-based copy used on
+  other platforms both skip these paths before examining their type, opening
+  them, creating destination entries, descending or counting towards the copy
+  limit, so neither an excluded entry nor any of its descendants consumes the
+  budget.
   Their source contents remain intact; Claude Code syncs account skills again
   for each login.
 - Exclusions use exact, case-sensitive path components. User-owned skills
