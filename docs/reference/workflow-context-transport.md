@@ -398,22 +398,24 @@ validation to make file transport appear successful.
 The reader distinguishes a value that is not there from a value that is wrong.
 Only the second is a diagnostic.
 
-| Situation | Status | Stdout | Stderr from the read call |
+| Situation | Status | Stdout | Stderr |
 | --- | --- | --- | --- |
 | `AMPLIHACK_CONTEXT_FILE` set and the file is missing, unreadable, a symlink or a directory | `2` | empty | empty |
-| `AMPLIHACK_CONTEXT_FILE` set, a regular file that is not a single JSON object | `3` | empty | the existing `invalid authoritative workflow context` warning |
+| `AMPLIHACK_CONTEXT_FILE` set, a regular file that is not a single JSON object | `2` | empty | empty |
 | Object-typed canonical key (`verdict_json`, `worktree_setup`, `pr_publish_result`, `finalization_assessment` and the like) declared with an empty default and not yet set (#1726) | `2` | empty | empty |
 | Field absent from a valid source | `2` | empty | empty |
 | Value present but unparseable, or containing a NUL byte | `3` | empty | the existing warning |
 | Unknown key | `3` | empty | the existing warning |
 
-The file's state is decided once, when `workflow_context.sh` is sourced, and it
-is split there into absent (`2`) and corrupt (`3`). Every reader follows that
-single decision: `workflow_context_read`, the `workflow_finalization_metadata`
+The file's state is decided once, when `workflow_context.sh` is sourced: either
+it holds one readable JSON object, or it carries no data at all. Every reader
+follows that single decision: `workflow_context_read`, the `workflow_finalization_metadata`
 keys and the `workflow_finalization_context` allowlist. No reader re-checks the
 file. A missing file therefore reads as status `2` for a metadata key as it does
-for any other key. The source step may emit one non-fatal diagnostic line, with
-no path content. The read call itself writes nothing to stderr for absence.
+for any other key. Nothing is written to stderr for absence, at source time or
+at the read call: a path that carries no data is not a diagnostic. What is
+wrong with a file that was expected to hold data is answered by the run's real
+outcome, which finalization reads instead.
 
 Absence never grants success. A caller takes status `2` as "no data", reads the
 run's real outcome, and decides from that. Status `3` is kept for corrupt data
@@ -421,20 +423,21 @@ only, so a typo in a key name cannot read as absence.
 
 The structural guarantees from #1538 are unchanged. The tier is chosen by the
 presence of the name, so once `RECIPE_VAR_verdict_json` exists at any value,
-including empty, the legacy scalar is never consulted. A missing or symlinked
-context file still suppresses fallback, and a symlink's target is never read.
+including empty, the legacy scalar is never consulted. A missing, symlinked or
+unparseable context file still suppresses fallback, and a symlink's target is
+never read: the file was selected, so the legacy scalar stays out of reach
+whether or not the file turned out to hold anything.
 
 An unset empty object key is the common case on a run that never reached
 worktree setup or publish. Before this change it read as invalid context and
-disabled the open-PR check in `confirm_open_pr`; it now reads as empty and the
-check runs.
+disabled finalization's open-PR check; it now reads as empty and the run's real
+outcome is read instead.
 
 Status `2` on an empty `RECIPE_VAR_<key>` applies only to object-typed canonical
 keys. An empty scalar key such as `branch_name` is a value and reads as empty
 with status `0`.
 
-Missing context file (the source step prints its one diagnostic line, the read
-prints nothing):
+Missing context file (nothing is printed on either stream):
 
 ```bash
 export AMPLIHACK_CONTEXT_FILE="$HOME/.amplihack/runs/none.json"   # file does not exist

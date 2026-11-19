@@ -224,22 +224,24 @@ finalization_outcome_facts <target_dir> <branch> [<pr_ref>]
 | --- | --- |
 | `target_dir` | Worktree or repository path. |
 | `branch` | The run branch. It is checked with `git check-ref-format --branch` before any git call, and a rejected name is reported as unknown, not as an error. |
-| `pr_ref` | Optional PR number or exact GitHub PR URL. Without it the PR is found by head branch. |
+| `pr_ref` | Optional PR number or exact GitHub PR URL. Without it the PR is found by head branch. A PR number the run recorded is never widened to discovery, so another branch's pull request cannot be adopted. |
 
-It prints one compact JSON object:
+It prints one compact JSON object. Every value but `schema_version` is a String:
 
 ```json
 {
   "schema_version": 1,
+  "branch": "feat/issue-2343-fix-issue-2343-and-1726",
   "local_head": "3f9c2a7d5e1b4c60a8d2f1e9b7c3a5d4e6f80912",
   "remote": "rysweet/amplihack-rs",
-  "branch": "feat/issue-2343-fix-issue-2343-and-1726",
-  "branch_pushed": true,
+  "github_origin": "true",
+  "branch_pushed": "true",
+  "remote_head": "",
   "pr_number": "2792",
   "pr_url": "https://github.com/rysweet/amplihack-rs/pull/2792",
   "pr_state": "OPEN",
   "pr_head": "3f9c2a7d5e1b4c60a8d2f1e9b7c3a5d4e6f80912",
-  "pr_head_relation": "equal",
+  "pr_head_relation": "local",
   "checks": "pending",
   "verdict": "SUCCESS",
   "gap": ""
@@ -248,34 +250,46 @@ It prints one compact JSON object:
 
 | Field | Values |
 | --- | --- |
-| `branch_pushed` | `true` when `git ls-remote --heads origin` lists exactly `refs/heads/<branch>` at `local_head`. `false` when the branch is absent or at another commit. `unknown` when the remote could not be read. |
-| `pr_head_relation` | `equal`, `descendant` (the local head is an ancestor of the PR head, as when a merge of main was pushed from another checkout), `ahead`, `diverged`, or `unknown`. |
+| `github_origin` | `true` when the worktree's origin is a github.com repository whose pull requests were read. `false` when this run has no such repository to read an outcome from at all: no GitHub origin, a remote the run itself declared otherwise, or no recorded worktree. `unknown` when that is itself unclear. |
+| `branch_pushed` | `true` when the remote carries the local head, either because an open pull request is serving it or because `git ls-remote --heads origin refs/heads/<branch>` is at the local head or a descendant of it. `false` when the remote demonstrably does not. `unknown` when the remote could not be read. |
+| `remote_head` | The remote branch tip, when `ls-remote` was consulted and answered. |
+| `pr_head_relation` | `local` (the PR head is the local head), `descendant` (the local head is an ancestor of the PR head, as when a merge of main was pushed from another checkout), `different`, `none` (no open PR), or `unknown`. |
 | `checks` | `green`, `pending`, `none`, `failing` or `unknown`, from `_finalization_pr_checks`. Read once. |
-| `verdict` | `SUCCESS`, `BLOCKED`, `GAP` or `UNCERTAIN`. Advisory: the validator applies the classification order below. |
-| `gap` | One sentence naming the gap, carrying the concrete facts: local head, PR head, branch and PR number where known. Control characters are removed and the length is capped. Empty when `verdict` is `SUCCESS`. |
+| `verdict` | `SUCCESS`, `BLOCKED`, `GAP` or `UNCERTAIN`. |
+| `gap` | One sentence naming the gap, carrying the concrete facts: local head, remote head, PR head, branch and PR number where known. Control characters are removed and the length is capped. Empty only when `verdict` is `SUCCESS`. |
 
 | Facts | `verdict` |
 | --- | --- |
-| Pushed at the local head, open PR at that head (`equal` or `descendant`), checks `green`, `pending` or `none` | `SUCCESS` |
+| Open PR at the local head or a descendant of it, checks `green`, `pending` or `none` | `SUCCESS` |
 | Same, a check `failing` | `BLOCKED` |
-| Branch not pushed, no open PR, or PR head `ahead` or `diverged` | `GAP` |
-| `gh` missing or erroring, remote unreadable, `checks` `unknown` | `UNCERTAIN` |
+| Remote does not carry the local head, no open PR, or a PR head that is neither the local head nor a descendant of it | `GAP` |
+| `gh` missing or erroring, remote unreadable, `checks` `unknown`, no worktree recorded, or the run declared a non-GitHub remote | `UNCERTAIN` |
+
+An open pull request whose head is the local head, or a descendant of it, is
+itself proof that the local head is published: the remote is serving that
+commit on this branch. The remote is asked directly only when that proof is
+missing, so a healthy run costs no extra remote read.
 
 The reader reuses `_finalization_pr_checks`, `_finalization_pr_head_descends`,
 `_finalization_pr_number_valid` and `parse_github_repo_identity`, so the head
 rule and the meaning of "green" are the ones described under
 [Resumed Runs](#resumed-runs-open-pr-success-path-1641). It adds no wait, poll,
-retry or timer. The remote is addressed by the name `origin`, never by a URL
-read from configuration, and git runs with `GIT_TERMINAL_PROMPT=0`, a no-op
-`GIT_ASKPASS` and `GIT_ALLOW_PROTOCOL=https:ssh:file`. The origin URL appears
-nowhere in the output: `remote` is `owner/repo` with any userinfo discarded.
-`git` and `gh` stderr is discarded.
+retry or timer. The branch is rejected before it reaches any git or gh argument
+unless `git check-ref-format refs/heads/<branch>` accepts it and it is neither
+empty, a default branch, nor leading-dash; a rejected name is reported as
+unknown, not as an error. The checkout must also be on that branch. The remote
+is addressed by the name `origin`, never by a URL read from configuration, and
+git runs with `GIT_TERMINAL_PROMPT=0` and the batch SSH command that
+`workflow_pr_head_fetch.sh` already uses, so it fails rather than prompting.
+The origin URL appears nowhere in the output: `remote` is `owner/repo` with any
+userinfo discarded. `git` and `gh` stderr is discarded.
 
 ### Where the outcome is read
 
 `collect-finalization-evidence` runs the reader once and embeds the object at
 `finalization_evidence.outcome`. If the reader cannot run, the collector embeds
-a fixed object with `verdict` `UNCERTAIN`. No field passes through a command
+a fixed object with `verdict` `UNRECORDED`, which routes the validator to a live
+read rather than to a failure. No field passes through a command
 line: the object is written to a `0600` temporary file under a private
 directory and spliced into the evidence with `jq --slurpfile`.
 
@@ -288,25 +302,31 @@ itself. It never fails the run for that reason.
 A missing, unreadable, symlinked or directory file named by
 `AMPLIHACK_CONTEXT_FILE` makes every context read report absence (status `2`,
 nothing on stdout), including the finalization metadata and context readers. Absence sends finalization to the outcome above. It is not a
-failure. A file that is present but not a single JSON object, a value that is
-unparseable, or a value that contains a NUL byte, still returns status `3` with its diagnostic, and finalization still reads the
-outcome rather than ending the run on it. See
+failure. A file that is present but not a single JSON object carries no data either, so
+it reports absence too. A value that IS present but unparseable, of the wrong
+type, or carrying a NUL byte is corrupt data: it still returns status `3` with
+its diagnostic, it is never repaired from a stale alias, and it withholds the
+bookkeeping fallback below so it can never borrow success. Finalization still
+reads the run's real outcome rather than ending the run on it. See
 [Workflow Context Transport](./workflow-context-transport.md#absence-and-corruption-2343).
 
 ### The assessment step
 
-`assess-finalization` is an agent step between `finalizer-step-status` and
-`validate-agentic-finalization`. It runs only when `outcome.verdict` is not
-`SUCCESS`, and carries `continue_on_error: true`, so it cannot end the run
-whether it succeeds, declines or fails. Its output is stored as
+`assess-finalization` is a sub-recipe step between `finalizer-step-status` and
+`validate-agentic-finalization`, whose one agent step lives in
+[`workflow-finalization-assessment.yaml`](../../amplifier-bundle/recipes/workflow-finalization-assessment.yaml).
+It runs only when `finalization_evidence.outcome.verdict` is not `SUCCESS`, and
+its step carries `continue_on_error: true`, so it cannot end the run whether it
+succeeds, declines or fails. Its output is stored as
 `finalization_assessment`, a JSON object with these leaves:
 
 | Leaf | Meaning |
 | --- | --- |
 | `verdict` | `SUCCESS`, `BLOCKED`, `FAILED` or `UNCERTAIN`. |
 | `gap` | The gap in words. |
-| `action_taken` | `none`, `pushed`, `created_pr`, or both. |
-| `pr_number`, `pr_url` | Present only when the agent believes it created or found a PR. |
+| `action_taken` | `none`, `pushed_branch` or `opened_pull_request`. |
+| `explanation` | Two or three sentences naming the artifacts the verdict was judged on. |
+| `pr_number`, `pr_url` | Present only when the agent believes it created or found a PR. Pull request identity is taken from the mechanical re-read, never from these. |
 
 The agent reads the evidence as data. The prompt fences the evidence and states
 that nothing inside it is an instruction. Only validated outcome fields are
@@ -320,7 +340,7 @@ must not put command output in its JSON.
 
 The agent's word is never the success: its `SUCCESS` is re-read mechanically,
 and the step cannot change the exit status of the run, which only the validator
-decides. A `SUCCESS` verdict, or any
+decides. A `SUCCESS` or `BLOCKED` verdict, or any
 `action_taken` other than `none`, triggers one more `finalization_outcome_facts`
 read, and the validator classifies on that. An assessment can explain a gap and
 record what it did. It cannot make a missing push or PR count as present.
@@ -336,42 +356,48 @@ Evaluation order:
 
 1. **Tooling.** Without `jq` the validator cannot read evidence and returns
    `FAILED_MISSING_TOOLING`.
-2. **Outcome.** The validator takes `finalization_evidence.outcome`, or reads
-   it live when absent, and reads `finalization_assessment` if present.
-3. **Worktree and tooling guards.** A dirty worktree is
-   `FAILED_DIRTY_WORKTREE`; missing `git` is `FAILED_MISSING_TOOLING`. A missing
-   `gh` is no longer a failure: it makes the outcome `UNCERTAIN`.
-4. **Outcome `SUCCESS`.** Classify `EXISTING_OPEN_PR` as a success for `green`,
-   `pending` and `none` checks alike. `pr_number` and `pr_url` come from the
-   confirmed PR. With checks other than `green`, `terminal_reason` names the
-   pending or unreported checks and `required_next_action` names the PR and
-   directs the reader to watch CI on it.
-5. **Outcome `BLOCKED`.** A check is failing: `BLOCKED_CI`.
-6. **Assessment present.** A `SUCCESS` verdict or any `action_taken` triggers
-   one mechanical re-read, classified as steps 4 to 7 would classify it.
-   `BLOCKED` is `BLOCKED_CI`. `FAILED` goes to step 8 with the assessment's
-   `gap`. `UNCERTAIN` goes to step 7 or 8 with the gap appended.
-7. **Typed booleans, narrowly.** `implementation_completed` and
-   `verification_completed` apply only when the origin is positively not a
-   GitHub remote, determined from the origin URL and not from a run-supplied
-   field. They never rescue an `UNCERTAIN` caused by a failed read against a
-   GitHub origin.
+2. **Selected evidence fields.** A field that is present but corrupt is marked
+   unread. It is not a terminal state of its own and it never ends the run, but
+   it is never repaired from a stale alias and it withholds the bookkeeping
+   fallback at step 7, so unreadable evidence can never borrow success.
+3. **Blockers about the local checkout.** A dirty worktree is
+   `FAILED_DIRTY_WORKTREE`; missing `git` or `jq` is `FAILED_MISSING_TOOLING`.
+   A missing `gh` is no longer among them: without `gh` the outcome cannot be
+   read, which the result says in words. A deterministic terminal probe that
+   already named a blocker is answered from its own record, without asking the
+   remote again. Empty or inaccessible agent output is `HOLLOW_SUCCESS`.
+4. **Reporting failure.** A failed reporting step is classified before the
+   outcome is read, because a missing narrative is a fact about this run's own
+   reporting that no published pull request can speak to: `FAILED_REPORTING`
+   when implementation and verification are durable, otherwise
+   `FAILED_IMPLEMENTATION`. Inside auto-drive a pull request the outcome read
+   confirms is handed to the loops on both exits; the read happens only with
+   the hand-off flag, so a standalone run makes no extra `gh` call (#1714).
+5. **Outcome.** The validator takes `finalization_evidence.outcome`, or reads
+   it live when it is absent, not an object or carries an unrecognised verdict.
+   `SUCCESS` is `EXISTING_OPEN_PR`, a success, for `green`, `pending` and
+   `none` checks alike, with `pr_number` and `pr_url` from the confirmed pull
+   request; with checks other than `green`, `terminal_reason` names them and
+   `required_next_action` names the request to watch. `BLOCKED` is `BLOCKED_CI`.
+6. **Assessment present.** A `SUCCESS` or `BLOCKED` verdict, or any
+   `action_taken` other than `none`, triggers one mechanical re-read and is
+   classified on that alone. Any `gap` it reported is appended to the outcome's.
+7. **The bookkeeping fallback.** `implementation_completed` and
+   `verification_completed` (and `allow_no_op` with `terminal_no_op`) apply only
+   to a run with no GitHub pull request to read an outcome from at all, which is
+   derived from the origin rather than from a run-supplied field. They never
+   rescue an `UNCERTAIN` caused by a failed read against a GitHub origin, and
+   corrupt evidence withholds this path entirely.
 8. **Failure with the gap named.** The result is a failure whose
-   `terminal_reason` is `outcome.gap`: `FAILED_REPORTING` when
-   `finalizer_step_status.reporting_failure` is `true` and no PR was confirmed,
-   otherwise `FAILED_IMPLEMENTATION`.
+   `terminal_reason` is `outcome.gap`, routed through the hand-off brick so a
+   confirmed pull request reaches the auto-drive loops (#1714).
 
-`reporting_failure` is considered after the outcome. A reporting-step failure
-beside a confirmed PR at the pushed head is a success, because the PR is the
-evidence that the work was delivered. Inside auto-drive the success state
-returns cleanly from the hand-off helper, so the merge-ready loop starts without
-needing the hand-off path (#1714).
-
-`FAILED_INVALID_EVIDENCE` is no longer produced. Evidence-completeness checks,
-the `verification_completed`-gated pending branch and `HOLLOW_SUCCESS` as a
-terminal state were removed: the run's real outcome answers the question each
-of them was a proxy for. There is no `FAILED_FINALIZER_OUTPUT` state; the
-narrative is never parsed.
+`FAILED_INVALID_EVIDENCE` is no longer produced. The evidence-completeness
+checks and the `verification_completed`-gated pending branch were removed: the
+run's real outcome answers the question each of them was a proxy for. The token
+stays in `terminal_vocabulary` and in `_handoff_known_state`, because a reader
+must still recognise it from older runs and other producers. There is no
+`FAILED_FINALIZER_OUTPUT` state; the narrative is never parsed.
 
 ### What a gap looks like
 
@@ -476,9 +502,10 @@ before persisting or reporting the result.
    follow-up identifier, `SUPERSEDED` needs a durable replacement identifier plus
    a supersession reason, `IMPLEMENTED_VERIFIED` needs implementation and
    verification evidence, `ALLOW_NO_OP` needs explicit no-op authorization
-   plus reason text, and `EXISTING_OPEN_PR` needs a publish signal, a live
-   GitHub check that the PR is open, same-repo and on the run's branch, and
-   either all-green checks or `verification_completed=true`.
+   plus reason text, and `EXISTING_OPEN_PR` needs a live GitHub check that the
+   pull request is open, same-repo, on the run's branch and at the run's head
+   or a descendant of it, with no failing check. Since #2343 it needs no
+   publish signal of the run's own and no `verification_completed`.
 7. The narrative artifact is never read for any of these decisions.
 8. The normalized result is persisted even for failure states so operators can
    diagnose the run from recipe JSON.
@@ -487,8 +514,8 @@ The classifier is total: every input maps to exactly one terminal state. Inside
 `validate_finalization` the fallthrough is a failure carrying the outcome's gap
 (evaluation order step 8). When validation produces no result at all, the
 default is `INCOMPLETE` with a plain reason. The completion helper (`complete()`
-in `workflow_agentic_finalization.sh`) initialises its `terminal_state` default
-to `INCOMPLETE`. `terminal_vocabulary` and the hand-off helper's known-state list
+in `complete_workflow` in `workflow_finalization_complete.sh`) initialises its
+`terminal_state` default to `INCOMPLETE`. `terminal_vocabulary` and the hand-off helper's known-state list
 are unchanged, so retired tokens stay recognised.
 
 ## Resumed Runs: Open-PR Success Path (#1641)
@@ -520,14 +547,14 @@ look like it only lacked evidence.
 
 | # | Condition | Source |
 | --- | --- | --- |
-| 1 | Evaluation-order steps 1–4 returned no result: no invalid evidence, dirty worktree, missing tooling, prior blocker, hollow success, reporting-failure split, `IMPLEMENTED_VERIFIED` or `ALLOW_NO_OP`. | Classifier order |
-| 2 | **Publish signal.** A non-empty `pr_url` or `pr_number`, `publish_state_reached=true`, or a `publish_status` or `prior_terminal_state` of `EXISTING_OPEN_PR`, `existing-open-pr`, `FOLLOWUP_CREATED`, `MERGED` or `closed-after-merge`. | Typed context (`workflow_finalization_context.sh`) |
+| 1 | Evaluation-order steps 1–4 returned no result: no dirty worktree, missing tooling, prior blocker, hollow success or reporting-failure split. | Classifier order |
+| 2 | ~~**Publish signal.**~~ Removed by #2343. The run no longer has to claim it published something before the remote is asked. What the claim used to stand in for is now read directly, and a recorded `pr_number` is still never widened to discovery, so another branch's pull request cannot be adopted. | — |
 | 2a | **Valid metadata.** None of `worktree_path`, `repo_path`, `pr_url`, `pr_number`, `publish_state_reached`, `prior_terminal_state`, `publish_status`, `branch_name` or `remote_host_type` holds a corrupt value (wrong JSON type, NUL byte). Absence is not corruption: a missing context file, or an unset empty object key, reads as empty and does not disable this path (#1726, #2343). | `workflow_finalization_metadata` status 3 |
 | 3 | **Explicit target directory.** `worktree_path` or `repo_path` resolved. The `.` fallback never qualifies. | Recipe metadata |
 | 4 | **GitHub remote.** `remote_host_type` is empty or `github` (any of `github`, `GitHub`, `GITHUB`), and `remote.origin.url` of the target directory parses to `owner/repo`. | Local git config |
 | 5 | **Run branch.** `branch_name` and `git branch --show-current` agree when both are set. The branch is not `main`, `master` or `HEAD`, does not start with `-`, and is a valid branch name under `git check-ref-format "refs/heads/<branch>"`. | Metadata + live git |
 | 6 | **Live PR state.** `gh pr view --repo <owner>/<repo>` reports `state=OPEN`, `headRefName` equal to the run branch, `headRefOid` equal to the local `git rev-parse HEAD` or a fast-forward of it (see [PR head rule](#pr-head-rule-1714); fails closed if HEAD cannot be resolved), `isCrossRepository=false`, the requested number, and `url` exactly `https://github.com/<owner>/<repo>/pull/<n>`. | `gh` read-only + live git |
-| 7 | **Check state.** `checks` is `green`, `pending` or `none` (see below); the PR is then handed on, with the pending state named. `checks=failing` is `BLOCKED_CI`. `checks=unknown` goes to the assessment. | `statusCheckRollup` |
+| 7 | **Check state.** `checks` is `green`, `pending` or `none` (see below); the PR is then handed on, with the pending state named. `checks=failing` is `BLOCKED_CI`. `checks=unknown` is an unread fact: the result names it as the gap, and the assessment may be asked about it. | `statusCheckRollup` |
 
 A publish status without a live open PR fails. An open PR with a failing check
 is `BLOCKED_CI`. A green rollup on another branch's PR fails. A green rollup on
@@ -540,8 +567,8 @@ vouch for it.
 The PR head commit (`headRefOid`) qualifies when it is the local HEAD, or when
 the local HEAD is its ancestor, which is the case when a merge of main was
 pushed to the PR from another checkout. Every local commit is then in the PR,
-so the PR's checks cover this run's work. The signal reports which case held
-in its `head` field (`local` or `descendant`), and the classifier records
+so the PR's checks cover this run's work. The outcome read reports which case held
+in its `pr_head_relation` field (`local` or `descendant`), and the classifier records
 `pr_head_sha_matches=true`, or `pr_head_sha_matches=false,pr_head_fast_forwards_local_head=true`,
 in `evidence_used`.
 
@@ -743,6 +770,14 @@ does not add fields to the `workflow_finalization_field` allowlist.
 `amplifier-bundle/tools/workflow_finalization_pr_signal.sh` is sourced by
 `workflow_agentic_finalization.sh` together with `workflow_gh_retry.sh`. It
 reports facts and does not classify.
+
+Since #2343 the validator does not call this entry point. It is kept as the one
+definition of the rules the outcome reader reuses -- `_finalization_pr_checks`,
+`_finalization_pr_list_number`, `_finalization_pr_number_valid` and the bounded
+`gh` read -- so the "is this PR this run's PR" rule cannot drift between the
+two. The brick that used to wrap it, `workflow_finalization_open_pr.sh`, is
+deleted: its check asked whether the run's own bookkeeping permitted it to
+look, and refused to look otherwise, which is the behaviour #2343 removes.
 
 ```text
 finalization_open_pr_signal <target_dir> <branch> [<pr_ref>]

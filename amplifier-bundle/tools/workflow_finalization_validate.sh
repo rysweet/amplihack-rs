@@ -18,10 +18,12 @@ validate_finalization() {
   # missing or corrupt context file, an unset typed boolean and an empty
   # narrative are absence of bookkeeping, and absence of bookkeeping is not
   # failure; the outcome read answers what they stood in for. Agent prose is
-  # still never read. The local-checkout blockers (dirty worktree, missing git
-  # or jq, a prior deterministic blocker, hollow agent output) survive, but no
-  # longer outrank a confirmed outcome, and a missing gh is no longer a failure
-  # of its own: without gh the outcome cannot be read, and the result says so.
+  # still never read. The blockers that are about this run rather than its
+  # output -- a dirty worktree, missing git or jq, a prior deterministic
+  # blocker, empty agent output, a failed reporting step -- are unchanged and
+  # still precede the outcome read: no published pull request can answer them.
+  # A missing gh is not among them any more: without gh the outcome cannot be
+  # read, which the result says in words instead of ending the run on it.
   #
   # Checks that are pending, or not reported at all, are no longer gated on
   # this run's own verification_completed (#2784): the pull request standing
@@ -164,7 +166,7 @@ FIELDS
   [ -n "$prior_terminal_state" ] || prior_terminal_state="$evidence_prior_terminal_state"
 
   # 2. Blockers about the local checkout, which no outcome can answer. gh is
-  #    deliberately absent from this list (#2343): see step 3.
+  #    deliberately absent from this list (#2343): see step 4.
   if [ "$evidence_dirty_worktree" = "true" ]; then
     fail_result "FAILED_DIRTY_WORKTREE" "collected evidence reported a dirty worktree" "Commit, stash, or remove uncommitted changes before finalization." "finalization_evidence.git.dirty_worktree=true"
   fi
@@ -267,16 +269,19 @@ FIELDS
   #    the record of what it did.
   apply_finalization_assessment
 
-  # 6. The bookkeeping fallback, for a run that has no GitHub pull request to
-  #    read an outcome from at all: no GitHub origin, a remote the run itself
-  #    declared non-GitHub, or no recorded worktree to look in. Against a
-  #    GitHub origin an unread fact is a gap, never a success, so typed
-  #    completion booleans can never stand in for a push. Corrupt evidence
-  #    withholds this path entirely.
-  if [ "$evidence_corrupt" != "true" ] && [ "$outcome_github_origin" = "false" ]; then
-    if [ "$reporting_failure" != "true" ] && [ "$implementation_completed" = "true" ] && [ "$verification_completed" = "true" ]; then
+  # 6. The bookkeeping fallback. Evidence that could not be read withholds it
+  #    entirely, so an unreadable run can never borrow success from it.
+  if [ "$evidence_corrupt" != "true" ]; then
+    # Typed completion booleans speak only for a run that has no GitHub pull
+    # request to read an outcome from at all: no GitHub origin, a remote the
+    # run itself declared non-GitHub, or no recorded worktree to look in.
+    # Against a GitHub origin an unread fact is a gap, never a success, so
+    # they can never stand in for a push.
+    if [ "$outcome_github_origin" = "false" ] && [ "$implementation_completed" = "true" ] && [ "$verification_completed" = "true" ]; then
       classify_success "IMPLEMENTED_VERIFIED" "implementation and verification evidence is complete, and the finalization worktree has no GitHub remote whose published outcome could be read" "No action required." "implementation_completed=true,verification_completed=true,github_origin=false"
     fi
+    # An explicit no-op declares that there was nothing to publish, which a
+    # missing pull request confirms rather than contradicts.
     if [ "$allow_no_op" = "true" ] && [ "$terminal_no_op" = "true" ]; then
       classify_success "ALLOW_NO_OP" "explicit no-op task with durable allow_no_op evidence" "No action required." "allow_no_op=true,terminal_no_op=true"
     fi

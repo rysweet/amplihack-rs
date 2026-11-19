@@ -202,7 +202,11 @@ fn pending_checks_hand_the_open_pr_on_with_or_without_auto_drive() {
 
     for auto_drive in [true, false] {
         let outcome = validate_after(&fx, &json, auto_drive);
-        assert!(outcome.success(), "auto_drive={auto_drive}\n{}", outcome.describe());
+        assert!(
+            outcome.success(),
+            "auto_drive={auto_drive}\n{}",
+            outcome.describe()
+        );
         assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
         assert_eq!(outcome.field("terminal_success"), "true");
         assert_eq!(outcome.field("pr_number"), "7");

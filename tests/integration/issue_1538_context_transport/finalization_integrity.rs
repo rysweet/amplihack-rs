@@ -1,11 +1,8 @@
 //! Malformed selected evidence must fail before positive completion or no-op.
 //!
-//! #2343 narrowed what that failure is called, not whether it happens. Evidence
-//! the reader cannot parse is no longer a terminal state of its own: the run
-//! classifies on what it actually produced, and when that is nothing, the
-//! unreadable evidence withholds the bookkeeping fallback instead of granting
-//! it. So these cases assert the guarantee this module exists for — unreadable
-//! evidence never borrows success — rather than one token's name.
+//! #2343 narrowed what that failure is called, not whether it happens: the
+//! unreadable evidence withholds the bookkeeping fallback instead of naming a
+//! terminal state of its own, so these cases assert the guarantee itself.
 use super::fixtures::*;
 use serde_json::{Value, json};
 
@@ -120,22 +117,23 @@ fn fixture(evidence: Value, route: usize, noop: bool) -> Fixture {
 fn assert_not_success(f: Fixture) {
     let r = f.finalizer("validate");
     let j = r.json();
+    assert_complete_schema(&j);
+    r.exit(1);
+    assert_eq!(j["terminal_success"], "false", "stderr={}", r.stderr);
+    assert_eq!(j["terminal_failure"], "true");
+    assert_eq!(j["finalizer_output_valid"], "false");
+    for success in ["IMPLEMENTED_VERIFIED", "ALLOW_NO_OP", "EXISTING_OPEN_PR"] {
+        assert_ne!(j["terminal_state"], success, "borrowed success: {j}");
+    }
+}
+
+fn assert_complete_schema(j: &Value) {
     let object = j.as_object().unwrap();
     assert_eq!(object.len(), OUTPUT.len(), "complete schema: {j}");
     for field in OUTPUT {
         assert!(
             object.get(field).is_some_and(Value::is_string),
             "String {field}: {j}"
-        );
-    }
-    r.exit(1);
-    assert_eq!(j["terminal_success"], "false", "stderr={}", r.stderr);
-    assert_eq!(j["terminal_failure"], "true");
-    assert_eq!(j["finalizer_output_valid"], "false");
-    for success in ["IMPLEMENTED_VERIFIED", "ALLOW_NO_OP", "EXISTING_OPEN_PR"] {
-        assert_ne!(
-            j["terminal_state"], success,
-            "unreadable evidence must not borrow success: {j}"
         );
     }
 }
@@ -143,14 +141,7 @@ fn assert_not_success(f: Fixture) {
 fn assert_result(f: Fixture, state: &str, exit: i32) {
     let r = f.finalizer("validate");
     let j = r.json();
-    let object = j.as_object().unwrap();
-    assert_eq!(object.len(), OUTPUT.len(), "complete schema: {j}");
-    for field in OUTPUT {
-        assert!(
-            object.get(field).is_some_and(Value::is_string),
-            "String {field}: {j}"
-        );
-    }
+    assert_complete_schema(&j);
     assert_eq!(
         j["terminal_state"], state,
         "child exit={} stderr={}",
@@ -254,10 +245,12 @@ fn invalid_selected_transport_cannot_borrow_success() {
             Fixture::new().env("RECIPE_VAR_finalization_evidence", raw),
             Fixture::new().env("FINALIZATION_EVIDENCE", raw),
         ] {
-            assert_not_success(f.env("IMPLEMENTATION_COMPLETED", "true")
+            assert_not_success(
+                f.env("IMPLEMENTATION_COMPLETED", "true")
                     .env("VERIFICATION_COMPLETED", "true")
                     .env("ALLOW_NO_OP", "true")
-                    .env("TERMINAL_NO_OP", "true"));
+                    .env("TERMINAL_NO_OP", "true"),
+            );
         }
     }
 }

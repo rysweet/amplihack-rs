@@ -29,8 +29,6 @@ pub use crate::issue_1641_finalization_open_pr::fixture::{
 
 pub const BRICK: &str = "workflow_finalization_handoff.sh";
 pub const HANDOFF_INFO: &str = "INFO: #1714: BLOCKED_CI handed to the merge-ready loop";
-pub const FI_HANDOFF_INFO: &str =
-    "INFO: #1714: FAILED_IMPLEMENTATION handed to the merge-ready loop";
 pub const PR134_URL: &str = "https://github.com/acme/widget/pull/134";
 
 pub fn workspace_root() -> PathBuf {

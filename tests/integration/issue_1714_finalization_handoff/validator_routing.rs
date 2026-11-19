@@ -22,14 +22,20 @@ fn the_validator_routes_its_handoff_exits_through_the_brick() {
     let outcome_at = dispatcher
         .find(". \"$here/workflow_finalization_outcome.sh\"")
         .expect("the dispatcher sources the outcome reader");
-    assert!(outcome_at < validate_at, "outcome reader before validator");
+    let classify_at = dispatcher
+        .find(". \"$here/workflow_finalization_outcome_classify.sh\"")
+        .expect("the dispatcher sources the outcome classifier");
+    assert!(
+        outcome_at < classify_at && classify_at < validate_at,
+        "the outcome reader, then its classifier, then the validator"
+    );
 
     let validator = read(&tool_path("workflow_finalization_validate.sh"));
     assert!(validator.lines().count() <= 300, "validator line budget");
     // Since #2343 the outcome-driven BLOCKED_CI exit lives in the outcome
-    // reader beside the classification it belongs to; every other hand-off
+    // classifier beside the classification it belongs to; every other hand-off
     // exit is still the validator's own, and there are no others.
-    let outcome = read(&tool_path("workflow_finalization_outcome.sh"));
+    let outcome = read(&tool_path("workflow_finalization_outcome_classify.sh"));
     let calls: Vec<&str> = code_lines(&validator)
         .filter(|l| l.contains("finalization_fail_or_handoff"))
         .collect();
@@ -75,6 +81,6 @@ fn the_validator_routes_its_handoff_exits_through_the_brick() {
     assert!(
         outcome_exits.len() == 1
             && outcome_exits[0].contains("finalization_fail_or_handoff \"BLOCKED_CI\""),
-        "the outcome reader's only hand-off exit is its failing-check BLOCKED_CI: {outcome_exits:?}"
+        "the outcome classifier's only hand-off exit is its failing-check BLOCKED_CI: {outcome_exits:?}"
     );
 }

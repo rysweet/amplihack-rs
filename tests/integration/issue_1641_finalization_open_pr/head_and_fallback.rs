@@ -120,7 +120,9 @@ fn valid_pr_number_takes_precedence_over_a_malformed_pr_url() {
     let outcome = fx.validate(&as_refs(&envs));
     assert_failed_implementation(&outcome, "malformed url, no number");
     assert!(
-        outcome.field("terminal_reason").contains("no open pull request"),
+        outcome
+            .field("terminal_reason")
+            .contains("no open pull request"),
         "the result must name the URL check\n{}",
         outcome.describe()
     );
@@ -187,7 +189,9 @@ fn failing_pr_list_is_no_signal() {
     let outcome = fx.validate(&as_refs(&envs));
     assert_failed_implementation(&outcome, "pr list exit 1");
     assert!(
-        outcome.field("terminal_reason").contains("could not be read"),
+        outcome
+            .field("terminal_reason")
+            .contains("could not be read"),
         "{}",
         outcome.describe()
     );
@@ -213,7 +217,9 @@ fn git_dir_target_is_not_a_worktree() {
     assert!(!outcome.success(), "{}", outcome.describe());
     assert_ne!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
     assert!(
-        outcome.field("terminal_reason").contains("not a git worktree"),
+        outcome
+            .field("terminal_reason")
+            .contains("not a git worktree"),
         "{}",
         outcome.describe()
     );

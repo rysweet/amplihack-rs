@@ -61,7 +61,11 @@ fn nonexistent_context_file_sends_the_check_to_the_evidence() {
     let mut envs = finished_env(&fx.repo_path());
     envs.push((
         "AMPLIHACK_CONTEXT_FILE",
-        fx.tmp.path().join("absent/context.json").display().to_string(),
+        fx.tmp
+            .path()
+            .join("absent/context.json")
+            .display()
+            .to_string(),
     ));
 
     assert_hands_pr_on(&fx.validate(&as_refs(&envs)));
@@ -199,7 +203,10 @@ fn typed_success_booleans_cannot_manufacture_success() {
     let mut envs = resumed(&fx);
     envs.push(("IMPLEMENTATION_COMPLETED", "true".to_owned()));
     envs.push(("VERIFICATION_COMPLETED", "true".to_owned()));
-    envs.push(("AGENTIC_FINALIZER_NARRATIVE", "pushed, PR open, CI green".to_owned()));
+    envs.push((
+        "AGENTIC_FINALIZER_NARRATIVE",
+        "pushed, PR open, CI green".to_owned(),
+    ));
 
     let outcome = fx.validate(&as_refs(&envs));
 

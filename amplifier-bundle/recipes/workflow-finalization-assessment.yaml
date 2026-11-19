@@ -85,9 +85,10 @@ steps:
       state, readiness, base or metadata, merging, and closing. If the gap is
       not one of the two above, take no action and say so.
 
-      Do not run `env`, `gh auth token`, or `git config --list`, and do not put
-      the output of any command into your answer. What you return is stored in
-      the run's context and may be logged.
+      Do not run anything that prints the environment, an authentication token,
+      or the repository's stored configuration, and do not put the output of any
+      command into your answer. What you return is stored in the run's context
+      and may be logged.
 
       ## Required output
 

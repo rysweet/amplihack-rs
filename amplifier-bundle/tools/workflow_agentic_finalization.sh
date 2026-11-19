@@ -78,9 +78,11 @@ fi
 . "$here/workflow_gh_retry.sh"
 . "$here/workflow_finalization_pr_signal.sh"
 # #2343: the run's real outcome, read by both collect_evidence and
-# validate_finalization. It reuses the pr-signal helpers above, so it is
-# sourced after them and before the validator's open-PR check below.
+# validate_finalization. The reader reuses the pr-signal helpers above, so it
+# is sourced after them; its classification half follows it and precedes the
+# validator that calls it.
 . "$here/workflow_finalization_outcome.sh"
+. "$here/workflow_finalization_outcome_classify.sh"
 . "$here/workflow_finalization_handoff.sh"
 . "$here/workflow_finalization_validate.sh"
 . "$here/workflow_finalization_complete.sh"

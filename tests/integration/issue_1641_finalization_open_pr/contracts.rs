@@ -71,13 +71,20 @@ fn open_pr_path_uses_only_typed_evidence_and_bounded_read_only_gh() {
             "the outcome reader must reuse `{required}` rather than restate its rule"
         );
     }
+    let classify = tool_text("workflow_finalization_outcome_classify.sh");
+    for (name, text) in [("reader", &outcome), ("classifier", &classify)] {
+        assert!(
+            !text.contains("agentic_finalizer_narrative") && !text.contains("precommit_results"),
+            "the outcome {name} must not read prose or raw precommit reports"
+        );
+    }
     assert!(
-        !outcome.contains("agentic_finalizer_narrative") && !outcome.contains("precommit_results"),
-        "the outcome reader must not read prose or raw precommit reports"
+        classify.contains("EXISTING_OPEN_PR"),
+        "the outcome classifier must classify EXISTING_OPEN_PR"
     );
     assert!(
-        outcome.contains("EXISTING_OPEN_PR"),
-        "the outcome reader must classify EXISTING_OPEN_PR"
+        !outcome.contains("EXISTING_OPEN_PR") && !outcome.contains("terminal_state"),
+        "the outcome reader reports facts; it must name no terminal state"
     );
     let validate = tool_text("workflow_finalization_validate.sh");
     assert!(
