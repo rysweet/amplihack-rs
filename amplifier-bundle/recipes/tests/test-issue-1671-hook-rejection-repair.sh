@@ -7,6 +7,7 @@
 #
 # Sections:
 #   A. stage_workflow_changes (workflow_stage_changes.sh)
+#   A2. private root run/reports stays out of the index (#2839)
 #   B. hook_repair_run usage errors
 #   C. classification of commit and push failures, hook ids
 #   D. the repair loop: verdicts, evaluator inputs, agent inputs, terminal 79
@@ -546,6 +547,189 @@ section_a() {
         fail "A: stage_workflow_changes must succeed with nothing tracked"; sed 's/^/    | /' "${empty}/err" >&2
     fi
     expect_eq "A: first file staged in an empty repository" "$(git -C "${empty}/repo" diff --cached --name-only)" "first.txt"
+}
+
+# =============================================================================
+# A2. private root run/reports (#2839)
+# =============================================================================
+# stage_in <repo> <case-dir>: run the helper, keeping stdout and stderr apart.
+stage_in() {
+    ( cd "$1" && . "${STAGE_HELPER}" && stage_workflow_changes ) >"$2/stage.out" 2>"$2/stage.err"
+}
+# report_entries <repo>: staged non-deletion entries under root run/reports.
+report_entries() {
+    git -C "$1" diff --cached --name-status --no-renames 2>/dev/null \
+        | awk -F'\t' '$1 != "D" && $2 ~ /^run\/reports\// { print }'
+}
+# reports_repo <case-dir>: a fixture with synthetic reports and a source file.
+reports_repo() {
+    new_repo "$1"
+    mkdir -p "$1/repo/src"
+    printf 'fn main() {}\n' > "$1/repo/src/lib.rs"
+    git -C "$1/repo" add src/lib.rs
+    git -C "$1/repo" commit -qm "source"
+}
+write_reports() {
+    mkdir -p "$1/run/reports/20260101-000000-sample" "$1/run/reports/step17e-fixture"
+    printf '{"synthetic": true}\n' > "$1/run/reports/20260101-000000-sample/report.json"
+    printf '{"synthetic": true, "ci": "stale"}\n' > "$1/run/reports/step17e-fixture/results.json"
+}
+expect_reports_intact() {
+    local label="$1" repo="$2"
+    expect_eq "${label}: report bytes kept on disk" \
+        "$(cat "${repo}/run/reports/step17e-fixture/results.json" 2>/dev/null)" '{"synthetic": true, "ci": "stale"}'
+}
+
+section_a2() {
+    need "${STAGE_HELPER}" A2 || return 0
+    local dir repo
+
+    # (a) one source edit beside untracked reports: product-only commit.
+    dir="${WORK}/a2-untracked"; reports_repo "${dir}"; repo="${dir}/repo"
+    printf 'fn main() { println!("x"); }\n' > "${repo}/src/lib.rs"
+    write_reports "${repo}"
+    if stage_in "${repo}" "${dir}"; then pass; else fail "A2(a): helper failed"; fi
+    expect_empty_file "A2(a): nothing on stdout" "${dir}/stage.out"
+    expect_file_contains "A2(a): reports reported as skipped" "${dir}/stage.err" \
+        "stage_workflow_changes: skipped run/reports/step17e-fixture/results.json"
+    git -C "${repo}" commit -qm "product only"
+    expect_eq "A2(a): commit holds only the source change" \
+        "$(git -C "${repo}" show --name-only --format= HEAD)" "src/lib.rs"
+    expect_eq "A2(a): reports remain untracked" \
+        "$(git -C "${repo}" ls-files --others --exclude-standard -- run/reports | wc -l | tr -d ' ')" "2"
+    expect_reports_intact "A2(a)" "${repo}"
+
+    # (b) reports staged by an earlier agent beside unrelated staged source.
+    dir="${WORK}/a2-prestaged"; reports_repo "${dir}"; repo="${dir}/repo"
+    printf 'pub fn extra() {}\n' > "${repo}/src/extra.rs"
+    write_reports "${repo}"
+    git -C "${repo}" add src/extra.rs run/reports
+    expect_ne "A2(b): fixture really staged reports" "$(report_entries "${repo}")" ""
+    if stage_in "${repo}" "${dir}"; then pass; else fail "A2(b): helper failed"; fi
+    expect_empty_file "A2(b): nothing on stdout" "${dir}/stage.out"
+    expect_eq "A2(b): no report entry left in the index" "$(report_entries "${repo}")" ""
+    expect_eq "A2(b): unrelated staged source survives" \
+        "$(git -C "${repo}" diff --cached --name-only --no-renames)" "src/extra.rs"
+    expect_file_contains "A2(b): unstaged path reported" "${dir}/stage.err" \
+        "stage_workflow_changes: unstaged run/reports/step17e-fixture/results.json"
+    expect_reports_intact "A2(b)" "${repo}"
+    local before after
+    before="$(git -C "${repo}" write-tree)"
+    stage_in "${repo}" "${dir}" || fail "A2(b): second run failed"
+    after="$(git -C "${repo}" write-tree)"
+    expect_eq "A2(b): idempotent from the pre-staged state" "${after}" "${before}"
+
+    # (c) an ordinary deletion of previously committed reports still commits.
+    dir="${WORK}/a2-cleanup"; reports_repo "${dir}"; repo="${dir}/repo"
+    write_reports "${repo}"
+    git -C "${repo}" add -f run/reports
+    git -C "${repo}" commit -qm "published by mistake"
+    rm -rf "${repo}/run/reports"
+    if stage_in "${repo}" "${dir}"; then pass; else fail "A2(c): helper failed"; fi
+    git -C "${repo}" commit -qm "remove reports"
+    expect_eq "A2(c): cleanup deletion is recorded" \
+        "$(git -C "${repo}" show --name-status --no-renames --format= HEAD | cut -f1 | sort -u)" "D"
+    expect_eq "A2(c): reports gone from HEAD" \
+        "$(git -C "${repo}" ls-tree -r --name-only HEAD -- run/reports | wc -l | tr -d ' ')" "0"
+
+    # (d) feedback path: reports alone never produce a staged change.
+    dir="${WORK}/a2-feedback"; reports_repo "${dir}"; repo="${dir}/repo"
+    write_reports "${repo}"
+    stage_in "${repo}" "${dir}" || fail "A2(d): helper failed"
+    expect_eq "A2(d): reports only leaves nothing staged" "$(git -C "${repo}" diff --cached --name-only)" ""
+    printf 'pub fn fixed() {}\n' >> "${repo}/src/lib.rs"
+    stage_in "${repo}" "${dir}" || fail "A2(d): helper failed with a source edit"
+    expect_eq "A2(d): feedback commit is product only" \
+        "$(git -C "${repo}" diff --cached --name-only)" "src/lib.rs"
+
+    # (e) an updated, already tracked report beside a source edit.
+    dir="${WORK}/a2-tracked-update"; reports_repo "${dir}"; repo="${dir}/repo"
+    write_reports "${repo}"
+    git -C "${repo}" add -f run/reports
+    git -C "${repo}" commit -qm "tracked pollution"
+    local head_blob
+    head_blob="$(git -C "${repo}" rev-parse HEAD:run/reports/step17e-fixture/results.json)"
+    printf '{"synthetic": true, "ci": "fresh"}\n' > "${repo}/run/reports/step17e-fixture/results.json"
+    printf 'pub fn more() {}\n' >> "${repo}/src/lib.rs"
+    if stage_in "${repo}" "${dir}"; then pass; else fail "A2(e): helper failed"; fi
+    expect_eq "A2(e): only the source edit is staged" "$(git -C "${repo}" diff --cached --name-only)" "src/lib.rs"
+    expect_eq "A2(e): HEAD blob of the report is unchanged in the index" \
+        "$(git -C "${repo}" rev-parse :run/reports/step17e-fixture/results.json)" "${head_blob}"
+    expect_eq "A2(e): updated report bytes kept on disk" \
+        "$(cat "${repo}/run/reports/step17e-fixture/results.json")" '{"synthetic": true, "ci": "fresh"}'
+    before="$(git -C "${repo}" write-tree)"
+    stage_in "${repo}" "${dir}" || fail "A2(e): second run failed"
+    expect_eq "A2(e): idempotent over a tracked report" "$(git -C "${repo}" write-tree)" "${before}"
+
+    # (f) only the root directory is excluded.
+    dir="${WORK}/a2-anchoring"; reports_repo "${dir}"; repo="${dir}/repo"
+    mkdir -p "${repo}/crates/foo/run/reports" "${repo}/run/logs"
+    printf 'x\n' > "${repo}/crates/foo/run/reports/keep.json"
+    printf 'x\n' > "${repo}/src/run_reports.rs"
+    printf 'x\n' > "${repo}/run/reports.rs"
+    printf 'x\n' > "${repo}/run/logs/x"
+    write_reports "${repo}"
+    stage_in "${repo}" "${dir}" || fail "A2(f): helper failed"
+    for p in crates/foo/run/reports/keep.json src/run_reports.rs run/reports.rs run/logs/x; do
+        git -C "${repo}" diff --cached --name-only > "${dir}/staged"
+        expect_file_contains "A2(f): ${p} is staged" "${dir}/staged" "${p}"
+    done
+    expect_eq "A2(f): root reports excluded" "$(git -C "${repo}" diff --cached --name-only | grep -c '^run/reports/' || true)" "0"
+
+    # (g) renames into and within the report directory.
+    dir="${WORK}/a2-rename"; reports_repo "${dir}"; repo="${dir}/repo"
+    write_reports "${repo}"
+    git -C "${repo}" add -f run/reports
+    git -C "${repo}" commit -qm "tracked pollution"
+    git -C "${repo}" mv run/reports/step17e-fixture/results.json run/reports/step17e-fixture/renamed.json
+    git -C "${repo}" mv src/lib.rs run/reports/moved-source.rs
+    stage_in "${repo}" "${dir}" || fail "A2(g): helper failed"
+    expect_eq "A2(g): no added or modified report in the index" "$(report_entries "${repo}")" ""
+
+    # (h) unborn HEAD with a pre-staged report.
+    dir="${WORK}/a2-unborn"; mkdir -p "${dir}"
+    git init -q "${dir}/repo"; repo="${dir}/repo"
+    printf 'first\n' > "${repo}/first.txt"
+    write_reports "${repo}"
+    git -C "${repo}" add first.txt run/reports
+    if stage_in "${repo}" "${dir}"; then pass; else fail "A2(h): helper failed on an unborn HEAD"; sed 's/^/    | /' "${dir}/stage.err" >&2; fi
+    expect_eq "A2(h): only the source file is staged" "$(git -C "${repo}" ls-files --cached)" "first.txt"
+    expect_reports_intact "A2(h)" "${repo}"
+}
+
+# H2. every raw broad `git add -A` publication site is converted (#2839).
+section_h_static_stage_sites() {
+    local f path label code
+    for f in workflow-pr-review workflow-publish workflow-finalize consensus-publish \
+        consensus-pr-feedback quick-change auto-drive-light; do
+        path="${RECIPES}/${f}.yaml"; label="H2 ${f}"
+        need "${path}" H2 || continue
+        code="${WORK}/${f}.code"
+        grep -v '^[[:space:]]*#' "${path}" > "${code}"
+        if grep -nE '(^|[;&|[:space:]])git[[:space:]]+add[[:space:]]+-A' "${code}" >/dev/null; then
+            fail "${label}: raw git add -A remains"
+        else pass; fi
+        expect_file_contains "${label}: stages through the shared helper" "${code}" "stage_workflow_changes"
+    done
+    # Between the two guard calls at the single-line `;`-sequenced sites.
+    for f in workflow-pr-review workflow-finalize consensus-publish consensus-pr-feedback; do
+        path="${RECIPES}/${f}.yaml"
+        local stage guards before=0 after=0 g
+        stage="$(grep -n 'stage_workflow_changes' "${path}" | grep -v ':[[:space:]]*#' | sed -n 1p | cut -d: -f1 || true)"
+        guards="$(grep -n 'artifact-guard --repo . --mode pre-publish' "${path}" | cut -d: -f1 || true)"
+        for g in ${guards}; do
+            [[ -n "${stage}" ]] || break
+            (( g <= stage && stage - g <= 60 )) && before=1
+            (( g >= stage && g - stage <= 5 )) && after=1
+        done
+        if (( before && after )); then pass; else
+            fail "H2 ${f}: stage_workflow_changes (line ${stage:-?}) must sit between artifact-guard calls (${guards//$'\n'/ })"
+        fi
+    done
+    expect_eq "H2 workflow-publish: step-16b stage keeps the hard chain" \
+        "$(grep -cE 'artifact-guard[^|]*&& stage_workflow_changes[^|]*&& amplihack hygiene artifact-guard.*\|\| \{ echo "STOP' "${RECIPES}/workflow-publish.yaml" || true)" "1"
+    expect_eq "H2 auto-drive-light: all four former raw adds converted" \
+        "$(grep -v '^[[:space:]]*#' "${RECIPES}/auto-drive-light.yaml" | grep -c 'stage_workflow_changes' || true)" "4"
 }
 
 # =============================================================================
@@ -2303,6 +2487,7 @@ section_l() {
 )
 
 section_a
+section_a2
 section_b
 section_c
 section_d
@@ -2310,6 +2495,7 @@ section_e
 section_f
 section_g
 section_h_static
+section_h_static_stage_sites
 section_h_dynamic
 section_i
 section_j

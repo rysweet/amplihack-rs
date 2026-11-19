@@ -398,9 +398,24 @@ fn default_workflow_direct_commit_paths_use_safe_pre_commit_handling() {
             ));
         }
 
+        // #2839: staging goes through the shared helper (or the scoped
+        // checkpoint add), and no raw broad add remains outside comments.
+        if !(cmd.contains("stage_workflow_changes")
+            || cmd.contains("git --literal-pathspecs add -A --pathspec-from-file"))
+        {
+            violations.push(format!(
+                "{recipe}: step `{step_id}` must stage through stage_workflow_changes"
+            ));
+        }
+        if cmd.lines().any(|l| {
+            let t = l.trim_start();
+            !t.starts_with('#') && (t.contains("git add -A") || t.contains("&& git add -A"))
+        }) {
+            violations.push(format!("{recipe}: step `{step_id}` has a raw `git add -A`"));
+        }
+
         for required in [
             "set -euo pipefail",
-            "git add -A",
             "git diff --cached --name-only",
             "commit_output_file=$(mktemp",
             "git commit",

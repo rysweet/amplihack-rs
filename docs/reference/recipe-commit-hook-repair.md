@@ -601,25 +601,102 @@ A `target` directory at the top of the repository is always excluded.
 Elsewhere a directory named `target` without `CACHEDIR.TAG`, such as
 `src/target/`, is source and is staged.
 
-and also, at the top of the repository only, when the path is under
-`.claude/runtime/` or `.amplihack/`. An agent session started in the
-worktree, such as a repair round, writes its session log, metrics and code
-graph there; outside amplihack-rs those directories are often not ignored.
+An untracked path is also excluded, at the top of the repository only, when
+it is under `.claude/runtime/`, `.amplihack/` or `run/reports/`. An agent
+session started in the worktree, such as a repair round, writes its session
+log, metrics and code graph under the first two; outside amplihack-rs those
+directories are often not ignored. `run/reports/` holds a run's private
+execution reports, such as CI snapshots and step results. They are evidence
+for the operator, not product source.
+
+The match is anchored to the top of the repository, so `crates/foo/run/reports/keep.json`,
+`run/reports.rs` and `run/logs/x` are source and are staged.
 
 Excluded paths are printed on stderr, one per line, prefixed
 `stage_workflow_changes: skipped `. Files the repository already tracks are
 staged when modified, including a tracked file under `.claude/runtime/` or
 `.amplihack/`.
 
-Untracked paths are passed with `git --literal-pathspecs add
---pathspec-from-file=<list> --pathspec-file-nul`, so a file named `*` or `:(glob)x`
-is treated as a name. On git older than 2.25 the helper falls back to
-`xargs -0 git --literal-pathspecs add --`.
+### Reports that are already staged or tracked
 
-The `artifact-guard --mode pre-publish` calls are unchanged.
-`stage_workflow_changes` now runs between the call before staging and the
-call after it in all three steps, so the second call checks what the helper
-staged. A test covers this for each step; see [Tests](#tests).
+Excluding only untracked files would not be enough. `git add -u` refreshes
+every path already in the index, so a report staged by an earlier agent step,
+or one an earlier commit already tracks, would reach the next commit. After
+`git add -u` and the untracked add, the helper therefore takes the staged
+state of paths under top-level `run/reports/` out of the index:
+
+| State of a report path | Result |
+|---|---|
+| untracked | never staged, printed as `skipped` |
+| staged as a new file | removed from the index |
+| tracked and modified | the index entry is reset to the version in `HEAD` |
+| tracked and deleted | the deletion is staged and commits normally |
+| repository has no commit yet | every staged path under `run/reports/` is removed from the index |
+
+Each path taken out of the index, or reset to `HEAD`, is printed on stderr as
+`stage_workflow_changes: unstaged <path>`. A path is reported as `unstaged` or
+`skipped`, never both: `skipped` is printed only for paths git lists as
+untracked, `unstaged` only for paths in the index. Standard error carries
+paths only, never file contents.
+
+The operation changes the index only. Report files stay on disk with their
+bytes unchanged, and no path outside top-level `run/reports/` is named, so
+unrelated staged source stays staged. Commits that already hold reports are
+not rewritten: the helper keeps new reports and new report edits out of later
+commits, and does nothing about earlier ones.
+
+To remove reports that were published by mistake, take them out of the index
+and commit as usual. The staged deletion passes through because it is neither
+an addition nor a modification; the files stay on disk, where the helper then
+treats them as untracked and prints them as `skipped`.
+
+```bash
+. amplifier-bundle/tools/workflow_stage_changes.sh
+git rm -r --cached run/reports/step17e-fixture
+stage_workflow_changes
+git commit -m "chore: remove private run reports from the tree"
+```
+
+Untracked paths are added with `git --literal-pathspecs add
+--pathspec-from-file=<list> --pathspec-file-nul`, so a file named `*` or
+`:(glob)x` is treated as a name. The `git reset` and `git rm --cached` calls
+that unstage reports take the same `--literal-pathspecs` and read their paths
+from a NUL-separated list. Where a git version predates
+`--pathspec-from-file`, the helper falls back to `xargs -0` with the same
+literal-pathspec command.
+
+### Steps that stage through the helper
+
+Besides the three steps in [Where it applies](#where-it-applies), the
+publication and checkpoint steps below call `stage_workflow_changes` rather
+than a raw `git add -A`: `step-18c-push-feedback-changes` in
+`workflow-pr-review.yaml`, the retry snippet in `workflow-publish.yaml`'s
+`step-16b` prompt, `step-20b-push-cleanup` in `workflow-finalize.yaml`,
+`step9-commit` in `consensus-publish.yaml`, `step12-push-updates` in
+`consensus-pr-feedback.yaml`, `quick-change-commit` in `quick-change.yaml`,
+and `light-precommit` and `light-commit-push` in `auto-drive-light.yaml`.
+
+Each resolves `workflow_stage_changes.sh` through the same search chain as its
+other helpers and exits with status 2 when the bundled helper is missing,
+rather than falling back to a raw add. Each keeps its own chaining: the
+`step-16b` snippet runs without `set -e`, so its guard, staging and second
+guard stay hard-chained to a `|| { echo "STOP: …" >&2; exit 1; }`. The
+`artifact-guard` calls are unchanged (`--mode pre-commit` in `light-precommit`,
+`--mode pre-publish` elsewhere), and staging runs between the call before it
+and the call after it, so the second call checks what the helper staged.
+
+`light-precommit` stages for a commit made two steps later in the same
+worktree, so its three adds use the helper too and the `FILES` list handed to
+`pre-commit run --files` is read from the index after them. That list is the
+index diff against the base commit, so a report an earlier commit on the
+branch already added still appears in it.
+
+When the helper stages nothing, `step-18c-push-feedback-changes`,
+`step-20b-push-cleanup`, `step9-commit` and `step12-push-updates` make no
+commit, because each commits only when `git diff --cached --name-only` is
+non-empty. A report-only change therefore produces no `address review
+feedback` commit, no new head and no further CI run. `quick-change-commit` and
+`light-commit-push` stop with "nothing staged to commit" instead.
 
 ## `hook_repair_run`
 
@@ -692,7 +769,9 @@ stage_workflow_changes
 
 Takes no arguments. Returns 0 on success or the failing `git` exit code.
 Writes nothing to stdout, installs no traps, and running it twice in a row
-stages the same set.
+stages the same set, whether the second run starts from untracked reports or
+from reports an earlier step staged. `skipped` and `unstaged` lines go to
+stderr; see [Staging rules](#staging-rules).
 
 ## Result line
 
@@ -833,7 +912,7 @@ fails closed. This is tracked in #1675.
 
 | Test | Covers |
 |---|---|
-| `amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh` | staging and exclusions, classification, id sanitising, redaction, verdict parsing, refusal cases, usage errors, result-line JSON, and the extracted checkpoint and step-15 bodies against a stub `AMPLIHACK_BIN` |
+| `amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh` | staging and exclusions (including private `run/reports/` files, in temporary repositories with synthetic reports), classification, id sanitising, redaction, verdict parsing, refusal cases, usage errors, result-line JSON, and the extracted checkpoint and step-15 bodies against a stub `AMPLIHACK_BIN` |
 | `tests/integration/issue_1671_hook_rejection_repair_test.rs` | runs the shell test from `cargo test` |
 
 The stub agent is driven by `STUB_AGENT_ACTION`, a space-separated list of
@@ -880,6 +959,8 @@ has its own case in the shell test:
 | a git directory that cannot hold the attempt file still yields redacted stderr and `--output` | [Evidence](#evidence) |
 | `not_fixable_in_code` with no diff and the same output stops without the evaluator; any difference goes to it | [No-progress stop](#no-progress-stop) |
 | lockfiles are staged | [Staging rules](#staging-rules) |
+| private `run/reports/` stays out of the commit whether it is untracked, pre-staged, tracked and rewritten, renamed, or in a repository with no commit yet; a staged deletion still commits; only the top-level directory is excluded | [Reports that are already staged or tracked](#reports-that-are-already-staged-or-tracked) |
+| every step in the list stages through `stage_workflow_changes`, between its two artifact-guard calls, with no raw `git add -A` outside comments | [Steps that stage through the helper](#steps-that-stage-through-the-helper) |
 | step-15's commit hook never sees `PRE_COMMIT_ALLOW_NO_CONFIG`; a checkpoint's does without a config | [Where it applies](#where-it-applies) |
 | a kept `HR_DIR` holds no unredacted agent or evaluator log | [Evidence](#evidence) |
 

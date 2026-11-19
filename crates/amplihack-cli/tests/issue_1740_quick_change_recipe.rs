@@ -335,10 +335,17 @@ fn commit_and_push_re_measure_after_hook_repair() {
         "the push step re-measures before verifying the remote ref"
     );
     let commit = command(&r, "quick-change-commit");
-    let add = commit.find("git add -A").unwrap();
+    assert!(!commit.contains("git add -A"), "no raw broad add (#2839)");
+    let add = commit.find("stage_workflow_changes").unwrap();
     let guard = |from: usize| commit[from..].find("artifact-guard").map(|i| i + from);
-    assert!(guard(0).unwrap() < add, "a guard run before git add -A");
-    assert!(guard(add).is_some(), "a guard run after git add -A (#1528)");
+    assert!(
+        guard(0).unwrap() < add,
+        "a guard run before stage_workflow_changes"
+    );
+    assert!(
+        guard(add).is_some(),
+        "a guard run after stage_workflow_changes (#1528)"
+    );
 }
 
 #[test]
