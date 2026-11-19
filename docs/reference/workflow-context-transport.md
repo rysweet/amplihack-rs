@@ -343,7 +343,7 @@ any extracted String no longer end the run (#2343). The field is treated as
 unread, stale aliases do not repair it, and positive completion and explicit
 no-op do not override it. Finalization classifies on the run's real outcome
 instead. See
-[Outcome-First Classification](./default-workflow-agentic-finalization.md#outcome-first-classification-2343).
+[The Run's Real Outcome](./default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 Newlines and other non-NUL control characters remain data and cannot hide later
 blocker fields.
 

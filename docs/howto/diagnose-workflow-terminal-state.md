@@ -116,7 +116,7 @@ for the full rules.
 Finalization no longer emits this state (#2343); it is still recognised so older
 run records and other producers read correctly. Finalization now classifies on
 the pushed head and the open PR, see
-[Outcome-First Classification](../reference/default-workflow-agentic-finalization.md#outcome-first-classification-2343).
+[The Run's Real Outcome](../reference/default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 The checks below apply to a record that carries the state from an earlier run
 or another producer.
 
@@ -205,7 +205,7 @@ prove closure.
 `HOLLOW_SUCCESS` is unchanged by #2343: empty or inaccessible agent output means
 the run may have produced nothing at all, so it stays a blocker ahead of any
 success classification. See
-[Outcome-First Classification](../reference/default-workflow-agentic-finalization.md#outcome-first-classification-2343).
+[The Run's Real Outcome](../reference/default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 
 `HOLLOW_SUCCESS` means a workflow path looked complete at the process level but
 did not produce meaningful terminal evidence. This often follows setup-only,

@@ -9,8 +9,12 @@
 # bookkeeping whether it had succeeded. The log line before the failure was
 # "open PR for the run branch has checks=pending and verification_completed=false".
 #
-# The fixed steps read the run's real outcome: whether an open same-repo pull
-# request sits at the local head, and that request's CI check class.
+# The fixed steps collect the facts of the run's real outcome -- the commit the
+# remote carries for the branch, the pull request at it, that request's head
+# and its CI check class -- and REPORT the terminal state assess-finalization
+# decided on them. The validation body reaches no verdict of its own, so these
+# cases supply the decision the way the recipe does, through the
+# `finalization_assessment` context key, and one case supplies none.
 #
 # What runs, unchanged: the real `amplihack` binary, through
 # `amplihack recipe run` and the pinned recipe runner, executes the shipped
@@ -43,8 +47,15 @@
 #                                   carrying #7 and a next action naming it
 #   diverged_pr_head_fails          the same branch and push, but #7 sits at an
 #                                   unrelated commit: the run fails, and the
-#                                   reason carries both commit ids and the
-#                                   pull request number
+#                                   record carries both commit ids and the
+#                                   pull request number, so the decision was
+#                                   made against the facts and not against
+#                                   this run's bookkeeping
+#   no_decision_goes_to_recovery    the healthy fixture of the first case with
+#                                   no assessment at all: the step reports that
+#                                   it has no terminal state and exits 1, which
+#                                   is what sends it to its recovery agent. It
+#                                   never fills a verdict in from the facts.
 #
 # Every scenario command runs under `env -i` with an explicit allowlist: no
 # token, GH_* setting, SSH_AUTH_SOCK or GIT_ASKPASS reaches it, and
@@ -175,6 +186,7 @@ context:
   step_recovery_dir: ""
   base_branch: ""
   finalization_evidence: ""
+  finalization_assessment: ""
   workflow_result: ""
 steps:
   - id: "collect-finalization-evidence"
@@ -261,12 +273,23 @@ new_case() {
   printf '%s %s %s\n' "$dir" "$sha" "$pr_head"
 }
 
-# run_case <case dir>: the generated recipe through amplihack and the pinned
-# runner, launched from the case's non-Git folder, under env -i. The run
-# carries NO implementation or verification booleans: the question is whether
-# finalization reads the pull request rather than this run's own bookkeeping.
+# assessment <terminal_state> <pr number>: the answer assess-finalization
+# writes, as the recipe stores it.
+assessment() {
+  jq -nc --arg s "$1" --arg pr "$2" \
+    '{terminal_state: $s, action_taken: "none", pr_number: $pr,
+      reason: ("assess-finalization decided " + $s),
+      next_action: ("See pull request #" + $pr)}'
+}
+
+# run_case <case dir> [<assessment json>]: the generated recipe through
+# amplihack and the pinned runner, launched from the case's non-Git folder,
+# under env -i. The run carries NO implementation or verification booleans: the
+# question is whether finalization reports the decision made on the pull
+# request rather than reaching one from this run's own bookkeeping. With no
+# assessment argument the run carries no decision at all.
 run_case() {
-  local dir="$1" setup
+  local dir="$1" assessed="${2-}" setup
   setup="$(jq -nc --arg p "$dir/clone" '{worktree_path: $p}')" || return 1
   ( cd "$dir/launch" && exec env -i HOME="$dir/home" PATH="$CASE_PATH" TERM=dumb LANG=C \
       TMPDIR="$dir/tmp" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
@@ -282,6 +305,7 @@ run_case() {
       "$BIN" recipe run "$WORK/finalize-qa.yaml" -w "$dir/launch" --no-detach \
       -c "worktree_setup=$setup" -c "repo_path=$dir/clone" -c "branch_name=$BRANCH" \
       -c "finalizer_step_status={\"status\":\"ok\",\"reporting_failure\":\"false\"}" \
+      -c "finalization_assessment=$assessed" \
       -c "pr_url=https://github.com/owner/repo/pull/7" ) </dev/null >"$dir/stdout" 2>"$dir/stderr"
 }
 
@@ -314,7 +338,7 @@ expect_exit() {
 
 # --- case A: pull request open at the pushed head, checks still pending ------
 if read -r dir _local_sha _pr_sha <<<"$(new_case pending local)"; then
-  run_case "$dir"
+  run_case "$dir" "$(assessment EXISTING_OPEN_PR 7)"
   rc=$?
   problems=()
   [ "$rc" -eq 0 ] || problems+=("recipe run exit code $rc")
@@ -340,7 +364,7 @@ fi
 
 # --- case B: the pull request sits at an unrelated commit --------------------
 if read -r dir local_sha pr_sha <<<"$(new_case diverged unrelated)"; then
-  run_case "$dir"
+  run_case "$dir" "$(assessment FAILED_IMPLEMENTATION 7)"
   rc=$?
   problems=()
   [ "$rc" -eq 0 ] || problems+=("recipe run exit code $rc")
@@ -349,13 +373,16 @@ if read -r dir local_sha pr_sha <<<"$(new_case diverged unrelated)"; then
   expect_exit "$dir" 1
   state="$(field "$dir" terminal_state)"
   case "$state" in EXISTING_OPEN_PR|IMPLEMENTED_VERIFIED|ALLOW_NO_OP) problems+=("a diverged pull request head reported success state $state") ;; esac
-  reason="$(field "$dir" terminal_reason)"
-  for fact in "$local_sha" "$pr_sha" "7"; do
-    case "$reason" in *"$fact"*) ;; *) problems+=("terminal_reason does not carry '$fact': $reason") ;; esac
+  # The facts the step gathered, not the sentence the assessment wrote: both
+  # commit ids and the pull request number have to be in the record, or the
+  # decision was not reported against what the run produced.
+  evidence="$(field "$dir" evidence_used)"
+  for fact in "$local_sha" "$pr_sha" "outcome.pr=7"; do
+    case "$evidence" in *"$fact"*) ;; *) problems+=("evidence_used does not carry '$fact': $evidence") ;; esac
   done
   no_mutation "$dir"
   if [ "${#problems[@]}" -eq 0 ]; then
-    pass "diverged_pr_head_fails - the reason carries both commit ids and the pull request number"
+    pass "diverged_pr_head_fails - the record carries both commit ids and the pull request number"
   else
     flunk "diverged_pr_head_fails: ${problems[*]}" "$dir"
   fi
@@ -364,8 +391,35 @@ else
   [ -f "$WORK/case-diverged/setup.log" ] && tail -n 10 "$WORK/case-diverged/setup.log" | sed 's/^/    setup: /'
 fi
 
+# --- case C: the healthy fixture, with nothing deciding the terminal state ---
+if read -r dir local_sha _pr_sha <<<"$(new_case nodecision local)"; then
+  run_case "$dir"
+  rc=$?
+  problems=()
+  [ "$rc" -eq 0 ] || problems+=("recipe run exit code $rc")
+  expect_field "$dir" terminal_state FAILED_MISSING_TERMINAL_EVIDENCE
+  expect_field "$dir" terminal_success false
+  expect_exit "$dir" 1
+  reason="$(field "$dir" terminal_reason)"
+  case "$reason" in *"no terminal state"*) ;; *) problems+=("terminal_reason does not name the missing decision: $reason") ;; esac
+  # The facts were still gathered; only the decision is missing.
+  evidence="$(field "$dir" evidence_used)"
+  for fact in "$local_sha" "outcome.pr=7" "outcome.checks=pending"; do
+    case "$evidence" in *"$fact"*) ;; *) problems+=("evidence_used does not carry '$fact': $evidence") ;; esac
+  done
+  no_mutation "$dir"
+  if [ "${#problems[@]}" -eq 0 ]; then
+    pass "no_decision_goes_to_recovery - the step reports no terminal state and exits 1"
+  else
+    flunk "no_decision_goes_to_recovery: ${problems[*]}" "$dir"
+  fi
+else
+  flunk "no_decision_goes_to_recovery: cannot set up the case" "$WORK/case-nodecision"
+  [ -f "$WORK/case-nodecision/setup.log" ] && tail -n 10 "$WORK/case-nodecision/setup.log" | sed 's/^/    setup: /'
+fi
+
 echo "cases passed: $passed"
-if [ "$fail" -eq 0 ] && [ "$passed" -eq 2 ]; then
+if [ "$fail" -eq 0 ] && [ "$passed" -eq 3 ]; then
   echo "issue 2343 finalization outcome contract green"
   echo "ALL_CASES_PASSED"
   exit 0

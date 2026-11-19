@@ -13,10 +13,17 @@ description: >
   repository and a clone on the run branch, under env -i with a fresh HOME. A
   stub gh, first on PATH, holds pull request #7 with a check still in progress;
   nothing reaches GitHub and no mutating call is answered. The run carries no
-  implementation or verification booleans at all. It checks that a pull request
-  open at the pushed head ends EXISTING_OPEN_PR carrying #7, and that the same
-  pull request sitting at an unrelated commit fails with both commit ids and the
-  pull request number in the reason. CI's Install Smoke Test job runs the driver
+  implementation or verification booleans at all. The shipped validation body
+  reaches no verdict of its own since #2809: it reports the terminal state
+  assess-finalization decided, so each case supplies that decision the way the
+  recipe does, through the finalization_assessment context key. It checks that
+  a pull request open at the pushed head ends EXISTING_OPEN_PR carrying #7;
+  that the same pull request sitting at an unrelated commit fails with both
+  commit ids and the pull request number in the record, so the decision was
+  reported against the facts; and that the healthy fixture with no assessment
+  at all ends FAILED_MISSING_TERMINAL_EVIDENCE and exits 1, which is what sends
+  the step to its recovery agent rather than letting it fill a verdict in from
+  the facts. CI's Install Smoke Test job runs the driver
   script directly against the binary it installs; CI does not run gadugi-test,
   so this file is for running the same cases through gadugi-test by hand.
 version: "1.0"
@@ -60,3 +67,8 @@ assertions:
     params:
       target: stdout
       expected: "PASS: diverged_pr_head_fails - "
+  - name: no-decision-goes-to-recovery
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: no_decision_goes_to_recovery - "

@@ -121,17 +121,18 @@ collect_evidence() {
     gh_required="true"
   fi
 
-  # #2343: what the run actually produced. The reader always exits 0 and
+  # #2343: the facts of what the run produced. The reader always exits 0 and
   # always writes one JSON object, so this never aborts collection; when it
-  # cannot run at all the evidence carries an UNRECORDED outcome and the
-  # validator reads the outcome live instead. The object is spliced in from a
-  # private 0600 file, so none of its fields pass through argv.
+  # cannot run at all the evidence carries an empty outcome and the validator
+  # reads the facts live instead. The object is spliced in from a private 0600
+  # file, so none of its fields pass through argv.
   outcome_tmp=""
   outcome_tmp="$(mktemp "${TMPDIR:-/tmp}/workflow-finalization-outcome.XXXXXX" 2>/dev/null)" || outcome_tmp=""
   if [ -n "$outcome_tmp" ]; then
     chmod 600 "$outcome_tmp" 2>/dev/null || :
     if declare -F finalization_outcome_facts >/dev/null 2>&1; then
       finalization_outcome_facts "$target_dir" "$branch_name" "${pr_url:-$pr_number}" \
+        "$(workflow_finalization_metadata remote_host_type || :)" \
         > "$outcome_tmp" 2>/dev/null || :
     fi
     [ -s "$outcome_tmp" ] || { rm -f -- "$outcome_tmp"; outcome_tmp=""; }
@@ -237,10 +238,9 @@ collect_evidence() {
       },
       outcome: (
         if ($outcome | length) == 1 and ($outcome[0] | type) == "object"
-           and ($outcome[0].verdict | type) == "string"
+           and ($outcome[0].local_head | type) == "string"
         then $outcome[0]
-        else {schema_version: 1, verdict: "UNRECORDED",
-              gap: "the run outcome reader did not run during evidence collection"}
+        else {}
         end
       )
     }'

@@ -267,13 +267,20 @@ in every autodrive recipe that wraps a step: `auto-drive-to-merge`,
 `autodrive-merge-loop` and `autodrive-merge-round`. The quoting is required,
 because the value is a path chosen by the enclosing run.
 
-`validate-agentic-finalization` is guarded because a real finalization failure
-(nothing pushed, no PR, a PR at another head, failing CI) should be recoverable.
-A finished run no longer reaches the guard in error: the step reads the pushed
-head, the open PR and its checks, and reports success with the PR handed on when
-CI is still pending. The new conditional `assess-finalization` step runs with
-`continue_on_error: true` and takes no recovery guard, because it cannot end the
-run. See [Outcome-First Classification](./default-workflow-agentic-finalization.md#outcome-first-classification-2343).
+`validate-agentic-finalization` is recovered with `--essential
+--stop-on-handoff` rather than `--guard`, because a real finalization failure
+(nothing pushed, no PR, a PR at another head, failing CI) should be repairable
+and not merely reportable. `--guard` withholds `retry_after_repair`, so the
+recovery agent could only stop; without it the agent may fix the run's outcome
+and validate again, or hand off with the reason. A finished run no longer
+reaches recovery in error: the step reports the terminal state
+`assess-finalization` decided on the pushed head, the open pull request and its
+checks, which is a success with the request handed on when CI is still pending.
+`assess-finalization` runs with `continue_on_error: true` and takes no recovery
+guard of its own; when it decides nothing, the validator reports that it has no
+terminal state and leaves its own step failing, which is where recovery picks
+the run up. See
+[The Run's Real Outcome](./default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 
 No step in `workflow-prep` or `workflow-design` reads the key, and both persist
 it regardless. That is the point of the entry rather than an oversight: the

@@ -136,7 +136,7 @@ it is not a completed code-change task.
 > classification. What did change is the run beside it: one whose head is
 > pushed and whose pull request is open is no longer reported as a failure for
 > want of bookkeeping. See
-> [Outcome-First Classification](../reference/default-workflow-agentic-finalization.md#outcome-first-classification-2343).
+> [The Run's Real Outcome](../reference/default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 
 If earlier phases exit `0` after empty agent output, inaccessible-codebase
 messages, or setup-only progress, finalization makes the overall recipe fail:

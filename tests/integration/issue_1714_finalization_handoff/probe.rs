@@ -119,16 +119,22 @@ pub(super) fn probe_json(outcome: &Outcome) -> Value {
     serde_json::from_str(line).expect("probe JSON")
 }
 
-/// The validator after the probe, with the probe's result as `terminal_state`.
-pub(super) fn validate_after(fx: &Fixture, probe: &Value, handoff: bool) -> Outcome {
+/// The validator after the probe, with the probe's result as `terminal_state`
+/// and the state `assess-finalization` decided on the published outcome. A
+/// probe state the validator answers from its own record (BLOCKED_CI and the
+/// other deterministic blockers) is reached before any assessment is read, so
+/// `decided` is ignored there; pass the state the assessment would return.
+pub(super) fn validate_after(fx: &Fixture, probe: &Value, handoff: bool, decided: &str) -> Outcome {
     let repo = fx.repo_path();
     let probe = probe.to_string();
+    let assessed = assessment(decided, "none", "7").1;
     let mut envs = vec![
         ("RECIPE_VAR_repo_path", repo.as_str()),
         ("RECIPE_VAR_branch_name", BRANCH),
         ("RECIPE_VAR_pr_url", PR_URL),
         ("RECIPE_VAR_terminal_state", probe.as_str()),
         ("RECIPE_VAR_finalizer_step_status", r#"{"status":"ok"}"#),
+        ("RECIPE_VAR_finalization_assessment", assessed.as_str()),
     ];
     if handoff {
         envs.push(FLAG);
@@ -182,7 +188,7 @@ fn a_merge_already_on_the_pr_before_finalize_ends_existing_open_pr() {
             local,
             "the probe's fetch writes no remote-tracking ref"
         );
-        let outcome = validate_after(&fx, &json, false);
+        let outcome = validate_after(&fx, &json, false, "EXISTING_OPEN_PR");
         assert!(outcome.success(), "named={named}\n{}", outcome.describe());
         assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
         assert_eq!(outcome.field("pr_number"), "7");
@@ -201,7 +207,7 @@ fn pending_checks_hand_the_open_pr_on_with_or_without_auto_drive() {
     let json = assert_probe_continues(&probe(&fx, true, true), "pending");
 
     for auto_drive in [true, false] {
-        let outcome = validate_after(&fx, &json, auto_drive);
+        let outcome = validate_after(&fx, &json, auto_drive, "EXISTING_OPEN_PR");
         assert!(
             outcome.success(),
             "auto_drive={auto_drive}\n{}",
@@ -226,8 +232,11 @@ fn a_failing_check_is_blocked_ci_from_the_probe_and_handed_off() {
     );
     let json = probe_json(&probe(&fx, true, true));
     assert_eq!(json["terminal_state"], "BLOCKED_CI");
-    let outcome = validate_after(&fx, &json, true);
+    // The probe's own BLOCKED_CI is answered from its record, before any
+    // assessment is read: an assessment claiming success cannot override it.
+    let outcome = validate_after(&fx, &json, true, "EXISTING_OPEN_PR");
     assert!(outcome.success(), "{}", outcome.describe());
     assert_eq!(outcome.field("terminal_state"), "BLOCKED_CI");
+    assert_eq!(outcome.field("terminal_success"), "false");
     assert_eq!(outcome.field("handoff"), "merge_ready_loop");
 }

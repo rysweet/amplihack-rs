@@ -319,13 +319,12 @@ steps:
       bullet points. There is no required schema, no required keys, and no
       machine contract — write for a human reader.
 
-      The evidence carries the run's real outcome under `outcome`: whether the
-      remote carries this run's head, whether a pull request is open at it, and
-      that request's CI checks. When `outcome.gap` names a gap, say so plainly.
-      Name these durable states too when the evidence shows them:
-      a dirty worktree, a closed-unmerged PR,
-      missing tooling for the selected path, failed CI,
-      and hollow success where output merely looked successful.
+      The evidence carries the facts of the run's outcome under `outcome`: the
+      commit the remote carries for the branch, the pull request at it and that
+      request's CI checks. When `outcome.unread` names a fact that could not be
+      read, say so plainly. Name these durable states too when the evidence
+      shows them: a dirty worktree, a closed-unmerged PR, missing tooling for
+      the selected path, failed CI, and hollow success.
     output: "agentic_finalizer_narrative"
   - id: "finalizer-step-status"
     type: "bash"
@@ -358,29 +357,26 @@ steps:
       jq -nc --arg status "$status" --arg reporting_failure "$reporting_failure" \
         '{status: $status, reporting_failure: $reporting_failure}'
     output: "finalizer_step_status"
-  - id: "assess-finalization"  # judgement, not a gate (#2809); the skipped verdicts and this step's continue_on_error are explained in docs/reference/default-workflow-agentic-finalization.md#the-assessment-step
+  - id: "assess-finalization"  # decides the terminal state (#2343, #2809); runs on every outcome, see docs/reference/default-workflow-agentic-finalization.md#the-assessment-step
     type: "recipe"
     recipe: "workflow-finalization-assessment"
     continue_on_error: true
-    condition: "finalization_evidence and finalization_evidence.outcome and finalization_evidence.outcome.verdict != 'SUCCESS' and finalization_evidence.outcome.verdict != 'BLOCKED'"
-
   - id: "validate-agentic-finalization"
     type: "bash"
     parse_json: true
     command: |
       IFS= read -r -d '' STEP_BODY <<'STEP_RECOVERY_BODY' || : # #2539: docs/reference/step-failure-recovery.md
       set -euo pipefail
-      # Issue #2343 contract: this step reports the run's real outcome, read from
-      # finalization_evidence and the typed finalizer_step_status, never from the
-      # agent narrative. Vocabulary: EXISTING_OPEN_PR (open at the run's head,
-      # green or waiting on CI), BLOCKED_CI, IMPLEMENTED_VERIFIED, ALLOW_NO_OP,
-      # FAILED_REPORTING, FAILED_IMPLEMENTATION (the gap, named), FAILED_DIRTY_WORKTREE,
-      # FAILED_MISSING_TOOLING, FAILED_MEANINGFUL_DIFF, FAILED_PR_METADATA_UNAVAILABLE.
-      # A non-success classification ends the run with exit 1 (fail closed).
+      # Issue #2343 contract: this step REPORTS the terminal state
+      # assess-finalization decided on the collected facts; it derives none of
+      # its own and never reads the agent narrative. The vocabulary is in
+      # workflow_finalization_result.sh. A non-success ends the run with exit 1;
+      # no decision at all leaves the step failing for its recovery agent,
+      # which repairs and validates again, or stops with the reason.
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
       bash "$FINALIZER_HELPER" validate
       STEP_RECOVERY_BODY
-      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --guard --dir "$RECIPE_VAR_step_recovery_dir" --goal "Validate the finalization evidence of the workflow for PR ${RECIPE_VAR_pr_number:-unknown}" -- bash -c "$STEP_BODY" validate-agentic-finalization
+      [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" validate-agentic-finalization; exec amplihack orch helper step-recovery run --step-id validate-agentic-finalization --essential --stop-on-handoff --dir "$RECIPE_VAR_step_recovery_dir" --goal "Report the terminal state assess-finalization decided for the workflow of PR ${RECIPE_VAR_pr_number:-unknown}, repairing the run's outcome if it is the gap" -- bash -c "$STEP_BODY" validate-agentic-finalization
     output: "workflow_result"
   - id: "step-recovery-report"  # #2539: a recorded handoff ends the run here with exit 81; with recovery off the output says so
     type: "bash"

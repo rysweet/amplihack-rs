@@ -24,7 +24,8 @@ use tempfile::TempDir;
 use crate::isolated_amplihack::isolated;
 use crate::issue_1641_finalization_open_pr::fixture::LEAK_MARKER;
 pub use crate::issue_1641_finalization_open_pr::fixture::{
-    BRANCH, Fixture, Outcome, PR_URL, as_refs, check_run, green_rollup, open_pr, resumed_env,
+    BRANCH, Fixture, Outcome, PR_URL, as_refs, assessment, check_run, green_rollup, open_pr,
+    resumed_env,
 };
 
 pub const BRICK: &str = "workflow_finalization_handoff.sh";

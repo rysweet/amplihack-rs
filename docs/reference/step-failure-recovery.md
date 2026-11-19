@@ -70,7 +70,7 @@ record is an ordinary failure.
 | `autodrive-merge-loop` | `step-03-finalize` (sub-recipe), recovered by `step-03r-finalize-recovery` only when the loop asked for finalisation | `--already-failed --essential` |
 | `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff --no-repair` |
 | `workflow-finalize` | `step-21-pr-ready` | `--essential --stop-on-handoff` |
-| `workflow-finalize` | `validate-agentic-finalization` | `--guard` |
+| `workflow-finalize` | `validate-agentic-finalization` | `--essential --stop-on-handoff` |
 
 Report steps: `workflow-finalize` `step-recovery-report` (before
 `workflow-complete`), `auto-drive-to-merge` `autodrive-report`, and
@@ -347,7 +347,7 @@ has: a branch that was not pushed, no open PR, a PR at a different head, a
 failing check, a dirty worktree or missing `git`/`jq`. A missing or unreadable
 context file, an unset empty object key and pending CI no longer produce a
 failure, so they never reach the guard (#2343, #1726). See
-[Outcome-First Classification](./default-workflow-agentic-finalization.md#outcome-first-classification-2343).
+[The Run's Real Outcome](./default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 
 ## Recovery directory
 

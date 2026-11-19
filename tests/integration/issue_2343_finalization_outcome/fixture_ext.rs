@@ -54,6 +54,7 @@ impl Fixture {
     pub fn gh_pr_at(&self, head: &str, rollup: Value) {
         let mut body = open_pr(rollup);
         body["headRefOid"] = json!(head);
+        body["isDraft"] = json!(false);
         self.gh_view(&body);
         self.gh_list(&json!([{"number": 7, "url": PR_URL, "isCrossRepository": false}]));
     }
@@ -68,6 +69,12 @@ pub fn pending_rollup() -> Value {
     json!([check_run("IN_PROGRESS", Value::Null)])
 }
 
+/// `green_rollup` under a name the local modules can import without pulling
+/// the whole #1641 builder surface into scope.
+pub fn green_rollup_for_tests() -> Value {
+    crate::issue_1641_finalization_open_pr::builders::green_rollup()
+}
+
 pub fn failing_rollup() -> Value {
     json!([check_run("COMPLETED", json!("FAILURE"))])
 }
@@ -78,11 +85,6 @@ pub fn finished_env(repo: &str) -> Vec<(&'static str, String)> {
     let mut envs = crate::issue_1641_finalization_open_pr::builders::resumed_env(repo);
     envs.push(("PR_URL", PR_URL.to_owned()));
     envs
-}
-
-/// First 12 characters, tolerant of an abbreviated SHA in the message.
-pub fn short(sha: &str) -> &str {
-    &sha[..12]
 }
 
 /// A credential-bearing origin URL. `parse_github_repo_identity` accepts
@@ -110,24 +112,24 @@ impl Fixture {
     }
 }
 
-/// The one sentence an assessment is allowed to contribute. Its presence in a
-/// result proves the record was read, so a case about what the assessment
-/// cannot do is not passing merely because the record was ignored.
-pub const ASSESSMENT_GAP: &str = "gh would not answer for this branch";
+/// A run whose assessment decided `terminal_state` for pull request `pr`.
+pub fn decided(fx: &Fixture, terminal_state: &str, pr: &str) -> Vec<(&'static str, String)> {
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(
+        crate::issue_1641_finalization_open_pr::builders::assessment(terminal_state, "none", pr),
+    );
+    envs
+}
 
-/// The assessment record the agentic step would have written, as the recipe
-/// stores it. The validator must treat it as an explanation, never as proof.
-pub fn assessment_env(verdict: &str, action: &str) -> (&'static str, String) {
-    (
-        "RECIPE_VAR_finalization_assessment",
-        json!({
-            "verdict": verdict,
-            "action_taken": action,
-            "gap": ASSESSMENT_GAP,
-            "explanation": "pushed the branch and opened the pull request",
-            "pr_number": "7",
-            "pr_url": PR_URL,
-        })
-        .to_string(),
-    )
+/// The same, for a run that recorded no pull request of its own.
+pub fn decided_resumed(
+    fx: &Fixture,
+    terminal_state: &str,
+    pr: &str,
+) -> Vec<(&'static str, String)> {
+    let mut envs = crate::issue_1641_finalization_open_pr::builders::resumed_env(&fx.repo_path());
+    envs.push(
+        crate::issue_1641_finalization_open_pr::builders::assessment(terminal_state, "none", pr),
+    );
+    envs
 }
