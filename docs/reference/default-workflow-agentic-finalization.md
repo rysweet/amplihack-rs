@@ -315,9 +315,15 @@ reads the run's real outcome rather than ending the run on it. See
 `assess-finalization` is a sub-recipe step between `finalizer-step-status` and
 `validate-agentic-finalization`, whose one agent step lives in
 [`workflow-finalization-assessment.yaml`](../../amplifier-bundle/recipes/workflow-finalization-assessment.yaml).
-It runs only when `finalization_evidence.outcome.verdict` is not `SUCCESS`, and
-its step carries `continue_on_error: true`, so it cannot end the run whether it
-succeeds, declines or fails. Its output is stored as
+It runs only on an outcome the mechanical read did not settle: when
+`finalization_evidence.outcome.verdict` is neither `SUCCESS` nor `BLOCKED`. Both
+of those are settled, and a `BLOCKED` outcome is a pull request already open at
+the run's head, so neither of the agent's two permitted actions applies and
+`validate-agentic-finalization` exits on `BLOCKED_CI` in
+`classify_confirmed_outcome` without ever reading an assessment. `GAP` and
+`UNCERTAIN` run, as does an outcome the reader never recorded. The step carries
+`continue_on_error: true`, so it cannot end the run whether it succeeds,
+declines or fails. Its output is stored as
 `finalization_assessment`, a JSON object with these leaves:
 
 | Leaf | Meaning |

@@ -358,11 +358,11 @@ steps:
       jq -nc --arg status "$status" --arg reporting_failure "$reporting_failure" \
         '{status: $status, reporting_failure: $reporting_failure}'
     output: "finalizer_step_status"
-  # Judgement, not a gate (#2809): it runs only on an outcome the mechanical read could not settle, and never ends the run.
+  # Judgement, not a gate (#2809): it runs only on an outcome the mechanical read could not settle, and never ends the run. SUCCESS and BLOCKED are both settled, so neither pays for the model call; see default-workflow-agentic-finalization.md#the-assessment-step.
   - id: "assess-finalization"
     type: "recipe"
     recipe: "workflow-finalization-assessment"
-    condition: "finalization_evidence and finalization_evidence.outcome and finalization_evidence.outcome.verdict != 'SUCCESS'"
+    condition: "finalization_evidence and finalization_evidence.outcome and finalization_evidence.outcome.verdict != 'SUCCESS' and finalization_evidence.outcome.verdict != 'BLOCKED'"
 
   - id: "validate-agentic-finalization"
     type: "bash"
