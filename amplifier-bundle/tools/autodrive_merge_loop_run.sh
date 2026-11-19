@@ -148,9 +148,9 @@ fi
 [ -n "$KEPT" ] || printf 'NOTICE: the loop driver output could not be kept in %s (the state folder is missing, is a link, is owned by another user or is not writable): this log is the only account of it [autodrive-merge-loop]\n' "$DIR" >&2
 # The copy is made here, by this shell, and not by `tee`. Where the host's
 # coreutils is the uutils implementation — Ubuntu 25.10 ships it as the
-# default, so `/usr/bin/tee` is uutils 0.12.0 on the factory hosts — `tee`
-# aborts part-way through any input larger than one pipe buffer, roughly one
-# run in ten:
+# default, and `/usr/bin/tee` was uutils 0.12.0 on the host this was found on,
+# with no GNU `tee` installed at all — `tee` aborts part-way through any input
+# larger than one pipe buffer, roughly one run in ten:
 #   thread 'main' panicked at src/uu/tee/src/tee.rs:188:21:
 #   assertion `left == right` failed: 2nd pipe should have enough spare
 # and the bytes it has already read die with it, so the copy AND this step's
