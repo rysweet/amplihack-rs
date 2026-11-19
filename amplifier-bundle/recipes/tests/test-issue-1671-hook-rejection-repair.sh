@@ -672,11 +672,11 @@ section_a2() {
     printf 'x\n' > "${repo}/run/logs/x"
     write_reports "${repo}"
     stage_in "${repo}" "${dir}" || fail "A2(f): helper failed"
+    git -C "${repo}" diff --cached --name-only > "${dir}/staged"
     for p in crates/foo/run/reports/keep.json src/run_reports.rs run/reports.rs run/logs/x; do
-        git -C "${repo}" diff --cached --name-only > "${dir}/staged"
         expect_file_contains "A2(f): ${p} is staged" "${dir}/staged" "${p}"
     done
-    expect_eq "A2(f): root reports excluded" "$(git -C "${repo}" diff --cached --name-only | grep -c '^run/reports/' || true)" "0"
+    expect_eq "A2(f): root reports excluded" "$(grep -c '^run/reports/' "${dir}/staged" || true)" "0"
 
     # (g) renames into and within the report directory.
     dir="${WORK}/a2-rename"; reports_repo "${dir}"; repo="${dir}/repo"
