@@ -52,12 +52,12 @@
   "step-failure-recovery": "5e84fab0b9eb91be",
   "verification-workflow": "928a87f44f1c2ad6",
   "workflow-design": "7c6a713c204f5fec",
-  "workflow-finalize": "ebaf79ccc1bfb1ac",
+  "workflow-finalize": "782b1938227cadd8",
   "workflow-pr-review": "c83294abc7fd2a6a",
   "workflow-precommit-test": "8c3b1cd6f23f3e76",
   "workflow-prep": "c51fc64baa445a29",
   "workflow-publish": "424bb3b3ecc5085e",
   "workflow-refactor-review": "2a0deb6ba4f7cef3",
-  "workflow-tdd": "55fcb894c0696e4d",
+  "workflow-tdd": "e3e469dfaaa5c424",
   "workflow-worktree": "e7229e29adfe1cc5"
 }

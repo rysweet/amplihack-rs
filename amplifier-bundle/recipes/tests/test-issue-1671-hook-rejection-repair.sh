@@ -697,6 +697,41 @@ section_a2() {
     if stage_in "${repo}" "${dir}"; then pass; else fail "A2(h): helper failed on an unborn HEAD"; sed 's/^/    | /' "${dir}/stage.err" >&2; fi
     expect_eq "A2(h): only the source file is staged" "$(git -C "${repo}" ls-files --cached)" "first.txt"
     expect_reports_intact "A2(h)" "${repo}"
+
+    # (i) unstage_root_run_reports_here: the same correction on its own, for a
+    # caller that has already staged by other means and has no scratch to lend
+    # (#2839). This is what the TDD checkpoint calls after the scoped add of
+    # #1672, whose filter never sees an already staged or already tracked
+    # report. One tracked-and-rewritten report and one brand-new report are
+    # staged together with a source edit; only the source edit may survive.
+    dir="${WORK}/a2-here"; reports_repo "${dir}"; repo="${dir}/repo"
+    write_reports "${repo}"
+    git -C "${repo}" add -f run/reports/step17e-fixture
+    git -C "${repo}" commit -qm "tracked pollution"
+    head_blob="$(git -C "${repo}" rev-parse HEAD:run/reports/step17e-fixture/results.json)"
+    printf '{"synthetic": true, "ci": "fresh"}\n' > "${repo}/run/reports/step17e-fixture/results.json"
+    printf 'pub fn more() {}\n' >> "${repo}/src/lib.rs"
+    git -C "${repo}" add -A
+    expect_ne "A2(i): fixture really staged reports" "$(report_entries "${repo}")" ""
+    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; unstage_root_run_reports_here' _ "${STAGE_HELPER}" ) \
+        >"${dir}/here.out" 2>"${dir}/here.err"; then pass; else fail "A2(i): helper failed"; sed 's/^/    | /' "${dir}/here.err" >&2; fi
+    expect_empty_file "A2(i): nothing on stdout" "${dir}/here.out"
+    expect_eq "A2(i): no report entry left in the index" "$(report_entries "${repo}")" ""
+    expect_eq "A2(i): the staged source edit survives" \
+        "$(git -C "${repo}" diff --cached --name-only --no-renames)" "src/lib.rs"
+    expect_eq "A2(i): HEAD blob of the rewritten report is restored in the index" \
+        "$(git -C "${repo}" rev-parse :run/reports/step17e-fixture/results.json)" "${head_blob}"
+    expect_eq "A2(i): rewritten report bytes kept on disk" \
+        "$(cat "${repo}/run/reports/step17e-fixture/results.json")" '{"synthetic": true, "ci": "fresh"}'
+    expect_eq "A2(i): the new report is untracked again" \
+        "$(git -C "${repo}" ls-files --cached -- run/reports/20260101-000000-sample | wc -l | tr -d " ")" "0"
+    expect_eq "A2(i): its own scratch is removed" \
+        "$(find "$(git -C "${repo}" rev-parse --absolute-git-dir)" -maxdepth 1 -name 'stage-workflow-changes.*' | wc -l | tr -d " ")" "0"
+    # Nothing to correct is success, not an error, and leaves the index alone.
+    before="$(git -C "${repo}" write-tree)"
+    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; unstage_root_run_reports_here' _ "${STAGE_HELPER}" ) \
+        >/dev/null 2>&1; then pass; else fail "A2(i): second run failed"; fi
+    expect_eq "A2(i): idempotent" "$(git -C "${repo}" write-tree)" "${before}"
 }
 
 # =============================================================================
@@ -1822,6 +1857,54 @@ section_h_dynamic() {
         "$(grep '^artifact-guard' "${dir}/stub/log" 2>/dev/null | sed -n 3p)" "artifact-guard staged=src.txt,"
     expect_eq "H1: the checkpoint commit sets PRE_COMMIT_ALLOW_NO_CONFIG without a config" \
         "$(grep -c 'ALLOW_NO_CONFIG=1$' "${dir}/hook.log" || true)" "2"
+
+    # H1c TDD checkpoint: private root run/reports stays out of the wip: commit
+    # (#2839), including the two shapes the untracked filter cannot see -- a
+    # report an earlier agent pre-staged, and one already tracked and since
+    # rewritten. The checkpoint's add list is `git diff --name-only` plus the
+    # filtered untracked paths, so only unstage_root_run_reports after the
+    # scoped add keeps these out.
+    #
+    # The hook must NOT reject here: a repair round restages through
+    # stage_workflow_changes, which unstages reports itself and would hide a
+    # checkpoint that never does it. So src.txt is clean and the first commit
+    # attempt succeeds, leaving the recipe's own staging as the only path
+    # under test.
+    dir="${WORK}/h1c-tdd-reports"
+    checkpoint_case "${dir}"
+    printf 'clean\n' > "${dir}/repo/src.txt"
+    mkdir -p "${dir}/repo/run/reports/tracked" "${dir}/repo/run/reports/new"
+    printf '{"ci":"stale"}\n' > "${dir}/repo/run/reports/tracked/results.json"
+    git -C "${dir}/repo" add -f run/reports/tracked/results.json
+    git -C "${dir}/repo" commit -qm "report published by mistake"
+    local head_blob
+    head_blob="$(git -C "${dir}/repo" rev-parse HEAD:run/reports/tracked/results.json)"
+    printf '{"ci":"fresh"}\n' > "${dir}/repo/run/reports/tracked/results.json"
+    printf '{"new":true}\n' > "${dir}/repo/run/reports/new/report.json"
+    git -C "${dir}/repo" add -f run/reports/new/report.json
+    expect_ne "H1c: fixture really pre-staged a report" \
+        "$(git -C "${dir}/repo" diff --cached --name-only -- run/reports)" ""
+    seed="$(git -C "${dir}/repo" rev-parse HEAD)"
+    run_step "${dir}" "${STEP_TDD}"
+    expect_eq "H1c: exit 0" "$(rc_of "${dir}")" "0"
+    expect_eq "H1c: one checkpoint commit" "$(git -C "${dir}/repo" rev-parse HEAD~1 2>/dev/null)" "${seed}"
+    expect_eq "H1c: the source edit is committed" "$(git -C "${dir}/repo" show HEAD:src.txt 2>/dev/null)" "clean"
+    expect_eq "H1c: no report in the checkpoint commit" \
+        "$(git -C "${dir}/repo" show --name-only --no-renames --format= HEAD | grep -c '^run/reports/' || true)" "0"
+    expect_eq "H1c: the tracked report keeps its committed bytes" \
+        "$(git -C "${dir}/repo" rev-parse HEAD:run/reports/tracked/results.json)" "${head_blob}"
+    expect_eq "H1c: the pre-staged report is still untracked" \
+        "$(git -C "${dir}/repo" ls-tree -r --name-only HEAD -- run/reports/new | wc -l | tr -d " ")" "0"
+    expect_eq "H1c: nothing is left staged after the commit" \
+        "$(git -C "${dir}/repo" diff --cached --name-only)" ""
+    expect_eq "H1c: rewritten report bytes kept on disk" \
+        "$(cat "${dir}/repo/run/reports/tracked/results.json")" '{"ci":"fresh"}'
+    expect_eq "H1c: pre-staged report bytes kept on disk" \
+        "$(cat "${dir}/repo/run/reports/new/report.json")" '{"new":true}'
+    expect_file_contains "H1c: each unstaged report is reported" "${dir}/step.err" \
+        "stage_workflow_changes: unstaged run/reports/new/report.json"
+    expect_file_contains "H1c: the rewritten tracked report is reported" "${dir}/step.err" \
+        "stage_workflow_changes: unstaged run/reports/tracked/results.json"
 
     # H1b TDD checkpoint: the guard refuses what the round staged; not retried.
     dir="${WORK}/h1b-tdd-guard-after-round"

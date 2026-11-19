@@ -1124,6 +1124,32 @@ fn checkpoint_and_review_recheck_after_staging() {
     );
 }
 
+/// Issue #2839: a step that commits must keep the private root `run/reports/`
+/// out of the index. The publication steps inherit that from
+/// `stage_workflow_changes`, which ends in `unstage_root_run_reports`. The TDD
+/// checkpoint stages only the paths it captured (#1672), and the filter it
+/// uses sees untracked paths alone -- a report an earlier agent pre-staged, or
+/// one already tracked and since rewritten, still reaches the index through
+/// `git diff --name-only`. So it must run the same correction itself, after
+/// its scoped add and before the commit.
+#[test]
+fn tdd_checkpoint_unstages_private_reports_after_its_scoped_add() {
+    let tdd = load_recipe("workflow-tdd.yaml");
+    let command = step_text(&tdd, "checkpoint-after-implementation", "command");
+    let scoped_add = shell_command_offset(command, SCOPED_TDD_ADD)
+        .expect("TDD checkpoint must stage only captured paths");
+    let unstage = shell_command_offset(command, "unstage_root_run_reports_here").expect(
+        "TDD checkpoint must call unstage_root_run_reports_here after its scoped add (#2839)",
+    );
+    let commit = command
+        .find("commit_with_pre_commit_guard -m")
+        .expect("TDD checkpoint must invoke the guarded commit helper");
+    assert!(
+        scoped_add < unstage && unstage < commit,
+        "unstage_root_run_reports_here must run after the scoped add and before the commit: {command}"
+    );
+}
+
 #[test]
 fn recipes_touched_by_issue_1528_stay_under_the_brick_budget() {
     // AC10. The phase recipes are covered by

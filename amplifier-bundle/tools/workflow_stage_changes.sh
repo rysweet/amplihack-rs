@@ -27,6 +27,11 @@
 # `:(glob)x` is a name, not a pattern (SR-5). Writes nothing to stdout,
 # installs no traps, and running it twice stages the same set.
 #
+# The TDD checkpoint stages a scoped path list of its own (#1672) rather than
+# calling stage_workflow_changes, so it would miss the run/reports correction
+# entirely. unstage_root_run_reports_here is that correction on its own, for a
+# caller that has already staged.
+#
 # Contract: docs/reference/recipe-commit-hook-repair.md#staging-rules
 
 # workflow_stage_filter <top>: NUL-separated untracked paths (relative to
@@ -124,24 +129,57 @@ unstage_root_run_reports() {
   return "$rc"
 }
 
-stage_workflow_changes() {
-  local top git_dir scratch physical list add_help rc=0
-  top="$(git rev-parse --show-toplevel)" || return $?
+# workflow_stage_scratch: allocate and print one private, owned scratch
+# directory inside this repository's Git metadata -- never inside the tree
+# being staged. The caller removes it. A failed or malformed allocation is
+# refused with status 2 and is never consumed or cleaned up (#1937). Both
+# entry points below allocate through this, so there is one boundary to audit.
+workflow_stage_scratch() {
+  local git_dir scratch physical
   git_dir="$(git rev-parse --absolute-git-dir)" || return $?
-  case "$top" in /*) ;; *) echo 'stage_workflow_changes: empty or relative worktree path' >&2; return 2 ;; esac
   case "$git_dir" in /*) ;; *) echo 'stage_workflow_changes: empty or relative Git metadata path' >&2; return 2 ;; esac
-  top="$(cd -- "$top" && pwd -P)" || return 2
   git_dir="$(cd -- "$git_dir" && pwd -P)" || return 2
-  [[ "$top" == /* && "$top" != / && -d "$top" && "$git_dir" == /* && "$git_dir" != / && -d "$git_dir" ]] \
+  [[ "$git_dir" == /* && "$git_dir" != / && -d "$git_dir" ]] \
     || { echo 'stage_workflow_changes: invalid canonical repository paths' >&2; return 2; }
-  # Keep both lists in one private allocation, never in the tree being staged.
-  # Do not consume or clean up a failed/invalid allocator result.
   scratch="$(umask 077 && mktemp -d "${git_dir:?}/stage-workflow-changes.XXXXXX")" || return $?
   case "$scratch" in "${git_dir:?}/stage-workflow-changes."*) ;; *) echo 'stage_workflow_changes: invalid scratch allocation' >&2; return 2 ;; esac
   [[ -d "$scratch" && ! -L "$scratch" && -O "$scratch" ]] || { echo 'stage_workflow_changes: scratch is not an owned directory' >&2; return 2; }
   physical="$(cd -- "$scratch" && pwd -P)" || return 2
   [[ -n "$physical" && "$physical" == "$scratch" && "${scratch%/*}" == "$git_dir" ]] \
     || { echo 'stage_workflow_changes: scratch escaped Git metadata' >&2; return 2; }
+  printf '%s' "$scratch"
+}
+
+# unstage_root_run_reports_here: unstage_root_run_reports for the worktree the
+# caller is standing in, allocating and removing a scratch of its own. The TDD
+# checkpoint stages the scoped path list of #1672 instead of calling
+# stage_workflow_changes -- that list is built from `git diff --name-only` plus
+# untracked paths, so its filter never sees a report that is already staged or
+# already tracked -- and so needs this correction (#2839) without the rest of
+# the helper, and has no scratch to lend it.
+unstage_root_run_reports_here() {
+  local top scratch rc=0
+  top="$(git rev-parse --show-toplevel)" || return $?
+  case "$top" in /*) ;; *) echo 'stage_workflow_changes: empty or relative worktree path' >&2; return 2 ;; esac
+  top="$(cd -- "$top" && pwd -P)" || return 2
+  [[ "$top" == /* && "$top" != / && -d "$top" ]] \
+    || { echo 'stage_workflow_changes: invalid canonical repository paths' >&2; return 2; }
+  scratch="$(workflow_stage_scratch)" || return $?
+  unstage_root_run_reports "$top" "$scratch" || rc=$?
+  rm -rf -- "${scratch:?}"
+  return "$rc"
+}
+
+stage_workflow_changes() {
+  local top scratch list add_help rc=0
+  top="$(git rev-parse --show-toplevel)" || return $?
+  case "$top" in /*) ;; *) echo 'stage_workflow_changes: empty or relative worktree path' >&2; return 2 ;; esac
+  top="$(cd -- "$top" && pwd -P)" || return 2
+  [[ "$top" == /* && "$top" != / && -d "$top" ]] \
+    || { echo 'stage_workflow_changes: invalid canonical repository paths' >&2; return 2; }
+  # Keep both lists in one private allocation, never in the tree being staged.
+  # Do not consume or clean up a failed/invalid allocator result.
+  scratch="$(workflow_stage_scratch)" || return $?
   list="${scratch:?}/paths"
   # No pathspec: `add -u` covers the whole tree, and unlike `-- :/` it does
   # not fail in a repository with nothing tracked yet.

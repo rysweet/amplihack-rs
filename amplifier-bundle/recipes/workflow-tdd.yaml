@@ -343,6 +343,7 @@ steps:
       if [ -s "$stage_paths" ]; then
         git --literal-pathspecs add -A --pathspec-from-file="$stage_paths" --pathspec-file-nul
       fi
+      unstage_root_run_reports_here  # #2839: the scoped add stages a private root run/reports file that was already staged or already tracked; this is the same index-only correction stage_workflow_changes ends with
       )
       amplihack hygiene artifact-guard --repo . --mode pre-publish
       STAGED=$(git diff --cached --name-only)

@@ -126,6 +126,21 @@ for entry in "${RECIPE_SITES[@]}"; do
       *) echo "FAIL: $recipe site $n missing ~/.amplihack fallback candidate" >&2; exit 1 ;;
     esac
 
+    # A site must be ONLY the runtime-artifact resolution. Packing a different
+    # helper's lookup onto the guard line -- which is what happened to
+    # workflow-finalize step-20b in #2839 -- drags that lookup's own `exit 2`
+    # into every case below: Case 1 then aborts with nothing resolved, and
+    # Case 4 reads the foreign exit 2 as this site's required-helper form,
+    # silently masking its warn-and-continue path. Say which helper leaked in,
+    # instead of failing as a bare exit 2 that names nothing.
+    foreign="$(printf '%s\n' "$site" \
+      | grep -oE '(^|[;&| \t])[A-Za-z_][A-Za-z0-9_]*_HELPER=' \
+      | tr -d ' \t;&|' | sort -u | grep -vx 'RUNTIME_ARTIFACT_HELPER=' || true)"
+    if [ -n "$foreign" ]; then
+      echo "FAIL: $recipe site $n mixes another helper lookup into the runtime-artifact site (${foreign//$'\n'/ }); put it on its own line so the site stays testable on its own" >&2
+      exit 1
+    fi
+
     # Case 1: site falls back to the installed ~/.amplihack bundle.
     repo="$WORK/$recipe.$n-repo"          # deliberately has no amplifier-bundle/
     home="$WORK/$recipe.$n-home"
