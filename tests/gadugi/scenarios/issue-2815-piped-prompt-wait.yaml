@@ -16,12 +16,21 @@ description: >
   reset and its end, that no `piped_prompt` refusal was written, and that no
   copy of the prompt was left in the rerun scratch folder. A second case is
   the issue #1618 regression guard: with the prompt in argv and stdin a pipe
-  nobody writes to or closes, the step still finishes. Everything runs under
+  nobody writes to or closes, the step still finishes. A third case runs a
+  one-step recipe through `amplihack recipe run` and the pinned
+  recipe-runner-rs, which is the shape the issue's own Check names: the
+  runner builds the launch argv and writes the step's task to the launch's
+  stdin itself, and the case checks that the run finishes, that the agent ran
+  twice on the same login, that both calls read the recipe's prompt on stdin,
+  and that the prompt never reached argv. It needs recipe-runner-rs and git;
+  without either it prints SKIP, or fails under
+  AMPLIHACK_2815_QA_REQUIRE_ALL=1. Everything runs under
   `env -i` with a scratch HOME, so the real ~/.claude and ~/.amplihack are
   never read or written, and no agent, account or network call is made. CI's
   Install Smoke Test job runs the driver script directly against the binary
-  it installs; CI does not run gadugi-test, so this file is for running the
-  same cases through gadugi-test by hand.
+  it installs, with AMPLIHACK_2815_QA_REQUIRE_ALL=1 and the pinned runner
+  that job installs; CI does not run gadugi-test, so this file is for running
+  the same cases through gadugi-test by hand.
 version: "1.0"
 config:
   timeout: 900000
@@ -32,9 +41,9 @@ agents:
     type: cli
     config: {}
 metadata:
-  tags: [cli, qa-team, usage-limit, stdin, recipe-step, regression]
+  tags: [cli, qa-team, usage-limit, stdin, recipe-step, recipe-runner, regression]
   priority: high
-  issues: ["2815"]
+  issues: ["2815", "2816"]
 steps:
   - name: run-issue-2815-piped-prompt-wait-cases
     agent: cli-agent
@@ -88,3 +97,8 @@ assertions:
     params:
       target: stdout
       expected: "PASS: held_open_stdin_does_not_hang - "
+  - name: recipe-step-waited-and-reran
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: recipe_step_waited_and_reran - "

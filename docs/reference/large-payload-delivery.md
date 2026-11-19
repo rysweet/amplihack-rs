@@ -870,27 +870,38 @@ the variable, never its value.
 When auto-switch or the usage-limit wait supervises a nested
 `amplihack claude -p` launch (see
 [Usage-limit reruns](./profile-command.md#usage-limit-reruns)), the first
-attempt inherits the supervisor's stdin. A rerun reads a regular file again
-from where the step started; a piped prompt went to the first attempt, so a
-rerun gets `/dev/null`. The prompt is lost, not exposed: it is never copied
-to disk, argv, the environment or the rerun buffer.
+attempt inherits the supervisor's stdin, with one exception. A rerun reads a
+regular file again from where the step started.
 
-amplihack's own large-payload sites take other paths, and none of these sites are affected:
+The exception is a prompt that arrives on stdin, which is how the recipe
+runner gives every Claude agent step its task: a bare `-p` on argv and the
+task written to the launch's stdin. Since issue #2815 the supervisor copies
+that prompt aside as it arrives and gives every attempt the same bytes, so
+such a step is rerun and waited for like any other. The copy is a `0600`
+file in the supervisor's rerun directory, created with `O_EXCL` and
+`O_NOFOLLOW` and removed when the step ends; the prompt is never put in
+argv, in the environment or in the rerun output buffer. The full rules,
+including what happens when the copy cannot be made, are in
+[Stdin handling](./profile-command.md#stdin-handling).
+
+Where no copy is made, a piped prompt went to the first attempt and a rerun
+gets `/dev/null`: the prompt is lost, not exposed.
+
+amplihack's own large-payload sites take other paths:
 
 - the fleet reasoner starts the `claude` binary directly, not through
   `amplihack claude`, so it is never supervised;
 - `--auto` launches are excluded from supervision, so auto mode's per-turn
   stdin prompt is never rerun;
 - `amplihack recipe run` passes context to the runner as `--set` argv, and
-  `recipe-runner-rs` gives each agent step its prompt as `-p` argv to
-  `amplihack claude`, which moves it to the `claude` child's stdin. The prompt
-  is held by `amplihack claude`, not taken from its own stdin, so every
-  attempt receives it again;
+  `recipe-runner-rs` writes each Claude agent step's prompt to the stdin of
+  `amplihack claude`, whose argv carries `--system-prompt-file <file>` and a
+  bare `-p`. The runner writes the task on a thread of its own and then
+  closes the pipe. It is that stdin the supervisor copies, so every attempt
+  receives the prompt again. Copilot steps take their prompt from a file
+  through `--add-dir` instead, and are not affected either way;
 - multitask workstreams pass context in `context.json`, which every attempt
   can read again.
-
-The limit applies only when someone runs `amplihack claude -p` and pipes the
-prompt on stdin by hand.
 
 The tests that hold this contract are `tests_issue_1570_reasoner` (stdin
 delivery and two-argument `reasoner_command`), `multitask/issue_1570_launcher.rs`,

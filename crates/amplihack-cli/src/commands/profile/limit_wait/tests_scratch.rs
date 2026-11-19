@@ -14,8 +14,22 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+
+/// Polls `cond` until it holds, or fails after 30 s. Used where a copier
+/// thread publishes something the caller is meant to read without joining.
+fn until(what: &str, mut cond: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !cond() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 
 fn mode(p: &Path) -> u32 {
     fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777
@@ -379,7 +393,96 @@ fn a_failed_copy_is_an_error_for_a_rerun_never_a_partial_prompt() {
         .unwrap();
     let mut policy = capture_prompt(&dir, source);
     assert!(matches!(policy, RerunStdin::Captured(_)), "{policy:?}");
+    // Issue #2816: the loss is readable without joining the copier, which
+    // is what lets the supervisor refuse the rerun before the wait rather
+    // than after it.
+    until("the lost capture to be published", || policy.capture_lost());
     assert!(policy.for_attempt(2).is_err(), "no partial replay");
+}
+
+/// Issue #2816: the copier publishes a lost capture while it is still
+/// draining the source, not only when it ends. The supervisor reads that
+/// flag when it decides whether a rerun is possible, which is before the
+/// wait; a flag set only at the end would be read only after one.
+#[test]
+fn a_lost_capture_is_published_while_the_copy_is_still_running() {
+    // A source the test holds open, so the copier cannot reach end of file.
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let mut source = fs::File::from(OwnedFd::from(reader));
+    // A capture sink that fails on the first write: a pipe with no reader,
+    // standing in for the `ENOSPC` or `EIO` of a real file.
+    let (dead, sink) = std::io::pipe().unwrap();
+    drop(dead);
+    let sink = fs::File::from(OwnedFd::from(sink));
+    // The attempt's stdin, drained, so nothing blocks on that sink either.
+    let (mut child_read, child_write) = std::io::pipe().unwrap();
+    let drain = std::thread::spawn(move || {
+        let mut got = Vec::new();
+        let _ = child_read.read_to_end(&mut got);
+        got
+    });
+
+    let complete = Arc::new(AtomicBool::new(false));
+    let lost = Arc::new(AtomicBool::new(false));
+    let (c, l) = (Arc::clone(&complete), Arc::clone(&lost));
+    let copier = std::thread::spawn(move || copy_prompt(&mut source, sink, child_write, &c, &l));
+
+    writer.write_all(b"the first block of the prompt").unwrap();
+    until("the lost capture to be published", || {
+        lost.load(Ordering::SeqCst)
+    });
+    assert!(
+        !complete.load(Ordering::SeqCst),
+        "a lost capture is never complete"
+    );
+
+    // Only now is the source closed, so the assertions above held while the
+    // copier was still running.
+    drop(writer);
+    assert!(copier.join().unwrap().is_err());
+    assert_eq!(
+        drain.join().unwrap(),
+        b"the first block of the prompt",
+        "the attempt still received every byte"
+    );
+}
+
+/// Issue #2816: `hand_back` is only for the one kind of stdin the
+/// supervisor takes bytes off. For every other kind fd 0 is the step's own
+/// descriptor, untouched, and handing it back is nothing at all.
+#[test]
+fn handing_stdin_back_does_nothing_when_nothing_was_taken() {
+    let before = fs::read_link("/proc/self/fd/0").ok();
+    let file = fs::File::open("/dev/null").unwrap();
+    for mut policy in [
+        RerunStdin::Inherit,
+        RerunStdin::Pipe,
+        RerunStdin::Null,
+        RerunStdin::File { file, start: 0 },
+    ] {
+        assert!(!policy.was_drained(), "{policy:?}");
+        assert!(!policy.capture_lost(), "{policy:?}");
+        policy.hand_back().unwrap();
+    }
+    assert_eq!(
+        fs::read_link("/proc/self/fd/0").ok(),
+        before,
+        "fd 0 was replaced for a stdin that was never drained"
+    );
+}
+
+/// Issue #2816: a capture says so, which is how the supervisor knows that
+/// standing down would hand a plain launch a stdin it has already eaten.
+#[test]
+fn a_capture_reports_that_stdin_was_drained() {
+    let (_t, dir) = rerun();
+    let (source, feeder) = fed_pipe(b"the piped prompt".to_vec());
+    let mut policy = capture_prompt(&dir, source);
+    assert!(policy.was_drained(), "{policy:?}");
+    assert!(!policy.capture_lost(), "{policy:?}");
+    feeder.join().unwrap();
+    assert_eq!(cat(policy.for_attempt(2).unwrap()), b"the piped prompt");
+    assert!(!policy.capture_lost(), "a whole capture is not lost");
 }
 
 /// The capture is secondary to the attempt in hand: a file that cannot be
@@ -408,13 +511,18 @@ fn a_capture_that_cannot_be_written_still_hands_the_attempt_its_whole_prompt() {
     });
 
     let complete = AtomicBool::new(false);
-    let err = copy_prompt(&mut source, sink, child_write, &complete);
+    let lost = AtomicBool::new(false);
+    let err = copy_prompt(&mut source, sink, child_write, &complete, &lost);
 
     assert!(err.is_err(), "the lost capture is reported: {err:?}");
     assert_eq!(drain.join().unwrap(), prompt, "the attempt's whole prompt");
     assert!(
         !complete.load(Ordering::SeqCst),
         "an unwritten capture is never complete, so a rerun is refused"
+    );
+    assert!(
+        lost.load(Ordering::SeqCst),
+        "issue #2816: the loss is published for a decision taken without joining"
     );
     // Last: a copier that stopped early would leave the feeder blocked on a
     // pipe nobody is draining, and the assertions above say so first.

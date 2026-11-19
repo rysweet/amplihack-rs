@@ -32,6 +32,19 @@
 # ~/.amplihack are never read or written. Everything is created under one
 # mktemp folder that the EXIT trap removes.
 #
+# The cases:
+#   1. `cat prompt | amplihack claude --subprocess-safe -- -p`, the supervisor
+#      driven directly, which is the smallest shape that reproduces the bug.
+#   2. a held-open stdin pipe with the prompt in argv: the #1618 guard, which
+#      copies nothing.
+#   3. a one-step recipe through `amplihack recipe run` and the pinned recipe
+#      runner, which is the shape the issue's Check names. The runner builds
+#      its own argv (`--system-prompt-file F -p --add-dir . --model M`) and
+#      writes the task to the launch's stdin on a thread of its own; nothing
+#      in this script constructs that. It needs recipe-runner-rs and git;
+#      without either it prints SKIP, or fails under
+#      AMPLIHACK_2815_QA_REQUIRE_ALL=1, as the issue #1619 scenario does.
+#
 # Where it runs: CI's "Install Smoke Test" job (.github/workflows/ci.yml)
 # runs this script directly against the amplihack binary that job installs.
 # CI does not run gadugi-test itself; tests/gadugi/scenarios/
@@ -157,7 +170,12 @@ esac
 step="${STEP:-0}"
 n=$(( $(cat "$RECORD_DIR/count.$step" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$RECORD_DIR/count.$step"
-if [ -n "${SKIP_STDIN:-}" ]; then sum=skipped; else sum=$($SUM_CMD | cut -d' ' -f1); fi
+if [ -n "${SKIP_STDIN:-}" ]; then
+  sum=skipped
+else
+  cat > "$RECORD_DIR/stdin.$step.$n"
+  sum=$($SUM_CMD < "$RECORD_DIR/stdin.$step.$n" | cut -d' ' -f1)
+fi
 {
   printf 'ARGV='
   for a in "$@"; do printf '%s|' "$a"; done
@@ -275,7 +293,7 @@ fi
 # caller, which never writes and never closes; the agent is told not to read
 # its stdin ($SKIP_STDIN), as a real agent given its prompt in argv does not.
 # The step is given 120 s, far longer than it needs.
-rm -f -- "$RECORDS"/count.* "$RECORDS"/call.* 2>/dev/null
+rm -f -- "$RECORDS"/count.* "$RECORDS"/call.* "$RECORDS"/stdin.* 2>/dev/null
 FIFO="$WORK/held.fifo"
 if mkfifo -- "$FIFO" 2>/dev/null; then
   # A writer that holds the pipe open for the whole of the step and never
@@ -298,6 +316,159 @@ if mkfifo -- "$FIFO" 2>/dev/null; then
   fi
 else
   fl held_open_stdin_does_not_hang "could not create a FIFO for the held-open case"
+fi
+
+# --- case 3: the same limit in a real recipe step, through the runner ------
+# The issue's Check in full: "a recipe step whose fake Claude reports a usage
+# limit once, with the prompt piped on stdin, must wait, rerun with the same
+# prompt and finish the run."
+#
+# Nothing here imitates the runner. `amplihack recipe run` starts the pinned
+# recipe-runner-rs, which resolves the agent step, builds the launch argv
+# itself and writes the step's task to the launch's stdin on a thread of its
+# own, then closes it. The launcher it starts is the binary under test
+# (AMPLIHACK_LAUNCHER_BINARY), so the supervisor under test is in the chain
+# exactly as it is on a real host.
+#
+# The wait is the only thing that can produce a second call: the profile root
+# is an empty private directory, so auto-switch has no candidate to rerun the
+# step under, and the assertions below check that both calls ran in the same
+# Claude configuration directory, which an auto-switch rerun would have
+# changed. The agent's own stderr, which carries the
+# `amplihack.recipe.usage_limit_wait` lines, is redirected by the runner to a
+# log file it removes when the step succeeds, so those lines are case 1's to
+# assert and not this case's.
+RECIPE_SENTINEL='PROMPT-SENTINEL-2815-ON-STDIN'
+RUNNER="${RECIPE_RUNNER_RS_PATH:-$(command -v recipe-runner-rs 2>/dev/null || true)}"
+GIT_BIN="$(command -v git 2>/dev/null || true)"
+
+recipe_skip() {
+  if [ "${AMPLIHACK_2815_QA_REQUIRE_ALL:-0}" = 1 ]; then
+    fl recipe_step_waited_and_reran "could not run ($1) and AMPLIHACK_2815_QA_REQUIRE_ALL=1"
+  else
+    echo "SKIP: recipe_step_waited_and_reran ($1)"
+  fi
+}
+
+run_recipe_case() {
+  CASE="$WORK/recipe"
+  mkdir -p -- "$CASE/home/.amplihack" "$CASE/project" "$CASE/work" "$CASE/tmp" \
+    || return 1
+  # No -p: `$CASE/home` exists already, and -m with -p would set the mode
+  # on the deepest directory only (shellcheck SC2174).
+  mkdir -m 700 -- "$CASE/home/profiles" || return 1
+  chmod -R go-rwx -- "$CASE" || return 1
+
+  cat > "$WORK/piped-prompt-qa.yaml" <<RECIPE
+name: "issue-2815-piped-prompt-qa"
+description: "one agent step whose prompt is delivered on stdin (issue 2815 QA)"
+version: "1.0.0"
+context: {}
+steps:
+  - id: "step-01-implement"
+    type: "agent"
+    prompt: |
+      $RECIPE_SENTINEL
+      Reply with the single word done and stop. Change nothing.
+RECIPE
+
+  # A git project with one commit: checkout discovery needs a repository.
+  qa_git() {
+    env -i HOME="$CASE/home" PATH="$SYS_PATH" GIT_CONFIG_NOSYSTEM=1 \
+      GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 \
+      "$GIT_BIN" -C "$CASE/project" \
+      -c user.name=qa -c user.email=qa@example.invalid -c commit.gpgsign=false "$@" \
+      </dev/null >/dev/null 2>&1
+  }
+  qa_git init -q || return 1
+  printf 'issue 2815 QA\n' > "$CASE/project/README.md"
+  qa_git add README.md || return 1
+  qa_git commit -q -m init || return 1
+
+  # No CLAUDE_CONFIG_DIR: a recipe agent step runs on $HOME/.claude, and
+  # HOME is this case's own scratch home.
+  ( cd "$CASE/project" && exec env -i \
+      PATH="$TOOLS:$SYS_PATH" \
+      HOME="$CASE/home" \
+      TMPDIR="$CASE/tmp" \
+      LANG=C TZ=UTC TERM=dumb \
+      AMPLIHACK_CLAUDE_PROFILE_ROOT="$CASE/home/profiles" \
+      AMPLIHACK_CLAUDE_BINARY_PATH="$TOOLS/claude" \
+      RECORD_DIR="$RECORDS" \
+      SUM_CMD="$SUM_CMD" \
+      LIMIT_EPOCH="$LIMIT_EPOCH" \
+      AMPLIHACK_NONINTERACTIVE=1 \
+      AMPLIHACK_NO_FRESHNESS_CHECK=1 \
+      AMPLIHACK_SKIP_AUTO_INSTALL=1 \
+      AMPLIHACK_SKIP_POWER_STEERING=1 \
+      AMPLIHACK_SKIP_REFLECTION=1 \
+      AMPLIHACK_ROTATE_AUTOSTART=0 \
+      AMPLIHACK_GOVERNOR=off \
+      AMPLIHACK_CLEANUP_ON_EXIT=0 \
+      AMPLIHACK_WORK_ROOT="$CASE/work" \
+      AMPLIHACK_LAUNCHER_BINARY="$BIN" \
+      AMPLIHACK_AGENT_BINARY=claude \
+      RECIPE_RUNNER_RS_PATH="$RUNNER" \
+      "$BIN" recipe run "$WORK/piped-prompt-qa.yaml" -w "$CASE/project" --no-detach ) \
+    </dev/null >"$WORK/recipe.out" 2>"$WORK/recipe.err"
+}
+
+rm -f -- "$RECORDS"/count.* "$RECORDS"/call.* "$RECORDS"/stdin.* 2>/dev/null
+if [ -z "$RUNNER" ] || [ ! -x "$RUNNER" ]; then
+  recipe_skip "no recipe-runner-rs"
+elif [ -z "$GIT_BIN" ]; then
+  recipe_skip "no git"
+else
+  run_recipe_case
+  RECIPE_RC=$?
+  R_CALLS="$(cat "$RECORDS/count.0" 2>/dev/null || echo 0)"
+  R_SUM1="$(sed -n 's/^STDIN=//p' "$RECORDS/call.0.1" 2>/dev/null)"
+  R_SUM2="$(sed -n 's/^STDIN=//p' "$RECORDS/call.0.2" 2>/dev/null)"
+  R_ARGV1="$(sed -n 's/^ARGV=//p' "$RECORDS/call.0.1" 2>/dev/null)"
+  R_ARGV2="$(sed -n 's/^ARGV=//p' "$RECORDS/call.0.2" 2>/dev/null)"
+  R_CFG1="$(sed -n 's/^CLAUDE_CONFIG_DIR=//p' "$RECORDS/call.0.1" 2>/dev/null)"
+  R_CFG2="$(sed -n 's/^CLAUDE_CONFIG_DIR=//p' "$RECORDS/call.0.2" 2>/dev/null)"
+  RDIAG="rc=$RECIPE_RC calls=$R_CALLS recipe.err tail: $(tail -n 12 "$WORK/recipe.err" 2>/dev/null | tr '\n' ' ')"
+  problems=""
+  add() { problems="$problems $1;"; }
+
+  [ "$RECIPE_RC" -eq 0 ] || add "the recipe run exited $RECIPE_RC"
+  [ "$R_CALLS" = 2 ] || add "the agent was called ${R_CALLS} time(s), want 2"
+  # The prompt arrived on stdin, whole and identical, on both calls.
+  if [ -z "$R_SUM1" ] || [ "$R_SUM1" = skipped ] || [ "$R_SUM1" != "$R_SUM2" ]; then
+    add "stdin differed between the calls ('${R_SUM1:-none}' vs '${R_SUM2:-none}')"
+  fi
+  for n in 1 2; do
+    if ! grep -q -- "$RECIPE_SENTINEL" "$RECORDS/stdin.0.$n" 2>/dev/null; then
+      add "call $n did not read the recipe's prompt on stdin"
+    fi
+  done
+  # ... and not in argv, which is the assumption the bug rested on.
+  case "$R_ARGV1$R_ARGV2" in
+    *"$RECIPE_SENTINEL"*) add "the prompt reached the agent in argv" ;;
+  esac
+  # The runner's real argv shape, built by the runner and not by this script.
+  for a in "$R_ARGV1" "$R_ARGV2"; do
+    case "$a" in
+      *"|--system-prompt-file|"*) ;;
+      *) add "no --system-prompt-file in argv '${a}'" ;;
+    esac
+    case "$a" in
+      *"|-p|"*) ;;
+      *) add "no bare -p in argv '${a}'" ;;
+    esac
+  done
+  # The same login both times, so the rerun was the wait's, not a profile swap.
+  [ "$R_CFG1" = "$R_CFG2" ] || add "the rerun changed CLAUDE_CONFIG_DIR ($R_CFG1 -> $R_CFG2)"
+  # Nothing of the prompt is left on disk once the run is over.
+  R_LEFT="$(find "$CASE/home/.amplihack/rerun" "$CASE/home/profiles" -name '*.in' -print 2>/dev/null | tr '\n' ' ')"
+  [ -z "$R_LEFT" ] || add "a copy of the prompt was left behind: $R_LEFT"
+
+  if [ -z "$problems" ]; then
+    pass recipe_step_waited_and_reran "a recipe agent step met a usage limit, waited, reran and finished with the same stdin prompt"
+  else
+    fl recipe_step_waited_and_reran "${problems}; $RDIAG"
+  fi
 fi
 
 if [ "$fail" -eq 0 ]; then

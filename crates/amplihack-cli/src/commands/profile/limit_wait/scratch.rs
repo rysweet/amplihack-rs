@@ -22,11 +22,19 @@
 //! a terminal unchanged, and anything else (a pipe with no capture, a
 //! socket, a closed descriptor) `/dev/null`: what the first attempt read
 //! from it is gone.
+//!
+//! One path leaves the supervisor altogether. When it cannot go on and no
+//! attempt has run, the caller launches the step once in this process on
+//! the stdin it inherited; a copier that has already started would have
+//! eaten part of that stdin. [`RerunStdin::hand_back`] therefore puts the
+//! stored prompt back on this process's own fd 0 before the supervisor
+//! stands down, and reports an error rather than let the plain launch read
+//! a prompt the copier has taken (issue #2816).
 
 use super::super::fsx;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -123,6 +131,68 @@ impl RerunStdin {
             RerunStdin::Pipe | RerunStdin::Null => Ok(Stdio::null()),
         }
     }
+
+    /// Whether a copier has already taken bytes off this process's own
+    /// stdin, so that handing fd 0 to a plain launch would shorten its
+    /// prompt (issue #2816). True for a capture whatever became of it,
+    /// including one that was set up and then failed.
+    pub(crate) fn was_drained(&self) -> bool {
+        matches!(self, RerunStdin::Captured(_))
+    }
+
+    /// Whether the stored prompt is already known to be unusable, asked
+    /// without waiting on the copier (issue #2816).
+    ///
+    /// The copier learns within moments that the capture file cannot be
+    /// written, but [`Capture::for_attempt`] only asks when a rerun is
+    /// already due, which is after the wait. This is the question a
+    /// decision can afford: `false` for every other kind of stdin, and for
+    /// a capture still going well or already complete.
+    pub(crate) fn capture_lost(&self) -> bool {
+        matches!(self, RerunStdin::Captured(c) if c.lost())
+    }
+
+    /// Puts the whole stored prompt back on this process's fd 0, for the
+    /// plain launch that follows the supervisor standing down (issue
+    /// #2816).
+    ///
+    /// Only a capture has taken anything off fd 0: every other kind left
+    /// the step's own descriptor in place, so this does nothing for them
+    /// and the launch inherits stdin exactly as it always did. For a
+    /// capture the copier is settled first, so the prompt is whole on
+    /// disk, and the read-only description opened at creation — already
+    /// matched to the writer's inode — is duplicated onto fd 0 at offset
+    /// 0. The capture file is unlinked when the [`Capture`] is dropped,
+    /// moments later; the open description on fd 0 keeps the bytes
+    /// readable for the launch, so nothing is left in the rerun directory
+    /// while the step runs.
+    ///
+    /// An error here means the prompt cannot be given back whole. The
+    /// caller must not run the step: its stdin is short by whatever the
+    /// copier read.
+    pub(crate) fn hand_back(&mut self) -> io::Result<()> {
+        let RerunStdin::Captured(c) = self else {
+            return Ok(());
+        };
+        let whole = c.whole()?;
+        dup_onto_stdin(&whole)
+    }
+}
+
+/// Duplicates `file` onto fd 0, leaving `file`'s own descriptor alone.
+///
+/// `dup2` clears close-on-exec on the descriptor it makes, so the launch
+/// that follows inherits it across an `exec` as well as across a spawn.
+fn dup_onto_stdin(file: &fs::File) -> io::Result<()> {
+    // SAFETY: `file` is an open descriptor this process owns, and fd 0 is
+    // replaced in one step; no other thread of this process is reading or
+    // closing fd 0 by the time this runs, because the only one that ever
+    // read it was the copier, which `whole` has just joined.
+    let rc = unsafe { libc::dup2(file.as_raw_fd(), libc::STDIN_FILENO) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// On Linux, a fresh open of the step's stdin through `/proc/self/fd/0`,
@@ -170,6 +240,11 @@ pub(crate) struct Capture {
     copier: Option<JoinHandle<io::Result<()>>>,
     /// Set by the copier only after end of file and a complete write.
     complete: Arc<AtomicBool>,
+    /// Set by the copier the moment the capture is known to be lost, which
+    /// is well before the copier itself ends (issue #2816): a write to the
+    /// capture file failed, or the source did. Read without joining, so a
+    /// rerun can be refused while the limit result can still be passed up.
+    lost: Arc<AtomicBool>,
     /// Why the capture cannot be replayed, once that is known.
     failure: Option<String>,
 }
@@ -180,7 +255,7 @@ impl std::fmt::Debug for Capture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Capture")
             .field("complete", &self.complete.load(Ordering::SeqCst))
-            .field("failed", &self.failure.is_some())
+            .field("failed", &self.lost())
             .finish()
     }
 }
@@ -200,16 +275,36 @@ impl Capture {
         {
             return Ok(Stdio::from(first));
         }
+        match self.whole() {
+            Ok(f) => Ok(Stdio::from(f)),
+            Err(e) => Err(io::Error::other(format!(
+                "{e}, so it cannot be given to attempt {n}"
+            ))),
+        }
+    }
+
+    /// The whole stored prompt, read-only and at offset 0, once the copier
+    /// has finished with it.
+    ///
+    /// Joins the copier (see [`Capture::settle`]) and refuses a capture
+    /// that is short or failed: a partial prompt is a shortened task, and
+    /// no caller may be given one.
+    fn whole(&mut self) -> io::Result<fs::File> {
         self.settle();
         if let Some(why) = &self.failure {
             return Err(io::Error::other(format!(
-                "this step's prompt was not stored whole, so it cannot be given to attempt {n}: \
-                 {why}"
+                "this step's prompt was not stored whole: {why}"
             )));
         }
         let mut f = self.reader.try_clone()?;
         f.seek(SeekFrom::Start(0))?;
-        Ok(Stdio::from(f))
+        Ok(f)
+    }
+
+    /// Whether the capture is already known to be unusable, without
+    /// joining the copier (issue #2816).
+    fn lost(&self) -> bool {
+        self.failure.is_some() || self.lost.load(Ordering::SeqCst)
     }
 
     /// Waits for the copier the first time a rerun needs the whole prompt,
@@ -293,16 +388,18 @@ fn start_copier(path: &Path, writer: fs::File, mut source: fs::File) -> io::Resu
     // `Command` puts on fd 0 reaches the child.
     let (child_read, child_write) = std::io::pipe()?;
     let complete = Arc::new(AtomicBool::new(false));
-    let flag = Arc::clone(&complete);
+    let lost = Arc::new(AtomicBool::new(false));
+    let (flag, lost_flag) = (Arc::clone(&complete), Arc::clone(&lost));
     let copier = std::thread::Builder::new()
         .name("amplihack-prompt-capture".to_string())
-        .spawn(move || copy_prompt(&mut source, writer, child_write, &flag))?;
+        .spawn(move || copy_prompt(&mut source, writer, child_write, &flag, &lost_flag))?;
     Ok(Capture {
         path: path.to_path_buf(),
         reader,
         first: Some(fs::File::from(std::os::fd::OwnedFd::from(child_read))),
         copier: Some(copier),
         complete,
+        lost,
         failure: None,
     })
 }
@@ -341,11 +438,20 @@ fn read_back(path: &Path, writer: &fs::File) -> io::Result<fs::File> {
 /// short is a shortened task the attempt would act on, whereas a lost
 /// capture only costs a rerun. The error is returned once the source is
 /// spent, and `complete` is left unset, so a rerun is refused.
+///
+/// `lost` is set the moment the capture itself is known to be gone — a
+/// write to the file failed, or the source did — and so before the drain
+/// that follows (issue #2816). An attempt that stopped reading is not a
+/// loss and never sets it. The supervisor reads this flag when it decides
+/// whether a rerun is possible at all, so a capture already known to be
+/// lost refuses the rerun then and there, rather than after a wait of
+/// hours.
 pub(super) fn copy_prompt(
     source: &mut fs::File,
     mut file: fs::File,
     child: std::io::PipeWriter,
     complete: &AtomicBool,
+    lost: &AtomicBool,
 ) -> io::Result<()> {
     let mut child = Some(child);
     let mut file_err: Option<io::Error> = None;
@@ -357,7 +463,10 @@ pub(super) fn copy_prompt(
             Ok(0) => break,
             Ok(k) => k,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
+            Err(e) => {
+                lost.store(true, Ordering::SeqCst);
+                return Err(e);
+            }
         };
         if file_err.is_none()
             && let Err(e) = file.write_all(&buf[..k])
@@ -365,6 +474,7 @@ pub(super) fn copy_prompt(
             // The capture is lost, so a rerun is refused. The attempt in
             // hand still gets its whole prompt.
             file_err = Some(e);
+            lost.store(true, Ordering::SeqCst);
         }
         if let Some(w) = &mut child
             && w.write_all(&buf[..k]).is_err()
@@ -378,7 +488,10 @@ pub(super) fn copy_prompt(
     if let Some(e) = file_err {
         return Err(e);
     }
-    file.flush()?;
+    if let Err(e) = file.flush() {
+        lost.store(true, Ordering::SeqCst);
+        return Err(e);
+    }
     complete.store(true, Ordering::SeqCst);
     Ok(())
 }

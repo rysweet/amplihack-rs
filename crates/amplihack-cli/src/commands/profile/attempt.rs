@@ -127,6 +127,31 @@ impl Drop for Signals {
     }
 }
 
+/// Debug-only seam for issue #2816: `AMPLIHACK_TEST_FAIL_ATTEMPT=<n>` makes
+/// attempt `n` fail to start, as a replaced binary, `EMFILE` or a refused
+/// output buffer would. The supervisor's answer to a first attempt that
+/// never started is to stand down and let a plain launch follow, and the
+/// only way to exercise that from the outside is to make one fail on
+/// demand.
+///
+/// Compiled out of release builds, as the usage-limit wait's test clock is,
+/// so no installed binary reads this variable.
+#[cfg(debug_assertions)]
+fn forced_attempt_failure(n: u32) -> Option<std::io::Error> {
+    let want: u32 = std::env::var("AMPLIHACK_TEST_FAIL_ATTEMPT")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    (want == n)
+        .then(|| std::io::Error::other(format!("AMPLIHACK_TEST_FAIL_ATTEMPT refused attempt {n}")))
+}
+
+#[cfg(not(debug_assertions))]
+fn forced_attempt_failure(_n: u32) -> Option<std::io::Error> {
+    None
+}
+
 /// Runs attempt `n`. `env` is a profile to switch to and its directory;
 /// `None` keeps the inherited environment.
 #[allow(clippy::too_many_arguments)]
@@ -140,6 +165,11 @@ pub(crate) fn run_attempt_with_recovery(
     signals: &Signals,
     recovery: Option<&recipe_runner_rs::recovery::ipc::Client>,
 ) -> Result<Attempt> {
+    if let Some(e) = forced_attempt_failure(n) {
+        // Before the output buffer is opened, which is where a real
+        // refusal of this shape lands first.
+        return Err(e).context("failed to start the supervised launch");
+    }
     let stdout_path = rerun_dir.join(format!("{}-{n}.out", std::process::id()));
     let mut opts = fs::OpenOptions::new();
     opts.read(true)

@@ -114,13 +114,16 @@ fn print_needs_the_flag_itself() {
 #[test]
 fn an_unknown_option_fails_safe_by_taking_the_next_word_as_its_value() {
     // A newer Claude's option this table lacks: its value is not the
-    // prompt, so a piped prompt skips the wait instead of waiting hours and
-    // rerunning with no prompt.
+    // prompt. The launch is therefore treated as having its prompt on
+    // stdin, so stdin is copied aside and replayed (issue #2815). The
+    // other way round would be worse: a wait of hours and then a rerun
+    // with no prompt at all.
     assert_eq!(p(&["-p", "--some-new-opt", "value"]), PRINT_ONLY);
     assert_eq!(p(&["-p", "-z", "value"]), PRINT_ONLY);
     // Followed by a real prompt, the prompt is missed too. That is the safe
     // side: `prompt` only matters with stdin on a pipe, where a missed
-    // prompt means "no wait", the behaviour before this feature.
+    // prompt means the pipe is copied aside — a copy nothing reads, which
+    // costs a file and no correctness.
     assert_eq!(p(&["-p", "--some-new-flag", "the real prompt"]), PRINT_ONLY);
     // It takes at most one word, and never an option.
     assert_eq!(p(&["-p", "--some-new-opt", "v", "x"]), PRINT_PROMPT);

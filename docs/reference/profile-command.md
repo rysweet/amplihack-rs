@@ -5190,8 +5190,9 @@ The launch runs Claude under a supervising amplihack process:
   prompt, a read-only regular file holding the stored copy, opened at
   offset 0 (not a pipe). A socket or a closed descriptor gets `/dev/null`.
   The supervisor's main thread never reads stdin. The copier thread does,
-  and the supervisor joins it before a rerun, so a pipe that never reaches
-  end of file can delay a rerun (see [Stdin](#stdin-handling));
+  and the supervisor joins it before a rerun, and before standing down, so
+  a pipe that never reaches end of file can delay either (see
+  [Stdin](#stdin-handling));
 - `SIGTERM` and `SIGHUP` are forwarded to the attempt; `SIGINT` reaches it
   through the terminal.
 
@@ -10813,7 +10814,9 @@ A launch is supervised for the wait when all of these hold:
 
 When checks 1 to 5 pass but the step cannot be supervised (check 6, or a
 scratch directory failure), the launch writes `skipped reason=not_supervised`
-once and runs unsupervised, as before.
+once and runs unsupervised, as before. A prompt copier that had already
+started hands the prompt back to that unsupervised launch first; see
+[Stdin handling](#stdin-handling).
 
 With an inherited profile and auto-switch on, the
 [auto-switch reruns](#usage-limit-reruns) come first and the wait follows.
@@ -10872,7 +10875,7 @@ continues the usage-limit wait or auto-switch rerun it would have had with the
 prompt in `-p`. A write to an attempt that has already exited (`EPIPE`) is
 ignored, and does not stop the copy or the step.
 
-Two failures differ in what they do:
+Three failures differ in what they do:
 
 - **The capture file cannot be created**, for instance because the rerun
   directory is missing. No byte of stdin has been consumed, so attempt one
@@ -10880,16 +10883,37 @@ Two failures differ in what they do:
   (`auto-switch: no rerun under profile …`) nor waited for
   (`skipped reason=piped_prompt`). `piped_prompt` therefore means that the
   prompt could not be stored, not that it was on a pipe.
-- **The copy fails or is cut short after attempt one started**, through a
-  copier error, a write error or an incomplete capture. Attempt one is not
-  affected, but the rerun returns an error instead of starting. The prompt is
-  never replayed from a partial file, and this case does not write
-  `skipped reason=piped_prompt`.
+- **The copy fails while it is running**, through a write error on the
+  capture file or an error reading stdin. Attempt one is not affected and
+  still receives every byte that arrives. The copier publishes the loss as
+  soon as it happens, and the supervisor reads that when it classifies the
+  limit, before it plans anything: the step takes the same two refusals as a
+  capture that was never created, and the attempt's own result, its held-back
+  stdout included, is passed up. No wait is announced and none is served.
+- **The loss lands too late to be read that way**: a copier that failed on
+  its final flush, one that panicked, or one that had not yet reached the
+  failing write when the limit was classified. The rerun then returns an
+  error instead of starting. The prompt is never replayed from a partial
+  file, and this case does not write `skipped reason=piped_prompt`.
 
 The join has one cost. The copier ends only when the writer closes the pipe.
 If attempt one reports a usage limit without reading its prompt and the pipe
 never reaches end of file, the rerun is delayed until it does. The
-supervisor does not defend against this.
+supervisor does not defend against this. A step that meets no limit never
+joins the copier at all, so a pipe held open with nothing written to it does
+not hold such a step up.
+
+**Standing down.** The supervisor stands down, and the caller runs the step
+once in this process, when it cannot start at all: no scratch directory, no
+stop-signal handler, or a first attempt that never spawned. That plain launch
+inherits this process's own fd 0, which the copier has been draining since
+before the first attempt. The supervisor therefore joins the copier and puts
+the whole stored prompt back on fd 0 first, so the launch reads the same
+bytes; the capture file is unlinked immediately afterwards, so nothing is
+left in the rerun directory while the step runs. Where the prompt cannot be
+put back whole, the step is not run at all and the error names both the
+reason the supervisor stood down and the reason the prompt was lost. A
+shortened prompt is a shortened task, and it would be acted on silently.
 
 The prompt is any positional argument, wherever it is, read with Claude's
 option table so that the values of options such as `--model`,

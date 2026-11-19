@@ -55,7 +55,7 @@ pub struct Pick {
 /// profile.
 ///
 /// The caller writes [`Pick::per_token`] when it makes the move, not here: a
-/// piped prompt can still refuse the rerun.
+/// piped prompt the supervisor could not store can still refuse the rerun.
 pub fn nested_candidate(
     state: &State,
     ledger: &Ledger,
@@ -389,8 +389,17 @@ pub fn supervise(
 /// could not start, so the caller launches unsupervised; once an attempt
 /// has run, errors are returned instead, so a step is never run twice by
 /// accident.
+///
+/// Every `Ok(None)` goes through [`unsupervised`], which hands the plain
+/// launch back whatever the prompt copier took off fd 0 before it stood
+/// down (issue #2816).
 pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Option<i32>> {
     let on = switch.is_some();
+    // Looks at stdin without reading it, so nothing here can block. It is
+    // taken before the scratch directory so that every path out of this
+    // function, including the ones that stand down below, can say what has
+    // been taken off stdin and hand it back (issue #2816).
+    let mut stdin = RerunStdin::capture();
     let setup = scratch_dir(switch.as_ref().map(|s| &s.state)).and_then(|dir| {
         Ok((
             dir,
@@ -399,11 +408,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     });
     let (rerun_dir, exe) = match setup {
         Ok(s) => s,
-        Err(e) => return unsupervised(&waiter, on, &e),
+        Err(e) => return unsupervised(&waiter, on, &mut stdin, &e),
     };
     super::sweep_rerun(&rerun_dir);
-    // Never reads stdin, so nothing here can block before signals are caught.
-    let mut stdin = RerunStdin::capture();
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     // Issue #2815: the step's prompt is on the pipe, which is how a recipe
     // agent step is always given one. Copy it aside as it arrives, so a
@@ -415,14 +422,22 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         stdin = captured;
     }
     // No copy was made: as before #2815, neither an auto-switch rerun nor
-    // the wait could give the prompt to another attempt.
-    let no_capture = prompt_on_stdin && !matches!(stdin, RerunStdin::Captured(_));
+    // the wait could give the prompt to another attempt. Set again below
+    // if the copy is later lost (#2816).
+    let mut no_capture = prompt_on_stdin && !stdin.was_drained();
     if no_capture {
         waiter.block(NoWait::PipedPrompt);
     }
     let signals = match Signals::register() {
         Ok(s) => s,
-        Err(e) => return unsupervised(&waiter, on, &format!("cannot catch stop signals: {e}")),
+        Err(e) => {
+            return unsupervised(
+                &waiter,
+                on,
+                &mut stdin,
+                &format!("cannot catch stop signals: {e}"),
+            );
+        }
     };
 
     // The profile this attempt runs under; `None` keeps the inherited
@@ -522,9 +537,11 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             recovery.as_ref(),
         ) {
             Ok(a) => a,
-            // The first attempt never started, so a plain launch can follow.
+            // The first attempt never started, so a plain launch can
+            // follow. `unsupervised` gives it back the prompt a copier has
+            // taken off stdin by now, or refuses to let it run (#2816).
             Err(e) if n == 1 && profile.is_none() => {
-                return unsupervised(&waiter, on, &e);
+                return unsupervised(&waiter, on, &mut stdin, &e);
             }
             Err(e) => return Err(e),
         };
@@ -537,6 +554,18 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         let Some(lim) = usage_limited(&attempt, waiter.now()) else {
             return attempt.finish(None);
         };
+        // Issue #2816: the copier knows at once when the capture file was
+        // lost, but `for_attempt` only asks when a rerun is already due,
+        // which is after the wait. Ask here instead, without joining the
+        // copier: a capture already known to be lost then refuses the
+        // auto-switch rerun and the wait on the spot, with the reasons
+        // either already gives, and this attempt's result — its held-back
+        // stdout included — is passed up. Waiting hours and then failing
+        // adds an outcome no caller asked for.
+        if !no_capture && stdin.capture_lost() {
+            no_capture = true;
+            waiter.block(NoWait::PipedPrompt);
+        }
         if let Some(client) = &recovery {
             client.outcome(recipe_runner_rs::recovery::model::Outcome::UsageLimit)?;
         }
@@ -727,12 +756,39 @@ fn scratch_dir(state: Option<&State>) -> Result<PathBuf> {
     }
 }
 
-fn unsupervised(waiter: &Waiter, on: bool, why: &dyn std::fmt::Display) -> Result<Option<i32>> {
+/// Stands down: the supervisor cannot go on and no attempt has run, so the
+/// caller runs the step once in this process (`Ok(None)`).
+///
+/// That launch inherits this process's own fd 0, which is why `stdin` is
+/// taken: a prompt copier started for issue #2815 has been reading fd 0
+/// since before the first attempt, and handing the launch what is left of
+/// that pipe would give it an empty or truncated prompt (issue #2816).
+/// `hand_back` puts the stored prompt back on fd 0 for every kind of stdin
+/// that needed taking, and does nothing for the kinds that did not. When it
+/// cannot, this returns `Err`: the step is not run at all, rather than run
+/// on a prompt that is short by whatever the copier read.
+fn unsupervised(
+    waiter: &Waiter,
+    on: bool,
+    stdin: &mut RerunStdin,
+    why: &dyn std::fmt::Display,
+) -> Result<Option<i32>> {
     let who = if on {
         "auto-switch"
     } else {
         "the usage-limit wait"
     };
+    // Issue #2816: by this point a copier may already have taken the
+    // step's prompt off fd 0, and the plain launch that follows inherits
+    // fd 0. Put the stored prompt back first, so that launch reads the
+    // same bytes; where it cannot be put back the step is not run at all,
+    // because a shortened prompt is a shortened task.
+    stdin.hand_back().map_err(|e| {
+        anyhow::anyhow!(
+            "{who} cannot supervise this step ({why}), and the copy of this step's prompt \
+             cannot be given to a plain launch either, so the step was not run: {e}"
+        )
+    })?;
     eprintln!("warning: {who} cannot supervise this step ({why}); running it once");
     waiter.not_supervised();
     Ok(None)

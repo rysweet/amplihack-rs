@@ -5,7 +5,12 @@
 //!   runs again with the same input. The value of a hidden option or of an
 //!   option this Claude version does not know is not taken as the prompt
 //!   either.
-//! - A stdin pipe held open by the caller does not hang the step.
+//! - A stdin pipe held open by the caller does not hang the step. The case
+//!   here is the one where no copy is made, because the prompt is in argv:
+//!   nothing in this file reaches the copier. The matching case on the
+//!   capture path, where a copier does run on a pipe the caller never
+//!   closes, is `a_held_open_captured_pipe_does_not_hang_the_step` in
+//!   `issue_2815_piped_prompt_wait.rs` (issue #2816).
 //!
 //! See `issue_1618_fixture`.
 
@@ -51,6 +56,10 @@ fn a_prompt_piped_on_stdin_is_waited_for_and_replayed() {
     }
 }
 
+/// The prompt is in argv (`f.step()` is `-p step`), so `prompt_in_args` is
+/// true and stdin is never copied. This is the guard for the path that
+/// leaves stdin alone; the capture path has its own, named in the module
+/// comment above.
 #[test]
 fn a_held_open_stdin_pipe_does_not_hang_the_step() {
     let f = Fixture::new();
