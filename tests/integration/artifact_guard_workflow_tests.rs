@@ -120,13 +120,13 @@ fn finalize_push_cleanup_guards_immediately_before_broad_staging() {
         .find("amplihack hygiene artifact-guard --repo . --mode pre-publish")
         .expect("step-20b must guard the exact repo before broad staging");
     let add = command
-        .find("git add -A")
-        .expect("step-20b currently performs broad staging");
+        .find("stage_workflow_changes")
+        .expect("step-20b stages the whole tree through the shared helper (#2839)");
     let between = &command[guard..add];
 
     assert!(
         guard < add,
-        "step-20b must invoke Artifact Guard before git add -A"
+        "step-20b must invoke Artifact Guard before it stages"
     );
     assert!(
         between
@@ -135,11 +135,11 @@ fn finalize_push_cleanup_guards_immediately_before_broad_staging() {
                 let trimmed = line.trim();
                 !trimmed.is_empty()
                     && !trimmed.starts_with("amplihack hygiene artifact-guard")
-                    && !trimmed.starts_with("git add -A")
+                    && !trimmed.starts_with("stage_workflow_changes")
             })
             .count()
             == 0,
-        "Artifact Guard must be the deterministic final gate immediately before git add -A; intervening lines:\n{between}"
+        "Artifact Guard must be the deterministic final gate immediately before staging; intervening lines:\n{between}"
     );
 }
 
@@ -319,22 +319,20 @@ fn workflow_publish_outside_in_fix_loop_guards_its_inline_git_add_all() {
     let prompt = step_text(&recipe, "step-16b-outside-in-fix-loop", "prompt");
     let guard = prompt
         .find("amplihack hygiene artifact-guard")
-        .expect("outside-in fix loop must guard its inline git add -A");
-    let add = prompt
-        .find("git add -A")
-        .expect("outside-in fix loop currently contains broad staging");
+        .expect("outside-in fix loop must guard its inline staging");
     let guarded_line = prompt[guard..]
         .lines()
         .next()
         .expect("guard snippet must be line-oriented");
 
+    // What the snippet stages is not named here. It is behaviour, checked by
+    // running the real step bodies in
+    // amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh.
+    // What this test owns is the chain: the guard runs first, and only its
+    // success lets the rest of the line run.
     assert!(
-        guard < add,
-        "outside-in fix loop must invoke artifact guard immediately before broad staging"
-    );
-    assert!(
-        guarded_line.contains("&& git add -A"),
-        "outside-in fix loop snippet must hard-chain guard success to broad staging; line was `{guarded_line}`"
+        guarded_line.starts_with(&format!("{GUARD} --repo . --mode pre-publish &&")),
+        "outside-in fix loop snippet must hard-chain guard success to staging; line was `{guarded_line}`"
     );
 }
 
@@ -497,7 +495,6 @@ fn broad_add_recheck_scanner_flags_a_synthetic_unguarded_commit() {
 fn every_recipe_broad_add_followed_by_commit_is_rechecked_by_the_guard() {
     // D5 / R7: guard -> git add -A -> guard -> git commit, in every recipe.
     let mut missing = Vec::new();
-    let mut checked = 0;
     for path in recipe_files() {
         let recipe = serde_yaml::from_str::<Value>(&read(&path))
             .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
@@ -505,7 +502,6 @@ fn every_recipe_broad_add_followed_by_commit_is_rechecked_by_the_guard() {
             if broad_add_spans(&body).is_empty() {
                 continue;
             }
-            checked += 1;
             for offset in adds_committed_without_recheck(&body) {
                 let line = body[offset..].lines().next().unwrap_or_default();
                 missing.push(format!(
@@ -519,14 +515,13 @@ fn every_recipe_broad_add_followed_by_commit_is_rechecked_by_the_guard() {
         }
     }
 
-    // The three phase-1 commit sites no longer use a broad add: the TDD
-    // checkpoint stages captured paths (#1672) and the refactor and publish
-    // steps use `stage_workflow_changes` (#1671). Both are checked in
-    // `phase1_commit_sites_never_fall_back_to_repo_path`.
-    assert!(
-        checked >= 7,
-        "expected the seven executable broad-add commit sites to be scanned, found {checked}"
-    );
+    // No bundle recipe spells a raw broad add any more: the TDD checkpoint
+    // stages the paths it captured (#1672) and every publication and review
+    // step stages through `stage_workflow_changes` (#1671, #2839). The scan
+    // is therefore a regression guard for a raw add being written again,
+    // rather than a count of sites; what the converted sites actually stage
+    // and commit is checked by running the real step bodies in
+    // amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh.
     assert!(
         missing.is_empty(),
         "every broad add that is committed must be re-checked by the artifact guard \
@@ -579,18 +574,23 @@ fn workflow_publish_fix_loop_stops_when_the_post_add_guard_refuses() {
     // guard must end the shell, or `git commit` on the next line still runs.
     let recipe = load_recipe("workflow-publish.yaml");
     let prompt = step_text(&recipe, "step-16b-outside-in-fix-loop", "prompt");
+    let pre_publish = format!("{GUARD} --repo . --mode pre-publish");
     let line = prompt
         .lines()
-        .find(|line| line.contains("git add -A"))
-        .expect("step-16b stages with git add -A");
-    let add = line.find("git add -A").expect("add on the line");
+        .find(|line| line.matches(&pre_publish).count() == 2)
+        .expect("step-16b guards both sides of its staging on one line");
+    let first = line.find(&pre_publish).expect("the first guard");
+    let second = line
+        .rfind(&format!("&& {pre_publish}"))
+        .expect("the second guard is chained after the staging on the same line");
+    let staged_between = line[first + pre_publish.len()..second]
+        .trim()
+        .strip_prefix("&&")
+        .map(str::trim)
+        .expect("the first guard is hard-chained to the staging command");
     assert!(
-        line[..add].contains(&format!("{GUARD} --repo . --mode pre-publish &&")),
-        "the first guard is hard-chained to the add: `{line}`"
-    );
-    assert!(
-        line[add..].contains(&format!("&& {GUARD} --repo . --mode pre-publish")),
-        "the second guard is chained after the add on the same line: `{line}`"
+        !staged_between.is_empty(),
+        "something must stage between the two guards: `{line}`"
     );
     let tail = line.rsplit_once("||").map(|(_, tail)| tail).unwrap_or("");
     assert!(
@@ -733,7 +733,9 @@ fn finalize_push_cleanup_never_commits_in_repo_path_or_cwd() {
         .find("exit 0")
         .map(|offset| warning + offset)
         .expect("step-20b must exit 0 (resilient, #414) when it skips");
-    let add = command.find("git add -A").expect("step-20b stages");
+    let add = command
+        .find("stage_workflow_changes")
+        .expect("step-20b stages");
     assert!(skip < add, "the skip must happen before anything is staged");
     for linked_check in ["--absolute-git-dir", "--git-common-dir"] {
         let at = command
@@ -1065,14 +1067,15 @@ fn checkpoint_and_review_recheck_after_staging() {
         "TDD checkpoint must recheck artifacts between scoped staging and commit: {command}"
     );
 
-    // Review feedback still uses broad staging and keeps the guard on the
-    // same line, so `set -e` binds a failed add before the guard can run.
+    // Review feedback stages the whole tree through the shared helper (#2839)
+    // and keeps the guard on the same line, so `set -e` binds a failed stage
+    // before the guard can run.
     let review = load_recipe("workflow-pr-review.yaml");
     let command = step_text(&review, "step-18c-push-feedback-changes", "command");
     assert!(
         command.lines().any(|line| line.trim()
-            == "git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish"),
-        "workflow-pr-review.yaml must recheck artifacts after broad staging: {command}"
+            == "stage_workflow_changes; amplihack hygiene artifact-guard --repo . --mode pre-publish"),
+        "workflow-pr-review.yaml must recheck artifacts after staging: {command}"
     );
 }
 

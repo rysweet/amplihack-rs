@@ -220,20 +220,24 @@ steps:
         printf 'none'; exit 0
       fi
       command -v pre-commit >/dev/null 2>&1 || qc_die "pre-commit is not on PATH, and this repository configures it"
+      # #2839: the same shared helper the commit two steps later uses, so the
+      # FILES handed to `pre-commit run --files` cannot contain private report JSON.
+      [ -f "$QC_TOOLS/workflow_stage_changes.sh" ] || qc_die "workflow_stage_changes.sh is missing from $QC_TOOLS"
+      . "$QC_TOOLS/workflow_stage_changes.sh"
       # quick_change_common.sh already set this; repeated so the guard and the
       # staging below visibly run under it (#1528).
       set -euo pipefail
       amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before staging; fix the cause, never bypass it (#1528)" >&2; exit 1; }
-      git add -A
+      stage_workflow_changes || { echo "STOP: staging failed" >&2; exit 1; }
       amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused after staging; fix the cause, never bypass it (#1528)" >&2; exit 1; }
       FILES=()
       while IFS= read -r -d '' f; do FILES+=("$f"); done < <(git diff --cached --name-only -z --diff-filter=d "$BASE" --)
       [ "${#FILES[@]}" -gt 0 ] || { printf 'none'; exit 0; }
       if ! pre-commit run --files "${FILES[@]}" >&2; then
-        git add -A
+        stage_workflow_changes || { echo "STOP: staging failed" >&2; exit 1; }
         pre-commit run --files "${FILES[@]}" >&2 || qc_die "pre-commit hooks failed twice; fix what they report, never bypass them"
       fi
-      git add -A
+      stage_workflow_changes || { echo "STOP: staging failed" >&2; exit 1; }
       printf 'passed'
     output: "light_precommit_result"
   - id: "light-commit-push"
@@ -246,14 +250,15 @@ steps:
       BRANCH="$(qc_branch)"
       RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
       BASE="$(qc_base)"
-      for helper in git-identity.sh workflow_hook_repair.sh verify_pushed_ref.sh; do
+      for helper in git-identity.sh workflow_hook_repair.sh verify_pushed_ref.sh workflow_stage_changes.sh; do
         [ -f "$QC_TOOLS/$helper" ] || qc_die "$helper is missing from $QC_TOOLS"
       done
       . "$QC_TOOLS/git-identity.sh"
       . "$QC_TOOLS/workflow_hook_repair.sh"
+      . "$QC_TOOLS/workflow_stage_changes.sh"  # #2839: private root run/reports/ stays out of the index
       set -euo pipefail
       amplihack hygiene artifact-guard --repo . --mode pre-publish || { echo "STOP: artifact guard refused before staging; fix the cause, never bypass it (#1528)" >&2; exit 1; }
-      git add -A
+      stage_workflow_changes || { echo "STOP: staging failed" >&2; exit 1; }
       amplihack hygiene artifact-guard --repo . --mode pre-publish || { echo "STOP: artifact guard refused after staging; fix the cause, never bypass it (#1528)" >&2; exit 1; }
       ! git diff --cached --quiet || qc_die "nothing staged to commit; the agent made no change"
       ISSUE="$(qc_issue)"
