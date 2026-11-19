@@ -604,52 +604,36 @@ Elsewhere a directory named `target` without `CACHEDIR.TAG`, such as
 An untracked path is also excluded, at the top of the repository only, when
 it is under `.claude/runtime/`, `.amplihack/` or `run/reports/`. An agent
 session started in the worktree, such as a repair round, writes its session
-log, metrics and code graph under the first two; outside amplihack-rs those
-directories are often not ignored. `run/reports/` holds a run's private
-execution reports, such as CI snapshots and step results. They are evidence
-for the operator, not product source.
-
-The match is anchored to the top of the repository, so `crates/foo/run/reports/keep.json`,
-`run/reports.rs` and `run/logs/x` are source and are staged.
+log, metrics and code graph under the first two. `run/reports/` holds a run's
+private execution reports, which are evidence for the operator and not source.
+Only the top-level directory is excluded: `crates/foo/run/reports/keep.json`
+and `run/reports.rs` are staged.
 
 Excluded paths are printed on stderr, one per line, prefixed
 `stage_workflow_changes: skipped `. Files the repository already tracks are
 staged when modified, including a tracked file under `.claude/runtime/` or
 `.amplihack/`.
 
-### Reports that are already staged or tracked
-
-Excluding untracked files alone is not enough. `git add -u` refreshes every
-path already in the index, so a report an earlier agent step staged, or one an
-earlier commit already tracks, would reach the next commit. After `git add -u`
-and the untracked add, the helper therefore takes the staged state of
-top-level `run/reports/` paths back out of the index: a staged addition is
-dropped, and a tracked report that has been rewritten is reset to its version
-in `HEAD`. A staged *deletion* passes through, so a commit that removes
-reports published by mistake still works. Where the repository has no commit
-yet, every cached path under `run/reports/` is dropped instead.
-
-The operation changes the index only. Report files keep their bytes on disk,
-and no path outside top-level `run/reports/` is named, so unrelated staged
-source stays staged. Commits that already hold reports are not rewritten: the
-helper keeps new reports and new report edits out of later commits and does
-nothing about earlier ones. Each affected path is printed on stderr as
-`stage_workflow_changes: unstaged <path>`; paths only, never file contents.
+`run/reports/` is also handled in the index (#2839), because `git add -u`
+refreshes every path already staged or tracked. After staging, the helper
+drops a staged `run/reports/` addition and resets a rewritten, tracked report
+to its version in `HEAD`; with no commit yet it drops every cached path there.
+A staged deletion is left alone, so a commit that removes reports published
+earlier still works. The operation is index-only: report files keep their
+bytes on disk, unrelated staged source stays staged, and earlier commits are
+not rewritten. Each path is printed on stderr as
+`stage_workflow_changes: unstaged <path>`.
 
 Untracked paths are added with `git --literal-pathspecs add
 --pathspec-from-file=<list> --pathspec-file-nul`, so a file named `*` or
-`:(glob)x` is treated as a name. The `git reset` and `git rm --cached` calls
-that unstage reports take the same `--literal-pathspecs` and read a
-NUL-separated list. On a git version that predates `--pathspec-from-file` the
-helper falls back to `xargs -0` with the same literal-pathspec command.
+`:(glob)x` is treated as a name. The unstaging calls are also literal. On git
+older than 2.25 the helper falls back to `xargs -0`.
 
 The `artifact-guard` calls are unchanged. `stage_workflow_changes` runs
-between the call before staging and the call after it at every publication and
-checkpoint step that stages the whole tree, so the second call checks what the
-helper staged. Each such step resolves `workflow_stage_changes.sh` through the
-same search chain as its other helpers and exits with status 2 when it is
-missing, rather than falling back to a raw add. Tests pin this for every step;
-see [Tests](#tests).
+between the call before staging and the call after it at each step that stages
+the whole tree. Each step resolves `workflow_stage_changes.sh` through the same
+search chain as its other helpers and exits with status 2 when it is missing,
+rather than falling back to a raw add.
 
 ## `hook_repair_run`
 
@@ -865,7 +849,7 @@ fails closed. This is tracked in #1675.
 
 | Test | Covers |
 |---|---|
-| `amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh` | staging and exclusions (including private `run/reports/` files, in temporary repositories with synthetic reports), classification, id sanitising, redaction, verdict parsing, refusal cases, usage errors, result-line JSON, and the extracted checkpoint and step-15 bodies against a stub `AMPLIHACK_BIN` |
+| `amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh` | staging and exclusions (including private `run/reports/` files, in temporary repositories), classification, id sanitising, redaction, verdict parsing, refusal cases, usage errors, result-line JSON, and the extracted checkpoint and step-15 bodies against a stub `AMPLIHACK_BIN` |
 | `tests/integration/issue_1671_hook_rejection_repair_test.rs` | runs the shell test from `cargo test` |
 
 The stub agent is driven by `STUB_AGENT_ACTION`, a space-separated list of
@@ -912,7 +896,7 @@ has its own case in the shell test:
 | a git directory that cannot hold the attempt file still yields redacted stderr and `--output` | [Evidence](#evidence) |
 | `not_fixable_in_code` with no diff and the same output stops without the evaluator; any difference goes to it | [No-progress stop](#no-progress-stop) |
 | lockfiles are staged | [Staging rules](#staging-rules) |
-| private `run/reports/` stays out of the commit whether it is untracked, pre-staged, tracked and rewritten, renamed, or in a repository with no commit yet; a staged deletion still commits; only the top-level directory is excluded | [Reports that are already staged or tracked](#reports-that-are-already-staged-or-tracked) |
+| top-level `run/reports/` stays out of the index whether untracked, pre-staged, rewritten or in a repository with no commit; a staged deletion still commits | [Staging rules](#staging-rules) |
 | step-15's commit hook never sees `PRE_COMMIT_ALLOW_NO_CONFIG`; a checkpoint's does without a config | [Where it applies](#where-it-applies) |
 | a kept `HR_DIR` holds no unredacted agent or evaluator log | [Evidence](#evidence) |
 
