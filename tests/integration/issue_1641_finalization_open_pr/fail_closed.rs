@@ -103,18 +103,8 @@ fn unusable_run_scope_is_never_read_and_never_decided() {
         outcome.describe()
     );
     fx.assert_gh_not_called("branch mismatch");
-}
 
-// What used to be the last case of the test above: a run branch named `main`
-// or `master`. The facts reader blanked those three names, which refused the
-// read before gh was asked -- a decision taken in the collector about what
-// the assessment is there to decide, and one that never covered a repository
-// whose default branch is `trunk` (#2819). The branch is now read like any
-// other, and what still holds is the part that was doing the work: reading
-// facts decides nothing, so with no assessment there is no decision, whatever
-// the branch is called.
-#[test]
-fn a_default_branch_name_is_read_and_still_decides_nothing() {
+    // Runs on the default branch never qualify.
     for branch in ["main", "master"] {
         let fx = Fixture::on_branch(branch);
         let mut view = open_pr(green_rollup());
@@ -122,18 +112,9 @@ fn a_default_branch_name_is_read_and_still_decides_nothing() {
         fx.gh_view(&view);
         let mut envs = with_url(&fx);
         set_branch(&mut envs, branch);
-
         let outcome = fx.validate(&as_refs(&envs));
-
         assert_no_decision(&outcome, branch);
-        assert!(
-            outcome
-                .field("evidence_used")
-                .contains(&format!("outcome.branch={branch}")),
-            "the branch must reach the facts rather than be refused by name: {}",
-            outcome.field("evidence_used")
-        );
-        fx.assert_gh_reads_only();
+        fx.assert_gh_not_called(branch);
     }
 }
 

@@ -261,7 +261,7 @@ fn a_failure_decided_with_nothing_pushed_names_the_branch_and_no_pull_request() 
     );
 }
 
-// #2819: `EXISTING_OPEN_PR` is defined as a pull request open at the run's
+// #2819 R1: `EXISTING_OPEN_PR` is defined as a pull request open at the run's
 // head. A decision that reports it while naming no pull request has shown
 // nothing, so finalization refuses to publish it: that is no decision, and the
 // run goes to the recovery agent with the reason quoting what came back. This
@@ -320,7 +320,7 @@ fn the_same_success_is_published_when_the_decision_names_the_pull_request() {
     assert_hands_pr_on(&fx.validate(&as_refs(&decided(&fx, "EXISTING_OPEN_PR", "7"))));
 }
 
-// #2819: and when that number came back as a JSON number rather than a
+// #2819 R3: and when that number came back as a JSON number rather than a
 // string. `gh` reports `"number": 7`, so an agent told to read the pull
 // request back and report its number returns the integer it was shown. A type
 // gate on that key would read it as a wrong type, reach the caller as an empty
@@ -389,7 +389,7 @@ fn a_recorded_outcome_whose_pr_number_is_a_json_number_is_read_as_written() {
     );
 }
 
-// #2819, the regression the broad form of the above caused and the guard
+// #2819 R4, the regression the broad form of the above caused and the guard
 // against it returning. `git.dirty_worktree` is a blocker: a worktree with
 // uncommitted changes must never reach a terminal success. The validator fails
 // on exactly `true` and trusts exactly `false`; every other value is not an
@@ -604,7 +604,7 @@ fn a_decision_is_not_published_when_the_facts_could_not_be_gathered() {
     );
 }
 
-// #2819: a context file that was selected and carried nothing says so,
+// #2819 R2: a context file that was selected and carried nothing says so,
 // once, naming the path and why. Without that line a consumer downstream
 // reports only that its producer "produced no output" and nothing anywhere
 // names the file. The status is unchanged -- absence, not a failure -- so the

@@ -13,7 +13,7 @@
 # that one decision without re-checking the file.
 #
 # Deciding it once is also the one place that can say WHY the file carried
-# nothing (#2819), so this prints exactly one line naming the path and the reason when
+# nothing (#2819 R2), so this prints exactly one line naming the path and the reason when
 # a file was selected and could not be read. The status stays 2: a reader that
 # got no data still reads the run's real outcome instead of ending the run.
 # Without the line, a consumer such as workflow_enforce_verdict.sh reports that

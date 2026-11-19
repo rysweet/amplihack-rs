@@ -9,9 +9,8 @@
 #      collect-finalization-evidence recorded, or one live read when it
 #      recorded none;
 #   3. report the terminal state assess-finalization decided on those facts,
-#      refusing to certify only an answer that carries no decision at all --
-#      which is _finalization_assessment_decides's question, asked there and
-#      nowhere else, so this file holds no copy of the rule.
+#      refusing to certify only the one decision that contradicts its own
+#      definition: a state that IS an open pull request, naming none.
 #
 # What it does NOT do: compare the local head with a remote head or a pull
 # request head, read a check class as a success or a failure, infer a terminal
@@ -25,18 +24,17 @@
 # leaves validate-agentic-finalization failing for its recovery agent, which
 # stops with the reason (docs/reference/step-failure-recovery.md).
 #
-# #2819: that recovery agent cannot repair its way out, and the step is wired
-# `--no-repair` so it is never offered the attempt. Everything this file
+# #2819 R2: that recovery agent cannot repair its way out, and the step is
+# wired `--no-repair` so it is never offered the attempt. Everything this file
 # decides on was recorded before the step first ran -- the decision from
 # finalization_assessment, the facts and the blockers from
 # finalization_evidence -- so a second run of the same body reads the same
 # values and reaches the same end. Nothing the agent is permitted to do
-# changes them: it may make no GitHub write, and may start no recipe, so it
+# changes them: it may make no GitHub write, so it cannot push the branch or
+# open the pull request the facts are missing, and may start no recipe, so it
 # cannot produce an assessment where there was none. Repairing the run's
-# outcome belongs to assess-finalization. Retrying THAT step is the recipe's
-# job -- assessment-decision-status asks whether it produced a decision and
-# reassess-finalization runs it once more when it did not, both upstream of
-# here, so a failed model call costs a second call rather than a finished run.
+# outcome belongs to assess-finalization, which is allowed exactly those two
+# actions and then decides on what it did.
 #
 # The facts themselves are obtained and rendered by
 # workflow_finalization_facts.sh, which this file requires to be sourced
@@ -55,7 +53,7 @@ validate_finalization() {
   local outcome_present="false" outcome_branch="" outcome_local_head="" outcome_remote=""
   local outcome_remote_head="" outcome_pr_number="" outcome_pr_url="" outcome_pr_state=""
   local outcome_pr_head="" outcome_checks="" outcome_unread=""
-  local assessment_state="" assessment_action="" assessment_pr="" assessment_gap="" assessment_reason="" assessment_next=""
+  local assessment_state="" assessment_action="" assessment_pr="" assessment_pr_raw="" assessment_reason="" assessment_next=""
   finalization_evidence="$(workflow_context_read finalization_evidence || :)"
   # A selected field that is present but corrupt is not absence. It is not a
   # terminal state of its own and it never ends the run; it is reported beside
@@ -218,15 +216,12 @@ FIELDS
   assessment_reason="$(_finalization_outcome_clean "$(workflow_finalization_field finalization_assessment reason || :)")"
   assessment_next="$(_finalization_outcome_clean "$(workflow_finalization_field finalization_assessment next_action || :)")"
   case "$assessment_action" in ''|none) assessment_action="none" ;; *) assessment_action="$(_finalization_outcome_clean "$assessment_action")" ;; esac
-  # Is there a decision to report? Asked of the one implementation of that
-  # question, _finalization_assessment_decides in
-  # workflow_finalization_result.sh -- the same call assessment-status made
-  # before reassess-finalization ran, on the same two values, so the retry's
-  # question and this refusal are one rule and one sentence. It prints a
-  # reason on every refusal and nothing when it accepts, so an empty
-  # $assessment_gap IS "there is a decision". It is asked before the two
-  # normalizations below, on exactly what the assessment returned.
-  if assessment_gap="$(_finalization_assessment_decides "$assessment_state" "$assessment_pr")"; then :; fi
+  # What came back, kept only to quote it back when it is not a pull request
+  # number, the way an unusable terminal_state is quoted below: cleaned of
+  # control characters and cut to 40 characters, since a pull request number is
+  # at most ten digits. It is a sentence for a human and reaches no identity
+  # field of the result.
+  assessment_pr_raw="$(LC_ALL=C printf '%s' "$(_finalization_outcome_clean "$assessment_pr")" | LC_ALL=C cut -c1-40)"
   # The result names the pull request the assessment judged. A value that is
   # not a pull request number names none, and an assessment that names none is
   # taken at its word, so a decision about no pull request is never handed to
@@ -247,31 +242,42 @@ FIELDS
   evidence_used="$evidence_used$(corrupt_evidence_note)"
   open_pr_confirmed_facts="$evidence_used"
 
-  if [ -z "$assessment_gap" ]; then
+  if _finalization_state_allowed "$assessment_state"; then
     [ -n "$assessment_reason" ] || assessment_reason="assess-finalization reported $assessment_state on the run's outcome"
     [ -n "$assessment_next" ] || assessment_next="See the finalization assessment."
+    # #2819 R1: a state whose definition is an open pull request, reported
+    # without one, has not been shown. open_pr_confirmed_number is set only from a pull
+    # request number the assessment itself returned in canonical form, so this
+    # refuses exactly the decision that contradicts its own definition; it
+    # does not re-judge the facts, and it never substitutes a number from the
+    # run's own bookkeeping for the one the assessment was asked to read back.
+    # That is no decision, which is the recovery agent's to close, not a
+    # verdict about the run.
+    if _finalization_state_names_pr "$assessment_state" && [ -z "$open_pr_confirmed_number" ]; then
+      no_decision="assess-finalization reported $assessment_state, which is a pull request open at this run's head, but named none"
+      if [ -n "$assessment_pr_raw" ]; then
+        no_decision="$no_decision: it returned pr_number \"$assessment_pr_raw\", which is not a pull request number"
+      else
+        no_decision="$no_decision: it returned an empty pr_number"
+      fi
+      fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" "$no_decision" \
+        "Run finalization again so assess-finalization reports the number of the open pull request it read, or the state the facts do support; re-running this step alone reads the same recorded answer." \
+        "$evidence_used"
+    fi
     if _finalization_state_is_success "$assessment_state"; then
       classify_success "$assessment_state" "$assessment_reason" "$assessment_next" "$evidence_used"
     fi
     finalization_fail_or_handoff_open_pr "$assessment_state" "$assessment_reason" "$assessment_next" "$evidence_used"
   fi
 
-  # 5. No decision: the sentence _finalization_assessment_decides refused
-  #    with, above. The facts were gathered and nothing judged them -- a gap
-  #    in finalization itself, not a verdict about the run. The step is left
+  # 5. No decision. The facts were gathered and nothing judged them: a gap in
+  #    finalization itself, not a verdict about the run. The step is left
   #    failing for its recovery agent, whose move is to hand off with this
-  #    reason: no repair it may make can put a decision here (#2819).
-  #
-  #    An answer that delivered nothing at all gets one clause more. That gap
-  #    is reached only after assessment-status gave the step a second attempt
-  #    through reassess-finalization, so both attempts came back empty and the
-  #    model call is what the operator must act on, not the run's artifacts.
-  #    Which gap it is, is read off the delivered state here; whether it IS a
-  #    gap was decided once, by the call above.
-  no_decision="$assessment_gap"
-  [ -n "$assessment_state" ] || no_decision="$no_decision: neither it nor the re-run after it returned an answer a state could be read from, so the run was never judged"
+  #    reason: no repair it may make can put a decision here (#2819 R2).
+  no_decision="assess-finalization reported no terminal state for this run's outcome"
+  [ -z "$assessment_state" ] || no_decision="$no_decision; it returned \"$(_finalization_outcome_clean "$assessment_state")\", which is not a state finalization publishes"
   [ -z "$outcome_unread" ] || no_decision="$no_decision; the facts it would have judged are incomplete: $outcome_unread"
   fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" "$no_decision" \
-    "Run finalization again so assess-finalization decides on the gathered outcome -- naming the number of the open pull request it read when the state it reports asserts one -- or report why it cannot; re-running this step alone reads the same recorded answer." \
+    "Run finalization again so assess-finalization decides on the gathered outcome, or report why it cannot; re-running this step alone reads the same recorded answer." \
     "$evidence_used"
 }

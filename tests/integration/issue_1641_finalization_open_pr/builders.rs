@@ -33,7 +33,7 @@ pub fn assessment(terminal_state: &str, action: &str, pr: &str) -> (&'static str
 /// The same answer, exactly as written. `assessment` renders every leaf as a
 /// string; this takes the object so a case can write a leaf the way a model
 /// actually would -- `gh` reports `"number": 7`, and an agent asked to report
-/// the pull request it read back copies the integer (#2819).
+/// the pull request it read back copies the integer (#2819 R3).
 pub fn assessment_raw(answer: Value) -> (&'static str, String) {
     ("RECIPE_VAR_finalization_assessment", answer.to_string())
 }

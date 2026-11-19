@@ -59,13 +59,6 @@
 #       nothing, on stdout or stderr, when none resolves. Never calls gh. It
 #       does not check FORBIDDEN: a caller that uses its result as a base
 #       checks it with delivery_base_ref.
-#   delivery_default_and_base_branches DIR BASE
-#       Prints, comma-separated, the branch names a run in DIR neither branched
-#       from nor owns: the repository's default branch (delivery_default_base,
-#       local refs only) and BASE, the run's own base, with or without the
-#       `origin/` prefix. Empties and duplicates are dropped, so the result may
-#       be one name or none. It refuses nothing and decides nothing -- it is a
-#       fact for a reader that must not write to those branches (#2819).
 #   delivery_strict_mode STRICT REPOSITORY PR_REPOSITORY CLOSING_REFERENCE
 #       Prints `true` when STRICT is `true`, and `false` when STRICT is `false`
 #       or empty and the three strict-only inputs are empty. Returns 1, with
@@ -213,17 +206,6 @@ delivery_default_base() {
     fi
   done
   return 1
-}
-
-# The branch names a run neither branched from nor owns. Reads local refs
-# only, never gh, never the network, and never fails the caller: a repository
-# whose default branch cannot be read contributes nothing to the list.
-delivery_default_and_base_branches() {
-  local dir="${1:-.}" base="${2:-}" default=""
-  base="${base#refs/remotes/}"; base="${base#origin/}"
-  default="$( (cd "$dir" 2>/dev/null && delivery_default_base) || printf '' )"
-  printf '%s\n%s\n' "$default" "$base" \
-    | awk 'NF && !seen[$0]++ { printf "%s%s", (n++ ? "," : ""), $0 }'
 }
 
 delivery_strict_mode() {

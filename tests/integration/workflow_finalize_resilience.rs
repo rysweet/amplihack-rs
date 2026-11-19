@@ -1354,7 +1354,7 @@ fn agentic_finalization_ignores_adversarial_finalizer_prose() {
 // classifier #2343 removed would show here as a different state or exit status.
 //
 // `EXISTING_OPEN_PR` is the one state whose definition is a pull request, so
-// the decision that names it has to name one (#2819); every other state
+// the decision that names it has to name one (#2819 R1); every other state
 // asserts nothing about a pull request and names none. The PR-less case is
 // covered in `issue_2343_finalization_outcome::terminal_states`.
 #[test]

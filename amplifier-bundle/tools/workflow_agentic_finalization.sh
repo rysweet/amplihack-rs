@@ -72,8 +72,6 @@ if [ ! -f "$DELIVERY_INPUTS_HELPER" ] || [ ! -r "$DELIVERY_INPUTS_HELPER" ]; the
   exit 2
 fi
 # shellcheck source=workflow_delivery_inputs.sh disable=SC1090
-# Also delivery_default_and_base_branches (#2819), which the collector below
-# calls for the branch names the run neither branched from nor owns.
 . "$DELIVERY_INPUTS_HELPER"
 . "$here/workflow_finalization_metadata.sh"
 . "$here/workflow_finalization_collect.sh"
@@ -121,40 +119,13 @@ resolve_finalization_base() {
   fi
 }
 
-# assessment-status (#2819): whether the answer assess-finalization
-# recorded carries a decision, as one JSON object on stdout. The recipe reads
-# `usable` to decide whether to run the assessment once more, so a model call
-# that failed or came back as prose costs a second attempt instead of ending a
-# finished run with no decision (#2847 item 1).
-#
-# It reads only what that step recorded. No git call, no gh call, no verdict
-# about the run, and no terminal state: the question is whether there is one to
-# report. It always exits 0 -- a gap here must not end the run that the retry
-# exists to save -- and on a host without jq it reports usable=true, which
-# skips the retry and leaves the validator to report the gap as it did before.
-assessment_status() {
-  local state pr reason
-  if ! command -v jq >/dev/null 2>&1; then
-    printf '{"usable":"true","reason":"jq is unavailable, so the recorded assessment was not examined"}\n'
-    return 0
-  fi
-  state="$(workflow_finalization_field finalization_assessment terminal_state || :)"
-  pr="$(workflow_finalization_field finalization_assessment pr_number || :)"
-  if reason="$(_finalization_assessment_decides "$state" "$pr")"; then
-    jq -nc --arg state "$state" '{usable:"true", reason:("assess-finalization decided " + $state)}'
-  else
-    jq -nc --arg reason "$(_finalization_outcome_clean "$reason")" '{usable:"false", reason:$reason}'
-  fi
-}
-
 [ "$mode" != collect ] || resolve_finalization_base
 case "$mode" in
   collect) run_finalization_cleanup; collect_evidence ;;
-  assessment-status) assessment_status ;;
   validate) validate_finalization ;;
   complete) complete_workflow ;;
   *)
-    echo "ERROR: workflow_agentic_finalization.sh requires mode: collect, assessment-status, validate, or complete" >&2
+    echo "ERROR: workflow_agentic_finalization.sh requires mode: collect, validate, or complete" >&2
     exit 2
     ;;
 esac

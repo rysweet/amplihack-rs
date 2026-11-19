@@ -291,24 +291,18 @@ fn agentic_finalizer_prompt_requests_human_narrative_not_machine_json() {
     }
 }
 
-/// The validation step is wired after the step that decides, runs the helper
-/// in validate mode, and does not mask a failure as a completion. Everything
-/// below parses the shipped recipe; nothing reads the validator's source.
-///
-/// What the validator *does* with the decision is behaviour, and is driven
-/// rather than read: `issue_2343_finalization_outcome::terminal_states` for a
-/// dirty worktree, missing tooling and each published state,
-/// `issue_2343_finalization_outcome::recovery` for an answer that decides
-/// nothing, `issue_2343_finalization_outcome::wiring` for the shipped steps
-/// end to end, and `workflow_finalize_resilience` for the typed completion
-/// booleans deciding nothing. A `contains` over the script text would pass on
-/// a token left in a comment and fail on a rewording, and would break the
-/// next time the file is split (#2819,
-/// docs/howto/keep-tests-passing-under-host-load.md).
+/// The validation step reports the terminal state `assess-finalization`
+/// decided (#2343, #2809). It runs after that step, consumes no agent prose,
+/// and does not mask a failure as a completion. That the typed completion
+/// booleans decide nothing, and that every published state is reported as the
+/// assessment named it, is run in workflow_finalize_resilience.rs.
 #[test]
-fn validation_step_runs_after_the_decision_and_masks_no_failure() {
+fn validation_step_reports_the_assessment_and_reads_no_agent_prose() {
     let recipe = load_finalize_recipe();
     let command = step_command(&recipe, "validate-agentic-finalization");
+    let validator = crate::issue_1641_finalization_open_pr::fixture::tool_text(
+        "workflow_finalization_validate.sh",
+    );
 
     assert!(
         step_index(&recipe, "assess-finalization")
@@ -320,8 +314,8 @@ fn validation_step_runs_after_the_decision_and_masks_no_failure() {
         "the step must run the finalization helper in validate mode"
     );
 
-    // The step itself must not hand the agent narrative, or the retired
-    // brittle state, to the validator.
+    // Neither the step nor the validator may touch agent narrative or the
+    // retired brittle state.
     for forbidden in [
         "AGENTIC_FINALIZER_OUTPUT",
         "agentic_finalizer_output",
@@ -329,8 +323,23 @@ fn validation_step_runs_after_the_decision_and_masks_no_failure() {
         "single JSON object",
     ] {
         assert!(
-            !command.contains(forbidden),
+            !command.contains(forbidden) && !validator.contains(forbidden),
             "validation must not consume agent prose via `{forbidden}`"
+        );
+    }
+
+    // The state comes from the assessment's structured terminal_state. The
+    // validator itself ends a run only on a blocker in the local checkout or
+    // on there being no decision to report.
+    for required in [
+        "finalization_assessment terminal_state",
+        "FAILED_MISSING_TERMINAL_EVIDENCE",
+        "FAILED_DIRTY_WORKTREE",
+        "FAILED_MISSING_TOOLING",
+    ] {
+        assert!(
+            validator.contains(required),
+            "the validator must report the assessment's state; missing `{required}`"
         );
     }
 
