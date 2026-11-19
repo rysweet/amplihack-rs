@@ -24,6 +24,7 @@ existing decision policy.
 - [TDD verdict enforcement](#tdd-verdict-enforcement)
 - [Verification evidence producer](#verification-evidence-producer)
 - [Finalization consumers](#finalization-consumers)
+- [Absence and corruption](#absence-and-corruption-2343)
 - [Documentation checkpoint](#documentation-checkpoint)
 - [Consumer and file inventory](#consumer-and-file-inventory)
 - [Transport acceptance requirements](#transport-acceptance-requirements)
@@ -336,21 +337,43 @@ signals. Preserve Git/tool probes and publish/PR ownership boundaries.
 Before delimiter extraction, validation checks all five selected evidence fields:
 `git.dirty_worktree`, `tooling.missing`, `tooling.gh_required`,
 `prior_terminal_state.terminal_state` and `agent_outputs.hollow_success_signals`.
-Strings and Booleans are supported; absent/null fields remain conservative.
-Wrong field/container types, malformed selected transport and embedded NUL in any
-extracted String produce `FAILED_INVALID_EVIDENCE`, `terminal_success="false"`,
-`terminal_failure="true"`, `finalizer_output_valid="false"` and exit `1`. Invalid
-field-reader results cannot be discarded or repaired from stale aliases;
-positive completion and explicit no-op cannot override them. Newlines and other
-non-NUL control characters remain data and cannot hide later blocker fields.
+Strings and Booleans are supported; absent/null fields remain conservative. A
+JSON number is a wrong type in all five, and in every other selected leaf but
+two: `finalization_assessment.pr_number` and `finalization_evidence.outcome.pr_number`
+also accept one, and render it as jq printed it (#2819). That exception is per
+key, as it already was for `pr_number` and `commits_ahead` in
+`workflow_finalization_metadata.sh`, and it is per key for a reason this PR
+reproduced: `git.dirty_worktree` is a blocker whose value is compared with the
+word `true`, so a JSON `1` there rendered as `"1"`, matched neither the blocker
+nor the empty value the live probe used to fire on, and let a worktree with
+uncommitted changes publish `EXISTING_OPEN_PR`. A blocker must not get weaker
+as a side effect of a type gate widening somewhere else.
+Wrong field/container types, malformed selected transport and embedded NUL in
+any extracted String no longer end the run (#2343). The field is treated as
+unread, stale aliases do not repair it, and positive completion and explicit
+no-op do not override it. Finalization classifies on the run's real outcome
+instead. See
+[The Run's Real Outcome](./default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
+Newlines and other non-NUL control characters remain data and cannot hide later
+blocker fields.
 
-Validation preserves `FAILED_INVALID_EVIDENCE`, `FAILED_DIRTY_WORKTREE`,
-`FAILED_MISSING_TOOLING`, blocked terminal states and `HOLLOW_SUCCESS` before
-completion checks. Reporting failure remains `FAILED_REPORTING` when durable
-implementation and verification are complete, otherwise `FAILED_IMPLEMENTATION`.
-Only both completion fields true authorize `IMPLEMENTED_VERIFIED`; explicit
-`allow_no_op` plus implementation `terminal_no_op` authorize `ALLOW_NO_OP`.
-These paths remain subject to every existing hard blocker.
+Validation answers the blockers about the local checkout first
+(`FAILED_DIRTY_WORKTREE`, `FAILED_MISSING_TOOLING`, a prior deterministic
+terminal probe), gathers the facts of the run's outcome, and then reports the
+terminal state `assess-finalization` decided on them. The collected
+`git.dirty_worktree` record stands in for the live probe only when it says
+exactly `true` (the blocker) or exactly `false` (believed, and the probe is
+skipped). Every other value -- unread, `unknown`, `yes`, `1` -- is not an
+answer, so the worktree itself is asked, which it can always answer. Since #2809 it applies no
+rule of its own to reach a state: there is no reporting-failure rule, no
+completion-field rule and no no-op rule in bash. `FAILED_REPORTING`,
+`IMPLEMENTED_VERIFIED`, `ALLOW_NO_OP` and `HOLLOW_SUCCESS` are decisions the
+assessment reaches on the facts, which include the typed `finalizer_step_status`
+and the completion fields; `FAILED_INVALID_EVIDENCE` is no longer produced at
+all. Every such state remains subject to the blockers above, which precede the
+decision, and a state whose definition is an open pull request is not published
+when the decision names none (#2819). See
+[Terminal Classification](./default-workflow-agentic-finalization.md#terminal-classification).
 
 Validation emits one complete JSON Object with exactly these 19 String fields:
 `terminal_success`, `terminal_state`, `terminal_reason`, `required_next_action`,
@@ -376,10 +399,10 @@ supported behavior. A successful formatting process is not terminal success.
 ### Strict exits and tooling
 
 Transport changes preserve existing failure behavior. Validation emits its
-structured failing result and exits `1` for non-success classifications,
-including malformed evidence. Missing finalizer helpers at recipe call sites,
-missing `jq` for collection/completion or `finalizer-step-status`, and invalid
-helper modes retain error exit `2`. Validation's missing-`jq` path retains its
+structured failing result and exits `1` for non-success classifications.
+Missing finalizer helpers at recipe call sites, missing `jq` for
+collection/completion or `finalizer-step-status`, and invalid helper modes
+retain error exit `2`. Validation's missing-`jq` path retains its
 structured `FAILED_MISSING_TOOLING` result and exit `1`.
 
 The reader's absent-field exit `2` and invalid-input exit `3` are separate from
@@ -387,6 +410,100 @@ these command exits. Consumers handle them explicitly, retain selected source
 authority and use conservative evidence or structured failure. No error path
 may inject completion flags, scrape narrative for approval, or relax strict
 validation to make file transport appear successful.
+
+## Absence and corruption (#2343)
+
+The reader distinguishes a value that is not there from a value that is wrong.
+Only the second is a bad-data status (`3`). Both can be reported: a context
+file that was selected and carried nothing still reads as absence, and still
+says once why it carried nothing.
+
+| Situation | Status | Stdout | Stderr |
+| --- | --- | --- | --- |
+| `AMPLIHACK_CONTEXT_FILE` set and the file is missing, unreadable, a symlink or a directory | `2` | empty | one `WARN` naming the path and the reason, at source time |
+| `AMPLIHACK_CONTEXT_FILE` set, a regular file that is not a single JSON object, or `jq` unavailable | `2` | empty | one `WARN` naming the path and the reason, at source time |
+| `AMPLIHACK_CONTEXT_FILE` not set at all | `2` | empty | empty |
+| Object-typed canonical key (`verdict_json`, `worktree_setup`, `pr_publish_result`, `finalization_assessment` and the like) declared with an empty default and not yet set (#1726) | `2` | empty | empty |
+| Field absent from a valid source | `2` | empty | empty |
+| Value present but unparseable, or containing a NUL byte | `3` | empty | the existing warning |
+| Unknown key | `3` | empty | the existing warning |
+
+The file's state is decided once, when `workflow_context.sh` is sourced: either
+it holds one readable JSON object, or it carries no data at all. Every reader
+follows that single decision: `workflow_context_read`, the `workflow_finalization_metadata`
+keys and the `workflow_finalization_context` allowlist. No reader re-checks the
+file. A missing file therefore reads as status `2` for a metadata key as it does
+for any other key. Nothing is written to stderr at a read call: the file's
+state was already decided and reported, so repeating it per key would say the
+same thing a hundred times.
+
+Because that decision is made once, it is also the one place that can say why
+the file carried nothing, and since #2819 it does: one `WARN` line naming the
+path (control characters removed, capped at 400 characters) and the reason --
+an empty path, a symlink, a directory, no such file, not a regular file, not
+readable, `jq` unavailable, or not exactly one JSON object. The status stays
+`2`: a reader that got no data still reads the run's real outcome and decides
+from that, and nothing ends the run. Absence nobody selected -- the variable
+unset -- is not a diagnostic and says nothing. Without the line, a consumer
+such as `workflow_enforce_verdict.sh` or `workflow_implementation_evidence.sh`
+reports only that its producer "produced no output", and the file that actually
+went missing is named nowhere.
+
+Absence never grants success. A caller takes status `2` as "no data", reads the
+run's real outcome, and decides from that. Status `3` is kept for corrupt data
+only, so a typo in a key name cannot read as absence.
+
+The structural guarantees from #1538 are unchanged. The tier is chosen by the
+presence of the name, so once `RECIPE_VAR_verdict_json` exists at any value,
+including empty, the legacy scalar is never consulted. A missing, symlinked or
+unparseable context file still suppresses fallback, and a symlink's target is
+never read: the file was selected, so the legacy scalar stays out of reach
+whether or not the file turned out to hold anything.
+
+An unset empty object key is the common case on a run that never reached
+worktree setup or publish. Before this change it read as invalid context and
+disabled the open-PR check finalization had then (deleted by #2343); it now
+reads as empty and the run's real outcome is read instead.
+
+Status `2` on an empty value applies only to object-typed canonical keys. An
+empty scalar key such as `branch_name` is a value and reads as empty with
+status `0`, and so does an empty `report` key such as `precommit_results`.
+
+The two sources answer alike. The context file carries every value the runner
+was given as a string, so the same declared-empty object key arrives there as
+`""`; it reads as absent exactly as `RECIPE_VAR_<key>=""` does. Any other
+unparseable value in the file is still corrupt and keeps status `3`.
+
+Missing context file (nothing is printed on either stream):
+
+```bash
+export AMPLIHACK_CONTEXT_FILE="$HOME/.amplihack/runs/none.json"   # file does not exist
+source amplifier-bundle/tools/workflow_context.sh
+workflow_context_read verdict_json; echo "status=$?"
+# status=2
+workflow_finalization_metadata repo_path; echo "status=$?"
+# status=2
+```
+
+Unset empty object key (#1726):
+
+```bash
+unset AMPLIHACK_CONTEXT_FILE
+export RECIPE_VAR_verdict_json=""        # object key, declared empty, never set
+source amplifier-bundle/tools/workflow_context.sh
+workflow_context_read verdict_json; echo "status=$?"
+# status=2
+```
+
+The same declared-empty object key carried in the context file:
+
+```bash
+printf '%s' '{"verdict_json":""}' > "$HOME/.amplihack/runs/context.json"
+export AMPLIHACK_CONTEXT_FILE="$HOME/.amplihack/runs/context.json"
+source amplifier-bundle/tools/workflow_context.sh
+workflow_context_read verdict_json; echo "status=$?"
+# status=2
+```
 
 ## Documentation checkpoint
 

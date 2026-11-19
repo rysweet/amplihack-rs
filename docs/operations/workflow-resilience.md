@@ -23,7 +23,7 @@ that typed evidence, persist normalized terminal fields, and return the process
 exit code. The agentic finalizer contributes a human-readable narrative artifact
 only; it is never parsed. A reporting step that fails after a successful
 implementation classifies as `FAILED_REPORTING` with durable evidence preserved,
-and malformed typed evidence fails closed as `FAILED_INVALID_EVIDENCE`.
+and malformed typed evidence no longer ends the run: finalization classifies on the pushed head and open PR (#2343). `FAILED_INVALID_EVIDENCE` is still recognised in the vocabulary but is no longer emitted by finalization.
 
 ## Observed failure modes
 
@@ -39,7 +39,7 @@ exposed these concrete failure modes:
 | Remaining meaningful diff | Branch changes remain but no valid PR, merge, follow-up, or verified implementation path proves closure. | Finalization returns `FAILED_MEANINGFUL_DIFF` rather than treating the branch as a no-op success. |
 | Missing tooling | Required `git`, `jq`, provider CLI, or provider auth is unavailable on a path that depends on it. | Finalization returns `FAILED_MISSING_TOOLING`, `FAILED_PR_METADATA_UNAVAILABLE`, or `BLOCKED_MANUAL_PROVIDER`; it does not silently skip required proof. |
 | Failed CI | Open PR has failing required checks but final output looks complete. | Finalization returns `BLOCKED_CI` with failing check evidence and nonzero exit. |
-| Hollow success | Workflow exits after setup, design, empty agent output, or inaccessible-codebase messages. | Finalization returns `HOLLOW_SUCCESS` or `FAILED_MISSING_TERMINAL_EVIDENCE`. |
+| Hollow success | Workflow exits after setup, design, empty agent output, or inaccessible-codebase messages. | Finalization returns `HOLLOW_SUCCESS`, which #2343 leaves unchanged. Where the agent output was not empty, the run is classified on its real outcome: no pushed head or open pull request is a failure naming that gap. |
 
 ## Publish behavior
 
@@ -97,7 +97,7 @@ agentic finalizer described in
 | Missing or ambiguous PR state | Failure; ambiguity is not treated as success. |
 | Implementation or verification evidence absent while work remains | Failure with `terminal_state=FAILED_IMPLEMENTATION`. |
 | Reporting step fails after successful implementation | Failure with `terminal_state=FAILED_REPORTING`; durable `pr_url`/`pr_number` and implementation/verification evidence are preserved. |
-| Success-looking run without completion evidence | Failure with `terminal_state=HOLLOW_SUCCESS` or `FAILED_MISSING_TERMINAL_EVIDENCE`. |
+| Success-looking run without completion evidence | Failure with a gap reported from the pushed head and PR facts, normally `INCOMPLETE` (#2343). |
 
 Already-terminal states are success only when verified through Git branch diff,
 GitHub PR metadata, or both. Pending or failed required checks on active PRs
@@ -204,4 +204,4 @@ or finalizer validation.
 | `BLOCKED_CI` | Required checks are pending, failed, or unavailable when required. | Fix CI or wait for checks; terminal-state resilience does not bypass CI. |
 | `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. | Resume `default-workflow` from implementation and verification, or choose a more specific failure state. |
 | `FAILED_REPORTING` | Implementation succeeded but a reporting/finalization step failed. Durable `pr_url`/`pr_number` and implementation/verification evidence are preserved. | Re-run the reporting step; the implementation is intact. Do not re-run the implementation. |
-| `HOLLOW_SUCCESS` | The run looked successful but produced no implementation, verification, publish, or valid no-op evidence. | Resume `default-workflow` from the missing phase or emit a supported no-op state with evidence. |
+| `HOLLOW_SUCCESS` | The run looked successful but its agent output was empty or inaccessible, so it may have produced nothing at all. Unchanged by #2343, and still ahead of every success classification. | Resume `default-workflow` from the missing phase or emit a supported no-op state with evidence. |

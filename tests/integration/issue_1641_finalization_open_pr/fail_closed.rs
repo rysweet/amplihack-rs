@@ -1,8 +1,12 @@
-//! Fail-closed cases the validator exists for. The open-PR path may only turn
-//! the default `FAILED_IMPLEMENTATION` into success when every proof holds; it
-//! never masks an earlier blocker and never succeeds on one signal alone.
+//! Fail-closed cases the validator exists for. Since #2343 they divide in two.
+//!
+//! A pull request that is not this run's is a matter of what the facts reader
+//! reports: it records what `gh` printed and never widens the lookup, so a
+//! closed, foreign or absent pull request simply is not there to decide on.
+//! Blockers about the local checkout still end the run before anything is read
+//! and before any assessment is consulted, so no decision can mask them.
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::fixture::*;
 
@@ -13,191 +17,91 @@ fn with_url(fx: &Fixture) -> Vec<(&'static str, String)> {
 }
 
 // Core regression for #1641 (must still hold): nothing published, no evidence.
+// Since #2343 the check no longer waits for the run to claim it published
+// something before looking, so the fixture publishes nothing at all: no open
+// PR for the branch, and no PR to view.
 #[test]
 fn run_with_no_pr_and_no_evidence_is_still_failed_implementation() {
     let fx = Fixture::new();
-    fx.gh_view(&open_pr(green_rollup()));
-    fx.gh_list(&json!([{"number": 7, "url": PR_URL, "isCrossRepository": false}]));
+    fx.gh_list(&json!([]));
+    fx.gh_fail("view", 1);
+
+    let outcome = fx.validate(&as_refs(&assessed_env(
+        &fx.repo_path(),
+        "FAILED_IMPLEMENTATION",
+        "",
+    )));
+
+    assert_failed_implementation(&outcome, "nothing published");
+    assert_eq!(outcome.field("publish_state_reached"), "false");
+    assert_eq!(outcome.field("pr_number"), "");
+    assert_eq!(outcome.field("pr_url"), "");
+    let evidence = outcome.field("evidence_used");
+    assert!(
+        evidence.contains("outcome.pr=none"),
+        "the facts must say there was no pull request: {evidence}"
+    );
+    fx.assert_gh_reads_only();
+}
+
+// The same run with nothing deciding it: finalization reports that it reached
+// no terminal state, which leaves its step failing for the recovery agent
+// rather than inventing an outcome.
+#[test]
+fn a_run_with_nothing_published_and_no_assessment_reaches_no_decision() {
+    let fx = Fixture::new();
+    fx.gh_list(&json!([]));
+    fx.gh_fail("view", 1);
 
     let outcome = fx.validate(&as_refs(&resumed_env(&fx.repo_path())));
 
-    assert_failed_implementation(&outcome, "no publish signal");
+    assert_no_decision(&outcome, "nothing published, nothing decided");
     assert_eq!(outcome.field("publish_state_reached"), "false");
-    fx.assert_gh_not_called("without a publish signal the validator must not search GitHub");
-}
-
-// An open PR is implementation proof only; it still needs green checks or
-// typed verification evidence. Failing checks are BLOCKED_CI (blocked_ci.rs).
-#[test]
-fn open_pr_without_a_passing_verification_signal_fails_closed() {
-    for rollup in [
-        json!([check_run("IN_PROGRESS", json!(null))]),
-        json!([check_run("QUEUED", json!(null))]),
-        json!([check_run("COMPLETED", json!(null))]),
-        json!([status_context("PENDING")]),
-        json!([{"__typename": "MysteryCheck", "state": "SUCCESS"}]),
-        json!([]),
-        Value::Null,
-    ] {
-        let fx = Fixture::new();
-        fx.gh_view(&open_pr(rollup.clone()));
-        let outcome = fx.validate(&as_refs(&with_url(&fx)));
-        assert_failed_implementation(&outcome, &format!("rollup {rollup}"));
-        assert_rejected_after_pr_view(
-            &fx,
-            &outcome,
-            "no passing verification signal",
-            &format!("rollup {rollup}"),
-        );
-    }
-}
-
-// The live PR must be OPEN, on the run branch, same-repo, and be the PR asked
-// for at the exact canonical URL.
-#[test]
-fn pr_that_is_not_the_runs_open_same_repo_pr_fails_closed() {
-    let cases: Vec<(&str, &str, Value)> = vec![
-        ("closed", "state", json!("CLOSED")),
-        ("merged", "state", json!("MERGED")),
-        ("head mismatch", "headRefName", json!("feat/other")),
-        ("cross repo", "isCrossRepository", json!(true)),
-        ("cross repo as string", "isCrossRepository", json!("false")),
-        ("cross repo missing", "isCrossRepository", Value::Null),
-        ("other number", "number", json!(8)),
-        (
-            "other repo url",
-            "url",
-            json!("https://github.com/evil/fixture/pull/7"),
-        ),
-        (
-            "url with suffix",
-            "url",
-            json!("https://github.com/rysweet/fixture/pull/7/files"),
-        ),
-    ];
-    for (name, key, value) in cases {
-        let fx = Fixture::new();
-        let mut view = open_pr(green_rollup());
-        view[key] = value;
-        fx.gh_view(&view);
-        let outcome = fx.validate(&as_refs(&with_url(&fx)));
-        assert_failed_implementation(&outcome, name);
-        assert_rejected_after_pr_view(&fx, &outcome, "no open-PR signal: PR is not open", name);
-        assert_eq!(
-            outcome.field("pr_number"),
-            "",
-            "{name}: unconfirmed PR must not be reported as confirmed"
-        );
-    }
-}
-
-#[test]
-fn gh_failure_or_malformed_json_is_no_signal_and_does_not_leak() {
-    let failing = Fixture::new();
-    failing.gh_fail("view", 1);
-    let outcome = failing.validate(&as_refs(&with_url(&failing)));
-    assert_failed_implementation(&outcome, "gh pr view exit 1");
-    assert_rejected_after_pr_view(
-        &failing,
-        &outcome,
-        "no open-PR signal: gh pr view failed",
-        "gh exit 1",
-    );
-    assert_no_leak(&outcome);
-
-    for body in ["not json", "{\"number\":", "[]", "\"OPEN\""] {
-        let fx = Fixture::new();
-        fx.gh_view_raw(body);
-        let outcome = fx.validate(&as_refs(&with_url(&fx)));
-        assert_failed_implementation(&outcome, &format!("malformed view body {body:?}"));
-        assert_rejected_after_pr_view(
-            &fx,
-            &outcome,
-            "no open-PR signal: PR is not open",
-            &format!("malformed view body {body:?}"),
-        );
-    }
-}
-
-// A pr_url naming another repo fails at once: no pr list fallback, no gh call.
-#[test]
-fn pr_url_for_another_repo_fails_closed_without_calling_gh() {
-    for url in [
-        "https://github.com/evil/fixture/pull/7",
-        "https://github.com/rysweet/fixture-evil/pull/7",
-        "https://github.com/rysweet/fixtur./pull/7",
-        "https://user@github.com/rysweet/fixture/pull/7",
-        "https://github.com/rysweet/fixture/pull/7?x=1",
-        "https://github.com/rysweet/fixture/pull/0",
-    ] {
-        let fx = Fixture::new();
-        fx.gh_view(&open_pr(green_rollup()));
-        fx.gh_list(&json!([{"number": 7, "url": PR_URL, "isCrossRepository": false}]));
-        let mut envs = resumed_env(&fx.repo_path());
-        envs.push(("PR_URL", url.to_owned()));
-        let outcome = fx.validate(&as_refs(&envs));
-        assert_failed_implementation(&outcome, url);
-        fx.assert_gh_not_called(url);
-    }
-}
-
-// The pr list fallback must find exactly one PR, and it must be same-repo.
-#[test]
-fn ambiguous_or_foreign_pr_list_results_fail_closed() {
-    for list in [
-        json!([]),
-        json!([{"number": 7, "url": PR_URL, "isCrossRepository": true}]),
-        json!([
-            {"number": 7, "url": PR_URL, "isCrossRepository": false},
-            {"number": 9, "url": "https://github.com/fork/fixture/pull/9", "isCrossRepository": true}
-        ]),
-        json!({"number": 7}),
-    ] {
-        let fx = Fixture::new();
-        fx.gh_list(&list);
-        fx.gh_view(&open_pr(green_rollup()));
-        let mut envs = resumed_env(&fx.repo_path());
-        envs.push((
-            "TERMINAL_STATE_PUBLISH_STATUS",
-            "existing-open-pr".to_owned(),
-        ));
-        let outcome = fx.validate(&as_refs(&envs));
-        assert_failed_implementation(&outcome, &format!("pr list {list}"));
-        assert!(
-            !fx.gh_calls().iter().any(|c| c.starts_with("pr view ")),
-            "pr list {list}: no PR may be inspected without a unique same-repo match"
-        );
-    }
+    assert_eq!(outcome.field("pr_number"), "");
 }
 
 // Guards that must hold before gh is ever called.
 #[test]
-fn unusable_run_scope_fails_closed_without_calling_gh() {
+fn unusable_run_scope_is_never_read_and_never_decided() {
     // Target directory fell back to '.': cwd is the repo, but REPO_PATH unset.
+    // The facts are not gathered at all, so no assessment can be applied to
+    // them -- the decision is read only after the facts are in hand.
     let fx = Fixture::new();
     fx.gh_view(&open_pr(green_rollup()));
+    let (_, assessment_json) = assessment("EXISTING_OPEN_PR", "none", "7");
     let outcome = fx.validate(&[
         ("BRANCH_NAME", BRANCH),
         ("PR_URL", PR_URL),
         ("FINALIZER_STEP_STATUS", "ok"),
+        (
+            "RECIPE_VAR_finalization_assessment",
+            assessment_json.as_str(),
+        ),
     ]);
-    assert_failed_implementation(&outcome, "'.' target fallback");
+    assert!(!outcome.success(), "{}", outcome.describe());
+    assert_eq!(
+        outcome.field("terminal_state"),
+        "FAILED_MISSING_TERMINAL_EVIDENCE",
+        "ungathered facts cannot be decided on\n{}",
+        outcome.describe()
+    );
     fx.assert_gh_not_called("'.' target fallback");
 
-    // AzDO remotes: only GitHub checks are evaluated.
-    let fx = Fixture::new();
-    fx.gh_view(&open_pr(green_rollup()));
-    let mut envs = with_url(&fx);
-    envs.push(("REMOTE_HOST_TYPE", "azdo".to_owned()));
-    assert_failed_implementation(&fx.validate(&as_refs(&envs)), "azdo remote");
-    fx.assert_gh_not_called("azdo remote");
-
-    // Metadata branch disagrees with the live branch.
+    // Metadata branch disagrees with the live branch (#1762): nothing is read
+    // for a branch the checkout is not on.
     let fx = Fixture::new();
     fx.gh_view(&open_pr(green_rollup()));
     let mut envs = with_url(&fx);
     set_branch(&mut envs, "feat/other");
-    assert_failed_implementation(&fx.validate(&as_refs(&envs)), "branch mismatch");
+    let outcome = fx.validate(&as_refs(&envs));
+    assert_no_decision(&outcome, "branch mismatch");
+    assert!(
+        outcome
+            .field("terminal_reason")
+            .contains("not on the run branch"),
+        "the reason must name the branch mismatch\n{}",
+        outcome.describe()
+    );
     fx.assert_gh_not_called("branch mismatch");
 
     // Runs on the default branch never qualify.
@@ -208,45 +112,62 @@ fn unusable_run_scope_fails_closed_without_calling_gh() {
         fx.gh_view(&view);
         let mut envs = with_url(&fx);
         set_branch(&mut envs, branch);
-        assert_failed_implementation(&fx.validate(&as_refs(&envs)), branch);
+        let outcome = fx.validate(&as_refs(&envs));
+        assert_no_decision(&outcome, branch);
         fx.assert_gh_not_called(branch);
     }
 }
 
-// Every earlier blocker keeps its state, and the open-PR path never runs.
+// Every blocker about the local checkout keeps its state, is reached before
+// anything is read, and cannot be overridden by an assessment that claims a
+// success.
 #[test]
-fn blockers_keep_their_state_and_are_not_masked_by_an_open_green_pr() {
-    let cases: [(&str, &str, &str); 4] = [
+fn blockers_keep_their_state_and_are_not_masked_by_a_claimed_success() {
+    let claimed = assessment("EXISTING_OPEN_PR", "none", "7");
+    let cases: [(&str, (&'static str, String), &str); 3] = [
         (
-            "FINALIZATION_EVIDENCE_GIT_DIRTY_WORKTREE",
-            "true",
+            "collected dirty worktree",
+            evidence_env("true", "", "false"),
             "FAILED_DIRTY_WORKTREE",
         ),
         (
-            "FINALIZATION_EVIDENCE_AGENT_OUTPUTS_HOLLOW_SUCCESS_SIGNALS",
-            "true",
-            "HOLLOW_SUCCESS",
+            "missing tooling",
+            evidence_env("false", "git", "false"),
+            "FAILED_MISSING_TOOLING",
         ),
-        ("TERMINAL_STATE_TERMINAL_STATE", "BLOCKED_CI", "BLOCKED_CI"),
-        ("FINALIZER_STEP_STATUS", "failed", "FAILED_IMPLEMENTATION"),
+        (
+            "prior terminal probe",
+            (
+                "RECIPE_VAR_terminal_state",
+                json!({"terminal_state": "BLOCKED_CI", "pr_number": "7"}).to_string(),
+            ),
+            "BLOCKED_CI",
+        ),
     ];
-    for (key, value, expected) in cases {
+    for (name, context, expected) in cases {
         let fx = Fixture::new();
         fx.gh_view(&open_pr(green_rollup()));
         let mut envs = with_url(&fx);
-        envs.retain(|(k, _)| *k != key);
-        envs.push((key, value.to_owned()));
+        envs.push(context);
+        envs.push(claimed.clone());
         let outcome = fx.validate(&as_refs(&envs));
-        assert!(!outcome.success(), "{key}={value}\n{}", outcome.describe());
-        assert_eq!(outcome.field("terminal_state"), expected, "{key}={value}");
-        fx.assert_gh_not_called(&format!("{key}={value}"));
+        assert!(!outcome.success(), "{name}\n{}", outcome.describe());
+        assert_eq!(
+            outcome.field("terminal_state"),
+            expected,
+            "{name}: a claimed success must not mask the blocker\n{}",
+            outcome.describe()
+        );
+        fx.assert_gh_not_called(name);
     }
 
     // A live dirty worktree (no collected evidence) is also a blocker.
     let fx = Fixture::new();
     fx.gh_view(&open_pr(green_rollup()));
     std::fs::write(fx.repo.join("untracked.txt"), "dirty\n").expect("dirty file");
-    let outcome = fx.validate(&as_refs(&with_url(&fx)));
+    let mut envs = with_url(&fx);
+    envs.push(claimed);
+    let outcome = fx.validate(&as_refs(&envs));
     assert_eq!(
         outcome.field("terminal_state"),
         "FAILED_DIRTY_WORKTREE",
@@ -256,15 +177,69 @@ fn blockers_keep_their_state_and_are_not_masked_by_an_open_green_pr() {
     fx.assert_gh_not_called("live dirty worktree");
 }
 
-// The publish-state override is internal; the environment cannot spoof it.
+// #2343: hollow-success signals and a failed reporting step are facts about
+// this run's own reporting, which a published pull request can speak to. They
+// no longer end the run on their own; they are carried into the result and
+// handed to the assessment, which decides.
+#[test]
+fn hollow_success_and_reporting_failure_are_carried_as_facts_not_swallowed() {
+    let fx = Fixture::new();
+    fx.gh_view(&open_pr(green_rollup()));
+    let mut envs = with_url(&fx);
+    envs.push(evidence_env("false", "", "true"));
+    envs.push(assessment("HOLLOW_SUCCESS", "none", ""));
+    let outcome = fx.validate(&as_refs(&envs));
+    assert!(!outcome.success(), "{}", outcome.describe());
+    assert_eq!(outcome.field("terminal_state"), "HOLLOW_SUCCESS");
+    assert_eq!(
+        outcome.field("hollow_success_detected"),
+        "true",
+        "the signal must still be reported\n{}",
+        outcome.describe()
+    );
+
+    let fx = Fixture::new();
+    fx.gh_view(&open_pr(green_rollup()));
+    let mut envs = with_url(&fx);
+    envs.push((
+        "RECIPE_VAR_finalizer_step_status",
+        json!({"status": "failed", "reporting_failure": "true"}).to_string(),
+    ));
+    envs.push(assessment("FAILED_REPORTING", "none", "7"));
+    let outcome = fx.validate(&as_refs(&envs));
+    assert!(!outcome.success(), "{}", outcome.describe());
+    assert_eq!(outcome.field("terminal_state"), "FAILED_REPORTING");
+    assert_eq!(
+        outcome.field("reporting_failure"),
+        "true",
+        "the typed reporting status must still be reported\n{}",
+        outcome.describe()
+    );
+    assert!(
+        outcome
+            .field("evidence_used")
+            .contains("reporting_failure=true"),
+        "the fact must travel with the decision: {}",
+        outcome.field("evidence_used")
+    );
+}
+
+// The publish-state override is internal; the environment cannot spoof it, and
+// it is set only from a pull request the facts report open.
 #[test]
 fn ambient_publish_state_override_cannot_spoof_publication() {
     let fx = Fixture::new();
-    let mut envs = resumed_env(&fx.repo_path());
+    fx.gh_list(&json!([]));
+    fx.gh_fail("view", 1);
+    let mut envs = assessed_env(&fx.repo_path(), "FAILED_IMPLEMENTATION", "");
     envs.push(("publish_state_override", "true".to_owned()));
     envs.push(("PUBLISH_STATE_OVERRIDE", "true".to_owned()));
+
     let outcome = fx.validate(&as_refs(&envs));
+
     assert_failed_implementation(&outcome, "spoofed override");
     assert_eq!(outcome.field("publish_state_reached"), "false");
-    fx.assert_gh_not_called("spoofed override");
+    // #2343: the facts are read whether or not the run claims to have
+    // published. What a claim may not do is stand in for the answer.
+    fx.assert_gh_reads_only();
 }
