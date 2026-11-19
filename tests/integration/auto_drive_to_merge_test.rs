@@ -2316,8 +2316,6 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
         "--round-recipe \"autodrive-crusty-round\"",
         "--clean-token \"CLEAN\"",
         "--verdict-field \"crusty_verdict\"",
-        // Its judging agents start in the checked review dir, not the PR worktree (#1528).
-        "--review-dir \"$REVIEW_DIR\"",
         "--state-dir \"$DIR\"",
         "bash \"$HERE/autodrive_crusty_finalize.sh\"",
         "crusty-rereview-not-needed",
@@ -2352,7 +2350,7 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
     let driver = read(&tool_path("autodrive_loop.sh"));
     for needle in [
         "--before-round)",
-        "exec bash \"$BEFORE_ROUND\" --repo \"$REPO\" --review-dir \"$REVIEW_REAL\" --state-dir \"$STATE_DIR\"",
+        "exec bash \"$BEFORE_ROUND\" --repo \"$REPO\" --state-dir \"$STATE_DIR\"",
         "BEFORE_ROUND_FAILED",
         "before_round_result",
         "if terminal_refusal \"$BEFORE_RC\" \"$BEFORE_LOG\"",
@@ -2969,9 +2967,9 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
         }
     }
     // #2575 removed the record-only reads (round-record, merge-ready-verdict),
-    // so the floor counts what remains.
+    // and #2808 removed both review-index reads; count the remaining reads.
     assert!(
-        reads >= 10,
+        reads >= 8,
         "found only {reads} step-output reads in the round recipes; the scan is broken"
     );
     bad.dedup();

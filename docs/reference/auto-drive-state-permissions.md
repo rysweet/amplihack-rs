@@ -1,7 +1,7 @@
 ---
 title: Auto-drive State Permissions
 description: How auto-drive writes its state and evidence 0700/0600 under any umask, and when the evidence check repairs or refuses an entry, decided by the state folder's location under the auto-drive state root or, for files, by the folder being private.
-last_updated: 2026-11-17
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -48,7 +48,6 @@ when it creates an entry gets that mode even under umask `002`.
 | `helper::write_new_private` (`autodrive/helper.rs`) | `OpenOptions::mode(0o600)` |
 | `secure_fs::create`, `secure_fs::output` (`autodrive_completion/secure_fs.rs`) | `openat(…, 0o600)` under a `0700` folder |
 | `private_state.rs`, `evaluator.rs` | explicit `0o700` / `0o600` modes, tempfiles in `0700` folders |
-| `review_generation::allocate` and `provision` (`run_isolation/review_generation.rs`), behind `amplihack internal review-allocate`, `review-next` and `review-checkout` | `tempfile::Builder::permissions(0o700)` for each `review-<random>` allocation folder in the state folder and each `review-generation-<random>` storage folder, which is made beside the checkout it backs (#2778); see [Superseded generations are retired](./recipe-checkout-isolation.md#superseded-generations-are-retired) |
 | `autodrive_state.sh` (`autodrive_private_dir`, `autodrive_mark_phase_done`, `autodrive_clear_phase`, `autodrive_record_crusty_loop_done`, `autodrive_record_resolved`, `autodrive_use_task_file`) | `umask 077` in the subshell that writes |
 | `autodrive_completion_context.sh` (`completion_context`) | `( umask 077 && set -C && printf … > "$CTX_DIR/$1" )`; `CTX_DIR` comes from `mktemp -d` |
 
@@ -64,6 +63,12 @@ repairs those files, as described below. For a drive started with
 `amplihack recipe run --detach`, the umask is that of the shell that ran the
 command, not the tmux server's (#2778); see
 [Detached runs](./recipe-command.md#detached-runs).
+
+Pre-review baselines use existing restricted artifact storage with directories
+`0700` and files `0600`. Collection is read-only, handles arbitrary filenames,
+and records symlink targets without following external content. Baselines
+retain original staged, unstaged, and untracked state across review recovery;
+see [pre-review evidence](recipe-checkout-isolation.md#pre-review-evidence).
 
 ## What the evidence check does
 

@@ -1845,8 +1845,7 @@ fn round_step06_records_minor_only() {
     let d = Drive::new();
     let script = step_command(ROUND, "step-06-write-round-record");
     let rec = d.record(1);
-    // Step-06 binds its record to the drive's private review generation
-    // (#2096), so the reviewed head is a real commit with a real generation.
+    // Ordinary round evidence names the commit reviewed in the PR worktree.
     let repo = d.tmp.path().join("pr");
     crate::support::git_fixture::init_with_commit(&repo);
     let head = amplihack_git::command_in(&repo)
@@ -1855,26 +1854,11 @@ fn round_step06_records_minor_only() {
         .unwrap();
     assert!(head.status.success(), "{}", show(&head));
     let head = String::from_utf8(head.stdout).unwrap().trim().to_string();
-    let generation =
-        crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin())
-            .args(["internal", "review-checkout"])
-            .arg(&repo)
-            .arg(d.tmp.path().join("review"))
-            .arg(&head)
-            .env("HOME", &d.home)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .output()
-            .unwrap();
-    assert!(generation.status.success(), "{}", show(&generation));
-    let generation = String::from_utf8(generation.stdout)
-        .unwrap()
-        .trim()
-        .to_string();
     let real = crate::support::amplihack_bin::amplihack_bin();
     let ctx = json!({"pr": "7", "head_sha": head}).to_string();
     let tools = tools_dir();
     let env: Vec<(&str, &OsStr)> = vec![
-        ("REVIEW_DIR", OsStr::new(&generation)),
+        ("REPO_PATH", repo.as_os_str()),
         ("REAL_AMPLIHACK", real.as_os_str()),
         (
             "RECIPE_VAR_crusty_verdict",

@@ -357,7 +357,7 @@ steps:
     output: merge_loop_preflight
     command: |
       jq -cn --arg r "$RECIPE_VAR_fixture_repo" --arg s "$RECIPE_VAR_autodrive_state_dir" --arg pr "$RECIPE_VAR_pr_number" \
-        '{should_run:"true",pr:$pr,repo:$r,review_dir:$r,state_dir:$s}'
+        '{should_run:"true",pr:$pr,repo:$r,state_dir:$s}'
   - id: loop
     type: bash
     output: merge_loop_result

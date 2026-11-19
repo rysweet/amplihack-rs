@@ -60,7 +60,6 @@ The preflight returns one JSON object. It contains no `should_run` field.
   "base_sha": "observed SHA",
   "state_dir": "absolute private directory or empty",
   "repo": "absolute linked worktree or empty",
-  "review_dir": "absolute main checkout or empty",
   "reason": "concrete observations",
   "blockers": [],
   "attempts": []
@@ -72,7 +71,7 @@ The preflight returns one JSON object. It contains no `should_run` field.
 | `pr_found` | `true` for an OPEN or MERGED PR, `false` only after a complete search found none, `unknown` when the search could not complete. |
 | `pr`, `pr_url` | Number and URL of the found PR; empty when none was found. |
 | `pr_state` | `OPEN`, `MERGED`, `NONE` (complete search, no PR) or `UNKNOWN` (incomplete search). |
-| `state_dir`, `repo`, `review_dir` | Set when a PR is found and reused; empty otherwise. No later step reads them when a new PR is built. |
+| `state_dir`, `repo` | Set when a PR is found and reused; empty otherwise. No later step reads them when a new PR is built. |
 | `blockers` | Named reasons the lookup, worktree or state could not be established. |
 
 The output is stored as `build_preflight` and passed whole to step-03.

@@ -75,10 +75,10 @@ fn a_run_started_from_a_pr_worktree_finishes() {
     succeeds(&out);
 
     let cwd = f.observed_str("from-worktree", "cwd");
-    assert_ne!(
+    assert_eq!(
         std::path::Path::new(&cwd),
         worktree.as_path(),
-        "the run must not work in the pull-request worktree itself"
+        "the run uses the selected pull-request worktree"
     );
     assert_eq!(f.worktrees(), before, "the worktree record changed");
 }
