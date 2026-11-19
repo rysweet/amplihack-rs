@@ -23,7 +23,11 @@
 //! - [`scan`] reads every log in the directory. Nothing it meets is an
 //!   error: a log that cannot be opened, is not a regular file, holds no
 //!   pointer line or holds one that will not parse is counted and skipped,
-//!   and the count reaches the caller in [`Scan::skipped`].
+//!   and the count reaches the caller in [`Scan::skipped`]. The directory
+//!   itself is treated the same way: one that is missing, cannot be listed
+//!   or fails the trust rule yields an empty scan carrying the reason, and
+//!   none of those is called a refusal, because the rules that need no
+//!   index still get their turn.
 //!
 //! A record is a claim, not a fact. The folder it names is checked by
 //! `guide.rs` before anything is written to it. Discovery has no log-count,
@@ -31,7 +35,7 @@
 //! at a time and the search stops at the first pointer line.
 
 use crate::run_guidance::GuideError;
-use crate::run_guidance::fs_safety::{check_dir, untrusted_reason};
+use crate::run_guidance::fs_safety::{DirState, dir_state, untrusted_reason};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind};
@@ -72,7 +76,9 @@ pub(super) struct Scan {
 }
 
 impl Scan {
-    /// The directory was not read at all.
+    /// The directory was not read at all. `note` says why in terms of the
+    /// directory, which it does not name: [`Self::summary`] goes inside a
+    /// note that names it already.
     fn unread(note: String) -> Self {
         Self {
             note: Some(note),
@@ -218,9 +224,11 @@ pub(super) fn read_named(log: &Path) -> Result<Option<Pointer>, GuideError> {
 
 /// One log worth opening: a regular file named `*.log`, with the time it
 /// was last written so the newest is read first.
-fn listed_logs(log_dir: &Path) -> Result<Vec<(SystemTime, std::path::PathBuf)>, GuideError> {
-    let rd = fs::read_dir(log_dir)
-        .map_err(|e| GuideError::Io(format!("cannot list {}: {e}", log_dir.display())))?;
+///
+/// The failure reason is about `log_dir` and does not name it: its one
+/// caller is [`scan`], whose note names the directory already.
+fn listed_logs(log_dir: &Path) -> Result<Vec<(SystemTime, std::path::PathBuf)>, String> {
+    let rd = fs::read_dir(log_dir).map_err(|e| format!("it cannot be listed: {e}"))?;
     let mut logs = Vec::new();
     for item in rd.flatten() {
         if !item
@@ -251,15 +259,22 @@ fn listed_logs(log_dir: &Path) -> Result<Vec<(SystemTime, std::path::PathBuf)>, 
 /// Every record in `log_dir`, newest log first. Never fails: a directory
 /// that cannot be read or does not pass the trust rule yields an empty scan
 /// carrying the reason, which `guide.rs` prints when nothing matched.
+///
+/// A directory that fails the trust rule is passed over, not refused: the
+/// search goes on to the rules that do not need the index, and the command
+/// exits only if they miss too. So the reason carries no verdict word, as
+/// the per-log reasons do not, and `guide.rs` prints it inside the note
+/// that already names the directory (the two-word rule, issue #2809).
 pub(super) fn scan(log_dir: &Path) -> Scan {
-    match check_dir(log_dir) {
-        Ok(true) => {}
-        Ok(false) => return Scan::unread(format!("{} does not exist", log_dir.display())),
+    match dir_state(log_dir) {
+        Ok(DirState::Trusted) => {}
+        Ok(DirState::Missing) => return Scan::unread("it does not exist".to_string()),
+        Ok(DirState::Untrusted(reason)) => return Scan::unread(reason),
         Err(e) => return Scan::unread(e.to_string()),
     }
     let logs = match listed_logs(log_dir) {
         Ok(logs) => logs,
-        Err(e) => return Scan::unread(e.to_string()),
+        Err(reason) => return Scan::unread(reason),
     };
     let mut skipped = 0;
     let mut reasons = BTreeMap::<String, usize>::new();

@@ -36,6 +36,16 @@ fn assert_lands_in(o: &std::process::Output, run: &Path) {
     assert_eq!(source, "run");
 }
 
+/// Sets a log's modification time, so the newest-first order of a sweep is
+/// the test's choice rather than the filesystem clock's.
+fn set_modified(path: &Path, epoch_secs: u64) {
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(epoch_secs);
+    fs::File::open(path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(when))
+        .unwrap();
+}
+
 fn issue_pointer(f: &GuideFixture, run: &Path) -> serde_json::Value {
     let mut p = GuideFixture::pointer(CORRELATION, Some(run));
     p["issue_number"] = "2783".into();
@@ -434,6 +444,18 @@ fn a_log_the_sweep_skips_is_not_called_a_refusal() {
     assert_lands_in(&o, &run);
 }
 
+/// A symbolic link where the guidance folder belongs is refused, whichever
+/// rule chose the run.
+///
+/// The mechanism is `append_entry`'s call to `ensure_private_dir`, which
+/// `lstat`s the path and refuses a link rather than creating through it or
+/// following it. The writer is path-based, not descriptor-relative, so this
+/// is not a defence against a link swapped in between the check and the
+/// write; #2837 records that rework as not planned. What puts that swap out
+/// of another user's reach is the ancestor rule: the work root, `runs`, the
+/// run folder and `run.json` are each refused when they are a link, are
+/// owned by another uid or can be written by group or others, so there is
+/// nowhere for another user to plant the link (CWE-367).
 #[test]
 fn a_symlink_planted_as_the_guidance_folder_is_not_followed() {
     let f = GuideFixture::new();
@@ -441,9 +463,16 @@ fn a_symlink_planted_as_the_guidance_folder_is_not_followed() {
     let victim = f.root.join("victim");
     private_dir(&victim);
     symlink(&victim, run.join("guidance")).unwrap();
-    f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&run)));
-    let o = f.guide_without_work_root(&[SESSION], "text");
-    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    // Every rule that can reach this run: the session name, the bare issue
+    // number and the issue URL.
+    for target in [SESSION, "2783", ISSUE_URL] {
+        let o = f.guide_without_work_root(&[target], "text");
+        assert_eq!(o.status.code(), Some(1), "{target}: {}", show(&o));
+        let line = one_line_error(&o);
+        assert!(line.contains("refusing"), "{target}: {line}");
+        assert!(line.contains("it is a symbolic link"), "{target}: {line}");
+    }
     assert_eq!(fs::read_dir(&victim).unwrap().count(), 0);
 }
 
@@ -805,6 +834,13 @@ fn a_note_about_one_record_does_not_stop_a_later_record_from_matching() {
     assert_lands_in(&o, &run);
 }
 
+/// The log directory is the sweep's own input, not the operator's, and a
+/// trust failure there only costs the rules that need the index: the ones
+/// that read the work root still run. So the note names the directory and
+/// the fault and stops there, exactly as a per-log reason does, and the
+/// word `refusing` -- which belongs to what the operator typed -- must not
+/// appear (issue #2809, the same pair as
+/// `a_log_the_sweep_skips_is_not_called_a_refusal`).
 #[test]
 fn a_log_directory_others_can_write_to_is_not_scanned_and_says_so() {
     let f = GuideFixture::new();
@@ -818,7 +854,22 @@ fn a_log_directory_others_can_write_to_is_not_scanned_and_says_so() {
         line.contains(&f.recipe_logs.display().to_string()),
         "{line}"
     );
+    assert!(line.contains("writable by group or others"), "{line}");
+    assert!(
+        !line.contains("refusing"),
+        "a log directory the sweep passed over is not a refusal: {line}"
+    );
     assert!(!run.join("guidance").exists());
+
+    // And the search went on past it: with the directory still unusable, a
+    // run under the work root in the environment is found as before.
+    let env_run = f.make_run("4d0c8b7a-9e8d-4c6b-85a4-0f1e2d3c4b5a", CORRELATION);
+    let o = f.guide(
+        &["4d0c8b7a-9e8d-4c6b-85a4-0f1e2d3c4b5a", "-"],
+        Some(b"past the log directory"),
+    );
+    assert_lands_in(&o, &env_run);
+
     fs::set_permissions(&f.recipe_logs, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
@@ -950,24 +1001,6 @@ fn bidirectional_and_line_separator_characters_never_reach_stderr() {
 }
 
 #[test]
-fn a_guidance_folder_swapped_for_a_symlink_after_acceptance_is_not_followed() {
-    // The recorded run is accepted, then `guidance` is a symlink to a folder
-    // outside the run: the write must be refused by the descriptor-relative
-    // open, whichever check saw the path first.
-    let f = GuideFixture::new();
-    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
-    let victim = f.root.join("victim-after-acceptance");
-    private_dir(&victim);
-    symlink(&victim, run.join("guidance")).unwrap();
-    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
-    for target in [SESSION, "2783", ISSUE_URL] {
-        let o = f.guide_without_work_root(&[target], "text");
-        assert_eq!(o.status.code(), Some(1), "{target}: {}", show(&o));
-    }
-    assert_eq!(fs::read_dir(&victim).unwrap().count(), 0);
-}
-
-#[test]
 fn a_bare_number_matching_several_runs_warns_on_stderr_and_keeps_stdout_unchanged() {
     let f = GuideFixture::new();
     let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
@@ -989,6 +1022,67 @@ fn a_bare_number_matching_several_runs_warns_on_stderr_and_keeps_stdout_unchange
         err.contains(RUN_FOLDER) || err.contains(second_folder),
         "warning should name the chosen run: {err}"
     );
+}
+
+/// The silence that would matter most: the issue rules take the newest of
+/// every record that matches, so a newer record that fails a check leaves
+/// the entry in an older run's folder. The command succeeds, and the one
+/// line on stdout names a folder that is not the live run's. A warning on
+/// stderr names the candidate that was passed over and why, so the operator
+/// can see that the guidance did not reach the run they meant (issue #2818).
+#[test]
+fn a_newer_record_that_fails_a_check_is_named_on_stderr_when_an_older_one_is_used() {
+    let f = GuideFixture::new();
+    let older = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    let newer_folder = "7b6a5c4d-3e2f-4a1b-9c8d-0e1f2a3b4c5d";
+    let newer_corr = "6c5b4a39-2e1f-4d0c-8b7a-9e8d7c6b5a40";
+    let newer = f.make_run_in_alt_work(newer_folder, newer_corr);
+    let old_log = f.session_log_from_pointer(SESSION, &issue_pointer(&f, &older));
+    let mut p = GuideFixture::pointer(newer_corr, Some(&newer));
+    p["issue_number"] = "2783".into();
+    p["issue_url"] = ISSUE_URL.into();
+    let new_log = f.session_log_from_pointer("amp-newer-20261118-205200", &p);
+    // The sweep reads logs newest first; set the order rather than trusting
+    // the clock to separate two files written in the same instant.
+    set_modified(&old_log, 1_000_000);
+    set_modified(&new_log, 2_000_000);
+    // The live run's folder drifts to a mode another user could write to,
+    // which is a reason not to use it, not a reason to stop.
+    fs::set_permissions(&newer, fs::Permissions::from_mode(0o777)).unwrap();
+
+    for target in [ISSUE_URL, "2783"] {
+        let o = f.guide_without_work_root(&[target], "to the live run");
+        assert_lands_in(&o, &older);
+        let err = stderr(&o);
+        assert!(err.contains("warning"), "{target}: {err}");
+        assert!(err.contains("were not used"), "{target}: {err}");
+        assert!(err.contains(newer_folder), "{target}: {err}");
+        assert!(
+            err.contains("writable by group or others"),
+            "{target}: {err}"
+        );
+        // The folder that failed the check was not written to, and nothing
+        // changed its permissions.
+        assert!(f.entries(&guidance_of(&newer)).is_empty());
+        assert_eq!(
+            fs::metadata(&newer).unwrap().permissions().mode() & 0o777,
+            0o777,
+            "{target}"
+        );
+    }
+    assert_eq!(f.entries(&guidance_of(&older)).len(), 2);
+}
+
+/// The same lookup with nothing passed over says nothing extra: the warning
+/// appears because a candidate was left out, not on every success.
+#[test]
+fn an_issue_lookup_with_no_failed_candidate_warns_about_nothing() {
+    let f = GuideFixture::new();
+    let run = f.make_run_in_alt_work(RUN_FOLDER, CORRELATION);
+    f.session_log_from_pointer(SESSION, &issue_pointer(&f, &run));
+    let o = f.guide_without_work_root(&[ISSUE_URL], "the only run");
+    assert_lands_in(&o, &run);
+    assert!(stderr(&o).is_empty(), "{}", show(&o));
 }
 
 #[test]

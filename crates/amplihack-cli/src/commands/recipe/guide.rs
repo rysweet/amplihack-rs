@@ -58,6 +58,16 @@
 //! same care taken with the same check -- they differ in what happens next,
 //! which is why a failed claim is never called a refusal here.
 //!
+//! A claim that named the target and was not used is reported even when the
+//! search goes on to succeed: one `warning:` line on stderr names it and
+//! why. The issue rules take the newest of every record that matches, so
+//! the claim left out can be a *newer* run than the one that was written
+//! to; without the line the command would exit 0, print the older folder on
+//! stdout, and leave the operator guiding a run that is over while the live
+//! one's folder sat there failing a check (issue #2818). The folders rule
+//! 4's `run.json` sweep passes over are not reported on success: they never
+//! named the target, so they say nothing about where the entry went.
+//!
 //! Inside a recipe run (`AMPLIHACK_RECIPE_RUN_ID` set) the command is refused
 //! unless `--from-step` is passed, so an agent step misled by text it read
 //! does not add guidance by accident. Entries it adds with the flag carry
@@ -653,6 +663,15 @@ struct Resolver<'a> {
     /// one would say the same thing twice and push a different folder's
     /// reason past [`MAX_SHOWN_REJECTIONS`].
     seen_rejections: HashSet<String>,
+    /// The subset of `rejected` whose records named this target: a run the
+    /// operator asked for by name, or a run that named the issue asked
+    /// about. These are reported on stderr when a rule nevertheless
+    /// succeeds, because the entry then went somewhere other than the run
+    /// the record pointed at (issue #2818). A record passed over during the
+    /// `run.json` sweep of rule 4 is not here: those folders did not name
+    /// the target, so reporting them on a success would say nothing about
+    /// where the entry went.
+    passed_over: Vec<String>,
     /// The work-root checks, shared by every rule, so a sweep over the
     /// folders of one work root pays them once.
     roots: RootChecks,
@@ -674,6 +693,7 @@ impl<'a> Resolver<'a> {
             notes: Vec::new(),
             rejected: Vec::new(),
             seen_rejections: HashSet::new(),
+            passed_over: Vec::new(),
             roots: RootChecks::default(),
         }
     }
@@ -690,6 +710,52 @@ impl<'a> Resolver<'a> {
         if self.seen_rejections.insert(line.clone()) {
             self.rejected.push(line);
         }
+    }
+
+    /// [`Self::reject`] for a record that named this target: the issue the
+    /// target asks about, or the run or session it names. The reason is
+    /// kept a second time, in [`Self::passed_over`], so that a rule which
+    /// goes on to succeed through some other record or folder still says on
+    /// stderr which candidate it left out (issue #2818).
+    fn reject_named(&mut self, reason: String) {
+        let line = sanitize_line(&reason);
+        if !self.passed_over.contains(&line) {
+            self.passed_over.push(line);
+        }
+        self.reject(reason);
+    }
+
+    /// A chosen destination, with a warning naming the records that named
+    /// this target and were passed over.
+    ///
+    /// Without this the silence would be wrong rather than merely quiet.
+    /// The issue rules take the newest of every record that matches, so a
+    /// record rejected here can be a *newer* run than the one chosen: the
+    /// command would exit 0, print the older folder on stdout and say
+    /// nothing about the live run whose folder had drifted to a mode, an
+    /// owner or a `run.json` that failed a check. The operator would then
+    /// be reading a run that cannot see the entry. The list is bounded like
+    /// the not-found line's, and any warning the rule itself raised is kept.
+    fn with_passed_over(&self, mut dest: Destination) -> Destination {
+        if self.passed_over.is_empty() {
+            return dest;
+        }
+        let shown = self.passed_over.len().min(MAX_SHOWN_REJECTIONS);
+        let mut part = format!(
+            "{} record(s) that name {} were not used: {}",
+            self.passed_over.len(),
+            quoted(self.target),
+            self.passed_over[..shown].join("; ")
+        );
+        let left = self.passed_over.len() - shown;
+        if left > 0 {
+            part.push_str(&format!(", and {left} more"));
+        }
+        dest.warning = Some(match dest.warning.take() {
+            Some(raised) => format!("{raised}; {part}"),
+            None => part,
+        });
+        dest
     }
 
     /// Every record in the log directory, newest log first. Read once, and
@@ -731,7 +797,7 @@ impl<'a> Resolver<'a> {
                 continue;
             }
             let Some(recorded) = record.run_dir.as_deref() else {
-                self.reject(format!(
+                self.reject_named(format!(
                     "a record names issue {number} but recorded no run folder"
                 ));
                 continue;
@@ -739,7 +805,7 @@ impl<'a> Resolver<'a> {
             match accept_recorded(recorded, record.run_id.as_deref(), &mut self.roots) {
                 Ok((dir, _)) if !matched.contains(&dir) => matched.push(dir),
                 Ok(_) => {}
-                Err(why) => self.reject(why),
+                Err(why) => self.reject_named(why),
             }
         }
         let chosen = matched.first()?;
@@ -778,7 +844,10 @@ impl<'a> Resolver<'a> {
         if let Some(recorded) = record.run_dir.as_deref() {
             match accept_recorded(recorded, record.run_id.as_deref(), &mut self.roots) {
                 Ok((dir, _)) => return Ok(Some(Destination::run(&dir, None))),
-                Err(why) => self.reject(why),
+                // The log the operator named recorded this folder, so a
+                // fallback to the work root below is a different folder
+                // from the one the session actually uses: say so.
+                Err(why) => self.reject_named(why),
             }
         }
         // A record written before `run_dir` existed, or by a run with no
@@ -832,7 +901,10 @@ impl<'a> Resolver<'a> {
             }
             match accept_recorded(recorded, record.run_id.as_deref(), &mut self.roots) {
                 Ok((dir, _)) => return Ok(Some(Destination::run(&dir, None))),
-                Err(why) => self.reject(why),
+                // This record carried the target's own ID or folder name,
+                // so a later stage that finds the run somewhere else found
+                // a different folder: say which one was left out.
+                Err(why) => self.reject_named(why),
             }
         }
         if let Some(found) = self.recorded_attempt_destination() {
@@ -936,18 +1008,33 @@ impl<'a> Resolver<'a> {
 }
 
 /// The guidance folder `target` names, and its kind.
+///
+/// One place turns the rules' answer into the result, so that every success
+/// carries the warning about the records that named this target and were
+/// passed over, and every miss carries the not-found line
+/// ([`Resolver::with_passed_over`], issue #2818).
 fn resolve_target(target: &str) -> Result<Destination, GuideError> {
     let mut resolver = Resolver::new(target);
+    match first_match(&mut resolver, target)? {
+        Some(found) => Ok(resolver.with_passed_over(found)),
+        None => Err(resolver.not_found()),
+    }
+}
+
+/// The first rule that matches `target`, or `None` when every rule misses.
+fn first_match(
+    resolver: &mut Resolver<'_>,
+    target: &str,
+) -> Result<Option<Destination>, GuideError> {
     // Rules 1 and 2. A target with `://` is only ever read as a GitHub URL,
     // so a mistyped one never reaches the filesystem as a run name.
     if target.contains("://") {
         if let Some(issue) = parse_issue_url(target) {
             // Never `state_root` or `ensure_private_chain` here: an issue URL
-            // that matches nothing must create nothing.
-            return match resolver.issue_destination(Some(&issue), issue.number) {
-                Some(found) => Ok(found),
-                None => Err(resolver.not_found()),
-            };
+            // that matches nothing must create nothing. The miss also ends
+            // the search, because no later rule may read a URL as a run or
+            // session name.
+            return Ok(resolver.issue_destination(Some(&issue), issue.number));
         }
         let pr = parse_pr_url(target)?;
         let root = state_root().map_err(|reason| {
@@ -955,24 +1042,22 @@ fn resolve_target(target: &str) -> Result<Destination, GuideError> {
         })?;
         let key = pr_key(&pr.owner, &pr.repo, pr.number);
         ensure_private_chain(&root, &[AUTO_DRIVE_DIR, &key])?;
-        return Ok(Destination {
+        return Ok(Some(Destination {
             dir: pr_guidance_parent(&root, &key).join(GUIDANCE_DIR),
             source: Source::Pr,
             warning: None,
-        });
+        }));
     }
     if let Some(found) = resolver.session_destination()? {
-        return Ok(found);
+        return Ok(Some(found));
     }
     if let Some(found) = resolver.run_destination()? {
-        return Ok(found);
+        return Ok(Some(found));
     }
-    if let Some(number) = bare_issue_number(target)
-        && let Some(found) = resolver.issue_destination(None, number)
-    {
-        return Ok(found);
+    if let Some(number) = bare_issue_number(target) {
+        return Ok(resolver.issue_destination(None, number));
     }
-    Err(resolver.not_found())
+    Ok(None)
 }
 
 /// The run folder for `id`: a folder of that name under `runs`, or the

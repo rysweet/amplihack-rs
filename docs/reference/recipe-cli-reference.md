@@ -322,6 +322,11 @@ The first match is used, in this order:
    matches, the newest run is used and a warning on stderr names the run ID
    that was chosen. The warning appears only when the command succeeds and
    only when there was more than one match; stdout is the same either way.
+   A record that names the issue and fails one of the checks below gets a
+   warning of its own, on the same stderr line: the issue rules take the
+   newest of every record that matches, so the one left out can be a newer
+   run than the one written to. See
+   [Recorded claims and named inputs](#recorded-claims-and-named-inputs).
 
 Where both the recorded folder and the work root in the environment resolve,
 the recorded folder is used: it is the folder the run actually uses.
@@ -353,6 +358,25 @@ The checks are the same strictness either way; the words differ only in what
 happens next. A record's failed claim is never called a refusal, because the
 search goes on.
 
+A claim that named the target and was not used is reported even when a later
+rule succeeds. One warning line on stderr names it and why, after the entry
+has been written:
+
+```text
+recipe guide: warning: 1 record(s) that name "2783" were not used: /home/alice/.amplihack/work/runs/9c8b7a65-4d3e-4f21-a0b9-8c7d6e5f4a3b: it is writable by group or others (mode 0777)
+```
+
+At most three reasons are shown, followed by `, and <n> more`, as in the
+not-found line. This matters most for the issue rules, which take the newest
+of every record that matches: without the line the command would exit 0, name
+the older folder on stdout, and say nothing about the newer run whose folder
+had drifted to a mode, an owner or a `run.json` that failed a check -- leaving
+the guidance in a run that has finished. Folders passed over while rule 4
+reads the `run.json` of every recorded folder are not reported here: they
+never named the target, so they say nothing about where the entry went. All
+of them, named or not, are still listed in the not-found line when every rule
+misses.
+
 Checks applied to a recorded folder before it is written to:
 
 - The raw path string is absolute and has no empty, `.` or `..` segment. The
@@ -377,8 +401,11 @@ Checks applied to a recorded folder before it is written to:
   folder beneath it are checked again at write time, so a writable `runs`
   would leave room to rename the run folder aside in between and have the
   entry land somewhere else (CWE-367). No permissions are changed.
-- The log directory passes the same trust check. A failure is reported as a
-  note.
+- The log directory passes the same trust check. A failure there is a note,
+  not a refusal: the directory is the sweep's own input, the rules that read
+  the work root still run, and the note gives the directory and the fault
+  with no verdict word --
+  `pointer lines in <log dir> (it is writable by group or others (mode 0777))`.
 - `run.json` exists and parses, its `run_id` is the folder's own name, and
   the `run_id` the pointer line recorded is either that name or the
   correlation ID of one of the attempts it lists. A log planted beside the
@@ -790,6 +817,7 @@ does not read this folder; see [Known limits](#known-limits).
 | Code | Meaning | Example message on stderr |
 | --- | --- | --- |
 | `0` | The entry was written | |
+| `0` | The entry was written, and a record that names the target was not used. Stdout is unchanged; the warning names the folder left out and why | `recipe guide: warning: 1 record(s) that name "2783" were not used: /home/alice/.amplihack/work/runs/9c8b7a65-4d3e-4f21-a0b9-8c7d6e5f4a3b: it is writable by group or others (mode 0777)` |
 | `1` | No run matches the target. One line names the target and each place looked at: the session log path, the log directory, the `run.json` of each recorded run folder, the recorded run folder if one was named but is absent, and `<work root>/runs/` | `recipe guide: no recipe run or detached session named "nightly-fix"; looked at session log /home/alice/.amplihack/recipe-logs/nightly-fix.log (not found), pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s)), the attempts in run.json of 3 recorded run folder(s), /home/alice/.amplihack/work/runs (no run folder or run.json with that ID)` |
 | `1` | An issue URL that no recorded run names. Nothing is created under the state folder | `recipe guide: no recipe run or detached session named "https://github.com/rysweet/amplihack-rs/issues/2783"; looked at pointer lines in /home/alice/.amplihack/recipe-logs (3 pointer record(s))` |
 | `1` | The target could be a run ID, but the work root cannot be resolved | `recipe guide: cannot look for run "nightly-fix": HOME is not set, so the default work root cannot be resolved` |
