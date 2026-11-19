@@ -45,6 +45,10 @@ steps:
       3. Plan implementation approach
       4. Document module specifications
       5. Identify risks and dependencies
+      6. If the task is a failing step or check, start by saying why it failed.
+         If the check was right, fix the cause. If the check was making a
+         judgement, keep the validation and move the judgement into an agent
+         step. Never delete or weaken a check in order to get past it.
 
       Consider the INVESTIGATION-FIRST PATTERN if the codebase is unfamiliar.
 
@@ -75,9 +79,8 @@ steps:
       7. Produce an evidence table with: workflow, run URL, event,
          branch/SHA, failing job, failing step, root-cause excerpt, and
          classification.
-      8. Classify each failure as one of: repo-caused,
-         generated-template-caused, external-transient, stale, unrelated, or
-         inaccessible.
+      8. Classify each failure as one of: repo-caused, generated-template-caused,
+         external-transient, stale, unrelated, or inaccessible.
       9. Select code/config changes only for repo-caused or
          generated-template-caused failures; do not patch external-transient,
          stale, unrelated, or inaccessible failures.
