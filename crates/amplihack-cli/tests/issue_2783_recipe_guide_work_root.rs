@@ -238,7 +238,7 @@ fn a_cleaned_up_folder_gives_its_reason_whichever_attempt_id_names_it() {
 // A recorded path is untrusted
 // ---------------------------------------------------------------------------
 
-fn assert_refused_and_nothing_written(o: &std::process::Output, dir: &Path) {
+fn assert_not_found_and_nothing_written(o: &std::process::Output, dir: &Path) {
     assert_eq!(o.status.code(), Some(1), "{}", show(o));
     assert!(stdout(o).is_empty(), "{}", show(o));
     one_line_error(o);
@@ -274,7 +274,7 @@ fn a_run_dir_with_a_dot_dot_component_is_not_used() {
     let p = GuideFixture::pointer(CORRELATION, Some(&sneaky));
     f.session_log_from_pointer(SESSION, &p);
     let o = f.guide_without_work_root(&[SESSION], "text");
-    assert_refused_and_nothing_written(&o, &f.alt_work.join("runs").join(RUN_FOLDER));
+    assert_not_found_and_nothing_written(&o, &f.alt_work.join("runs").join(RUN_FOLDER));
 }
 
 #[test]
@@ -285,7 +285,7 @@ fn a_run_dir_whose_parent_is_not_named_runs_is_not_used() {
     crate::support::recipe_guide::private_file(&dir.join("run.json"), "{}");
     f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&dir)));
     let o = f.guide_without_work_root(&[SESSION], "text");
-    assert_refused_and_nothing_written(&o, &dir);
+    assert_not_found_and_nothing_written(&o, &dir);
 }
 
 #[test]
@@ -299,7 +299,7 @@ fn a_run_dir_that_is_a_symbolic_link_is_not_used() {
     symlink(&real, &link).unwrap();
     f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&link)));
     let o = f.guide_without_work_root(&[SESSION], "text");
-    assert_refused_and_nothing_written(&o, &real);
+    assert_not_found_and_nothing_written(&o, &real);
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn a_run_dir_without_a_run_json_is_not_used() {
     private_dir(&dir);
     f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&dir)));
     let o = f.guide_without_work_root(&[SESSION], "text");
-    assert_refused_and_nothing_written(&o, &dir);
+    assert_not_found_and_nothing_written(&o, &dir);
 }
 
 #[test]
@@ -631,7 +631,7 @@ fn a_run_dir_containing_the_replacement_character_is_not_used() {
         .into();
     f.session_log_from_pointer(SESSION, &p);
     let o = f.guide_without_work_root(&[SESSION], "text");
-    assert_refused_and_nothing_written(&o, &run);
+    assert_not_found_and_nothing_written(&o, &run);
 }
 
 #[test]
@@ -644,7 +644,7 @@ fn a_run_dir_whose_runs_folder_is_a_symbolic_link_is_not_used() {
     let via = linked_work.join("runs").join(RUN_FOLDER);
     f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&via)));
     let o = f.guide_without_work_root(&[SESSION], "text");
-    assert_refused_and_nothing_written(&o, &real);
+    assert_not_found_and_nothing_written(&o, &real);
 }
 
 #[test]
@@ -654,7 +654,7 @@ fn a_run_dir_that_others_can_write_to_is_not_used() {
     fs::set_permissions(&run, fs::Permissions::from_mode(0o777)).unwrap();
     f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&run)));
     let o = f.guide_without_work_root(&[SESSION], "text");
-    assert_refused_and_nothing_written(&o, &run);
+    assert_not_found_and_nothing_written(&o, &run);
 }
 
 /// A log planted beside the real ones, naming a run folder whose `run.json`
@@ -671,7 +671,7 @@ fn a_record_whose_run_id_disagrees_with_the_report_is_not_used() {
     f.session_log_from_pointer(SESSION, &pointer);
     for target in [SESSION, other, RUN_FOLDER, ISSUE_URL, "2783"] {
         let o = f.guide_without_work_root(&[target], "recover the recorded run");
-        assert_refused_and_nothing_written(&o, &run);
+        assert_not_found_and_nothing_written(&o, &run);
         let line = one_line_error(&o);
         assert!(line.contains("does not record run"), "{target}: {line}");
         assert!(line.contains(other), "{target}: {line}");
@@ -692,7 +692,7 @@ fn a_report_that_names_another_run_is_not_used() {
     fs::write(&report, serde_json::to_string(&value).unwrap()).unwrap();
     f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&run)));
     let o = f.guide_without_work_root(&[SESSION], "text");
-    assert_refused_and_nothing_written(&o, &run);
+    assert_not_found_and_nothing_written(&o, &run);
     let line = one_line_error(&o);
     assert!(line.contains("names run"), "{line}");
     assert!(line.contains(other), "{line}");
@@ -728,7 +728,7 @@ fn a_writable_work_root_runs_folder_or_report_is_not_used() {
         fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
         f.session_log_from_pointer(SESSION, &GuideFixture::pointer(CORRELATION, Some(&run)));
         let o = f.guide_without_work_root(&[SESSION], "no write under a writable path");
-        assert_refused_and_nothing_written(&o, &run);
+        assert_not_found_and_nothing_written(&o, &run);
         let line = one_line_error(&o);
         assert!(
             line.contains(&path.display().to_string()),
@@ -738,7 +738,7 @@ fn a_writable_work_root_runs_folder_or_report_is_not_used() {
             line.contains("writable by group or others"),
             "{level} {mode:04o}: {line}"
         );
-        // Nothing changed the permissions it refused.
+        // Nothing changed the permissions it read.
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             mode,
@@ -810,7 +810,7 @@ fn a_symbolic_link_named_like_a_log_is_skipped_by_the_scan() {
     )
     .unwrap();
     let o = f.guide_without_work_root(&["2783"], "text");
-    assert_refused_and_nothing_written(&o, &run);
+    assert_not_found_and_nothing_written(&o, &run);
 }
 
 #[test]
@@ -865,7 +865,7 @@ fn a_leading_plus_or_non_digits_in_a_recorded_issue_number_do_not_match() {
     p["issue_number"] = "+2783".into();
     f.session_log_from_pointer(SESSION, &p);
     let o = f.guide_without_work_root(&["2783"], "text");
-    assert_refused_and_nothing_written(&o, &run);
+    assert_not_found_and_nothing_written(&o, &run);
 }
 
 #[test]
@@ -1125,10 +1125,11 @@ fn the_success_line_escapes_a_control_character_in_the_folder_it_names() {
 }
 
 /// The same hostile ancestor, reached the other way: a record claims it.
-/// `accept_recorded` now refuses the claim on its characters, before any of
-/// the checks that read only the last two components and the work root. It
-/// stays a note, so the rest of rule 3 still reaches the real run through the
-/// work root in the environment (issue #2809).
+/// `accept_recorded` declines to use the claim on its characters, before any
+/// of the checks that read only the last two components and the work root.
+/// The claim is not used rather than refused, so the rest of rule 3 still
+/// reaches the real run through the work root in the environment
+/// (issue #2809).
 #[test]
 fn a_recorded_run_folder_with_a_control_character_in_an_ancestor_is_passed_over() {
     let f = GuideFixture::new();

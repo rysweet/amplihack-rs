@@ -41,12 +41,22 @@
 //! 5. a bare issue number, `<n>` or `#<n>`: the recorded run that names that
 //!    issue number, whatever the repository.
 //!
-//! Two kinds of input, treated differently (issue #2809). What the operator
-//! named -- the target, the session log it points at, the `--file` path and
-//! the destination folder -- is refused when it fails a check. What a record
-//! claimed is never refused: a claim that fails a check becomes a note in the
-//! not-found message and the next rule is still tried. Nothing here fails
-//! closed, and no new refusal was added.
+//! Two kinds of input, treated differently (issue #2809), and one word for
+//! each failure, used here, in the function docs below and on the reference
+//! page.
+//!
+//! What the operator named -- the target, the session log it points at, the
+//! `--file` path and the destination folder once it is chosen -- is
+//! **refused**: the command prints why and stops, having written nothing.
+//!
+//! What a record claimed -- a `run_dir`, a session or an issue read out of a
+//! pointer line or a `run.json` -- is **not used**: the reason becomes a
+//! line in the not-found message, under `not used:`, and the next rule still
+//! gets its turn. A record is a claim, so a claim that does not hold must
+//! not be written to; not using one ends nothing, because the search goes
+//! on and the command exits only if every rule misses. Both words name the
+//! same care taken with the same check -- they differ in what happens next,
+//! which is why a failed claim is never called a refusal here.
 //!
 //! Inside a recipe run (`AMPLIHACK_RECIPE_RUN_ID` set) the command is refused
 //! unless `--from-step` is passed, so an agent step misled by text it read
@@ -439,14 +449,16 @@ fn records_issue_number(recorded: Option<&str>, number: u64) -> bool {
 /// links: not a symbolic link, the expected type, owned by this process's
 /// effective user and not writable by group or others.
 ///
-/// Every failure is a refusal, the mode included. The folder is accepted
-/// here and written to later, so a folder another user can write to can be
-/// renamed aside and replaced in between, which would land the entry in a
-/// folder that user controls (CWE-367). `append_entry` rechecks only the
-/// run folder and the guidance folder, never `runs` or the work root, so
-/// nothing downstream makes up for accepting a writable ancestor. A refusal
-/// here costs nothing: the reason goes into the not-found line and the next
-/// rule still gets its turn (issue #2809).
+/// Every failure means the path is not used, the mode included. The folder
+/// is accepted here and written to later, so a folder another user can
+/// write to can be renamed aside and replaced in between, which would land
+/// the entry in a folder that user controls (CWE-367). `append_entry`
+/// rechecks only the run folder and the guidance folder, never `runs` or
+/// the work root, so nothing downstream makes up for accepting a writable
+/// ancestor. Not using a path costs nothing: the reason goes into the
+/// not-found line, under `not used:`, and the next rule still gets its turn
+/// (issue #2809). Every caller is a recorded claim, so nothing here is a
+/// refusal in the module doc's sense -- the command does not stop.
 fn check_recorded_path(path: &Path, want_dir: bool) -> Result<(), String> {
     let meta = fs::symlink_metadata(path).map_err(|e| {
         if e.kind() == ErrorKind::NotFound {
@@ -456,7 +468,7 @@ fn check_recorded_path(path: &Path, want_dir: bool) -> Result<(), String> {
         }
     })?;
     match untrusted_reason(&meta, want_dir) {
-        Some(reason) => Err(format!("refusing {}: {reason}", path.display())),
+        Some(reason) => Err(format!("{}: {reason}", path.display())),
         None => Ok(()),
     }
 }
@@ -492,8 +504,8 @@ impl RootChecks {
 
     fn compute(runs: &Path, root: &Path) -> Result<(), String> {
         // An unset HOME skips the comparison with the home folder rather
-        // than refusing; the not-found line still names what could not be
-        // resolved.
+        // than making the folder unusable; the not-found line still names
+        // what could not be resolved.
         let home = crate::user_config::home_dir().unwrap_or_default();
         if let Err(e) = work_root::validate(root, &home) {
             return Err(format!(
@@ -503,7 +515,7 @@ impl RootChecks {
         }
         // `lstat` at each level above the run folder, so a link swapped in
         // there is seen rather than followed, and a level another user can
-        // write to is refused rather than written under.
+        // write to is not used rather than written under.
         for level in [root, runs] {
             check_recorded_path(level, true)
                 .map_err(|reason| format!("cannot be used: {reason}"))?;
@@ -514,10 +526,11 @@ impl RootChecks {
 
 /// Whether a folder a record named may be written to.
 ///
-/// Every reason it returns is a refusal, never a note: a record is a claim,
-/// and a claim that does not hold must not be written to. A refusal is not
-/// the end of the search -- it becomes a line in the not-found message and
-/// a later rule still gets its turn (issue #2809).
+/// Every reason it returns means the folder is not used: a record is a
+/// claim, and a claim that does not hold must not be written to. That is
+/// not the end of the search -- the reason becomes a line in the not-found
+/// message, under `not used:`, and a later rule still gets its turn
+/// (issue #2809). Nothing it returns stops the command on its own.
 ///
 /// `run_id` is the correlation id the record carried, which the folder's own
 /// `run.json` must agree with, so a log planted beside the real ones cannot
@@ -1095,13 +1108,13 @@ mod tests {
         );
         assert_eq!(quoted("say \"x\"\\y"), "\"say \\\"x\\\"\\\\y\"");
         // A replacement character is printable and is shown as itself; it is
-        // `accept_recorded` that refuses a path holding one.
+        // `accept_recorded` that declines to use a path holding one.
         assert_eq!(quoted("a\u{fffd}b"), "\"a\u{fffd}b\"");
     }
 
     #[test]
     fn a_message_is_one_line_however_it_was_built() {
-        let built = "refusing /w/a\nb\r\u{2029}c: it is a symbolic link";
+        let built = "/w/a\nb\r\u{2029}c: it is a symbolic link";
         let shown = sanitize_line(built);
         assert!(!shown.contains('\n') && !shown.contains('\r'), "{shown}");
         assert!(!shown.contains('\u{2029}'), "{shown}");
@@ -1233,7 +1246,7 @@ mod tests {
                 .unwrap_err();
             assert!(reason.contains(shown), "{path:?}: {reason}");
             assert!(reason.contains("in its path"), "{path:?}: {reason}");
-            // The reason itself is printable: no character it refused
+            // The reason itself is printable: no character it rejected
             // survives into the line that reports it.
             assert!(
                 !reason.chars().any(needs_escape),
@@ -1243,7 +1256,8 @@ mod tests {
     }
 
     /// The memo of the work-root checks answers for the second folder under
-    /// a `runs` directory exactly as it did for the first, refusal included.
+    /// a `runs` directory exactly as it did for the first, a root that
+    /// cannot be used included.
     /// A sweep over a log directory is a sweep over a handful of work roots,
     /// and this is what lets it cost a handful of `work_root::validate`
     /// calls rather than one per folder (issue #2818).
@@ -1274,13 +1288,13 @@ mod tests {
         assert_eq!(roots.0.len(), 1, "one memo entry per `runs` folder");
     }
 
-    /// A work root that cannot be used is refused for every folder under it,
-    /// from the memo as well as on the first call.
+    /// A work root that cannot be used keeps every folder under it from
+    /// being used, from the memo as well as on the first call.
     #[test]
-    fn a_refused_work_root_is_refused_again_from_the_memo() {
+    fn an_unusable_work_root_is_unusable_again_from_the_memo() {
         let run = "3f1b7c2a-5d4e-4a90-8b61-7e2c9d0a4f18";
         let mut roots = RootChecks::default();
-        // `/` is refused as a work root, so `/runs/<id>` has nowhere to live.
+        // `/` is not a usable work root, so `/runs/<id>` has nowhere to live.
         for _ in 0..2 {
             let reason = accept_recorded(&format!("/runs/{run}"), None, &mut roots)
                 .map(|(d, _)| d.display().to_string())
@@ -1293,12 +1307,12 @@ mod tests {
         assert_eq!(roots.0.len(), 1);
     }
     /// A recorded path fails the one trust rule in every one of its four
-    /// ways, and each is a refusal. The mode case is the one a writable
-    /// ancestor reaches: the folder is accepted here and written to later,
-    /// so accepting it would leave room for a rename in between
-    /// (CWE-367, issue #2818).
+    /// ways, and each one means the path is not used. The mode case is the
+    /// one a writable ancestor reaches: the folder is accepted here and
+    /// written to later, so accepting it would leave room for a rename in
+    /// between (CWE-367, issue #2818).
     #[test]
-    fn a_recorded_path_is_refused_for_type_owner_and_mode() {
+    fn a_recorded_path_is_not_used_for_type_owner_and_mode() {
         use crate::run_guidance::fs_safety::{euid, with_euid_override};
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -1335,9 +1349,15 @@ mod tests {
             fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
             let reason = check_recorded_path(path, want_dir).unwrap_err();
             assert!(reason.contains("writable by group or others"), "{reason}");
-            assert!(reason.starts_with("refusing "), "{reason}");
+            // The reason opens with the path it is about, so the
+            // not-found line reads `not used: <path>: <reason>` rather
+            // than calling a record's failed claim a refusal (issue #2809).
+            assert!(
+                reason.starts_with(&format!("{}: ", path.display())),
+                "{reason}"
+            );
         }
-        // Nothing here changed what it refused.
+        // Nothing here changed the permissions it read.
         assert_eq!(
             fs::metadata(&file).unwrap().permissions().mode() & 0o777,
             0o606

@@ -334,16 +334,24 @@ pointer line.
 
 #### Recorded claims and named inputs
 
-The command treats two kinds of input differently.
+The command treats two kinds of input differently, and uses one word for
+each failure. The same two words are used in the module documentation of
+`guide.rs` and in the messages the command prints.
 
 - **A recorded claim** is a `run_dir`, session or issue taken from a pointer
-  line or a `run.json`. A claim that fails a check below is not used. It
-  becomes a note in the not-found message, and the next rule is still tried.
-- **An operator-named input** is something you typed: the target and the
-  `--file` path. These are refused with an error when they fail: a malformed
-  pull request URL, a session log you named that is a symbolic link or not
-  trusted, a destination folder that fails a check, or a `--file` path that
-  cannot be read.
+  line or a `run.json`. A claim that fails a check below is **not used**: the
+  reason becomes a line in the not-found message, after `not used:`, and the
+  next rule is still tried. The command stops only if every rule misses.
+- **An operator-named input** is something you typed: the target, the session
+  log the target names, the `--file` path, and the destination folder once a
+  rule has chosen it. These are **refused** — the command prints why and
+  stops, having written nothing: a malformed pull request URL, a session log
+  you named that is a symbolic link or not trusted, a destination folder that
+  fails a check, or a `--file` path that cannot be read.
+
+The checks are the same strictness either way; the words differ only in what
+happens next. A record's failed claim is never called a refusal, because the
+search goes on.
 
 Checks applied to a recorded folder before it is written to:
 
