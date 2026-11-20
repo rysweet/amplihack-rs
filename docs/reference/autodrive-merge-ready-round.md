@@ -834,7 +834,7 @@ people. It replaces every bare `STUCK` ending of the merge-ready loop.
 | `pr_number` | PR to hand off; checked to be a positive integer. |
 | `head_sha` | Head the drive last saw; checked against the SHA format before use. |
 | `handoff_reason` | Trusted text, written by the calling recipe, naming what caused the hand-off. It never carries loop or driver output: the merge-ready hand-off passes a fixed sentence and puts the loop's own reason in `handoff_blocker`. |
-| `handoff_blocker` | The blocker sentence, as untrusted text between markers the prompt tells the agent to follow no instruction from. From the merge-ready loop it is the loop line's `reason`; from finalisation and the base sync it is their own result text; otherwise the blocker sentence from the last write-up. For `UNREADABLE` the loop's reason names the kept `merge-ready-driver.err` and its path, quotes the driver's last line (one filtered line, withheld whole when it matches a list of credential shapes, which is a shape list and not a guarantee), and says whether `merge-ready-result.json` is absent, unreadable or says something else. When nothing was kept, or only part of it was, it says so and quotes nothing. See [Kept driver output](#kept-driver-output). |
+| `handoff_blocker` | The blocker sentence, as untrusted text between markers the prompt tells the agent to follow no instruction from. From the merge-ready loop it is the loop line's `reason`; from finalisation and the base sync it is their own result text; otherwise the blocker sentence from the last write-up. For `UNREADABLE` the loop's reason names the kept `merge-ready-driver.err` and its path, quotes the driver's last line (one filtered line, withheld whole when it matches a list of credential shapes, which is a shape list and not a guarantee), and says whether `merge-ready-result.json` is absent, unreadable or says something else. When nothing was kept, or only part of it was, it says so and quotes nothing. Whatever the feed, the recipe's own `fence-blocker` step filters this slot before the prompt quotes it: one line of printable ASCII with `<` and `>` replaced by `_`, cut at 2000 characters, so no caller can forge or close the markers. See [Kept driver output](#kept-driver-output). |
 | `stop_comment_posted` | `true` when the loop driver already posted a stop comment. |
 | `autodrive_state_dir` | State directory; when `handoff_blocker` is empty the agent reads the blocker from `merge-ready-latest.writeup` there. |
 
@@ -1374,20 +1374,24 @@ leave the drive `STUCK` (#2656). The tests
   those markers. The hand-off also asks its agent to quote the blocker inside
   a fenced code block, which would stop the `www.` and `GH-123` cases
   rendering in the posted comment, but that is an instruction to an agent
-  rather than a filter. `base_sync.reason` and `finalize_merge.reason` reach
-  the same slot on the other two hand-off paths without that replacement, so
-  the markers are not proof against every writer that fills them. On
-  `step-03f` the two share one slot, `{{base_sync.reason}}` first, so the
-  loop reason's place inside the fence depends on its neighbour as well as on
-  its own filter. `step-03d` cannot filter the neighbour, because it is
-  conditioned on a sync that succeeded and the hand-off also fires when the
-  sync did not; closing the gap means filtering at the hand-off rather than
-  at each caller, which this change does not do. What the replacement does
-  secure rests on one other property: `tr -cd '\040-\176'` strips newlines,
-  so the reason is a single line and a forged marker can never begin a line
-  of its own while the true closing marker does. Treat that as load-bearing
-  if the printable-ASCII filter is ever relaxed. What remains is that the
-  agent reads the text at all, which the markers bound but do not remove.
+  rather than a filter. The callers are not the only writers that fill the
+  slot: `base_sync.reason` and `finalize_merge.reason` are agent-written free
+  text and reach it on the other two hand-off paths, and on `step-03f`
+  `{{base_sync.reason}}` and `{{sync_loop_outcome.reason}}` share one slot.
+  `step-03d` cannot filter its neighbour there, because it is conditioned on
+  a sync that succeeded while the hand-off also fires when the sync did not.
+  `autodrive-handoff` therefore filters its own input, in the `fence-blocker`
+  step, before the prompt quotes it: every feed is covered at the fence
+  rather than each caller in turn, including any caller added later. The
+  callers' own replacement stays, so the loop reason is filtered twice. The
+  fence filter is never a gate — it exits 0 whatever it is given, because a
+  hand-off that does not run leaves the PR undrafted and silent, the one
+  ending this recipe exists to prevent. It also maps tab and newline to a
+  space, which keeps a property worth naming: with no newline in the text, a
+  forged marker can never begin a line of its own while the true closing
+  marker does. Treat that as the backstop if the bracket replacement is ever
+  relaxed. What remains is that the agent reads the text at all, which the
+  markers bound but do not remove.
 - Judging agents run in the actual PR worktree with instructions to leave it
   unchanged. Trusted workflow assets are selected independently of cwd;
   repository text and review output do not grant workflow authority.
