@@ -25,6 +25,7 @@
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 
@@ -174,13 +175,19 @@ exit 0
 
 /// Replaces `autodrive_loop.sh` in the copied bundle for the loop-step
 /// tests: writes `loop_result` (when present) to the driver's own result file
-/// under umask 077, prints `loop_stdout` (text an agent might have printed)
-/// and exits `loop_rc`.
+/// under umask 077, prints `loop_stdout` (text an agent might have printed),
+/// writes `loop_stderr` to standard error (#2849) and exits `loop_rc`. It
+/// also records in `loop-fd4` whether it inherited the kept copy's descriptor,
+/// and in `loop-umask` the umask it was started with.
 const FAKE_LOOP_DRIVER: &str = r#"#!/usr/bin/env bash
 S="$FAKE_STATE"; dir=""; repo=""; prev=""
 for a in "$@"; do [ "$prev" = --state-dir ] && dir="$a"; [ "$prev" = --repo ] && repo="$a"; prev="$a"; done
 printf '%s\n' "$@" > "$S/loop-argv"
 printf '%s\n' "$@" >> "$S/loop-argv-all"; echo "--" >> "$S/loop-argv-all"
+# #2849: whether the driver inherited the kept copy's descriptor. The step
+# closes it on this side of the pipe, so the answer must be `closed`.
+if [ -e /proc/self/fd/4 ]; then echo open > "$S/loop-fd4"; else echo closed > "$S/loop-fd4"; fi
+umask > "$S/loop-umask"
 if [ -f "$S/loop_result" ]; then
   ( umask 077; jq -cn --arg r "$(cat "$S/loop_result")" \
       '{loop:"merge-ready",loop_result:$r,round_label:"round-2",reason:"fixture stop"}' > "$dir/merge-ready-result.json" )
@@ -188,6 +195,11 @@ if [ -f "$S/loop_result" ]; then
   [ -n "$repo" ] && ( umask 077; git -C "$repo" rev-parse HEAD > "$dir/merge-ready-latest.head" 2>/dev/null )
 fi
 [ -f "$S/loop_stdout" ] && cat "$S/loop_stdout"
+# #2849: what a driver that dies noisily leaves behind. `loop_stderr` is
+# written to standard error after `loop_stdout`; `loop_result_raw` is written
+# verbatim as a partial result file.
+[ -f "$S/loop_stderr" ] && cat "$S/loop_stderr" >&2
+[ -f "$S/loop_result_raw" ] && ( umask 077; cp "$S/loop_result_raw" "$dir/merge-ready-result.json" )
 exit "$(cat "$S/loop_rc" 2>/dev/null || echo 0)"
 "#;
 
@@ -1323,17 +1335,22 @@ struct LoopCase {
     rc: &'static str,
     result: Option<&'static str>,
     printed: Option<String>,
+    /// Text the stub driver writes to standard error (#2849).
+    stderr: Option<String>,
 }
 
-fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
+/// Puts the stub loop driver in the copied bundle and sets its fixture files
+/// for one run, clearing what the run before left behind.
+fn stage_loop_driver(fx: &Fx, case: &LoopCase) {
     write_executable(
         &fx.tools().join("autodrive_loop.sh"),
         FAKE_LOOP_DRIVER,
         0o755,
     );
     fx.set("loop_rc", case.rc);
-    let _ = std::fs::remove_file(fx.fake.join("loop_result"));
-    let _ = std::fs::remove_file(fx.fake.join("loop_stdout"));
+    for f in ["loop_result", "loop_stdout", "loop_stderr", "loop-fd4"] {
+        let _ = std::fs::remove_file(fx.fake.join(f));
+    }
     let _ = std::fs::remove_file(fx.state.join("merge-ready-result.json"));
     if let Some(r) = case.result {
         fx.set("loop_result", r);
@@ -1341,42 +1358,78 @@ fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
     if let Some(p) = &case.printed {
         fx.set("loop_stdout", p);
     }
-    let preflight = json!({
+    if let Some(e) = &case.stderr {
+        fx.set("loop_stderr", e);
+    }
+}
+
+/// The preflight JSON a loop step reads its PR, repo and state directory from.
+fn loop_preflight(fx: &Fx) -> String {
+    json!({
         "should_run": "true", "pr": PR, "pr_url": "", "pr_state": "OPEN",
         "branch": "feat/issue-2575", "head_sha": SHA_A, "base_branch": "main",
         "base_sha": SHA_B, "state_dir": fx.state, "repo": fx.repo,
         "reason": "fixture", "blockers": [], "attempts": []
     })
-    .to_string();
-    let env = |c: &mut Command| {
-        c.env("RECIPE_VAR_merge_loop_preflight", &preflight)
-            .env("RECIPE_VAR_task_description", "issue 2575 fixture task")
-            .env("RECIPE_VAR_autodrive_state_dir", &fx.state)
-            .env("RECIPE_VAR_pr_number", PR)
-            .env("RECIPE_VAR_no_merge", "false")
-            .env("RECIPE_VAR_autodrive_dry_run", "false")
-            .env(
-                "RECIPE_VAR_autodrive_invocation_file",
-                fx.state.join("invocation.json"),
-            )
-            .env("REPO_PATH", &fx.repo)
-            .current_dir(&fx.repo)
-            .stdin(Stdio::null());
-    };
+    .to_string()
+}
+
+/// The environment and working directory every loop-step run needs.
+fn loop_env(c: &mut Command, fx: &Fx, preflight: &str) {
+    c.env("RECIPE_VAR_merge_loop_preflight", preflight)
+        .env("RECIPE_VAR_task_description", "issue 2575 fixture task")
+        .env("RECIPE_VAR_autodrive_state_dir", &fx.state)
+        .env("RECIPE_VAR_pr_number", PR)
+        .env("RECIPE_VAR_no_merge", "false")
+        .env("RECIPE_VAR_autodrive_dry_run", "false")
+        .env(
+            "RECIPE_VAR_autodrive_invocation_file",
+            fx.state.join("invocation.json"),
+        )
+        .env("REPO_PATH", &fx.repo)
+        .current_dir(&fx.repo)
+        .stdin(Stdio::null());
+}
+
+/// The commands of `step-02` and `step-02a`. `autodrive-merge-loop.yaml` is
+/// 21 KB of YAML that no run changes, so it is read and parsed once for the
+/// whole test binary rather than twice for every step run.
+fn loop_commands() -> &'static (String, String) {
+    static CMDS: OnceLock<(String, String)> = OnceLock::new();
+    CMDS.get_or_init(|| {
+        (
+            command_of("autodrive-merge-loop", "step-02"),
+            command_of("autodrive-merge-loop", "step-02a"),
+        )
+    })
+}
+
+/// Runs `step-02` alone. `step-02a` is a second process, so [`loop_step`]
+/// adds it only for the callers that read the outcome it produces.
+fn loop_step_02(fx: &Fx, case: &LoopCase) -> Output {
+    stage_loop_driver(fx, case);
+    let mut c = fx.bash();
+    c.arg("-c").arg(&loop_commands().0);
+    loop_env(&mut c, fx, &loop_preflight(fx));
+    c.output().expect("run merge loop step-02")
+}
+
+/// Runs `step-02a` over the loop line a `step-02` that exited 0 printed.
+fn loop_outcome_step(fx: &Fx, out: &Output) -> Output {
     let mut c = fx.bash();
     c.arg("-c")
-        .arg(command_of("autodrive-merge-loop", "step-02"));
-    env(&mut c);
-    let out = c.output().expect("run merge loop step-02");
+        .arg(&loop_commands().1)
+        .env("RECIPE_VAR_merge_loop_result", stdout(out));
+    loop_env(&mut c, fx, &loop_preflight(fx));
+    c.output().expect("run merge loop step-02a")
+}
+
+fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
+    let out = loop_step_02(fx, case);
     if out.status.code() != Some(0) {
         return (out, None);
     }
-    let mut c = fx.bash();
-    c.arg("-c")
-        .arg(command_of("autodrive-merge-loop", "step-02a"))
-        .env("RECIPE_VAR_merge_loop_result", stdout(&out));
-    env(&mut c);
-    let classified = c.output().expect("run merge loop step-02a");
+    let classified = loop_outcome_step(fx, &out);
     (out, Some(classified))
 }
 
@@ -1403,6 +1456,7 @@ fn step02_keeps_refusal_and_usage_limit_exits() {
                 rc,
                 result,
                 printed: None,
+                stderr: None,
             },
         );
         assert_eq!(
@@ -1429,6 +1483,7 @@ fn step02_turns_every_other_loop_ending_into_a_handoff() {
                 rc: "1",
                 result,
                 printed: None,
+                stderr: None,
             },
         );
         assert_eq!(out.status.code(), Some(0), "{result:?}: {}", show(&out));
@@ -1452,6 +1507,7 @@ fn step02_done_leads_to_finalisation() {
             rc: "0",
             result: Some("DONE"),
             printed: None,
+            stderr: None,
         },
     );
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
@@ -1470,6 +1526,7 @@ fn done_result_with_a_failed_driver_exit_is_handed_off() {
             rc: "1",
             result: Some("DONE"),
             printed: None,
+            stderr: None,
         },
     );
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
@@ -1492,6 +1549,7 @@ fn agent_printed_loop_result_is_ignored() {
                 rc: "1",
                 result: Some("STUCK"),
                 printed: Some(format!("{line}\n")),
+                stderr: None,
             },
         );
         assert_eq!(
@@ -1514,6 +1572,7 @@ fn step02a_reason_is_bounded() {
             rc: "1",
             result: Some("STUCK"),
             printed: Some("x".repeat(5000)),
+            stderr: None,
         },
     );
     let v = last_json(&classified.unwrap(), "outcome");
@@ -1876,3 +1935,9 @@ fn handoff_word_stops_the_loop_before_the_evaluator() {
 // merged. A child module, so it shares the fakes and fixtures above.
 #[path = "issue_2575_wait_sync_success.rs"]
 mod wait_sync_success;
+
+// #2849 item 1: the loop driver's output is kept in the PR's state folder and
+// an UNREADABLE hand-off names it. A child module, so it shares the stub
+// driver and the loop-step fixtures above.
+#[path = "issue_2849_loop_driver_evidence.rs"]
+mod loop_driver_evidence;
