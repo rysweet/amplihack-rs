@@ -944,7 +944,8 @@ FINAL_STATES="$(printf '%s %s' "$HELPER_STATES" "$AGENT_STATES")"
 # The helper also prints its terminal evidence as bare `key=value` lines, and
 # that would be the obvious anchor, but it is unreadable from here: the recipe
 # runner captures a bash step's standard output and standard error at every
-# nesting depth, so neither stream reaches build.out or build.err. The
+# nesting depth, so neither stream reaches build.out or build.err (issue
+# #2875). The
 # `INFO: resolved open PR ... (#1596)` line the helper writes to standard
 # error is unreadable for the same reason. What does reach this script is the
 # call the helper makes after emitting that evidence
@@ -986,7 +987,9 @@ fi
 # request's number. Both are the operator's to supply, and the Crusty loop
 # needs the task: autodrive_loop.sh refuses to start a round without one, and
 # so does autodrive_crusty_rereview.sh between merge rounds, so a drive
-# launched on a bare number cannot review the pull request at all.
+# launched on a bare number cannot review the pull request at all. That is
+# issue #2874, and passing the task here sidesteps it rather than covering it:
+# the bare-number path stays untested until #2874 is fixed.
 printf 'SUCCESS\n' > "$WORK/gh-state/checks"
 drive_started=0
 if [ -n "$BRANCH" ] && make_clone "$WORK/pr-clone" \
