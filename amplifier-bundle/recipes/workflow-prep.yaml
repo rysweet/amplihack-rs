@@ -223,7 +223,15 @@ steps:
         echo "[skip] not a git repo — defaulting to 'other'" >&2
         printf 'other'; exit 0
       fi
-      REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+      # The configured remote URL, not the transport-rewritten one. `git remote
+      # get-url` applies `url.<base>.insteadOf`, which changes where Git
+      # connects, not which project this is; `gh` and every later identity step,
+      # workflow_publish_pr.sh included, read `remote.origin.url` from the
+      # configuration. Reading the rewritten value classified a GitHub
+      # repository reached through a local mirror as a non-GitHub host, and the
+      # publish step then skipped `gh pr create` altogether.
+      REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null || echo "")
+      [ -n "$REMOTE_URL" ] || REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
       # nocasematch (bash 3.1) folds case inside `case` itself. Not bash 4's
       # lowercase expansion, which macOS /bin/bash 3.2 rejects (issue #1423), and
       # not a lowercasing pipe, which would put a possibly-PAT-bearing URL on a

@@ -158,6 +158,16 @@ struct Step03Run {
 }
 
 fn run_step_02d_with_remote(remote_url: &str) -> Step02dRun {
+    // The ordinary case: no `insteadOf` rewrite, so the configured URL and the
+    // one `git remote get-url` resolves are the same.
+    run_step_02d_with_urls(remote_url, remote_url)
+}
+
+/// `config_url` is what `git config --get remote.origin.url` prints; an empty
+/// value stands for an unset key. `resolved_url` is what `git remote get-url`
+/// prints, which differs from the configured value when a
+/// `url.<base>.insteadOf` rewrite is in force.
+fn run_step_02d_with_urls(config_url: &str, resolved_url: &str) -> Step02dRun {
     let temp = tempfile::tempdir().expect("tempdir");
     let repo_dir = temp.path().join("repo");
     let bin_dir = temp.path().join("bin");
@@ -172,6 +182,11 @@ printf '%s\n' "$*" >> "$GIT_LOG"
 case "$1:$2" in
   rev-parse:--is-inside-work-tree) exit 0 ;;
   remote:get-url) printf '%s\n' "$GIT_REMOTE_URL"; exit 0 ;;
+  config:--get)
+    [ "$3" = remote.origin.url ] || { echo "unexpected git config key: $3" >&2; exit 2; }
+    # An unset key prints nothing and exits 1, as git itself does.
+    [ -n "$GIT_CONFIG_REMOTE_URL" ] || exit 1
+    printf '%s\n' "$GIT_CONFIG_REMOTE_URL"; exit 0 ;;
   *) echo "unexpected git invocation: $*" >&2; exit 2 ;;
 esac
 "#,
@@ -190,7 +205,8 @@ esac
         .env("PATH", path)
         .env("REPO_PATH", &repo_dir)
         .env("GIT_LOG", &git_log)
-        .env("GIT_REMOTE_URL", remote_url)
+        .env("GIT_REMOTE_URL", resolved_url)
+        .env("GIT_CONFIG_REMOTE_URL", config_url)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -463,6 +479,45 @@ fn step_02d_detects_all_azdo_url_patterns() {
     assert!(
         body.contains("ssh.dev.azure.com"),
         "step-02d must detect ssh.dev.azure.com URLs (Issue #684)"
+    );
+}
+
+#[test]
+fn step_02d_reads_the_configured_remote_url_not_the_rewritten_one() {
+    // A `url.<base>.insteadOf` rewrite changes where Git connects, not which
+    // project the repository is. `gh` and the later identity steps, including
+    // workflow_publish_pr.sh, read `remote.origin.url` from the configuration,
+    // so step-02d must read the same value. Reading the rewritten URL
+    // classified a GitHub repository reached through a local mirror as a
+    // non-GitHub host, and the publish step then skipped `gh pr create`.
+    let run = run_step_02d_with_urls(
+        "https://github.com/example-org/example-repo.git",
+        "file:///srv/mirrors/example-org/example-repo.git",
+    );
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "github",
+        "step-02d must classify from the configured remote URL, not the one \
+         `git remote get-url` resolves through an insteadOf rewrite. \
+         stderr: {}",
+        String::from_utf8_lossy(&run.output.stderr)
+    );
+}
+
+#[test]
+fn step_02d_falls_back_to_get_url_when_the_config_key_is_unset() {
+    // `remote.origin.url` unset is not a GitHub repository by default: the
+    // step still has `git remote get-url` to fall back on, and must use it
+    // rather than silently classifying as 'other'.
+    let run = run_step_02d_with_urls("", "https://github.com/example-org/example-repo.git");
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "github",
+        "step-02d must fall back to `git remote get-url` when the configured \
+         key is unset. stderr: {}",
+        String::from_utf8_lossy(&run.output.stderr)
     );
 }
 
