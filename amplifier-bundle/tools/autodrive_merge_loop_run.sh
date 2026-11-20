@@ -126,46 +126,58 @@ rm -f -- "$RESULT_FILE"
 # quote a file this run did not create.
 #
 # Write only into a state directory that is already there, is not a symbolic
-# link and is ours. This runs before the driver re-checks the directory, and
-# both the create and the append below would otherwise follow a planted link.
-# Whatever is at the name is removed first and the file created new (an
-# exclusive create under umask 077), so a foreign file keeps neither its
-# content nor its mode and a link is replaced, never written through. A
-# directory there cannot be removed, so the create fails and no copy is made.
-# The tool never creates the state directory: autodrive_private_dir stays the
-# only authority for that.
+# link and is ours. This runs before the driver re-checks the directory.
+# Whatever is at the name is removed first and the file opened new, once, as
+# descriptor 4: an exclusive open (`set -C`) under umask 077, so a foreign
+# file keeps neither its content nor its mode and a link at the name is
+# refused rather than written through. The descriptor is held open for the
+# rest of the run, so there is no second open by name for a link planted after
+# this point to catch. A directory at the name cannot be removed, so the open
+# fails and no copy is made. The tool never creates the state directory:
+# autodrive_private_dir stays the only authority for that.
+#
+# The open is a grouped command so that its `2>/dev/null` lasts only for the
+# open. Written as `exec 4>"$KEPT" 2>/dev/null` the second redirection would
+# apply to this shell from then on, and this shell's standard error is the
+# step's whole log. The umask is restored for the same reason: the driver
+# below would otherwise inherit 077.
 KEPT="${DIR%/}/merge-ready-driver.err"
 if [ -d "$DIR" ] && [ ! -L "${DIR%/}" ] && [ -O "$DIR" ]; then
   rm -f -- "$KEPT" 2>/dev/null
-  (umask 077; set -C; : > "$KEPT") 2>/dev/null || KEPT=""
+  OLD_UMASK="$(umask)"; umask 077
+  { set -C; exec 4>"$KEPT"; } 2>/dev/null || KEPT=""
+  set +C; umask "$OLD_UMASK"
 else
   KEPT=""
 fi
+# Opening the copy is never a condition either: with no file to keep, the
+# descriptor goes to /dev/null so that the writer below always runs. Putting
+# the redirection on the writer instead would skip the writer when the open
+# failed, and the driver would then die of SIGPIPE on its next write. That
+# would let the copy decide the run, which is exactly what it must not do.
+[ -n "$KEPT" ] || exec 4>/dev/null
 # #2849: a copy that was not made is said once in the log, on every ending.
 # Only an UNREADABLE reason carried it before, so a STUCK or HANDOFF run lost
 # the copy in silence — the very loss this change exists to fix. Printed
 # before the driver starts, so it never lands between the driver's own lines.
 # Still not a check: no gate, no exit status, no decision reads it.
 [ -n "$KEPT" ] || printf 'NOTICE: the loop driver output could not be kept in %s (the state folder is missing, is a link, is owned by another user or is not writable): this log is the only account of it [autodrive-merge-loop]\n' "$DIR" >&2
-# The copy is made here, by this shell, and not by `tee`. Where the host's
-# coreutils is the uutils implementation — Ubuntu 25.10 ships it as the
-# default, and `/usr/bin/tee` was uutils 0.12.0 on the host this was found on,
-# with no GNU `tee` installed at all — `tee` aborts part-way through any input
-# larger than one pipe buffer, roughly one run in ten:
-#   thread 'main' panicked at src/uu/tee/src/tee.rs:188:21:
-#   assertion `left == right` failed: 2nd pipe should have enough spare
-# and the bytes it has already read die with it, so the copy AND this step's
-# own log both lose the driver's output. That is the very loss this change
-# exists to prevent, and it would be a loss this tool did not have before the
-# copy was added, because the driver used to write straight to standard
-# error. A read loop cannot abort that way, writes the same bytes, and
-# reaches the log a line at a time instead of a block at a time. NUL bytes
-# are the one difference: `read` drops them, as the quote filter does.
+# The copy is made here, by this shell, and not by `tee`: where /usr/bin/tee
+# is the uutils implementation, which Ubuntu 25.10 ships as the default, it
+# aborts part-way through any input larger than one pipe buffer and the bytes
+# it has already read die with it, so the copy AND this step's own log lose
+# the driver's output. That is the very loss this change exists to prevent.
+# The panic text and the host it was seen on are in the PR body for #2849.
+# A read loop cannot abort that way and writes the same bytes, reaching the
+# log a line at a time instead of a block at a time. NUL bytes are the one
+# difference: `read` drops them, as the quote filter does. It is also slower
+# than a block copy, because bash reads a pipe a byte at a time; the reference
+# page records the rate measured.
 #
-# Its exit status is read exactly as `tee`'s was, and for the same one
-# purpose: non-zero when a write to the copy failed, which the PARTIAL clause
-# below reports and nothing else reads. A write to the log is never counted,
-# so the log stays whole even while the copy is failing.
+# The writer's exit status has one purpose: non-zero when a write to the copy
+# failed, which the PARTIAL clause below reports and nothing else reads. A
+# write to the log is never counted, so the log stays whole even while the
+# copy is failing.
 keep_and_log() {
   local line="" rc=0
   while IFS= read -r line; do
@@ -183,6 +195,7 @@ keep_and_log() {
 # Deliberately not a check: with KEPT empty the copy goes to /dev/null, the
 # driver still runs, its output still reaches this step's standard error in
 # full, and every exit status below is unchanged. Do not turn this into a gate.
+# `4>&-` keeps the copy's descriptor out of the driver and its agents.
 { bash "$LOOP_HELPER" --task-file "$TASK_IN" \
   --loop-name "merge-ready" \
   --before-round "$REREVIEW" \
@@ -203,13 +216,16 @@ keep_and_log() {
   --context "autodrive_state_dir=${DIR}" \
   --context "autodrive_budget_loop_rounds=${LOOP_BUDGET}" \
   --context "autodrive_budget_total_rounds=${RECIPE_VAR_autodrive_budget_total_rounds:-}" \
-  --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}" 2>&1; } | keep_and_log 4>>"${KEPT:-/dev/null}"
+  --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}" 2>&1; } 4>&- | keep_and_log
 # The driver's own status, never the pipeline's, and never `$?`: this step
 # runs under `pipefail`, so a copy that fails (a full disk) would otherwise
 # become the loop's exit and read a finished DONE as UNREADABLE, or lose a 79,
 # a 75 or a pass-through. Keep this on the line directly after the pipeline.
 PS=("${PIPESTATUS[@]}")
 RC=${PS[0]}
+# The copy is written; nothing below writes to it. Close the descriptor so the
+# readers below, and anything they start, do not hold the file open for write.
+exec 4>&-
 # The copy's own status, for the reason only. A write that failed part-way (a
 # full disk) leaves a kept file that stops mid-run. It changes no exit status
 # and no decision; it stops the reason claiming a complete copy and quoting a

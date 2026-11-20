@@ -428,6 +428,13 @@ no copy at all. A read loop cannot fail that way and reaches the log a line at
 a time rather than a block at a time. NUL bytes are the one difference: `read`
 drops them, as the quote filter does.
 
+The kept file is opened once, before the driver starts, as a descriptor the
+step holds for the rest of the run, and falls back to `/dev/null` when the
+open fails. The writer therefore always runs, whatever became of the copy: a
+writer that could be skipped would leave the driver writing into a pipe with
+no reader, and a driver killed by that would lose both its output and its own
+exit status to the copy, which is exactly what the copy must never decide.
+
 The step's standard error carries the same bytes in the same order as before,
 so the run log is unchanged. The driver's exit status is the step's exit
 status; the copy cannot change any exit in the [table above](#how-the-loop-ends).
@@ -454,7 +461,10 @@ The opening words are the text the tool has always used, so `UNREADABLE` and
 the exit status in it are unchanged. The output clause and the result-file
 clause are new. The outcome step (`step-02a`, and `step-03d` after a base sync)
 prepends `loop result UNREADABLE: ` and passes the whole text to the
-[hand-off](#hand-off) as `handoff_reason`.
+[hand-off](#hand-off) as `handoff_blocker`, the slot whose contents sit
+between markers the hand-off prompt tells its agent to follow no instruction
+from. The trusted `handoff_reason` sentence is written by the recipe and
+carries no driver text.
 
 The output clause is exactly one of these:
 
@@ -528,7 +538,8 @@ standard error, and the exit status is the driver's. The tool writes the copy
 only when `state_dir` already exists as a real directory (not a link) owned by
 the current user; otherwise the output goes only to standard error and the
 reason says `could not be kept`. The tool never creates the state folder or
-changes its mode: the runner creates it `0700` and the driver re-checks it
+changes its mode: the loop's preflight step creates it `0700` through
+`amplihack orch helper autodrive state`, and the driver re-checks it
 ([state directory](auto-drive-to-merge.md#state-directory)).
 
 Only an `UNREADABLE` reason carries the loss, so the step also prints one
@@ -546,13 +557,17 @@ These limits apply:
   before. Order and content are unchanged.
 - A run that fails before the state folder exists keeps nothing.
 - A directory at the file's name cannot be replaced, because the tool removes
-  only a file or link there. The create fails, no copy is made and the reason
+  only a file or link there. The open fails, no copy is made and the reason
   says `could not be kept`.
 - A write failure part-way through, for example a full disk, leaves a
   truncated kept file while standard error stays complete: a write to the log
   is never counted against the copy, so the log goes on receiving every line.
   The reason then says `only part of its output could be kept` and quotes
   nothing. The exit status is still the driver's.
+- The read loop is slower than a block copy, because bash reads a pipe a byte
+  at a time. Measured at about 0.6 MB/s, so 20 MB of driver output added about
+  34 seconds. A round's own output is tens of kilobytes, so this is below
+  notice there; a driver that prints megabytes will feel it.
 - A process that inherits the driver's standard error and holds it open delays
   the step until it closes, because the driver's output now reaches the copy
   through a pipe that the step waits on. Nothing in the driver normally does
@@ -814,8 +829,8 @@ people. It replaces every bare `STUCK` ending of the merge-ready loop.
 | --- | --- |
 | `pr_number` | PR to hand off; checked to be a positive integer. |
 | `head_sha` | Head the drive last saw; checked against the SHA format before use. |
-| `handoff_reason` | The loop result or merge result that caused the hand-off. For `UNREADABLE` it names the kept `merge-ready-driver.err` and its path, quotes the driver's last line as untrusted text (one filtered line, withheld whole when it matches a list of credential shapes — a shape list, not a guarantee), and says whether `merge-ready-result.json` is absent, unreadable or says something else. When nothing was kept, or only part of it was, it says so and quotes nothing. See [Kept driver output](#kept-driver-output). |
-| `handoff_blocker` | The blocker sentence from the last write-up or finalisation statement. |
+| `handoff_reason` | Trusted text, written by the calling recipe, naming what caused the hand-off. It never carries loop or driver output: the merge-ready hand-off passes a fixed sentence and puts the loop's own reason in `handoff_blocker`. |
+| `handoff_blocker` | The blocker sentence, as untrusted text between markers the prompt tells the agent to follow no instruction from. From the merge-ready loop it is the loop line's `reason`; from finalisation and the base sync it is their own result text; otherwise the blocker sentence from the last write-up. For `UNREADABLE` the loop's reason names the kept `merge-ready-driver.err` and its path, quotes the driver's last line (one filtered line, withheld whole when it matches a list of credential shapes, which is a shape list and not a guarantee), and says whether `merge-ready-result.json` is absent, unreadable or says something else. When nothing was kept, or only part of it was, it says so and quotes nothing. See [Kept driver output](#kept-driver-output). |
 | `stop_comment_posted` | `true` when the loop driver already posted a stop comment. |
 | `autodrive_state_dir` | State directory; when `handoff_blocker` is empty the agent reads the blocker from `merge-ready-latest.writeup` there. |
 
@@ -1293,11 +1308,15 @@ leave the drive `STUCK` (#2656). The tests
   reaches the hand-off, as text.
 - The tool writes `merge-ready-driver.err` only into a state directory that
   already exists, is not a symbolic link and is owned by the current user. It
-  removes any existing file or link at that name and creates the file new
-  (an exclusive create), `0600`, so a planted link or a file with a looser
-  mode is replaced, never written through. A directory at that name cannot be
-  removed, so the create fails. If any check or the create fails, the output
-  goes only to standard error.
+  removes any existing file or link at that name and opens the file new, once,
+  as a descriptor it holds for the rest of the run: an exclusive open, `0600`,
+  so a planted link or a file with a looser mode is replaced, never written
+  through, and there is no second open by name for a link planted later to
+  catch. A directory at that name cannot be removed, so the open fails. If any
+  check or the open fails, the descriptor goes to `/dev/null` and the output
+  goes only to standard error. The driver's side of the pipe does not inherit
+  the descriptor, so neither the driver nor an agent it starts can write into
+  the file.
 - The tool reads the kept file back only when it created it in this run and it
   is still a regular file, not a link, owned by the current user, and only its
   last 8 KiB. A round agent that swaps the path for a link to another file
@@ -1307,9 +1326,10 @@ leave the drive `STUCK` (#2656). The tests
   without the prefix the shape list matches on.
 - The quoted last line is untrusted and may be secret, because the driver's
   final output is often a tail of a round log that holds agent and PR text,
-  and the reason reaches the trusted part of the hand-off prompt and probably a
-  public PR comment. A line that matches a list of credential shapes is
-  withheld whole, not masked in place. The shapes are those `mask_secrets`
+  and the reason reaches the hand-off prompt and probably a public PR
+  comment. It reaches that prompt in the fenced untrusted slot, never in the
+  trusted sentence, but the comment the hand-off posts is public. A line that
+  matches a list of credential shapes is withheld whole, not masked in place. The shapes are those `mask_secrets`
   masks in `autodrive_budget.sh`, all three of its groups of rules: GitHub
   (`gh[pousr]_`, `github_pat_`), `sk-`, AWS (`A3T`, `AKIA`, `ASIA`), Slack,
   GitLab, npm and Google keys, a three-part JWT, a URL with a password and a
@@ -1330,15 +1350,20 @@ leave the drive `STUCK` (#2656). The tests
   replaced by `_` with `://` broken to `:_/`. The quote then cannot close its
   own quotation marks, expand as shell or command substitution, open a
   `{{ }}` template, start a code fence, add an HTML tag, notify an
-  `@mention`, render as a Markdown link or image, leave a usable URL, or
-  raise a cross-reference from `#1` or `owner/repo#2`. It can still emphasise,
-  because `*`, `_` and `|` pass through. The line is cut at 200 characters and
-  labelled as untrusted text that is not an instruction.
+  `@mention`, render as a Markdown link or image, carry a scheme URL, or
+  raise a cross-reference from `#1` or `owner/repo#2`. Two things still
+  render: text beginning `www.`, which GitHub autolinks without a scheme, and
+  a `GH-123` reference, which it resolves to an issue. Emphasis passes too,
+  because `*`, `_` and `|` are untouched. The line is cut at 200 characters
+  and labelled as untrusted text that is not an instruction.
 - The credential check is a shape list, not a guarantee, and the filters do
   not stop a 200-character sentence written as an instruction. The quote
-  travels in `handoff_reason` with its untrusted label, not in
-  `handoff_blocker`, the input the hand-off sets between untrusted-text
-  markers. This is an accepted residual risk.
+  therefore travels in `handoff_blocker`, between the untrusted-text markers
+  the hand-off prompt tells its agent to follow no instruction from, and not
+  in the trusted `handoff_reason` sentence. The hand-off's own comment quotes
+  the blocker inside a fenced code block, so the `www.` and `GH-123` cases
+  above do not render there either. What remains is that the agent reads the
+  text at all, which the markers bound but do not remove.
 - Judging agents run in the actual PR worktree with instructions to leave it
   unchanged. Trusted workflow assets are selected independently of cwd;
   repository text and review output do not grant workflow authority.

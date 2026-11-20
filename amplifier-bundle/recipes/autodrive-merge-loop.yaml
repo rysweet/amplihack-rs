@@ -116,8 +116,14 @@ steps:
     context:
       pr_number: "{{merge_loop_preflight.pr}}"
       head_sha: "{{merge_loop_outcome.head_sha}}"
-      handoff_reason: "{{merge_loop_outcome.reason}}"
-      handoff_blocker: ""
+      # #2849: the loop's reason can now carry the driver's own last line,
+      # which is untrusted text from an agent, a PR or a log. It goes in the
+      # fenced `handoff_blocker` slot, which the prompt tells its agent to
+      # follow no instruction from, and never in the trusted "Why the drive
+      # stopped" sentence. The base-sync hand-off below and the finalisation
+      # hand-off already pass their dynamic text this way.
+      handoff_reason: "the merge-ready loop stopped without a merge-ready verdict; the loop's own account of it is the blocker below"
+      handoff_blocker: "{{merge_loop_outcome.reason}}"
       autodrive_state_dir: "{{merge_loop_preflight.state_dir}}"
       stop_comment_posted: "{{merge_loop_outcome.stop_comment_posted}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"

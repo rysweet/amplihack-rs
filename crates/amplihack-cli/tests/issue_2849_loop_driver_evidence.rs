@@ -68,7 +68,7 @@ fn kept_clause(fx: &Fx) -> String {
     format!("its output was kept in {NAME} at {}", kept(fx).display())
 }
 
-/// The wording for a copy that `tee` could not finish writing.
+/// The wording for a copy the step could not finish writing.
 fn partial_clause(fx: &Fx) -> String {
     format!(
         "only part of its output could be kept, in {NAME} at {}",
@@ -1043,6 +1043,57 @@ fn a_directory_at_the_kept_name_is_left_alone_and_the_run_goes_on() {
     assert!(stderr_of(&out).contains("output next to a directory"));
 }
 
+/// #2849: a kept name that cannot be opened at all still changes nothing.
+/// The descriptor is opened once, before the driver starts, and falls back to
+/// `/dev/null`, so the writer always runs. The failure this pins is what
+/// happens when it does not: a writer that is skipped leaves the driver
+/// writing into a pipe with no reader, so it dies of SIGPIPE on its first
+/// line and the step exits 141 with the driver's own status and its whole
+/// output lost. A directory at the kept name is the one unopenable state a
+/// test can hold with the state folder still ours and writable, because
+/// `rm -f` cannot clear it; it exercises the `/dev/null` fallback, not the
+/// open itself, which cannot fail separately now that the create and the
+/// append are one operation.
+#[test]
+fn an_unopenable_kept_name_never_takes_the_drivers_exit_or_its_output() {
+    let Some(fx) = loop_fixture() else { return };
+    fs::create_dir(kept(&fx)).unwrap();
+    let out = loop_step_02(&fx, &case("7", None, Some("first line\nlast line\n")));
+    assert_eq!(
+        out.status.code(),
+        Some(7),
+        "the driver's own exit passes through, never 141: {}",
+        show(&out)
+    );
+    let err = stderr_of(&out);
+    for line in ["first line", "last line"] {
+        assert!(err.contains(line), "{line} reached the log: {}", show(&out));
+    }
+    assert!(err.contains(NOT_KEPT_NOTICE), "{}", show(&out));
+}
+
+/// #2849: the copy's descriptor belongs to the step, not to the driver. The
+/// pipeline closes it on the driver's side, so neither the driver nor an
+/// agent it starts can write into, truncate or read the evidence file.
+#[test]
+fn the_driver_does_not_inherit_the_copys_descriptor() {
+    let Some(fx) = loop_fixture() else { return };
+    if !PathBuf::from("/proc/self/fd").is_dir() {
+        eprintln!("SKIP: this host has no /proc/self/fd");
+        return;
+    }
+    let out = loop_step_02(&fx, &case("0", Some("DONE"), None));
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert!(kept(&fx).is_file(), "the copy was made: {}", show(&out));
+    let seen = fs::read_to_string(fx.fake.join("loop-fd4")).expect("the driver reported its fds");
+    assert_eq!(
+        seen.trim(),
+        "closed",
+        "the driver inherited the copy's descriptor: {}",
+        show(&out)
+    );
+}
+
 /// Runs `step-02` under a 2 KiB limit on file size, with the signal that limit
 /// raises ignored, so a write past it fails the way a full disk does. The
 /// stub driver ends with `case`. `None` when this shell cannot set the limit.
@@ -1141,9 +1192,10 @@ fn a_copy_that_was_not_made_is_said_in_the_log_on_every_ending() {
 #[test]
 fn a_failing_copy_never_changes_the_drivers_exit_or_its_loop_line() {
     let Some(fx) = loop_fixture() else { return };
-    // `tee` exits 1 here, after the driver has finished. The step's `pipefail`
-    // would hand that 1 to a plain `$?`: a finished DONE would read as
-    // UNREADABLE, and a 79, 75 or 3 would be lost. The status is the driver's.
+    // The copy's writes fail here, under a file-size limit, so the writer ends
+    // non-zero after the driver has finished. The step's `pipefail` would hand
+    // that 1 to a plain `$?`: a finished DONE would read as UNREADABLE, and a
+    // 79, 75 or 3 would be lost. The status read is the driver's own.
     let overflow: String = (0..400)
         .map(|i| format!("filler line number {i:04}\n"))
         .collect();
