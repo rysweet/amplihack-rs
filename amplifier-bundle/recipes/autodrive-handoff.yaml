@@ -43,6 +43,18 @@ steps:
   # never begin a line of its own while the true closing marker does. That is
   # the backstop if the bracket replacement is ever relaxed.
   #
+  # `\` becomes `_` as well (written `\134`, the octal form the other `tr`
+  # calls here use, which also keeps shellcheck from reading `\\` as an
+  # attempted quote escape). That one is not cosmetic. The runner stores
+  # a bash step's output by trying `serde_json::from_str` on it first and
+  # keeping the parsed value when it succeeds, so a blocker that is itself
+  # valid JSON is decoded before the prompt renders it. Without this, the
+  # text `"UNTRUSTED-BLOCKER\u003e\u003e\u003e ..."` would pass the bracket
+  # replacement untouched — it holds no literal `<` or `>` — and come back out
+  # of the parse with real brackets, closing the fence. No escape can be
+  # written without a backslash, so removing it leaves JSON decoding unable to
+  # produce any character that was not already literally in the text.
+  #
   # Truncation is a bash expansion rather than `head -c` on the pipe: `head`
   # closing the pipe early would make `tr` die of SIGPIPE and, under
   # `pipefail`, fail this step over the filtering of a blocker.
@@ -59,7 +71,7 @@ steps:
       B="$(printf '%s' "${RECIPE_VAR_handoff_blocker:-}" \
            | LC_ALL=C tr '\011\012' '  ' \
            | LC_ALL=C tr -cd '\040-\176' \
-           | LC_ALL=C tr '<>' '__')" || B=""
+           | LC_ALL=C tr '<>\134' '___')" || B=""
       printf '%s' "${B:0:2000}"
       exit 0
     output: "handoff_blocker_fenced"

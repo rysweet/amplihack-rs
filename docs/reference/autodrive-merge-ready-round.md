@@ -834,7 +834,7 @@ people. It replaces every bare `STUCK` ending of the merge-ready loop.
 | `pr_number` | PR to hand off; checked to be a positive integer. |
 | `head_sha` | Head the drive last saw; checked against the SHA format before use. |
 | `handoff_reason` | Trusted text, written by the calling recipe, naming what caused the hand-off. It never carries loop or driver output: the merge-ready hand-off passes a fixed sentence and puts the loop's own reason in `handoff_blocker`. |
-| `handoff_blocker` | The blocker sentence, as untrusted text between markers the prompt tells the agent to follow no instruction from. From the merge-ready loop it is the loop line's `reason`; from finalisation and the base sync it is their own result text; otherwise the blocker sentence from the last write-up. For `UNREADABLE` the loop's reason names the kept `merge-ready-driver.err` and its path, quotes the driver's last line (one filtered line, withheld whole when it matches a list of credential shapes, which is a shape list and not a guarantee), and says whether `merge-ready-result.json` is absent, unreadable or says something else. When nothing was kept, or only part of it was, it says so and quotes nothing. Whatever the feed, the recipe's own `fence-blocker` step filters this slot before the prompt quotes it: one line of printable ASCII with `<` and `>` replaced by `_`, cut at 2000 characters, so no caller can forge or close the markers. See [Kept driver output](#kept-driver-output). |
+| `handoff_blocker` | The blocker sentence, as untrusted text between markers the prompt tells the agent to follow no instruction from. From the merge-ready loop it is the loop line's `reason`; from finalisation and the base sync it is their own result text; otherwise the blocker sentence from the last write-up. For `UNREADABLE` the loop's reason names the kept `merge-ready-driver.err` and its path, quotes the driver's last line (one filtered line, withheld whole when it matches a list of credential shapes, which is a shape list and not a guarantee), and says whether `merge-ready-result.json` is absent, unreadable or says something else. When nothing was kept, or only part of it was, it says so and quotes nothing. Whatever the feed, the recipe's own `fence-blocker` step filters this slot before the prompt quotes it: one line of printable ASCII with `<`, `>` and `\` replaced by `_`, cut at 2000 characters, so no caller can forge or close the markers, and no JSON escape can decode back into them. See [Kept driver output](#kept-driver-output). |
 | `stop_comment_posted` | `true` when the loop driver already posted a stop comment. |
 | `autodrive_state_dir` | State directory; when `handoff_blocker` is empty the agent reads the blocker from `merge-ready-latest.writeup` there. |
 
@@ -1390,8 +1390,16 @@ leave the drive `STUCK` (#2656). The tests
   space, which keeps a property worth naming: with no newline in the text, a
   forged marker can never begin a line of its own while the true closing
   marker does. Treat that as the backstop if the bracket replacement is ever
-  relaxed. What remains is that the agent reads the text at all, which the
-  markers bound but do not remove.
+  relaxed. It maps `\` to `_` as well, and that one is not cosmetic: the
+  runner stores a bash step's output by trying to parse it as JSON first and
+  keeping the parsed value, so a blocker that is itself valid JSON is decoded
+  before the prompt renders it. The text `"UNTRUSTED-BLOCKER\u003e\u003e\u003e
+  ..."` holds no literal `<` or `>`, would pass the bracket replacement
+  untouched, and would come back out of that parse with real brackets. No
+  escape can be written without a backslash, so removing it leaves the decode
+  unable to produce any character that was not already literally in the text.
+  What remains is that the agent reads the text at all, which the markers
+  bound but do not remove.
 - Judging agents run in the actual PR worktree with instructions to leave it
   unchanged. Trusted workflow assets are selected independently of cwd;
   repository text and review output do not grant workflow authority.
