@@ -74,11 +74,15 @@ impl Marks {
     ///
     /// The budget bounds a chain of waits that sleep. A wait that ends the
     /// moment it starts spends none of it, so the budget alone does not bound
-    /// a chain of those: a re-entry for a reset that has already passed is
-    /// refused by the caller before it is planned
-    /// ([`Plan::ends_at_once`]), and that is what ends such a chain.
+    /// a chain of those. A re-entry for a reset that has already passed is
+    /// therefore not left as one: where another login could take over it is
+    /// planned from capacity instead ([`plan::upgrade_passed_reset`]), which
+    /// gives it a deadline and brings it back under this budget, and where
+    /// none could it is refused by the caller before it is planned
+    /// ([`Plan::ends_at_once`]). Either way such a chain ends.
     ///
     /// [`Plan::ends_at_once`]: super::plan::Plan::ends_at_once
+    /// [`plan::upgrade_passed_reset`]: super::plan::upgrade_passed_reset
     /// [`plan::CAPACITY_DEFAULT_MAX`]: super::plan::CAPACITY_DEFAULT_MAX
     pub(crate) fn refuses_reentry(&self, max: Option<u64>) -> bool {
         self.spent >= max.unwrap_or(super::plan::CAPACITY_DEFAULT_MAX)

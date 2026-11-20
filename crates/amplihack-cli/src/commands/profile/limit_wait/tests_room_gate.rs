@@ -415,7 +415,7 @@ const ROOMY_STEP_TIMEOUT: &str = "3600";
 const FAST: &str = "1000";
 const SILENCED: [&str; 2] = ["AMPLIHACK_USAGE_WAIT_LEDGER", "AMPLIHACK_RECIPE_LOG"];
 
-fn guarded<T>(f: impl FnOnce() -> T) -> T {
+pub(super) fn guarded<T>(f: impl FnOnce() -> T) -> T {
     let _lock = env_lock()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -438,7 +438,7 @@ fn guarded<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-fn waiter(e: &Env, max_wait_secs: Option<u64>) -> Waiter {
+pub(super) fn waiter(e: &Env, max_wait_secs: Option<u64>) -> Waiter {
     let watch = Watch::new(Some(&e.store), None, None, Some(e.home.as_path()));
     assert!(watch.is_home(), "the test needs a $HOME/.claude step");
     Waiter::new(
@@ -459,7 +459,7 @@ fn waiter(e: &Env, max_wait_secs: Option<u64>) -> Waiter {
     )
 }
 
-fn signals() -> Signals {
+pub(super) fn signals() -> Signals {
     Signals::register().expect("the test process can register stop signals")
 }
 

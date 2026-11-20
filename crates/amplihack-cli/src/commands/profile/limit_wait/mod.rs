@@ -44,6 +44,8 @@ mod tests_login_key;
 #[cfg(test)]
 mod tests_marks;
 #[cfg(test)]
+mod tests_passed_reset;
+#[cfg(test)]
 mod tests_plan;
 #[cfg(test)]
 mod tests_plan_login_change;
@@ -371,6 +373,31 @@ impl Waiter {
         (self.home_takeover)()
     }
 
+    /// The mark for the login the attempt now running was launched on: what
+    /// [`Marks`] records for a wait, and the account the wait's lines name.
+    fn mark(&self) -> Option<String> {
+        self.attempt_login.as_ref().map(|(_, n)| n.clone())
+    }
+
+    /// Whether the ordinary rule refuses a wait after the attempt now
+    /// running: this step has already waited on that login, or it has waited
+    /// before and its `max_wait_secs` budget is spent (#2731).
+    ///
+    /// The one place that rule is computed. [`Waiter::after_limit`] asks it
+    /// for the limit it is judging, and the supervisor asks it before that
+    /// call, because [`plan::upgrade_passed_reset`] is narrowed to a
+    /// re-entry this rule would have refused and so must know the answer
+    /// while the limit is still being planned. Asking records nothing and
+    /// nothing between the two readings writes the marks or the attempt's
+    /// login, so the two agree.
+    ///
+    /// False for a step that may not wait at all: with no settings there is
+    /// no rule that could have refused anything.
+    pub(crate) fn ordinarily_refused(&self) -> bool {
+        self.settings
+            .is_some_and(|s| self.marks.refuses(&self.mark(), s.max_wait_secs))
+    }
+
     /// Whether the retry may run under another login, and what it costs if
     /// none has room; `None` keeps the inherited profile. Cleared as each
     /// wait is planned, so it only ever describes the wait that just ran.
@@ -420,7 +447,11 @@ impl Waiter {
     /// once, on a `reentered` line before the wait's `start`. The budget and
     /// the step timeout still refuse, unchanged, and so does a re-entry with
     /// nothing to wait on: a reset already behind the clock would plan a wait
-    /// of no length, which spends none of the budget.
+    /// of no length, which spends none of the budget. Where another login
+    /// could take over, such a limit no longer arrives as a reset wait at
+    /// all: the supervisor has already made it a capacity wait
+    /// ([`plan::upgrade_passed_reset`]), which has a deadline of its own and
+    /// so spends the budget that bounds the chain.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
@@ -450,13 +481,16 @@ impl Waiter {
         // The mark is the login the failed attempt ran on, read before it
         // was launched. A login this step has already waited on, or a spent
         // budget after an earlier wait, refuses this one (#2731).
-        let mark = self.attempt_login.as_ref().map(|(_, n)| n.clone());
+        let mark = self.mark();
         let max = settings.max_wait_secs;
         // What the ordinary rule says, kept whether or not it is applied:
         // a re-entry is only *reported* when it lifted that refusal, so a
         // retry that merely landed on a login this step has never waited on
-        // is an ordinary first wait for that login and reads as one.
-        let ordinarily_refused = self.marks.refuses(&mark, max);
+        // is an ordinary first wait for that login and reads as one. Read
+        // through the same method the supervisor reads it through, so the
+        // rule that narrows `plan::upgrade_passed_reset` and the rule applied
+        // here cannot drift apart.
+        let ordinarily_refused = self.ordinarily_refused();
         let met = match resumed {
             Resumed::AfterASignal(met) => Some(met),
             Resumed::Ordinarily => None,
@@ -501,12 +535,21 @@ impl Waiter {
         // not one more attempt. A reset the retry has already passed plans a
         // wait that ends the moment it starts, so it would spend none of the
         // budget and the chain would be bounded by nothing but how long the
-        // harness kept repeating the message. With no reset ahead and no
-        // capacity signal there is nothing left to wait on, and the limit is
-        // passed up as already waited, exactly as it was before #2857. The
-        // refusal is of the *lifted* rule only: the same plan on a login this
-        // step has not waited on is that login's first wait and keeps its
-        // grace.
+        // harness kept repeating the message. With nothing left to wait on,
+        // the limit is passed up as already waited, exactly as it was before
+        // #2857. The refusal is of the *lifted* rule only: the same plan on a
+        // login this step has not waited on is that login's first wait and
+        // keeps its grace.
+        //
+        // This is now the backstop rather than the first answer. A usage
+        // limit stating a passed reset is lifted upstream into a capacity
+        // wait by `plan::upgrade_passed_reset` wherever another login could
+        // take over, and such a plan is never `ends_at_once`. What still
+        // reaches here is the case where no capacity wait could start at all
+        // (no rotator, no other login, or a read that failed), a spend limit,
+        // which no other login would lift, and the two plans the supervisor
+        // builds without passing through that rule: `plan::from_reading` and
+        // `blocked_skip`. For those the step still ends here, and loudly.
         if reentry.is_some() && p.ends_at_once(now) {
             return already_waited();
         }

@@ -181,6 +181,43 @@ fn a_capacity_start_line_with_no_reset_says_none() {
     );
 }
 
+// Issue #2857: a re-entry on a usage limit that states a reset the clock has
+// already passed is a capacity wait, and its `start` line prints that reset.
+// The reset is whatever the message stated, so it can be any past instant: the
+// line must still be one well-formed line.
+
+#[test]
+fn issue_2857_a_capacity_start_line_for_a_long_past_reset_is_well_formed() {
+    let until = T0 + 3600;
+    for (reset, shown) in [
+        (0, "1969-12-31 16:00:00 -08:00"),
+        (1, "1969-12-31 16:00:01 -08:00"),
+        (T0 - 120, "2026-10-18 07:58:00 -07:00"),
+    ] {
+        assert_eq!(
+            line(&capacity_start(Some(reset), until, Bound::MaxWait), &LA),
+            format!(
+                "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity \
+                 harness=claude reset={shown} until=2026-10-18 09:00:00 -07:00 bound=max_wait"
+            ),
+            "reset {reset}"
+        );
+    }
+}
+
+#[test]
+fn issue_2857_an_instant_the_zone_cannot_write_is_written_as_seconds() {
+    let l = line(
+        &capacity_start(Some(i64::MIN), T0 + 3600, Bound::MaxWait),
+        &LA,
+    );
+    assert!(
+        l.contains(" reset=@-9223372036854775808 until=2026-10-18 09:00:00 -07:00 "),
+        "{l}"
+    );
+    assert!(l.is_ascii() && !l.contains('\n'), "{l:?}");
+}
+
 const FAILED: [FailReason; 3] = [
     FailReason::CapacityExpired,
     FailReason::StepTimeout,

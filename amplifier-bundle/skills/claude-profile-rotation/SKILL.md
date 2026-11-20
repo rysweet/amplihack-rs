@@ -295,6 +295,21 @@ hosts the rule does not apply to are listed under "What is not gated" in
 and until it is restarted the waiting steps sleep to their reset, or to a
 `profile switch`.
 
+A step that wakes and meets a limit on its first attempt waits again, and the
+recipe log says so once (`reentered met=usage_limit` or `met=rate_limit`). When
+the limit message states a reset the clock has already passed, which a retry
+at 08:32 sees in "resets 8:30am", the second wait is a capacity wait: it ends
+when a login with room is live, not at the reset, and its `start` line shows
+`wait=capacity` with the past time in `reset=`. It starts only while the rotator
+is running with auto-switch on and another stored login could take over; on a
+host without one the step ends as a usage limit with
+`skipped reason=already_waited`, as before. A spend limit is never waited out
+this way, even when its message states a session reset. The step's
+`max_wait_secs` budget (default 21600 seconds, shared by all its waits) ends the
+chain, so no retry count applies. If a step ends this way, start the rotator and check
+`amplihack profile list` for a second login before raising the budget. See
+"A reset that has already passed" in `docs/reference/profile-command.md`.
+
 While on credits the rotator reports capacity, so recipe steps in the
 usage-limit wait rerun and spend credits, provided that cycle also records room
 for the credit login by the same rule. The limit-resume hook does not resume

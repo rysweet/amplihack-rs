@@ -634,7 +634,24 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             if profile.is_none() {
                 // This attempt ran under the inherited profile: its limit is the
                 // freshest word on that profile.
-                let wait = plan::upgrade(lim.wait, lim.seen, || takeover(&waiter));
+                //
+                // Issue #2857, part 1: when this attempt is the retry a wait
+                // earned, and the limit it met states a reset the clock has
+                // already passed, a reset wait for it would end at once and
+                // spend none of the step's budget, so the wait is refused and
+                // the step ends. Where another login could take over, it is
+                // planned from capacity instead. `ordinarily_refused` is read
+                // here, before anything records a mark, and is exactly the
+                // rule `after_limit` applies to this same limit; the clock is
+                // the wait's own, the one that read the reset.
+                let passed = plan::upgrade_passed_reset(
+                    lim.wait,
+                    lim.seen,
+                    matches!(met, Some(Met::UsageLimit)) && waiter.ordinarily_refused(),
+                    waiter.now(),
+                    || takeover(&waiter),
+                );
+                let wait = plan::upgrade(passed, lim.seen, || takeover(&waiter));
                 // Issue #2731: an organisation spend limit with no reset on a
                 // `$HOME/.claude` step waits for the login to change instead.
                 inherited_wait = Some(plan::upgrade_spend(
