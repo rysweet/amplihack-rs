@@ -1,7 +1,7 @@
 //! Issue #2857, part 2: a limit wait ends early on a rotator signal only when
 //! the login the retry will use has room.
 //!
-//! What happened on calypso on 19 Nov 2026: the rotator swapped waiting runs'
+//! What happened on one host on 19 Nov 2026: the rotator swapped waiting runs'
 //! logins between accounts that were at 98-100% session, and every swap woke
 //! every wait. The first call after each wake returned a 429 that the runner
 //! retried six times before the run ended indeterminate. Stopping the rotator
@@ -381,8 +381,8 @@ fn progress_lines(out: &Output) -> usize {
 
 type Stage = Box<dyn FnOnce() + Send>;
 
-/// A swap during the wait onto a login at 98-100%: what calypso's rotator did
-/// at 20:31-20:34Z, and what woke 26 runs.
+/// A swap during the wait onto a login at 98-100%: what the rotator did over
+/// four minutes on 19 Nov 2026, and what woke 26 runs.
 #[test]
 fn a_swap_onto_a_full_login_during_the_wait_does_not_end_it() {
     let f = with_profiles();

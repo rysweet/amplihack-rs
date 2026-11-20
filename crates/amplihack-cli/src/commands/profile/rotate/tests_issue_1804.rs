@@ -319,20 +319,20 @@ fn choose_treats_a_login_exactly_at_session_at_as_at_its_threshold() {
     );
 }
 
-/// The 19 Nov 2026 swaps: ttanner, bbuck, ssackett and uunze were at 98-100%
-/// session, so a rotator at `--session-at 85` makes none of them a target,
-/// whichever of them is live.
+/// The 19 Nov 2026 swaps: four logins in a row were at 98-100% session, so a
+/// rotator at `--session-at 85` makes none of them a target, whichever of
+/// them is live.
 #[test]
 fn choose_makes_none_of_the_logins_at_98_to_100_percent_session_a_target() {
     let s = settings(85);
     let plan = vec![
-        m("ttanner", &measured(98.0, 60.0, FAR)),
+        m("aanderson", &measured(98.0, 60.0, FAR)),
         m("bbuck", &measured(99.0, 40.0, FAR)),
-        m("ssackett", &measured(99.9, 20.0, FAR)),
-        m("uunze", &measured(100.0, 10.0, FAR)),
+        m("ccapstone", &measured(99.9, 20.0, FAR)),
+        m("ddrumpf", &measured(100.0, 10.0, FAR)),
     ];
     assert_eq!(choose(&s, None, &plan), None);
-    let live = m("ttanner", &measured(98.0, 60.0, FAR));
+    let live = m("aanderson", &measured(98.0, 60.0, FAR));
     assert_eq!(choose(&s, Some(&live), &plan[1..]), None);
 }
 
@@ -1160,7 +1160,7 @@ fn choose_picks_a_lone_login_exactly_when_it_has_room_under_and_never_otherwise(
 fn a_plan_whose_logins_all_have_room_but_none_under_session_at_gives_no_swap() {
     let s = settings(85);
     let plan = vec![
-        m("ttanner", &measured(98.0, 60.0, FAR)),
+        m("aanderson", &measured(98.0, 60.0, FAR)),
         m("bbuck", &measured(99.0, 40.0, FAR)),
     ];
     assert!(plan.iter().all(|p| has_room(&p.reading)), "all have room");
