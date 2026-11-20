@@ -796,6 +796,28 @@ fn the_work_tree_cap_is_eight() {
     assert_eq!(MAX_WORK_TREES, 8);
 }
 
+/// A `git status` that Git declines to answer, such as one that timed out, is
+/// not changes anybody made, and the line must not say it is. The boolean the
+/// removal paths read still counts it as dirty, so the folder is still kept.
+#[test]
+fn a_git_status_that_fails_gives_its_own_words_and_not_uncommitted_changes() {
+    let s = Scratch::new();
+    let broken = s.root.join("broken");
+    fs::create_dir_all(&broken).unwrap();
+    fs::write(broken.join(".git"), "gitdir: /nonexistent\n").unwrap();
+
+    let detail = git_dirty_state(&broken).expect_err("Git cannot answer for this folder");
+    assert!(!detail.is_empty(), "Git's own words follow the reason");
+    assert!(
+        !detail.contains(UNCOMMITTED),
+        "what Git said, not a claim of changes: {detail}"
+    );
+    assert!(
+        git_has_dirty_state(&broken),
+        "the removal paths still treat it as dirty, so the folder stays"
+    );
+}
+
 #[test]
 fn a_folder_with_no_git_entry_is_not_kept() {
     let s = Scratch::new();

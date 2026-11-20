@@ -19,7 +19,7 @@ use super::run_dir::{
 use super::targets::{HOOK_TARGET_PREFIX, is_cargo_target, target_name};
 use super::work_root::WorkRoot;
 use crate::commands::hygiene::cleanup::{
-    git_has_dirty_state, hardened_git, has_live_pid_marker, sanitized_stderr_short,
+    git_dirty_state, git_has_dirty_state, hardened_git, has_live_pid_marker, sanitized_stderr_short,
 };
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
@@ -415,7 +415,7 @@ fn unpushed_reason(worktree: &Path) -> Option<String> {
     match result {
         Ok(0) => None,
         Ok(_) => Some(label.to_string()),
-        Err(error) => Some(format!("cannot check for unpushed commits: {error:#}")),
+        Err(error) => Some(format!("{CANNOT_CHECK}: {error:#}")),
     }
 }
 
@@ -707,9 +707,14 @@ fn judge_work_tree(dir: &Path, at: &Path, owner: u32) -> Option<KeepReason> {
         return Some(KeepReason::unchecked(dir, at, detail));
     }
     // The same two checks, in the same order and with the same words, as the
-    // ones a worktree removal has always made (`worktree_item`).
-    if git_has_dirty_state(at) {
-        return Some(KeepReason::new(dir, at, "has uncommitted changes"));
+    // ones a worktree removal has always made (`worktree_item`). The one
+    // difference: a removal has only "keep it" to decide, so it counts a
+    // `git status` that timed out or refused as dirty, whereas this says a
+    // line and so names what it met instead of claiming changes it never saw.
+    match git_dirty_state(at) {
+        Ok(true) => return Some(KeepReason::new(dir, at, "has uncommitted changes")),
+        Ok(false) => {}
+        Err(detail) => return Some(KeepReason::unchecked(dir, at, detail)),
     }
     unpushed_reason(at).map(|reason| KeepReason::new(dir, at, reason))
 }
