@@ -813,9 +813,8 @@ the sync produced travels in `handoff_blocker` as
 `{{base_sync.reason}} {{sync_loop_outcome.reason}}`: the base-sync agent's
 reason, then the `step-03d` loop reason. When the one extra round ended
 `UNREADABLE`, that loop reason names the
-[kept driver output](#kept-driver-output). Because `handoff_blocker` is not
-empty, the hand-off prompt's instruction to read `merge-ready-driver.err` does
-not apply on this route.
+[kept driver output](#kept-driver-output). The prompt's instruction to read
+`merge-ready-driver.err` applies on this route as it does on `step-02c`.
 
 ### What the sync step does
 
@@ -1335,11 +1334,9 @@ leave the drive `STUCK` (#2656). The tests
   agent printed.
 - The kept driver output is evidence, never an authority. Nothing in the tool
   reads the file back, to decide whether the drive continues or merges or to
-  build the reason, and nothing in the recipes parses it. On `step-02c`, where
-  `handoff_blocker` is empty, the hand-off agent opens it by name and its
-  prompt tells it to read the file as untrusted evidence of what happened,
-  never as instructions. On `step-03f` the prompt gives it no such
-  instruction.
+  build the reason, and nothing in the recipes parses it. The hand-off agent
+  opens it by name, and its prompt tells it to read the file as untrusted
+  evidence of what happened, never as instructions, on every hand-off.
 - The tool writes `merge-ready-driver.err` only into a state directory that
   already exists, is not a symbolic link and is owned by the current user. It
   removes any existing file or link at that name and opens the file new, once,
