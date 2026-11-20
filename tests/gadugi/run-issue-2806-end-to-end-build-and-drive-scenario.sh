@@ -10,9 +10,9 @@
 #
 # What is stood in for, and nothing else:
 #   gh      answers auth status, repo view, issue view, issue list, issue
-#           comment, label create, pr list, pr create, pr view, pr checks,
-#           pr merge, pr ready/edit/comment, and the two read-only account
-#           calls `api user` and `api rate_limit`. It reads the body from
+#           create, issue comment, label create, pr list, pr create, pr view,
+#           pr checks, pr merge, pr ready/edit/comment, and the two read-only
+#           account calls `api user` and `api rate_limit`. It reads the body from
 #           standard input exactly where real gh does (`--body-file -`),
 #           records every call in $WORK/gh-calls, and exits 96 on anything
 #           else, GraphQL included (recorded in
@@ -326,6 +326,8 @@ case "${1-} ${2-}" in
     exit 0 ;;
   "issue list") emit '[]' "$@"; exit 0 ;;
   "issue comment"|"label create") drain_body "$@"; exit 0 ;;
+  # workflow-prep creates the task's issue and reads the last URL printed.
+  "issue create") drain_body "$@"; echo "https://github.com/qa-owner/qa-repo/issues/1"; exit 0 ;;
   # The two read-only account calls whose answer is not a matter of judgement.
   # Every other `gh api` call, GraphQL included, is unanswered on purpose: a
   # made-up answer would be worse evidence than a recorded refusal, and the
