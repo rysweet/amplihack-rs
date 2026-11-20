@@ -177,7 +177,8 @@ exit 0
 /// tests: writes `loop_result` (when present) to the driver's own result file
 /// under umask 077, prints `loop_stdout` (text an agent might have printed),
 /// writes `loop_stderr` to standard error (#2849) and exits `loop_rc`. It
-/// also records in `loop-fd4` whether it inherited the kept copy's descriptor.
+/// also records in `loop-fd4` whether it inherited the kept copy's descriptor,
+/// and in `loop-umask` the umask it was started with.
 const FAKE_LOOP_DRIVER: &str = r#"#!/usr/bin/env bash
 S="$FAKE_STATE"; dir=""; repo=""; prev=""
 for a in "$@"; do [ "$prev" = --state-dir ] && dir="$a"; [ "$prev" = --repo ] && repo="$a"; prev="$a"; done
@@ -186,6 +187,7 @@ printf '%s\n' "$@" >> "$S/loop-argv-all"; echo "--" >> "$S/loop-argv-all"
 # #2849: whether the driver inherited the kept copy's descriptor. The step
 # closes it on this side of the pipe, so the answer must be `closed`.
 if [ -e /proc/self/fd/4 ]; then echo open > "$S/loop-fd4"; else echo closed > "$S/loop-fd4"; fi
+umask > "$S/loop-umask"
 if [ -f "$S/loop_result" ]; then
   ( umask 077; jq -cn --arg r "$(cat "$S/loop_result")" \
       '{loop:"merge-ready",loop_result:$r,round_label:"round-2",reason:"fixture stop"}' > "$dir/merge-ready-result.json" )

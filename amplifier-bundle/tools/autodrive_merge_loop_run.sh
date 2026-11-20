@@ -172,7 +172,7 @@ fi
 [ -n "$KEPT" ] || exec 4>/dev/null
 # #2849: a copy that was not made is said once in the log, on every ending.
 # Only an UNREADABLE reason carried it before, so a STUCK or HANDOFF run lost
-# the copy in silence — the very loss this change exists to fix. Printed
+# the copy in silence, the very loss this change exists to fix. Printed
 # before the driver starts, so it never lands between the driver's own lines.
 # Still not a check: no gate, no exit status, no decision reads it.
 [ -n "$KEPT" ] || printf 'NOTICE: the loop driver output could not be kept in %s (the state folder is missing, is a link, is owned by another user or is not writable): this log is the only account of it [autodrive-merge-loop]\n' "$DIR" >&2
@@ -261,8 +261,8 @@ line() { jq -cn --arg r "$1" --arg why "$2" '{loop:"merge-ready",loop_result:$r,
 # tells the agent to read the file itself, as untrusted evidence; an agent can
 # judge what it finds there, which no filter here could do for it.
 #
-# A copy that stopped part-way keeps its name and its path — a truncated file
-# is still the evidence a person has to open — but says so first.
+# A copy that stopped part-way keeps its name and its path, because a truncated
+# file is still the evidence a person has to open, but says so first.
 output_clause() {
   if [ -z "$KEPT" ]; then
     printf '%s' "its output could not be kept (the state folder is missing, is a link, is owned by another user or is not writable)"

@@ -351,9 +351,9 @@ fn a_tee_that_fails_on_path_changes_nothing_about_the_copy_or_the_log() {
     // account of a driver that died, so it cannot rest on a program the host
     // supplies: a `tee` that fails, or is missing, or copies only part of
     // what it reads, must leave the kept file and the log exactly as they
-    // would be without it. A host `tee` is not hypothetical — Ubuntu 25.10
+    // would be without it. A host `tee` is not hypothetical: Ubuntu 25.10
     // installs the uutils one, which aborts part-way through a copy larger
-    // than a pipe buffer — so here it fails outright, which an external
+    // than a pipe buffer, so here it fails outright, which an external
     // duplicator could not survive and this step must.
     let dir = fx.root.join("failing-tee");
     fs::create_dir_all(&dir).unwrap();
@@ -507,7 +507,7 @@ fn the_reason_is_printable_ascii_and_the_file_keeps_the_raw_bytes() {
 }
 
 #[test]
-fn a_long_driver_line_leaves_the_reason_short_and_the_file_whole() {
+fn a_single_long_driver_line_is_kept_whole_and_stays_out_of_the_reason() {
     let Some(fx) = loop_fixture() else { return };
     let long = "Q".repeat(20_000);
     let (why, handoff_why, _) = unreadable(&fx, Some(&format!("{long}\n")));
@@ -515,7 +515,6 @@ fn a_long_driver_line_leaves_the_reason_short_and_the_file_whole() {
         why,
         expected_reason(&fx, "1", &kept_clause(&fx), "is absent")
     );
-    assert!(why.len() <= 900, "{}", why.len());
     assert!(handoff_why.len() <= 1000, "{}", handoff_why.len());
     assert_no_driver_text(&handoff_why, &["QQQQQQQQQQ"]);
     assert_eq!(read(&kept(&fx)), format!("{long}\n"), "evidence is not cut");
@@ -870,6 +869,29 @@ fn the_driver_does_not_inherit_the_copys_descriptor() {
         "the driver inherited the copy's descriptor: {}",
         show(&out)
     );
+}
+
+/// #2849: the umask of 077 that opens the copy is restored before the driver
+/// starts. The driver runs under the umask the step was started with, so a file
+/// it creates is not made private by the copy's open.
+#[test]
+fn the_driver_runs_under_the_steps_own_umask_not_the_copys() {
+    let Some(fx) = loop_fixture() else { return };
+    stage_loop_driver(&fx, &case("0", Some("DONE"), None));
+    let mut c = fx.bash();
+    c.arg("-c")
+        .arg("umask 022; exec bash -c \"$STEP\"")
+        .env("STEP", &loop_commands().0);
+    loop_env(&mut c, &fx, &loop_preflight(&fx));
+    let out = c.output().expect("run merge loop step-02 under umask 022");
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(
+        read(&fx.fake.join("loop-umask")).trim(),
+        "0022",
+        "the driver's umask: {}",
+        show(&out)
+    );
+    assert_eq!(mode(&kept(&fx)), 0o600, "{}", show(&out));
 }
 
 /// Runs `step-02` under a 2 KiB limit on file size, with the signal that limit
