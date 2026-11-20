@@ -223,7 +223,7 @@ steps:
         echo "[skip] not a git repo — defaulting to 'other'" >&2
         printf 'other'; exit 0
       fi
-      REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+      REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null || git remote get-url origin 2>/dev/null || echo "")
       # nocasematch (bash 3.1) folds case inside `case` itself. Not bash 4's
       # lowercase expansion, which macOS /bin/bash 3.2 rejects (issue #1423), and
       # not a lowercasing pipe, which would put a possibly-PAT-bearing URL on a
