@@ -268,7 +268,7 @@ fn the_snapshot_records_each_candidate_account() {
     let (e, _, _) = env3();
     let ctx = ctx_with(&e, |_, _| unreachable!());
     let state = State::new(ctx.store.root()).unwrap();
-    let snap = snapshot(&ctx, &state).unwrap();
+    let snap = snapshot(&ctx, &state, super::observe::Read::Cached).unwrap();
     let names: Vec<_> = snap
         .candidate_accounts
         .iter()
@@ -476,7 +476,7 @@ fn decide_measured_keeps_the_probes_it_decided_on() {
     let (e, _, _) = env3();
     let ctx = ctx_with(&e, |_, _| unreachable!());
     let state = State::new(ctx.store.root()).unwrap();
-    let snap = snapshot(&ctx, &state).unwrap();
+    let snap = snapshot(&ctx, &state, super::observe::Read::Cached).unwrap();
     let probes = probes_for(&snap, &[("spare", ok(0.0, 43.0)), ("third", spent())]);
     let m = decide_measured(&ctx, &snap, spent(), probes.clone(), now()).unwrap();
     assert_eq!(m.probed, Some((spent(), probes)));

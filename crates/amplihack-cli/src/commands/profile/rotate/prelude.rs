@@ -13,12 +13,12 @@ use super::handfix_msg::ledger_unreadable;
 use super::identify::Skip;
 use super::identify::excluded_offline::local_only_dirs;
 use super::log::{Sink, msg, open_or_warn};
-use super::observe::{Snap, live_alert, live_name, snapshot};
+use super::observe::{Read, Snap, live_alert, live_name, snapshot};
 use super::overflow_record::log_ignored;
 use super::seed;
 use super::swap::RecoverOutcome;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{Lock, State, now, recover_auto_switch};
+use crate::commands::profile::auto_switch::kit::{Lock, State, now, recover_auto_switch_with};
 use crate::commands::profile::name::ProfileName;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -55,6 +55,11 @@ pub enum Prelude {
     Guided,
 }
 
+/// The rotate log's sink, also to stdout when `stdout` is set.
+pub fn log_sink(ctx: &Ctx, stdout: bool) -> Sink {
+    Sink::new(open_or_warn(&ctx.rs.log, &ctx.rs.log1), stdout, true)
+}
+
 /// Runs the prelude. The sink writes to the rotate log, and to stdout when
 /// `stdout` is set; it is returned for the caller's own lines. `hand_change`
 /// runs hand-change recovery (issue #1693); only a rotate cycle sets it.
@@ -66,14 +71,13 @@ pub fn locked_prelude(
     ctx.identity_budget.reset();
     prototype_guard(ctx.store.root())?;
     ctx.rs.ensure()?;
-    let log = open_or_warn(&ctx.rs.log, &ctx.rs.log1);
-    let mut out = Sink::new(log, stdout, true);
+    let mut out = log_sink(ctx, stdout);
     let state = State::new(ctx.store.root())?;
 
     let Some(lock) = state.try_lock(LOCK_WAIT)? else {
         return Ok((out, Prelude::LockBusy));
     };
-    if let Err(e) = recover_auto_switch(&state) {
+    if let Err(e) = recover_auto_switch_with(&state, &ctx.procs) {
         if !matches!(e, ProfileError::AutoSwitchInvariant(_)) {
             return Err(e);
         }
@@ -114,7 +118,7 @@ pub fn locked_prelude(
     {
         return Ok((out, Prelude::Guided));
     }
-    let first = snapshot(ctx, &state)?;
+    let first = snapshot(ctx, &state, Read::Cached)?;
     log_skips(ctx, &mut out, &first);
     for (name, cause) in &first.candidate_refusals {
         out.emit(

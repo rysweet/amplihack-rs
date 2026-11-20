@@ -34,6 +34,7 @@ use super::tests_swap::{ino_at, login, private};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use crate::commands::profile::store::ProfileStore;
 use amplihack_utils::claude_capacity as cap;
 use std::collections::BTreeSet;
@@ -137,7 +138,7 @@ impl Fx {
     fn ctx(&self, check: super::key_check::KeyCheckFn) -> Ctx {
         let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
         let mut ctx = Ctx::new(self.store.clone(), self.home.clone(), s);
-        ctx.scan = |_| Liveness::Known(BTreeSet::new());
+        ctx.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
         ctx.measure = Some(all_plan_logins_out);
         ctx.key_check = check;
         ctx
@@ -569,7 +570,7 @@ fn the_default_check_is_the_real_one_and_refuses_a_profile_with_no_key() {
     let f = fx();
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
-    c.scan = |_| Liveness::Known(BTreeSet::new());
+    c.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
     c.measure = Some(all_plan_logins_out);
     // `key_check` left at its default.
     assert_eq!(
@@ -599,7 +600,7 @@ fn the_default_check_refuses_a_key_the_swap_would_not_deliver() {
     );
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
-    c.scan = |_| Liveness::Known(BTreeSet::new());
+    c.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
     c.measure = Some(all_plan_logins_out);
     assert_eq!(
         run_cycle(&mut c, Mode::Watch).unwrap(),
@@ -623,7 +624,7 @@ fn after_a_swap_onto_an_api_key_the_key_is_where_claude_reads_it() {
     private(&f.home.join(".claude.json"), &home.to_string());
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
-    c.scan = |_| Liveness::Known(BTreeSet::new());
+    c.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
     c.measure = Some(all_plan_logins_out);
     assert_eq!(
         run_cycle(&mut c, Mode::Watch).unwrap(),
@@ -647,7 +648,7 @@ fn the_default_check_passes_a_key_in_home_and_never_logs_the_value() {
     );
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
-    c.scan = |_| Liveness::Known(BTreeSet::new());
+    c.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
     c.measure = Some(all_plan_logins_out);
     assert_eq!(
         run_cycle(&mut c, Mode::Watch).unwrap(),
@@ -697,7 +698,7 @@ fn a_failing_check_never_puts_a_key_value_in_the_log_or_ledger() {
     .unwrap();
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
-    c.scan = |_| Liveness::Known(BTreeSet::new());
+    c.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
     c.measure = Some(all_plan_logins_out);
     assert_eq!(
         run_cycle(&mut c, Mode::Watch).unwrap(),
@@ -830,7 +831,7 @@ fn a_plan_login_with_a_session_on_it_keeps_the_rotator_off_the_api_key() {
     f.store.add(&n("busy")).unwrap();
     login(&f.root.join("busy").join(CREDS));
     let mut c = f.ctx(|_| panic!("no login check: the key must not be a target"));
-    c.scan = |_| Liveness::Known(BTreeSet::from(["busy".to_string()]));
+    c.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::from(["busy".to_string()])));
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = f.logged();
     assert_eq!(got, CycleOutcome::Alerted, "{log:?}");
@@ -850,13 +851,13 @@ fn a_mark_on_a_detected_key_is_reported_and_a_kind_set_one_is_not() {
     let f = fx();
     let c = f.ctx(|_| panic!("no login check"));
     let state = crate::commands::profile::auto_switch::kit::State::new(&f.root).unwrap();
-    let snap = super::observe::snapshot(&c, &state).unwrap();
+    let snap = super::observe::snapshot(&c, &state, super::observe::Read::Cached).unwrap();
     assert_eq!(snap.detected_mark, Some(n(KEY)));
     private(
         &f.root.join(".auto-switch"),
         "enabled=off\noverflow=api-key\nkind=api-key:platform\n",
     );
-    let snap = super::observe::snapshot(&c, &state).unwrap();
+    let snap = super::observe::snapshot(&c, &state, super::observe::Read::Cached).unwrap();
     assert_eq!(snap.overflow.len(), 1, "{:?}", snap.overflow);
     assert_eq!(snap.detected_mark, None);
 }
@@ -871,7 +872,7 @@ fn a_corrupt_auto_switch_file_loses_the_marks_for_the_rotator() {
     private(&f.root.join(".auto-switch"), "this is not a setting\n");
     let c = f.ctx(|_| panic!("no login check"));
     let state = crate::commands::profile::auto_switch::kit::State::new(&f.root).unwrap();
-    let snap = super::observe::snapshot(&c, &state).unwrap();
+    let snap = super::observe::snapshot(&c, &state, super::observe::Read::Cached).unwrap();
     assert!(snap.overflow.is_empty(), "{:?}", snap.overflow);
     // Issue #2218: which profiles are excluded is unknown, so every profile
     // counts as excluded and none is a candidate, the credits one included.

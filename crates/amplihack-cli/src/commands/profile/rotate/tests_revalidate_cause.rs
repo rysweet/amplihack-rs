@@ -1,14 +1,14 @@
 //! Issue #1721: confirming the cause, and the one-shot failed-probes case.
 //!
 //! This file uses only what already exists on `main` (`run_cycle`,
-//! `Ctx::measure`, `Ctx::scan`, `decide_measured`), so it compiles and runs
+//! `Ctx::measure`, `Ctx::scan`, `decide_measured`; `Ctx::scan` is now `Ctx::procs`, issue #2040), so it compiles and runs
 //! against unchanged code. That is the hard gate in the design: test 1a must
 //! return `Skipped` with `msg::CHANGED` on `main`, and `Swapped` after the
 //! fix. The D9 tests (10a, 10b) are expected to pass on both.
 //!
 //! The fixture is `tests_swap::env()` (`work` live, `spare` stored) plus two
 //! stored profiles, `spare2` and `third`, each with a login and an account.
-//! `Ctx::scan` never reads `/proc`: it sees no session, or the sessions a
+//! `Ctx::procs` never reads `/proc`: it sees no session, or the sessions a
 //! test's own static flag turns on. Logins are created and renamed inside
 //! the temp dir only; no test reads, prints or asserts on their contents,
 //! runs `claude` or touches a real home.
@@ -22,6 +22,7 @@ use super::tests_swap::{CREDS, Env, env, ino_at, login, n, private};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, State, now};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
@@ -57,7 +58,7 @@ pub(super) fn env3() -> (Env, u64, u64) {
 pub(super) fn ctx_with(e: &Env, measure: MeasureFn) -> Ctx {
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
-    ctx.scan = |_| Liveness::Known(BTreeSet::new());
+    ctx.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
     ctx.measure = Some(measure);
     ctx
 }
@@ -177,7 +178,7 @@ fn session_in_third_while_measuring(ctx: &Ctx, snap: &Snap) -> Result<Measuremen
 fn issue_1721_a_session_started_in_an_unrelated_profile_does_not_stop_the_swap() {
     let (e, _, _) = env3();
     let mut ctx = ctx_with(&e, session_in_third_while_measuring);
-    ctx.scan = scan_1b;
+    ctx.procs = ProcSource::from_fn(scan_1b);
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
     assert_eq!(outcome, CycleOutcome::Swapped, "{log}");
@@ -205,7 +206,7 @@ fn issue_1721_failed_probes_on_other_candidates_do_not_stop_a_swap_decision() {
     let (e, _, _) = env3();
     let ctx = ctx_with(&e, some_probes_failed);
     let state = State::new(ctx.store.root()).unwrap();
-    let snap = snapshot(&ctx, &state).unwrap();
+    let snap = snapshot(&ctx, &state, super::observe::Read::Cached).unwrap();
     for c in ["spare", "spare2", "third"] {
         assert_candidate(&snap, c);
     }

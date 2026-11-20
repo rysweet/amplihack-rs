@@ -8,6 +8,13 @@ pub enum Mode {
     Watch,
 }
 
+impl Mode {
+    /// The mode of a plain `profile rotate`, with or without `--dry-run`.
+    pub fn once(dry_run: bool) -> Self {
+        if dry_run { Self::DryRun } else { Self::OneShot }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CycleOutcome {
     Swapped,

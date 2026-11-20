@@ -24,6 +24,7 @@ use super::tests_swap::{ino_at, private};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::tests_fake_http::{FakeHttp, Reply};
 use crate::commands::profile::usage_direct::{self, Endpoints, Request};
@@ -175,7 +176,7 @@ impl Fx {
     fn ctx(&self) -> Ctx {
         let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
         let mut ctx = Ctx::new(self.store.clone(), self.home.clone(), s);
-        ctx.scan = |_| Liveness::Known(BTreeSet::new());
+        ctx.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
         ctx.measure = Some(work_out_spare_free);
         let mut l = self.rs.load_ledger().unwrap().unwrap();
         let identity = via_fake(&self.home.join(".claude")).unwrap();

@@ -404,7 +404,12 @@ fn gate_ctx(e: &Env, reread: Option<RereadFn>) -> Ctx {
 }
 
 fn snap(c: &Ctx) -> Snap {
-    snapshot(c, &State::new(c.store.root()).unwrap()).unwrap()
+    snapshot(
+        c,
+        &State::new(c.store.root()).unwrap(),
+        super::observe::Read::Cached,
+    )
+    .unwrap()
 }
 
 fn panics(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {

@@ -251,11 +251,13 @@ fn a_rotator_that_ignores_sigterm_keeps_its_pid_file() {
             .unwrap(),
     );
     let pid = stubborn.0.id() as i32;
+    // The outer bash's own command line already contains "watch", so wait
+    // for the exec itself: argv[0] becomes `amplihack`.
     let guard = reaper(&f);
     guard.1.link_own(stubborn.0.id());
     wait_until("the stub to exec", || {
         fs::read(format!("/proc/{pid}/cmdline"))
-            .is_ok_and(|c| String::from_utf8_lossy(&c).contains("watch"))
+            .is_ok_and(|c| c.starts_with(b"amplihack\0") && c.ends_with(b"watch\0"))
     });
     fs::create_dir_all(f.rotate_dir()).unwrap();
     fs::write(pid_file(&f), format!("{pid}\n")).unwrap();

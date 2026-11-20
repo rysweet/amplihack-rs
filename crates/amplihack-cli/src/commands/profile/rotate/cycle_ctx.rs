@@ -8,13 +8,13 @@ use super::super::ledger::RotateState;
 use super::super::revalidate;
 use super::super::settings::Settings;
 use super::MeasureFn;
-use crate::commands::profile::auto_switch::kit::{Liveness, scan_system};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::ProbeMode;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd::no_refresh_dirs;
 use crate::commands::profile::usage_source::SourceEnv;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -29,8 +29,9 @@ pub struct Ctx {
     pub(in crate::commands::profile::rotate) last_proto: Option<&'static str>,
     pub(super) last_gate: Option<String>,
     pub(in crate::commands::profile::rotate) failed_live: u32,
-    /// Finds running sessions; tests inject synthetic liveness.
-    pub(in crate::commands::profile::rotate) scan: fn(&Path) -> Liveness,
+    /// Finds running sessions through the shared snapshot (issue #2040);
+    /// tests inject synthetic liveness.
+    pub(in crate::commands::profile::rotate) procs: ProcSource,
     /// Tests inject measurement while the lock is released.
     pub(in crate::commands::profile::rotate) measure: Option<MeasureFn>,
     /// Freshness re-read by the configured method; None reads nothing.
@@ -78,7 +79,7 @@ impl Ctx {
             last_proto: None,
             last_gate: None,
             failed_live: 0,
-            scan: scan_system,
+            procs: ProcSource::system(),
             measure: None,
             reread: None,
             reread_live: None,

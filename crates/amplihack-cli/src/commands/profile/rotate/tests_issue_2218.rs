@@ -869,9 +869,10 @@ mod failed_count {
 mod live_freshness_step {
     use super::*;
     use crate::commands::profile::auto_switch::kit::{Liveness, State};
+    use crate::commands::profile::proc_snapshot::ProcSource;
     use crate::commands::profile::rotate::decide::Probed;
     use crate::commands::profile::rotate::fresh::live::{FROZEN_CYCLES, step};
-    use crate::commands::profile::rotate::observe::{decide_measured, snapshot};
+    use crate::commands::profile::rotate::observe::{Read, decide_measured, snapshot};
     use crate::commands::profile::rotate::tests_issue_1870::rd;
     use std::collections::BTreeSet;
     use std::time::Duration;
@@ -903,10 +904,10 @@ mod live_freshness_step {
         }
         let s = settings::resolve(&TuneFlags::default(), None, &|_| None).unwrap();
         let mut c = Ctx::new(e.store.clone(), e.home.clone(), s);
-        c.scan = |_| Liveness::Known(BTreeSet::new());
+        c.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
         c.now = clock;
         c.reread_live = Some(never_reread);
-        let snap = snapshot(&c, &State::new(&e.root).unwrap()).unwrap();
+        let snap = snapshot(&c, &State::new(&e.root).unwrap(), Read::Cached).unwrap();
         assert_eq!(snap.live_excluded, excluded);
         for cycle in 0..=FROZEN_CYCLES {
             let m = decide_measured(&c, &snap, frozen(), Vec::new(), T).unwrap();

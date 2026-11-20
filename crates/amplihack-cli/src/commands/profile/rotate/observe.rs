@@ -149,7 +149,7 @@ impl Snap {
 pub(super) mod affinity;
 #[path = "observe_snapshot.rs"]
 mod take;
-pub use take::snapshot;
+pub use take::{Read, snapshot};
 
 pub fn live_name(id: &LiveId) -> Option<&ProfileName> {
     match id {

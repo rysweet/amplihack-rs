@@ -24,6 +24,7 @@ use super::tests_swap::{Env, env, ino_at, n};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
@@ -590,7 +591,7 @@ fn sr3_revalidation_treats_a_stale_retry_target_as_unknown_without_reading() {
     let e = env();
     add_stored(&e, "spare2");
     let mut c = ctx(&e, measure_sr3, Some(never));
-    c.scan = scan_busy;
+    c.procs = ProcSource::from_fn(scan_busy);
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = log_of(&e);
     assert_eq!(got, CycleOutcome::Skipped, "{log}");

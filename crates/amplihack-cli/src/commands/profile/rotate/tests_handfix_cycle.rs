@@ -2,7 +2,7 @@
 //! review of #1702), on the 27 Oct fixture from `tests_handfix.rs`.
 //! `Ctx::measure` replaces finding `claude` and probing, and `Ctx::identity`
 //! is the fixture's fake credential reader, so nothing outside the temp dir
-//! runs; `Ctx::scan` sees no sessions. Each stub checks the snapshot it is
+//! runs; `Ctx::procs` sees no sessions. Each stub checks the snapshot it is
 //! handed, so these tests show what the cycle itself read after recovery.
 
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
@@ -17,12 +17,13 @@ use super::tests_handfix::{C, CREDS, Fx, L, M, by_path, fx, moved_line};
 use super::tests_swap::{ino_at, n, private};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
+use crate::commands::profile::proc_snapshot::ProcSource;
 use std::collections::BTreeSet;
 
 pub(super) fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(f.store.clone(), f.home.clone(), s);
-    ctx.scan = |_| Liveness::Known(BTreeSet::new());
+    ctx.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
     ctx.measure = Some(measure);
     ctx.identity = by_path;
     ctx

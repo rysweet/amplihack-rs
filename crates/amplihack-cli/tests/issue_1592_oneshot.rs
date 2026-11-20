@@ -9,7 +9,7 @@ use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_rotate::*;
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 
@@ -211,10 +211,42 @@ fn a_dry_run_changes_nothing_and_prints_only_would_and_cycle_lines() {
     f.usage_direct("work", 90, 20);
     f.usage_direct("spare", 10, 20);
     f.usage_direct("extra", 50, 60);
-    let before = snapshot(&f);
+    // Issue #2040 (D10): the dry run takes the run lock and writes its pid
+    // into it. The lock exists before the snapshot, so the dry run may only
+    // rewrite that one file.
+    let run_lock = f.rotate_dir().join("rotate-run.lock");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(f.rotate_dir())
+        .unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&run_lock)
+        .unwrap();
+    let rel = run_lock
+        .strip_prefix(&f.home)
+        .unwrap()
+        .display()
+        .to_string();
+    let without_lock = |mut s: BTreeMap<String, String>| {
+        assert!(s.remove(&rel).is_some(), "{rel} is in the snapshot");
+        s
+    };
+    let before = without_lock(snapshot(&f));
     let out = f.ok(&["profile", "rotate", "--dry-run"]);
-    assert_eq!(snapshot(&f), before, "dry run wrote or moved something");
-    assert!(!f.rotate_dir().exists());
+    assert_eq!(
+        without_lock(snapshot(&f)),
+        before,
+        "dry run wrote or moved something"
+    );
+    let rotate_entries: Vec<_> = fs::read_dir(f.rotate_dir())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(rotate_entries, ["rotate-run.lock"]);
     let ls = lines(&out);
     assert!(!ls.is_empty());
     for l in &ls {

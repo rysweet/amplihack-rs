@@ -273,6 +273,8 @@ pub mod msg {
     pub const AUTO_SWITCH_INCONSISTENT: &str =
         "ALERT: auto-switch recovery is inconsistent; no swap";
     pub const LOCK_BUSY: &str = "skip: state lock busy";
+    /// Issue #2040 (D10): another rotate run holds the whole-run lock.
+    pub const RUN_BUSY: &str = "skip: another profile rotate run holds the run lock";
     /// Issue #1753 (R1): the expired live login was refreshed before its
     /// identity was read.
     pub const LIVE_REFRESHED: &str =

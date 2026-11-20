@@ -10,7 +10,7 @@ use super::identify::excluded_offline;
 use super::ledger::{Phase, spend_reset};
 use super::log::{Sink, msg, timestamp};
 use super::observe::{
-    Measurement, live_alert, live_name, measure_and_decide, platform_block_reason, snapshot,
+    Measurement, Read, live_alert, live_name, measure_and_decide, platform_block_reason, snapshot,
 };
 use super::overflow_record::{alert_line, target_check};
 use super::pin::{self, Gate as PinGate};
@@ -19,6 +19,7 @@ use super::seed;
 use super::swap;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, exists, now};
+use crate::commands::profile::proc_snapshot::Fresh;
 use crate::commands::profile::usage_direct;
 
 /// The outcome `--dry-run` reports for `decision`, matching the line it
@@ -73,7 +74,10 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     }
     // Issues #1693, #1886: what hand-change recovery would do, from the same
     // identity reads; it stops here unless it could only not tell.
-    let env_for = || handfix::Env::system(ctx.store.root(), &state, ctx.scan);
+    let env_for = || {
+        let root = ctx.store.root();
+        handfix::Env::system(&state, ctx.procs.liveness(root, Fresh::Cached))
+    };
     let read = |p: &std::path::Path| ctx.identity_reader().oauth(p);
     let (store, rs, home) = (&ctx.store, &ctx.rs, &ctx.home);
     let gap = handfix::min_gap(ctx);
@@ -89,7 +93,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     if handfix::dry_run_stops(&lines) {
         return Ok(CycleOutcome::Alerted);
     }
-    let snap = snapshot(ctx, &state)?;
+    let snap = snapshot(ctx, &state, Read::Cached)?;
     if !ctx.home_local_only() && seed::preview(ctx, &state, &snap, &mut out) {
         return Ok(CycleOutcome::Alerted);
     }

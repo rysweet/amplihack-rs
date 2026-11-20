@@ -12,11 +12,14 @@ pub use super::fsx::{
     movable_login, now, read_bounded_nofollow, same_private_bytes, writable_by_others,
     write_atomic_keep_mode, write_private_atomic,
 };
-pub use super::liveness::{Liveness, scan_system};
+pub use super::liveness::Liveness;
 pub use super::mv::{
     MoveError, REFRESH_LOCK, abort_point, exchange_logins, move_login, release_refresh_lock_at,
     take_refresh_lock_at,
 };
 pub use super::state::{CLAUDE_JSON, CREDS, Ledger, Lock, MAX_CLAUDE_JSON, State, parse_position};
-pub use super::swap::{account, guard_held, read_claude_json, recover as recover_auto_switch};
+pub use super::swap::{
+    account, guard_held, read_claude_json, recover as recover_auto_switch,
+    recover_reporting_with as recover_auto_switch_with,
+};
 pub use super::usage::ReadingSource;

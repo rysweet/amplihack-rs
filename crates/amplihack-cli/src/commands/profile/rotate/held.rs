@@ -13,7 +13,7 @@ use super::identify::LiveId;
 use super::ledger::{RotateLedger, SWITCHED, active_blocks};
 use super::log::{Sink, msg};
 use super::measure::{self, Live};
-use super::observe::{Snap, snapshot};
+use super::observe::{Read, Snap, snapshot};
 use super::overflow_record::block_pinned_spend_limited;
 use super::overflow_record::note_live;
 use super::pin::PinState;
@@ -111,7 +111,7 @@ fn watch_pinned_spend(
     prototype_guard(ctx.store.root())?;
     // Only what the live login's block depends on, as for a stay (#1721):
     // another profile's churn does not stop it.
-    let fresh = snapshot(ctx, state)?;
+    let fresh = snapshot(ctx, state, Read::Confirmed)?;
     let why = changed(first, &fresh, &Decision::Stay, exists(&ctx.rs.journal));
     if !why.is_empty() {
         // The probe may have read another login; the next cycle probes again.

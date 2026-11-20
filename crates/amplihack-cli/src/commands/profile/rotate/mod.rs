@@ -99,6 +99,8 @@ mod recover;
 #[cfg(unix)]
 mod revalidate;
 #[cfg(unix)]
+mod run_lock;
+#[cfg(unix)]
 pub(super) mod seed;
 #[cfg(unix)]
 mod sessions_daily;
@@ -174,6 +176,8 @@ mod tests_measure;
 mod tests_pin;
 #[cfg(all(test, target_os = "linux"))]
 mod tests_pin_overflow;
+#[cfg(all(test, target_os = "linux"))]
+mod tests_proc_reads;
 #[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
@@ -260,11 +264,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
         match args.action {
             None => {
                 let s = settings::resolve(&args.tune, None, &env)?;
-                let mode = if args.dry_run {
-                    cycle::Mode::DryRun
-                } else {
-                    cycle::Mode::OneShot
-                };
+                let mode = cycle::Mode::once(args.dry_run);
                 if mode == cycle::Mode::OneShot {
                     warn_foreign_rotator(Some(store.root()));
                 }

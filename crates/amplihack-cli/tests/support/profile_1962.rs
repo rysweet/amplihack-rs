@@ -473,7 +473,16 @@ impl World {
             s.insert(p.to_path_buf(), stamp_of(m));
         };
         walk(&self.f.home.join(".claude"), &mut note);
-        walk(&self.f.rotate_dir(), &mut note);
+        // Issue #2040 (D10): the dry run takes the run lock, which may create
+        // the rotate directory and `rotate-run.lock` and rewrites its pid.
+        // Every other entry in the directory is still stamped.
+        let rotate = self.f.rotate_dir();
+        let run_lock = rotate.join("rotate-run.lock");
+        walk(&rotate, &mut |p, m| {
+            if p != rotate && p != run_lock {
+                note(p, m);
+            }
+        });
         walk(&self.state().join("expected"), &mut note);
         for p in ["work", "spare", "extra"] {
             walk(&self.f.root.join(p), &mut note);

@@ -52,3 +52,28 @@ fn isolated_never_uses_the_real_home() {
         "HOME {home:?} is under the temp dir"
     );
 }
+
+/// Issue #2040: the running-session snapshot lives in `$XDG_RUNTIME_DIR`, so
+/// a child started by a test must get a private runtime directory under the
+/// temp dir, never the developer's real one.
+#[test]
+fn isolated_sets_a_private_runtime_dir_under_the_temp_dir() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let cmd = isolated("x");
+    let rt = env_of(&cmd, "XDG_RUNTIME_DIR")
+        .flatten()
+        .expect("isolated() sets XDG_RUNTIME_DIR");
+    if let Some(real) = std::env::var_os("XDG_RUNTIME_DIR") {
+        assert_ne!(rt, real.as_os_str(), "XDG_RUNTIME_DIR must be a temp dir");
+    }
+    let rt = std::path::Path::new(rt);
+    assert!(rt.is_absolute(), "{rt:?}");
+    assert!(
+        rt.starts_with(std::env::temp_dir()),
+        "XDG_RUNTIME_DIR {rt:?} is under the temp dir"
+    );
+    let meta = std::fs::symlink_metadata(rt).expect("the runtime dir exists");
+    assert!(meta.is_dir(), "{rt:?} is a directory, not a symlink");
+    assert_eq!(meta.permissions().mode() & 0o777, 0o700, "{rt:?}");
+    assert_eq!(meta.uid(), amplihack_utils::secure_files::euid());
+}
