@@ -19,7 +19,7 @@ description: >
   the stub. Cleanup is left on and no phase is skipped: reflection and power
   steering are not disabled.
 
-  Six cases, each asserted below, on outcomes only; no internal run-folder
+  Seven cases, each asserted below, on outcomes only; no internal run-folder
   path or layout is asserted. Part 1: `part1_build_opens_pr_and_pushes_branch`
   (the stub recorded a `pr create` for the run's branch, and the bare origin
   holds that branch at the local head) and
@@ -38,9 +38,12 @@ description: >
   stand-in agent left a file in, the run emitted a line beginning `amplihack:
   leaving ` naming the folder kept, that copy as the work tree and the reason
   `has uncommitted changes`, once or twice and identical each time, and the
-  folder is still there with the file in it; issue #2785). And one on this
-  file: `every_case_this_run_emitted_is_asserted_by_the_descriptor`, which
-  fails the scenario when a case the script emits has no assertion here.
+  folder is still there with the file in it; issue #2785) and
+  `part3_the_runs_wrote_nothing_into_the_repository` (AMPLIHACK_HOME points
+  the product at this checkout, and `git status --porcelain` gained no entry
+  across the two runs). And one on this file:
+  `every_case_this_run_emitted_is_asserted_by_the_descriptor`, which fails the
+  scenario when a case the script emits has no assertion here.
 
   Everything runs under `env -i` with a 0700 root, a PATH holding only the
   scenario's own tool links, no Git system or global configuration and only
@@ -106,6 +109,11 @@ assertions:
     params:
       target: stdout
       expected: "PASS: part3_unsaved_work_folder_kept_with_reason"
+  - name: the-runs-wrote-nothing-into-the-repository-under-test
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part3_the_runs_wrote_nothing_into_the_repository"
   - name: the-descriptor-states-every-case-the-script-emits
     type: output_contains
     params:

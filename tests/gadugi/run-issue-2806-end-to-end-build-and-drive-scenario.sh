@@ -76,6 +76,10 @@
 #         removal and the end-of-run sweep can both reach a folder and each
 #         says so once. A whole build may keep other folders too; their lines
 #         are not read. No internal run-folder path or layout is asserted.
+#         Last, AMPLIHACK_HOME points the product at this checkout, so the
+#         checkout's `git status --porcelain` listing is taken before the build
+#         and compared after the drive: neither run may have added an entry.
+#         Entries that were there already are not this case's business.
 #
 # Cleanup is left on: AMPLIHACK_CLEANUP_ON_EXIT, AMPLIHACK_SKIP_REFLECTION and
 # AMPLIHACK_SKIP_POWER_STEERING are not set. Context keys that choose a route
@@ -100,6 +104,8 @@
 # RECIPE_RUNNER_RS_PATH (or put recipe-runner-rs on PATH) for the runner.
 # On success it prints ALL_CASES_PASSED and exits 0; otherwise SCENARIO_FAILED
 # and exit 1, with each evidence file dumped under its own header.
+# No `-e` on purpose: every case must run and report, so an early exit would
+# hide the failures after the first one. Setup is guarded with `|| die`.
 set -uo pipefail
 umask 077
 
@@ -483,6 +489,14 @@ flunk() {
 TASK="Add a file named feature.txt at the repository root containing one line of text."
 BRANCH=""
 
+# The checkout as it stands before any run. AMPLIHACK_HOME points the product
+# at this repository, so a run could write into it; the last case compares this
+# against the same listing afterwards. Taken as a listing rather than as a
+# clean/dirty verdict, so a checkout that was already dirty still gives a
+# usable comparison.
+REPO_BEFORE="$WORK/repo-status-before"
+git -C "$REPO_ROOT" status --porcelain > "$REPO_BEFORE" 2>/dev/null || : > "$REPO_BEFORE"
+
 # --- E: part 1, the whole build ---------------------------------------------
 printf 'PENDING\n' > "$WORK/gh-state/checks"
 scenario_env build "$BINDIR/amplihack" recipe run smart-orchestrator \
@@ -661,6 +675,21 @@ if [ -n "$kept_problems" ]; then
   flunk "part3_unsaved_work_folder_kept_with_reason:$kept_problems"
 else
   pass "part3_unsaved_work_folder_kept_with_reason"
+fi
+
+# Requirement 9: neither run wrote into the repository the product was pointed
+# at. Entries present before the runs are not this case's business; only
+# entries the runs added are.
+REPO_AFTER="$WORK/repo-status-after"
+if git -C "$REPO_ROOT" status --porcelain > "$REPO_AFTER" 2>/dev/null; then
+  ADDED="$(comm -13 <(sort -u -- "$REPO_BEFORE") <(sort -u -- "$REPO_AFTER") | tr '\n' '|')"
+  if [ -n "$ADDED" ]; then
+    flunk "part3_the_runs_wrote_nothing_into_the_repository: $REPO_ROOT gained: $ADDED"
+  else
+    pass "part3_the_runs_wrote_nothing_into_the_repository"
+  fi
+else
+  flunk "part3_the_runs_wrote_nothing_into_the_repository: cannot read the status of $REPO_ROOT"
 fi
 
 # --- H: the descriptor states this scenario in full -------------------------
