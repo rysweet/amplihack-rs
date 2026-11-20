@@ -191,7 +191,6 @@ for t in "${OPTIONAL_TOOLS[@]}"; do
 done
 ln -sf -- "$BIN" "$BINDIR/amplihack"
 ln -sf -- "$RUNNER" "$BINDIR/recipe-runner-rs"
-SCENARIO_PATH="$BINDIR"
 
 # One wrapper for every command that runs the product or Git: env -i with an
 # explicit list. Reflection, power steering and cleanup are deliberately left to
@@ -200,7 +199,7 @@ scenario_env() {
   local label="$1"; shift
   env -i \
     HOME="$WORK/home" \
-    PATH="$SCENARIO_PATH" \
+    PATH="$BINDIR" \
     TERM=dumb LANG=C \
     TMPDIR="$WORK/tmp-$label" \
     XDG_CONFIG_HOME="$WORK/home/.config" \
@@ -480,19 +479,13 @@ scenario_env build "$BINDIR/amplihack" recipe run smart-orchestrator \
 build_rc=$?
 echo "build exit status: $build_rc"
 
-# Branch and head, as the stub recorded them: the head the pull request was
-# asked for, in either of the two forms gh accepts, and otherwise the branch
-# the folder gh was called in was on.
+# Branch and head, as the stub recorded them when the pull request was asked
+# for: the branch of `--head`, in either of the two forms gh accepts, and
+# otherwise the branch the folder gh was called in was on. The stub writes
+# both as it goes, so gh's arguments are parsed in one place and not two; the
+# argv file is read here only for whether a `pr create` was recorded at all.
 if [ -s "$WORK/gh-create.argv" ]; then
-  BRANCH="$(awk '{
-      for (i = 1; i <= NF; i++) {
-        v = ""
-        if ($i ~ /^--head=/) { v = substr($i, 8) }
-        else if ($i == "--head" && i < NF) { v = $(i + 1) }
-        if (v != "") { sub(/^.*:/, "", v); print v; exit }
-      }
-    }' "$WORK/gh-create.argv")"
-  [ -n "$BRANCH" ] || BRANCH="$(cat "$WORK/gh-state/branch" 2>/dev/null)"
+  BRANCH="$(cat "$WORK/gh-state/branch" 2>/dev/null)"
 fi
 printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$' || BRANCH=""
 LOCAL_HEAD="$(cat "$WORK/gh-create.head" 2>/dev/null)"
@@ -548,7 +541,7 @@ awk '$1 == "pr" && $2 == "merge" && $3 == "42" { found = 1 } END { exit !found }
 # The drive's verdict: the last step prints one typed report object carrying
 # `stop_reason`, which is the drive's own word for how it ended. The wording
 # of the sentence beside it is the product's and is not read here.
-drive_verdict="$(grep -hoE '"stop_reason": *"[a-z_]+"' "$WORK/drive.out" "$WORK/drive.err" | tail -n 1)"
+drive_verdict="$(grep -hoE '"stop_reason" *: *"[a-z_]+"' "$WORK/drive.out" "$WORK/drive.err" | tail -n 1)"
 
 if [ "$drive_started" -ne 1 ]; then
   flunk "part2_drive_ends_at_verdict_and_merges: there was no branch to drive (the per-PR clone or worktree could not be made)"
