@@ -27,10 +27,16 @@
 //! - `End::said_try_now` splits the ends into those that claim the retry
 //!   should work and those that merely ran out (part 1).
 //!
+//! `wait` has no opinion about login-change waits (#2731): it asks
+//! `change_may_end` for every plan, and the exemption is the real `WaitDeps`'
+//! to make from the plan, which `tests_room_gate.rs` pins. The pre-existing
+//! `a_login_change_wait_still_ends_when_the_login_changes` in
+//! `tests_wait_ends.rs` runs that path through the new conjunction.
+//!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_wait_room;`.
 
 use super::plan::Bound;
-use super::tests_wait::{Fake, capacity_plan_in, login_change_plan_in, plan_in};
+use super::tests_wait::{Fake, capacity_plan_in, plan_in};
 use super::wait::{End, wait};
 
 // --- the fingerprint route -------------------------------------------------------
@@ -172,45 +178,40 @@ fn the_question_is_asked_at_the_poll_that_sees_the_change_and_at_each_poll_after
 // --- what the gate does not touch ---------------------------------------------------
 
 /// The rotator's capacity is already a reading of room (`fresh_room`), so it is
-/// not asked again, and a change held back does not hold it back.
+/// not asked again, and a change the gate would hold back does not hold it
+/// back. The change is armed and the gate shut, so a capacity source that had
+/// lost its place to the change, or that read the gate itself, would fail here.
 #[test]
 fn rotator_capacity_ends_the_wait_whatever_the_change_gate_says() {
     let mut f = Fake::new();
-    f.capacity_from = Some(40);
+    f.capacity_from = Some(30);
+    f.login_changed_from = Some(10);
     f.change_room_from = None;
     assert_eq!(
         wait(&plan_in(300, Bound::ResetMargin), &mut f),
         End::RotatorCapacity
     );
-    assert_eq!(f.change_probes, Vec::<i64>::new());
-}
-
-/// A swap that also records capacity still ends as `rotator capacity`, as it
-/// always has (auto-drive reads these reasons), now with the room gate open.
-#[test]
-fn a_swap_with_room_that_also_reports_capacity_still_ends_as_rotator_capacity() {
-    let mut f = Fake::new();
-    f.capacity_from = Some(30);
-    f.login_changed_from = Some(30);
-    f.change_room_from = Some(0);
     assert_eq!(
-        wait(&plan_in(1800, Bound::ResetMargin), &mut f),
-        End::RotatorCapacity,
-        "the capacity sources keep first refusal"
+        f.change_probes,
+        Vec::<i64>::new(),
+        "the capacity sources are read first, so the gate is never asked"
     );
 }
 
 /// The known residual, stated so it is a decision and not an oversight: another
 /// login's capacity is read at the 100% rule and is not gated by this change.
+/// As above, the change is armed and the gate shut.
 #[test]
 fn another_logins_capacity_is_not_held_back_by_the_room_gate() {
     let mut f = Fake::new();
-    f.other_from = Some(40);
+    f.other_from = Some(30);
+    f.login_changed_from = Some(10);
     f.change_room_from = None;
     assert_eq!(
         wait(&plan_in(300, Bound::ResetMargin), &mut f),
         End::OtherCapacity
     );
+    assert_eq!(f.change_probes, Vec::<i64>::new());
 }
 
 #[test]
@@ -235,18 +236,6 @@ fn a_held_back_change_never_holds_back_a_signal_the_deadline_or_the_sessions_end
     f.login_changed_from = Some(0);
     f.change_room_from = None;
     assert_eq!(wait(&plan_in(75, Bound::MaxWait), &mut f), End::MaxReached);
-}
-
-/// `wait` has no opinion about login-change waits (#2731): whether one is held
-/// back is the `WaitDeps`' to say, from the plan, and `tests_room_gate.rs` pins
-/// that the real one says no. Here the Fake says yes, and the wait ends as it
-/// did before the gate existed.
-#[test]
-fn a_login_change_wait_ends_on_a_change_when_its_deps_say_the_gate_is_open() {
-    let mut f = Fake::new();
-    f.prints = vec![(0, Some(1)), (45, Some(2))];
-    assert_eq!(wait(&login_change_plan_in(1800), &mut f), End::LoginChanged);
-    assert_eq!(f.elapsed(), 90);
 }
 
 // --- what an end claims -----------------------------------------------------------------

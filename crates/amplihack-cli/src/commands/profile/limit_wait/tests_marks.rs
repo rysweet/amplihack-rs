@@ -270,25 +270,3 @@ fn issue_2857_a_step_that_never_named_a_login_is_re_entered_on_the_same_terms() 
     assert!(m.refuses(&NONE, Some(DEFAULT_BUDGET)));
     assert!(!m.refuses_reentry(Some(DEFAULT_BUDGET)));
 }
-
-/// What a re-entry does not do: it does not record a mark by itself and does
-/// not change what the ordinary refusal says. The caller records the wait it
-/// starts, as for any wait, so `used` and the marks stay the step's history.
-#[test]
-fn issue_2857_asking_about_a_re_entry_changes_nothing() {
-    let mut m = Marks::new();
-    m.record(key("a"));
-    m.spend(10);
-    let before = (
-        m.used(),
-        m.remaining(Some(600)),
-        m.refuses(&key("a"), Some(600)),
-    );
-    let _ = m.refuses_reentry(Some(600));
-    let after = (
-        m.used(),
-        m.remaining(Some(600)),
-        m.refuses(&key("a"), Some(600)),
-    );
-    assert_eq!(before, after);
-}

@@ -10,7 +10,7 @@
 //! The rule, in one place: **a change may end a wait only when the login now
 //! live has room**, with three named exceptions that open the gate:
 //!
-//! - a login-change wait (`Plan::capacity_may_end()` is false, #2731). It waits
+//! - a login-change wait (`Plan::is_login_change()`, #2731). It waits
 //!   for one organisation's spend limit to be replaced by another's credit, and
 //!   no capacity reading reports credit. Gating it would bring #2731 back.
 //!   Part 1 is the backstop: if it wakes onto a full login, the 429 that
@@ -413,12 +413,7 @@ fn a_ledger_that_is_not_a_regular_file_closes_the_gate() {
 /// of the change under test: the waits here end on a reading the test gives.
 const ROOMY_STEP_TIMEOUT: &str = "3600";
 const FAST: &str = "1000";
-const SILENCED: [&str; 4] = [
-    "AMPLIHACK_USAGE_WAIT_LEDGER",
-    "AMPLIHACK_RECIPE_LOG",
-    "AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW",
-    "AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE",
-];
+const SILENCED: [&str; 2] = ["AMPLIHACK_USAGE_WAIT_LEDGER", "AMPLIHACK_RECIPE_LOG"];
 
 fn guarded<T>(f: impl FnOnce() -> T) -> T {
     let _lock = env_lock()
@@ -428,6 +423,17 @@ fn guarded<T>(f: impl FnOnce() -> T) -> T {
     for name in SILENCED {
         guard.clear(name);
     }
+    // The wait's clock is pinned, not merely sped up. A test that reads
+    // `Waiter::now()` to build a reset and then lets `after_limit` read the
+    // clock again must get the same answer from both: on the wall clock a
+    // second ticking between the two turns a reset one second ahead into one
+    // already passed, and `Plan::ends_at_once` then refuses the re-entry. The
+    // base is this moment, so the rotate ledgers the gate reads, whose stamps
+    // are real-clock ones, stay as fresh as they were.
+    guard.assign(
+        "AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW",
+        crate::commands::profile::fsx::now().to_string(),
+    );
     guard.assign("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", FAST);
     f()
 }
