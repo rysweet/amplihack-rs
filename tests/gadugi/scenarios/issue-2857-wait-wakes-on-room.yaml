@@ -14,8 +14,10 @@ description: >
   `live_room: true`; a swap onto a login with no room, a ledger from a rotator
   that records no room bit, and the record a stopping rotator leaves all let
   the wait run to its own end. A person's own `profile switch` records no room
-  bit and still wakes the wait unless it says `live_room: false`. The limit states a reset five minutes in the
-  past, so every wait ends at once and the scenario takes seconds without any
+  bit and still wakes the wait unless it says `live_room: false`. A first
+  limit states a reset five minutes in the past, so its wait ends at once; the
+  second states the next window's reset and is cut short by a lowered
+  `usage_limit_max_wait_secs`, so the scenario takes seconds and needs no
   debug-only clock seam. Everything runs under `env -i` with a scratch HOME,
   so the real ~/.claude and ~/.amplihack are never read or written, and no
   agent, account, rotator or network call is made. CI's Install Smoke Test job

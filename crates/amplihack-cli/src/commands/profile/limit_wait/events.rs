@@ -169,12 +169,12 @@ where
 /// ended and whether the step went back into one, and the step's stderr keeps
 /// the rest.
 ///
-/// The `end` and `reentered` lines are the stderr ones. The `start` line is the stderr one with
-/// `harness=` dropped and `account=` put in its place, so one `grep` over
-/// both sinks reads as one stream. `account` is re-validated here, at the
-/// one point where a login name can reach a file: a name outside the
-/// rotator's own form is written as `unknown` whole rather than trimmed to
-/// fit, so two logins can never collapse onto one identity in the log.
+/// The `end` and `reentered` lines are the stderr ones. The `start` line is
+/// the stderr one with `harness=` dropped and `account=` put in its place, so
+/// one `grep` over both sinks reads as one stream. `account` is re-validated
+/// here, at the one point where a login name can reach a file: a name outside
+/// the rotator's own form is written as `unknown` whole rather than trimmed
+/// to fit, so two logins can never collapse onto one identity in the log.
 pub(super) fn recipe_line<Z: TimeZone>(e: &Event, account: Option<&str>, tz: &Z) -> Option<String>
 where
     Z::Offset: Display,
