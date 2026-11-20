@@ -759,8 +759,8 @@ folders only at removal, so a dry run can list one as `would-remove` and
 
 Cleanup looks for a `.git` entry, a folder or a file, in the folder itself, in
 a folder directly inside it, and in a folder two levels inside it. That finds
-`<run dir>/runtime/tmp/amplihack-rs/.git` and
-`<work root>/r/<short id>/checkout/.git`. A repository three or more levels
+a repository copy a step left under the run's runtime folder, such as
+`<run dir>/runtime/tmp/amplihack-rs/.git`. A repository three or more levels
 down is not found.
 
 - **No `.git` there.** The folder is removed as described in the rest of this
@@ -775,8 +775,9 @@ down is not found.
   run folder under a work root inside a repository would never be removed.
 - **Several work trees in one folder.** Cleanup judges each one and stops at the
   first that holds unsaved work. It reports that one.
-- **A `.git` that is not a repository.** An empty `.git` folder with no `HEAD`
-  is ignored, and the folder is removed as usual.
+- **A `.git` that is not a repository.** A `.git` folder with no `HEAD` in it
+  is ignored, whatever else it holds, and the folder is removed as usual.
+  Nothing inside it is read beyond the presence of `HEAD`.
 
 Anything cleanup cannot settle is kept, with
 `cannot check for unpushed commits: …`:
@@ -793,8 +794,8 @@ Anything cleanup cannot settle is kept, with
 - A path cannot be resolved.
 - One folder holds more than eight work trees. The detail is
   `more work trees than can be checked`. Only the `.git` entries described
-  above count: an ignored empty `.git` folder and a candidate that is a
-  symbolic link do not. The cap is reached while the work trees are being
+  above count: an ignored `.git` folder with no `HEAD` and a candidate that is
+  a symbolic link do not. The cap is reached while the work trees are being
   found, before any of them is judged, so more than eight keeps the folder
   without judging any of them.
 
@@ -1504,9 +1505,13 @@ tell. See [Folders with unsaved work are kept](#folders-with-unsaved-work-are-ke
 Git commands against a candidate run with hooks and fsmonitor disabled and
 with the system git configuration ignored. A repository's own
 `.git/config` can still name clean and smudge filters, and those can run
-during `git status` and `git worktree remove`, and inside `gh`. Cleanup runs
-as you, on worktrees of your own runs, so such a filter has no more rights
-than whoever could already write that configuration.
+during `git status` and `git worktree remove`, and inside `gh`. The
+[unsaved-work check](#folders-with-unsaved-work-are-kept) widens where that
+applies: it runs Git in any repository copy up to two levels inside a
+candidate folder, which can be one a step downloaded or extracted rather than
+one a run recorded. Cleanup runs as you, and only in a folder whose `.git`
+belongs to you, so such a filter has no more rights than whoever could
+already write into that folder.
 
 Before each removal, cleanup resolves the path again and requires it to
 resolve to the same place it did when the item was collected, and still to lie
