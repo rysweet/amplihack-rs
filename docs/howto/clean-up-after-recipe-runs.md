@@ -726,7 +726,7 @@ order:
 | `has no upstream and commits on no remote branch` | The checked-out branch has no upstream, and `HEAD` has commits that no remote-tracking branch contains. |
 | `cannot check for unpushed commits: <detail>` | Cleanup could not tell. Not knowing is a reason to keep, never to delete. |
 
-These are the reasons the `run-worktree` category gives, with one addition:
+These are the reasons the `run-worktree` category gives, with one difference:
 `run-worktree` has only "remove it or keep it" to settle, so it counts a
 `git status` it could not run as uncommitted changes, whereas this check says
 a line and so names what it met. Either way the folder is kept. The check
