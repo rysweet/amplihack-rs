@@ -568,7 +568,7 @@ elif ! grep -qE "$HELPER_EVIDENCE_KEYS" "$WORK/build.out" "$WORK/build.err"; the
   # `INFO: resolved open PR ... treating as EXISTING_OPEN_PR (#1596)`, which is
   # the next anchor. Do not fall back to the agent form, which is the
   # stand-in's own answer and proves nothing about finalisation.
-  flunk "part1_finalization_is_not_failed_implementation: neither $WORK/build.out nor $WORK/build.err holds a terminal-evidence line of finalisation's own (a bare key=value line from amplifier-bundle/tools/workflow_final_status.sh), so the only state reported is the stand-in agent's (agent: ${AGENT_STATES:-none}, build exit $build_rc)"
+  flunk "part1_finalization_is_not_failed_implementation: neither build.out nor build.err, both dumped below, holds a terminal-evidence line of finalisation's own (a bare key=value line from amplifier-bundle/tools/workflow_final_status.sh), so the only state reported is the stand-in agent's (agent: ${AGENT_STATES:-none}, build exit $build_rc)"
 elif ! grep -qE '"terminal_state" *: *"EXISTING_OPEN_PR"|^terminal_state=EXISTING_OPEN_PR$|"pr_number" *: *"?42"?|/pull/42' \
     "$WORK/build.out" "$WORK/build.err"; then
   flunk "part1_finalization_is_not_failed_implementation: the run's output does not name the open pull request (build exit $build_rc, helper: ${HELPER_STATES:-none}, agent: ${AGENT_STATES:-none})"
