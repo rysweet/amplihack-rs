@@ -1072,6 +1072,36 @@ fn an_unopenable_kept_name_never_takes_the_drivers_exit_or_its_output() {
     assert!(err.contains(NOT_KEPT_NOTICE), "{}", show(&out));
 }
 
+/// #2849: `POSIXLY_CORRECT` in the environment makes bash enter POSIX mode at
+/// startup, and a redirection error on `exec` ends a POSIX-mode shell outright
+/// rather than returning 1. Without the guard around the open, a kept name
+/// that cannot be opened would end the step there, silently and before the
+/// driver ran: the copy deciding the run again, by another route. The mode is
+/// turned off for the open and restored after it.
+#[test]
+fn posix_mode_does_not_let_an_unopenable_kept_name_end_the_step() {
+    let Some(fx) = loop_fixture() else { return };
+    fs::create_dir(kept(&fx)).unwrap();
+    stage_loop_driver(&fx, &case("7", None, Some("first line\nlast line\n")));
+    let mut c = fx.bash();
+    c.arg("-c")
+        .arg(&loop_commands().0)
+        .env("POSIXLY_CORRECT", "1");
+    loop_env(&mut c, &fx, &loop_preflight(&fx));
+    let out = c.output().expect("run merge loop step-02 in POSIX mode");
+    assert_eq!(
+        out.status.code(),
+        Some(7),
+        "the driver ran and its own exit passed through: {}",
+        show(&out)
+    );
+    let err = stderr_of(&out);
+    for line in ["first line", "last line"] {
+        assert!(err.contains(line), "{line} reached the log: {}", show(&out));
+    }
+    assert!(err.contains(NOT_KEPT_NOTICE), "{}", show(&out));
+}
+
 /// #2849: the copy's descriptor belongs to the step, not to the driver. The
 /// pipeline closes it on the driver's side, so neither the driver nor an
 /// agent it starts can write into, truncate or read the evidence file.

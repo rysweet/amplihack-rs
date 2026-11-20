@@ -434,6 +434,10 @@ open fails. The writer therefore always runs, whatever became of the copy: a
 writer that could be skipped would leave the driver writing into a pipe with
 no reader, and a driver killed by that would lose both its output and its own
 exit status to the copy, which is exactly what the copy must never decide.
+POSIX mode is turned off around the open and restored after it, for the same
+reason: a redirection error on `exec` ends a POSIX-mode shell outright, and
+bash enters that mode on its own when `POSIXLY_CORRECT` is in the
+environment, so the step would end before the driver ran.
 
 The step's standard error carries the same bytes in the same order as before,
 so the run log is unchanged. The driver's exit status is the step's exit

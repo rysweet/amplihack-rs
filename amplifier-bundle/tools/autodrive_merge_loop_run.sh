@@ -141,12 +141,21 @@ rm -f -- "$RESULT_FILE"
 # apply to this shell from then on, and this shell's standard error is the
 # step's whole log. The umask is restored for the same reason: the driver
 # below would otherwise inherit 077.
+#
+# POSIX mode is off for the open and restored after it. A redirection error
+# on `exec` ends a POSIX-mode shell outright instead of returning 1, and bash
+# enters that mode on its own when POSIXLY_CORRECT is in the environment at
+# startup. The step would then end, silently and before the driver ran, over
+# a copy it could not open: the copy deciding the run, by another route.
 KEPT="${DIR%/}/merge-ready-driver.err"
 if [ -d "$DIR" ] && [ ! -L "${DIR%/}" ] && [ -O "$DIR" ]; then
   rm -f -- "$KEPT" 2>/dev/null
   OLD_UMASK="$(umask)"; umask 077
+  POSIX_WAS=""; [[ -o posix ]] && POSIX_WAS=1
+  set +o posix
   { set -C; exec 4>"$KEPT"; } 2>/dev/null || KEPT=""
   set +C; umask "$OLD_UMASK"
+  [ -z "$POSIX_WAS" ] || set -o posix
 else
   KEPT=""
 fi
