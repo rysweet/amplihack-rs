@@ -1163,6 +1163,9 @@ case "$created_number" in
 esac
 if [ "$created_path" = "$CREATE_RESULT" ] || [ -z "${created_number//0/}" ] ||
   ! (LC_ALL=C; shopt -s nocasematch; [[ "$created_repo" == "$REPO_IDENTITY" ]]); then
+  # The earlier scoped lookup may have returned an incomplete identity.
+  PR_URL_RESULT=""
+  PR_NUMBER_RESULT=""
   finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1
 fi
 PR_URL_RESULT="$CREATE_RESULT"
