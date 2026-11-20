@@ -495,7 +495,10 @@ echo "build exit status: $build_rc"
 if [ -s "$WORK/gh-create.argv" ]; then
   BRANCH="$(cat "$WORK/gh-state/branch" 2>/dev/null)"
 fi
-printf '%s' "$BRANCH" | grep -Eq '^[A-Za-z0-9._/-]+$' || BRANCH=""
+# Whole-string, and no leading dash: the value reaches `git fetch` and
+# `git worktree add` as an argument, and `grep` would have matched one line of
+# a multi-line value and accepted a value Git would read as an option.
+[[ $BRANCH =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]] || BRANCH=""
 LOCAL_HEAD="$(cat "$WORK/gh-create.head" 2>/dev/null)"
 ORIGIN_HEAD=""
 [ -z "$BRANCH" ] || ORIGIN_HEAD="$(gitq --git-dir="$ORIGIN" rev-parse "refs/heads/$BRANCH" 2>/dev/null)"
