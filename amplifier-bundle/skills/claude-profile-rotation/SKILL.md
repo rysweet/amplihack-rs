@@ -159,12 +159,13 @@ directory.
 - It is used only after the user marks it with
   `amplihack profile overflow add <name>`; the mark is consent to per-token
   billing. Do not mark it without asking. The rotator uses it last (tier 10):
-  plan logins with capacity, then plan logins below 100% (`plan-room`), then
+  plan logins with capacity, then plan logins below 100% with session use
+  below `--session-at` (`plan-room`), then
   credit overflow, then the API key, and only when every plan login was
   measured, none is below 100% on both windows, the earliest plan reset is further away than
   `--overflow-wait` and its login check passes. It moves `~/.claude` off it
-  on the first cycle after a plan login has capacity or room, ignoring
-  `--hold`. Auto-switch uses it only for a
+  on the first cycle after a plan login has capacity or is a plan-room
+  target, ignoring `--hold`. Auto-switch uses it only for a
   new nested launch or a usage-limit rerun; that session's next nested launch
   or rerun goes back to a plan profile.
 - `rotate status` prints
@@ -209,10 +210,14 @@ and the extra use is billed to the credits. Marked as an *overflow profile*,
 the rotator moves work onto it only when no measured plan login, the live one
 included, is below 100% on both windows, and the next plan reset is known
 and more than `--overflow-wait` seconds away (default 1800). Until then the
-plan-room swap (`reason=plan-room`) moves `~/.claude` to the plan login with
-the most room: session below `--session-at` first, then the most weekly
-room, then the most session room, then name. It moves work back in the first
-cycle in which a plan login has capacity or room. Auto-switch follows the
+plan-room swap (`reason=plan-room`) moves `~/.claude` to the plan-room target
+with the most room. A target is a plan login below 100% on both windows with
+session use below `--session-at`; a login at or above `--session-at` is never
+a target, however far below 100% it reads. Targets are ranked by the most
+weekly room, then the most session room, then name. With no target the
+rotator stays and writes the ALERT, and credits stay unused while any plan
+login is below 100%. It moves work back in the first cycle in which a plan
+login has capacity or is a plan-room target. Auto-switch follows the
 same rule through the same gate, whatever its own threshold: it uses an
 overflow profile only when no plan profile is below 100% on both windows and
 the next plan reset is beyond the wait. Earlier releases used credits once
@@ -279,8 +284,23 @@ overflow login into `~/.claude` by hand while a plan login has capacity, the
 next cycle moves it out; to stay on it, remove the mark or stop the rotator.
 
 While on credits the rotator reports capacity, so recipe steps in the
-usage-limit wait rerun and spend credits. The limit-resume hook does not
-resume interactive sessions onto a login whose plan windows read 100%.
+usage-limit wait rerun and spend credits, provided the cycle also records
+`last_cycle.live_room: true` for the credit login; a credit profile that reads
+at or above `--session-at` on its session, or at 100% on its week, records
+`false` and the steps keep waiting. The limit-resume hook does not resume
+interactive sessions onto a login whose plan windows read 100%.
+
+Recipe steps waiting on a usage limit end their wait on a login change or a
+rotator cycle only when the ledger's last cycle has capacity and says the live
+login has room (`last_cycle.live_room: true`). A swap onto a login at 98% of
+its session wakes no step, and neither does `rotate stop`, which records no
+cycle. A `profile switch` still wakes a step: it records `switched` with no
+`live_room`, which counts as room unless the record says `false`. The waits and
+hosts the rule does not apply to are listed under "What is not gated" in
+`docs/reference/profile-command.md`. After upgrading, restart the rotator
+(`rotate stop`, then `rotate start`): an older rotator never writes the field,
+and until it is restarted the waiting steps sleep to their reset, or to a
+`profile switch`.
 
 | ALERT | What to tell the user |
 |-------|-----------------------|
@@ -309,15 +329,16 @@ is used only once marked with `amplihack profile overflow add <name>`;
 then. Hosts that relied on the old implicit tier must run that command;
 nothing is marked automatically. An unmarked API-key profile left live in
 `~/.claude` by an older release shows as `platform_not_marked` in
-`rotate status`; the rotator moves off it once a plan login has room and
-never moves back. Check with
+`rotate status`; the rotator moves off it once a plan login has capacity or
+is a plan-room target and never moves back. Check with
 `amplihack profile kind list`; fix a wrong guess with
 `amplihack profile kind set <name> api-key|subscription|auto` (writes the
 `kind=` line in `<root>/.auto-switch`; upgrade every binary and restart the
 rotator first, because older binaries read that line as corrupt).
 
 Order: plan logins with capacity, then plan logins past a threshold but
-below 100% (`reason=plan-room`), then marked credit overflow tiers 1-9, then
+below 100% with session use below `--session-at` (`reason=plan-room`), then
+marked credit overflow tiers 1-9, then
 the marked API-key tier (10). The rotator moves onto the API key only under
 the same `--overflow-wait` gate, only when no credit profile can be used and
 no plan login is below 100% on both windows, and only after a login check

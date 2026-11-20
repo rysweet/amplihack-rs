@@ -196,6 +196,14 @@ fn a_reset_inside_the_ten_minute_grace_retries_at_once() {
     assert_eq!(f.count("0"), 2);
 }
 
+/// Issue #2857 leaves this test as it was. The first wait ends `reset reached`,
+/// which says *try now*, and the retry meets the same message, "resets 8:30am",
+/// read at 08:32: a reset two minutes past, inside the grace, so there is
+/// nothing left to wait for. A re-entry needs a reset still ahead or a capacity
+/// signal to wait on, and this has neither, so the limit is passed up as
+/// already waited and no `reentered` line is written. Without that, the stub's
+/// five limits would each be "waited" for in zero time and the run would end
+/// successfully on the sixth call.
 #[test]
 fn ac7_a_second_limit_is_passed_up_after_one_wait() {
     let f = Fixture::new();
@@ -218,6 +226,7 @@ fn ac7_a_second_limit_is_passed_up_after_one_wait() {
             "failed reason=already_waited: usage limit not lifted",
         ]
     );
+    assert!(!ev.iter().any(|l| l.starts_with("reentered ")), "{ev:?}");
     assert_eq!(claude_stdout(&out), "attempt 2 output\n");
     let stderr = text(&out.stderr);
     assert!(

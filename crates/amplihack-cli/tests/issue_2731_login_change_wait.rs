@@ -58,8 +58,8 @@ const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
 const RESET_START: &str = "start reason=usage_limit harness=claude \
                            reset=2026-10-18 08:30:00 -07:00 \
                            until=2026-10-18 08:32:00 -07:00 bound=reset+margin";
-const FAILED_SPEND: &str = "failed reason=spend_limit: usage limit not lifted";
 const FAILED_AGAIN: &str = "failed reason=already_waited: usage limit not lifted";
+const FAILED_SPEND: &str = "failed reason=spend_limit: usage limit not lifted";
 
 /// The stub `claude` these tests use. It is the #1618 stub with one addition:
 /// `SWAP_ON_CALL`, a space-separated list of `<call>:<login>`, runs the
@@ -94,11 +94,14 @@ exit 0
 /// Replaces the rotate ledger's `live` with `$1`, in one rename, as the
 /// rotator does under its own lock. The cycle it records is an old one, so
 /// nothing here is fresh rotator capacity: the only thing that changes is
-/// which login is live.
+/// which login is live. It records `live_room: true` (issue #2857): a wait on
+/// a reset or capacity ends on a login change only when the login now live
+/// has room, and these tests are about the login-change path itself.
+/// `issue_2857_wakes_only_on_room.rs` covers the same swap without room.
 const SWAP_SCRIPT: &str = r#"#!/bin/sh
 umask 077
 d="$LEDGER_DIR"
-printf '{"version":1,"live":"%s","alert":null,"last_cycle":{"at":%s,"outcome":"stayed"}}' \
+printf '{"version":1,"live":"%s","alert":null,"last_cycle":{"at":%s,"outcome":"stayed","live_room":true}}' \
   "$1" "$OLD_AT" > "$d/ledger.json.new"
 chmod 600 "$d/ledger.json.new"
 mv "$d/ledger.json.new" "$d/ledger.json"
@@ -370,7 +373,7 @@ fn ac1_a_swap_during_the_wait_still_ends_it() {
     let out = run_during_wait(&f, &mut c, move || {
         let dir = profiles.join(".auto-switch.d").join("rotate");
         let body = format!(
-            r#"{{"version":1,"live":"Y","alert":null,"last_cycle":{{"at":{OLD_CYCLE},"outcome":"stayed"}}}}"#
+            r#"{{"version":1,"live":"Y","alert":null,"last_cycle":{{"at":{OLD_CYCLE},"outcome":"stayed","live_room":true}}}}"#
         );
         let tmp = dir.join("ledger.json.new");
         fs::write(&tmp, &body).unwrap();
@@ -647,10 +650,18 @@ fn ac3_a_swap_to_a_limited_login_waits_again_keyed_to_it() {
     assert_no_account_detail(&f, &out);
 }
 
+/// Issue #2857 changed this test's expectation and kept it. It used to say that
+/// a login the step had already waited on gets no second wait, so the marks
+/// end an oscillating rotator's chain. Every wait here ends on a login change,
+/// which says *try now*, so a limit on the retry is the signal being wrong and
+/// the same-login refusal is lifted: X and then Y are waited on again, each
+/// time with one `reentered` line. What ends the chain is the evidence running
+/// out, not a count: the rotator stops swapping after call 3, the fourth
+/// attempt waits out its reset, and the fifth meets the same message read at
+/// 08:32, a reset two minutes past. That gives it nothing to wait on, so it is
+/// refused as already waited, as before, and there is no sixth attempt.
 #[test]
-fn a_login_already_waited_on_gets_no_second_wait() {
-    // The rotator swaps X -> Y and back to X. The step waited on X already,
-    // so the chain ends rather than running for ever.
+fn a_login_that_comes_round_again_is_waited_on_again_and_the_chain_ends_with_the_evidence() {
     let f = with_profiles();
     x_is_live(&f);
     let mut c = home_step(&f);
@@ -663,10 +674,17 @@ fn a_login_already_waited_on_gets_no_second_wait() {
         ["skipped reason=already_waited", FAILED_AGAIN],
         "{ev:?}"
     );
-    assert!(
-        f.count("0") <= 4,
-        "the marks bound the chain; it ran {} attempts",
-        f.count("0")
+    assert_eq!(
+        f.count("0"),
+        5,
+        "the chain ran as long as something signalled"
+    );
+    assert_eq!(
+        ev.iter()
+            .filter(|l| *l == "reentered met=usage_limit")
+            .count(),
+        2,
+        "X came round again at call 3 and Y at call 4; call 2 was a new login: {ev:?}"
     );
 }
 
@@ -911,6 +929,10 @@ fn ac7_an_explicit_config_dir_step_is_unaffected_by_a_home_login_change() {
             RESET_START,
             "end reason=reset reached",
             "resume attempt=2",
+            // Issue #2857 leaves this as it was: the retry meets a reset two
+            // minutes past, which gives a re-entry nothing to wait on, so it is
+            // refused as already waited and writes no `reentered` line. A login
+            // change in ~/.claude still says nothing here.
             "skipped reason=already_waited",
             FAILED_AGAIN,
         ],
@@ -947,6 +969,8 @@ fn ac7_an_inherited_profile_step_is_unaffected_by_a_home_login_change() {
             RESET_START,
             "end reason=reset reached",
             "resume attempt=2",
+            // Issue #2857 leaves this as it was, as for the config-directory
+            // step above.
             "skipped reason=already_waited",
             FAILED_AGAIN,
         ]

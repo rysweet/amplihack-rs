@@ -1,6 +1,6 @@
 //! The rotate ledger, `<root>/.auto-switch.d/rotate/ledger.json`, read
 //! loosely: only `version`, `live`, `live_kind`, `alert` and
-//! `last_cycle.{at,measured_at,outcome,overflow}` matter, unknown fields
+//! `last_cycle.{at,measured_at,outcome,overflow,live_room}` matter, unknown fields
 //! are ignored, and a wrongly typed field reads as absent. The rotator's own
 //! reader is strict; the hook must keep working across ledger additions
 //! (#1656, #1657), so it is not reused.
@@ -42,6 +42,14 @@ pub struct CycleStatus {
     /// login is an API-key profile, billed per token. `false` for any other
     /// value, a wrongly typed one, or without a valid `live`.
     pub platform_live: bool,
+    /// The last cycle's reading of room on the login it left live (issue
+    /// #2857): below the rotator's `--session-at` on the session window and
+    /// below 100% on the week. `None` for a cycle that measured nothing
+    /// about that login, for a value that is not a JSON boolean, and from a
+    /// rotator older than #2857. [`says_room`](CycleStatus::says_room) reads
+    /// it, and reads `None` as no room for every outcome but a person's own
+    /// `switched`; nothing else reads it.
+    pub live_room: Option<bool>,
 }
 
 impl CycleStatus {
@@ -63,6 +71,47 @@ impl CycleStatus {
                 self.outcome.as_deref(),
                 Some("swapped" | "stayed" | "switched")
             )
+    }
+
+    /// Whether this record claims room on the login it left live (issue
+    /// #2857): the outcome it records is one that chose a login, and the
+    /// reading it carries for that login is room.
+    ///
+    /// Pure. It reads the outcome and `live_room` and nothing else, no clock
+    /// and no file, so [`fresh_room`](Self::fresh_room) and the usage-limit
+    /// wait's own gate cannot disagree about what a record claims. It does
+    /// not read `alert`; both callers take that from
+    /// [`has_capacity`](Self::has_capacity) first.
+    ///
+    /// Fails closed. An outcome this reader does not know is never room,
+    /// whatever the bit says, and a record with no outcome claims nothing.
+    ///
+    /// The one carve-out is `switched`, a person's own `profile switch`
+    /// (issue #1691). The rotator measured nothing about the login that
+    /// person chose, so there is no bit to write, and the wake #1691 gave
+    /// someone unsticking a waiting run stays. It is lifted only by a record
+    /// that positively says `live_room: false`. The incident of 19 November
+    /// 2026 was `swapped` throughout, never `switched`, and `swapped` and
+    /// `stayed` still need `Some(true)`.
+    pub fn says_room(&self) -> bool {
+        match self.outcome.as_deref() {
+            Some("switched") => self.live_room != Some(false),
+            Some("swapped" | "stayed") => self.live_room == Some(true),
+            _ => false,
+        }
+    }
+
+    /// [`fresh_capacity`](Self::fresh_capacity) on a login the record also
+    /// claims has room (issue #2857): [`says_room`](Self::says_room).
+    ///
+    /// It adds a requirement and removes none: the cycle must still be a
+    /// fresh one with capacity, and must also claim room. The usage limit
+    /// wait wakes on the rotator's capacity only for this, because a swap
+    /// onto a login at 98% of its session window is fresh capacity and is
+    /// not somewhere a retry can run. The limit-resume hook keeps
+    /// `fresh_capacity`, whose meaning is unchanged.
+    pub fn fresh_room(&self, start: i64) -> bool {
+        self.fresh_capacity(start) && self.says_room()
     }
 
     /// The live login runs on an overflow profile after the last cycle: it
@@ -142,6 +191,9 @@ pub fn parse_cycle(raw: &[u8], now: i64) -> Option<CycleStatus> {
         live,
         overflow,
         platform_live,
+        live_room: last
+            .and_then(|c| c.get("live_room"))
+            .and_then(Value::as_bool),
     })
 }
 

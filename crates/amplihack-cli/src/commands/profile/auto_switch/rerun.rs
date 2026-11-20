@@ -20,11 +20,12 @@ use super::state::{Ledger, State};
 use super::takeover::{capacity_candidate, profile_check};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
-    Attempt, Limited, Signals, note_key_error, run_attempt_with_recovery, usage_limited,
+    Attempt, Limited, Signals, note_key_error, rate_limited_in, run_attempt_with_recovery,
+    usage_limited_in,
 };
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
-use crate::commands::profile::limit_wait::{AfterLimit, Waiter};
+use crate::commands::profile::limit_wait::{AfterLimit, Met, Resumed, Waiter};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::recipe::run::limit_patterns::Harness;
@@ -568,9 +569,26 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             profile.as_ref(),
             switch.as_ref().map(|sw| sw.store.root()),
         );
-        let Some(lim) = usage_limited(&attempt, waiter.now()) else {
-            return finish(attempt, None, &stdin);
+        // Issue #2857: how this attempt came to run, read once and consumed,
+        // so an auto-switch rerun under another profile cannot inherit it.
+        // Asked before the output is judged, because what it says decides
+        // whether a 429 is a limit worth waiting for or the transient fault
+        // it is everywhere else.
+        let resumed_on_a_signal = waiter.resumed_on_a_signal();
+        let output = attempt.output();
+        let limited = usage_limited_in(&output, waiter.now());
+        // Issue #2857, part 1: the retry a wait earned was rejected at once,
+        // so the signal that ended that wait was wrong about the login. A
+        // usage-limit message says what is wrong and when it clears, so it
+        // decides; a bare 429 states nothing and asks for a capacity wait.
+        let met = match (&limited, resumed_on_a_signal) {
+            (_, false) => None,
+            (Some(_), true) => Some(Met::UsageLimit),
+            (None, true) => rate_limited_in(&output).then_some(Met::RateLimit),
         };
+        if limited.is_none() && met.is_none() {
+            return finish(attempt, None, &stdin);
+        }
         // Issue #2816: the copier knows at once when the capture file was
         // lost, but `for_attempt` only asks when a rerun is already due,
         // which is after the wait. Ask here instead, without joining the
@@ -586,98 +604,126 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         if let Some(client) = &recovery {
             client.outcome(recipe_runner_rs::recovery::model::Outcome::UsageLimit)?;
         }
-        if profile.is_none() {
-            // This attempt ran under the inherited profile: its limit is the
-            // freshest word on that profile.
-            let wait = plan::upgrade(lim.wait, lim.seen, || takeover(&waiter));
-            // Issue #2731: an organisation spend limit with no reset on a
-            // `$HOME/.claude` step waits for the login to change instead.
-            inherited_wait = Some(plan::upgrade_spend(
-                wait,
-                lim.spend.filter(|_| waiter.is_home()),
-                || waiter.rotator_running(),
-            ));
-        }
-        if let Some(sw) = &switch {
-            let current = profile.as_ref().unwrap_or(&sw.inherited).clone();
-            tried.push(current.to_string());
-            let eff = config::effective(&sw.state.root);
-            // The profile an unstored prompt kept this step from rerunning
-            // under.
-            let mut refused: Option<ProfileName> = None;
-            if eff.on
-                && let Some(next) = next_profile(
-                    sw.store,
-                    &sw.state,
-                    &eff.config,
-                    &current,
-                    &tried,
-                    &lim,
-                    &waiter,
-                )
-            {
-                // The limit is recorded; a rerun that has no whole prompt to
-                // read is refused rather than given part of one. When the
-                // capture was never made the wait below refuses too, with
-                // `piped_prompt`; when the prompt is merely still arriving
-                // the wait is still worth making, and is asked again when
-                // it ends (issue #2816).
-                let unstored = no_capture.then(|| NO_STORED_PROMPT.to_string());
-                if let Some(why) = unstored.or_else(|| stdin.rerun_refused()) {
-                    eprintln!(
-                        "auto-switch: no rerun under profile {:?}: {why}",
-                        next.profile.as_str()
-                    );
-                    refused = Some(next.profile);
-                } else {
+        // Issue #2857: a usage limit decides the wait, as it always has.
+        // The 429 path below is reached only when there is no limit
+        // message at all, so a retry that printed both is planned by the
+        // message and the 429 beside it adds nothing.
+        if let Some(lim) = &limited {
+            if profile.is_none() {
+                // This attempt ran under the inherited profile: its limit is the
+                // freshest word on that profile.
+                let wait = plan::upgrade(lim.wait, lim.seen, || takeover(&waiter));
+                // Issue #2731: an organisation spend limit with no reset on a
+                // `$HOME/.claude` step waits for the login to change instead.
+                inherited_wait = Some(plan::upgrade_spend(
+                    wait,
+                    lim.spend.filter(|_| waiter.is_home()),
+                    || waiter.rotator_running(),
+                ));
+            }
+            if let Some(sw) = &switch {
+                let current = profile.as_ref().unwrap_or(&sw.inherited).clone();
+                tried.push(current.to_string());
+                let eff = config::effective(&sw.state.root);
+                // The profile an unstored prompt kept this step from rerunning
+                // under.
+                let mut refused: Option<ProfileName> = None;
+                if eff.on
+                    && let Some(next) = next_profile(
+                        sw.store,
+                        &sw.state,
+                        &eff.config,
+                        &current,
+                        &tried,
+                        lim,
+                        &waiter,
+                    )
+                {
+                    // The limit is recorded; a rerun that has no whole prompt to
+                    // read is refused rather than given part of one. When the
+                    // capture was never made the wait below refuses too, with
+                    // `piped_prompt`; when the prompt is merely still arriving
+                    // the wait is still worth making, and is asked again when
+                    // it ends (issue #2816).
+                    let unstored = no_capture.then(|| NO_STORED_PROMPT.to_string());
+                    if let Some(why) = unstored.or_else(|| stdin.rerun_refused()) {
+                        eprintln!(
+                            "auto-switch: no rerun under profile {:?}: {why}",
+                            next.profile.as_str()
+                        );
+                        refused = Some(next.profile);
+                    } else {
+                        if let Some(sig) = signals.received() {
+                            eprintln!("auto-switch: no rerun: this step was told to stop");
+                            return finish(attempt, Some(128 + sig), &stdin);
+                        }
+                        eprintln!(
+                            "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?} (auto-switch)",
+                            current.as_str(),
+                            next.profile.as_str()
+                        );
+                        per_token::record(&sw.state.root, next.per_token.as_deref());
+                        attempt.discard();
+                        profile = Some(next.profile).filter(|p| *p != sw.inherited);
+                        continue;
+                    }
+                }
+                // No other candidate: back to the inherited profile, which was
+                // passed over only for the threshold and still has capacity.
+                // This is an auto-switch rerun; it does not call `after_limit`,
+                // so the wait is still there if that profile is limited next.
+                if inherited_has_capacity && profile.is_some() {
+                    // As for a candidate above: a rerun needs the whole prompt.
+                    // The `skipped` event is written below.
+                    let unstored = no_capture.then(|| NO_STORED_PROMPT.to_string());
+                    if let Some(why) = unstored.or_else(|| stdin.rerun_refused()) {
+                        inherited_has_capacity = false;
+                        if refused.as_ref() != Some(&sw.inherited) {
+                            eprintln!(
+                                "auto-switch: no rerun under profile {:?}: {why}",
+                                sw.inherited.as_str()
+                            );
+                        }
+                    }
+                }
+                if inherited_has_capacity && profile.is_some() {
+                    inherited_has_capacity = false;
                     if let Some(sig) = signals.received() {
                         eprintln!("auto-switch: no rerun: this step was told to stop");
                         return finish(attempt, Some(128 + sig), &stdin);
                     }
                     eprintln!(
-                        "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?} (auto-switch)",
+                        "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?}, which is over the auto-switch threshold but not limited (auto-switch)",
                         current.as_str(),
-                        next.profile.as_str()
+                        sw.inherited.as_str()
                     );
-                    per_token::record(&sw.state.root, next.per_token.as_deref());
                     attempt.discard();
-                    profile = Some(next.profile).filter(|p| *p != sw.inherited);
+                    profile = None;
                     continue;
                 }
             }
-            // No other candidate: back to the inherited profile, which was
-            // passed over only for the threshold and still has capacity.
-            // This is an auto-switch rerun; it does not call `after_limit`,
-            // so the wait is still there if that profile is limited next.
-            if inherited_has_capacity && profile.is_some() {
-                // As for a candidate above: a rerun needs the whole prompt.
-                // The `skipped` event is written below.
-                let unstored = no_capture.then(|| NO_STORED_PROMPT.to_string());
-                if let Some(why) = unstored.or_else(|| stdin.rerun_refused()) {
-                    inherited_has_capacity = false;
-                    if refused.as_ref() != Some(&sw.inherited) {
-                        eprintln!(
-                            "auto-switch: no rerun under profile {:?}: {why}",
-                            sw.inherited.as_str()
-                        );
-                    }
-                }
+        } else {
+            // Issue #2857: a bare 429 on the retry a signalled wait
+            // earned. It states no reset, so what it asks for is a
+            // capacity wait, and only where one could start at all: the
+            // same check issue #1801 makes for a limit that states no
+            // readable reset. With nothing that could end such a wait,
+            // the 429 goes back to the recipe runner as the transient
+            // fault it is everywhere else, and no line is written.
+            //
+            // Nothing is recorded against any account here. A 429 is not
+            // a reading of a login's windows, so no profile is marked
+            // limited and no auto-switch candidate is chosen: the step
+            // waits on the login it is on.
+            let planned = plan::upgrade(
+                WaitFor::Skip(NoWait::NoReset),
+                Some((Harness::Claude, None)),
+                || takeover(&waiter),
+            );
+            if !matches!(planned, WaitFor::Capacity { .. }) {
+                return finish(attempt, None, &stdin);
             }
-            if inherited_has_capacity && profile.is_some() {
-                inherited_has_capacity = false;
-                if let Some(sig) = signals.received() {
-                    eprintln!("auto-switch: no rerun: this step was told to stop");
-                    return finish(attempt, Some(128 + sig), &stdin);
-                }
-                eprintln!(
-                    "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?}, which is over the auto-switch threshold but not limited (auto-switch)",
-                    current.as_str(),
-                    sw.inherited.as_str()
-                );
-                attempt.discard();
-                profile = None;
-                continue;
-            }
+            inherited_wait = Some(planned);
         }
         // Set by now unless the inherited profile never ran and has no
         // known reset: a candidate's limit is another account's and never
@@ -697,7 +743,17 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // arriving when the limit was seen has normally arrived by the time
         // the wait ends; when it has not, the step ends here with this
         // attempt's result rather than on a rerun with nothing to read.
-        match waiter.after_limit(wait, n, &signals, &probe, &mut || stdin.rerun_refused()) {
+        match waiter.after_limit(
+            wait,
+            n,
+            &signals,
+            &probe,
+            &mut || stdin.rerun_refused(),
+            match met {
+                Some(met) => Resumed::AfterASignal(met),
+                None => Resumed::Ordinarily,
+            },
+        ) {
             AfterLimit::Finish(code) => return finish(attempt, code, &stdin),
             AfterLimit::Retry => {
                 attempt.discard();

@@ -1707,6 +1707,76 @@ to another candidate that measured with enough headroom. If every candidate
 is counted as failed, the probes are at fault rather than the accounts: run
 `amplihack profile usage` to see each profile's state.
 
+### Logins with room that the rotator does not swap onto
+
+Before the ALERT, the rotator tries a
+[plan-room swap](../reference/profile-command.md#rotate-plan-room-swap), a
+free move to a plan login below 100% on both windows. It moves only onto a
+login whose session use is also below `--session-at`. A login at 98% of its
+session has room on paper and almost none in practice: a swap onto it trades
+one exhausted login for another, and every recipe step waiting on a usage
+limit sees the login change.
+
+With every plan login at or above `--session-at`, the rotator makes no swap and
+writes the ALERT line once. Live `aanderson` at `s=90%,w=80%` and `bbuck` at
+`s=95%,w=60%` with the default `--session-at 85`:
+
+```
+2026-11-19T20:31:07Z ALERT: no profile has capacity live=aanderson s=90% w=80%
+```
+
+The rotator stays on `aanderson`. Because the live login is below 100% on both
+windows, this is an advisory ALERT, and credits and the API key stay unused,
+because both logins are below 100%. The rule uses whatever `--session-at` is
+set to, so raising it admits more logins as targets, and also moves the point
+at which the rotator swaps away from the live login. The reference has the
+full rule, with the ranking of the logins it does swap onto. Recipe steps
+waiting on a usage limit read the same test from the ledger (see
+[Steps that wait on a usage limit](#steps-that-wait-on-a-usage-limit)).
+
+### Steps that wait on a usage limit
+
+A recipe step that hit a usage limit and is waiting
+(see [Waiting for a usage-limit reset](claude-profiles.md#waiting-for-a-usage-limit-reset))
+ends its wait when the rotator puts a login in `~/.claude` that has room, not
+when it merely changes the login. Each cycle records one extra field in
+`ledger.json`, `last_cycle.live_room`, which is `true` when the login now live
+has a reading from that cycle with session use below `--session-at` and week
+use below 100%. The test is the same for a plan login, a credit profile and the
+API-key profile:
+
+```bash
+grep -o '"live_room": *[a-z]*' ~/.claude-profiles/.auto-switch.d/rotate/ledger.json
+```
+
+```
+"live_room": true
+```
+
+Four things to know:
+
+- **Stopping the rotator does not wake waiting steps.** `amplihack profile
+  rotate stop` records no cycle, and a waiting step wakes only on a cycle that
+  has capacity and says room.
+- **An older rotator never writes the field.** After upgrading, restart the
+  rotator (`amplihack profile rotate stop`, then `amplihack profile rotate
+  start`). Until you do, waiting steps sleep to their reset, or end on a
+  `profile switch`, instead of waking early on the rotator's swaps.
+- **A missing or false `live_room` reads as no room, with one exception.** No
+  output from the `grep` means the last cycle recorded none: it measured
+  nothing, it was a `profile switch`, or the rotator is from before the field.
+  `false` means the login now live has too little session left, is at 100% on
+  its week, or has no usable reading. A move onto credits or the API key
+  records `true` when that login's reading passes the same test, so a waiting
+  step still wakes then.
+- **A `profile switch` still wakes a waiting step.** It records the outcome
+  `switched` and no `live_room`, which counts as room unless the record states
+  `false`. Switching the login by hand is still the way to unstick a step.
+
+The waits and hosts that this rule does not apply to are listed in
+[What is not gated](../reference/profile-command.md#what-is-not-gated).
+`amplihack profile rotate status` shows the last cycle.
+
 The log is not the only place you hear about it. When a cycle gets as far
 as deciding to swap, stay or raise the ALERT, the rotator updates the shared
 capacity state from that cycle's measurements, and the status line, Claude
@@ -1941,7 +2011,8 @@ On each cycle:
 1. While the live login is a plan profile, the rotator decides as usual.
    When it would write `ALERT: no profile has capacity`, it first tries the
    [plan-room swap](../reference/profile-command.md#rotate-plan-room-swap):
-   a move to the plan login below 100% on both windows with the most room.
+   a move to the plan login below 100% on both windows and below
+   `--session-at` on its session, with the most room.
    Only when no measured plan login, the live one included, has room does it look
    at overflow: if the earliest plan reset is more than `--overflow-wait`
    away, no plan profile's probe timed out or could not start in this cycle,
@@ -1949,16 +2020,20 @@ On each cycle:
    tier with `reason=overflow-in`. A failed live probe never leads to
    credits.
 2. While the live login is an overflow profile, it checks every plan
-   profile. As soon as one has capacity, or failing that has room, it swaps
-   back with `reason=overflow-out`, without waiting for `--hold` or needing
-   `--margin` or `--upgrade-margin`. Otherwise it stays.
+   profile. As soon as one has capacity, or failing that is a plan-room
+   target, it swaps back with `reason=overflow-out`, without waiting for
+   `--hold` or needing `--margin` or `--upgrade-margin`. Otherwise it stays.
 
 A plan profile *has capacity* when its probe succeeded and its session and
 week use are both below `--session-at` and `--week-at`. It *has room* when
-its probe succeeded and both are below 100%. Credits are billed, so the
-rotator never moves onto them while a measured plan profile has room, and it
-moves back as soon as one has. It does not bounce: from the plan login it
-moves to, it returns to credits only once no plan login has room again.
+its probe succeeded and both are below 100%. It is a *plan-room target* when
+it has room and its session use is below `--session-at`. Credits are billed,
+so the rotator never moves onto them while a measured plan profile has room,
+and it moves back as soon as one has capacity or is a plan-room target. A plan
+profile with room that is at or above `--session-at` keeps the rotator off
+credits without being moved onto: the rotator stays where it is, and writes
+the ALERT. It does not bounce: from the plan login it moves to, it returns to
+credits only once no plan login has room again.
 
 Not every plan login is measured. One with a session on it, or leased,
 hosting, parked or with no account, is skipped; one whose probe failed gave
@@ -1971,7 +2046,8 @@ all of these: see [The order the rotator follows](#the-order-the-rotator-follows
 
 Earlier releases moved onto credits as soon as every plan login had reached
 a threshold. They now wait until no plan login is below 100%; until then
-the rotator spreads work over the plan logins with room.
+the rotator spreads work over the plan-room targets and stays put when there
+are none.
 
 An overflow profile's own session and weekly limits show as exhausted in
 `profile usage`. That does not stop it being used, by the rotator or by
@@ -2881,9 +2957,10 @@ API-key profile. See
 ### The order the rotator follows
 
 1. Plan (subscription) logins with capacity.
-2. Plan logins past a threshold but below 100% on both windows
-   (`reason=plan-room`): those with session use below `--session-at` first,
-   then the most weekly room, then the most session room.
+2. Plan logins past a weekly threshold but below 100% on both windows, with
+   session use below `--session-at` (`reason=plan-room`): the most weekly
+   room first, then the most session room. A login at or above
+   `--session-at` is never a target.
 3. Only when no measured plan login is below 100% on both windows: marked
    credit overflow profiles, tiers 1 to 9.
 4. The marked API-key profile, tier 10, only with every plan login measured.

@@ -56,6 +56,34 @@ impl Marks {
         self.waited.contains(mark) || (self.used() && self.remaining(max) == Some(0))
     }
 
+    /// Whether the one wait a *contradicted signal* earns is refused (issue
+    /// #2857).
+    ///
+    /// The retry a wait earned met a limit at once, so what ended that wait
+    /// was wrong about the login. Waiting again on that same login is the
+    /// right answer, and the same-login rule is the one thing lifted here:
+    /// it exists to stop a step sleeping twice for the same reason, and this
+    /// is a different reason. This takes no mark for that reason.
+    ///
+    /// The budget rule is not lifted, and that is what bounds the chain. An
+    /// unset `max_wait_secs` is not an unlimited one: the step's budget is
+    /// then the length a capacity wait is planned with when nothing sets one
+    /// ([`plan::CAPACITY_DEFAULT_MAX`]), so a login that keeps claiming room
+    /// and keeps rejecting the retry runs out of budget rather than running
+    /// for ever. No count and no timer is added.
+    ///
+    /// The budget bounds a chain of waits that sleep. A wait that ends the
+    /// moment it starts spends none of it, so the budget alone does not bound
+    /// a chain of those: a re-entry for a reset that has already passed is
+    /// refused by the caller before it is planned
+    /// ([`Plan::ends_at_once`]), and that is what ends such a chain.
+    ///
+    /// [`Plan::ends_at_once`]: super::plan::Plan::ends_at_once
+    /// [`plan::CAPACITY_DEFAULT_MAX`]: super::plan::CAPACITY_DEFAULT_MAX
+    pub(crate) fn refuses_reentry(&self, max: Option<u64>) -> bool {
+        self.remaining(Some(max.unwrap_or(super::plan::CAPACITY_DEFAULT_MAX))) == Some(0)
+    }
+
     /// Records a wait on `mark`, whether or not it slept.
     pub(crate) fn record(&mut self, mark: Option<String>) {
         self.waited.push(mark);

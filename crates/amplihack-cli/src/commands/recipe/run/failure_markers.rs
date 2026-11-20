@@ -5,7 +5,11 @@
 //! the evidence before matching. Precedence between the tables is decided in
 //! `failure_class::classify_failure_text`, not by their order here. The
 //! usage-limit markers are not here: they live with the other limit patterns
-//! in `limit_patterns` (#1618).
+//! in `limit_patterns` (#1618), as do the 429 phrases `TRANSIENT_MARKERS` is
+//! composed from (#2857).
+
+use super::limit_patterns;
+use std::sync::LazyLock;
 
 /// The literal line a structural guard prints when it refuses to spawn
 /// (`terminal_block` in `execute.rs`, issues #1326/#1327/#1329/#1332).
@@ -22,8 +26,29 @@ pub(super) const STRUCTURAL_REFUSAL_MARKER: &str = "blocked_terminal orchestrati
 /// Note what is deliberately absent: 401/403/404. An auth rejection or an
 /// unknown-model answer is a *stable* server answer, not an overloaded one, and
 /// retrying it just burns budget. Those are classified `Environmental` below.
-pub(super) const TRANSIENT_MARKERS: &[&str] = &[
-    // Anthropic / OpenAI style overload and rate-limit envelopes.
+///
+/// Issue #2857: the 429 envelopes are not listed here. They are defined once,
+/// in [`limit_patterns::CLAUDE_RATE_LIMIT`], which the usage-limit wait reads
+/// at one position for one decision (whether the retry a limit wait earned was
+/// rejected at once), and this table is composed from that definition. A 429 is
+/// still a transient transport fault here, and in auto-drive's terminal
+/// decisions; only the second copy of the phrases is gone.
+///
+/// `classify_failure_text` reports the marker that appears earliest in the
+/// evidence, taking the longest at a tie, so which part a phrase comes from
+/// does not change what is reported.
+pub(super) static TRANSIENT_MARKERS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    TRANSIENT_MARKERS_BASE
+        .iter()
+        .copied()
+        .chain(limit_patterns::CLAUDE_RATE_LIMIT.iter().copied())
+        .collect()
+});
+
+/// Every transient marker that is not a 429 envelope. Read only through
+/// [`TRANSIENT_MARKERS`].
+const TRANSIENT_MARKERS_BASE: &[&str] = &[
+    // Anthropic / OpenAI style overload envelopes.
     "api error: 529",
     "529 overloaded",
     "overloaded_error",
@@ -34,10 +59,6 @@ pub(super) const TRANSIENT_MARKERS: &[&str] = &[
     "api error: 500",
     "500 internal server error",
     "504 gateway timeout",
-    "api error: 429",
-    "429 too many requests",
-    "rate_limit_error",
-    "rate limit exceeded",
     "server_error",
     "service temporarily unavailable",
     // Transport / socket level.

@@ -5766,7 +5766,9 @@ The rotator and auto-switch move onto an overflow profile only from a plan
 profile, or from an overflow profile that is spend-blocked or exhausted. They
 do not move from a tier-2 profile to a tier-1 profile that becomes usable
 again; they move back to a plan profile as soon as one has capacity, or has
-[room](#rotate-plan-room-swap).
+[room](#rotate-plan-room-swap). For the rotator, room means a
+[plan-room target](#rotate-plan-room-swap): a login with session use at or
+above `--session-at` is not moved back to.
 
 `add` and `remove` change only the `overflow` key of `<root>/.auto-switch`,
 through the same locked write as the [auto-switch commands](#auto-switch-commands)
@@ -7029,6 +7031,20 @@ A plan login *has room* when its probe this cycle gave `ok` and both its
 session and week use are below 100%. A failed probe, a login that was not
 measured, an `exhausted` reading and every API-key profile have no room.
 
+The swap does not move onto every login that has room. A *plan-room target*
+is a plan login that has room and whose session use is below `--session-at`.
+A login at or above `--session-at` is not a target, however far below 100% it
+reads: its session window is nearly spent, and a swap onto it trades one
+exhausted login for another. The week is held to the room rule, below 100%,
+and not to `--week-at`.
+
+Having room and being a target are different tests:
+
+| Test | Definition | Used by |
+|------|------------|---------|
+| Has room | `ok` probe, session and week below 100% | The [overflow](#overflow-decision) rules, which spend nothing while a plan login has room, and [auto-switch](#auto-switch-and-overflow-profiles) |
+| Plan-room target | Has room, and session below `--session-at` | The plan-room swap, and the [`live_room`](#plan-room-in-the-ledger) bit the rotator records for a [waiting step](#waking-only-on-room), which applies the same test to whichever login is live |
+
 While the live login is a plan profile, the rotator considers a plan-room
 swap only when both hold:
 
@@ -7045,25 +7061,31 @@ upgrade swaps. `--margin`, `--hold` and `--upgrade-margin` do not apply.
 While the live login is an [overflow profile](#overflow-decision), the same
 ranking chooses the plan login to move back to.
 
-Plan logins with room are ranked by these keys, in order:
+Plan-room targets are ranked by these keys, in order:
 
-1. a login whose session use is below `--session-at` comes before one whose
-   session use is not;
-2. the most weekly room: the lowest week use;
-3. the most session room: the lowest session use;
-4. the profile name, ascending by byte value.
+1. the most weekly room: the lowest week use;
+2. the most session room: the lowest session use;
+3. the profile name, ascending by byte value.
 
-The first key keeps a login whose session window is nearly spent from
-winning on weekly room alone. Ranking by week next keeps the login with the
-most weekly room, which lasts longest.
+Ranking by week keeps the login with the most weekly room, which lasts
+longest. The session window needs no key of its own: every target is already
+below `--session-at`.
 
-The live login is ranked by the same keys. A live login that is exhausted,
-or whose probe failed, ranks last. The rotator swaps only when the best
-candidate ranks strictly ahead of the live login; otherwise the cycle ends in
-`ALERT no-capacity` as before, and the ALERT is written once, not every
-cycle. This stops two logins from swapping back and forth: live `ddrumpf` at
-`s=0%,w=92%` stays put rather than moving to `ccapstone` at `s=11%,w=92%`,
-and `ccapstone` would not move back either.
+The live login is ranked with the targets when it is one itself, which it can
+be when it reached `--week-at` with its session below `--session-at`. A live
+login that is exhausted, whose probe failed, or whose session use is at or
+above `--session-at` is not in the ranking, so the best target is chosen over
+it. The rotator swaps only when the best target ranks strictly ahead of the
+live login; otherwise there is no swap. This stops two logins from swapping
+back and forth: live `ddrumpf` at `s=0%,w=92%` stays put rather than moving
+to `ccapstone` at `s=11%,w=92%`, and `ccapstone` would not move back either.
+
+When no plan login is a target, or when the live login ranks first, there is
+no plan-room swap. The cycle then takes the path it takes when no candidate
+exists: `ALERT no-capacity`, written once and not every cycle. A plan login
+that has room but is not a target still counts as room for the
+[overflow](#overflow-decision) rules, so credits and the API key stay unused
+while it exists; the rotator neither moves onto it nor spends.
 
 The swap is logged with `reason=plan-room`.
 
@@ -7090,12 +7112,12 @@ login past its session threshold and no candidate that beats it by
 ```
 
 `aanderson`, `bbuck`, `ccapstone`, `ddrumpf` and `ryan-mistt-personal` have
-session use below 85%, so they rank first. `eelsworth` has the lowest week
-use but ranks after them because its session (98%) is at `--session-at`;
-the live `iivanovich` (87%) ranks after them for the same reason; `ggrant`
-has no room. `ccapstone` and `ddrumpf` tie on week at 92%, and `ddrumpf`
-wins on session. A marked credit or API-key profile is never chosen here,
-and is not used while any of these logins has room.
+session use below 85%, so they are the targets. `eelsworth` has the lowest
+week use but is not a target because its session (98%) is at `--session-at`;
+the live `iivanovich` (87%) is out of the ranking for the same reason, and
+`ggrant` has no room. `ccapstone` and `ddrumpf` tie on week at 92%, and
+`ddrumpf` wins on session. A marked credit or API-key profile is never chosen
+here, and is not used while any of these logins has room.
 
 **Unmeasured plan logins.** A plan login skipped as `session running`,
 `leased`, `hosting`, `parked`, `no account` or `directory refused`, or whose
@@ -7106,16 +7128,36 @@ login-less and `not oauth` profiles do not count, nor do overflow or API-key
 profiles.
 
 **Example with no session room.** With every plan login at or above
-`--session-at`, the first key ties and weekly room decides. Live `aanderson`
-at `s=90%,w=80%` and `bbuck` at `s=95%,w=60%`:
+`--session-at`, none is a target, and the cycle makes no swap. Live
+`aanderson` at `s=90%,w=80%` and `bbuck` at `s=95%,w=60%` both have room, but
+neither has session room:
 
 ```
-2026-10-31T08:10:05Z swap aanderson->bbuck live s=90% w=80% target s=95% w=60% reason=plan-room
+2026-10-31T08:10:05Z cycle live=aanderson aanderson:s=90%,w=80% bbuck:s=95%,w=60%
+2026-10-31T08:10:05Z ALERT: no profile has capacity live=aanderson s=90% w=80%
 ```
 
-On the next cycle, with the same readings, `bbuck` is live and ranks ahead
-of `aanderson`, so there is no swap back; the cycle writes
-`ALERT no-capacity` once.
+The cycle stays on `aanderson` and writes the `ALERT: no profile has
+capacity` line once. Because the live login is below 100% on both windows, the
+ALERT is an [advisory ALERT](#rotate-advisory-alert), and the cycle records
+`stayed` with `live_room` `false` (see
+[Plan room in the ledger](#plan-room-in-the-ledger)). The rotator does not
+move to `bbuck`, which would trade 10% of session left for 5%. Later cycles
+with the same readings write no second ALERT line, and credits and the API key
+stay unused, because both logins have room.
+
+**Example with weekly room used up.** A plan login whose session is fresh but
+whose week is nearly spent is still a target. With the live `aanderson` at
+`s=95%,w=60%` and `ccapstone` at `s=20%,w=93%`, `ccapstone` is past the default
+`--week-at 90` and so has no capacity, but it has room:
+
+```
+2026-10-31T08:20:05Z swap aanderson->ccapstone live s=95% w=60% target s=20% w=93% reason=plan-room
+```
+
+`ccapstone` has both windows below 100% and session use below 85%, so it is
+the only target. The live `aanderson`, at 95% of its session, is not in the
+ranking.
 
 #### Rotate decision order
 
@@ -7131,8 +7173,9 @@ first step that gives a swap ends the decision:
    login with room, or a stay, stands.
 2. When step 1 gives `ALERT no-capacity`, or a threshold swap onto a plan
    login without capacity: the [plan-room swap](#rotate-plan-room-swap), which
-   ranks the live login with the others. When the live login ranks first, it
-   is `ALERT no-capacity`.
+   ranks the live login with the other targets. When the live login ranks
+   first, or no plan login is a target because every one is at or above
+   `--session-at`, it is `ALERT no-capacity`.
 3. Only when no measured plan login, the live one included, has room, and the
    [overflow gate](#earliest-plan-reset) allows it: the first usable marked
    per-token profile in tier order. That is a credit
@@ -7153,8 +7196,8 @@ While the live login is a per-token profile (credit or API key), the order
 is:
 
 1. a plan login with [capacity](#plan-pool), `reason=overflow-out`;
-2. a plan login with room, chosen by the plan-room ranking,
-   `reason=overflow-out`;
+2. a plan-room target (a plan login with room and session use below
+   `--session-at`), chosen by the plan-room ranking, `reason=overflow-out`;
 3. a usable marked per-token profile in tier order, under the same gate,
    when either of these holds:
    - the live profile is the API key and no plan login has room: the first
@@ -7200,11 +7243,12 @@ Credits cost money and plan capacity does not, so the rotator:
   than `--overflow-wait` seconds away (an unknown reset spends money only with
   `--overflow-unknown-reset 1`);
 - moves back to a plan profile in the first cycle in which one has capacity
-  or room.
+  or is a [plan-room target](#rotate-plan-room-swap).
 
 Reaching `--session-at` or `--week-at` on every plan login is not enough on
-its own: while a plan login is below 100% on both windows, the
-[plan-room swap](#rotate-plan-room-swap) uses it first.
+its own: while a plan login is below 100% on both windows, the rotator does
+not spend. It uses the [plan-room swap](#rotate-plan-room-swap) when that
+login is a target, and otherwise stays and writes `ALERT no-capacity`.
 
 [Auto-switch](#auto-switch-and-overflow-profiles) follows the same rule
 with the running rotator's gate: the wait, the unknown-reset choice, and
@@ -7227,11 +7271,14 @@ A plan candidate *has capacity* when all of these hold:
 
 `--margin`, `--hold` and `--upgrade-margin` play no part in this test. A
 plan login that has capacity is one the rotator would not swap away from
-for reaching a threshold. A plan login without capacity can still have
-[room](#rotate-plan-room-swap): with `--session-at 80`, a plan login at
-`s=85%,w=40%` has no capacity but has room, so the rotator moves off credits
-onto it. It does not move back onto credits from there while that login, or
-any other, still has room.
+for reaching a threshold. A plan login without capacity can still be a
+[plan-room target](#rotate-plan-room-swap): with `--week-at 85`, a plan login
+at `s=20%,w=88%` has no capacity but has room and session use below
+`--session-at`, so the rotator moves off credits onto it. It does not move
+back onto credits from there while that login, or any other, still has room.
+A plan login at or above `--session-at` is different: with `--session-at 80`,
+a login at `s=85%,w=40%` has room, so credits are not spent on its account,
+but it is not a target, so a rotator on credits does not move onto it either.
 
 #### Overflow candidates
 
@@ -7297,7 +7344,7 @@ login, the live one included, has room does it consider overflow:
 | Condition | Outcome |
 |-----------|---------|
 | Live probe failed | As without overflow. A failed live probe never moves work onto credits. |
-| A plan login, the live one included, has room below 100% on both windows | No overflow. The [plan-room swap](#rotate-plan-room-swap) moves to the best-ranked plan login, or the cycle stays with `ALERT no-capacity` when the live login ranks first. Neither credits nor the API key are used while a plan login has room. |
+| A plan login, the live one included, has room below 100% on both windows | No overflow. The [plan-room swap](#rotate-plan-room-swap) moves to the best-ranked plan-room target, or the cycle stays with `ALERT no-capacity` when the live login ranks first or every login with room is at or above `--session-at`. Neither credits nor the API key are used while a plan login has room. |
 | A plan candidate's probe in this cycle ended in `timeout` or `error` (`claude` could not be started, written to, read or waited for, or the profile directory was refused just before the spawn) | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity. That login might have capacity, so such a probe never moves work onto credits or the API key. It is probed again on the next cycle. The [plan-room swap](#rotate-plan-room-swap) is not held: it costs nothing. |
 | A plan profile is skipped as [`directory refused`](#rotate-candidates) | As without overflow. Its login cannot be checked and might have capacity. The skip, and so the hold, comes back on every cycle until the directory is fixed. |
 | An [unmeasured plan login](#rotate-plan-room-swap), and the only usable overflow profile is the API key | No move onto the key. `ALERT: API key not used` names the logins. |
@@ -7307,11 +7354,16 @@ login, the live one included, has room does it consider overflow:
 | No overflow candidate is eligible | As without overflow: `ALERT no-capacity`. |
 
 For example, with the live login at `s=95%,w=60%` and a plan candidate at
-`s=87%,w=50%`, both have room, so the rotator makes the free swap onto the
-candidate whatever the plan reset, and no credits are spent. Only once every
-plan login reads 100% on one of its windows, and the reset is beyond the
-wait, does it move onto credits. Auto-switch makes the same choice on the
-same readings.
+`s=20%,w=93%`, both have room, and the candidate is a plan-room target, so
+the rotator makes the free swap onto it whatever the plan reset, and no
+credits are spent. With the candidate at `s=87%,w=50%` instead, both still
+have room but neither is a target (`--session-at` is 85 by default), so the
+cycle makes no swap and writes `ALERT no-capacity`; no credits are spent
+then either. Only once every plan login reads 100% on one of its windows, and
+the reset is beyond the wait, does the rotator move onto credits.
+Auto-switch makes the same spend decision on the same readings. The target
+rule changes the rotator's plan-room swap only; the moves auto-switch makes
+for a Claude session are unchanged.
 
 The comparison is strict: a reset exactly `--overflow-wait` seconds away
 stays. With `--overflow-wait 0` the rotator moves onto overflow as soon as
@@ -7346,7 +7398,7 @@ While the live login is an overflow profile, these rules apply in order:
 | Condition | Outcome |
 |-----------|---------|
 | A plan candidate has capacity | Swap to the plan candidate that has capacity with the most headroom, `reason=overflow-out`. `--margin`, `--hold` and `--upgrade-margin` do not apply. |
-| A plan candidate has room | Swap to the plan login the [plan-room ranking](#rotate-plan-room-swap) puts first, `reason=overflow-out`. |
+| A plan candidate is a [plan-room target](#rotate-plan-room-swap) | Swap to the plan login the [plan-room ranking](#rotate-plan-room-swap) puts first, `reason=overflow-out`. A plan login with room but session use at or above `--session-at` is not a target, and the rotator stays on credits. |
 | The live reading is `spend_limit` | [Block](#overflow-spend-limit-block) the live profile, then swap to the next eligible overflow candidate if the wait rule above still holds, else to the plan candidate with the most headroom that is not exhausted and whose probe did not fail, else ALERT `no-capacity`. |
 | Live probe failed | [Failed-probe rules](#rotate-failed-live-probes), with plan candidates as the only targets; otherwise stay on credits. |
 | Otherwise | Stay on credits. |
@@ -7356,13 +7408,16 @@ reaching its plan limit is expected. An overflow profile is never swapped for
 another overflow profile except after a spend limit, and never for a lower
 tier that becomes usable again.
 
-The rules do not flap. `overflow-out` moves only to a plan login with room,
-and the rotator moves back onto credits only once no plan login, that one
-included, has room and every rule above holds again.
+The rules do not flap. `overflow-out` moves only to a plan login that is a
+plan-room target, and the rotator moves back onto credits only once no plan
+login, that one included, has room and every rule above holds again.
 
 If an overflow profile's login is live in `~/.claude` while a plan profile
-has capacity or room, for example after you put it there by hand, the next cycle
-moves it out with `reason=overflow-out`. To keep running on it, remove the
+has capacity or is a [plan-room target](#rotate-plan-room-swap), for example
+after you put it there by hand, the next cycle moves it out with
+`reason=overflow-out`. A plan login with room that is at or above
+`--session-at` is not a target, so the rotator leaves the overflow profile
+where it is. To keep running on it, remove the
 mark, stop the rotator, or put it there with `amplihack profile switch <name>`,
 which [pins](#pin-and-overflow) it.
 
@@ -9020,7 +9075,9 @@ changes nothing but `.default`.
 9. Still under the lock, write the [pin](#rotate-pin), then the default
    pointer `<root>/.default`, then the ledger's `last_cycle`:
    `outcome` `switched`, with `at` and `measured_at` both the current time,
-   and clear the ledger's ALERT key. This record is what lets the
+   and clear the ledger's ALERT key. The record carries no `live_room`,
+   because `switch` takes no reading; a [waiting step](#waking-only-on-room)
+   reads `switched` without it as room. This record is what lets the
    [usage-limit wait](#usage-limit-wait) rerun steps that stopped on a
    usage limit before the switch; see
    [Sessions stopped by a limit](#sessions-stopped-by-a-limit). No
@@ -9220,7 +9277,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 
 | Path | Contents |
 |------|----------|
-| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when the usage it relied on was read, which for `stayed` is when the live reading was taken (see [Stays and capacity](#rotate-stays-and-capacity)) and for every other rotate outcome is when the cycle started measuring, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. |
+| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when the usage it relied on was read, which for `stayed` is when the live reading was taken (see [Stays and capacity](#rotate-stays-and-capacity)) and for every other rotate outcome is when the cycle started measuring, absent for a cycle that measured nothing; `outcome`; for an [overflow](#rotate-overflow) cycle, `overflow`; and, for a cycle that measured the login live afterwards, `live_room`, see [Plan room in the ledger](#plan-room-in-the-ledger)), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `live_room`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. |
 | `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`checking`, `j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at`, `pid`, and optional `identity` containing sanitized full incoming/outgoing accounts authorized before exchange. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `gate.json` | Written by `rotate watch` when it starts: `version`, `pid`, and the [overflow](#rotate-overflow) gate it resolved from its flags (`overflow_wait`, `overflow_unknown_reset`, `session_at`, `week_at`). [Auto-switch](#auto-switch-and-overflow-profiles) uses it only while the rotator with that pid runs. If it cannot be written, the log says `overflow: gate not recorded, auto-switch will not use overflow (<error>)` and auto-switch uses no overflow profile. |
@@ -9307,6 +9364,74 @@ binary that uses the root before the first `overflow add`, then restart the
 rotator (`rotate stop`, `rotate start`). To go back to an older binary,
 follow
 [Upgrading and rolling back](../howto/claude-profile-rotation.md#upgrading-and-rolling-back).
+
+#### Plan room in the ledger
+
+`last_cycle.live_room` answers one question for a waiting step: after this
+cycle, does the login live in `~/.claude` have room to run a step? It is true
+when the rotator holds a measured reading of that login from the cycle and the
+reading passes the test of a [plan-room target](#rotate-plan-room-swap):
+session use below `--session-at` and week use below 100%. The test is applied
+to the reading of whichever login is live after the cycle, whatever its kind.
+There is no exclusion for a credit-backed overflow profile or the API-key
+profile, so a cycle that moves onto either can record `true`. The rotator
+decides this, from the measurement it already holds, so a reader never
+applies a threshold of its own. The field holds no percentage and no other
+reading.
+
+```json
+{
+  "version": 1,
+  "live": "spare",
+  "account": "<accountUuid>",
+  "since": 1793701400,
+  "swapped_at": 1793701400,
+  "previous": "work",
+  "last_cycle": { "at": 1793701445, "measured_at": 1793701325, "outcome": "swapped", "live_room": true }
+}
+```
+
+| Cycle | `live_room` |
+|-------|-------------|
+| A swap, or a stay, after which the login in `~/.claude` has a measured reading from this cycle: a plan login, a credit-backed overflow profile, or the API-key profile, whose reading is the fixed 0% and 0% | `true` when session use is below `--session-at` and week use is below 100%, else `false` |
+| A swap or stay after which that login's reading is failed, exhausted or carried from an earlier cycle | `false` |
+| A cycle that measured nothing (idle, held, skipped, or a guided recovery), and one that holds no reading for the login now live | absent |
+| An `alerted` cycle raised outside the decision, which ends before the live login is read: a refused swap, a paused exclude list | absent |
+| An `alerted` or `stayed-unread` cycle that went through the decision, because the live login could not be read, or read at 100% or at a spend limit | not defined: the field may hold either value. Neither outcome is capacity, so no reader treats it as room whatever the field holds |
+| A [`profile switch`](#rotate-switch), which records the outcome `switched` and takes no reading | absent |
+| Any record written by a rotator from before this field | absent |
+
+The swap case reads the reading of the login swapped *to*, matched by profile
+name, and never by position in the list. A swap onto a login at `s=98%` writes
+`"outcome": "swapped"` with `"live_room": false`. The outcome still counts as
+capacity under the [rotator capacity rule](#rotator-capacity-rule), which the
+limit-resume hook also reads, so that rule keeps its meaning and the new field
+sits beside it. A stay on a login at `s=90%` is capacity too, because the
+login can still be used, and records `false` for the same reason.
+
+Only a JSON boolean inside `last_cycle` is read; `null`, a string, a number, an
+array and a `live_room` key at the top level of the ledger all read as absent.
+The ledger's other checks apply unchanged. While a rotator older than the field
+runs, this binary leaves the field out, as it does `measured_at`, so that
+rotator can still read the file.
+
+A reader turns the record into a yes or no with one function of the record
+alone (`CycleStatus::says_room` in `amplihack_utils::rotator_status`). It reads
+no clock and no file, and the [room rule](#rotator-room-rule) and the
+[waiting step](#waking-only-on-room) both call it, so they cannot disagree:
+
+| Outcome | `live_room` is `true` | `live_room` is `false` | `live_room` is absent |
+|---------|-----------------------|------------------------|-----------------------|
+| `swapped`, `stayed` | room | no room | no room |
+| `switched` | room | no room | room |
+| any other outcome, or an outcome this binary does not know | no room | no room | no room |
+
+`switched` is the one outcome that reads as room without a `true`. It is what
+`amplihack profile switch` records, and a person who moves the login by hand
+to unstick a waiting step is saying the login is fit to use, which the
+rotator's own swap does not say. A `switched` record that states `false`
+overrules that. `fresh_capacity` is unchanged and still says only that a cycle
+found capacity.
 
 ### Rotate log
 
@@ -10602,12 +10727,16 @@ same user as the session, which is the trust boundary.
 
 #### Rotator capacity rule
 
-This is the ledger rule a reset wait and a capacity wait use for the
-[usage-limit wait](#usage-limit-wait)'s `rotator capacity` check
-(`CycleStatus::fresh_capacity` in `amplihack_utils::rotator_status`). A
-[login-change wait](#login-change-wait) does not apply it at all. The
+This is the ledger rule that says a rotator cycle recorded capacity
+(`CycleStatus::fresh_capacity` in `amplihack_utils::rotator_status`). A reset
+wait and a capacity wait use it for the
+[usage-limit wait](#usage-limit-wait)'s `rotator capacity` check, together
+with the [rotator room rule](#rotator-room-rule), which asks that the login
+the cycle left live has room. Capacity alone does not end a wait. A
+[login-change wait](#login-change-wait) applies neither. The
 limit-resume hook does not resume on it; it resumes only on a
-[swap record](#capacity-for-a-resume). The hook
+[swap record](#capacity-for-a-resume), and it does not read the room rule.
+The hook
 still reads the ledger, by the trust rules at the end of this section, for
 the `live` profile and for the `rotator-down` check. The `live` profile is
 the login in the [event key](#resume-state-directory) unless a noted swap
@@ -10700,6 +10829,55 @@ file owned by you, not a symlink and not writable by group or others. A
 `last_cycle.at` or `measured_at` of 0 or more than 300 seconds in the future
 is ignored. A
 `live` value that fails the [name rules](#name-rules) is logged as `-`.
+
+#### Rotator room rule
+
+The capacity rule above records that a cycle found capacity somewhere. It
+does not say that the login the cycle left in `~/.claude` can run a step: a
+swap onto a login at `s=98%` records `swapped`, and counts as capacity. The
+room rule closes that gap (`CycleStatus::fresh_room`, beside `fresh_capacity`
+in `amplihack_utils::rotator_status`). The rule is read in two forms.
+
+The form the `rotator capacity` exit reads is met when both of these hold:
+
+- the [rotator capacity rule](#rotator-capacity-rule) is met, with the same
+  `measured_at` or `at` freshness against the time the wait started;
+- the record says room, by the table in
+  [Plan room in the ledger](#plan-room-in-the-ledger) (`says_room`).
+
+The conjunction is literal: `fresh_room(start)` is `fresh_capacity(start)` and
+`says_room()`, and nothing else. An outcome that is not capacity fails it
+whatever `live_room` holds.
+
+The three `login changed` exits read the other form, which asks the same two
+questions of the latest recorded cycle and leaves out the age: the record's
+outcome is capacity (`swapped`, `stayed` or `switched`, with no alert), and it
+says room. Both forms read the record through one function, so a record that
+ends a wait in one form is a record the other reads the same way.
+
+What the reader makes of a ledger it cannot use depends on why:
+
+| Ledger | `rotator capacity` exit | `login changed` exits |
+|--------|-------------------------|-----------------------|
+| Present and readable, and the record says room | ends the wait, if also fresh capacity | open |
+| Present and readable, and the record says no room, or is not capacity | does not end the wait | closed |
+| Present and unusable: unreadable, oversize, a symlink, not a regular file, owned by someone else, group or other writable, bad JSON, or a `"version"` other than 1 | does not end the wait | closed |
+| Absent: no file at all | has nothing to read, so does not end the wait | open, because no rotator is running whose record could say otherwise |
+
+Only a missing file is absent. Every other way of failing to read the ledger
+is closed. The reader applies no threshold: the rotator decided room when it
+wrote the cycle.
+
+Nothing else in the ledger satisfies the capacity form. A no-capacity ALERT,
+an `alerted`, `stayed-unread`, `skipped`, `idle` or `held` outcome, and a
+cycle that is merely newer than the wait all fail it. `rotate stop` records no
+cycle, so it adds nothing that could satisfy the form.
+
+Only the usage-limit wait reads this rule, for a reset wait and a capacity
+wait. The [limit-resume hook](#rotate-session-resume) keeps the capacity rule
+and the swap record and calls neither `fresh_room` nor `says_room`, so it can
+still resume a session onto a login whose session use is at or above
+`--session-at`, provided the swap record shows both windows below 100%.
 
 #### Resume state directory
 
@@ -10795,8 +10973,9 @@ is in the [how-to](../howto/claude-profiles.md#waiting-for-a-usage-limit-reset).
 There are three kinds of wait:
 
 - a **reset wait**, for a limit that resets within five hours: it waits for
-  that reset, or for a login with capacity to become live, whichever comes
-  first (see [Reset time](#reset-time)). For a step under an inherited
+  that reset, or for a login with room to become live, whichever comes
+  first (see [Reset time](#reset-time) and
+  [Waking only on room](#waking-only-on-room)). For a step under an inherited
   profile with auto-switch on, a stored profile that a [reading](#readings)
   taken during the wait shows has capacity ends the wait as well, without
   that profile's login becoming live, and the retry then runs under it
@@ -11070,7 +11249,11 @@ After an attempt hits a usage limit, in this order:
    its `max_wait_secs` budget is spent: `skipped reason=already_waited`, and
    the result is passed up. A `$HOME/.claude` step that is now on a login it
    has not waited on, with budget left, is not refused here; see
-   [One wait per login](#one-wait-per-login);
+   [One wait per login](#one-wait-per-login). Neither is a limit on the first
+   attempt after a wait that ended because something said to try again, with
+   budget left: it is [waited out again](#a-limit-after-a-wait) and reported
+   once. A 429 on that attempt is waited out only when a capacity wait could
+   start for the step, and is otherwise passed to the recipe runner as before;
 6. the limit is not one a reset wait can outlast (see
    [Reset time](#reset-time)) and neither a
    [capacity wait](#capacity-wait) nor a
@@ -11154,12 +11337,21 @@ mark like any other, although it spends no time.
 | inherited profile | refused |
 | `$CLAUDE_CONFIG_DIR` | refused |
 
+Every "refused" row has one exception, on any kind of step: the first attempt
+after a wait that ended because something said to try again. If that attempt
+meets a limit, the signal was wrong, the same-login refusal does not apply, and
+the step waits again, under the start checks that
+[A limit after a wait](#a-limit-after-a-wait) sets out for each kind of limit.
+The budget refusal below is not lifted.
+
 Two things bound the chain. A rotator that swaps away from a login and later
 back to it finds that login's mark already recorded, so no further wait
 starts on it; and the rotator can only move logins the profile store holds,
 so the marks a step can record are finite and a repeat ends the step. There
 is no separate iteration count: the marks are the bound, which is why the
-short-circuit records one.
+short-circuit records one. A [limit after a wait](#a-limit-after-a-wait) lifts
+a mark's refusal only for the retry that a wait ended by a positive signal has
+earned, and the budget below still bounds that chain.
 
 `max_wait_secs` is a **per-step** budget, not a per-wait one. Each wait is
 planned with the maximum less the seconds this step has already spent
@@ -11177,9 +11369,97 @@ was.
 
 When a wait is refused, the supervisor writes `skipped reason=already_waited`
 and then the [closing line](#closing-line), and the step ends as a usage
-limit. Every retry runs the step **from the start** with the same prompt, so
-anything a failed attempt already did (a commit, a push, a comment) may
-happen again. Write agent steps so that running one twice is harmless.
+limit. The one exception is a limit that meets the retry a wait has just
+earned; see [A limit after a wait](#a-limit-after-a-wait). Every retry runs
+the step **from the start** with the same prompt, so anything a failed
+attempt already did (a commit, a push, a comment) may happen again. Write
+agent steps so that running one twice is harmless.
+
+### A limit after a wait
+
+A wait that ends because something said *try now* gives the step a retry. If
+that retry meets a limit, the signal was wrong: the login the wait woke on
+was not usable. The step waits again and says so once, rather than ending as
+an indeterminate failure on the first attempt after a wait it had just
+finished.
+
+The retry is covered when all of these hold:
+
+- the attempt is the one launched by a wait's own resume, for this step. An
+  attempt that auto-switch started under another profile with no wait before
+  it is not covered, and neither is a later step, which starts with no
+  history;
+- that wait ended on a positive signal: `reset reached`, `rotator capacity`,
+  `login changed` or `login capacity` (see
+  [Reasons a wait ends](#reasons-a-wait-ends)). A wait that ended at its own
+  ceiling, with `max reached`, `capacity expired`, `step timeout`,
+  `session ended` or `signal`, had no signal behind it, and a limit after it
+  is evidence that waiting is not helping, so the
+  [`already_waited`](#one-wait-per-login) refusal stands;
+- the attempt's output carries a limit: a usage-limit message in the
+  [shape the wait reads](#reset-time), or a 429 report;
+- the limit gives the second wait something to wait on: a reset still ahead,
+  or a capacity or login-change wait. A message whose reset has already passed
+  (the retry meets, at 08:32, the "resets 8:30am" it met before) is refused as
+  `already_waited` and is not re-entered, because a wait for it would end at
+  once, spend none of the budget and launch the same attempt again.
+
+A usage-limit message and a 429 report reach the second wait by different
+paths, set out below.
+
+**A 429 report** is the last stderr line that begins with `API Error: 429`,
+`429 Too Many Requests`, `rate_limit_error` or `rate limit exceeded`, or, when
+no stderr line does, the last non-empty line of the stdout tail if it begins
+with one of them. Surrounding whitespace is trimmed first, as it is for a
+usage-limit message, and case is ignored. A phrase that ends in a digit must
+not be followed by another, so `API Error: 4290` is not a 429 report. The same
+words mid-line, or in an earlier line of model output, do not count; they are
+the model's own prose. This reading applies only at this position.
+Everywhere else a 429 is still the short-lived transport fault the
+[failure classifier](./transient-failure-retry.md#classification) calls it,
+and here too it starts a wait and nothing else: no profile is recorded as
+limited and auto-switch does not move. When the output carries both a usage
+limit and a 429, the usage limit decides.
+
+What the second wait is, and which checks decide whether it starts, depends
+on which of the two the attempt printed:
+
+| The retry's output | Path | The second wait |
+|--------------------|------|-----------------|
+| A usage-limit message that states a reset within five hours | The ordinary planner | A [reset wait](#reset-time) for that reset |
+| A usage-limit message for a weekly limit, one that states a reset more than five hours away, or one that states none, and is not a spend limit | The ordinary planner | A [capacity wait](#capacity-wait) when the [start checks](#when-a-capacity-wait-starts) pass, else `skipped reason=reset_too_far` or `no_reset` |
+| A spend limit that states no reset | The ordinary planner | A [login-change wait](#login-change-wait) for a `$HOME/.claude` step with a rotator running, else `skipped reason=spend_limit` |
+| A 429 report | The re-entry | A capacity wait with `reset=none` when the same start checks pass, else no wait and the failure goes back to the recipe runner as before |
+
+**A usage-limit message** is planned exactly as the first wait was, by the same
+planner and under every check in
+[When a capacity wait starts](#when-a-capacity-wait-starts). The only check
+lifted is the one-wait-per-login refusal. The first wait having passed those
+checks does not stand in for them: the retry's message can differ from the
+first one, and a reset wait, which needs no rotator and no probe, can be
+followed by a weekly-limit message that does.
+
+**A 429 report** states no reset and no kind of limit, so there is nothing to
+plan from. It becomes a capacity wait with `reset=none`, which ends on a
+capacity signal alone, and only when a capacity wait could start for this step:
+the step's login, a running rotator with auto-switch on, and another login that
+could take over. Without them nothing could end the wait before its deadline,
+so the 429 goes back to the recipe runner, which classifies and retries it by
+its own [rules](./transient-failure-retry.md#classification).
+
+The checks that apply to every wait apply here too: a disabled wait, a stop
+signal, `AMPLIHACK_STEP_TIMEOUT` and the step's remaining `max_wait_secs`
+budget, with `already_waited` when it is spent. No retry count and no new
+timer bounds the chain. Each further wait needs a positive signal followed by
+a limit that contradicts it. The budget (`21600` seconds when nothing sets it)
+caps the re-entry waits: a re-entry is refused once the step's earlier waits
+have spent all of it, and otherwise is planned with what is left.
+
+Each re-entry that starts a wait writes one line, once, before the second
+wait's `start`, as shown under [Log lines](#log-lines). A refused re-entry
+writes no `reentered` line; a refused usage-limit message writes the
+`skipped` and closing lines described in
+[Order of attempts](#order-of-attempts).
 
 ### Reset time
 
@@ -11252,8 +11532,9 @@ before it begins.
 A `$HOME/.claude` step reads its [login key](#one-wait-per-login)
 immediately before each attempt is launched, and reads it again after a limit
 before it plans a wait. When the two differ, the rotator moved another login
-into `~/.claude` while the attempt was failing, there is nothing left to wait
-for, and the supervisor writes
+into `~/.claude` while the attempt was failing. If that login has room, as
+[Waking only on room](#waking-only-on-room) defines it, there is nothing left
+to wait for, and the supervisor writes
 
 ```
 amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=… until=… bound=…
@@ -11266,6 +11547,13 @@ passes, so nothing is added to the step's `max_wait_secs` budget and nothing
 is appended to the file `AMPLIHACK_USAGE_WAIT_LEDGER` names. The pair also
 reaches the run's [recipe log](#the-wait-in-the-recipe-log), so a reader sees
 that the step met a limit and moved on.
+
+When the login that arrived has no room, or the ledger cannot say, the step
+does not retry onto it. It plans the wait it would have planned had nothing
+changed, and that wait ends on the first of its exits that
+[Waking only on room](#waking-only-on-room) allows. A
+[login-change wait](#login-change-wait) is the exception: it retries at once
+on any change, as it always did.
 
 It does record its mark, which is the login the failed attempt ran on, not
 the login that has just arrived. That is what keeps the step finite: a
@@ -11294,6 +11582,11 @@ reads as "no change", and the step waits as it otherwise would:
 | either, `work` | neither file readable | no change |
 | neither file readable | either, `work` | no change |
 
+The room check ([Waking only on room](#waking-only-on-room)) reads the same
+ledger file, by the same trust rules as the
+[rotator capacity rule](#rotator-capacity-rule). It adds no comparison to this
+table: a change is first decided by the table, and only then is the room asked.
+
 The cross-source rows are the reason the source is carried at all. The swap
 record is written at a different moment from the cycle ledger and may name
 the login before or after the one the ledger names, so two readings taken
@@ -11319,12 +11612,17 @@ come first, then the deadline, then the 30 s probes in the order listed.
 | `max reached` | login change | the `max_wait` deadline passed and the login never changed | no; [closing line](#closing-line) with `reason=spend_limit` |
 | `capacity expired` | capacity | the `max_wait` deadline passed with no login showing capacity | no; [closing line](#closing-line) |
 | `step timeout` | all | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no; [closing line](#closing-line) |
-| `login changed` | all | the login changed before the wait was planned, or two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline | yes |
-| `rotator capacity` | reset, capacity | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped`, `stayed` or `switched`, no alert; `stayed-unread` is not capacity) whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
+| `login changed` | all | the login changed before the wait was planned, or two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline. On a reset or capacity wait for a `$HOME/.claude` step, the change counts only when the login that arrived [has room](#waking-only-on-room) | yes |
+| `rotator capacity` | reset, capacity | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle that meets the [rotator room rule](#rotator-room-rule): a cycle with capacity (`swapped`, `stayed` or `switched`, no alert; `stayed-unread` is not capacity) that says room (`live_room: true`, or a `switched` record that does not state `false`), whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
 | `login capacity` | reset, capacity | the step runs under an inherited profile with auto-switch on, and a [reading](#readings) taken after the wait began shows that another stored profile has capacity (see [Capacity for a profile step](#capacity-for-a-profile-step)) | yes, under that profile |
 
-Both capacity rows apply to a reset wait and to a capacity wait, and to
-**neither** of them on a login-change wait. A login-change wait is started
+The end reasons keep their names; what changed is which swaps and cycles earn
+`login changed` and `rotator capacity`. See
+[Waking only on room](#waking-only-on-room).
+
+Both capacity rows, and the room condition on `login changed`, apply to a reset
+wait and to a capacity wait, and to **neither** of them on a login-change wait,
+which takes `login changed` on any change, as it always did. A login-change wait is started
 by an organisation spend limit, which is a limit on the organisation's
 credit rather than on any session or week, and no capacity reading reports
 credit: a rotator cycle that measures the live login's windows, and a stored
@@ -11339,15 +11637,26 @@ measures the same login and stays there leaves the wait in place. The two
 capacity checks are therefore not run at all for that plan, rather than run
 and ignored.
 
-`rotator capacity` uses the [rotator capacity rule](#rotator-capacity-rule)
-(`CycleStatus::fresh_capacity` in `amplihack_utils::rotator_status`). The
-limit-resume hook no longer uses that rule; it acts only on a
-[swap record](#swap-record). It is checked with the fingerprint every 30 s. A
-cycle that moved onto a [credit-backed overflow profile](#rotate-overflow)
-(`swapped`, `overflow=in`) or stayed on one whose probe read it in this
-cycle with no active spend block, at any figures (`stayed`, `overflow=on`),
-counts as capacity, so the step runs again on
-credits.
+`rotator capacity` uses the [rotator room rule](#rotator-room-rule)
+(`CycleStatus::fresh_room` in `amplihack_utils::rotator_status`), which adds
+one condition to the [rotator capacity rule](#rotator-capacity-rule)
+(`CycleStatus::fresh_capacity`): the record says the login the cycle left live
+has room (`CycleStatus::says_room`). The limit-resume hook uses neither; it
+acts only on a
+[swap record](#swap-record). The room rule is checked with the fingerprint
+every 30 s.
+
+A cycle that moved onto a [credit-backed overflow profile](#rotate-overflow)
+(`swapped`, `overflow=in`) or stayed on one whose probe read it in this cycle
+with no active spend block (`stayed`, `overflow=on`) is capacity at any
+figures, and the room rule adds only the `live_room` condition. The rotator
+writes `live_room` for a credit-backed or API-key login from its reading, as
+for any other login. Session use below `--session-at` and week use below 100%
+record `true`, so the wait ends as `rotator capacity` and the step runs again
+on credits, as it did before; the API-key profile's fixed 0% reading always
+passes. The one narrowing is a credit-backed profile that reads at or above
+`--session-at`, or at 100% on its week: it records `false`, and a wait that
+used to end when the rotator moved onto it now sleeps on.
 
 The **login fingerprint** watches the directory the retry will use:
 `<root>/<inherited profile>`, else `$CLAUDE_CONFIG_DIR`, else
@@ -11371,6 +11680,131 @@ says when a wait ends and has no readable form at all; the key is a profile
 name, says which waits a step may still make, and is the `account=` field of
 the [recipe-log lines](#the-wait-in-the-recipe-log). They are read from
 different files and neither is derived from the other.
+
+#### Waking only on room
+
+A change of login is not, by itself, a reason to run the step again. When
+every plan login is close to its session limit, the login that arrives can be
+nearly as spent as the one that left, and a run of swaps can change
+`~/.claude` several times in a few minutes. If each change ended every
+waiting step, each step's retry would meet a limit on a login that had no
+room, once per change. A reset wait or a capacity wait on a `$HOME/.claude`
+step therefore ends early only when **the login the retry will use has
+room**.
+
+Room is the rotator's own reading, not the wait's. The rotator records
+[`last_cycle.live_room`](#plan-room-in-the-ledger) with each cycle, using the
+test of a [plan-room target](#rotate-plan-room-swap). The wait applies no
+threshold of its own and reads no percentage. It asks the one question,
+through the [rotator room rule](#rotator-room-rule), and every way it cannot
+get a clear *room* is *no room*, with the one exception of a person's own
+[`profile switch`](#rotate-switch), which still wakes the step.
+
+Four exits of a `$HOME/.claude` step's wait can lead to a retry on the login
+now live. The room rule gates all four:
+
+| Exit | What it needs besides the change |
+|------|----------------------------------|
+| `rotator capacity`, a cycle with capacity recorded after the wait began | that cycle says room |
+| `login changed`, two probes 30 s apart agree on a new [fingerprint](#ending-the-wait-early) | the ledger's latest cycle is capacity and says room |
+| `login changed`, the [login key](#one-wait-per-login) read from the rotator's own files differs from the key before the attempt | the ledger's latest cycle is capacity and says room |
+| `login changed`, [before the wait](#a-login-that-changed-before-the-wait) was planned, so the retry would run at once | the ledger's latest cycle is capacity and says room |
+
+"Says room" is the table under
+[Plan room in the ledger](#plan-room-in-the-ledger). The first row also needs
+the cycle to be newer than the wait, as the
+[rotator room rule](#rotator-room-rule) says. The other three read the latest
+recorded cycle, whatever its age, and apply no freshness test: the change is
+the evidence that something happened, and the record says whether the login
+last measured could run a step. A record that says room, left by an old cycle,
+therefore opens these three exits when the login changes before a newer cycle
+has judged the login that arrived. They are closed by a latest cycle that is
+not capacity (`stayed-unread`, `alerted`, `held`, `skipped`, `idle`, or one
+with an alert), by one that says no room, and by a ledger that exists and
+cannot be used.
+
+When the room check is closed, the change is not lost. The fingerprint still
+differs from its baseline, and each 30 s probe asks again. The wait ends on
+the first probe that finds the latest cycle capacity and saying room. A
+login that has changed before the wait, with no room, is not short-circuited:
+the step plans an ordinary wait, [marked](#one-wait-per-login) against the
+login the failed attempt ran on, as every mark is, and that wait ends on the
+exits above.
+
+##### What is not gated
+
+These cases keep the behaviour they had before the room rule, either because
+the rule does not apply to them or because it answers yes.
+
+| Case | Why |
+|------|-----|
+| A [login-change wait](#login-change-wait) | It waits for one organisation's spend limit to be replaced by another organisation's credit. No capacity reading reports credit, so a room test would end it never. It keeps every exit it had. A limit that meets its retry is [waited out again](#a-limit-after-a-wait). |
+| A fingerprint change on a step that does not use `$HOME/.claude`: an inherited profile, or `$CLAUDE_CONFIG_DIR` | The rotator never swaps into those directories, so its room reading says nothing about them. The step keeps the `login changed` exit it had. |
+| A step on `$HOME/.claude` whose profile root holds no rotator ledger at all | There is no rotator whose reading could say no room. This is the host where a person changes the login by hand, or a host that never ran a rotator, and the step keeps the `login changed` exits it had. Only a missing file is this case. A ledger that exists and cannot be used closes the gate, as the table in the [Rotator room rule](#rotator-room-rule) lists. |
+| `login capacity` | A profile step's exit reads stored [readings](#readings) under auto-switch's own candidate rules, which count a login as having room below 100%. It is not a rotator signal and does not read `live_room`. |
+
+**Stopping the rotator.** `amplihack profile rotate stop` sends `SIGTERM` and
+removes the pid file. It records no cycle: a cycle still measuring when the
+signal arrives ends with the log line `stop: signal received; cycle
+abandoned` and records nothing, and a cycle that has reached its swap finishes
+and records as usual. A wait ends on `rotator capacity` only on a cycle with
+capacity that says room, recorded after the wait began, so a stop supplies
+nothing for that exit. The three `login changed` exits need the login to
+change, which a stop does not do. A record that is merely newer than the wait,
+or whose outcome is not capacity, ends no wait either.
+
+**A manual switch still wakes.** `amplihack profile switch` records the
+outcome `switched` and takes no reading, so it carries no `live_room`. That
+record says room, so a step waiting on the login that was in `~/.claude`
+before the switch ends its wait, as it did before this rule. A `switched`
+record that states `live_room: false` does not.
+
+An example. A threshold swap puts `bbuck` live, with its session at 92%, and
+three steps are waiting on `aanderson`'s limit. The default `--session-at` is
+85, so `bbuck` has no room to run a step:
+
+```
+2026-11-19T20:31:07Z swap aanderson->bbuck live s=100% w=71% target s=92% w=64% reason=threshold
+```
+
+The cycle records `"outcome": "swapped"` with `"live_room": false`. It is
+capacity under the [capacity rule](#rotator-capacity-rule), and the login did
+change, but no wait ends. Hours later `bbuck`'s session window resets, a cycle
+stays on it and records `"live_room": true`, and the waits end together:
+
+```
+amplihack.recipe.usage_limit_wait end reason=rotator capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+```
+
+A rotator that makes plan-room swaps no longer swaps onto a login like `bbuck`
+(see [Rotate plan-room swap](#rotate-plan-room-swap)), so a run of those
+swaps between exhausted logins, which used to wake every wait at each swap,
+does not happen. The room rule covers the swaps that still can: a threshold
+swap onto a login without capacity, an upgrade swap, a failed-probe swap and
+a swap made by an older rotator.
+
+**Cost.** The gate fails closed, and a wake it cannot confirm is a wake it does
+not make:
+
+- A ledger written by a rotator older than the field has no `live_room`, so
+  its `swapped` and `stayed` cycles say no room. No wait ends on them until
+  the rotator is restarted on a binary that writes the field
+  (`amplihack profile rotate stop`, then `amplihack profile rotate start`);
+  the waits sleep to their reset meanwhile, and a `profile switch` still wakes
+  them.
+- A swap lands a moment before the cycle that records it is saved. A probe in
+  that gap reads the latest saved cycle, whatever its age. If that cycle says
+  room, the three `login changed` exits are open and the step retries on the
+  login that has just arrived before the rotator has judged it; when that
+  login is full, the retry meets a limit and is
+  [waited out again](#a-limit-after-a-wait). Otherwise they stay closed and
+  the next probe, at most 30 s later, reads the new cycle. The
+  `rotator capacity` exit is not open in the gap, because it needs a cycle
+  newer than the wait.
+- The same gap is wider after a `profile switch`: the `switched` record says
+  room until the rotator's next cycle replaces it. That is narrower than before
+  the rule, when every change opened these exits.
 
 ### Capacity wait
 
@@ -11522,7 +11956,7 @@ login-change wait instead. Session capacity and organisation credit are
 different quantities, and only the second is what that limit is about.
 
 A `$HOME/.claude` step uses the `login changed` and `rotator capacity`
-checks. A step under an inherited profile with auto-switch on uses
+checks, each held to [room](#waking-only-on-room). A step under an inherited profile with auto-switch on uses
 `login changed` and, instead of `rotator capacity`, checks every 30 s,
 after the fingerprint, for a profile that auto-switch would choose now. The
 check judges capacity from the stored [readings](#readings) only, and uses
@@ -11779,6 +12213,11 @@ cycle that does swap ends the wait, recorded as `login changed`
 (see [Reasons a wait ends](#reasons-a-wait-ends)), the end the retry acts
 on. Two independent readings can reach it.
 
+This wait is **not** held to [room](#waking-only-on-room), for the reason given
+under [What is not gated](#what-is-not-gated). The arriving login can
+therefore be nearly spent; a limit or a 429 on the first attempt after the wait
+is [waited out again](#a-limit-after-a-wait) rather than ending the step.
+
 The **login fingerprint** notices that the directory the step would retry
 in has changed under it. It acts only when two probes 30 s apart agree, so
 by itself it reports a swap up to about 60 s after it lands — and does not
@@ -11855,16 +12294,17 @@ and order; new fields are only ever added at the end. A capacity wait's
 [login-change wait](#login-change-wait)'s has `wait=login_change`.
 
 The `start` and `end` lines of each wait also go to the run's
-[recipe log](#the-wait-in-the-recipe-log) when there is one. The `end` line
-is identical; the `start` line is this one with `harness=` dropped and
-`account=<login>` put where it was. Every other field and token is the same,
-and no other event reaches that sink.
+[recipe log](#the-wait-in-the-recipe-log) when there is one, and so does a
+`reentered` line, which is identical in both sinks. The `end` line is
+identical; the `start` line is this one with `harness=` dropped and
+`account=<login>` put where it was. No other event reaches that sink.
 
 | Event | Fields |
 |-------|--------|
 | `start` (reset wait) | `reason=usage_limit harness=claude reset=<time> until=<time> bound=<bound>` |
 | `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time> bound=max_wait\|step_timeout` |
 | `start` (login-change wait) | `reason=spend_limit wait=login_change harness=claude reset=none until=<time> bound=max_wait\|step_timeout` |
+| `reentered` | `met=usage_limit\|rate_limit`; once per [re-entry](#a-limit-after-a-wait), before that wait's `start` |
 | `progress` | `remaining=<secs>s`, every 60 s |
 | `end` | `reason=<end reason>` from the table above |
 | `resume` | `attempt=<n>`, counting every attempt in the step |
@@ -11956,6 +12396,30 @@ amplihack.recipe.usage_limit_wait end reason=login changed
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
+A capacity wait ended by the rotator, whose retry returned a 429, so the step
+waited a second time. The `reentered` line comes once, between the first
+wait's `resume` and the second wait's `start`:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=2026-11-19 14:20:00 -08:00 bound=max_wait
+amplihack.recipe.usage_limit_wait progress remaining=21540s
+amplihack.recipe.usage_limit_wait end reason=rotator capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack.recipe.usage_limit_wait reentered met=rate_limit
+amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=2026-11-19 14:20:09 -08:00 bound=max_wait
+amplihack.recipe.usage_limit_wait progress remaining=21450s
+amplihack.recipe.usage_limit_wait end reason=rotator capacity
+amplihack.recipe.usage_limit_wait resume attempt=3
+```
+
+`attempt=` keeps counting every attempt in the step, so `attempt=3` is the
+retry after the second wait. The second wait is planned with the step's
+`max_wait_secs` (here the default 21600 s) less the time already spent
+waiting (see [One wait per login](#one-wait-per-login)): the first wait lasted
+90 s and the retry took 9 s, so the second `until` is 9 s after the first. The
+`reentered` line tells a second `start` that follows a contradicted signal from
+one that follows a new login.
+
 No **stderr** line contains credentials, account names, profile names,
 e-mail addresses, organisation IDs, config directory paths, config content
 or text copied from Claude's output. Only fixed words, event and reason
@@ -11988,7 +12452,8 @@ slept for three hours looked hung, and runs were stopped on that reading.
 
 A detached run (`amplihack recipe run --detach`) exports the absolute path of
 its log in `AMPLIHACK_RECIPE_LOG`, and every supervised step appends two
-lines to that file for each wait it makes:
+lines to that file for each wait it makes (and a third, `reentered`, when a
+wait is [entered again](#a-limit-after-a-wait)):
 
 ```
 amplihack.recipe.usage_limit_wait start reason=usage_limit account=work reset=2026-11-16 13:00:00 +00:00 until=2026-11-16 13:02:00 +00:00 bound=reset+margin
@@ -12030,6 +12495,12 @@ Exactly one `start` and one `end` reach the recipe log for each wait. No
 that the step is waiting, on which login, until when, and how the wait ended,
 and the step's stderr keeps the full account. A step that waits twice, on two
 logins, writes two pairs.
+
+One more line can reach it: the `reentered` line of a
+[limit after a wait](#a-limit-after-a-wait). It has no `account=` and no text
+from the step's output, only `met=usage_limit` or `met=rate_limit` from a fixed
+list, so a reader sees that the signal was contradicted, and by which kind of
+limit, and nothing else.
 
 **The account name.** It is the profile name the rotator records, read at
 runtime from the [rotate ledger](#rotate-state-directory)'s `live` or the
@@ -12101,7 +12572,10 @@ detached run's log. Do not set it by hand.
 
 **The lines are informational.** A detached run copies each step's own output
 into the recipe log, so an agent step could print a line in this shape.
-Nothing reads these lines as authority. Auto-drive's wall budget still comes
+Nothing reads these lines as authority, and nothing in the wait's own control
+path reads them back: the `reentered` line is written for a person, and the
+decision to enter again is made from the attempt's output and the wait that
+just ended, never from the log. Auto-drive's wall budget still comes
 from the separate file `AMPLIHACK_USAGE_WAIT_LEDGER` names, which only the
 wait writes, and the recipe runner's failure classification still comes from
 the step's own exit and evidence tail.
@@ -13243,8 +13717,9 @@ A marked API-key profile is always tier 10, below every credit
 The full order is in [Rotate decision order](#rotate-decision-order):
 
 1. plan (subscription) logins with capacity;
-2. plan logins with [room](#rotate-plan-room-swap) below 100% on both
-   windows, the live one included;
+2. plan-room targets: plan logins with [room](#rotate-plan-room-swap) below
+   100% on both windows and session use below `--session-at`, the live one
+   included;
 3. only when no plan login has room: marked credit overflow profiles, tiers
    1 to 9;
 4. then the marked API-key profile, tier 10.
@@ -13277,7 +13752,8 @@ If an unmarked API-key profile is already live in `~/.claude`, for example
 after a hand change or an upgrade from a release that used the API key
 without a mark, the rotator reports it as `platform_not_marked` and treats it
 as live on the API key for the rules that move work **off** it, below. It
-moves off as soon as a plan login has room, never moves work back **onto**
+moves off as soon as a plan login has capacity or is a
+[plan-room target](#rotate-plan-room-swap), never moves work back **onto**
 it, and never writes a mark for you. It does not probe the profile or give it
 a reading.
 
@@ -13297,8 +13773,9 @@ The rotator swaps `~/.claude` onto the API-key profile, with
   live one included, is at 100% session or 100% week. A plan login whose
   probe failed, that was not measured, or that reads exhausted has no room.
   This is stricter than [plan capacity](#plan-pool): a plan login below
-  100% on both windows is used by the
-  [plan-room swap](#rotate-plan-room-swap) instead;
+  100% on both windows keeps the rotator off the API key, and the
+  [plan-room swap](#rotate-plan-room-swap) moves onto it when it is a
+  target;
 - no credit overflow profile can be used: each is blocked, excluded, not a
   candidate or failed its probe;
 - the [earliest plan reset](#earliest-plan-reset) is further away than
@@ -13327,7 +13804,7 @@ cycle. `--hold`, `--margin` and `--upgrade-margin` do not apply to them:
 | Condition | Outcome |
 |-----------|---------|
 | A plan candidate has capacity | Swap to the plan candidate with capacity that has the most headroom, `reason=overflow-out`. A failed plan probe is not capacity. |
-| No plan candidate has capacity, and a plan candidate has room | Swap to the plan login the [plan-room ranking](#rotate-plan-room-swap) puts first, `reason=overflow-out`. A plan login below 100% costs nothing. |
+| No plan candidate has capacity, and a plan candidate is a [plan-room target](#rotate-plan-room-swap) | Swap to the plan login the [plan-room ranking](#rotate-plan-room-swap) puts first, `reason=overflow-out`. A plan login below 100% costs nothing, but one at or above `--session-at` is not a target. |
 | No plan candidate has room, and a credit overflow candidate can be used | Swap to the first by tier, `reason=overflow-out`. Credits cost less than the API key. |
 | The API key is blocked, and a plan or credit candidate can be used | Swap to the best one: a plan candidate that is not exhausted and whose probe did not fail, then a credit candidate. |
 | The API key is blocked, and nothing can be used | One ALERT and stay. No swap is attempted. |
@@ -13759,7 +14236,8 @@ not changed by the upgrade.
 
 An unmarked API-key profile that is live in `~/.claude` at the upgrade stays
 live under the [exit rules](#moving-off-the-api-key), and keeps billing per
-token, until a plan login has capacity or room, or a credit overflow profile
+token, until a plan login has capacity or is a
+[plan-room target](#rotate-plan-room-swap), or a credit overflow profile
 can be used. Once the rotator moves off it, it never moves back onto it.
 `rotate status` reports it as `platform_not_marked` meanwhile. If you do not
 want per-token billing in the meantime, either mark it with `overflow add`
@@ -13771,7 +14249,8 @@ profile once every plan login had reached `--session-at` or `--week-at`.
 Credit profiles are billed too, so they now wait for the same condition as
 the API key: no plan login, the live one included, below 100% on both
 windows. Until then the [plan-room swap](#rotate-plan-room-swap) uses the
-plan login with the most room.
+plan-room target with the most room, and the rotator stays and writes the
+ALERT when there is none.
 
 ### API-key errors
 

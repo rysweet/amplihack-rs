@@ -201,6 +201,23 @@ impl Plan {
         !self.login_change
     }
 
+    /// Whether this wait would end the moment it began, because the reset it
+    /// waits for has already passed at `now`.
+    ///
+    /// [`plan`] gives such a wait a deadline of `now`, which is how the grace
+    /// a step's first limit on a login gets is spelled: the reset in the
+    /// message may be minutes behind the clock the retry reads, and retrying
+    /// at once is the right answer. The wait sleeps for nothing, so it spends
+    /// none of the step's budget, and a chain of them is bounded by nothing.
+    /// The caller asks this where that matters (issue #2857) and nowhere else.
+    ///
+    /// A capacity wait is never this: it waits for a reading, not for the
+    /// reset, and its deadline is its own. Neither is a login-change wait,
+    /// whose limit stated no reset at all.
+    pub(crate) fn ends_at_once(&self, now: i64) -> bool {
+        self.kind == PlanKind::Reset && self.reset.is_some_and(|r| r <= now)
+    }
+
     /// A plan with a deadline the caller chooses, for the wait's own tests.
     ///
     /// There is deliberately no way to raise `login_change` here:

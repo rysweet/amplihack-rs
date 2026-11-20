@@ -703,7 +703,7 @@ fn e2_an_old_reading_near_the_threshold_whose_reread_fails_swaps() {
 lane!(lsf);
 
 #[test]
-fn e2b_a_stale_95_percent_whose_reread_fails_still_swaps_to_a_70_percent_candidate() {
+fn e2b_a_stale_95_percent_whose_reread_fails_makes_no_plan_room_swap_onto_a_login_at_session_at() {
     let e = env();
     seed(&lsf::CLOCK);
     let at1 = lsf::clock();
@@ -724,17 +724,23 @@ fn e2b_a_stale_95_percent_whose_reread_fails_still_swaps_to_a_70_percent_candida
     let got = step(&mut c, &lsf::CLOCK);
     let log = log_of(&e);
     assert_eq!(lsf::live_calls(), 1, "{log}");
-    assert_eq!(got, CycleOutcome::Swapped, "decided on 95, not 70: {log}");
-    // Decided on the measured 95% by the rules as merged with #2136: `spare`
-    // at 70% has room but not capacity at `--session-at 70`, so its pools
-    // label the move `plan-room`. On the substituted 70% it would be the
-    // ALERT (0 points of gain), and it is never a projected swap.
-    assert!(
-        log.contains("swap work->spare live s=95% w=41% target s=70% w=40% reason=plan-room"),
-        "95% needs a swap: {log}"
+    // Issue #2857 changed the expectation here and kept the test. `spare` is at
+    // 70% with `--session-at 70`: it has room but is itself at the threshold,
+    // and the rotator no longer plan-room swaps onto a login at or above its
+    // threshold (before, the second pass of `plan_room::choose` took it as the
+    // best of the full logins). Decided on the measured 95%, as the test
+    // always required, there is no target to move to: no swap, no
+    // `plan-room` line, and never a projected swap.
+    assert_ne!(
+        got,
+        CycleOutcome::Swapped,
+        "no swap onto a login at --session-at: {log}"
     );
+    assert!(!log.contains("reason=plan-room"), "{log}");
     assert!(!log.contains("reason=projected"), "{log}");
-    assert!(!log.contains("ALERT: no profile has capacity"), "{log}");
+    // No capacity assertion either way: with nothing to move to, the cycle
+    // is the no-capacity ALERT (advisory while the live login has room),
+    // which is the outcome the plan-room swap onto a full login used to hide.
 }
 
 lane!(lsg);
@@ -1213,6 +1219,12 @@ fn a_creeping_cache_in_the_same_window_never_clears_the_lag() {
 }
 
 // Issue comment: 100% -> 90%, then an older 0%/0% for the login just left.
+//
+// Issue #2857 moved the login swapped to from 90% to 65% session
+// (`--session-at 70`). At 90% the swap was the plan-room swap onto a login
+// past the threshold, which the rotator no longer makes, so there was no swap
+// to bounce back from; at 65% it is a threshold swap onto a login with
+// capacity, which is the swap the replay needs.
 lane!(bounce);
 
 #[test]
@@ -1222,11 +1234,11 @@ fn a_hundred_to_ninety_swap_never_bounces_back_on_older_zero_capacity() {
     seed(&bounce::CLOCK);
     let before_use = bounce::CLOCK.load(Ordering::SeqCst) - 1;
     set(&bounce::LIVE, &[Live::Direct(100.0, 20.0)]);
-    set(&bounce::OTHERS, &[("spare", rd(90.0, 20.0, None))]);
+    set(&bounce::OTHERS, &[("spare", rd(65.0, 20.0, None))]);
     set(&bounce::REREAD, &[exh(100.0, 20.0)]);
     let mut c = ctx(&e, bounce::clock, bounce::measure, Some(bounce::reread));
     assert_eq!(step(&mut c, &bounce::CLOCK), CycleOutcome::Swapped);
-    assert_eq!(ino_at(&e.live()), Some(e.t), "90% spare becomes live");
+    assert_eq!(ino_at(&e.live()), Some(e.t), "65% spare becomes live");
     // Its next measured value is 100%. Work looks completely unused, but
     // that measurement predates its most recent use.
     set(&bounce::OTHERS, &[("work", rd(0.0, 0.0, Some(before_use)))]);

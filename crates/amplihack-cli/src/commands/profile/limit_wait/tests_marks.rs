@@ -192,3 +192,103 @@ fn used_is_whether_this_step_has_waited_at_all() {
     m.record(key("a"));
     assert!(m.used());
 }
+
+// --- Issue #2857: the retry a wait earned ---------------------------------
+//
+// `refuses_reentry(max)` is the one exception to the same-login refusal. The
+// retry a wait earned, after a wait that ended on a positive signal, meets a
+// limit: the signal was wrong, and the login it woke on is not usable. The
+// same-login rule is lifted for exactly that retry and the budget rule is not:
+// a step's `max_wait_secs` is still the whole of what its waits may spend.
+//
+// An unset maximum is not an unlimited one. The step's budget is then the same
+// default a capacity wait is planned with (`plan::CAPACITY_DEFAULT_MAX`,
+// 21 600 s), so a chain of re-entries ends in the budget and not in a count
+// or a timer.
+//
+// `refuses_reentry` takes no login name: it is reachable only for the retry a
+// signalled wait earned (`Resumed::AfterASignal`), and a name is exactly what
+// it ignores.
+
+const DEFAULT_BUDGET: u64 = 21_600;
+
+#[test]
+fn issue_2857_a_login_already_waited_on_is_not_refused_a_re_entry() {
+    let mut m = Marks::new();
+    m.record(key("a"));
+    assert!(
+        m.refuses(&key("a"), Some(DEFAULT_BUDGET)),
+        "the ordinary refusal stands, and is what a re-entry lifts"
+    );
+    assert!(
+        !m.refuses_reentry(Some(DEFAULT_BUDGET)),
+        "the same login, with budget left, may be re-entered"
+    );
+}
+
+#[test]
+fn issue_2857_a_re_entry_is_refused_once_the_budget_is_spent() {
+    let mut m = Marks::new();
+    m.record(key("a"));
+    m.spend(599);
+    assert!(!m.refuses_reentry(Some(600)), "one second left");
+    m.spend(1);
+    assert!(m.refuses_reentry(Some(600)), "none left");
+    m.spend(u64::MAX);
+    assert!(
+        m.refuses_reentry(Some(600)),
+        "overspent saturates and still refuses"
+    );
+}
+
+#[test]
+fn issue_2857_a_zero_maximum_leaves_nothing_to_re_enter_with() {
+    let mut m = Marks::new();
+    m.record(key("a"));
+    assert!(m.refuses_reentry(Some(0)));
+}
+
+#[test]
+fn issue_2857_an_unset_maximum_falls_back_to_the_default_budget_not_to_unlimited() {
+    let mut m = Marks::new();
+    m.record(NONE);
+    m.spend(DEFAULT_BUDGET - 1);
+    assert!(!m.refuses_reentry(None), "one second of the default left");
+    m.spend(1);
+    assert!(
+        m.refuses_reentry(None),
+        "the default budget is spent: no unbounded chain when nothing sets a maximum"
+    );
+}
+
+#[test]
+fn issue_2857_a_step_that_never_named_a_login_is_re_entered_on_the_same_terms() {
+    // A step with no profile store has one mark, `None`; its single wait is
+    // refused for a second one by `refuses`, and re-entered by this.
+    let mut m = Marks::new();
+    m.record(NONE);
+    assert!(m.refuses(&NONE, Some(DEFAULT_BUDGET)));
+    assert!(!m.refuses_reentry(Some(DEFAULT_BUDGET)));
+}
+
+/// What a re-entry does not do: it does not record a mark by itself and does
+/// not change what the ordinary refusal says. The caller records the wait it
+/// starts, as for any wait, so `used` and the marks stay the step's history.
+#[test]
+fn issue_2857_asking_about_a_re_entry_changes_nothing() {
+    let mut m = Marks::new();
+    m.record(key("a"));
+    m.spend(10);
+    let before = (
+        m.used(),
+        m.remaining(Some(600)),
+        m.refuses(&key("a"), Some(600)),
+    );
+    let _ = m.refuses_reentry(Some(600));
+    let after = (
+        m.used(),
+        m.remaining(Some(600)),
+        m.refuses(&key("a"), Some(600)),
+    );
+    assert_eq!(before, after);
+}

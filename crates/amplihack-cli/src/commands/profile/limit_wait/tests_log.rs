@@ -4,6 +4,7 @@
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_log;`.
 
+use super::Met;
 use super::events::{Event, FailReason, Shape, Skip, line};
 use super::plan::{Bound, NoWait};
 use super::wait::End;
@@ -275,4 +276,94 @@ fn no_event_can_hold_a_name_a_path_or_an_address() {
         let l = line(e, &LA);
         assert!(!l.contains('@') && !l.contains('/'), "{l}");
     }
+}
+
+// --- Issue #2857: the line a re-entry writes ------------------------------
+//
+// One line per re-entry, before the new wait's `start`: `reentered met=` and
+// one of two fixed tokens naming the limit that met the retry. It is built
+// from the closed `Met` enum, so no text from the attempt's output, no login
+// name and no path can reach it. A reader grepping the log can then tell a
+// second `start` that follows a contradicted signal from one that follows a
+// new login.
+
+#[test]
+fn issue_2857_a_re_entry_line_names_the_limit_that_met_the_retry() {
+    assert_eq!(
+        line(
+            &Event::Reentered {
+                met: Met::UsageLimit
+            },
+            &LA
+        ),
+        "amplihack.recipe.usage_limit_wait reentered met=usage_limit"
+    );
+    assert_eq!(
+        line(
+            &Event::Reentered {
+                met: Met::RateLimit
+            },
+            &LA
+        ),
+        "amplihack.recipe.usage_limit_wait reentered met=rate_limit"
+    );
+}
+
+#[test]
+fn issue_2857_a_re_entry_line_has_no_other_field_and_no_zone() {
+    for met in [Met::UsageLimit, Met::RateLimit] {
+        let l = line(&Event::Reentered { met }, &LA);
+        let rest = l.strip_prefix(PREFIX).expect("the prefix");
+        let words: Vec<&str> = rest.split(' ').collect();
+        assert_eq!(words.len(), 2, "{l}");
+        assert_eq!(words[0], "reentered");
+        assert!(words[1].starts_with("met="), "{l}");
+        assert!(l.is_ascii() && !l.contains('\n'), "{l:?}");
+    }
+}
+
+// An attempt's `Output` can hold 64 KiB of the agent's own text. It is matched
+// for the two limit readings and dropped, and the type is built so that nothing
+// later can print it by accident: no `Debug` for a stray `{:?}`, no `Display`,
+// no `Clone` to keep a copy past the match, no `Serialize` to put it in a
+// record. A derive added to it fails here, with the name of the trait.
+//
+// Each probe resolves, on stable Rust, to the inherent constant when the type
+// has the trait and to the fallback trait's constant when it does not.
+macro_rules! implements {
+    ($t:ty: $tr:path) => {{
+        struct Probe<T: ?Sized>(std::marker::PhantomData<T>);
+        #[allow(dead_code)]
+        impl<T: ?Sized + $tr> Probe<T> {
+            const YES: bool = true;
+        }
+        #[allow(dead_code)]
+        trait Otherwise {
+            const YES: bool = false;
+        }
+        impl<T: ?Sized> Otherwise for Probe<T> {}
+        <Probe<$t>>::YES
+    }};
+}
+
+#[test]
+fn issue_2857_the_output_a_limit_is_read_from_cannot_be_printed_copied_or_recorded() {
+    use crate::commands::profile::attempt::Output;
+    assert!(
+        implements!(String: std::fmt::Debug),
+        "the probe finds a trait a type has"
+    );
+    assert!(
+        !implements!(Output: std::fmt::Debug),
+        "Output must not be Debug"
+    );
+    assert!(
+        !implements!(Output: std::fmt::Display),
+        "Output must not be Display"
+    );
+    assert!(!implements!(Output: Clone), "Output must not be Clone");
+    assert!(
+        !implements!(Output: serde::Serialize),
+        "Output must not be Serialize"
+    );
 }

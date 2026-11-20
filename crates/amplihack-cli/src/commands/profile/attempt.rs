@@ -281,16 +281,57 @@ pub(crate) struct Limited {
     pub(crate) spend: Option<Harness>,
 }
 
-/// `Some` when `attempt` hit its usage limit. `now` is the wait's clock.
-pub(crate) fn usage_limited(attempt: &Attempt, now: i64) -> Option<Limited> {
-    if attempt.signalled || attempt.code == 0 {
+/// A failed attempt's output, read once (issue #2857): the stderr tail it
+/// streamed and the last 64 KiB of its buffered stdout.
+///
+/// Both limit readings (the usage-limit message and the 429 envelope) are
+/// taken from the same bytes, so the two can never answer about different
+/// output. Empty for an attempt that succeeded or was signalled, which is
+/// how [`usage_limited_in`] keeps its "no need to read the output" shortcut.
+/// The bytes are matched and dropped: never stored, logged or printed.
+pub(crate) struct Output {
+    /// The attempt failed on its own, so its output is worth reading.
+    failed: bool,
+    stderr: Vec<u8>,
+    stdout: Vec<u8>,
+}
+
+impl Attempt {
+    /// This attempt's output for the limit readings, read through its own
+    /// file handle rather than by reopening its path.
+    pub(crate) fn output(&self) -> Output {
+        if self.signalled || self.code == 0 {
+            return Output {
+                failed: false,
+                stderr: Vec::new(),
+                stdout: Vec::new(),
+            };
+        }
+        let stdout = tail(&self.stdout).unwrap_or_else(|e| {
+            eprintln!("amplihack: could not read this step's buffered output: {e}");
+            Vec::new()
+        });
+        Output {
+            failed: true,
+            stderr: self.stderr_tail.clone(),
+            stdout,
+        }
+    }
+}
+
+/// Whether `o` carries a harness 429 envelope at the position
+/// [`limit_patterns::rate_limit`] reads one at (issue #2857). An attempt
+/// that succeeded or was signalled never does.
+pub(crate) fn rate_limited_in(o: &Output) -> bool {
+    o.failed && limit_patterns::rate_limit(&o.stderr, &o.stdout)
+}
+
+/// `Some` when the output `o` is a usage limit. `now` is the wait's clock.
+pub(crate) fn usage_limited_in(o: &Output, now: i64) -> Option<Limited> {
+    if !o.failed {
         return None; // no need to read the output
     }
-    let out_tail = tail(&attempt.stdout).unwrap_or_else(|e| {
-        eprintln!("amplihack: could not read this step's buffered output: {e}");
-        Vec::new()
-    });
-    let (err, out) = (&attempt.stderr_tail, &out_tail);
+    let (err, out) = (&o.stderr, &o.stdout);
     let text = joined(err, out);
     let ledger_reset = classified_reset(&text, err, out, fsx::now())?;
     let message = limit_patterns::limit_message(err, out, now);

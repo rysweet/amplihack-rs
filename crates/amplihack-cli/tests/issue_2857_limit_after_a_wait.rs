@@ -1,0 +1,559 @@
+//! Issue #2857, part 1: a limit or 429 on the first attempt after a limit wait
+//! has ended re-enters the wait, once reported, instead of ending the run.
+//!
+//! The case this comes from: a wait ends because something said *try now* (the
+//! rotator recorded capacity, the login changed). The retry it earns meets a
+//! 429 straight away, because the login the wait woke on was not usable. Before
+//! the change the step ended there, as an indeterminate failure, on the first
+//! attempt after a wait it had just finished.
+//!
+//! What these tests pin:
+//!
+//! - a 429 on the attempt a wait's own resume launched, after a wait that ended
+//!   on a positive signal, starts a capacity wait with `reset=none`, writes one
+//!   `reentered met=rate_limit` line before that wait's `start`, and the run
+//!   succeeds when the second wait's signal comes;
+//! - a usage-limit message on that attempt is planned by the ordinary planner
+//!   (`met=usage_limit`), so a message that states a near reset is a reset wait;
+//! - a wait that ended at its own ceiling earns nothing: nothing said *try*, so
+//!   the `already_waited` refusal stands, and a 429 after it is not re-entered;
+//! - the position is the whole rule. A 429 on the first attempt (no wait yet), a
+//!   429 phrase in the model's prose, or a 429 on a step where no capacity wait
+//!   could start, re-enters nothing;
+//! - the step's `max_wait_secs` budget still bounds the chain.
+//!
+//! Everything runs on the fixture's virtual clock, so no test sleeps, and
+//! nothing is asked of a delay. The rotator is a stub ledger: the stub `claude`
+//! writes the rotate ledger's cycle during the attempt it plays, stamped on the
+//! virtual clock, which is what the wait's capacity reading sees. Nothing reads
+//! or writes the real `~/.claude`, `~/.amplihack` or a real rotator.
+
+#![cfg(unix)]
+
+use crate::issue_1618_fixture::{
+    Fixture, LIMIT_TEXT, TEST_NOW, WEEKLY_TEXT, claude_stdout, describe, events, executable, text,
+};
+use crate::issue_1618_wait_profiles::with_profiles;
+use crate::issue_1801_capacity_wait::{rotator_running, x_is_live};
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+
+const MAX_WAIT_ENV: &str = "AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS";
+
+/// A 429 as the harness prints it: the envelope the recipe runner's own
+/// transient markers describe (`api error: 429`, `rate_limit_error`).
+const RATE_429: &str = r#"API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."}}"#;
+const FAILED_AGAIN: &str = "failed reason=already_waited: usage limit not lifted";
+const FAILED_EXPIRED: &str = "failed reason=capacity_expired: usage limit not lifted";
+const REENTERED_RATE: &str = "reentered met=rate_limit";
+const REENTERED_USAGE: &str = "reentered met=usage_limit";
+
+/// The stub `claude`. It is the #1618 stub with two additions, both keyed on
+/// the call number so a test can say what happens on which attempt:
+///
+/// - `LIMIT_MESSAGE_<n>` (else `LIMIT_MESSAGE`) is printed on call `n` while
+///   `n <= $LIMIT_CALLS`, on stderr, or on stdout when `LIMIT_ON_STDOUT_<n>`
+///   is set, then `LIMIT_TRAILER_<n>` on stdout if set (so a 429 can be an
+///   earlier line of the output rather than its last), and the call exits
+///   `$LIMIT_EXIT` (default 1);
+/// - `ROOM_ON_CALL` is a space-separated list of `<call>:<measured_at>:<room>`;
+///   on that call the stub replaces the rotate ledger, in one rename and
+///   private, with a `swapped` cycle whose `measured_at` and `at` are
+///   `<measured_at>` and whose `live_room` is `<room>`.
+const STUB: &str = r#"#!/bin/sh
+case "$1" in
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
+esac
+step="${STEP:-0}"
+n=$(( $(cat "$RECORD_DIR/count.$step" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$RECORD_DIR/count.$step"
+{
+  printf 'PWD=%s\n' "$(pwd -P)"
+  printf 'HOME=%s\n' "$HOME"
+  printf 'CLAUDE_CONFIG_DIR=%s\n' "${CLAUDE_CONFIG_DIR-<unset>}"
+  printf 'PROFILE=%s\n' "${AMPLIHACK_CLAUDE_PROFILE-<unset>}"
+} > "$RECORD_DIR/call.$step.$n"
+echo "attempt $n output"
+for spec in $ROOM_ON_CALL; do
+  call="${spec%%:*}"; rest="${spec#*:}"; at="${rest%%:*}"; room="${rest#*:}"
+  if [ "$call" = "$n" ]; then
+    umask 077
+    printf '{"version":1,"live":"X","alert":null,"last_cycle":{"at":%s,"measured_at":%s,"outcome":"swapped","live_room":%s}}' \
+      "$at" "$at" "$room" > "$LEDGER_DIR/ledger.json.new"
+    chmod 600 "$LEDGER_DIR/ledger.json.new"
+    mv "$LEDGER_DIR/ledger.json.new" "$LEDGER_DIR/ledger.json"
+  fi
+done
+limit="${LIMIT_CALLS:-0}"
+if [ "$n" -le "$limit" ]; then
+  eval "msg=\${LIMIT_MESSAGE_$n-\$LIMIT_MESSAGE}"
+  eval "on_stdout=\${LIMIT_ON_STDOUT_$n-}"
+  if [ -n "$on_stdout" ]; then printf '%s\n' "$msg"; else printf '%s\n' "$msg" >&2; fi
+  eval "trailer=\${LIMIT_TRAILER_$n-}"
+  if [ -n "$trailer" ]; then printf '%s\n' "$trailer"; fi
+  exit "${LIMIT_EXIT:-1}"
+fi
+exit 0
+"#;
+
+fn rotate_dir(f: &Fixture) -> PathBuf {
+    f.profiles.join(".auto-switch.d").join("rotate")
+}
+
+/// A step on `$HOME/.claude` with X live, the stub installed, and a ledger
+/// directory for the stub to write into. The rotator itself is not started:
+/// `rotator_running` is held by the caller when the case needs one.
+fn home_step(f: &Fixture) -> Command {
+    fs::create_dir_all(f.home.join(".claude")).unwrap();
+    executable(&f.tools.join("claude"), STUB);
+    x_is_live(f);
+    let mut c = f.step();
+    c.env_remove("CLAUDE_CONFIG_DIR")
+        .env("LEDGER_DIR", rotate_dir(f))
+        .env("LIMIT_MESSAGE", WEEKLY_TEXT);
+    c
+}
+
+/// `<call>:<measured_at>:<room>` offsets from the virtual clock's start.
+fn room_on(call: u32, after_start: i64, room: bool) -> String {
+    format!("{call}:{}:{room}", TEST_NOW + after_start)
+}
+
+fn count(ev: &[String], prefix: &str) -> usize {
+    ev.iter().filter(|l| l.starts_with(prefix)).count()
+}
+
+/// The first wait of the home cases below: a weekly limit, a capacity wait,
+/// woken by the rotator's fresh cycle with room that call 1 wrote.
+fn assert_first_wait_woke_on_the_rotator(ev: &[String]) {
+    assert!(
+        ev[0].starts_with("start reason=usage_limit wait=capacity harness=claude reset="),
+        "{ev:?}"
+    );
+    assert_eq!(ev[1], "end reason=rotator capacity", "{ev:?}");
+    assert_eq!(ev[2], "resume attempt=2", "{ev:?}");
+}
+
+// --- the 429 the issue is about ----------------------------------------------
+
+#[test]
+fn a_429_on_the_retry_a_rotator_wake_earned_waits_again_and_says_so_once() {
+    let f = with_profiles();
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "2")
+        .env("LIMIT_MESSAGE_2", RATE_429)
+        // Call 1 records capacity with room as the limit hits; call 2 records
+        // a newer one as the 429 hits, which is what the second wait wakes on.
+        .env(
+            "ROOM_ON_CALL",
+            format!("{} {}", room_on(1, 5, true), room_on(2, 100, true)),
+        );
+    let out = f.run(&mut c);
+    assert!(
+        out.status.success(),
+        "the run must not end indeterminate on a 429 after a wait: {}",
+        describe(&out)
+    );
+    assert_eq!(f.count("0"), 3, "limit, 429, then the attempt that works");
+    let ev = events(&out);
+    assert_eq!(ev.len(), 7, "{ev:?}");
+    assert_first_wait_woke_on_the_rotator(&ev);
+    assert_eq!(
+        ev[3], REENTERED_RATE,
+        "before the second wait's start: {ev:?}"
+    );
+    assert!(
+        ev[4].starts_with("start reason=usage_limit wait=capacity harness=claude reset=none "),
+        "a 429 states no reset, so the second wait is a capacity wait with none: {ev:?}"
+    );
+    assert_eq!(ev[5], "end reason=rotator capacity", "{ev:?}");
+    assert_eq!(ev[6], "resume attempt=3", "{ev:?}");
+    assert_eq!(
+        count(&ev, "reentered "),
+        1,
+        "reported once for the one re-entry: {ev:?}"
+    );
+    assert_eq!(claude_stdout(&out), "attempt 3 output\n");
+    f.assert_isolated("0");
+}
+
+#[test]
+fn a_429_as_the_last_line_of_stdout_counts_like_one_on_stderr() {
+    let f = with_profiles();
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "2")
+        .env("LIMIT_MESSAGE_2", RATE_429)
+        .env("LIMIT_ON_STDOUT_2", "1")
+        .env(
+            "ROOM_ON_CALL",
+            format!("{} {}", room_on(1, 5, true), room_on(2, 100, true)),
+        );
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    let ev = events(&out);
+    assert_eq!(count(&ev, "reentered "), 1, "{ev:?}");
+    assert_eq!(ev[3], REENTERED_RATE, "{ev:?}");
+}
+
+#[test]
+fn a_usage_limit_message_on_the_retry_is_planned_as_the_first_wait_was() {
+    // The retry's message states a reset an hour away, so the second wait is a
+    // reset wait, not a capacity wait: the same planner, the same checks. Only
+    // the same-login refusal is lifted.
+    let f = with_profiles();
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "2")
+        .env(
+            "LIMIT_MESSAGE_2",
+            "You've hit your session limit · resets 9:00am (America/Los_Angeles)",
+        )
+        .env("ROOM_ON_CALL", room_on(1, 5, true));
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 3);
+    let ev = events(&out);
+    assert_eq!(ev.len(), 7, "{ev:?}");
+    assert_first_wait_woke_on_the_rotator(&ev);
+    assert_eq!(ev[3], REENTERED_USAGE, "{ev:?}");
+    assert_eq!(
+        ev[4],
+        "start reason=usage_limit harness=claude reset=2026-10-18 09:00:00 -07:00 \
+         until=2026-10-18 09:02:00 -07:00 bound=reset+margin",
+        "{ev:?}"
+    );
+    assert_eq!(ev[5], "end reason=reset reached", "{ev:?}");
+    assert_eq!(ev[6], "resume attempt=3", "{ev:?}");
+}
+
+/// A reset that has already passed gives a re-entry nothing to wait on. The
+/// retry of the second wait meets the message it met before, read at 09:02:
+/// "resets 9:00am" is two minutes past, inside the grace, so a wait for it would
+/// end at once, spend none of the budget and run the same attempt again. With
+/// the stub saying it ten times, such a chain would run all ten and end in
+/// success on the eleventh. The limit is passed up as already waited on the
+/// third attempt instead, with no second `reentered` line, because the one
+/// re-entry was for a reset that was still ahead.
+#[test]
+fn a_reset_that_has_already_passed_is_not_re_entered_however_often_the_stub_says_it() {
+    let f = with_profiles();
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "10")
+        .env("ROOM_ON_CALL", room_on(1, 5, true));
+    for call in 2..=10 {
+        c.env(
+            format!("LIMIT_MESSAGE_{call}"),
+            "You've hit your session limit · resets 9:00am (America/Los_Angeles)",
+        );
+    }
+    let out = f.run(&mut c);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the limit must be passed up, not waited for ten times: {}",
+        describe(&out)
+    );
+    assert_eq!(f.count("0"), 3, "limit, re-entered limit, refused limit");
+    let ev = events(&out);
+    assert_first_wait_woke_on_the_rotator(&ev);
+    assert_eq!(ev[3], REENTERED_USAGE, "{ev:?}");
+    assert_eq!(
+        ev[4],
+        "start reason=usage_limit harness=claude reset=2026-10-18 09:00:00 -07:00 \
+         until=2026-10-18 09:02:00 -07:00 bound=reset+margin",
+        "{ev:?}"
+    );
+    assert_eq!(ev[5], "end reason=reset reached", "{ev:?}");
+    assert_eq!(ev[6], "resume attempt=3", "{ev:?}");
+    assert_eq!(
+        ev[7..],
+        ["skipped reason=already_waited", FAILED_AGAIN],
+        "{ev:?}"
+    );
+    assert_eq!(
+        count(&ev, "reentered "),
+        1,
+        "the refused limit writes no `reentered` line: {ev:?}"
+    );
+    assert!(
+        text(&out.stderr).contains("resets 9:00am"),
+        "the runner's classifier must still see the limit"
+    );
+}
+
+#[test]
+fn the_budget_of_a_step_still_bounds_the_chain_of_waits() {
+    // `max_wait_secs` is the step's whole budget. The first wait spends its 30
+    // seconds to the poll that sees the rotator; the second is planned with
+    // what is left, 15 seconds, so it ends at its own deadline before the
+    // next poll could wake it. No retry count and no timer bounds the chain:
+    // the budget does, as it always has.
+    let f = with_profiles();
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "5")
+        .env("LIMIT_MESSAGE_2", RATE_429)
+        .env(MAX_WAIT_ENV, "45")
+        .env(
+            "ROOM_ON_CALL",
+            format!("{} {}", room_on(1, 5, true), room_on(2, 100, true)),
+        );
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "no third attempt: {}", describe(&out));
+    let ev = events(&out);
+    assert_eq!(ev[3], REENTERED_RATE, "{ev:?}");
+    assert_eq!(
+        ev[ev.len() - 2..],
+        ["end reason=capacity expired", FAILED_EXPIRED],
+        "{ev:?}"
+    );
+    assert_eq!(count(&ev, "start "), 2, "{ev:?}");
+}
+
+// --- a wait that ran out earns nothing --------------------------------------
+
+/// A step with no rotator and no profile root of its own: the reset wait the
+/// stock message asks for, planned with `max_wait_secs = 0`, ends at its
+/// ceiling (`max reached`) and still gives the step its one retry.
+fn ceiling_step(f: &Fixture) -> Command {
+    executable(&f.tools.join("claude"), STUB);
+    let mut c = f.step();
+    c.env(MAX_WAIT_ENV, "0");
+    c
+}
+
+#[test]
+fn a_usage_limit_after_a_wait_that_ran_out_is_refused_as_it_always_was() {
+    let f = Fixture::new();
+    let mut c = ceiling_step(&f);
+    c.env("LIMIT_CALLS", "2");
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "one wait, one retry, then the step ends");
+    let ev = events(&out);
+    assert_eq!(count(&ev, "start "), 1, "{ev:?}");
+    assert_eq!(ev[1], "end reason=max reached", "{ev:?}");
+    assert_eq!(
+        ev[ev.len() - 2..],
+        ["skipped reason=already_waited", FAILED_AGAIN],
+        "nothing said try, so a limit after the wait is no contradiction: {ev:?}"
+    );
+    assert_eq!(count(&ev, "reentered "), 0, "{ev:?}");
+    assert!(
+        text(&out.stderr).contains(LIMIT_TEXT),
+        "the runner's classifier must still see the limit"
+    );
+}
+
+#[test]
+fn a_429_after_a_wait_that_ran_out_is_not_re_entered() {
+    let f = Fixture::new();
+    let mut c = ceiling_step(&f);
+    c.env("LIMIT_CALLS", "2").env("LIMIT_MESSAGE_2", RATE_429);
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2);
+    let ev = events(&out);
+    assert_eq!(
+        ev[1..],
+        ["end reason=max reached", "resume attempt=2"],
+        "the 429 is passed up as before; nothing waits for it: {ev:?}"
+    );
+}
+
+// --- the position is the whole rule ------------------------------------------
+
+#[test]
+fn a_429_on_the_first_attempt_starts_no_wait() {
+    let f = with_profiles();
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "1").env("LIMIT_MESSAGE_1", RATE_429);
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 1);
+    assert_eq!(events(&out), Vec::<String>::new(), "no wait, no line");
+}
+
+#[test]
+fn a_429_phrase_in_the_models_prose_after_a_wait_is_not_a_429() {
+    // The retry fails for another reason. Its stdout is the model's answer and
+    // mentions a 429, once mid-line and once as an earlier line; neither is
+    // the last non-empty line starting the way a harness 429 does.
+    let f = with_profiles();
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "2")
+        .env("ROOM_ON_CALL", room_on(1, 5, true))
+        .env(
+            "LIMIT_MESSAGE_2",
+            "The build failed: API Error: 429 was in the log, retrying",
+        )
+        .env("LIMIT_ON_STDOUT_2", "1");
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2);
+    let ev = events(&out);
+    assert_eq!(ev.len(), 3, "only the first wait: {ev:?}");
+    assert_eq!(count(&ev, "reentered "), 0, "{ev:?}");
+
+    // The same 429 as an earlier line of stdout, followed by the model's own
+    // closing line, is prose too: only the last non-empty line is read.
+    let h = with_profiles();
+    let _rotator = rotator_running(&h);
+    let mut c = home_step(&h);
+    c.env("LIMIT_CALLS", "2")
+        .env("ROOM_ON_CALL", room_on(1, 5, true))
+        .env("LIMIT_MESSAGE_2", RATE_429)
+        .env("LIMIT_ON_STDOUT_2", "1")
+        .env("LIMIT_TRAILER_2", "Sorry, I could not finish that.");
+    let out = h.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(count(&events(&out), "reentered "), 0, "{}", describe(&out));
+
+    // The positive control for the same fixture: the same message as the last
+    // line, in the shape of a harness 429, is re-entered.
+    let g = with_profiles();
+    let _rotator = rotator_running(&g);
+    let mut c = home_step(&g);
+    c.env("LIMIT_CALLS", "2")
+        .env(
+            "ROOM_ON_CALL",
+            format!("{} {}", room_on(1, 5, true), room_on(2, 100, true)),
+        )
+        .env("LIMIT_MESSAGE_2", RATE_429);
+    let out = g.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(count(&events(&out), "reentered "), 1);
+}
+
+#[test]
+fn a_429_where_no_capacity_wait_could_start_is_passed_up_not_waited_for() {
+    // No rotator is running, so nothing could end a capacity wait before its
+    // deadline. The first wait is an ordinary reset wait (no rotator needed)
+    // that reaches its reset; the 429 after it goes back to the recipe runner
+    // as it always did, with no `reentered` line and no second wait.
+    let f = with_profiles();
+    x_is_live(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_MESSAGE", LIMIT_TEXT)
+        .env("LIMIT_CALLS", "2")
+        .env("LIMIT_MESSAGE_2", RATE_429);
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2);
+    let ev = events(&out);
+    assert_eq!(count(&ev, "start "), 1, "{ev:?}");
+    assert_eq!(count(&ev, "reentered "), 0, "{ev:?}");
+    assert_eq!(ev[1], "end reason=reset reached", "{ev:?}");
+}
+
+// --- nothing else in the line, and nothing in the control path reads it back ----
+
+#[test]
+fn the_reentered_line_carries_no_account_and_no_output_text() {
+    let f = with_profiles();
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "2")
+        .env("LIMIT_MESSAGE_2", RATE_429)
+        .env(
+            "ROOM_ON_CALL",
+            format!("{} {}", room_on(1, 5, true), room_on(2, 100, true)),
+        );
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    let line = events(&out)
+        .into_iter()
+        .find(|l| l.starts_with("reentered "))
+        .expect("one reentered line");
+    assert_eq!(line, REENTERED_RATE, "closed token and nothing after it");
+    let stderr = text(&out.stderr);
+    for leaked in [
+        "rate_limit_error",
+        "account's rate limit",
+        "SENTINEL",
+        "uuid-",
+    ] {
+        let wait_lines: Vec<&str> = stderr
+            .lines()
+            .filter(|l| l.starts_with("amplihack.recipe.usage_limit_wait "))
+            .collect();
+        assert!(
+            wait_lines.iter().all(|l| !l.contains(leaked)),
+            "{leaked:?} in a wait line: {wait_lines:?}"
+        );
+    }
+}
+
+// --- both on one attempt: the usage limit decides --------------------------------
+
+#[test]
+fn a_usage_limit_beside_a_429_decides_the_wait() {
+    // The retry prints both. A usage-limit message states what is wrong and
+    // when it clears, so it is planned as one (`met=usage_limit`, a reset wait);
+    // the 429 beside it adds nothing. No capacity wait with `reset=none`.
+    let f = with_profiles();
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "2")
+        .env(
+            "LIMIT_MESSAGE_2",
+            format!(
+                "{RATE_429}\nYou've hit your session limit · resets 9:00am (America/Los_Angeles)"
+            ),
+        )
+        .env("ROOM_ON_CALL", room_on(1, 5, true));
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    let ev = events(&out);
+    assert_eq!(ev[3], REENTERED_USAGE, "{ev:?}");
+    assert!(
+        ev[4].contains(" harness=claude reset=2026-10-18 09:00:00 -07:00 "),
+        "a reset wait for the stated reset: {ev:?}"
+    );
+    assert_eq!(count(&ev, "reentered "), 1, "{ev:?}");
+}
+
+// --- the rotator is not told a 429 was a limit -------------------------------------
+
+/// A 429 on the retry records no profile as limited and moves nothing: the
+/// re-entry is a wait on the login the step is on, and the step's own login
+/// is unchanged after it. The rotate ledger's live login is the one the
+/// retry runs on, both times.
+#[test]
+fn a_429_re_entry_runs_the_retry_on_the_login_the_step_was_on() {
+    let f = with_profiles();
+    let _rotator = rotator_running(&f);
+    let mut c = home_step(&f);
+    c.env("LIMIT_CALLS", "2")
+        .env("LIMIT_MESSAGE_2", RATE_429)
+        .env(
+            "ROOM_ON_CALL",
+            format!("{} {}", room_on(1, 5, true), room_on(2, 100, true)),
+        );
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 3);
+    for n in 1..=3 {
+        assert_eq!(
+            f.call("0", n)["CLAUDE_CONFIG_DIR"],
+            "<unset>",
+            "call {n} ran on $HOME/.claude, as the step did"
+        );
+    }
+    // Nothing was recorded against the profile store: no login was marked
+    // limited and no usage reading was written by the 429.
+    assert!(
+        !f.profiles
+            .join(".auto-switch.d")
+            .join("usage.json")
+            .exists(),
+        "a 429 is not a usage reading and records no profile as limited"
+    );
+}

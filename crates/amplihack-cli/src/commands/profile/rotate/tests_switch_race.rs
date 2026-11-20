@@ -80,6 +80,7 @@ fn a_hand_pin_and_a_record(ctx: &Ctx) {
         measured_at: Some(now()),
         outcome: "stayed".into(),
         overflow: None,
+        live_room: None,
     });
     ctx.rs.save_ledger(&l).unwrap();
 }

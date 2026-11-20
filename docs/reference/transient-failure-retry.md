@@ -101,6 +101,18 @@ its table there.
   or the wait was turned off. See the
   [usage-limit wait](./profile-command.md#usage-limit-wait).
 
+- **A 429 straight after a wait is waited out too, and is still `transient_transport` here.**
+  When a wait ends because something said to try again and the first attempt
+  after it ends on a 429 report, the wait supervisor waits again instead of
+  passing the failure up as `indeterminate`, provided a capacity wait could
+  start for the step. Without that the 429 is classified and retried by the
+  [rules below](#classification) as before, as is a 429 anywhere else, and a
+  429 is never filed as `usage_limit`. The four 429 phrases in the table are
+  held in one list, and both the table's marker row and the wait's reading are
+  built from it, so the two cannot name different phrases. The position and
+  line rules for the wait's reading are in
+  [A limit after a wait](./profile-command.md#a-limit-after-a-wait).
+
 - **`5-hour limit` is the session window's newer name (#2230).** Claude Code
   now reports the session window this way:
 

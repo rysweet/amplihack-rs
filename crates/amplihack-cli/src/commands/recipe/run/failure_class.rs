@@ -299,7 +299,7 @@ pub(crate) fn classify_failure_text(text: &str) -> (FailureClass, Option<&'stati
     if let Some(marker) = first_match(&haystack, AGENT_API_MARKERS) {
         return (FailureClass::AgentApi, Some(marker));
     }
-    if let Some(marker) = first_match(&haystack, TRANSIENT_MARKERS) {
+    if let Some(marker) = first_match(&haystack, &TRANSIENT_MARKERS) {
         return (FailureClass::TransientTransport, Some(marker));
     }
     (FailureClass::Indeterminate, None)
