@@ -392,8 +392,9 @@ set -u
 root="${QA_SCENARIO_ROOT:?}"
 if [ "${1-}" = "--version" ]; then echo "2.0.0 (Claude Code)"; exit 0; fi
 input="$(cat)"
-first="$(printf '%s\n' "$input" | head -n 1)"
-hash="$(printf '%s' "$input" | sha256sum | cut -d' ' -f1)"
+first="${input%%$'\n'*}"   # the prompt's first line
+hash="$(printf '%s' "$input" | sha256sum)"
+hash="${hash%% *}"         # sha256sum prints the digest, two spaces, then the name
 
 # The first call leaves one repository copy with a file nobody committed, in
 # this process's own TMPDIR, for part 3.
@@ -407,9 +408,8 @@ if [ ! -e "$marker" ]; then
 fi
 
 # In a work tree on a branch other than main, there is a change to commit.
-if [ "$(git branch --show-current 2>/dev/null)" != "" ] \
-   && [ "$(git branch --show-current 2>/dev/null)" != main ] \
-   && [ ! -e feature.txt ]; then
+branch="$(git branch --show-current 2>/dev/null)"
+if [ -n "$branch" ] && [ "$branch" != main ] && [ ! -e feature.txt ]; then
   printf 'qa feature\n' > feature.txt
 fi
 
