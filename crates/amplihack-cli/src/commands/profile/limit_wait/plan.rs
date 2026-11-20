@@ -188,6 +188,12 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
+    /// Whether this wait is for the login in `$HOME/.claude` changing, and
+    /// for nothing else (issue #2731). The reader of the private field.
+    pub(crate) fn is_login_change(&self) -> bool {
+        self.login_change
+    }
+
     /// Whether a capacity reading may end this wait.
     ///
     /// True for a reset wait (issue #2694: a login with room ends it rather
@@ -198,7 +204,7 @@ impl Plan {
     /// looking healthy, so a reading would end the wait and send the step
     /// back onto the same spent login.
     pub(crate) fn capacity_may_end(&self) -> bool {
-        !self.login_change
+        !self.is_login_change()
     }
 
     /// Whether this wait would end the moment it began, because the reset it

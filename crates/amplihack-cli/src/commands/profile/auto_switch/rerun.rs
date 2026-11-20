@@ -20,8 +20,7 @@ use super::state::{Ledger, State};
 use super::takeover::{capacity_candidate, profile_check};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
-    Attempt, Limited, Signals, note_key_error, rate_limited_in, run_attempt_with_recovery,
-    usage_limited_in,
+    Attempt, Limited, Signals, note_key_error, run_attempt_with_recovery,
 };
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
@@ -576,7 +575,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // it is everywhere else.
         let resumed_on_a_signal = waiter.resumed_on_a_signal();
         let output = attempt.output();
-        let limited = usage_limited_in(&output, waiter.now());
+        let limited = output.usage_limited(waiter.now());
         // Issue #2857, part 1: the retry a wait earned was rejected at once,
         // so the signal that ended that wait was wrong about the login. A
         // usage-limit message says what is wrong and when it clears, so it
@@ -584,7 +583,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         let met = match (&limited, resumed_on_a_signal) {
             (_, false) => None,
             (Some(_), true) => Some(Met::UsageLimit),
-            (None, true) => rate_limited_in(&output).then_some(Met::RateLimit),
+            (None, true) => output.rate_limited().then_some(Met::RateLimit),
         };
         if limited.is_none() && met.is_none() {
             return finish(attempt, None, &stdin);
@@ -604,10 +603,33 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         if let Some(client) = &recovery {
             client.outcome(recipe_runner_rs::recovery::model::Outcome::UsageLimit)?;
         }
-        // Issue #2857: a usage limit decides the wait, as it always has.
-        // The 429 path below is reached only when there is no limit
-        // message at all, so a retry that printed both is planned by the
-        // message and the 429 beside it adds nothing.
+        // Issue #2857: a bare 429 on the retry a signalled wait earned, which
+        // is the only way past the return above with no limit message. It
+        // states no reset, so what it asks for is a capacity wait, and only
+        // where one could start at all: the same check issue #1801 makes for
+        // a limit that states no readable reset. With nothing that could end
+        // such a wait, the 429 goes back to the recipe runner as the
+        // transient fault it is everywhere else, and no line is written.
+        //
+        // Nothing is recorded against any account here. A 429 is not a
+        // reading of a login's windows, so no profile is marked limited and
+        // no auto-switch candidate is chosen: the step waits on the login it
+        // is on.
+        if limited.is_none() {
+            let planned = plan::upgrade(
+                WaitFor::Skip(NoWait::NoReset),
+                Some((Harness::Claude, None)),
+                || takeover(&waiter),
+            );
+            if !matches!(planned, WaitFor::Capacity { .. }) {
+                return finish(attempt, None, &stdin);
+            }
+            inherited_wait = Some(planned);
+        }
+        // Issue #2857: a usage limit decides the wait, as it always has. The
+        // 429 arm above ran only when there is no limit message at all, so a
+        // retry that printed both is planned by the message here and the 429
+        // beside it adds nothing.
         if let Some(lim) = &limited {
             if profile.is_none() {
                 // This attempt ran under the inherited profile: its limit is the
@@ -702,28 +724,6 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                     continue;
                 }
             }
-        } else {
-            // Issue #2857: a bare 429 on the retry a signalled wait
-            // earned. It states no reset, so what it asks for is a
-            // capacity wait, and only where one could start at all: the
-            // same check issue #1801 makes for a limit that states no
-            // readable reset. With nothing that could end such a wait,
-            // the 429 goes back to the recipe runner as the transient
-            // fault it is everywhere else, and no line is written.
-            //
-            // Nothing is recorded against any account here. A 429 is not
-            // a reading of a login's windows, so no profile is marked
-            // limited and no auto-switch candidate is chosen: the step
-            // waits on the login it is on.
-            let planned = plan::upgrade(
-                WaitFor::Skip(NoWait::NoReset),
-                Some((Harness::Claude, None)),
-                || takeover(&waiter),
-            );
-            if !matches!(planned, WaitFor::Capacity { .. }) {
-                return finish(attempt, None, &stdin);
-            }
-            inherited_wait = Some(planned);
         }
         // Set by now unless the inherited profile never ran and has no
         // known reset: a candidate's limit is another account's and never

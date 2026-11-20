@@ -163,11 +163,13 @@ where
 }
 
 /// The line a wait appends to the run's recipe log, or `None` for an event
-/// that does not belong there (issue #2731). Only a wait's `start` and `end`
-/// do: the recipe log says that the step is waiting, on which login, until
-/// when and how the wait ended, and the step's stderr keeps the rest.
+/// that does not belong there (issue #2731). Only a wait's `start` and `end`,
+/// and the `reentered` between two of them (issue #2857), do: the recipe log
+/// says that the step is waiting, on which login, until when, how the wait
+/// ended and whether the step went back into one, and the step's stderr keeps
+/// the rest.
 ///
-/// The `end` line is the stderr one. The `start` line is the stderr one with
+/// The `end` and `reentered` lines are the stderr ones. The `start` line is the stderr one with
 /// `harness=` dropped and `account=` put in its place, so one `grep` over
 /// both sinks reads as one stream. `account` is re-validated here, at the
 /// one point where a login name can reach a file: a name outside the
@@ -192,8 +194,7 @@ where
                 start_body(*shape, &who, *reset, *until, *bound, tz)
             ))
         }
-        Event::End(_) => Some(line(e, tz)),
-        Event::Reentered { .. } => Some(line(e, tz)),
+        Event::End(_) | Event::Reentered { .. } => Some(line(e, tz)),
         _ => None,
     }
 }

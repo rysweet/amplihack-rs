@@ -81,7 +81,7 @@ impl Marks {
     /// [`Plan::ends_at_once`]: super::plan::Plan::ends_at_once
     /// [`plan::CAPACITY_DEFAULT_MAX`]: super::plan::CAPACITY_DEFAULT_MAX
     pub(crate) fn refuses_reentry(&self, max: Option<u64>) -> bool {
-        self.remaining(Some(max.unwrap_or(super::plan::CAPACITY_DEFAULT_MAX))) == Some(0)
+        self.spent >= max.unwrap_or(super::plan::CAPACITY_DEFAULT_MAX)
     }
 
     /// Records a wait on `mark`, whether or not it slept.

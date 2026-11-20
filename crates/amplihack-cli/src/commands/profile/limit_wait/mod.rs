@@ -456,19 +456,22 @@ impl Waiter {
         // a re-entry is only *reported* when it lifted that refusal, so a
         // retry that merely landed on a login this step has never waited on
         // is an ordinary first wait for that login and reads as one.
-        let waited_on_this_login = self.marks.refuses(&mark, max);
+        let ordinarily_refused = self.marks.refuses(&mark, max);
         let met = match resumed {
             Resumed::AfterASignal(met) => Some(met),
             Resumed::Ordinarily => None,
         };
+        // The one re-entry #2857 buys, when this is one: a signal said the
+        // login was usable, this limit contradicts it, and the ordinary rule
+        // would have refused the wait. Read twice below, so it is decided
+        // once here.
+        let reentry = met.filter(|_| ordinarily_refused);
         let refused = match met {
             Some(_) => self.marks.refuses_reentry(max),
-            None => waited_on_this_login,
+            None => ordinarily_refused,
         };
         if refused {
-            log(&Event::Skipped(Skip::AlreadyWaited));
-            log(&Event::Failed(FailReason::AlreadyWaited));
-            return AfterLimit::Finish(None);
+            return already_waited();
         }
         let now = self.clock.now();
         let step = self.step_timeout.map(|t| (self.step_start, t));
@@ -504,10 +507,8 @@ impl Waiter {
         // refusal is of the *lifted* rule only: the same plan on a login this
         // step has not waited on is that login's first wait and keeps its
         // grace.
-        if met.is_some() && waited_on_this_login && p.ends_at_once(now) {
-            log(&Event::Skipped(Skip::AlreadyWaited));
-            log(&Event::Failed(FailReason::AlreadyWaited));
-            return AfterLimit::Finish(None);
+        if reentry.is_some() && p.ends_at_once(now) {
+            return already_waited();
         }
         self.marks.record(mark.clone());
         let account = mark.as_deref();
@@ -522,7 +523,7 @@ impl Waiter {
         // still refuse this wait and before the wait's own `start`, so a
         // refused re-entry and a re-entry whose limit the planner skipped
         // both write nothing.
-        if let Some(met) = met.filter(|_| waited_on_this_login) {
+        if let Some(met) = reentry {
             emit(&Event::Reentered { met }, account);
         }
         emit(
@@ -640,6 +641,20 @@ impl Waiter {
     }
 }
 
+/// The step ends on the limit it hit, because it has no wait left to make:
+/// the `skipped` line saying so, the closing line, and the result.
+///
+/// The two refusals in [`Waiter::after_limit`] that end a step this way are
+/// the same refusal reached twice: the same-login or spent-budget rule
+/// (#2731), and, for the one re-entry a contradicted signal earns, a plan
+/// with nothing left to wait on (#2857). They write the same pair of lines
+/// because a reader has the same question either way.
+fn already_waited() -> AfterLimit {
+    log(&Event::Skipped(Skip::AlreadyWaited));
+    log(&Event::Failed(FailReason::AlreadyWaited));
+    AfterLimit::Finish(None)
+}
+
 /// Whether the retry this wait earned has no prompt to read, asked of
 /// `replay` the moment before the retry would be announced (issue #2816).
 ///
@@ -700,7 +715,7 @@ fn no_prompt_for_a_retry(replay: &mut dyn FnMut() -> Option<String>) -> bool {
 /// That costs an early wake during a rotator upgrade and nothing else; the
 /// opposite direction is the bug.
 fn change_may_end(plan: &plan::Plan, watch: &Watch) -> bool {
-    if !plan.capacity_may_end() || !watch.is_home() {
+    if plan.is_login_change() || !watch.is_home() {
         return true;
     }
     match watch.rotator_state() {
