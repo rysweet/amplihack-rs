@@ -94,13 +94,7 @@ steps:
       case "$R" in DONE|WAITING) OUTCOME=done; FINALISE=true ;; *) OUTCOME=handoff; FINALISE=false ;; esac
       # The driver posts its own stop comment for a budget stop (post_stop).
       case "$R" in BUDGET_EXHAUSTED) POSTED=true ;; *) POSTED=false ;; esac
-      # #2849: the reason now travels in the hand-off's fenced `handoff_blocker`
-      # slot, so it must not be able to forge or close that fence. `<` and `>`
-      # become `_`, as the tool's own quote filter already does for the
-      # driver's last line; the rest of the reason can come from the driver's
-      # result file, which no filter touches. Everything else about the text
-      # is unchanged: printable ASCII, cut at 1000 characters.
-      REASON="$(printf 'loop result %s: %s' "$R" "$WHY" | LC_ALL=C tr -cd '\040-\176' | LC_ALL=C tr '<>' '__' | head -c 1000)"
+      REASON="$(printf 'loop result %s: %s' "$R" "$WHY" | LC_ALL=C tr -cd '\040-\176' | head -c 1000)"
       # The preflight output may hold prose around its JSON, as step-02 reads it.
       REPO="$(printf '%s' "${RECIPE_VAR_merge_loop_preflight:-}" | amplihack orch helper extract-json --require-field repo \
               | amplihack orch helper extract-field --field repo --default '')"
@@ -122,14 +116,8 @@ steps:
     context:
       pr_number: "{{merge_loop_preflight.pr}}"
       head_sha: "{{merge_loop_outcome.head_sha}}"
-      # #2849: the loop's reason can now carry the driver's own last line,
-      # which is untrusted text from an agent, a PR or a log. It goes in the
-      # fenced `handoff_blocker` slot, which the prompt tells its agent to
-      # follow no instruction from, and never in the trusted "Why the drive
-      # stopped" sentence. The base-sync hand-off below and the finalisation
-      # hand-off already pass their dynamic text this way.
-      handoff_reason: "the merge-ready loop stopped without a merge-ready verdict; the loop's own account of it is the blocker below"
-      handoff_blocker: "{{merge_loop_outcome.reason}}"
+      handoff_reason: "{{merge_loop_outcome.reason}}"
+      handoff_blocker: ""
       autodrive_state_dir: "{{merge_loop_preflight.state_dir}}"
       stop_comment_posted: "{{merge_loop_outcome.stop_comment_posted}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
@@ -243,13 +231,7 @@ steps:
       case "$R" in DONE|WAITING) OUTCOME=done; FINALISE=true ;; *) OUTCOME=handoff; FINALISE=false ;; esac
       # The driver posts its own stop comment for a budget stop (post_stop).
       case "$R" in BUDGET_EXHAUSTED) POSTED=true ;; *) POSTED=false ;; esac
-      # #2849: the reason now travels in the hand-off's fenced `handoff_blocker`
-      # slot, so it must not be able to forge or close that fence. `<` and `>`
-      # become `_`, as the tool's own quote filter already does for the
-      # driver's last line; the rest of the reason can come from the driver's
-      # result file, which no filter touches. Everything else about the text
-      # is unchanged: printable ASCII, cut at 1000 characters.
-      REASON="$(printf 'loop result %s: %s' "$R" "$WHY" | LC_ALL=C tr -cd '\040-\176' | LC_ALL=C tr '<>' '__' | head -c 1000)"
+      REASON="$(printf 'loop result %s: %s' "$R" "$WHY" | LC_ALL=C tr -cd '\040-\176' | head -c 1000)"
       # The preflight output may hold prose around its JSON, as step-02 reads it.
       REPO="$(printf '%s' "${RECIPE_VAR_merge_loop_preflight:-}" | amplihack orch helper extract-json --require-field repo \
               | amplihack orch helper extract-field --field repo --default '')"
