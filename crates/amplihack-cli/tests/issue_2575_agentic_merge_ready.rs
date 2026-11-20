@@ -195,11 +195,9 @@ fi
 [ -f "$S/loop_stdout" ] && cat "$S/loop_stdout"
 # #2849: what a driver that dies noisily leaves behind. `loop_stderr` is
 # written to standard error after `loop_stdout`; `loop_result_raw` is written
-# verbatim as a partial result file; `loop_swap_to` makes the driver replace
-# the kept output file with a link to that path while it runs.
+# verbatim as a partial result file.
 [ -f "$S/loop_stderr" ] && cat "$S/loop_stderr" >&2
 [ -f "$S/loop_result_raw" ] && ( umask 077; cp "$S/loop_result_raw" "$dir/merge-ready-result.json" )
-[ -f "$S/loop_swap_to" ] && { rm -f "$dir/merge-ready-driver.err"; ln -s "$(cat "$S/loop_swap_to")" "$dir/merge-ready-driver.err"; }
 exit "$(cat "$S/loop_rc" 2>/dev/null || echo 0)"
 "#;
 
