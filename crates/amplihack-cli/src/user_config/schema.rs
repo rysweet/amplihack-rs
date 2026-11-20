@@ -31,6 +31,10 @@ pub(crate) enum Scope {
 pub(crate) enum ValueKind {
     /// One of the allowlisted agent CLIs, canonicalised to lowercase.
     AgentBinary,
+    /// A model id amplihack is willing to put on a command line, validated
+    /// by the one checker every model string crosses
+    /// ([`crate::commands::launch::model_tiers::table::validate_model_id`]).
+    ModelId,
     /// An absolute path, without `..`, control characters or NUL, at most
     /// [`MAX_PATH_BYTES`].
     AbsPath,
@@ -42,7 +46,16 @@ pub(crate) enum ValueKind {
     Choice(&'static [&'static str]),
     /// A tmux session-name pattern: see [`validate_session_pattern`].
     SessionPattern,
+    /// A TOML array of command prefixes, each validated as a
+    /// [`crate::policy::Prefix`], at most [`MAX_DENY_COMMANDS`] of them
+    /// (issue #2589). Set by editing the user file: `config set` writes
+    /// scalars only.
+    CommandList,
 }
+
+/// Most dangerous-command entries one file may add (issue #2589). The
+/// shipped defaults are in code and are not counted against it.
+pub(crate) const MAX_DENY_COMMANDS: usize = 64;
 
 /// The values of `recipe.detach`.
 pub(crate) const DETACH_MODES: &[&str] = &["tmux", "none"];
@@ -66,6 +79,8 @@ pub(crate) enum Value {
     Bool(bool),
     Int(u64),
     Text(String),
+    /// A list of command prefixes (issue #2589).
+    List(Vec<String>),
 }
 
 impl Value {
@@ -75,6 +90,9 @@ impl Value {
             Value::Bool(value) => value.to_string(),
             Value::Int(value) => value.to_string(),
             Value::Text(value) => value.clone(),
+            // `config get` prints one value; the entries read best on one
+            // line, which is also how `config list` shows them.
+            Value::List(values) => values.join(", "),
         }
     }
 
@@ -98,6 +116,13 @@ impl Value {
             _ => None,
         }
     }
+
+    pub(crate) fn as_list(&self) -> Option<&[String]> {
+        match self {
+            Value::List(values) => Some(values),
+            _ => None,
+        }
+    }
 }
 
 /// TOML syntax: strings quoted and escaped, bools and integers bare.
@@ -106,6 +131,16 @@ impl fmt::Display for Value {
         match self {
             Value::Bool(value) => write!(f, "{value}"),
             Value::Int(value) => write!(f, "{value}"),
+            Value::List(values) => {
+                f.write_str("[")?;
+                for (index, value) in values.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{}", Value::Text(value.clone()))?;
+                }
+                f.write_str("]")
+            }
             Value::Text(value) => {
                 f.write_str("\"")?;
                 for c in value.chars() {
@@ -257,6 +292,18 @@ pub(crate) static KEYS: &[KeyDef] = &[
         lower_only: true,
     },
     KeyDef {
+        // Issue #2589: the dangerous-command entries this installation adds
+        // to the shipped list. User-only, because a cloned repository must
+        // not change what any harness denies, and with no variable, because
+        // a deny list one exported variable can empty is not one.
+        name: "policy.deny_commands",
+        scope: Scope::UserOnly,
+        kind: ValueKind::CommandList,
+        env: None,
+        default: None,
+        lower_only: false,
+    },
+    KeyDef {
         name: "orchestrator.max_depth",
         scope: Scope::UserAndProject,
         kind: ValueKind::Int {
@@ -266,6 +313,65 @@ pub(crate) static KEYS: &[KeyDef] = &[
         env: Some("AMPLIHACK_MAX_DEPTH"),
         default: Some(DEFAULT_MAX_DEPTH),
         lower_only: true,
+    },
+    KeyDef {
+        name: "model.force",
+        // Issue #1619: names the model every launch asks for, and lands as
+        // the argv token right after `--model`. A cloned repository must not
+        // choose it (the reason the review of #1647 gave for `agent.binary`).
+        scope: Scope::UserOnly,
+        kind: ValueKind::ModelId,
+        env: Some("AMPLIHACK_FORCE_MODEL"),
+        default: None,
+        lower_only: false,
+    },
+    KeyDef {
+        name: "model.tier_map",
+        // Issue #1619: the instance's tier mapping, including the
+        // `[step_tiers]` table that drives amplihack's rewriting of recipe
+        // YAML, whose bash step bodies execute. A path, and it decides which
+        // model every agent step asks for, so user-only. No variable: it is
+        // set deliberately in the user's own config, not picked up from an
+        // inherited environment.
+        scope: Scope::UserOnly,
+        kind: ValueKind::AbsPath,
+        env: None,
+        default: None,
+        lower_only: false,
+    },
+    KeyDef {
+        name: "review.combined_small_diff",
+        // Issue #1619: a small change may have its code, security and
+        // philosophy passes as one review. Off by default, so the three
+        // separate passes run exactly as they did before.
+        //
+        // User-only for the reason `model.force` above is: the review step
+        // reads this from inside the worktree under review, so a project
+        // value would let a cloned repository replace its own dedicated
+        // security and philosophy passes with one generalist pass.
+        scope: Scope::UserOnly,
+        kind: ValueKind::Bool,
+        env: None,
+        default: Some("false"),
+        lower_only: false,
+    },
+    KeyDef {
+        name: "review.combined_diff_threshold",
+        // Changed lines at or below which a diff counts as small. A
+        // threshold of zero would mean no diff is ever small, which is what
+        // turning the switch off already does.
+        //
+        // User-only with the switch it bounds: a project-settable threshold
+        // of 100000 makes every diff small and is the same control by
+        // another name.
+        scope: Scope::UserOnly,
+        kind: ValueKind::Int {
+            min: 1,
+            max: 100_000,
+        },
+        env: None,
+        default: Some("200"),
+        lower_only: false,
     },
     super::schema_governor::GOVERNOR_ENABLED,
     super::schema_governor::GOVERNOR_MAX_CONCURRENCY,
@@ -343,6 +449,14 @@ pub(crate) fn parse_raw(kind: ValueKind, raw: &str) -> Result<Value, String> {
         ValueKind::AgentBinary => validate_binary_name(raw)
             .map(Value::Text)
             .ok_or_else(|| kind_requirement(kind)),
+        // Checked on whatever the caller passes, and the value stored is
+        // the one checked. The file path hands over the raw input; the
+        // environment path trims first (`load.rs`), which rejects everything
+        // raw validation would and stores the trimmed value, so neither can
+        // hide a leading dash from a later reader.
+        ValueKind::ModelId => crate::commands::launch::model_tiers::table::validate_model_id(raw)
+            .map(|()| Value::Text(raw.to_string()))
+            .map_err(|_| kind_requirement(kind)),
         ValueKind::AbsPath => validate_abs_path(raw).map(|()| Value::Text(raw.to_string())),
         ValueKind::Choice(words) => words
             .iter()
@@ -357,6 +471,12 @@ pub(crate) fn parse_raw(kind: ValueKind, raw: &str) -> Result<Value, String> {
             "false" => Ok(Value::Bool(false)),
             _ => Err(kind_requirement(kind)),
         },
+        // A list is never typed on the command line or read from a
+        // variable, so the reason says where it is set instead of
+        // describing a value the caller cannot supply here.
+        ValueKind::CommandList => Err("is a list and is set by editing the user file \
+             ~/.amplihack/config.toml, not from the command line"
+            .to_string()),
         ValueKind::Int { min, max } => {
             if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(kind_requirement(kind));
@@ -375,10 +495,21 @@ pub(crate) fn from_toml(kind: ValueKind, item: &toml_edit::Value) -> Result<Valu
         (
             ValueKind::AgentBinary
             | ValueKind::AbsPath
+            | ValueKind::ModelId
             | ValueKind::Choice(_)
             | ValueKind::SessionPattern,
             toml_edit::Value::String(s),
         ) => parse_raw(kind, s.value()),
+        (ValueKind::CommandList, toml_edit::Value::Array(array)) => {
+            let mut entries = Vec::with_capacity(array.len());
+            for item in array.iter() {
+                let Some(text) = item.as_str() else {
+                    return Err(kind_requirement(kind));
+                };
+                entries.push(text.to_string());
+            }
+            parse_command_list(&entries)
+        }
         (ValueKind::Bool, toml_edit::Value::Boolean(b)) => Ok(Value::Bool(*b.value())),
         (ValueKind::Int { .. }, toml_edit::Value::Integer(i)) => {
             let value = *i.value();
@@ -395,11 +526,25 @@ pub(crate) fn from_toml(kind: ValueKind, item: &toml_edit::Value) -> Result<Valu
 pub(crate) fn kind_requirement(kind: ValueKind) -> String {
     match kind {
         ValueKind::AgentBinary => "must be one of amplifier, claude, codex or copilot".to_string(),
+        // The length comes from the checker itself, so the requirement this
+        // prints cannot outlive a change to it.
+        ValueKind::ModelId => format!(
+            "must be a model id of at most {} letters, digits and '.', '_', '-', '[', ']', \
+             '@' or ':', not starting with '-'",
+            crate::commands::launch::model_tiers::table::MAX_MODEL_ID_BYTES
+        ),
         ValueKind::AbsPath => format!(
             "must be an absolute path without '..', control characters or NUL, at most \
              {MAX_PATH_BYTES} bytes"
         ),
         ValueKind::Bool => "must be true or false".to_string(),
+        ValueKind::CommandList => format!(
+            "must be a TOML array of at most {MAX_DENY_COMMANDS} command prefixes, each 1 to \
+             {} bytes of ASCII letters, digits and the characters . _ - / @ = +, holding at \
+             most {} words separated by exactly one space",
+            crate::policy::prefix::MAX_BYTES,
+            crate::policy::prefix::MAX_TOKENS
+        ),
         ValueKind::Choice(words) => format!("must be one of {}", words.join(", ")),
         ValueKind::SessionPattern => format!(
             "must be 1 to {MAX_SESSION_PATTERN_CHARS} characters of letters, digits, '-' and \
@@ -411,6 +556,23 @@ pub(crate) fn kind_requirement(kind: ValueKind) -> String {
         }
         ValueKind::Int { min, max } => format!("must be an integer from {min} to {max}"),
     }
+}
+
+/// Validate the entries of a `policy.deny_commands` value (issue #2589).
+///
+/// One bad entry rejects the whole value: an entry silently dropped from a
+/// deny list is worse than a value refused with a reason, because the list
+/// that remains would still be believed. The reason never quotes the entry,
+/// which is attacker-chosen; the caller escapes it when it shows it.
+pub(crate) fn parse_command_list(entries: &[String]) -> Result<Value, String> {
+    let requirement = || kind_requirement(ValueKind::CommandList);
+    if entries.len() > MAX_DENY_COMMANDS {
+        return Err(requirement());
+    }
+    for entry in entries {
+        crate::policy::Prefix::try_from(entry.as_str()).map_err(|_| requirement())?;
+    }
+    Ok(Value::List(entries.to_vec()))
 }
 
 /// The syntactic checks every path value passes: absolute, no `..`

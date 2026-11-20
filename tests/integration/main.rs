@@ -26,6 +26,13 @@ mod investigation_workflow_decomposition;
 mod isolated_amplihack;
 #[path = "isolated_amplihack_scan.rs"]
 mod isolated_amplihack_scan;
+// Issue #2658: the real-runner tests build or reuse recipe-runner-rs at the
+// pinned revision instead of using whatever the host has installed.
+#[path = "../support/pinned_runner.rs"]
+mod pinned_runner;
+// The helper's unit tests run in this binary only.
+#[path = "../support/pinned_runner_tests.rs"]
+mod pinned_runner_tests;
 
 // Issue #1973: condition waits with one ceiling, shared with cli_integration.
 #[path = "../../crates/amplihack-cli/tests/support/wait.rs"]
@@ -477,6 +484,10 @@ mod issue_1510_collector_agent_prose;
 #[path = "auto_drive_to_merge_test.rs"]
 mod auto_drive_to_merge;
 
+// Issue #2458: the base qa.toml declares how merge-ready criterion 1 is met.
+#[path = "issue_2458_qa_declaration_test.rs"]
+mod issue_2458_qa_declaration;
+
 // Issue #1641: a resumed run whose branch already has an open, same-repo PR
 // with green checks (or pending/no CI plus this run's typed precommit evidence)
 // finalizes as EXISTING_OPEN_PR instead of FAILED_IMPLEMENTATION; a failing
@@ -504,6 +515,14 @@ mod issue_1642_github_origin_parsing;
 #[path = "issue_1762_caller_branch_alias_test.rs"]
 mod issue_1762_caller_branch_alias;
 
+// Issue #2471 (first slice of #2472): a failed push step (15, 18c) gets
+// an agentic recovery. The real steps, taken by id, run through
+// recipe-runner-rs against a bare remote whose pre-receive hook rejects an
+// inherited RECIPE_VAR_issue_number, with a fake agent. Skipped without the
+// runner; CI installs it.
+#[path = "push_failure_recovery.rs"]
+mod push_failure_recovery;
+
 // Issue #1697: bundled journalistic-writing-style skill — content, trigger
 // separation from documentation-writing, registration, isolated install.
 #[path = "journalistic_writing_style_skill_test.rs"]
@@ -523,6 +542,15 @@ mod issue_1764_git_never_prompts;
 #[path = "issue_1771_precommit_symlinked_caches_test.rs"]
 mod issue_1771_precommit_symlinked_caches;
 
+// Issue #2712: a recipe shell suite started inside a recipe run inherited
+// AMPLIHACK_WORK_ROOT and AMPLIHACK_WORK_ROOT_EXPLICIT=1 and put its
+// worktrees in the shared work root, outside its own EXIT trap. Runs
+// test-default-workflow-reliability.sh with an explicit work root supplied
+// from outside and requires that directory to stay empty, plus two unit tests
+// of the shared setup fragment the suites source.
+#[path = "issue_2712_recipe_test_work_root.rs"]
+mod issue_2712_recipe_test_work_root;
+
 // Issue #1966: is_critical_code is a required caller input. consensus-workflow
 // step 0 and consensus-tdd-impl reject a missing or malformed value before any
 // route, and the route gate fails unless exactly one route completed. Static
@@ -530,3 +558,19 @@ mod issue_1771_precommit_symlinked_caches;
 // recipe-runner-rs with agent steps stubbed, all under isolated(..).
 #[path = "issue_1966_consensus_criticality.rs"]
 mod issue_1966_consensus_criticality;
+
+// Issue #1619 (TDD): the small-diff combined review. Runs the review-mode
+// step's script against a temporary git repository with the settings in a
+// temporary home, and checks the answer it prints in each case.
+#[path = "issue_1619_review_mode_test.rs"]
+mod issue_1619_review_mode;
+
+// Issue #1619: a step whose shell body was extracted into
+// amplifier-bundle/tools/ for the brick budget still has to be readable by
+// the tests that assert on it. One place follows the call-out.
+#[path = "recipe_step_body.rs"]
+mod recipe_step_body;
+
+// Issues #2343, #1726, #2809: finalization reads the run's real outcome.
+#[path = "issue_2343_finalization_outcome.rs"]
+mod issue_2343_finalization_outcome;

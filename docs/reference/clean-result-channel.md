@@ -484,3 +484,4 @@ scraping stdout. See the PR body for the exact pinned-rev bump.
 - [RecipeResult Reference](./recipe-result.md)
 - [Rust Runner Execution](./rust-runner-execution.md)
 - [Recipe Runner Logging](./recipe-runner-logging.md)
+- [Launcher Output Streams Reference](./launcher-output-streams.md) for the notices the launcher writes to stderr

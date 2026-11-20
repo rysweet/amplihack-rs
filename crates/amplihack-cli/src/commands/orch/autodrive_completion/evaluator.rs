@@ -83,7 +83,7 @@ pub fn run(
         ("loop_repo_path", state.repo.to_string_lossy().into_owned()),
         (
             "loop_agent_working_dir",
-            state.review_dir.to_string_lossy().into_owned(),
+            state.repo.to_string_lossy().into_owned(),
         ),
         ("loop_child_exit_code", child_rc.to_string()),
         (
@@ -96,6 +96,7 @@ pub fn run(
         (
             "loop_findings_current",
             String::from_utf8(secure_fs::read(
+                secure_fs::Scope::of(&state.state_dir),
                 &state.record.with_extension("json.findings"),
                 evidence::LIMIT,
             )?)?,
@@ -137,8 +138,8 @@ pub fn run(
                 .join("../recipes/loop-health-evaluator.yaml"),
         )
         .arg("--working-dir")
-        .arg(&state.review_dir)
-        .current_dir(&state.review_dir);
+        .arg(&state.repo)
+        .current_dir(&state.repo);
     // Preserve the launcher's policy ceilings and sibling depth, never values
     // from agent output or context. No shell evaluates any of these arguments.
     for (key, value) in [
@@ -161,20 +162,21 @@ pub fn run(
             cmd.arg("-c").arg(format!("{key}={value}"));
         } else {
             let path = context_dir.path().join(&key);
-            secure_fs::output(&path)?.write_all(value.as_bytes())?;
+            secure_fs::output(secure_fs::Scope::of(&state.state_dir), &path)?
+                .write_all(value.as_bytes())?;
             cmd.arg("--context-from-file")
                 .arg(format!("{key}={}", path.display()));
         }
     }
-    let file = secure_fs::output(&health_log)?;
+    let file = secure_fs::output(secure_fs::Scope::of(&state.state_dir), &health_log)?;
     let status = cmd.stdout(file.try_clone()?).stderr(file).status()?;
-    let log = secure_fs::read(&health_log, evidence::LIMIT)?;
+    let log = secure_fs::read(
+        secure_fs::Scope::of(&state.state_dir),
+        &health_log,
+        evidence::LIMIT,
+    )?;
     let log = String::from_utf8_lossy(&log);
     eprint!("{log}");
-    ensure!(
-        evidence::review_stamp(&state.launch_tools, &state.review_dir)? == state.review_stamp,
-        "loop-health evaluator changed the trusted review directory"
-    );
     let rc = status.code().unwrap_or(1);
     let (result, code) = classify_exit(rc, &log);
     let evaluator_verdict = result;

@@ -1600,7 +1600,7 @@ hook is registered, stop the nudger so a session is not told to continue
 twice. List the processes running the script:
 
 ```bash
-pgrep -af 'bash .*limit-nudger.sh'
+ps -eo pid=,args= | grep -F 'limit-nudger.sh' | grep -v grep
 ```
 
 Each line is a pid followed by its command line. Check that the command line

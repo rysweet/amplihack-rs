@@ -485,11 +485,13 @@ fn recipe_helper_lookup_snippets_are_identical() {
     // Issue #1966 (D10): seven earlier copies plus the three criticality
     // checkpoints (consensus-workflow validate-criticality-input and
     // consensus-tdd-impl step5-validate-criticality and
-    // step5-require-complete-route). Set from the count in the tree.
+    // step5-require-complete-route). #2575 moved the merge loop's step-02 copy
+    // into autodrive_merge_loop_run.sh, which sources the helper from beside
+    // itself. Set from the count in the tree.
     assert_eq!(
         copies.len(),
-        10,
-        "expected ten copies of the recipe_context_value.sh lookup, found: {:?}",
+        9,
+        "expected nine copies of the recipe_context_value.sh lookup, found: {:?}",
         copies.iter().map(|(at, _)| at).collect::<Vec<_>>()
     );
     let (first_at, first) = &copies[0];

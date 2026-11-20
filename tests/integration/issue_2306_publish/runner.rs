@@ -3,50 +3,12 @@ use super::fixture::{PublishFixture, describe, root};
 use std::fs;
 use std::path::PathBuf;
 
-/// Require Cargo installation provenance, not just a matching version string.
-/// Missing/mismatched runner is a hard prerequisite failure, never a skipped test.
+/// `recipe-runner-rs` at the revision in `claude-plugin/recipe-runner.rev`,
+/// from the shared helper (#2658): an override that passes the receipt check,
+/// or a build of the pin cached in the test target directory. Never the host's
+/// installed runner. A missing or mismatched runner fails the test.
 fn pinned_runner() -> PathBuf {
-    let pin = fs::read_to_string(root().join("claude-plugin/recipe-runner.rev")).unwrap();
-    let candidate = std::env::var_os("RECIPE_RUNNER_RS_PATH")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-                .map(|p| p.join("recipe-runner-rs"))
-                .find(|p| p.is_file())
-        })
-        .unwrap_or_else(|| {
-            let cargo_home = std::env::var_os("CARGO_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap()).join(".cargo"));
-            cargo_home.join("bin/recipe-runner-rs")
-        });
-    assert!(
-        candidate.is_file(),
-        "install the pinned runner with scripts/install-pinned-recipe-runner.sh"
-    );
-    let receipt = candidate
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join(".crates2.json");
-    let receipt: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(&receipt)
-            .unwrap_or_else(|e| panic!("runner provenance {}: {e}", receipt.display())),
-    )
-    .unwrap();
-    assert!(
-        receipt["installs"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .any(|key| key.starts_with("recipe-runner-rs ")
-                && key.contains("git+https://github.com/rysweet/amplihack-recipe-runner?")
-                && key.contains(&format!("#{}", pin.trim()))),
-        "runner must be installed from pin {}",
-        pin.trim()
-    );
-    candidate
+    crate::pinned_runner::pinned_runner(&root())
 }
 
 fn run_step(f: &PublishFixture, extra: &[(&str, &str)]) -> serde_json::Value {

@@ -1,8 +1,13 @@
-//! The validator half of #1714. Both BLOCKED_CI exits (the prior-state probe
-//! and the open-PR check) hand off only when `RECIPE_VAR_finalization_handoff`
-//! is exactly `true` and the PR number is valid; the result keeps
-//! `terminal_success:"false"` and gains `handoff:"merge_ready_loop"`. Every
-//! other state, and every run without the flag, exits 1 with no `handoff` key.
+//! The validator half of #1714. Both BLOCKED_CI routes (the prior-state probe,
+//! and the published outcome that `assess-finalization` judged) hand off only
+//! when `RECIPE_VAR_finalization_handoff` is exactly `true` and the PR number
+//! is valid; the result keeps `terminal_success:"false"` and gains
+//! `handoff:"merge_ready_loop"`. Every other state, and every run without the
+//! flag, exits 1 with no `handoff` key.
+//!
+//! Since #2343 the terminal state of a published outcome is the one
+//! `assess-finalization` decided, so these cases supply that decision; the
+//! prior-state probe is unchanged and still answers from its own record.
 
 use serde_json::json;
 
@@ -13,7 +18,7 @@ use super::fixture::*;
 const FLAG: (&str, &str) = ("RECIPE_VAR_finalization_handoff", "true");
 
 /// A resumed run whose prior terminal probe reported `state` for PR `pr`.
-fn prior_state_env(fx: &Fixture, state: &str, pr: &str) -> Vec<(&'static str, String)> {
+pub(super) fn prior_state_env(fx: &Fixture, state: &str, pr: &str) -> Vec<(&'static str, String)> {
     let mut envs = resumed_env(&fx.repo_path());
     envs.push(("TERMINAL_STATE_TERMINAL_STATE", state.to_owned()));
     if !pr.is_empty() {
@@ -22,13 +27,13 @@ fn prior_state_env(fx: &Fixture, state: &str, pr: &str) -> Vec<(&'static str, St
     envs
 }
 
-fn with_flag<'a>(envs: &'a [(&'static str, String)]) -> Vec<(&'a str, &'a str)> {
+pub(super) fn with_flag<'a>(envs: &'a [(&'static str, String)]) -> Vec<(&'a str, &'a str)> {
     let mut refs = as_refs(envs);
     refs.push(FLAG);
     refs
 }
 
-fn assert_handed_off(outcome: &Outcome, pr: &str, why: &str) {
+pub(super) fn assert_handed_off(outcome: &Outcome, pr: &str, why: &str) {
     assert!(
         outcome.success(),
         "{why}: the hand-off exits 0\n{}",
@@ -54,7 +59,7 @@ fn assert_handed_off(outcome: &Outcome, pr: &str, why: &str) {
     );
 }
 
-fn assert_failed_closed(outcome: &Outcome, state: &str, why: &str) {
+pub(super) fn assert_failed_closed(outcome: &Outcome, state: &str, why: &str) {
     assert_eq!(
         outcome.output.status.code(),
         Some(1),
@@ -117,19 +122,6 @@ fn completion_of_a_handed_off_result_never_reports_success() {
     assert_eq!(completion["workflow_result"]["handoff"], "merge_ready_loop");
 }
 
-// T1b: the open-PR check with a failing check run.
-#[test]
-fn open_pr_with_a_failing_check_is_handed_off() {
-    let fx = Fixture::new();
-    fx.gh_view(&open_pr(json!([check_run("COMPLETED", json!("FAILURE"))])));
-    let mut envs = resumed_env(&fx.repo_path());
-    envs.push(("PR_URL", PR_URL.to_owned()));
-    let outcome = validate(&fx, &with_flag(&envs));
-    assert_handed_off(&outcome, "7", "open-PR check");
-    assert_eq!(outcome.field("pr_url"), PR_URL);
-    fx.assert_gh_reads_only();
-}
-
 // T2: anything but exactly "true" leaves a standalone run failing closed, and
 // a bare FINALIZATION_HANDOFF is never read.
 #[test]
@@ -160,10 +152,11 @@ fn without_exactly_true_blocked_ci_still_fails_closed() {
     fx.gh_view(&open_pr(json!([check_run("COMPLETED", json!("FAILURE"))])));
     let mut envs = resumed_env(&fx.repo_path());
     envs.push(("PR_URL", PR_URL.to_owned()));
+    envs.push(assessment("BLOCKED_CI", "none", "7"));
     assert_failed_closed(
         &validate(&fx, &as_refs(&envs)),
         "BLOCKED_CI",
-        "open-PR check, no flag",
+        "published outcome, no flag",
     );
 }
 
@@ -185,17 +178,23 @@ fn other_prior_state_blockers_are_never_handed_off() {
 }
 
 // T3: the remaining non-CI failures keep exit 1 with the flag and a PR. The
-// first is FAILED_IMPLEMENTATION with a PR number the open-PR check could not
-// confirm (no live view), which is never handed off (#1714 case 2).
+// first is FAILED_IMPLEMENTATION where neither the assessment nor the facts
+// name a pull request at all, which is never handed off (#1714 case 2).
 #[test]
 fn non_ci_failures_with_the_flag_still_fail_closed() {
     let fx = Fixture::new();
     let mut envs = resumed_env(&fx.repo_path());
-    envs.push(("PR_NUMBER", "134".to_owned()));
+    envs.push(assessment("FAILED_IMPLEMENTATION", "none", ""));
+    let outcome = validate(&fx, &with_flag(&envs));
     assert_failed_closed(
-        &validate(&fx, &with_flag(&envs)),
+        &outcome,
         "FAILED_IMPLEMENTATION",
-        "no implementation evidence",
+        "no pull request to hand on",
+    );
+    assert_eq!(
+        outcome.field("pr_number"),
+        "",
+        "a failure with no pull request names none"
     );
 
     let fx = Fixture::new();
@@ -210,33 +209,25 @@ fn non_ci_failures_with_the_flag_still_fail_closed() {
         "dirty worktree precedes the probe",
     );
 
+    // HOLLOW_SUCCESS is the assessment's call since #2343: the signal is a
+    // fact handed to it, and the state it returns is never handed off.
     let fx = Fixture::new();
-    let mut envs = prior_state_env(&fx, "HOLLOW_SUCCESS", "134");
+    let mut envs = resumed_env(&fx.repo_path());
+    envs.push(("PR_NUMBER", "134".to_owned()));
+    // An assessment puts the finalization cohort in the canonical tier, so the
+    // collected evidence is given in its canonical form too.
     envs.push((
-        "FINALIZATION_EVIDENCE_AGENT_OUTPUTS_HOLLOW_SUCCESS_SIGNALS",
-        "true".to_owned(),
+        "RECIPE_VAR_finalization_evidence",
+        json!({"agent_outputs": {"hollow_success_signals": "true"}}).to_string(),
     ));
-    assert_failed_closed(
-        &validate(&fx, &with_flag(&envs)),
-        "HOLLOW_SUCCESS",
-        "hollow success",
+    envs.push(assessment("HOLLOW_SUCCESS", "none", "134"));
+    let outcome = validate(&fx, &with_flag(&envs));
+    assert_failed_closed(&outcome, "HOLLOW_SUCCESS", "hollow success");
+    assert_eq!(
+        outcome.field("hollow_success_detected"),
+        "true",
+        "the collected signal is still reported"
     );
-}
-
-// T4, validator half: BLOCKED_CI with no valid PR number is not handed off.
-#[test]
-fn blocked_ci_without_a_valid_pr_number_fails_closed() {
-    for pr in ["", "abc", "0", "#134", "134 ", "99999999999"] {
-        let fx = Fixture::new();
-        let envs = prior_state_env(&fx, "BLOCKED_CI", pr);
-        let outcome = validate(&fx, &with_flag(&envs));
-        assert_failed_closed(&outcome, "BLOCKED_CI", &format!("pr={pr:?}"));
-        assert!(
-            !outcome.stderr.contains(HANDOFF_INFO),
-            "pr={pr:?}\n{}",
-            outcome.describe()
-        );
-    }
 }
 
 // T11: the hand-off exits 0 only after a complete JSON object was written.
@@ -256,20 +247,6 @@ fn a_failed_handoff_emit_exits_non_zero() {
         "the INFO line is printed only after a complete result\n{}",
         outcome.describe()
     );
-}
-
-// The 19-key schema of a result that is not handed off is unchanged.
-#[test]
-fn a_success_result_has_no_handoff_key_even_with_the_flag() {
-    let fx = Fixture::new();
-    fx.gh_view(&open_pr(green_rollup()));
-    let mut envs = resumed_env(&fx.repo_path());
-    envs.push(("PR_URL", PR_URL.to_owned()));
-    let outcome = validate(&fx, &with_flag(&envs));
-    assert!(outcome.success(), "{}", outcome.describe());
-    assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
-    assert_no_handoff_key(&outcome, "EXISTING_OPEN_PR");
-    assert_eq!(outcome.json().as_object().map(|o| o.len()), Some(19));
 }
 
 /// Put a `jq` on the fixture's PATH that fails whenever its filter adds the

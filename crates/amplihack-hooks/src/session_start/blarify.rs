@@ -222,7 +222,6 @@ mod tests {
     use crate::test_support::env_lock;
     use amplihack_types::ProjectDirs;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::time::Duration;
 
@@ -584,15 +583,13 @@ mod tests {
 
         let stub_log = dir.path().join("amplihack-sync.log");
         let stub = dir.path().join("amplihack-sync");
-        fs::write(
+        crate::test_support::write_executable(
             &stub,
-            format!(
+            &format!(
                 "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then echo amplihack-test; exit 0; fi\nprintf '%s\\n' \"$@\" > \"{}\"\n",
                 stub_log.display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         unsafe {
             std::env::set_var("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub);
             std::env::set_var("AMPLIHACK_BLARIFY_MODE", "sync");

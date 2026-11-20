@@ -22,7 +22,7 @@ pub(crate) mod governor_view;
 #[cfg(unix)]
 mod kind;
 #[cfg(unix)]
-mod limit_wait;
+pub(crate) mod limit_wait;
 #[cfg(unix)]
 mod organisation;
 /// Issue #2030: Commander option arity, for the `amplihack claude` passthrough rewrite.
@@ -136,6 +136,8 @@ mod tests_usage_view;
 mod tests_verify;
 #[cfg(all(test, unix))]
 mod tests_verify_cmd;
+#[cfg(all(test, unix))]
+mod tests_wait_for_refreshes;
 
 use anyhow::Result;
 /// For `amplihack sessions` (issue #1746): the live check and profile root.
@@ -150,13 +152,16 @@ pub(crate) use auto_switch::{
     statusline_entry::is_amplihack_statusline,
 };
 use clap::Subcommand;
-use name::ProfileName;
+pub(crate) use name::ProfileName;
 #[cfg(test)]
 use root_cmd::{render_list, render_show};
 pub(crate) use root_config::store_from_env;
 pub(crate) use rotate::autostart_on_launch;
 #[cfg(unix)]
 pub(crate) use rotate::warn_foreign_rotator;
+// `refresh_profile_settings` returns `settings_refresh::ProfileRefresh`,
+// which stays unexported: its callers reach its two fields and never name
+// the type, and re-exporting a name nothing writes is a warning here.
 pub(crate) use settings_refresh::{Refresh, refresh_profile_settings};
 use std::borrow::Cow;
 use std::ffi::OsStr;
@@ -309,7 +314,7 @@ impl ProfileError {
             Self::InvalidSharedSettings(_) => "repair ~/.claude/settings.json and retry",
             Self::InvalidSharedSource(_) => "ensure ~/.claude is a directory and retry",
             Self::SharedAssetLimit(_) => {
-                "reduce oversized files or directories under ~/.claude and retry"
+                "under ~/.claude, shrink what the message reports: the entries of a named folder, an oversized file, or the nesting depth"
             }
             Self::SharedSourceContainsRoot(_) => "choose a profile root outside ~/.claude",
             Self::SeedCleanupFailed { .. } => {

@@ -334,8 +334,6 @@ fn executable_arguments_environment_and_depth_are_not_evaluator_context_fields()
                 d.p("crusty-round-1.json").as_os_str(),
                 "--repo".as_ref(),
                 d.repo.as_os_str(),
-                "--review-dir".as_ref(),
-                d.review.as_os_str(),
                 "--launch-tools".as_ref(),
                 crate::support::auto_drive_light::tools_dir().as_os_str(),
                 "--evaluator-context-file".as_ref(),

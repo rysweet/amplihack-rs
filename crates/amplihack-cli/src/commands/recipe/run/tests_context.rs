@@ -854,6 +854,25 @@ mod issue_1976_removed_keys {
         }
     }
 
+    /// #2814: #2808 removed the separate review checkout, so a run given
+    /// `review_dir` or `review_launch_dir` would accept and ignore it.
+    #[test]
+    fn the_retired_review_checkout_keys_are_refused_not_ignored() {
+        for key in ["review_dir", "review_launch_dir"] {
+            assert!(
+                REMOVED_CONTEXT_KEYS
+                    .iter()
+                    .any(|(listed, _)| *listed == key),
+                "{key} is not listed: {REMOVED_CONTEXT_KEYS:?}"
+            );
+            let (code, out) = reject(&["task_description=x", &format!("{key}=/tmp/anywhere")]);
+            assert_eq!(code, Some(1), "{out}");
+            assert!(out.contains(key), "{out}");
+            assert!(out.contains("#2808"), "{out}");
+            assert!(!out.contains("/tmp/anywhere"), "the value is echoed: {out}");
+        }
+    }
+
     #[test]
     fn whitespace_around_the_key_is_trimmed() {
         for arg in [
@@ -928,5 +947,957 @@ mod issue_1976_removed_keys {
             assert_eq!(code, None, "{pairs:?}: {out}");
             assert!(out.is_empty(), "{pairs:?}: {out}");
         }
+    }
+}
+
+// -------------------------------------------------------------------------
+// Issue #2582: context_transport. When the runner reports `context_file_v1`,
+// recipe context reaches it in a 0600 file under the run's private runtime
+// folder and the runner's argv carries only `--context-file <path>`. Without
+// the capability, today's `--set` path runs byte for byte.
+// -------------------------------------------------------------------------
+
+mod context_transport_2582 {
+    use super::super::context_transport::{
+        CONTEXT_FILE_CAPABILITY, ContextTransport, DOWNGRADE_NOTICE, refuse_reserved_keys,
+        supports_context_file, write_context_file,
+    };
+    use super::super::execute::pass_context;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    /// Distinctive synthetic values, each at least 12 characters with a
+    /// unique token, so a match can only come from this test's context.
+    const TASK: &str = "ZQXV2582TASKWORD fix the widget";
+    const BODY: &str = "ZQXV2582BODYWORD {\"json\": [1, 2]} $(touch pwned) `x`";
+
+    fn context() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("task_description".to_string(), TASK.to_string()),
+            ("pr_body".to_string(), BODY.to_string()),
+            ("flag".to_string(), "true".to_string()),
+        ])
+    }
+
+    fn report(capabilities: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "version": "fixture",
+            "capabilities": capabilities,
+        })
+    }
+
+    fn with_capability() -> serde_json::Value {
+        report(&["codex_exec", "durable_recovery_v1", CONTEXT_FILE_CAPABILITY])
+    }
+
+    fn without_capability() -> serde_json::Value {
+        report(&["codex_exec", "durable_recovery_v1"])
+    }
+
+    /// A private runtime folder, as `RuntimeGuard` creates it (0700).
+    fn runtime() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("runtime");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        (tmp, dir)
+    }
+
+    fn args(command: &Command) -> Vec<String> {
+        command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn is_root() -> bool {
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[test]
+    fn capability_constant_is_context_file_v1() {
+        assert_eq!(CONTEXT_FILE_CAPABILITY, "context_file_v1");
+    }
+
+    #[test]
+    fn capability_match_is_exact() {
+        assert!(supports_context_file(&with_capability()));
+        assert!(!supports_context_file(&without_capability()));
+        assert!(!supports_context_file(&report(&[
+            "context_file_v10",
+            "context_file",
+            "CONTEXT_FILE_V1",
+            " context_file_v1",
+        ])));
+        assert!(!supports_context_file(&serde_json::json!({})));
+        assert!(!supports_context_file(&serde_json::json!({
+            "capabilities": "context_file_v1"
+        })));
+        assert!(!supports_context_file(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn file_transport_argv_is_path_only() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let transport = ContextTransport::choose(&with_capability(), &runtime, &context).unwrap();
+        let ContextTransport::File(file) = &transport else {
+            panic!("the capability must select the file transport");
+        };
+        let expected = runtime.join("context").join("context.json");
+        assert_eq!(file.path(), expected.as_path());
+
+        let mut command = Command::new("echo");
+        let bytes = transport.apply(&mut command, &context).unwrap();
+        let argv = args(&command);
+        assert_eq!(
+            argv,
+            ["--context-file".to_string(), expected.display().to_string()]
+        );
+        for value in context.values() {
+            assert!(
+                !argv.iter().any(|a| a.contains(value.as_str())),
+                "a context value reached argv"
+            );
+        }
+        assert!(!argv.iter().any(|a| a == "--set" || a == "-c"));
+        assert_eq!(
+            bytes,
+            "--context-file".len()
+                + 1
+                + expected.as_os_str().len()
+                + 1
+                + 2 * std::mem::size_of::<usize>(),
+            "the argv cost of the file path feeds the env budget (D8)"
+        );
+    }
+
+    #[test]
+    fn file_holds_the_context_as_a_json_object_of_strings() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let file = write_context_file(&runtime, &context).unwrap();
+        let bytes = fs::read(file.path()).unwrap();
+        let parsed: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed.len(), context.len());
+        for (key, value) in &context {
+            assert_eq!(
+                parsed.get(key),
+                Some(&serde_json::Value::String(value.clone())),
+                "{key} must be written as the string amplihack holds (D1)"
+            );
+        }
+    }
+
+    #[test]
+    fn context_file_modes() {
+        let (_tmp, runtime) = runtime();
+        let file = write_context_file(&runtime, &context()).unwrap();
+        let dir = runtime.join("context");
+        assert_eq!(file.path(), dir.join("context.json").as_path());
+        assert_eq!(mode(&dir), 0o700, "context folder must be 0700");
+        assert_eq!(mode(file.path()), 0o600, "context file must be 0600");
+        assert!(
+            fs::symlink_metadata(file.path()).unwrap().is_file(),
+            "context file must be a regular file"
+        );
+    }
+
+    #[test]
+    fn context_file_is_not_under_the_exported_tmp() {
+        let (_tmp, runtime) = runtime();
+        fs::create_dir(runtime.join("tmp")).unwrap();
+        let file = write_context_file(&runtime, &context()).unwrap();
+        assert!(!file.path().starts_with(runtime.join("tmp")));
+        assert!(file.path().starts_with(&runtime));
+    }
+
+    #[test]
+    fn context_file_removed_on_drop() {
+        let (_tmp, runtime) = runtime();
+        let file = write_context_file(&runtime, &context()).unwrap();
+        let path = file.path().to_path_buf();
+        assert!(path.is_file());
+        drop(file);
+        assert!(!path.exists(), "the context file must be removed");
+        assert!(
+            !runtime.join("context").exists(),
+            "the context folder must be removed"
+        );
+        assert!(
+            runtime.is_dir(),
+            "the runtime folder belongs to RuntimeGuard"
+        );
+    }
+
+    /// Issue #2582 (review 17b finding 2 / security S3): the one case where
+    /// `ContextFile::drop` is actually LOAD-BEARING.
+    ///
+    /// Everywhere else, `RuntimeGuard::release()` ends with
+    /// `remove_dir_all(<runtime>)`, which removes the context file whether or
+    /// not the `Drop` ever ran — so no "nothing left behind" assertion can
+    /// distinguish a working teardown from a deleted one. The exception is
+    /// `RuntimeRemoval::KeptInUse`: a process still holds the runtime folder,
+    /// `remove_dir_all` is deliberately NOT called, and the folder stays on
+    /// disk until a later sweep. There, `ContextFile::drop` is the only thing
+    /// removing a 0600 file that can hold auto-drive authorization material,
+    /// and it is exactly the case with a live exposure.
+    ///
+    /// This test reproduces that shape directly: the runtime folder survives
+    /// the release, and the context file must still be gone.
+    #[test]
+    fn context_file_is_removed_even_when_the_runtime_folder_is_retained() {
+        use crate::commands::cleanup::run_dir::{RuntimeGuard, RuntimeRemoval};
+        use crate::test_support::proc::fake_proc_scope;
+
+        let procs = fake_proc_scope();
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = tmp.path().join("runtime");
+        fs::create_dir(&runtime).unwrap();
+        fs::create_dir(runtime.join("tmp")).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+
+        // The context file, holding a distinctive secret.
+        let mut context = self::context();
+        context.insert(
+            "autodrive_authorization".to_string(),
+            "ZQXV2582AUTHWORD".to_string(),
+        );
+        let file = write_context_file(&runtime, &context).unwrap();
+        let path = file.path().to_path_buf();
+        assert!(path.is_file());
+
+        // A live process inside the runtime folder, so the guard must keep it.
+        let mut child = std::process::Command::new("sh")
+            .env("PATH", crate::test_support::host_path())
+            .arg("-c")
+            .arg("echo ready; while read -r _; do :; done")
+            .current_dir(runtime.join("tmp"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+        {
+            use std::io::BufRead;
+            let mut line = String::new();
+            std::io::BufReader::new(child.stdout.take().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            assert_eq!(line.trim(), "ready");
+        }
+        procs.fake.link_own(child.id());
+
+        // The run's own teardown order: the context file is dropped, then the
+        // runtime folder is released.
+        drop(file);
+        let removal = RuntimeGuard::new(runtime.clone())
+            .unwrap()
+            .remove()
+            .unwrap();
+
+        drop(child.stdin.take());
+        let _ = child.wait();
+
+        // The precondition that makes this test meaningful. If this ever
+        // becomes `Removed`, the assertions below are proved by
+        // `remove_dir_all` instead of by `ContextFile::drop`, and this test
+        // has stopped testing anything.
+        assert_eq!(
+            removal,
+            RuntimeRemoval::KeptInUse,
+            "this test is only meaningful while the runtime folder is retained"
+        );
+        assert!(
+            runtime.is_dir(),
+            "a runtime folder in use is left in place, so remove_dir_all did NOT run"
+        );
+
+        // The actual claim.
+        assert!(
+            !path.exists(),
+            "the context file must be gone even though the runtime folder was kept: {}",
+            path.display()
+        );
+        assert!(!runtime.join("context").exists(), "and its 0700 folder too");
+        // Nothing anywhere under the retained tree still holds the secret.
+        let mut found = Vec::new();
+        let mut stack = vec![runtime.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap().flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if fs::read(&p)
+                    .map(|b| String::from_utf8_lossy(&b).contains("ZQXV2582AUTHWORD"))
+                    .unwrap_or(false)
+                {
+                    found.push(p);
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "authorization material left in the retained runtime folder: {found:?}"
+        );
+    }
+
+    #[test]
+    fn context_file_drop_leaves_unexpected_entries_alone() {
+        // Cleanup is remove_file then remove_dir, never remove_dir_all.
+        let (_tmp, runtime) = runtime();
+        let file = write_context_file(&runtime, &context()).unwrap();
+        let stray = runtime.join("context").join("stray.txt");
+        fs::write(&stray, "kept").unwrap();
+        drop(file);
+        assert!(!runtime.join("context").join("context.json").exists());
+        assert_eq!(fs::read_to_string(&stray).unwrap(), "kept");
+    }
+
+    #[test]
+    fn transport_drop_removes_the_file() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let transport = ContextTransport::choose(&with_capability(), &runtime, &context).unwrap();
+        assert!(runtime.join("context").join("context.json").is_file());
+        drop(transport);
+        assert!(!runtime.join("context").exists());
+    }
+
+    #[test]
+    fn fallback_matches_today_byte_for_byte() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let transport =
+            ContextTransport::choose(&without_capability(), &runtime, &context).unwrap();
+        assert!(matches!(transport, ContextTransport::Set));
+        assert!(
+            !runtime.join("context").exists(),
+            "the fallback writes no file"
+        );
+
+        // NOT `assert_eq!(transport.apply(..), pass_context(..))`: since the
+        // refactor `ContextTransport::Set::apply` IS `pass_context`, so such a
+        // comparison is `f(x) == f(x)` and cannot fail. The argv is therefore
+        // pinned against a literal instead — that is what "byte for byte"
+        // actually has to mean for a reader.
+        let mut via_transport = Command::new("echo");
+        let transport_bytes = transport.apply(&mut via_transport, &context).unwrap();
+
+        // BTreeMap order: flag, pr_body, task_description.
+        assert_eq!(
+            args(&via_transport),
+            vec![
+                "--set".to_string(),
+                "flag=true".to_string(),
+                "--set".to_string(),
+                format!("pr_body={BODY}"),
+                "--set".to_string(),
+                format!("task_description={TASK}"),
+            ],
+            "the --set argv must be exactly the pre-#2582 form"
+        );
+        assert!(args(&via_transport).iter().all(|a| a != "--context-file"));
+
+        // And the byte count is the documented argv cost of those pairs:
+        // `--set\0`, `KEY=VALUE\0` and two argv pointers per entry.
+        let expected: usize = context
+            .iter()
+            .map(|(k, v)| {
+                "--set".len() + 1 + k.len() + 1 + v.len() + 1 + 2 * std::mem::size_of::<usize>()
+            })
+            .sum();
+        assert_eq!(transport_bytes, expected);
+    }
+
+    #[test]
+    fn empty_context_passes_no_flag() {
+        let (_tmp, runtime) = runtime();
+        let empty = BTreeMap::new();
+        for report in [with_capability(), without_capability()] {
+            let transport = ContextTransport::choose(&report, &runtime, &empty).unwrap();
+            assert!(matches!(transport, ContextTransport::None));
+            let mut command = Command::new("echo");
+            assert_eq!(transport.apply(&mut command, &empty).unwrap(), 0);
+            assert_eq!(command.get_args().count(), 0);
+        }
+        assert!(!runtime.join("context").exists());
+    }
+
+    #[test]
+    fn reserved_key_refused_on_both_paths() {
+        let (_tmp, runtime) = runtime();
+        let mut context = context();
+        context.insert(
+            "amplihack_claude_profile".to_string(),
+            "ZQXV2582PROFILEWORD".to_string(),
+        );
+        for report in [with_capability(), without_capability()] {
+            let error = match ContextTransport::choose(&report, &runtime, &context) {
+                Ok(_) => panic!("a reserved key must be refused"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("amplihack_claude_profile"), "{error}");
+            assert!(error.contains("reserved"), "{error}");
+            assert!(!error.contains("ZQXV2582"), "values must not be printed");
+            assert!(
+                !runtime.join("context").exists(),
+                "no file may be written before the refusal"
+            );
+        }
+        assert!(refuse_reserved_keys(&context).is_err());
+        assert!(refuse_reserved_keys(&self::context()).is_ok());
+    }
+
+    /// Issue #2582 (security review S1, widened after re-review): a context
+    /// key whose value is RUN, or which chooses what is run, must be refused
+    /// — on BOTH transports and in ANY letter case — never merely dropped
+    /// from the env mirror by the denylist. Dropping is not enough: the
+    /// `--set` path would still hand the pair to the runner.
+    ///
+    /// The list is deliberately the whole family rather than the one name
+    /// #2582 made topical. `GIT_SSH_COMMAND` and friends are run by git
+    /// itself (the repo already scrubs them in `install::clone` and flags
+    /// them in the hooks' tmux guard), and `{TOOL}_BINARY_PATH` is resolved
+    /// by `launch_target` as a user-supplied override at the highest
+    /// precedence for ANY tool name — so the next tool added there is
+    /// covered by the suffix rule without anyone remembering to come back.
+    #[test]
+    fn executable_selector_keys_are_reserved_on_both_paths() {
+        for key in [
+            // The runner selector (#2582).
+            "recipe_runner_rs_path",
+            "RECIPE_RUNNER_RS_PATH",
+            "Recipe_Runner_Rs_Path",
+            // Git/SSH names whose value git executes.
+            "git_ssh_command",
+            "git_ssh",
+            "git_proxy_command",
+            "git_askpass",
+            "ssh_askpass",
+            "git_external_diff",
+            "git_sequence_editor",
+            "git_editor",
+            "git_pager",
+            // `{TOOL}_BINARY_PATH`, including a tool that does not exist yet.
+            "claude_binary_path",
+            "codex_binary_path",
+            "copilot_binary_path",
+            "some_future_tool_binary_path",
+        ] {
+            let (_tmp, runtime) = runtime();
+            let mut context = context();
+            context.insert(key.to_string(), "/tmp/ZQXV2582EVILRUNNER".to_string());
+
+            for report in [with_capability(), without_capability()] {
+                let error = match ContextTransport::choose(&report, &runtime, &context) {
+                    Ok(_) => panic!("{key} must be refused, not accepted"),
+                    Err(error) => error.to_string(),
+                };
+                assert!(error.contains("reserved"), "{error}");
+                assert!(
+                    !error.contains("ZQXV2582"),
+                    "the value must not be printed: {error}"
+                );
+                assert!(
+                    !runtime.join("context").exists(),
+                    "no file may be written before the refusal"
+                );
+            }
+
+            assert!(refuse_reserved_keys(&context).is_err(), "{key}");
+
+            // And the `--set` path refuses it identically, so neither
+            // transport is a way around the rule.
+            let mut command = Command::new("echo");
+            assert!(pass_context(&mut command, &context).is_err(), "{key}");
+        }
+    }
+
+    /// The operator-visible refusal text, pinned against a literal.
+    ///
+    /// This used to `assert_eq!` the message from `refuse_reserved_keys`
+    /// against the one from `pass_context`. Since the refactor `pass_context`
+    /// CALLS `refuse_reserved_keys`, so that comparison was `f(x) == f(x)`:
+    /// it could not fail, and it would have gone on passing if the message
+    /// had been reworded or emptied. The text itself is the contract, so the
+    /// text is what is asserted.
+    #[test]
+    fn refusal_message_is_pinned_and_shared_by_both_entry_points() {
+        const EXPECTED: &str = "recipe context key \"AMPLIHACK_X\" is reserved: the AMPLIHACK_ namespace, Git execution configuration and any name that selects or runs a program cannot be set from recipe context";
+
+        let context = BTreeMap::from([("AMPLIHACK_X".to_string(), "v".to_string())]);
+        let moved = refuse_reserved_keys(&context).unwrap_err().to_string();
+        assert_eq!(moved, EXPECTED);
+
+        // `pass_context` reaches the same refusal, and the caller sees the
+        // same words — now asserted against the literal, not against `moved`.
+        let mut command = Command::new("echo");
+        let today = pass_context(&mut command, &context)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(today, EXPECTED);
+        assert!(
+            command.get_args().count() == 0,
+            "a refused context must put nothing on the argv"
+        );
+    }
+
+    #[test]
+    fn oversize_pair_only_refused_on_fallback() {
+        let (_tmp, runtime) = runtime();
+        let big = "y".repeat(200 * 1024);
+        let context = BTreeMap::from([("task_description".to_string(), big.clone())]);
+
+        let file = ContextTransport::choose(&with_capability(), &runtime, &context).unwrap();
+        let mut command = Command::new("echo");
+        file.apply(&mut command, &context)
+            .expect("the file path has no per-pair MAX_ARG_STRLEN limit (D6)");
+        let written = fs::read(runtime.join("context").join("context.json")).unwrap();
+        assert!(written.len() > big.len());
+        drop(file);
+
+        let set = ContextTransport::choose(&without_capability(), &runtime, &context).unwrap();
+        let mut command = Command::new("echo");
+        let error = set.apply(&mut command, &context).unwrap_err().to_string();
+        assert!(error.contains("131072"), "{error}");
+        assert!(!error.contains("yyyy"));
+    }
+
+    #[test]
+    fn context_dir_preexisting_refused() {
+        // A real folder.
+        let (_tmp, runtime) = runtime();
+        fs::create_dir(runtime.join("context")).unwrap();
+        assert!(write_context_file(&runtime, &context()).is_err());
+        assert!(!runtime.join("context").join("context.json").exists());
+
+        // A symbolic link named `context` pointing at a folder elsewhere.
+        let (tmp, runtime) = self::runtime();
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, runtime.join("context")).unwrap();
+        assert!(write_context_file(&runtime, &context()).is_err());
+        assert!(
+            fs::read_dir(&elsewhere).unwrap().next().is_none(),
+            "nothing may be written through the link"
+        );
+        assert!(
+            fs::symlink_metadata(runtime.join("context"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the planted link is left as it is"
+        );
+    }
+
+    /// Asserts the module's central negative claim for one way of making the
+    /// write fail: the capability IS present, the write fails, and the run
+    /// must end as an error rather than quietly degrading to `--set`.
+    fn assert_no_fallback_on_write_failure(runtime: &Path) {
+        let context = context();
+        match ContextTransport::choose(&with_capability(), runtime, &context) {
+            Ok(ContextTransport::Set) => panic!("a write failure must never fall back to --set"),
+            Ok(_) => panic!("a write failure must be an error"),
+            Err(error) => {
+                let text = format!("{error:#}");
+                // Pin WHICH failure this is. Without it, an earlier failure
+                // mode added to `choose` later would let all three cases
+                // report a pass for a reason that has nothing to do with the
+                // write.
+                assert!(
+                    text.contains("failed to write recipe context file"),
+                    "the refusal must be the write failure, not some earlier \
+                     error: {text}"
+                );
+                assert!(!text.contains("ZQXV2582"), "values must not be printed");
+            }
+        }
+    }
+
+    /// Issue #2582, the central negative claim: with the capability present,
+    /// a failed context-file write ends the run and NEVER degrades to `--set`.
+    ///
+    /// The trigger is an existing entry at `<runtime>/context`, which
+    /// `write_context_file` refuses with `AlreadyExists`. That is a *root-safe*
+    /// trigger: unlike a 0500 folder, it does not depend on DAC enforcement,
+    /// so this test really runs in a root CI image instead of reporting a pass
+    /// it never earned.
+    #[test]
+    fn capability_present_write_failure_does_not_fall_back() {
+        // An existing regular file where the context folder must go.
+        let (_tmp, runtime) = runtime();
+        fs::write(runtime.join("context"), b"planted").unwrap();
+        assert_no_fallback_on_write_failure(&runtime);
+
+        // An existing folder of the same name.
+        let (_tmp, runtime) = self::runtime();
+        fs::create_dir(runtime.join("context")).unwrap();
+        assert_no_fallback_on_write_failure(&runtime);
+
+        // A runtime folder that does not exist at all.
+        let tmp = tempfile::tempdir().unwrap();
+        assert_no_fallback_on_write_failure(&tmp.path().join("not-created"));
+    }
+
+    /// The same claim for the permission-denied trigger, which only a non-root
+    /// euid can produce. Kept separate from the root-safe case above so that
+    /// skipping it cannot silently take the central claim with it.
+    #[test]
+    fn capability_present_unwritable_runtime_does_not_fall_back() {
+        if is_root() {
+            // Root ignores DAC, so a 0500 folder does not stop the write.
+            return;
+        }
+        let (_tmp, runtime) = runtime();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_no_fallback_on_write_failure(&runtime)
+        }));
+        // Restore the mode before propagating, so the tempdir can be removed.
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    #[test]
+    fn write_error_has_no_values() {
+        // Root-safe trigger first, so the no-values claim is asserted even in
+        // a root CI image where the permission-denied case below cannot run.
+        let (_tmp, planted) = runtime();
+        fs::write(planted.join("context"), b"planted").unwrap();
+        let text = match write_context_file(&planted, &context()) {
+            Ok(_) => panic!("an existing entry at <runtime>/context must fail the write"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(
+            text.contains("failed to write recipe context file"),
+            "{text}"
+        );
+        assert!(!text.contains("ZQXV2582"), "{text}");
+        assert!(!text.contains("widget"), "{text}");
+
+        if is_root() {
+            return;
+        }
+        let (_tmp, runtime) = runtime();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = write_context_file(&runtime, &context());
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        let text = match result {
+            Ok(_) => panic!("writing into a 0500 folder must fail"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(
+            text.contains("failed to write recipe context file"),
+            "{text}"
+        );
+        assert!(!text.contains("ZQXV2582"), "{text}");
+        assert!(!text.contains("widget"), "{text}");
+    }
+
+    #[test]
+    fn missing_runtime_dir_is_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gone = tmp.path().join("not-created");
+        assert!(write_context_file(&gone, &context()).is_err());
+        assert!(!gone.exists(), "the runtime folder is not created here");
+    }
+
+    // ---------------------------------------------------------------------
+    // The operator-visible record of the chosen transport.
+    //
+    // The pinned runner reports the capability on every host, so a run that
+    // took the `--set` path means a runner older than the pin was supplied
+    // through `RECIPE_RUNNER_RS_PATH`. Without a record that is visible only
+    // in `/proc`, which is the thing this change removes. The record is at
+    // info level and holds the transport name and nothing else: no key, no
+    // value, and no count derived from one.
+    // ---------------------------------------------------------------------
+
+    /// What the `fmt` subscriber would write for one transport's record, with
+    /// `info` as the maximum level, so a record emitted below it is invisible
+    /// here and the test fails on the empty string.
+    ///
+    /// This is strictly *more* permissive than production, where the binary
+    /// installs `EnvFilter::from_default_env()` and an unset `RUST_LOG` means
+    /// `ERROR`. So no assertion built on this helper can show that an
+    /// operator sees anything at all; it can only show what the record
+    /// carries when something is listening. The claim that the `--set`
+    /// downgrade is actually visible belongs to
+    /// `the_set_downgrade_prints_to_stderr_without_rust_log` below and to the
+    /// integration assertion in
+    /// `tests/issue_2582_degraded_runner_no_set.rs`.
+    fn captured_record(transport: &ContextTransport) -> String {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for Buffer {
+            type Writer = Buffer;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buffer = Buffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || transport.record());
+        let bytes = buffer.0.lock().unwrap().clone();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    /// The notice names the capability whose absence it reports. The constant
+    /// spells the name out because a `const` cannot be formatted, so without
+    /// this a rename of [`CONTEXT_FILE_CAPABILITY`] would leave the operator
+    /// reading about a capability that no longer exists.
+    #[test]
+    fn the_notice_names_the_capability_and_the_override() {
+        assert!(
+            DOWNGRADE_NOTICE.contains(CONTEXT_FILE_CAPABILITY),
+            "{DOWNGRADE_NOTICE}"
+        );
+        assert!(
+            DOWNGRADE_NOTICE.contains("RECIPE_RUNNER_RS_PATH"),
+            "the notice must name what to change: {DOWNGRADE_NOTICE}"
+        );
+        assert!(
+            DOWNGRADE_NOTICE.starts_with("amplihack: "),
+            "the house prefix: {DOWNGRADE_NOTICE}"
+        );
+        assert!(
+            !DOWNGRADE_NOTICE.contains('\n'),
+            "one line: {DOWNGRADE_NOTICE}"
+        );
+    }
+
+    /// The `--set` downgrade prints to stderr; the other two arms do not.
+    ///
+    /// This is the half of the control a unit test can hold. `captured_record`
+    /// above cannot: it installs a subscriber at `INFO`, which is strictly
+    /// more permissive than production, where `bins/amplihack` installs
+    /// `EnvFilter::from_default_env()` and an unset `RUST_LOG` means `ERROR`
+    /// — so the `tracing` record is written nowhere in a default run and no
+    /// assertion on it shows that an operator sees anything. Nor can a test
+    /// here read the bytes: `eprintln!` under `cargo test` goes to libtest's
+    /// capture buffer rather than fd 2, so a test that searched fd 2 would
+    /// pass whether or not the line were emitted at all. What this asserts is
+    /// the decision `record` acts on; that the bytes really reach stderr is
+    /// asserted against the real binary in
+    /// `tests/issue_2582_degraded_runner_no_set.rs`.
+    #[test]
+    fn only_the_set_transport_has_a_downgrade_notice() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let set = ContextTransport::choose(&without_capability(), &runtime, &context).unwrap();
+        let notice = set
+            .downgrade_notice()
+            .expect("the --set downgrade must be printed, or the control exists only in prose");
+        assert_eq!(notice, DOWNGRADE_NOTICE);
+        // The line is printed because the context is already exposed; it must
+        // not add to the exposure.
+        for key in context.keys() {
+            assert!(
+                !notice.contains(key.as_str()),
+                "a key was printed: {notice}"
+            );
+        }
+        for value in context.values() {
+            assert!(
+                !notice.contains(value.as_str()),
+                "a value was printed: {notice}"
+            );
+        }
+        assert!(
+            !notice.contains("ZQXV2582"),
+            "a value was printed: {notice}"
+        );
+
+        // `file` is what a normal run takes, and a notice on every run teaches
+        // an operator to skip the one that matters.
+        for (transport, name) in [
+            (
+                ContextTransport::choose(&with_capability(), &runtime, &context).unwrap(),
+                "file",
+            ),
+            (
+                ContextTransport::choose(&with_capability(), &runtime, &BTreeMap::new()).unwrap(),
+                "none",
+            ),
+        ] {
+            assert_eq!(
+                transport.downgrade_notice(),
+                None,
+                "the {name} transport must print nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn transport_names_are_none_file_and_set() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        let empty = BTreeMap::new();
+        assert_eq!(
+            ContextTransport::choose(&with_capability(), &runtime, &empty)
+                .unwrap()
+                .name(),
+            "none"
+        );
+        assert_eq!(
+            ContextTransport::choose(&with_capability(), &runtime, &context)
+                .unwrap()
+                .name(),
+            "file"
+        );
+        assert_eq!(
+            ContextTransport::choose(&without_capability(), &runtime, &context)
+                .unwrap()
+                .name(),
+            "set"
+        );
+    }
+
+    #[test]
+    fn the_record_is_at_info_and_carries_the_name_alone() {
+        let (_tmp, runtime) = runtime();
+        let context = context();
+        for (transport, name) in [
+            (
+                ContextTransport::choose(&with_capability(), &runtime, &context).unwrap(),
+                "file",
+            ),
+            (
+                ContextTransport::choose(&without_capability(), &runtime, &context).unwrap(),
+                "set",
+            ),
+            (
+                ContextTransport::choose(&with_capability(), &runtime, &BTreeMap::new()).unwrap(),
+                "none",
+            ),
+        ] {
+            let text = captured_record(&transport);
+            assert!(
+                !text.trim().is_empty(),
+                "the transport must be recorded at info level, not below it"
+            );
+            assert!(text.contains("INFO"), "the record must be at info: {text}");
+            assert!(
+                text.contains("recipe context transport"),
+                "the record must be findable by its message: {text}"
+            );
+            let (_, fields) = text
+                .split_once("recipe context transport")
+                .expect("the record's message");
+            assert_eq!(
+                fields.trim(),
+                format!("transport={name}"),
+                "the record carries the transport name and nothing else: {text}"
+            );
+            for key in context.keys() {
+                assert!(!text.contains(key.as_str()), "a key was recorded: {text}");
+            }
+            for value in context.values() {
+                assert!(
+                    !text.contains(value.as_str()),
+                    "a value was recorded: {text}"
+                );
+            }
+            assert!(!text.contains("ZQXV2582"), "a value was recorded: {text}");
+            // Against the fields, not the whole line: the subscriber's
+            // timestamp carries arbitrary digits, so a whole-line search for
+            // `context.len()` would pass or fail by the clock. The exact
+            // equality above is the stronger statement anyway — it pins the
+            // fields to the transport name and nothing else — and this keeps
+            // the reason a count is unwanted written down: a count of a
+            // one-key context says which key it was.
+            assert!(
+                !fields.contains(&context.len().to_string()),
+                "a count derived from the context was recorded: {text}"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // A planted entry at `<runtime_dir>/context`.
+    //
+    // `context_dir_preexisting_refused` covers a real folder and a symbolic
+    // link to a folder that exists, which is the case a `create_dir_all` (or
+    // a `DirBuilder` relaxed to `recursive(true)`) would accept and then
+    // write through. These are the other three shapes: a dangling link, a
+    // link to a file, and a regular file. `mkdir` refuses each, so nothing is
+    // created at the link's target and nothing is written.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn a_planted_entry_at_the_context_path_is_refused_with_nothing_written() {
+        // A dangling symbolic link: `create_dir_all` would create the target.
+        let (_dangling, runtime) = runtime();
+        let target = runtime.join("planted-target");
+        std::os::unix::fs::symlink(&target, runtime.join("context")).unwrap();
+        let error = format!(
+            "{:#}",
+            write_context_file(&runtime, &context()).unwrap_err()
+        );
+        assert!(error.contains("already exists"), "{error}");
+        assert!(!error.contains("ZQXV2582"), "{error}");
+        assert!(
+            fs::symlink_metadata(&target).is_err(),
+            "nothing may be created through a dangling link"
+        );
+        assert!(
+            fs::symlink_metadata(runtime.join("context"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the planted link is left as it is"
+        );
+
+        // A symbolic link to a file that exists elsewhere.
+        let (tmp, runtime) = self::runtime();
+        let elsewhere = tmp.path().join("elsewhere.txt");
+        fs::write(&elsewhere, b"keep me").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, runtime.join("context")).unwrap();
+        assert!(write_context_file(&runtime, &context()).is_err());
+        assert_eq!(
+            fs::read(&elsewhere).unwrap(),
+            b"keep me",
+            "the link's target is untouched"
+        );
+
+        // A regular file where the folder would go.
+        let (_file, runtime) = self::runtime();
+        fs::write(runtime.join("context"), b"not a folder").unwrap();
+        assert!(write_context_file(&runtime, &context()).is_err());
+        assert_eq!(
+            fs::read(runtime.join("context")).unwrap(),
+            b"not a folder",
+            "the planted file is left as it is"
+        );
     }
 }

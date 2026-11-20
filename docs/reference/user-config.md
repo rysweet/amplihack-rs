@@ -19,9 +19,13 @@ files.
   - [recipe.detach, recipe.tmux_session_pattern and recipe.log_dir](#recipedetach)
   - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
+  - [model.force](#modelforce)
+  - [model.tier_map](#modeltier_map)
+  - [Review keys](#review-keys)
   - [Governor keys](#governor-keys)
   - [sessions.daily_archive](#sessionsdaily_archive)
   - [sessions.archive_days and sessions.archive_dest](#sessionsarchive_days-and-sessionsarchive_dest)
+  - [policy.deny_commands](#policydeny_commands)
 - [The config command](#the-config-command)
   - [config get](#config-get)
   - [config set](#config-set)
@@ -61,7 +65,20 @@ recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
 recipe.log_dir = (unset)  # default
 recipe.usage_limit_wait = true  # default
 recipe.usage_limit_max_wait_secs = 21600  # default
+policy.deny_commands = (unset)  # default
 orchestrator.max_depth = 3  # default
+model.force = (unset)  # default
+model.tier_map = (unset)  # default
+review.combined_small_diff = false  # default
+review.combined_diff_threshold = 200  # default
+governor.enabled = false  # default
+governor.max_concurrency = 4  # default
+governor.reserve_points = 10  # default
+governor.step = 1  # default
+governor.band_pct = 10  # default
+governor.eval_interval_secs = 60  # default
+governor.wait_secs = 600  # default
+governor.max_reading_age_secs = 3600  # default
 sessions.daily_archive = true  # default
 sessions.archive_days = 3  # default
 sessions.archive_dest = (unset)  # default
@@ -152,7 +169,12 @@ command, so it never prints `flag`.
 | `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
 | `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
 | `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | `21600` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
+| `policy.deny_commands` | list of command prefixes | (unset: the shipped defaults only) | — | — | user only |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
+| `model.force` | model id | (unset) | `AMPLIHACK_FORCE_MODEL` | — | user only |
+| `model.tier_map` | absolute path | (unset: `$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`) | — | — | user only |
+| `review.combined_small_diff` | bool | `false` | — | — | user only |
+| `review.combined_diff_threshold` | integer lines, 1 to 100000 | `200` | — | — | user only |
 | `governor.enabled` | bool | `false` | — | — | user only |
 | `governor.max_concurrency` | integer, 1 to 64 | `4` | — | — | user only |
 | `governor.reserve_points` | integer, 0 to 100 | `10` | — | — | user only |
@@ -237,7 +259,7 @@ not the marker, so the tag is `user_config:<binary>` and never
 
 ```console
 $ amplihack agent-binary --shell
-env -u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME -u AMPLIHACK_AUTODRIVE_STATE_DIR AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=user_config:claude
+env -u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME -u AMPLIHACK_AUTODRIVE_STATE_DIR -u AMPLIHACK_RUN_GUIDANCE_DIRS AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=user_config:claude
 ```
 
 The full resolver is described in [Active Agent Binary](./active-agent-binary.md).
@@ -340,23 +362,28 @@ like every path.
 ### recipe.usage_limit_wait
 
 Whether a recipe agent step that fails on a Claude usage limit waits, for
-the reset or for another login with capacity, and runs once more, instead of
-ending the run. See the
+the reset, for another login with capacity, or for the login in `~/.claude`
+to change, and runs once more, instead of ending the run. See the
 [usage-limit wait](./profile-command.md#usage-limit-wait). With no setting
 in the environment or a file, it is on, except in CI: any `CI` that is
 not, after trimming, empty, `0` or `false` in any case. Setting it in a file or the variable turns it on
 in CI too. The environment variable also accepts `1` and `0`.
 
-`recipe.usage_limit_max_wait_secs` bounds one wait and defaults to `21600`
-(six hours). It shortens a wait for a reset, which never lasts beyond the
-reset plus 120 seconds, and sets how long a
-[capacity wait](./profile-command.md#capacity-wait) for another login lasts.
-`0` means one more attempt with no wait for a reset, and an immediate
-`usage_limit` failure for a capacity wait.
+`recipe.usage_limit_max_wait_secs` bounds the time one step spends waiting,
+across every wait it makes, and defaults to `21600` (six hours). It shortens
+a wait for a reset, which never lasts beyond the reset plus 120 seconds, and
+sets how long a [capacity wait](./profile-command.md#capacity-wait) for
+another login, or a
+[login-change wait](./profile-command.md#login-change-wait) on an
+organisation spend limit with no reset, lasts. `0` means one more attempt
+with no wait for a reset, and an immediate `usage_limit` failure for a
+capacity or login-change wait. A step that waits again after the login in
+`~/.claude` changes gets only what its earlier waits left; see
+[One wait per login](./profile-command.md#one-wait-per-login).
 
 The default is not a ceiling. A user file or
 `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a higher value, and a capacity
-wait honours it. A project file is `lower only`: it can shorten the maximum
+or login-change wait honours it. A project file is `lower only`: it can shorten the maximum
 but never raise it above the user or default value, so a repository cannot
 make your runs wait longer.
 
@@ -384,6 +411,87 @@ stays at 2 even with `orchestrator.max_depth = 10` configured. See
 
 A project file can only lower this value: the result is the smaller of the
 project value and the user value (or the default, 3).
+
+### model.force
+
+One model id for every launch, whatever tier a step declared and whatever the
+[tier mapping](./model-tiers.md) says. `AMPLIHACK_FORCE_MODEL` sets the same
+thing for one run.
+
+```sh
+amplihack config set model.force claude-sonnet-5-5
+```
+
+This is the only setting that replaces a concrete `--model` already on a
+launched command line, which is a deliberate exception to issue #1527. It
+fires only from your own user file or your own environment, and the stderr
+line names it as the origin:
+
+```text
+amplihack: model.force is set, so `claude` is launched with `--model claude-sonnet-5-5` whatever the step asked for. Unset model.force or AMPLIHACK_FORCE_MODEL to restore per-step tiers.
+```
+
+Like every other model line amplihack prints, it ends by naming the setting
+that controls it, so the line and the lever cannot drift apart.
+
+The reasoning effort of the step's tier still applies, so forcing one model
+across a mixed-tier recipe does not flatten Codex effort to a single value. A
+launch through the LiteLLM gateway ignores it, as it ignores tiers.
+
+The value is validated the way `agent.binary` is: at most 128 bytes, no
+control characters or whitespace, none of `/`, `\`, `;`, `$`, a backtick, `'` or `"`, not starting
+with `-`, and drawn from letters, digits and `. _ [ ] @ : -`. It lands as the
+argument right after `--model`, and both Codex and Claude Code have
+single-token flags that bypass their sandbox, so a value that could act as
+another argument is rejected rather than passed on.
+
+User-only.
+
+### model.tier_map
+
+Where the [model tier](./model-tiers.md) mapping is read from.
+
+`model.tier_map` names the mapping file. Unset, amplihack reads
+`$AMPLIHACK_HOME/model-tiers.toml`, then `~/.amplihack/model-tiers.toml`.
+Exactly one file is read, and its entries merge cell by cell over the mapping
+that ships with amplihack. A cell the file names replaces the shipped cell
+whole, so a `[codex.<tier>]` cell that names a `model` restates its `effort`.
+Per-step tier overrides live in the same file, in its `[step_tiers]` table.
+
+The file is read once per process through the same reader every other
+amplihack config file uses: at most 64 KiB, regular files only, opened
+non-blocking, so a FIFO, device file or directory is reported rather than
+read. A symlink that resolves to a regular file is followed, exactly as
+`~/.amplihack/config.toml` is; a dangling one is reported rather than taken
+for "no file". A file amplihack cannot use produces one stderr line naming it
+and the reason, and the shipped mapping then applies.
+
+Both keys are user-only, like every path-valued key. A project file arrives
+with a repository you may have just cloned, and these files drive amplihack's
+rewriting of recipe YAML, whose steps run shell commands.
+
+### Review keys
+
+Whether the separate code, security and philosophy review passes of the
+refactor-review phase may run as one combined pass on a small change.
+
+- `review.combined_small_diff` turns it on. Default `false`, so the three
+  passes run separately exactly as they did before the setting existed.
+- `review.combined_diff_threshold` is the changed-line count at or below which
+  a diff counts as small. Default `200`, accepted range 1 to 100000.
+
+```sh
+amplihack config set review.combined_small_diff true
+amplihack config set review.combined_diff_threshold 120
+```
+
+Above the threshold the three passes run separately whatever the first key
+says. Both keys are user-only: the review step reads them from inside the
+worktree under review, so a project value would let a cloned repository decide
+that its own security and philosophy passes do not run. This applies to the
+refactor-review phase of a build, not to PR review.
+See [Combined review for small
+diffs](./model-tiers.md#combined-review-for-small-diffs).
 
 ### Governor keys
 
@@ -471,6 +579,66 @@ value is not replaced by the default. The command prints
 `cannot read <key> (<why>)` and exits 1, and the daily run logs
 `sessions archive: cannot read <key> (<why>); not run`. A flag still works,
 because the key is then not read.
+
+### policy.deny_commands
+
+Extra entries for amplihack's
+[dangerous-command policy](./dangerous-command-policy.md), the list it writes
+into Claude Code's `permissions.deny`, the Codex execpolicy rules file and the
+Copilot CLI command line.
+
+This is the only list-valued key. `config set` writes scalars, so it is set by
+editing the user file:
+
+```toml
+[policy]
+deny_commands = ["shutdown", "systemctl stop", "docker rm -f"]
+```
+
+```console
+$ amplihack config get policy.deny_commands --show-origin
+shutdown, systemctl stop, docker rm -f  # user (/home/alice/.amplihack/config.toml)
+```
+
+The entries print on one line, separated by `, `; a comma is not an accepted
+character in an entry, so the separator is unambiguous. `config get` prints
+one value and `--show-origin` adds one trailing comment for it, not one per
+entry. `config list` prints every value in TOML syntax rather than bare, so
+its row reads
+`policy.deny_commands = ["shutdown", "systemctl stop", "docker rm -f"]`, and
+`(unset)` when the key is absent. `config set policy.deny_commands <value>`
+is a usage error that names the file to edit. `config unset
+policy.deny_commands` removes the key.
+
+- Entries are added **after** the shipped defaults, in the order written, with
+  duplicates removed. An entry can never remove a default; there is no
+  removal mechanism for the defaults.
+- The list holds at most 64 entries. A longer list is reported and ignored,
+  on the same terms as a bad entry.
+- Each entry is a command prefix: ASCII letters, digits and `. _ / @ = + -`,
+  single spaces between 1 to 8 tokens, 1 to 128 bytes. Quotes, backslashes,
+  parentheses, colons, globs, control characters and NUL are rejected, because
+  each is syntax in at least one harness's rule format. One rejected entry is
+  reported once and rejects the whole value, which then reverts to unset: an
+  entry silently dropped from a deny list would leave a shorter list that is
+  still believed. The shipped defaults live in code and are written either
+  way, so a bad line here cannot switch the policy off.
+- The key is user-only, because it decides what your agents may run. A project
+  file's value is reported and ignored, and an insecure user file (group- or
+  world-writable, or owned by somebody else) contributes no entries, while the
+  shipped defaults are still written.
+- On Copilot CLI the entries become command-line arguments of the launched
+  process, so they are readable by every user on the host through `/proc`.
+  Write short command prefixes only: a host name, a service name, a login or
+  anything else you would not publish does not belong in this list. The
+  shipped defaults are command names and reveal nothing; what you add is
+  yours to judge. This is the same rule that keeps prompt text out of argv.
+
+The defaults apply whether or not this key is set. Claude Code and Copilot
+CLI pick a change up on the next launch; a Codex rules file is refreshed on
+the next `amplihack codex`. Run `amplihack update` after changing it to
+write every harness at once, and to reach the managed profiles, which only
+an install refreshes.
 
 ## The config command
 
@@ -660,9 +828,17 @@ have just cloned, so it is trusted less.
 
 - **The user file must be owned by you and not writable by group or others.**
   If it is not, its user-only keys (`agent.binary`, `paths.home`, `node.*`,
-  `recipe.log_dir`, `governor.*`) are ignored and reported. Its other keys still apply.
+  `recipe.log_dir`, `model.*`, `review.*`, `governor.*`, `sessions.*`,
+  `policy.deny_commands`) are ignored and reported. Its other keys still apply.
 - **The project file never names a path, a command, an executable or the
   agent CLI.** `agent.binary` and every path-valued key are user-only.
+- **The project file cannot choose a model, the tier mapping or the review
+  passes.** `model.force`, `model.tier_map` and both `review.*` keys are
+  user-only. A forced model becomes the argument right after `--model`;
+  `model.tier_map` names the file that drives amplihack's rewriting of recipe
+  YAML, whose steps run shell commands; and the review step reads the `review.*`
+  keys from inside the worktree under review, so a project value would let a
+  repository decide whether its own security pass runs.
 - **The project file cannot change the capacity governor.** Every
   `governor.*` key is user-only.
 - **`config set --project` and `config edit --project` refuse a project
@@ -788,6 +964,8 @@ so the user file is the only place the consent lives.
 - [Environment Variables](./environment-variables.md) — What each variable does
 - [Active Agent Binary](./active-agent-binary.md) — The full agent-binary resolver, including the `user_config` layer
 - [amplihack doctor](./doctor-command.md) — The `Effective config` section
+- [Model Tiers](./model-tiers.md) — What the `model.*` and `review.*` keys control: the tier vocabulary, the per-harness mapping, precedence and the run-summary section
 - [Capacity Governor](./capacity-governor.md): What the `governor.*` keys control
 - [Memory Configuration Consent](../features/memory-consent-prompt.md) — The NODE_OPTIONS prompt whose answer `node.heap_consent` stores
 - [Config Write Durability](../concepts/config-write-durability.md): Why the launcher's consent save skips the `fsync` that other config writes perform
+- [Dangerous Command Policy](./dangerous-command-policy.md): The policy list `policy.deny_commands` adds to, and the files each harness receives

@@ -10,7 +10,7 @@
 #[path = "issue_2336_autodrive_completion_failures.rs"]
 mod failures;
 #[path = "support/autodrive_completion.rs"]
-mod fixture;
+pub(crate) mod fixture;
 #[path = "issue_2336_autodrive_completion_live.rs"]
 mod live;
 #[path = "issue_2336_autodrive_completion_regressions.rs"]
@@ -205,8 +205,8 @@ fn unresolved_major_and_blocking_concerns_still_reach_evaluator_at_sibling_depth
         assert_eq!(calls[0]["ceiling"], "6");
         let argv = calls[0]["argv"].as_array().unwrap();
         assert!(
-            argv.iter().any(|v| v == &json!(d.review)),
-            "evaluator works in trusted review directory"
+            argv.iter().any(|v| v == &json!(d.repo)),
+            "evaluator works in the actual PR worktree"
         );
         assert!(argv.iter().any(|v| v == "loop_round_verdict=CONCERNS"));
         assert!(!d.marked());
@@ -273,6 +273,50 @@ fn rereview_requires_followup_recording_before_returning_success() {
             "rereview must share completion-first dispatch"
         );
     }
+}
+
+/// #2575 B1: criterion 3 is read from the PR's verdict comment. A CLEAN
+/// Crusty record whose verdict never reached the PR (a failed post, or a state
+/// folder from an older release) is no record: the re-review runs Crusty
+/// instead of leaving criterion 3 unmet for good, and the drive reaches DONE.
+#[test]
+fn clean_record_without_a_posted_verdict_runs_crusty_and_reaches_done() {
+    let d = Drive::new();
+    done_record(&d);
+    let o = d.finalize(false, false);
+    assert!(o.status.success() && d.marked(), "baseline: {}", show(&o));
+    assert!(!d.p("crusty-verdict-posted.txt").exists());
+    d.set("eval-verdict", "DONE");
+    let before = d.rounds().len();
+    let o = d.rereview(false);
+    assert!(
+        o.status.success() && d.marked(),
+        "the re-run Crusty loop ends DONE: {}",
+        show(&o)
+    );
+    assert!(
+        d.rounds().len() > before,
+        "a CLEAN record with no posted verdict runs Crusty: {}",
+        show(&o)
+    );
+}
+
+/// The same record with its verdict read back on the PR needs no new review.
+#[test]
+fn clean_record_with_a_posted_verdict_does_not_run_crusty() {
+    let d = Drive::new();
+    done_record(&d);
+    let o = d.finalize(false, false);
+    assert!(o.status.success() && d.marked(), "baseline: {}", show(&o));
+    let head = d.head();
+    private_file(
+        &d.p("crusty-verdict-posted.txt"),
+        &format!("CLEAN {head}\nMINOR_ONLY {head}\n"),
+    );
+    let before = d.rounds().len();
+    let o = d.rereview(false);
+    assert!(o.status.success() && d.marked(), "{}", show(&o));
+    assert_eq!(d.rounds().len(), before, "{}", show(&o));
 }
 
 #[test]
@@ -356,6 +400,60 @@ fn unavailable_rust_helper_fails_preflight_before_spending_a_review() {
     assert!(
         stderr(&o).contains("helper"),
         "report the missing completion dependency: {}",
+        show(&o)
+    );
+}
+
+/// #2814: the record carries the commit the loop measured, and recording it is
+/// all the loop does with it. A review that names another commit leaves no
+/// finding, refuses nothing and stops nothing: the round completes on its
+/// verdict exactly as it would have had the review named the same commit. The
+/// reconciliation this replaces turned that round into a stopped drive.
+#[test]
+fn a_review_naming_another_commit_does_not_change_the_round() {
+    let d = Drive::new();
+    d.git(&d.repo, &["commit", "--allow-empty", "-qm", "other"]);
+    let other = d.head();
+    d.git(&d.repo, &["reset", "-q", "--hard", "HEAD~1"]);
+    assert_ne!(other, d.head());
+    d.set("review-head", &other);
+    let o = d.run_loop();
+    assert_complete(&d, &o);
+    let record: serde_json::Value = serde_json::from_str(&d.read("crusty-latest.json")).unwrap();
+    assert_eq!(
+        record["reviewed_head_sha"],
+        d.head(),
+        "the record carries the measured commit, not the claim: {}",
+        show(&o)
+    );
+    assert_eq!(
+        d.read("crusty-round-1.json.findings"),
+        "",
+        "a disagreeing claim is not a finding: {}",
+        show(&o)
+    );
+}
+
+/// #2814: a dispatch refusal ends the drive, so the reason the loop records
+/// names what the helper refused. "The completion decision or evidence was
+/// invalid" on its own left the operator to work out which of the two it was,
+/// and from a run that had already stopped.
+#[test]
+fn an_invalid_decision_records_what_dispatch_refused() {
+    let d = Drive::new();
+    d.set("review.json", &json!({"crusty_verdict":"CONCERNS", "concerns":[{
+        "id":"wrong-result", "severity":"major", "summary":"Wrong return value", "evidence":"lib.rs:4"
+    }]}).to_string());
+    // The next-action agent claims a completion the evidence cannot carry.
+    d.set("action", "complete");
+    let o = d.run_loop();
+    assert!(!o.status.success(), "{}", show(&o));
+    let v = json_output(&o);
+    assert_eq!(v["loop_result"], "INVALID_DECISION", "{}", show(&o));
+    let reason = v["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("unresolved findings"),
+        "the recorded reason must name what dispatch refused: {reason:?} {}",
         show(&o)
     );
 }

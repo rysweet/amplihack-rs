@@ -16,6 +16,36 @@ pub(crate) fn home_env_lock() -> &'static Mutex<()> {
     env_lock()
 }
 
+/// A `PATH` that still holds this host's real directories, for a test that
+/// starts a program resolved through it.
+///
+/// Tests in this binary set the process-global `PATH` to a single private
+/// directory while they run (the install and update suites do, to test
+/// shadowing and absence). A sibling test that spawns `sh`, `bash` or `git`
+/// in that window finds none of them, and fails with `NotFound` or exit 127
+/// for a reason that has nothing to do with what it was testing.
+///
+/// The value is read once, under the same lock those tests hold, so it is
+/// never a narrowed one. Spawns then use it with no lock, and stay parallel:
+/// `Command::env("PATH", ..)` sets the search path for the program itself as
+/// well as the child's environment.
+///
+/// **Must not be called while holding [`env_lock`].** The initializer takes
+/// that lock, which is a plain non-reentrant `Mutex`, so a caller that
+/// already holds it deadlocks — and only sometimes, since a sibling test that
+/// initialized the `OnceLock` first makes the initializer never run. A test
+/// that holds the lock across its spawns wants a `PATH` constant of its own
+/// instead (`run_guidance::tests::CHILD_PATH`), or should call this before
+/// taking the lock.
+pub(crate) fn host_path() -> OsString {
+    static PATH: OnceLock<OsString> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin"))
+    })
+    .clone()
+}
+
 /// Alias for `env_lock()` — all env locks use the same underlying mutex.
 pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
     env_lock()
@@ -168,6 +198,26 @@ impl EnvGuard {
         }
         Self { previous }
     }
+
+    /// Set `key` to `value` until the guard is dropped. The value `key` had
+    /// before the guard first touched it is restored on drop, panics included.
+    pub(crate) fn assign(&mut self, key: &str, value: impl AsRef<OsStr>) {
+        self.remember(key);
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    /// Remove `key` until the guard is dropped, restoring it on drop.
+    pub(crate) fn clear(&mut self, key: &str) {
+        self.remember(key);
+        unsafe { std::env::remove_var(key) };
+    }
+
+    fn remember(&mut self, key: &str) {
+        if !self.previous.iter().any(|(name, _)| name == key) {
+            self.previous
+                .push((OsString::from(key), std::env::var_os(key)));
+        }
+    }
 }
 
 /// The variables that name an outer recipe run (#1984): the shell helper's five
@@ -189,6 +239,24 @@ pub(crate) const OUTER_RUN_IDENTITY_VARS: [&str; 7] = [
 /// caller must hold `env_lock()` (or `home_env_lock()`), as for any `EnvGuard`.
 pub(crate) fn clear_outer_run_env() -> EnvGuard {
     EnvGuard::unset(OUTER_RUN_IDENTITY_VARS)
+}
+
+/// Set or clear several path-valued variables until the guard drops: `Some`
+/// sets, `None` removes. The caller must hold `env_lock()`, as for any
+/// [`EnvGuard`].
+///
+/// This is the shape a fixture wants when it points `HOME`, `CODEX_HOME` or a
+/// profile root at a temp directory, which [`EnvGuard::set`] cannot take
+/// because its values are `&str`.
+pub(crate) fn env_paths(vars: &[(&str, Option<&Path>)]) -> EnvGuard {
+    let mut guard = EnvGuard::capture(&[]);
+    for (key, value) in vars {
+        match value {
+            Some(path) => guard.assign(key, path),
+            None => guard.clear(key),
+        }
+    }
+    guard
 }
 
 /// Runs `f` under the shared env lock with each variable set (or removed when
@@ -257,8 +325,11 @@ impl IsolatedWorkRoot {
             "AMPLIHACK_WORK_ROOT",
             "AMPLIHACK_WORK_ROOT_EXPLICIT",
             "AMPLIHACK_CLEANUP_ON_EXIT",
+            crate::run_guidance::GUIDANCE_DIRS_ENV,
         ]);
         unsafe {
+            // Issue #2535: an outer run's guidance never reaches a test run.
+            std::env::remove_var(crate::run_guidance::GUIDANCE_DIRS_ENV);
             std::env::set_var("AMPLIHACK_WORK_ROOT", dir.path().join("work"));
             std::env::remove_var("AMPLIHACK_WORK_ROOT_EXPLICIT");
             std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0");
@@ -469,3 +540,36 @@ pub(crate) fn write_executable(path: &Path, body: &str) {
 
 #[path = "test_support_proc_guard.rs"]
 mod proc_guard;
+
+/// The one hang guard of `tests/support/wait.rs`, for lib tests (issue #2019).
+#[path = "../tests/support/wait.rs"]
+pub(crate) mod wait;
+
+/// The fake clocks shared by every test crate (issue #2019).
+#[path = "../tests/support/virtual_clock.rs"]
+pub(crate) mod virtual_clock;
+
+#[cfg(unix)]
+#[path = "../tests/support/unix_process.rs"]
+pub(crate) mod unix_process;
+
+/// A bare origin, clones of it, and the three states a folder's work tree can
+/// be in: clean and pushed, uncommitted, or committed and not pushed (issue
+/// #2785).
+#[path = "test_support/origin_clones.rs"]
+pub(crate) mod origin_clones;
+
+/// A gate that holds one side of a test at a known point (issue #2019).
+#[path = "test_support/test_gate.rs"]
+pub(crate) mod test_gate;
+
+/// Wait on and kill a process through a pidfd (issue #2019).
+#[cfg(target_os = "linux")]
+#[path = "test_support/pidfd_wait.rs"]
+pub(crate) mod pidfd_wait;
+
+// Issue #2019: contracts of the event-wait helpers (`test_gate`, `wait`,
+// `pidfd_wait`) and of the stub writer's mode check.
+#[cfg(unix)]
+#[path = "test_support/tests_2019_helpers.rs"]
+mod tests_2019_helpers;

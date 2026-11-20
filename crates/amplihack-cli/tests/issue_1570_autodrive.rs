@@ -53,6 +53,8 @@ exec 9>&-
 printf '%s\0' "$@" > "$STUB_LOG/call-$(printf '%05d' "$n")"
 case "${1:-} ${2:-}" in
   "recipe show") exit 0 ;;
+  # The loop allocates and releases its review generation (#2096).
+  "internal "*) exec "$REAL_AMPLIHACK" "$@" ;;
   "orch helper")
     cat >/dev/null
     if [ "${3:-}" = "extract-field" ]; then
@@ -75,13 +77,14 @@ case "${1:-} ${2:-}" in
       fi
       echo "LOOP_HEALTH: STUCK"; exit 1
     fi
+    # The round commits in repo_path (the last one wins); since #2096 its
+    # working dir is the review generation's trusted launch dir.
+    wt=""; for a in "$@"; do case "$a" in repo_path=*) wt="${a#repo_path=}" ;; esac; done
+    t="$(git -C "$wt" write-tree)"
+    c="$(git -C "$wt" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "stub round $n")"
+    git -C "$wt" update-ref HEAD "$c"
     prev=
     for a in "$@"; do
-      if [ "$prev" = "--working-dir" ]; then
-        t="$(git -C "$a" write-tree)"
-        c="$(git -C "$a" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "stub round $n")"
-        git -C "$a" update-ref HEAD "$c"
-      fi
       if [ "$prev" = "--context-from-file" ]; then
         f=${a#task_description=}
         cp -- "$f" "$STUB_STATE/task-seen-$n"
@@ -175,9 +178,8 @@ fn drive(task: Option<&str>) -> Run {
     for d in [&bin, &log, &stub_state, &cwd] {
         std::fs::create_dir_all(d).unwrap();
     }
-    // The loop's review dir defaults to its working directory and must be the
-    // main checkout of --repo's repository (#1528), so `cwd` is a main
-    // checkout and `repo` its linked worktree, as in a real run.
+    // `cwd` is a main checkout and `repo` its linked worktree, as in a real
+    // run: since #2808 the rounds run in `repo`, the PR's own worktree.
     main_checkout_with_worktree(tmp.path(), &cwd, &repo);
     let stub = bin.join("amplihack");
     crate::support::exec_stub::write_executable(&stub, STUB, 0o755);
@@ -208,6 +210,10 @@ fn drive(task: Option<&str>) -> Run {
         .env("HOME", tmp.path())
         .env("STUB_LOG", &log)
         .env("STUB_STATE", &stub_state)
+        .env(
+            "REAL_AMPLIHACK",
+            crate::support::amplihack_bin::amplihack_bin(),
+        )
         .current_dir(&cwd)
         .output()
         .expect("spawn autodrive_loop.sh");
@@ -389,8 +395,7 @@ fn each_round_passes_the_task_by_file_and_never_in_argv() {
             "round {}: the task text must not appear in argv",
             i + 1
         );
-        // The round runs in --repo (the PR worktree, #1528) and the task
-        // still reaches it through the state-dir copy (#1570).
+        // The round uses the PR worktree; task transport remains file-backed.
         let wd = argv
             .iter()
             .position(|a| a == "--working-dir")
@@ -399,7 +404,18 @@ fn each_round_passes_the_task_by_file_and_never_in_argv() {
         assert_eq!(
             Path::new(wd).canonicalize().ok(),
             run.repo.canonicalize().ok(),
-            "round {}: the round must run in --repo",
+            "round {}: the round starts in the actual PR worktree",
+            i + 1
+        );
+        let repo_path = argv
+            .iter()
+            .rev()
+            .find_map(|a| a.strip_prefix("repo_path="))
+            .unwrap_or_else(|| panic!("round {}: missing repo_path: {argv:?}", i + 1));
+        assert_eq!(
+            Path::new(repo_path).canonicalize().ok(),
+            run.repo.canonicalize().ok(),
+            "round {}: the round commits in --repo",
             i + 1
         );
     }

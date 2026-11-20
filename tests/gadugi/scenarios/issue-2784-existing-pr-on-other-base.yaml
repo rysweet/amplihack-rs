@@ -1,0 +1,59 @@
+name: issue-2784-existing-pr-on-other-base
+description: >
+  Outside-in QA for issue #2784. With base_branch empty, step-16-create-draft-pr
+  of workflow-publish.yaml takes the base from origin/HEAD, and its duplicate
+  lookup was scoped to that base: an open pull request from the same branch
+  into dev was missed, and gh pr create opened a second pull request into
+  main. The scenario (via
+  tests/gadugi/run-issue-2784-existing-pr-other-base-scenario.sh) runs the
+  shipped step-16 body through `amplihack recipe run` and the pinned recipe
+  runner, against a local bare repository whose HEAD is main and a clone on
+  the feature branch, under env -i with a fresh HOME. A stub gh, first on
+  PATH, holds an open pull request #615 from the branch into dev; nothing
+  reaches GitHub. It checks that the run records #615 with base dev and the
+  message naming both bases, and makes no pr create call; a control case with
+  no pull request checks that one pr create is made without --base. CI's
+  Install Smoke Test job runs the driver script directly against the binary
+  it installs; CI does not run gadugi-test, so this file is for running the
+  same cases through gadugi-test by hand.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, workflow-publish, pull-request, regression]
+  priority: high
+  issues: ["2784"]
+steps:
+  - name: run-issue-2784-existing-pr-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2784-existing-pr-other-base-scenario.sh
+    timeout: 880000
+  - name: all-existing-pr-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: existing-pr-on-other-base-adopted
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: existing_pr_on_other_base_adopted - "
+  - name: no-pr-creates-one-without-base
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: no_pr_creates_one_without_base - "

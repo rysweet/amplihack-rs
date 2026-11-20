@@ -29,7 +29,9 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS](#amplihack_recipe_heartbeat_interval_seconds)
   - [AMPLIHACK_RECIPE_SNIPPET_LINES](#amplihack_recipe_snippet_lines)
   - [AMPLIHACK_RECIPE_SNIPPET_BYTES](#amplihack_recipe_snippet_bytes)
+  - [AMPLIHACK_RECIPE_LOG](#amplihack_recipe_log)
   - [AMPLIHACK_RECIPE_LOG_JSONL](#amplihack_recipe_log_jsonl)
+  - [AMPLIHACK_RUN_GUIDANCE_DIRS](#amplihack_run_guidance_dirs)
   - [AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS](#amplihack_recipe_transient_max_attempts)
   - [AMPLIHACK_RECIPE_TRANSIENT_BUDGET_SECS](#amplihack_recipe_transient_budget_secs)
   - [NONINTERACTIVE](#noninteractive)
@@ -108,7 +110,8 @@ caller's environment, so they need no hand-off.
 `$(amplihack agent-binary --shell)` prints an inline `env` prefix that removes
 every session marker and sets both variables (#1525). It also removes
 `AMPLIHACK_PARENT_RECIPE_PID`, `AMPLIHACK_PARENT_RECIPE_STARTTIME` and
-`AMPLIHACK_AUTODRIVE_STATE_DIR` (#1976): a tmux server first started from a
+`AMPLIHACK_AUTODRIVE_STATE_DIR` (#1976), and `AMPLIHACK_RUN_GUIDANCE_DIRS`
+(#2535): a tmux server first started from a
 recipe step keeps the step's values, and a run in a later session would watch
 a parent that has gone and stop at once with exit `75`. It belongs inside the
 double-quoted tmux command; in single quotes it expands in the new session and
@@ -469,7 +472,7 @@ amplihack recipe run recipe.yaml
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
 
-**Usage-limit wait:** a Claude agent step that waits on a usage limit, for a reset or for another login with capacity, ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner. See [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
+**Usage-limit wait:** a Claude agent step that waits on a usage limit, for a reset, for another login with capacity, or for the login in `~/.claude` to change, ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. The deadline is taken from the step's start, not the wait's, so a step that waits several times over, once per login the rotator brings in, is still bounded by it. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner. See [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
 
 ---
 
@@ -771,6 +774,60 @@ amplihack recipe run default-workflow \
 
 ---
 
+### AMPLIHACK_RECIPE_LOG
+
+**Type:** absolute path
+**Set by:** `amplihack recipe run --detach`, which exports its own log path
+**Inherited by:** anything that run starts, including a foreground run or
+sub-recipe nested inside it, whose steps then append to the enclosing run's
+log; a nested run that is itself detached overwrites it with its own path
+**Read by:** the usage-limit wait in each supervised agent step
+
+Internal. It names a detached run's own log file, the one
+`amplihack recipe run --detach` prints as `log:`. A step that waits out a
+usage limit appends two lines to it, one when the wait starts and one when it
+ends, so a waiting step is visible to anyone reading the run's log instead of
+looking hung behind the runner's heartbeat:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit account=work reset=2026-11-16 13:00:00 +00:00 until=2026-11-16 13:02:00 +00:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait end reason=login changed
+```
+
+A login-change wait's `start` line reads `reason=spend_limit`, since an
+organisation spend limit is the only limit that starts one; every other wait
+reads `reason=usage_limit`.
+
+Both lines arrive whole. The detached run copies the runner's output into
+the same file a line at a time, holding an unterminated tail back until its
+line is complete, so a wait line never lands inside a half-written `working
+(Ns elapsed)` heartbeat and `grep amplihack.recipe.usage_limit_wait` over
+the log returns whole lines.
+
+A top-level foreground `amplihack recipe run` has no log file of its own and
+never sets the variable, so it writes no such lines; its stderr is on the
+terminal already.
+
+Do not set it by hand. It is not read from `config.toml`, a recipe spec or a
+step's declared environment, and a detached run overwrites any value it
+inherits, so no detached run's steps can append into another detached run's
+log. Unset, empty or relative, it is ignored: no line is written, no file
+is created, and the step behaves exactly as it would without it.
+
+An absolute path is opened with `O_CREAT`, so one naming a file that does
+not exist yet **is created**, `0600`, and written to — set the variable by
+hand at a path you did not mean and you get a stray file there. A path that
+exists but is not a private regular file this user owns — a directory, a
+symlink, a file owned by another user, one readable or writable by group or
+other, or one with more than one link — is refused instead, and nothing is
+written or changed.
+
+This is not `AMPLIHACK_RECIPE_LOG_JSONL`, and nothing is ever written to the
+file that names. The full rules are in
+[The wait in the recipe log](profile-command.md#the-wait-in-the-recipe-log).
+
+---
+
 ### AMPLIHACK_RECIPE_LOG_JSONL
 
 **Type:** path
@@ -789,6 +846,70 @@ jq 'select(.type == "heartbeat")' /tmp/default-workflow.jsonl
 ```
 
 Equivalent config key: `recipe.log_jsonl` in `~/.amplihack/config`.
+
+---
+
+### AMPLIHACK_RUN_GUIDANCE_DIRS
+
+**Type:** OS path list (`:`-separated on Linux and macOS)
+**Set by:** `amplihack recipe run`, on its runner child only
+**Read by:** the agent-step launcher (`amplihack claude`, `launch`,
+`RustyClawd`, `copilot` and `codex` when started by a recipe step)
+
+The guidance folders whose entries are added to the end of each agent step's
+prompt, as written by
+[`amplihack recipe guide`](./recipe-cli-reference.md#amplihack-recipe-guide).
+`recipe run` builds the list from:
+
+1. its own `<work root>/runs/<run folder name>/guidance`;
+2. the pull request's auto-drive guidance folder, when the run's context has
+   `pr_url`, or a numeric `pr_number` with a `repo_path` whose `origin`
+   remote is on `github.com`;
+3. the value it inherited, so a nested `recipe run` also reads the outer
+   runs' guidance.
+
+Duplicates are removed and the order is kept. The run's own folders come
+first so that, in a deep nesting, the 16-folder limit below leaves out the
+outermost runs' folders, never the innermost run's own. Entries are sorted by
+time across all folders, so this order does not change the block. A folder
+whose path contains `:` cannot be listed; it is left out with a warning and
+the other folders are kept.
+
+When the context names a pull request that cannot be resolved (a `pr_url`
+that is not a GitHub pull request URL, a `pr_number` that is not a positive
+whole number, a `repo_path` whose `origin` cannot be read or is not on
+`github.com`, or no usable state folder), the run starts without the pull
+request's folder and prints one line on stderr naming the field and the
+cause, for example:
+
+```text
+amplihack: no pull request operator guidance for this run: cannot resolve pr_number: the origin remote of repo_path is not a github.com repository
+```
+
+For example, in a round of an auto-drive for pull request 2535, the value
+is:
+
+```text
+/home/alice/.amplihack/work/runs/8c0e2a54-1f7d-4c56-9a39-2d1b6f0c7e15/guidance:/home/alice/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_2535/guidance
+```
+
+When the variable is unset, as in an interactive launch, the launcher reads
+no guidance and the prompt is unchanged. The launcher reads at most 16
+folders. It skips, with a warning naming it, a folder whose path is not
+absolute, whose last part is not `guidance`, or which (or whose parent) is a
+symbolic link, is owned by another user, or can be written by its group or
+by others. Across all folders it uses the newest entries, up to 256 entries
+and 256 KiB of text.
+
+These checks start at the state folder and do not cover the folders above
+it. `AMPLIHACK_STATE_DIR` must not sit under a folder that other users can
+write to.
+
+`--detach`, `$(amplihack agent-binary --shell)` and the test isolation
+helpers remove the variable, so a new top-level run never reads another
+run's guidance.
+
+Do not set this variable by hand. To add guidance, use `amplihack recipe guide`.
 
 ---
 
@@ -995,8 +1116,10 @@ Claude usage limit waits for the reset, or for a login with capacity, and
 runs once more instead of ending the run. A reset more than five hours away
 or an unreadable reset is waited out only by a
 [capacity wait](./profile-command.md#capacity-wait), when another login
-could take over. A spend limit is never waited for unless it also states a
-session reset. Overrides the
+could take over. An organisation spend limit with no reset is waited for
+only by a [login-change wait](./profile-command.md#login-change-wait), on a
+step running on `~/.claude` with a rotator running; on any other step it
+ends the run at once, whatever room other logins have. Overrides the
 config files; empty means unset; an invalid value prints one warning and is
 ignored. See the
 [usage-limit wait reference](./profile-command.md#usage-limit-wait).
@@ -1010,14 +1133,25 @@ ignored. See the
 **Config key:** [`recipe.usage_limit_max_wait_secs`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
-Upper bound on one usage-limit wait. For a wait on a reset it only shortens
-the wait, and `0` means no wait but one more attempt; such a wait never
-lasts longer than five hours and 120 seconds. For a
+Upper bound on the time one step spends waiting out usage limits, across
+every wait it makes. For a wait on a reset it only shortens the wait, and `0`
+means no wait but one more attempt; such a wait never lasts longer than five
+hours and 120 seconds. For a
 [capacity wait](./profile-command.md#capacity-wait) on a weekly or
-unreadable reset it sets the length of the wait, with no five-hour ceiling
-(the wait still ends sooner at the failed login's own reset plus 120 s), and `0` means the step ends at once as a usage limit. The variable may set a
-value above the default. Overrides the config files; empty means unset; an
-invalid value prints one warning, naming the variable only, and is ignored.
+unreadable reset, or a
+[login-change wait](./profile-command.md#login-change-wait) on an
+organisation spend limit with no reset, it sets the length of the wait, with
+no five-hour ceiling (a capacity wait still ends sooner at the failed login's
+own reset plus 120 s), and `0` means the step ends at once as a usage limit.
+
+A step that waits again after its login changes draws on the same budget, so
+a chain of waits across several logins lasts no longer in total than the one
+wait the same step would have made before; see
+[One wait per login](./profile-command.md#one-wait-per-login).
+
+The variable may set a value above the default. Overrides the config files;
+empty means unset; an invalid value prints one warning, naming the variable
+only, and is ignored.
 
 ---
 
@@ -1104,6 +1238,10 @@ Standard Unix home directory. Used to resolve `~/.amplihack`, `~/.npm-global`, a
 Sets the `--model` amplihack passes to Claude-compatible tools: `claude`,
 `rusty`, `rustyclawd` and `amplifier`. `amplihack copilot` and `amplihack codex`
 ignore it.
+
+A set, non-blank value also replaces the model a recipe step's tier maps to on
+the `claude` column; see rank 3 in
+[Model Tiers: Precedence](./model-tiers.md#precedence).
 
 | `AMPLIHACK_DEFAULT_MODEL` | What amplihack adds |
 |---|---|

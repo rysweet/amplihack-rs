@@ -52,7 +52,7 @@ done
 export REAL_AMPLIHACK
 echo "  (JSON helper: ${REAL_AMPLIHACK:-POSIX stand-in})"
 
-# The review dir must be the main checkout of --repo's repository (#1528).
+# --repo is a linked worktree of a main checkout, as a PR worktree is (#2808).
 MAIN="${WORK}/main"; WT="${WORK}/worktree"
 g() { HOME="$WORK" GIT_CONFIG_NOSYSTEM=1 git -C "$MAIN" -c user.name=t -c user.email=t@t "$@"; }
 { mkdir -p "$MAIN" && g init -q \
@@ -72,10 +72,11 @@ run() { # run <case> [loop-script] [extra loop args...]
   shift; [ $# -gt 0 ] && shift
   mkdir -p "${CASE}/stub"
   RC=0
-  ( cd "$MAIN" && STUB_STATE="${CASE}/stub" PATH="${WORK}/bin:${PATH}" AMPLIHACK_BIN="${WORK}/bin/amplihack" \
+  mkdir -p "${WORK}/home"
+  ( cd "$MAIN" && HOME="${WORK}/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 STUB_STATE="${CASE}/stub" PATH="${WORK}/bin:${PATH}" AMPLIHACK_BIN="${WORK}/bin/amplihack" \
       bash "$loop" --loop-name merge-ready --round-recipe autodrive-merge-round \
         --clean-token MERGE_READY --verdict-field merge_ready_verdict \
-        --repo "$WT" --review-dir "$MAIN" --state-dir "${CASE}/state" --task-file "${WORK}/task.txt" "$@" ) \
+        --repo "$WT" --state-dir "${CASE}/state" --task-file "${WORK}/task.txt" "$@" ) \
     >"${CASE}/out" 2>"${CASE}/err" || RC=$?
   OUT="$(cat "${CASE}/out")"; ERR="$(cat "${CASE}/err")"
   local k; for k in $STUB_KNOBS; do unset "$k"; done; STUB_KNOBS=""
@@ -88,7 +89,6 @@ json_lines() { # every stdout line is one JSON object (SR-6)
   local line
   while IFS= read -r line; do printf '%s' "$line" | jq -e 'type == "object"' >/dev/null 2>&1 || return 1; done <<<"$OUT"
 }
-
 MARK='amplihack.recipe.failure_class '
 marker() { # marker <class> <structural> [signal]
   printf '%s{"schema_version":1,"issue":1267,"class":"%s","signal":"%s","action":"terminal","attempt":1,"retryable":false,"structural_refusal":%s}' \
@@ -229,6 +229,60 @@ run no-helper "${WORK}/bundle/tools/autodrive_loop.sh"
 ok NO-HELPER "rc=${RC}: without autodrive_refusal.sh the loop must exit 2" test "$RC" -eq 2
 ok NO-HELPER-SAYS "the error must name the missing file: ${ERR}" has "$ERR" autodrive_refusal.sh
 ok NO-HELPER-NO-ROUND "no round may run without the refusal check" test "$(calls autodrive-merge-round)" -eq 0
+
+# --- 9. the round's pre-review baseline is reclaimed (#2808 SR-10) ----------
+# step-01c saves the worktree's untracked file contents beside the round
+# record so step-02b can tell a reviewer edit from existing work. Nothing
+# outside the round reads it, and it may hold secrets, so the loop removes it
+# as soon as the round that took it has returned -- including when the round
+# failed.
+stub STUB_LEAVE_BASELINE=1
+run baseline-reclaimed
+ok BASELINE-GONE "the loop must remove every pre-review.* the round left: $(ls -d "${CASE}"/state/pre-review.* 2>/dev/null | tr '\n' ' ')" \
+  bash -c 'test -z "$(find "$1" -maxdepth 1 -name "pre-review.*" -print -quit 2>/dev/null)"' _ "${CASE}/state"
+ok BASELINE-KEEPS-STATE "the rest of the state directory is untouched" test -f "${CASE}/state/merge-ready-round-1.json"
+ok BASELINE-DONE "reclaiming the baseline must not change the outcome: rc=${RC}" has "$OUT" '"loop_result":"DONE"'
+
+stub STUB_LEAVE_BASELINE=1 STUB_RC_1=1 "STUB_OUT_1=${QUOTE}"
+run baseline-reclaimed-after-failure
+ok BASELINE-GONE-ON-FAILURE "a failed round's baseline must be reclaimed too" \
+  bash -c 'test -z "$(find "$1" -maxdepth 1 -name "pre-review.*" -print -quit 2>/dev/null)"' _ "${CASE}/state"
+
+# --- 11. the guard and record scripts use $AMPLIHACK_BIN (#2096 finding 8) ---------
+# `amplihack` first on PATH refuses and logs; $AMPLIHACK_BIN, under another
+# name, logs and answers. Every call must reach $AMPLIHACK_BIN.
+AB="${WORK}/amplihack-bin"; mkdir -p "${AB}/path" "${AB}/state"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "BARE %s\n" "$*" >> "$AB_LOG"' 'exit 97' > "${AB}/path/amplihack"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "BIN %s\n" "$*" >> "$AB_LOG"' \
+  'case "${1:-} ${2:-}" in' \
+  '  "orch helper") STUB_STATE="$AB_STATE" exec "$AB_STUB" "$@" ;;' \
+  'esac' 'exit 0' > "${AB}/amplihack-alt"
+chmod 0755 "${AB}/path/amplihack" "${AB}/amplihack-alt"
+ab() { # ab <script> <args...>: run a bundle script with the alternate binary
+  # stdin comes from /dev/null, not this script's own: a bundled tool calls
+  # `amplihack orch helper <mode>` in modes the stub has no stand-in for, and
+  # on an inherited terminal or pipe a tool that reads stdin blocks for ever
+  # (#2582). /dev/null rather than `<&-`, so fd 0 stays taken and a later
+  # open() in a child cannot land on it.
+  AB_LOG="${AB}/log" AB_STATE="${AB}/state" AB_STUB="${WORK}/bin/amplihack" REAL_AMPLIHACK="" \
+    HOME="${WORK}/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    AMPLIHACK_BIN="${AB}/amplihack-alt" PATH="${AB}/path:${PATH}" bash "${TOOLS}/$1" "${@:2}" </dev/null
+}
+bare_calls() { local n; n="$(grep -c '^BARE ' "${AB}/log" 2>/dev/null)" || true; printf '%s' "${n:-0}"; }
+: > "${AB}/log"
+SHA40="$(git -C "$WT" rev-parse --verify HEAD)"
+AUTODRIVE_ROUND_RECORD="${AB}/record.json" REPO_PATH="$WT" AUTODRIVE_ROUND_LABEL=round-1 \
+  RECIPE_VAR_crusty_verdict='{"crusty_verdict":"CLEAN","concern_count":0}' \
+  RECIPE_VAR_reviewed_head_sha="$SHA40" \
+  RECIPE_VAR_crusty_review="{\"reviewed_head_sha\":\"${SHA40}\"}" \
+  RECIPE_VAR_crusty_round_context="{\"head_sha\":\"${SHA40}\"}" RECIPE_VAR_crusty_fix_evidence='{"commits":0}' \
+  AUTODRIVE_COMPLETION_STATE="${AB}/completion" ab autodrive_crusty_record.sh >/dev/null 2>"${AB}/record.err"
+ok AMPLIHACK-BIN-RECORD-EXTRACT "the record's field extraction calls \$AMPLIHACK_BIN: $(tail -n 2 "${AB}/record.err")" \
+  grep -qF "BIN orch helper extract-json --require-field crusty_verdict" "${AB}/log"
+ok AMPLIHACK-BIN-RECORD-SEAL "the completion seal calls \$AMPLIHACK_BIN" \
+  grep -qxF "BIN orch helper autodrive-completion-seal --private-state ${AB}/completion" "${AB}/log"
+ok AMPLIHACK-BIN-NO-BARE "no call reached a bare amplihack on PATH: $(grep '^BARE ' "${AB}/log" | tr '\n' ';')" \
+  test "$(bare_calls)" -eq 0
 
 echo "=== ${PASSED} passed, ${FAILED} failed ==="
 [ "$FAILED" -eq 0 ] || exit 1

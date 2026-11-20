@@ -218,3 +218,37 @@ impl Fixture {
         ))
     }
 }
+
+/// The 19 String fields of a finalization result.
+pub const OUTPUT: [&str; 19] = [
+    "terminal_success",
+    "terminal_state",
+    "terminal_reason",
+    "required_next_action",
+    "hollow_success_detected",
+    "evidence_used",
+    "finalizer_schema_version",
+    "finalizer_confidence",
+    "finalizer_output_valid",
+    "reporting_failure",
+    "implementation_completed",
+    "verification_completed",
+    "publish_state_reached",
+    "terminal_no_op",
+    "terminal_failure",
+    "pr_url",
+    "pr_number",
+    "observed_phases",
+    "missing_evidence",
+];
+
+pub fn assert_complete_schema(j: &Value) {
+    let object = j.as_object().unwrap();
+    assert_eq!(object.len(), OUTPUT.len(), "complete schema: {j}");
+    for field in OUTPUT {
+        assert!(
+            object.get(field).is_some_and(Value::is_string),
+            "String {field}: {j}"
+        );
+    }
+}

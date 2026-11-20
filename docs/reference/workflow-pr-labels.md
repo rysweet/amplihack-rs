@@ -6,7 +6,7 @@ flow. It is implemented by `apply_pr_labels_best_effort()` in
 `amplifier-bundle/tools/workflow_publish_pr.sh` and driven entirely by the
 `WORKFLOW_PR_LABELS` environment variable.
 
-Updated: 2026-07-23
+Updated: 2026-11-18
 
 ## Contents
 
@@ -212,6 +212,15 @@ unset WORKFLOW_PR_LABELS      # or: export WORKFLOW_PR_LABELS=""
 
 ## Security considerations
 
+- **Labels do not authorize a merge.** Labeling does not validate the PR
+  author or its base. An adopted PR can receive configured labels even when
+  its base is forbidden or has not been fetched; finalization checks the base
+  later. A label-driven merge consumer must enforce author and base policy
+  itself. The adoption fix (#2784) preserves this labeling contract without
+  adding a guard. Author validation is tracked in
+  [#2789](https://github.com/rysweet/amplihack-rs/issues/2789); auto-drive's
+  separate base-policy gap is tracked in
+  [#2790](https://github.com/rysweet/amplihack-rs/issues/2790).
 - **Deterministic stamp, never agentic.** Labeling is a deterministic stamp with
   no judgment. It is never an LLM/agentic step. The merge-queue discriminator
   that consumes this label must stay deterministic so that an agent can never
@@ -272,6 +281,10 @@ Contract verified by the test:
 The obsolete cases that exercised the removed shell-side parser — multi-label
 whitespace-trimming and per-label fan-out call counts — are gone, because there
 is no longer a shell parser to test; `gh` owns the splitting.
+
+Adopted-PR labeling is covered by the `labels_*` cases in
+`tests/integration/issue_2306_publish/existing_pr_other_base.rs`, which run the
+shipped step-16 with an adopted pull request into `dev`.
 
 Run it locally:
 

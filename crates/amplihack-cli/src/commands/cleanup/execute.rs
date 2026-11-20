@@ -134,6 +134,12 @@ pub(super) fn execute(
             if procs.in_use(target) {
                 refuse!("in use by a running process");
             }
+            // Issue #2785, last of the free checks and so closest to the
+            // delete: work that appeared since this was planned is still
+            // seen. A refusal is reported as skipped, never as a failure.
+            if let Some(keep) = keep_and_report_unsaved_work(target) {
+                refuse!("{keep}");
+            }
             remove_real_dir(target)
         }
         Op::RemoveDir {
@@ -149,6 +155,13 @@ pub(super) fn execute(
             }
             if procs.in_use(target) {
                 refuse!("in use by a running process");
+            }
+            // Issue #2785, before the Cargo lock so nothing slow sits
+            // between the judgement and the delete. This one arm covers the
+            // run-owned folder, `untagged-target` and `tmp-leftover`, and is
+            // the only judgement the last two get.
+            if let Some(keep) = keep_and_report_unsaved_work(target) {
+                refuse!("{keep}");
             }
             // Issue #2039: a Cargo target is locked exclusively from the
             // check through the delete, so a build cannot start in between.

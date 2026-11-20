@@ -282,3 +282,115 @@ fn the_legacy_consent_is_a_layer_until_migrated() {
     );
     assert!(e.legacy.is_none());
 }
+
+// --- issue #2589: policy.deny_commands through the layers ------------------
+
+#[test]
+fn the_user_file_supplies_the_instance_deny_entries() {
+    let fx = Fx::new();
+    fx.user("[policy]\ndeny_commands = [\"shutdown\", \"tmux kill-server\"]\n");
+    let e = fx.load(&[]);
+    assert_eq!(
+        e.file_value("policy.deny_commands"),
+        Some(&Value::List(vec![
+            "shutdown".into(),
+            "tmux kill-server".into()
+        ]))
+    );
+    assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
+}
+
+#[test]
+fn an_unset_key_is_no_entries_and_no_diagnostic() {
+    let fx = Fx::new();
+    let e = fx.load(&[]);
+    assert_eq!(e.file_value("policy.deny_commands"), None);
+    assert!(e.diagnostics.is_empty(), "{:?}", e.diagnostics);
+}
+
+/// SEC-A1: the key is user-only, so a repository someone else wrote cannot
+/// add — or appear to add — an entry to any harness's deny list.
+#[test]
+fn a_project_file_entry_is_reported_and_ignored() {
+    let fx = Fx::new();
+    fx.project("[policy]\ndeny_commands = [\"git-commit\"]\n");
+    let e = fx.load(&[]);
+    assert_eq!(e.file_value("policy.deny_commands"), None);
+    assert!(
+        e.diagnostics
+            .iter()
+            .any(|d| d.key.as_deref() == Some("policy.deny_commands")),
+        "{:?}",
+        e.diagnostics
+    );
+}
+
+/// A user file the group or another user can write is not trusted for a
+/// user-only key. The built-in defaults are unaffected: they live in code.
+#[cfg(unix)]
+#[test]
+fn an_insecure_user_file_contributes_no_entries() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    fx.user("[policy]\ndeny_commands = [\"shutdown\"]\n");
+    let path = user_file(&fx.home);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+    let e = fx.load(&[]);
+    assert_eq!(e.file_value("policy.deny_commands"), None);
+    assert!(
+        e.diagnostics
+            .iter()
+            .any(|d| d.key.as_deref() == Some("policy.deny_commands")),
+        "{:?}",
+        e.diagnostics
+    );
+}
+
+#[test]
+fn an_invalid_entry_is_reported_once_and_the_key_stays_unset() {
+    let fx = Fx::new();
+    fx.user("[policy]\ndeny_commands = [\"pkill\", \"shell(x)\"]\n");
+    let e = fx.load(&[]);
+    assert_eq!(
+        e.file_value("policy.deny_commands"),
+        None,
+        "one bad entry rejects the value; it is not silently filtered"
+    );
+    assert_eq!(
+        e.diagnostics
+            .iter()
+            .filter(|d| d.key.as_deref() == Some("policy.deny_commands"))
+            .count(),
+        1,
+        "{:?}",
+        e.diagnostics
+    );
+}
+
+/// SEC-V4: the rejected value is attacker-chosen, so the diagnostic that
+/// quotes it carries no raw escape or bidi character.
+#[test]
+fn a_rejected_entry_is_escaped_in_the_diagnostic() {
+    let fx = Fx::new();
+    fx.user("[policy]\ndeny_commands = [\"a\\u001bb\"]\n");
+    let e = fx.load(&[]);
+    for d in &e.diagnostics {
+        let text = format!("{d:?}");
+        assert!(!text.contains('\u{1b}'), "unescaped control: {text}");
+    }
+}
+
+#[test]
+fn a_value_that_is_not_an_array_is_reported_and_ignored() {
+    let fx = Fx::new();
+    fx.user("[policy]\ndeny_commands = \"pkill\"\n");
+    let e = fx.load(&[]);
+    assert_eq!(e.file_value("policy.deny_commands"), None);
+    assert!(
+        e.diagnostics
+            .iter()
+            .any(|d| d.key.as_deref() == Some("policy.deny_commands")),
+        "{:?}",
+        e.diagnostics
+    );
+}

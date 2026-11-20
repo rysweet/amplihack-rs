@@ -441,6 +441,10 @@ Step-error verification extracts the actual step-16 command from
 into a minimal temporary recipe with its required context and executes it through
 the runner pinned by
 [`claude-plugin/recipe-runner.rev`](../../claude-plugin/recipe-runner.rev).
+The tests obtain that runner from the shared helper described in
+[Run Tests Against the Pinned Recipe Runner](../howto/run-tests-against-the-pinned-recipe-runner.md),
+which builds it at the pin into a test-private cache and never uses a runner
+installed on the host.
 Assertions inspect the failed serialized `StepResult.error`, including credential
 redaction, distinctive stderr, and empty stderr. Helper stderr alone or a skipped
 runner execution does not establish this boundary contract.

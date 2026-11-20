@@ -32,6 +32,21 @@
 //!   test that calls `.env()` or `.stdin()` afterwards wins, and a test that
 //!   clears another command's environment calls [`no_git_prompt`] itself
 //!   after `env_clear()`.
+//! - `AMPLIHACK_TEST_PROBE_WAIT=exit` ([`PROBE_WAIT_ENV`], issue #2019), so a
+//!   debug build's `--version` probe of a stub waits for the stub to exit
+//!   instead of giving up after 3 s on a busy host. Release builds never read
+//!   it.
+//! - no `AMPLIHACK_WORK_ROOT`, `AMPLIHACK_WORK_ROOT_EXPLICIT`,
+//!   `AMPLIHACK_RUN_DIR` or `AMPLIHACK_RUN_ID` (issue #2712). `env_clear()`
+//!   already drops them; what matters is that a test which starts a recipe
+//!   shell suite starts it through [`isolated`], because a suite that
+//!   inherits an explicit work root puts its worktrees under
+//!   `<work root>/worktrees` instead of its own scratch, outside its `EXIT`
+//!   trap. The suites clear the same names themselves by sourcing
+//!   `amplifier-bundle/recipes/tests/recipe-test-env.sh`, which also clears
+//!   the five `AMPLIHACK_RUN_IDENTITY_VARS` of
+//!   `amplifier-bundle/tools/git-repo-env.sh`; this is the other half of that
+//!   contract, for the Rust side.
 //! - `AMPLIHACK_TEST_PROC_ROOT` ([`PROC_ROOT_ENV`], issue #2042) set to
 //!   [`shared_empty_proc_root`], so `profile` and `sessions` commands read an
 //!   empty fake process table instead of the host's `/proc`. A test that
@@ -59,6 +74,10 @@ pub const HOME_GUARD_ENV: &str = "AMPLIHACK_TEST_HOME_GUARD";
 
 /// The variable that turns the rotator's launch autostart off.
 pub const ROTATE_AUTOSTART_ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
+
+/// The debug-only knob that makes the launch-target `--version` probe wait
+/// for the candidate's exit instead of its 3 s / 10 s deadline (issue #2019).
+pub const PROBE_WAIT_ENV: &str = "AMPLIHACK_TEST_PROBE_WAIT";
 
 /// The variable naming the Claude login profile root.
 pub const PROFILE_ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
@@ -195,7 +214,8 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
     command
         .env("HOME", shared_temp_home())
         .env(HOME_GUARD_ENV, "1")
-        .env(ROTATE_AUTOSTART_ENV, "0");
+        .env(ROTATE_AUTOSTART_ENV, "0")
+        .env(PROBE_WAIT_ENV, "exit");
     reapply_proc_root(&mut command);
     command
 }

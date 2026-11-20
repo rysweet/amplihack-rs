@@ -448,10 +448,26 @@ fn lock_check_refusal(path: &Path, error: &std::io::Error) -> Refusal {
     Refusal::LockCheck(text)
 }
 
+/// A `.cargo-lock` locked by [`lock_one`]. Dropping it unlocks with
+/// `LOCK_UN` before the file is closed (issue #2643): a child forked by
+/// another thread holds a copy of the descriptor until it execs, and closing
+/// only this copy would leave the lock held by the child's copy. `LOCK_UN`
+/// releases the lock on the open file description, so every copy loses it.
+#[derive(Debug)]
+pub(super) struct HeldLock(fs::File);
+
+impl Drop for HeldLock {
+    fn drop(&mut self) {
+        // SAFETY: the fd is valid for the life of `self.0`. An error leaves
+        // nothing to do: closing the file is the only other release.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
 /// Locks `lock` with `mode` when it is a real file. `Ok(None)` when there is
 /// no lock file. A lock held by another process is [`Refusal::InUse`]; any
 /// other problem, including a linked lock, is [`Refusal::LockCheck`].
-fn lock_one(lock: &Path, mode: LockMode) -> Result<Option<fs::File>, Refusal> {
+fn lock_one(lock: &Path, mode: LockMode) -> Result<Option<HeldLock>, Refusal> {
     let file = match fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
@@ -461,7 +477,7 @@ fn lock_one(lock: &Path, mode: LockMode) -> Result<Option<fs::File>, Refusal> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(lock_check_refusal(lock, &error)),
     };
-    // SAFETY: the fd is valid for the life of `file`; closing it releases
+    // SAFETY: the fd is valid for the life of `file`; [`HeldLock`] releases
     // the lock.
     let rc = unsafe { libc::flock(file.as_raw_fd(), mode.flags()) };
     if rc != 0 {
@@ -471,7 +487,7 @@ fn lock_one(lock: &Path, mode: LockMode) -> Result<Option<fs::File>, Refusal> {
         }
         return Err(lock_check_refusal(lock, &error));
     }
-    Ok(Some(file))
+    Ok(Some(HeldLock(file)))
 }
 
 /// Locks, with `mode`, `dir/.cargo-lock` and the `.cargo-lock` of every
@@ -481,7 +497,7 @@ fn lock_one(lock: &Path, mode: LockMode) -> Result<Option<fs::File>, Refusal> {
 /// With [`LockMode::Exclusive`] the caller must keep the returned handles
 /// until the delete is done; dropping them earlier lets a build start
 /// between the check and the delete.
-pub(super) fn lock_cargo_tree_with(dir: &Path, mode: LockMode) -> Result<Vec<fs::File>, Refusal> {
+pub(super) fn lock_cargo_tree_with(dir: &Path, mode: LockMode) -> Result<Vec<HeldLock>, Refusal> {
     let mut held = Vec::new();
     held.extend(lock_one(&dir.join(".cargo-lock"), mode)?);
     let entries = fs::read_dir(dir).map_err(|e| lock_check_refusal(dir, &e))?;
@@ -499,7 +515,7 @@ pub(super) fn lock_cargo_tree_with(dir: &Path, mode: LockMode) -> Result<Vec<fs:
 }
 
 /// [`lock_cargo_tree_with`] in [`LockMode::Exclusive`], for removal.
-pub(super) fn lock_cargo_tree(dir: &Path) -> Result<Vec<fs::File>, Refusal> {
+pub(super) fn lock_cargo_tree(dir: &Path) -> Result<Vec<HeldLock>, Refusal> {
     lock_cargo_tree_with(dir, LockMode::Exclusive)
 }
 

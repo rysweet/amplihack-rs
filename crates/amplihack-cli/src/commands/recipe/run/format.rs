@@ -1,5 +1,8 @@
 use super::super::*;
 
+use crate::commands::launch::model_tiers::record::{Fallback, Record};
+use crate::commands::launch::model_tiers::table::{Effort, Tier};
+
 const MAX_OUTPUT_LENGTH: usize = 200;
 const MAX_RECENT_SNIPPET_LINES: usize = 5;
 const MAX_RECENT_SNIPPET_CHARS: usize = 300;
@@ -133,6 +136,14 @@ fn format_recipe_run_table(result: &RecipeRunResult, show_context: bool) -> Stri
         append_recent_snippet_lines(&mut lines, "Recent stderr", &step.recent_stderr);
     }
 
+    // Issue #1619: additive, after the steps and before the context, so the
+    // step status and `    Output: ` lines keep their exact shape.
+    let tiers = model_tier_lines(&run_tier_records(), &result.step_results);
+    if !tiers.is_empty() {
+        lines.push(String::new());
+        lines.extend(tiers);
+    }
+
     if show_context && !result.context.is_empty() {
         lines.push(String::new());
         lines.push("Context:".to_string());
@@ -236,5 +247,170 @@ fn json_scalar_to_string(value: &JsonValue) -> String {
         JsonValue::Number(v) => v.to_string(),
         JsonValue::String(v) => v.clone(),
         other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+// =========================================================================
+// Issue #1619: the run summary names the model and effort each step ran on.
+//
+// The section is additive: nothing here reshapes the step status line or its
+// `    Output: ` line, which are a machine-read contract (issue #1512).
+//
+// Attribution is a correlation, not a lookup: no step id ever reaches a child
+// process, because the recipe runner sets no step-id environment variable. So
+// a step id is printed only when the records and the steps that ran line up,
+// and otherwise the section prints by launch sequence and says why.
+//
+// Two things break the line-up, and only one of them is a count. A retry or a
+// resumed run changes how many records there are. A parallel group does not:
+// its results are collected by declaration position while the records are
+// appended in launch order, so pairing by position would attach step ids to
+// the wrong launches with the counts agreeing. A declared group therefore
+// refuses pairing outright.
+// =========================================================================
+
+/// Whether this step result carries a `parallel_group`.
+///
+/// Read out of the flattened `extra` map rather than a named field: the
+/// pinned runner's `StepResult` does not report grouping today, so this is the
+/// guard holding the moment it does.
+fn declares_a_parallel_group(step: &RecipeRunStepResult) -> bool {
+    step.extra
+        .get("parallel_group")
+        .is_some_and(|value| !value.is_null())
+}
+
+/// The `Model tiers:` section for one run, or no lines at all when no launch
+/// recorded a tier: an empty heading is noise in every summary that has
+/// nothing to report.
+pub(crate) fn model_tier_lines(
+    records: &[Record],
+    step_results: &[RecipeRunStepResult],
+) -> Vec<String> {
+    if records.is_empty() {
+        return Vec::new();
+    }
+    let ran: Vec<&RecipeRunStepResult> = step_results
+        .iter()
+        .filter(|step| step.status != "skipped")
+        .collect();
+    let grouped = step_results.iter().any(declares_a_parallel_group);
+    let paired = !grouped && ran.len() == records.len();
+    let mut lines = vec!["Model tiers:".to_string()];
+    let shown = records.len().min(MAX_TIER_LINES);
+    if grouped {
+        lines.push(
+            "  a step in this run declares a parallel_group, so the launches did not \
+             necessarily happen in the order the recipe declares them: amplihack cannot \
+             tell which launch belongs to which, so none is named here."
+                .to_string(),
+        );
+    } else if !paired {
+        // Deliberately names no id, not even to say which one is missing:
+        // half an attribution reads as a whole one.
+        lines.push(format!(
+            "  {} tiered launches against {} recipe entries that ran: amplihack cannot \
+             tell which launch belongs to which, so none is named here. A retry or a \
+             resumed run does this.",
+            records.len(),
+            ran.len()
+        ));
+    }
+    for (index, record) in records.iter().take(shown).enumerate() {
+        let label = if paired {
+            ran[index].step_id.clone()
+        } else {
+            format!("launch {}", record.seq)
+        };
+        lines.push(format!("  {label}: {}", describe(record)));
+    }
+    if records.len() > shown {
+        // A summary is read, not parsed. A run of a thousand launches would
+        // otherwise print a thousand lines here and bury the step results
+        // above them.
+        lines.push(format!(
+            "  … and {} more launches; the full record is model-tiers.jsonl in the run \
+             directory.",
+            records.len() - shown
+        ));
+    }
+    lines
+}
+
+/// How many launches the section names one by one.
+const MAX_TIER_LINES: usize = 50;
+
+/// What one launch ran on, in one line: the tier it asked for, the model and
+/// effort it got, and where they differ from what was asked.
+fn describe(record: &Record) -> String {
+    // Read back off disk by `record::read_all`, and a run directory is not a
+    // trust boundary amplihack owns alone. Defence in depth: the values are
+    // validated or allowlisted on the way in.
+    let safe = crate::user_config::safe::display_safe;
+    let tier = record.tier.map(Tier::as_str).unwrap_or("none");
+    let model = match record.effective_model.as_deref() {
+        Some(model) => safe(model),
+        None => format!("{} default model", safe(&record.harness)),
+    };
+    let mut line = format!("{tier} → {model}");
+    if let Some(effort) = record.effective_effort.map(Effort::as_str) {
+        line.push_str(&format!(", effort {effort}"));
+    } else if let Some(effort) = record.requested_effort.map(Effort::as_str) {
+        line.push_str(&format!(
+            ", effort {effort} asked for but not a launch control here"
+        ));
+    }
+    // What was asked for, when it is not what ran: a substitution is visible
+    // rather than silent.
+    let mut asides = Vec::new();
+    if record.requested_model != record.effective_model
+        && let Some(requested) = record.requested_model.as_deref()
+    {
+        asides.push(format!("requested: {}", safe(requested)));
+    }
+    if let Some(reason) = record.fallback {
+        asides.push(reason_text(reason, &safe(&record.column)));
+    }
+    if !asides.is_empty() {
+        line.push_str(&format!(" ({})", asides.join("; ")));
+    }
+    line
+}
+
+/// Why a tier did not become a model, in the words the stderr line used.
+fn reason_text(reason: Fallback, column: &str) -> String {
+    match reason {
+        Fallback::NoColumn => format!("no `{column}` column"),
+        Fallback::NoMapping => format!("no entry in the `{column}` column"),
+        Fallback::NoModel => format!("the `{column}` entry names no model"),
+        Fallback::Gateway => "the LiteLLM gateway routes on the model name".to_string(),
+    }
+}
+
+/// The run directory of the run being summarised.
+///
+/// `execute` records it rather than the summary reading `AMPLIHACK_RUN_DIR`
+/// back: a top-level `recipe run` hands that variable to its children without
+/// setting it on itself, so reading the environment would make the section
+/// appear only for a nested run, reporting the parent's launches as this
+/// run's steps.
+static RUN_DIR: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
+
+/// Name the run directory whose tier records this process's summary reads.
+pub(super) fn remember_run_dir(dir: &std::path::Path) {
+    if let Ok(mut slot) = RUN_DIR.lock() {
+        *slot = Some(dir.to_path_buf());
+    }
+}
+
+/// Every tier record of the run being summarised, in launch order. Empty when
+/// the run had no durable directory.
+pub(super) fn run_tier_records() -> Vec<Record> {
+    let Ok(slot) = RUN_DIR.lock() else {
+        return Vec::new();
+    };
+    match slot.as_deref() {
+        Some(dir) => crate::commands::launch::model_tiers::record::read_all(dir),
+        None => Vec::new(),
     }
 }
