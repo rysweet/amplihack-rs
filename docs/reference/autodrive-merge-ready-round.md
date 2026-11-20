@@ -1314,13 +1314,17 @@ leave the drive `STUCK` (#2656). The tests
   already exists, is not a symbolic link and is owned by the current user. It
   removes any existing file or link at that name and opens the file new, once,
   as a descriptor it holds for the rest of the run: an exclusive open, `0600`,
-  so a planted link or a file with a looser mode is replaced, never written
-  through, and there is no second open by name for a link planted later to
-  catch. A directory at that name cannot be removed, so the open fails. If any
-  check or the open fails, the descriptor goes to `/dev/null` and the output
-  goes only to standard error. The driver's side of the pipe does not inherit
-  the descriptor, so neither the driver nor an agent it starts can write into
-  the file.
+  so a planted regular file, a link to one or a dangling link is replaced
+  rather than written through, and there is no second open by name for a link
+  planted later to catch. Noclobber refuses only an existing regular file: a
+  link to a FIFO or a device planted in the window between the removal and
+  the open is opened rather than refused, and a FIFO with no reader would
+  block the open. Planting one needs write access to a state folder that is
+  `0700` and owned by the caller. A directory at that name cannot be removed,
+  so the open fails. If any check or the open fails, the descriptor goes to
+  `/dev/null` and the output goes only to standard error. The driver's side
+  of the pipe does not inherit the descriptor, so neither the driver nor an
+  agent it starts can write into the file.
 - The tool reads the kept file back only when it created it in this run and it
   is still a regular file, not a link, owned by the current user, and only its
   last 8 KiB. A round agent that swaps the path for a link to another file
@@ -1364,10 +1368,17 @@ leave the drive `STUCK` (#2656). The tests
   not stop a 200-character sentence written as an instruction. The quote
   therefore travels in `handoff_blocker`, between the untrusted-text markers
   the hand-off prompt tells its agent to follow no instruction from, and not
-  in the trusted `handoff_reason` sentence. The hand-off's own comment quotes
-  the blocker inside a fenced code block, so the `www.` and `GH-123` cases
-  above do not render there either. What remains is that the agent reads the
-  text at all, which the markers bound but do not remove.
+  in the trusted `handoff_reason` sentence. `step-02a` and `step-03d` replace
+  `<` and `>` with `_` in the reason, so that it can neither forge nor close
+  those markers. The hand-off also asks its agent to quote the blocker inside
+  a fenced code block, which would stop the `www.` and `GH-123` cases
+  rendering in the posted comment, but that is an instruction to an agent
+  rather than a filter. `base_sync.reason` and `finalize_merge.reason` reach
+  the same slot on the other two hand-off paths without that replacement, so
+  the markers are not proof against every writer that fills them; closing
+  that would mean filtering at the hand-off rather than at each caller, which
+  this change does not do. What remains is that the agent reads the text at
+  all, which the markers bound but do not remove.
 - Judging agents run in the actual PR worktree with instructions to leave it
   unchanged. Trusted workflow assets are selected independently of cwd;
   repository text and review output do not grant workflow authority.

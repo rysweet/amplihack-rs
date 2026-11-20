@@ -151,7 +151,7 @@ KEPT="${DIR%/}/merge-ready-driver.err"
 if [ -d "$DIR" ] && [ ! -L "${DIR%/}" ] && [ -O "$DIR" ]; then
   rm -f -- "$KEPT" 2>/dev/null
   OLD_UMASK="$(umask)"; umask 077
-  POSIX_WAS=""; [[ -o posix ]] && POSIX_WAS=1
+  POSIX_WAS=""; if [[ -o posix ]]; then POSIX_WAS=1; fi
   set +o posix
   { set -C; exec 4>"$KEPT"; } 2>/dev/null || KEPT=""
   set +C; umask "$OLD_UMASK"
@@ -173,9 +173,9 @@ fi
 [ -n "$KEPT" ] || printf 'NOTICE: the loop driver output could not be kept in %s (the state folder is missing, is a link, is owned by another user or is not writable): this log is the only account of it [autodrive-merge-loop]\n' "$DIR" >&2
 # The copy is made here, by this shell, and not by `tee`: where /usr/bin/tee
 # is the uutils implementation, which Ubuntu 25.10 ships as the default, it
-# aborts part-way through any input larger than one pipe buffer and the bytes
-# it has already read die with it, so the copy AND this step's own log lose
-# the driver's output. That is the very loss this change exists to prevent.
+# can abort part-way through any input larger than one pipe buffer, about one
+# run in ten, and the bytes it has already read die with it, so the copy AND
+# this step's own log lose the driver's output. That is the very loss this change exists to prevent.
 # The panic text and the host it was seen on are in the PR body for #2849.
 # A read loop cannot abort that way and writes the same bytes, reaching the
 # log a line at a time instead of a block at a time. NUL bytes are the one

@@ -94,7 +94,13 @@ steps:
       case "$R" in DONE|WAITING) OUTCOME=done; FINALISE=true ;; *) OUTCOME=handoff; FINALISE=false ;; esac
       # The driver posts its own stop comment for a budget stop (post_stop).
       case "$R" in BUDGET_EXHAUSTED) POSTED=true ;; *) POSTED=false ;; esac
-      REASON="$(printf 'loop result %s: %s' "$R" "$WHY" | LC_ALL=C tr -cd '\040-\176' | head -c 1000)"
+      # #2849: the reason now travels in the hand-off's fenced `handoff_blocker`
+      # slot, so it must not be able to forge or close that fence. `<` and `>`
+      # become `_`, as the tool's own quote filter already does for the
+      # driver's last line; the rest of the reason can come from the driver's
+      # result file, which no filter touches. Everything else about the text
+      # is unchanged: printable ASCII, cut at 1000 characters.
+      REASON="$(printf 'loop result %s: %s' "$R" "$WHY" | LC_ALL=C tr -cd '\040-\176' | LC_ALL=C tr '<>' '__' | head -c 1000)"
       # The preflight output may hold prose around its JSON, as step-02 reads it.
       REPO="$(printf '%s' "${RECIPE_VAR_merge_loop_preflight:-}" | amplihack orch helper extract-json --require-field repo \
               | amplihack orch helper extract-field --field repo --default '')"
@@ -237,7 +243,13 @@ steps:
       case "$R" in DONE|WAITING) OUTCOME=done; FINALISE=true ;; *) OUTCOME=handoff; FINALISE=false ;; esac
       # The driver posts its own stop comment for a budget stop (post_stop).
       case "$R" in BUDGET_EXHAUSTED) POSTED=true ;; *) POSTED=false ;; esac
-      REASON="$(printf 'loop result %s: %s' "$R" "$WHY" | LC_ALL=C tr -cd '\040-\176' | head -c 1000)"
+      # #2849: the reason now travels in the hand-off's fenced `handoff_blocker`
+      # slot, so it must not be able to forge or close that fence. `<` and `>`
+      # become `_`, as the tool's own quote filter already does for the
+      # driver's last line; the rest of the reason can come from the driver's
+      # result file, which no filter touches. Everything else about the text
+      # is unchanged: printable ASCII, cut at 1000 characters.
+      REASON="$(printf 'loop result %s: %s' "$R" "$WHY" | LC_ALL=C tr -cd '\040-\176' | LC_ALL=C tr '<>' '__' | head -c 1000)"
       # The preflight output may hold prose around its JSON, as step-02 reads it.
       REPO="$(printf '%s' "${RECIPE_VAR_merge_loop_preflight:-}" | amplihack orch helper extract-json --require-field repo \
               | amplihack orch helper extract-field --field repo --default '')"
