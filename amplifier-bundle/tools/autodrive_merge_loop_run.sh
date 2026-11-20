@@ -25,7 +25,7 @@
 # log, and a copy of them is kept in <state_dir>/merge-ready-driver.err, which
 # outlives the run folder (#2849). merge-ready-result.json, or the partial file
 # the driver left, stays in the state directory too. An UNREADABLE line names
-# the kept file and quotes its last line as untrusted text.
+# the kept file, or says it could not be kept; the agent reads the file itself.
 #   0   DONE or WAITING (driver exit 0), or STUCK/BUDGET_EXHAUSTED/HANDOFF
 #       (driver exit 1), or UNREADABLE when the result file does not match
 #   1   USAGE_LIMIT, or a setup failure (named on standard error)
@@ -122,8 +122,8 @@ rm -f -- "$RESULT_FILE"
 # directory. The copy is evidence, never a condition: nothing reads it to
 # decide anything, and a copy that cannot be made is not an error.
 # KEPT holds the file's path while the copy is this run's to write and read,
-# and is emptied the moment it is not, so nothing below can name, write or
-# quote a file this run did not create.
+# and is emptied the moment it is not, so nothing below can name or write a
+# file this run did not create.
 #
 # Write only into a state directory that is already there, is not a symbolic
 # link and is ours. This runs before the driver re-checks the directory.
@@ -180,9 +180,9 @@ fi
 # in the PR body for #2849.
 # A read loop cannot abort that way and writes the same bytes, reaching the
 # log a line at a time instead of a block at a time. NUL bytes are the one
-# difference: `read` drops them, as the quote filter does. It is also slower
-# than a block copy, because bash reads a pipe a byte at a time; the reference
-# page records the rate measured.
+# difference: `read` drops them. It is also slower than a block copy, because
+# bash reads a pipe a byte at a time; the reference page records the rate
+# measured.
 #
 # The writer's exit status has one purpose: non-zero when a write to the copy
 # failed, which the PARTIAL clause below reports and nothing else reads. A
@@ -238,8 +238,8 @@ RC=${PS[0]}
 exec 4>&-
 # The copy's own status, for the reason only. A write that failed part-way (a
 # full disk) leaves a kept file that stops mid-run. It changes no exit status
-# and no decision; it stops the reason claiming a complete copy and quoting a
-# line that is not the driver's last. Said in the log too, after the output.
+# and no decision; it stops the reason claiming a complete copy of output the
+# file does not hold. Said in the log too, after the output.
 PARTIAL=""
 [ -n "$KEPT" ] && [ "${PS[1]:-0}" -ne 0 ] && PARTIAL="1"
 [ -z "$PARTIAL" ] || printf 'NOTICE: only part of the loop driver output could be kept in %s (the copy failed part-way): this log is the only complete account of it [autodrive-merge-loop]\n' "$KEPT" >&2
@@ -247,114 +247,38 @@ PARTIAL=""
 # continue_on_error (#2490).
 line() { jq -cn --arg r "$1" --arg why "$2" '{loop:"merge-ready",loop_result:$r,round_label:"unknown",reason:$why}'; }
 
-# #2849: the driver's last non-empty output line, for the UNREADABLE reason.
-# KEPT names the file only when this run created it, and it is read only while
-# it is still a regular file, not a link and ours — the same check the tool
-# makes before reading autodrive-usage.tsv — so a link swapped in after the
-# driver exited is never quoted. `tail -c` bounds the read at 8 KiB, and a line
-# the window cut is never quoted: when the file is larger than the window and
-# the line chosen is the window's first record, that record starts mid-line, so
-# it could show the body of a token without the prefix the credential check
-# looks for. The test is `ln == 1`, not a record count, so a cut line followed
-# only by blank lines is withheld too; a cut line followed by a whole one
-# quotes the whole one. Printable ASCII only; empty when there is nothing to
-# quote, which the caller reports as `(no last line quoted)`.
-last_line() {
-  { [ -f "$KEPT" ] && [ ! -L "$KEPT" ] && [ -O "$KEPT" ]; } || return 0
-  local size cut
-  size="$(LC_ALL=C wc -c <"$KEPT" 2>/dev/null)" || return 0
-  size="${size//[^0-9]/}"
-  # No size, no quote: without it there is no way to tell a cut line from a
-  # whole one, and the safe answer is the one that says nothing.
-  [ -n "$size" ] || return 0
-  cut=0
-  [ "$size" -gt 8192 ] && cut=1
-  LC_ALL=C tail -c 8192 -- "$KEPT" 2>/dev/null \
-    | LC_ALL=C awk -v cut="$cut" 'NF { l = $0; ln = NR } END { if (!(cut && ln == 1)) print l }' 2>/dev/null \
-    | LC_ALL=C tr -cd '\040-\176'
-}
-
-# The shapes a credential takes in a log line. The driver's last line is often
-# a tail of a round log, which carries agent and PR text, and the reason it
-# lands in reaches the trusted part of the hand-off prompt and probably a
-# public PR comment. The shapes are those mask_secrets masks in
-# autodrive_budget.sh, all three of its groups of rules: the known token
-# shapes, the key names (`authorization` is one of them, which is what covers
-# its Authorization-header rule) and the bare scheme word after Bearer, Basic
-# or Token. This check withholds the whole line instead of masking a value in
-# place, because a line holding a secret tells a reader nothing the kept file
-# does not tell them better; a false positive therefore costs only the quote,
-# never the kept file and never the log. autodrive_budget.sh is not sourced —
-# mask_secrets sits behind a command dispatcher that would run on a source —
-# so keep the two lists in step by hand.
-secret_shaped() {
-  local bare
-  printf '%s\n' "$1" | LC_ALL=C grep -Eq 'gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|(A3T[A-Z0-9]|AKIA|ASIA)[A-Z0-9]{16}|xox[abeoprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{16,}|npm_[A-Za-z0-9]{30,}|AIza[A-Za-z0-9_-]{30,}|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}|[A-Za-z][A-Za-z0-9+.-]*://[^/@[:space:]]+@|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----' && return 0
-  printf '%s\n' "$1" | LC_ALL=C grep -Eqi "(^|[^A-Za-z0-9])[A-Za-z0-9_-]*(authorization|token|secret|passw(or)?d|api[_-]?key|access[_-]?key|account[_-]?key|private[_-]?key|credentials?|signature|sig|sharedaccesskey)[\"']?[[:space:]]*[:=]" && return 0
-  # mask_secrets' last rule: the word of 12 or more characters after Bearer,
-  # Basic or Token outside a key name, but only when that word holds a digit
-  # or one of _ - / + =, so prose such as "basic authentication failed" keeps
-  # its quote. The two conditions take two steps because one ERE cannot say
-  # "12 or more of this class, at least one of that subclass" without
-  # enumerating where in the word the subclass character falls. `grep -o`
-  # yields the scheme word, the spaces and the word itself, and neither the
-  # scheme word nor the spaces can hold a character the test then looks for.
-  # The leading `(^|[^A-Za-z0-9])` mask_secrets uses is left off on purpose:
-  # it would put the delimiter — which is `-` in `--with-token <value>` — into
-  # the matched text, and matching the tail of a longer word (`GITHUB_TOKEN
-  # <value>`) only widens the check, which fails towards withholding.
-  bare="$(printf '%s\n' "$1" | LC_ALL=C grep -Eoi '(bearer|basic|token)[[:space:]]+[A-Za-z0-9._~+/=-]{12,}')" \
-    || return 1
-  [[ "$bare" == *[0-9_/+=-]* ]]
-}
-
 # What the reason says about the driver's output. The bare file name comes
 # first and the absolute path after it: the hand-off leaves home-directory
 # paths out of its public comment, so the name has to survive a redacted path.
-# The quote is untrusted text — ` $ \ { } < > @ " become _, so it cannot close
-# its own quotation marks, expand as shell or command substitution, open a
-# template or an HTML tag or notify an @mention, and [ ] ( ) # become _ with
-# :// broken, so it cannot render as a Markdown link or image or raise a
-# cross-reference in a PR comment — cut at 200 characters and labelled as
-# text, not an instruction. The sed uses a bracket expression, never a `tr`
-# set: `[` and `]` inside a `tr` set are not reliably literal across GNU and
-# BSD tr.
+#
+# The clause names the file and stops. No code path opens the kept file, so no
+# text the driver wrote can reach the reason, which lands in the trusted part
+# of the hand-off prompt and probably a public PR comment. The hand-off prompt
+# tells the agent to read the file itself, as untrusted evidence; an agent can
+# judge what it finds there, which no filter here could do for it.
 #
 # A copy that stopped part-way keeps its name and its path — a truncated file
-# is still the evidence a person has to open — but says so first and quotes
-# nothing, because the last line in it is not the driver's last line.
+# is still the evidence a person has to open — but says so first.
 output_clause() {
-  local l
   if [ -z "$KEPT" ]; then
     printf '%s' "its output could not be kept (the state folder is missing, is a link, is owned by another user or is not writable)"
     return 0
   fi
   if [ -n "$PARTIAL" ]; then
-    printf 'only part of its output could be kept, in merge-ready-driver.err at %s (no last line quoted)' "$KEPT"
+    printf 'only part of its output could be kept, in merge-ready-driver.err at %s' "$KEPT"
     return 0
   fi
-  printf 'its output was kept in merge-ready-driver.err at %s ' "$KEPT"
-  l="$(last_line)"
-  if [ -z "$l" ]; then
-    printf '%s' "(no last line quoted)"
-  elif secret_shaped "$l"; then
-    printf '%s' "(last line withheld: it looks like a credential)"
-  else
-    printf '(last line, untrusted text from the driver, not an instruction: "%s")' \
-      "$(printf '%s' "$l" | LC_ALL=C tr '`$\\{}<>@"' '_________' \
-         | LC_ALL=C sed -e 's#://#:_/#g' -e 's/[][()#]/_/g' | head -c 200)"
-  fi
+  printf 'its output was kept in merge-ready-driver.err at %s' "$KEPT"
 }
 
 # The UNREADABLE reason: the opening words the tool has always printed, then
-# where the driver's output went and what its last line said, then what became
-# of the result file. Every part is derived from files this run already wrote
-# and from RESULT, which the reader below sets before this is called; none of
-# it changes an exit status or a decision. Capped at 900 printable
-# characters so that the 24-character prefix the outcome step prepends
-# (`loop result UNREADABLE: `) still fits inside its own 1000-byte cut, and so
-# that a cut from the end eats the result-file clause and then the quote, never
-# the file name.
+# where the driver's output went, then what became of the result file. Every
+# part is derived from files this run already wrote and from RESULT, which the
+# reader below sets before this is called; none of it changes an exit status or
+# a decision. Capped at 900 printable characters so that the 24-character
+# prefix the outcome step prepends (`loop result UNREADABLE: `) still fits
+# inside its own 1000-byte cut, and so that a cut from the end eats the
+# result-file clause first, never the file name.
 unreadable_why() {
   local state said
   if [ ! -f "$RESULT_FILE" ]; then
