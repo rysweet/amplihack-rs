@@ -105,7 +105,8 @@
 #
 # Run by hand: bash tests/gadugi/run-issue-2806-end-to-end-build-and-drive-scenario.sh
 # Set AMPLIHACK_2806_QA_BIN to an amplihack binary to skip the build, and
-# RECIPE_RUNNER_RS_PATH (or put recipe-runner-rs on PATH) for the runner.
+# RECIPE_RUNNER_RS_PATH (or put recipe-runner-rs on PATH) for the runner. Set
+# QA_KEEP_WORK=1 to keep the temporary root afterwards for a post-mortem.
 # On success it prints ALL_CASES_PASSED and exits 0; otherwise SCENARIO_FAILED
 # and exit 1, with each evidence file dumped under its own header.
 # No `-e` on purpose: every case must run and report, so an early exit would
@@ -145,7 +146,13 @@ on_exit() {
   case "$WORK" in
     ""|/) ;;
     "${HOME:-/nonexistent}"|"${HOME:-/nonexistent}"/) ;;
-    "${HOST_TMP%/}"/*) rm -rf -- "$WORK" ;;
+    "${HOST_TMP%/}"/*)
+      # QA_KEEP_WORK keeps the root for a post-mortem by hand. The failure
+      # dump above prints the evidence files, but not the two run folders,
+      # the clones or the bare origin, which is where a failure inside a
+      # recipe run has to be read. Unset in CI, so CI still cleans up.
+      if [ -n "${QA_KEEP_WORK:-}" ]; then echo "KEPT: $WORK"; else rm -rf -- "$WORK"; fi
+      ;;
   esac
   exit "$rc"
 }
@@ -188,7 +195,11 @@ for d in "$BINDIR" "$WORK/home" "$WORK/gh-state" "$WORK/tmp-build" "$WORK/tmp-dr
 done
 
 # Tools a step may call. The first group is required; the rest are linked when
-# the host has them.
+# the host has them. The list serves the product, not this driver: `sleep` and
+# `timeout` are here because the shipped steps running inside this PATH may
+# call them, and this script never does. Dropping a tool the driver happens
+# not to use trades a tidier list for a failure deep inside a recipe run,
+# which is far harder to read than the untidiness it cures.
 REQUIRED_TOOLS=(bash sh env git jq cat grep sed awk sort tr head tail cut dirname
   basename mkdir rm cp mv ln chmod date stat mktemp uniq wc find xargs tee
   sha256sum touch readlink realpath)
@@ -414,7 +425,11 @@ cat > "$BINDIR/claude" <<'CLAUDE_STUB'
 #!/bin/bash
 set -u
 root="${QA_SCENARIO_ROOT:?}"
-if [ "${1-}" = "--version" ]; then echo "2.0.0 (Claude Code)"; exit 0; fi
+# The version the product gates on: below 2.1.319 it refuses to launch,
+# because that is the first Claude Code that accepts the operating contract
+# through `--append-system-prompt-file`. A stand-in naming an older one would
+# stop the build at its first agent step and test the gate, not the build.
+if [ "${1-}" = "--version" ]; then echo "2.1.319 (Claude Code)"; exit 0; fi
 input="$(cat)"
 first="${input%%$'\n'*}"   # the prompt's first line
 hash="$(printf '%s' "$input" | sha256sum)"
@@ -489,6 +504,9 @@ for f in "${EVIDENCE_FILES[@]}"; do : > "$WORK/$f"; chmod 600 "$WORK/$f"; done
 # --- case bookkeeping --------------------------------------------------------
 fail=0
 passed=0
+# The cases this run reached, whichever way they went. A failing case is still
+# a case the script covers, so both pass and flunk record the name; the
+# descriptor check in section H reads this list in both directions.
 CASE_NAMES="$WORK/emitted-case-names"
 : > "$CASE_NAMES"
 pass() {
@@ -499,6 +517,14 @@ pass() {
 flunk() {
   echo "FAIL: $1"
   fail=1
+  # A case flunk reads "case_name: what went wrong". The few flunks that
+  # belong to no case say so in words, and those have a space before the
+  # colon, so an all-[A-Za-z0-9_] head is what distinguishes the two.
+  local head="${1%%:*}"
+  case "$head" in
+    ''|*[!A-Za-z0-9_]*) ;;
+    *) printf '%s\n' "$head" >> "$CASE_NAMES" ;;
+  esac
 }
 
 TASK="Add a file named feature.txt at the repository root containing one line of text."
@@ -731,13 +757,22 @@ printf '%s\n' "$DESCRIPTOR_CASE" >> "$CASE_NAMES"
 if [ ! -f "$DESCRIPTOR" ]; then
   flunk "the scenario descriptor is missing: $DESCRIPTOR"
 else
-  undescribed=""
-  while IFS= read -r case_name; do
-    [ -n "$case_name" ] || continue
-    grep -qF -- "PASS: $case_name" "$DESCRIPTOR" || undescribed="$undescribed $case_name"
-  done < <(sort -u -- "$CASE_NAMES")
-  if [ -n "$undescribed" ]; then
-    flunk "the descriptor does not assert:$undescribed"
+  # Both directions, over the cases this run reached rather than the ones that
+  # passed. Forwards: a case the script emits that the descriptor does not
+  # assert is coverage the descriptor does not state. Backwards: an assertion
+  # naming a case the script no longer emits at all is coverage the descriptor
+  # claims and the script no longer provides, which is how a case deleted from
+  # the driver would otherwise pass unnoticed.
+  EMITTED="$WORK/case-names-sorted"
+  ASSERTED="$WORK/descriptor-case-names"
+  sort -u -- "$CASE_NAMES" > "$EMITTED"
+  sed -n 's/.*expected: *"PASS: \([A-Za-z0-9_]*\)".*/\1/p' "$DESCRIPTOR" | sort -u > "$ASSERTED"
+  undescribed="$(comm -23 "$EMITTED" "$ASSERTED" | tr '\n' ' ')"
+  unemitted="$(comm -13 "$EMITTED" "$ASSERTED" | tr '\n' ' ')"
+  if [ -n "${undescribed// /}" ]; then
+    flunk "the descriptor does not assert: ${undescribed% }"
+  elif [ -n "${unemitted// /}" ]; then
+    flunk "the descriptor asserts cases this run never reached: ${unemitted% }"
   else
     pass "$DESCRIPTOR_CASE"
   fi
