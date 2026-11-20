@@ -1376,10 +1376,18 @@ leave the drive `STUCK` (#2656). The tests
   rendering in the posted comment, but that is an instruction to an agent
   rather than a filter. `base_sync.reason` and `finalize_merge.reason` reach
   the same slot on the other two hand-off paths without that replacement, so
-  the markers are not proof against every writer that fills them; closing
-  that would mean filtering at the hand-off rather than at each caller, which
-  this change does not do. What remains is that the agent reads the text at
-  all, which the markers bound but do not remove.
+  the markers are not proof against every writer that fills them. On
+  `step-03f` the two share one slot, `{{base_sync.reason}}` first, so the
+  loop reason's place inside the fence depends on its neighbour as well as on
+  its own filter. `step-03d` cannot filter the neighbour, because it is
+  conditioned on a sync that succeeded and the hand-off also fires when the
+  sync did not; closing the gap means filtering at the hand-off rather than
+  at each caller, which this change does not do. What the replacement does
+  secure rests on one other property: `tr -cd '\040-\176'` strips newlines,
+  so the reason is a single line and a forged marker can never begin a line
+  of its own while the true closing marker does. Treat that as load-bearing
+  if the printable-ASCII filter is ever relaxed. What remains is that the
+  agent reads the text at all, which the markers bound but do not remove.
 - Judging agents run in the actual PR worktree with instructions to leave it
   unchanged. Trusted workflow assets are selected independently of cwd;
   repository text and review output do not grant workflow authority.
