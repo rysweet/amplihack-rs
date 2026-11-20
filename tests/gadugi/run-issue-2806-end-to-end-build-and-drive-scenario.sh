@@ -614,7 +614,24 @@ awk '$1 == "pr" && $2 == "merge" && $3 == "42" { found = 1 } END { exit !found }
 # The drive's verdict: the last step prints one typed report object carrying
 # `stop_reason`, which is the drive's own word for how it ended. The wording
 # of the sentence beside it is the product's and is not read here.
-drive_verdict="$(grep -hoE '"stop_reason" *: *"[a-z_]+"' "$WORK/drive.out" "$WORK/drive.err" | tail -n 1)"
+#
+# One awk reads both files to the end and keeps the last match it saw. A grep
+# piped into a consumer that stops early would, under pipefail, turn the
+# producer's write error into the pipeline's status and collapse the value to
+# the empty string; see tests/issue_1434_no_early_exit_pipelines.sh.
+drive_verdict=""
+if [ "$drive_started" -eq 1 ]; then
+  drive_verdict="$(awk '
+    {
+      rest = $0
+      while (match(rest, /"stop_reason"[[:space:]]*:[[:space:]]*"[a-z_]+"/)) {
+        last = substr(rest, RSTART, RLENGTH)
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+    }
+    END { if (last != "") print last }
+  ' "$WORK/drive.out" "$WORK/drive.err")"
+fi
 
 if [ "$drive_started" -ne 1 ]; then
   flunk "part2_drive_ends_at_verdict_and_merges: there was no branch to drive (the per-PR clone or worktree could not be made)"
