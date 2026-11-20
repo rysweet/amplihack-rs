@@ -575,7 +575,11 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // it is everywhere else.
         let resumed_on_a_signal = waiter.resumed_on_a_signal();
         let output = attempt.output();
-        let limited = output.usage_limited(waiter.now());
+        // The wait's clock, read once. The message's reset is read against it
+        // below, and so is every judgement this block makes about that reset,
+        // so the two cannot disagree about where the clock stands.
+        let now = waiter.now();
+        let limited = output.usage_limited(now);
         // Issue #2857, part 1: the retry a wait earned was rejected at once,
         // so the signal that ended that wait was wrong about the login. A
         // usage-limit message says what is wrong and when it clears, so it
@@ -642,13 +646,14 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 // the step ends. Where another login could take over, it is
                 // planned from capacity instead. `ordinarily_refused` is read
                 // here, before anything records a mark, and is exactly the
-                // rule `after_limit` applies to this same limit; the clock is
-                // the wait's own, the one that read the reset.
+                // rule `after_limit` applies to this same limit; `now` is the
+                // wait's own clock, the very reading the reset was parsed
+                // against.
                 let passed = plan::upgrade_passed_reset(
                     lim.wait,
                     lim.seen,
                     matches!(met, Some(Met::UsageLimit)) && waiter.ordinarily_refused(),
-                    waiter.now(),
+                    now,
                     || takeover(&waiter),
                 );
                 let wait = plan::upgrade(passed, lim.seen, || takeover(&waiter));

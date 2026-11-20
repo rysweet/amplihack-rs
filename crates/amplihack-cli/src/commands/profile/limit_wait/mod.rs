@@ -544,12 +544,16 @@ impl Waiter {
         // This is now the backstop rather than the first answer. A usage
         // limit stating a passed reset is lifted upstream into a capacity
         // wait by `plan::upgrade_passed_reset` wherever another login could
-        // take over, and such a plan is never `ends_at_once`. What still
-        // reaches here is the case where no capacity wait could start at all
-        // (no rotator, no other login, or a read that failed), a spend limit,
-        // which no other login would lift, and the two plans the supervisor
-        // builds without passing through that rule: `plan::from_reading` and
-        // `blocked_skip`. For those the step still ends here, and loudly.
+        // take over, and such a plan is never `ends_at_once`. Only a reset
+        // plan can still arrive here with a deadline of now, and three build
+        // one: a usage limit whose passed reset found no login to take over
+        // (no rotator, no other login, or a read that failed); a spend limit
+        // stating a passed session reset, which no other login would lift;
+        // and `plan::from_reading`, which the supervisor builds without
+        // passing through the rule and which rejects only a reset more than
+        // five hours ahead, never one behind. For those the step still ends
+        // here, and loudly. A blocked step never reaches this line at all:
+        // `blocked_skip` is a `WaitFor::Skip`, and the arm above returns.
         if reentry.is_some() && p.ends_at_once(now) {
             return already_waited();
         }
