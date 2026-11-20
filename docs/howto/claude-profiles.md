@@ -2112,12 +2112,9 @@ to turn it on there). A failure that is not a usage limit is passed back at once
    as `You've hit your session limit · resets 1pm (America/Los_Angeles)`,
    and waits until the earliest of:
    - the reset plus two minutes;
-   - a different account becoming live for the step's login directory. For a
-     step that uses `~/.claude` the new account must also have room: the
-     [login rotator](claude-profile-rotation.md) says so in its ledger, and a
-     swap onto a login near its session limit does not end the wait (see
-     [A swap onto a full login](#a-swap-onto-a-full-login)). A login you
-     switch to yourself with `amplihack profile switch` still ends it;
+   - a different account becoming live for the step's login directory; on
+     `~/.claude`, one the [rotator](claude-profile-rotation.md) records as
+     having room (see [A swap onto a full login](#a-swap-onto-a-full-login));
    - for a step that uses `~/.claude`, the
      [login rotator](claude-profile-rotation.md) recording a fresh cycle
      with capacity that left a login with room live;
@@ -2232,11 +2229,9 @@ rotator's `--session-at` and its week below 100%. The rotator records that in
 its ledger when it records the cycle, and the wait reads the one answer, so
 there is no threshold to set on the step.
 
-On a host where every login is nearly spent, each swap used to wake every
-waiting step. Each step ran once on the login that had just arrived, hit its
-limit again, and used up the step's chance to wait. Now the steps keep
-sleeping. A swap onto a login at 98% of its session does not end a wait, and
-neither does stopping the rotator with `amplihack profile rotate stop`, which
+On a host where every login is nearly spent, this is what keeps a step asleep.
+A swap onto a login at 98% of its session does not end a wait, and neither
+does stopping the rotator with `amplihack profile rotate stop`, which
 records no cycle. A wait ends when the reset arrives, or when a cycle that has
 capacity records that the login in `~/.claude` has room.
 
@@ -2304,8 +2299,10 @@ hours by default:
 
 - for a step that uses `~/.claude`, until the
   [login rotator](claude-profile-rotation.md) records a fresh cycle with
-  capacity, or a different account becomes live in `~/.claude`. This needs
-  a rotator running; without one the run ends at once, as before;
+  capacity that left a login with room live, or a different account with room
+  becoming live in `~/.claude` (see
+  [A swap onto a full login](#a-swap-onto-a-full-login)). This needs a rotator
+  running; without one the run ends at once, as before;
 - for a step under an inherited profile with auto-switch on, until a usage
   reading taken during the wait shows that another profile has capacity;
   the step then runs on that profile, not on the exhausted one. This also

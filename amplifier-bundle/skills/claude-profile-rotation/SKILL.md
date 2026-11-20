@@ -283,13 +283,6 @@ An excluded profile is never used, even when marked. If the user moves an
 overflow login into `~/.claude` by hand while a plan login has capacity, the
 next cycle moves it out; to stay on it, remove the mark or stop the rotator.
 
-While on credits the rotator reports capacity, so recipe steps in the
-usage-limit wait rerun and spend credits, provided the cycle also records
-`last_cycle.live_room: true` for the credit login; a credit profile that reads
-at or above `--session-at` on its session, or at 100% on its week, records
-`false` and the steps keep waiting. The limit-resume hook does not resume
-interactive sessions onto a login whose plan windows read 100%.
-
 Recipe steps waiting on a usage limit end their wait on a login change or a
 rotator cycle only when the ledger's last cycle has capacity and says the live
 login has room (`last_cycle.live_room: true`). A swap onto a login at 98% of
@@ -301,6 +294,11 @@ hosts the rule does not apply to are listed under "What is not gated" in
 (`rotate stop`, then `rotate start`): an older rotator never writes the field,
 and until it is restarted the waiting steps sleep to their reset, or to a
 `profile switch`.
+
+While on credits the rotator reports capacity, so recipe steps in the
+usage-limit wait rerun and spend credits, provided that cycle also records room
+for the credit login by the same rule. The limit-resume hook does not resume
+interactive sessions onto a login whose plan windows read 100%.
 
 | ALERT | What to tell the user |
 |-------|-----------------------|

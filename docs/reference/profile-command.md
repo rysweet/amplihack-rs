@@ -9383,10 +9383,6 @@ reading.
 {
   "version": 1,
   "live": "spare",
-  "account": "<accountUuid>",
-  "since": 1793701400,
-  "swapped_at": 1793701400,
-  "previous": "work",
   "last_cycle": { "at": 1793701445, "measured_at": 1793701325, "outcome": "swapped", "live_room": true }
 }
 ```
@@ -9401,24 +9397,22 @@ reading.
 | A [`profile switch`](#rotate-switch), which records the outcome `switched` and takes no reading | absent |
 | Any record written by a rotator from before this field | absent |
 
-The swap case reads the reading of the login swapped *to*, matched by profile
-name, and never by position in the list. A swap onto a login at `s=98%` writes
-`"outcome": "swapped"` with `"live_room": false`. The outcome still counts as
-capacity under the [rotator capacity rule](#rotator-capacity-rule), which the
+The swap case reads the reading of the login swapped *to*. A swap onto a login
+at `s=98%` writes `"outcome": "swapped"` with `"live_room": false`. The outcome
+still counts as capacity under the
+[rotator capacity rule](#rotator-capacity-rule), which the
 limit-resume hook also reads, so that rule keeps its meaning and the new field
 sits beside it. A stay on a login at `s=90%` is capacity too, because the
 login can still be used, and records `false` for the same reason.
 
 Only a JSON boolean inside `last_cycle` is read; `null`, a string, a number, an
 array and a `live_room` key at the top level of the ledger all read as absent.
-The ledger's other checks apply unchanged. While a rotator older than the field
-runs, this binary leaves the field out, as it does `measured_at`, so that
-rotator can still read the file.
+While a rotator older than the field runs, this binary leaves the field out, as
+it does `measured_at`, so that rotator can still read the file.
 
-A reader turns the record into a yes or no with one function of the record
-alone (`CycleStatus::says_room` in `amplihack_utils::rotator_status`). It reads
-no clock and no file, and the [room rule](#rotator-room-rule) and the
-[waiting step](#waking-only-on-room) both call it, so they cannot disagree:
+The record alone decides, by one rule. The [room rule](#rotator-room-rule) and
+the [waiting step](#waking-only-on-room) both apply it, so they cannot
+disagree:
 
 | Outcome | `live_room` is `true` | `live_room` is `false` | `live_room` is absent |
 |---------|-----------------------|------------------------|-----------------------|
@@ -9430,8 +9424,7 @@ no clock and no file, and the [room rule](#rotator-room-rule) and the
 `amplihack profile switch` records, and a person who moves the login by hand
 to unstick a waiting step is saying the login is fit to use, which the
 rotator's own swap does not say. A `switched` record that states `false`
-overrules that. `fresh_capacity` is unchanged and still says only that a cycle
-found capacity.
+overrules that.
 
 ### Rotate log
 
@@ -10845,9 +10838,7 @@ The form the `rotator capacity` exit reads is met when both of these hold:
 - the record says room, by the table in
   [Plan room in the ledger](#plan-room-in-the-ledger) (`says_room`).
 
-The conjunction is literal: `fresh_room(start)` is `fresh_capacity(start)` and
-`says_room()`, and nothing else. An outcome that is not capacity fails it
-whatever `live_room` holds.
+An outcome that is not capacity fails it whatever `live_room` holds.
 
 The three `login changed` exits read the other form, which asks the same two
 questions of the latest recorded cycle and leaves out the age: the record's
@@ -10865,13 +10856,10 @@ What the reader makes of a ledger it cannot use depends on why:
 | Absent: no file at all | has nothing to read, so does not end the wait | open, because no rotator is running whose record could say otherwise |
 
 Only a missing file is absent. Every other way of failing to read the ledger
-is closed. The reader applies no threshold: the rotator decided room when it
-wrote the cycle.
+is closed.
 
-Nothing else in the ledger satisfies the capacity form. A no-capacity ALERT,
-an `alerted`, `stayed-unread`, `skipped`, `idle` or `held` outcome, and a
-cycle that is merely newer than the wait all fail it. `rotate stop` records no
-cycle, so it adds nothing that could satisfy the form.
+`rotate stop` records no cycle, so it adds nothing that could satisfy either
+form.
 
 Only the usage-limit wait reads this rule, for a reset wait and a capacity
 wait. The [limit-resume hook](#rotate-session-resume) keeps the capacity rule
@@ -11616,10 +11604,6 @@ come first, then the deadline, then the 30 s probes in the order listed.
 | `rotator capacity` | reset, capacity | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle that meets the [rotator room rule](#rotator-room-rule): a cycle with capacity (`swapped`, `stayed` or `switched`, no alert; `stayed-unread` is not capacity) that says room (`live_room: true`, or a `switched` record that does not state `false`), whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
 | `login capacity` | reset, capacity | the step runs under an inherited profile with auto-switch on, and a [reading](#readings) taken after the wait began shows that another stored profile has capacity (see [Capacity for a profile step](#capacity-for-a-profile-step)) | yes, under that profile |
 
-The end reasons keep their names; what changed is which swaps and cycles earn
-`login changed` and `rotator capacity`. See
-[Waking only on room](#waking-only-on-room).
-
 Both capacity rows, and the room condition on `login changed`, apply to a reset
 wait and to a capacity wait, and to **neither** of them on a login-change wait,
 which takes `login changed` on any change, as it always did. A login-change wait is started
@@ -11637,14 +11621,9 @@ measures the same login and stays there leaves the wait in place. The two
 capacity checks are therefore not run at all for that plan, rather than run
 and ignored.
 
-`rotator capacity` uses the [rotator room rule](#rotator-room-rule)
-(`CycleStatus::fresh_room` in `amplihack_utils::rotator_status`), which adds
-one condition to the [rotator capacity rule](#rotator-capacity-rule)
-(`CycleStatus::fresh_capacity`): the record says the login the cycle left live
-has room (`CycleStatus::says_room`). The limit-resume hook uses neither; it
-acts only on a
-[swap record](#swap-record). The room rule is checked with the fingerprint
-every 30 s.
+`rotator capacity` uses the [rotator room rule](#rotator-room-rule), checked
+with the fingerprint every 30 s. The limit-resume hook does not use it; it acts
+only on a [swap record](#swap-record).
 
 A cycle that moved onto a [credit-backed overflow profile](#rotate-overflow)
 (`swapped`, `overflow=in`) or stayed on one whose probe read it in this cycle
@@ -11750,8 +11729,7 @@ abandoned` and records nothing, and a cycle that has reached its swap finishes
 and records as usual. A wait ends on `rotator capacity` only on a cycle with
 capacity that says room, recorded after the wait began, so a stop supplies
 nothing for that exit. The three `login changed` exits need the login to
-change, which a stop does not do. A record that is merely newer than the wait,
-or whose outcome is not capacity, ends no wait either.
+change, which a stop does not do.
 
 **A manual switch still wakes.** `amplihack profile switch` records the
 outcome `switched` and takes no reading, so it carries no `live_room`. That
@@ -11803,8 +11781,7 @@ not make:
   `rotator capacity` exit is not open in the gap, because it needs a cycle
   newer than the wait.
 - The same gap is wider after a `profile switch`: the `switched` record says
-  room until the rotator's next cycle replaces it. That is narrower than before
-  the rule, when every change opened these exits.
+  room until the rotator's next cycle replaces it.
 
 ### Capacity wait
 

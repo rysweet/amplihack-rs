@@ -1707,6 +1707,40 @@ to another candidate that measured with enough headroom. If every candidate
 is counted as failed, the probes are at fault rather than the accounts: run
 `amplihack profile usage` to see each profile's state.
 
+The log is not the only place you hear about it. When a cycle gets as far
+as deciding to swap, stay or raise the ALERT, the rotator updates the shared
+capacity state from that cycle's measurements, and the status line, Claude
+Code, `amplihack claude` and `amplihack recipe run` show a warning such as:
+
+```
+⚠ all Claude accounts ≥90% · next reset Oct 22 2am
+```
+
+The capacity state uses the auto-switch threshold and exclusion list, not
+`--session-at` and `--week-at`, so it agrees with what the status line and
+`profile usage` record. The rotator's `ALERT` can therefore appear at
+different percentages from the warning. A profile whose probe failed counts
+as having capacity, so it does not cause a warning.
+
+The warning needs auto-switch to be on. The rotator rotates with no
+auto-switch setting at all, but then it writes only the `ALERT` to its log
+and no warning appears. To get the warning as well, run:
+
+```bash
+amplihack profile auto-switch on
+```
+
+A cycle that stops early, for example on `skip: state lock busy` or
+`skip: state changed during measurement (live)`, does not update the
+warning; the next full cycle does. The text in brackets names what changed;
+see [Rotate revalidation](../reference/profile-command.md#rotate-revalidation).
+
+The warning clears by itself when the first account resets. Where it
+appears and how it is deduplicated is in
+[When no account has capacity](claude-profiles.md#when-no-account-has-capacity);
+the file and the exact rules are in the
+[capacity notice reference](../reference/profile-command.md#capacity-notice).
+
 ### Logins with room that the rotator does not swap onto
 
 Before the ALERT, the rotator tries a
@@ -1725,14 +1759,12 @@ writes the ALERT line once. Live `aanderson` at `s=90%,w=80%` and `bbuck` at
 2026-11-19T20:31:07Z ALERT: no profile has capacity live=aanderson s=90% w=80%
 ```
 
-The rotator stays on `aanderson`. Because the live login is below 100% on both
-windows, this is an advisory ALERT, and credits and the API key stay unused,
-because both logins are below 100%. The rule uses whatever `--session-at` is
-set to, so raising it admits more logins as targets, and also moves the point
-at which the rotator swaps away from the live login. The reference has the
-full rule, with the ranking of the logins it does swap onto. Recipe steps
-waiting on a usage limit read the same test from the ledger (see
-[Steps that wait on a usage limit](#steps-that-wait-on-a-usage-limit)).
+The rotator stays on `aanderson` and writes an advisory ALERT. The rule uses
+whatever `--session-at` is set to, so raising it admits more logins as targets,
+and also moves the point at which the rotator swaps away from the live login.
+The reference has the full rule, with the ranking of the logins it does swap
+onto. Recipe steps waiting on a usage limit read the same test from the ledger
+(see [Steps that wait on a usage limit](#steps-that-wait-on-a-usage-limit)).
 
 ### Steps that wait on a usage limit
 
@@ -1776,40 +1808,6 @@ Four things to know:
 The waits and hosts that this rule does not apply to are listed in
 [What is not gated](../reference/profile-command.md#what-is-not-gated).
 `amplihack profile rotate status` shows the last cycle.
-
-The log is not the only place you hear about it. When a cycle gets as far
-as deciding to swap, stay or raise the ALERT, the rotator updates the shared
-capacity state from that cycle's measurements, and the status line, Claude
-Code, `amplihack claude` and `amplihack recipe run` show a warning such as:
-
-```
-⚠ all Claude accounts ≥90% · next reset Oct 22 2am
-```
-
-The capacity state uses the auto-switch threshold and exclusion list, not
-`--session-at` and `--week-at`, so it agrees with what the status line and
-`profile usage` record. The rotator's `ALERT` can therefore appear at
-different percentages from the warning. A profile whose probe failed counts
-as having capacity, so it does not cause a warning.
-
-The warning needs auto-switch to be on. The rotator rotates with no
-auto-switch setting at all, but then it writes only the `ALERT` to its log
-and no warning appears. To get the warning as well, run:
-
-```bash
-amplihack profile auto-switch on
-```
-
-A cycle that stops early, for example on `skip: state lock busy` or
-`skip: state changed during measurement (live)`, does not update the
-warning; the next full cycle does. The text in brackets names what changed;
-see [Rotate revalidation](../reference/profile-command.md#rotate-revalidation).
-
-The warning clears by itself when the first account resets. Where it
-appears and how it is deduplicated is in
-[When no account has capacity](claude-profiles.md#when-no-account-has-capacity);
-the file and the exact rules are in the
-[capacity notice reference](../reference/profile-command.md#capacity-notice).
 
 ## Use usage credits when every plan login is exhausted
 
