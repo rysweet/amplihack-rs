@@ -21,8 +21,12 @@
 #           $WORK/gh-state/checks and is written below, in this file, once
 #           before each run.
 #   claude  reads and discards the prompt and writes one fixed answer, whatever
-#           step asked. Its first call also leaves one repository copy with an
-#           uncommitted file in its own TMPDIR, which part 3 looks for. Every
+#           step asked. In a work tree inside the scenario's root it writes the
+#           task's file, and nowhere else: a step may call the agent from the
+#           repository the product was pointed at, and a stand-in that wrote
+#           there would be the scenario failing its own last case. Its first
+#           call also leaves one repository copy with an uncommitted file in
+#           its own TMPDIR, which part 3 looks for. Every
 #           call is recorded in $WORK/agent-calls.jsonl (argv, working
 #           directory, HOME, a hash of the prompt, its first line, the answer).
 #           The answer is one line holding one JSON object: the union of the
@@ -427,10 +431,21 @@ if [ ! -e "$marker" ]; then
   fi
 fi
 
-# In a work tree on a branch other than main, there is a change to commit.
+# In a work tree on a branch other than main, there is a change to commit, at
+# the repository root the task names. Only in a work tree inside the scenario's
+# own root: a step may call the agent from the repository the product was
+# pointed at, which is this checkout, and a stand-in that wrote a file there
+# would be the scenario writing into the repository under test. Part 3 reads
+# that as the product's doing and would report a fault that is the scenario's.
+top="$(git rev-parse --show-toplevel 2>/dev/null)"
+[ -z "$top" ] || top="$(cd "$top" 2>/dev/null && pwd -P)"
+case "$top" in
+  "$root"/*) ;;
+  *) top="" ;;
+esac
 branch="$(git branch --show-current 2>/dev/null)"
-if [ -n "$branch" ] && [ "$branch" != main ] && [ ! -e feature.txt ]; then
-  printf 'qa feature\n' > feature.txt
+if [ -n "$top" ] && [ -n "$branch" ] && [ "$branch" != main ] && [ ! -e "$top/feature.txt" ]; then
+  printf 'qa feature\n' > "$top/feature.txt"
 fi
 
 # One line, one JSON object, and nothing after it: a step that declares
