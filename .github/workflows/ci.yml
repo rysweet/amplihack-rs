@@ -796,6 +796,13 @@ jobs:
       - name: "Outside-in: cleanup keeps unsaved Git work (issue #2785)"
         shell: bash
         run: AMPLIHACK_2785_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2785-cleanup-keeps-unsaved-work-scenario.sh
+      # Issue #2806: one whole build and one whole drive, end to end, against the
+      # binary installed above and the pinned runner. `gh`, `claude` and `codex`
+      # are stand-ins on a private PATH; the origin is a folder. Missing
+      # prerequisites fail; nothing reaches GitHub or a live agent.
+      - name: "Outside-in: whole build and whole drive (issue #2806)"
+        shell: bash
+        run: AMPLIHACK_2806_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2806-end-to-end-build-and-drive-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing

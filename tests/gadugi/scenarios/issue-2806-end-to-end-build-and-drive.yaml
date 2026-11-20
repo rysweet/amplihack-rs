@@ -1,0 +1,110 @@
+name: issue-2806-end-to-end-build-and-drive
+description: >
+  Outside-in QA for issue #2806, the release evidence for the whole product.
+  The scenario (via
+  tests/gadugi/run-issue-2806-end-to-end-build-and-drive-scenario.sh) runs the
+  shipped `smart-orchestrator` recipe on a small task, routed to
+  `default-workflow`, in a temporary repository whose origin is a local bare
+  repository; then the shipped `auto-drive-to-merge` recipe on the pull
+  request that build opened, from a per-PR clone with a linked worktree added
+  from it. Only the outside world is stood in for: `gh` (which answers the
+  pull request, issue and account calls the shipped steps make, records every
+  call, and exits 96 on any call it does not answer, GraphQL included),
+  `claude` (one fixed answer whatever step asks, every call recorded) and
+  `codex`. The pull request's checks are PENDING for the build, which is the
+  issue #2343 case:
+  finalisation must hand the pull request on and not end
+  FAILED_IMPLEMENTATION. They are SUCCESS for the drive, so the merge step's
+  precondition holds and the drive ends at a verdict with a merge recorded on
+  the stub. Cleanup is left on and no phase is skipped: reflection and power
+  steering are not disabled.
+
+  Six cases, each asserted below, on outcomes only; no internal run-folder
+  path or layout is asserted. Part 1: `part1_build_opens_pr_and_pushes_branch`
+  (the stub recorded a `pr create` for the run's branch, and the bare origin
+  holds that branch at the local head) and
+  `part1_finalization_is_not_failed_implementation` (the terminal state is not
+  FAILED_IMPLEMENTATION and names the open pull request). Part 2:
+  `part2_drive_ends_at_verdict_and_merges` (the stub recorded a `pr merge` for
+  the pull request and the drive printed its own terminal report, the object
+  carrying `stop_reason`, which is its verdict however it ended; the sentence
+  beside it is the product's and is not read). Part 3, over the evidence of
+  both runs: `part3_committed_work_survives` (the committed work is still on
+  the branch in the origin and readable in the per-PR worktree) and
+  `part3_unsaved_work_folder_kept_with_reason` (for the repository copy the
+  stand-in agent left a file in, the run emitted a line beginning `amplihack:
+  leaving ` naming the folder kept, that copy as the work tree and the reason
+  `has uncommitted changes`, once or twice and identical each time, and the
+  folder is still there with the file in it; issue #2785). And one on this
+  file: `every_case_this_run_emitted_is_asserted_by_the_descriptor`, which
+  fails the scenario when a case the script emits has no assertion here.
+
+  Everything runs under `env -i` with a 0700 root, a PATH holding only the
+  scenario's own tool links, no Git system or global configuration and only
+  the file transport; the real ~/.claude and ~/.amplihack are never read or
+  written. A missing binary, runner or host tool is a failure, not a skip. The
+  driver runs in CI, in the host-install job, after the pinned recipe runner
+  is installed; it is never run by hand on a shared host.
+version: "1.0"
+config:
+  timeout: 2400000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, end-to-end, build, drive, release-evidence]
+  priority: high
+  issues: ["2806", "2802", "2785", "2343"]
+steps:
+  - name: run-issue-2806-end-to-end-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2806-end-to-end-build-and-drive-scenario.sh
+    timeout: 2300000
+  - name: all-end-to-end-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+# One assertion per PASS line the script emits, so the descriptor states the
+# scenario in full rather than a subset of it.
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: the-build-opens-a-pull-request-and-pushes-the-branch
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part1_build_opens_pr_and_pushes_branch"
+  - name: finalisation-with-pending-checks-is-not-failed-implementation
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part1_finalization_is_not_failed_implementation"
+  - name: the-drive-ends-at-a-verdict-with-a-merge-recorded
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part2_drive_ends_at_verdict_and_merges"
+  - name: the-committed-work-survives-both-runs
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part3_committed_work_survives"
+  - name: a-folder-with-unsaved-work-is-kept-and-says-why
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part3_unsaved_work_folder_kept_with_reason"
+  - name: the-descriptor-states-every-case-the-script-emits
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: every_case_this_run_emitted_is_asserted_by_the_descriptor"
