@@ -129,11 +129,16 @@ rm -f -- "$RESULT_FILE"
 # link and is ours. This runs before the driver re-checks the directory.
 # Whatever is at the name is removed first and the file opened new, once, as
 # descriptor 4: an exclusive open (`set -C`) under umask 077, so a foreign
-# file keeps neither its content nor its mode and a link at the name is
-# refused rather than written through. The descriptor is held open for the
-# rest of the run, so there is no second open by name for a link planted after
-# this point to catch. A directory at the name cannot be removed, so the open
-# fails and no copy is made. The tool never creates the state directory:
+# file keeps neither its content nor its mode, and a planted regular file, a
+# link to one or a dangling link is replaced rather than written through.
+# Noclobber refuses only an existing regular file: a link to a device or a
+# FIFO, planted in the window between the removal and the open, is opened
+# rather than refused, and a FIFO with no reader would block the open.
+# Planting one needs write access to a state folder that is 0700 and owned by
+# the caller. See #2879. The descriptor is held open for the rest of the run,
+# so there is no second open by name for a link planted after this point to
+# catch. A directory at the name cannot be removed, so the open fails and no
+# copy is made. The tool never creates the state directory:
 # autodrive_private_dir stays the only authority for that.
 #
 # The open is a grouped command so that its `2>/dev/null` lasts only for the

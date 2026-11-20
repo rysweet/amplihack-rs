@@ -313,7 +313,7 @@ fn a_driver_that_outtalks_a_pipe_buffer_loses_nothing_from_either_place() {
     let written = format!("{filler}{last}\n");
     assert!(
         written.len() > 64 * 1024,
-        "past a 64 KiB pipe buffer, not only past the 8 KiB one: {}",
+        "past a 64 KiB pipe buffer: {}",
         written.len()
     );
 
