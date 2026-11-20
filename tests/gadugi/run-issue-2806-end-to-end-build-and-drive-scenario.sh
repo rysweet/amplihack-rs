@@ -348,7 +348,13 @@ case "${1-} ${2-}" in
     # in: that folder is the run's own work tree, so this is the run's work
     # without the scenario knowing anything about the run's layout.
     printf '%s\n' "$(pwd -P)" >> "$root/gh-create.cwd"
-    git rev-parse HEAD > "$root/gh-create.head" 2>/dev/null || true
+    # Not guarded: a `pr create` from a folder with no committed head is not a
+    # `pr create` the product could have meant, and swallowing it here would
+    # surface later as an empty local head and point at the wrong cause.
+    git rev-parse HEAD > "$root/gh-create.head" 2>/dev/null || {
+      echo "gh stub: pr create in $(pwd -P), which has no committed HEAD" >&2
+      exit 97
+    }
     git branch --show-current > "$state/branch" 2>/dev/null || true
     # The shipped publish step writes `--head=<branch>`; `--head <branch>` is
     # the other form gh accepts. An `owner:branch` value keeps the branch.
