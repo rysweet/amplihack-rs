@@ -12,6 +12,7 @@ for file in "$GH_RETRY_TMPDIR"/* "$GH_RETRY_TMPDIR"/.[!.]*; do
   [ -f "$file" ] || continue
   ls -l "$file" >> "$CASE_ROOT/capture.permissions"
 done
+printf 'partial stdout from failed gh\n'
 cat "$CASE_ROOT/create.stderr" >&2
 exit 23
 "#,
@@ -302,16 +303,19 @@ fn cleanup_failure_does_not_replace_original_gh_failure_status() {
 
 #[test]
 fn mandatory_body_file_creation_and_write_failures_remain_terminal_with_diagnostics() {
-    for failure in ["creation", "write"] {
+    for (failure, operation, status) in [
+        ("creation", "body temp creation", 77),
+        ("write", "body-file write", 78),
+    ] {
         let f = PublishFixture::new();
         let mut command = f.publish_command();
         if failure == "creation" {
             f.shim(
                 "mktemp",
                 r#"
-if [ -f "$CASE_ROOT/issue-looked-up" ]; then
-  echo 'injected mktemp rejection' >&2; exit 77
-fi
+case "${1:-}" in
+  *workflow-pr-body.*) exit 77 ;;
+esac
 exec "$REAL_TOOL" "$@"
 "#,
             );
@@ -324,22 +328,27 @@ exec "$REAL_TOOL" "$@"
             command.env("WORKFLOW_BODY_FILE_HELPER", helper);
         }
         let output = command.output().unwrap();
-        assert!(
-            !output.status.success(),
-            "mandatory {failure} failure must stop publishing"
+        assert_eq!(
+            output.status.code(),
+            Some(status),
+            "mandatory {failure} failure: {}",
+            describe(&output)
         );
         assert!(!f.read("gh.log").contains("pr create"));
+        let result = json(&output);
+        assert_eq!(result["state"], "FAILED_PR_CREATE");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("body") || stderr.contains("temp"),
-            "failed operation missing: {stderr:?}"
-        );
-        assert!(
-            stderr.contains("77")
-                || stderr.contains("78")
-                || stderr.contains("failed")
-                || stderr.contains("could not"),
-            "failure condition missing: {stderr:?}"
+        for diagnostic in [result["message"].as_str().unwrap(), stderr.as_ref()] {
+            assert!(diagnostic.contains("gh pr create"), "{diagnostic:?}");
+            assert!(diagnostic.contains(operation), "{diagnostic:?}");
+            assert!(
+                diagnostic.contains(&format!("exit {status}")),
+                "{diagnostic:?}"
+            );
+        }
+        assert_eq!(
+            fs::read_dir(f.tmp.path().join("private")).unwrap().count(),
+            0
         );
     }
 }

@@ -230,13 +230,26 @@ fn followup_actual_runner_accepts_canonical_repository_casing() {
 }
 
 #[test]
+fn followup_actual_runner_keeps_rejected_create_identity_private() {
+    let f = PublishFixture::new();
+    let rejected = "https://github.com/foreign-owner/private-repo/pull/99";
+    let result = run_step(&f, &[("CREATE_OUTPUT", rejected)]);
+    let error = failed_step_error(&result);
+    assert!(error.contains("invalid PR identity URL"), "{error}");
+    assert!(!result.to_string().contains(rejected), "{result}");
+}
+
+#[test]
 fn followup_actual_runner_keeps_final_rejection_after_long_retry_warning() {
     let f = PublishFixture::new();
     f.long_transient_create_failure();
     let secret = "sk-ant-api03-ABCDEFGHIJKLMNOPQRST";
     f.write(
         "create.stderr",
-        &format!("distinctive final creation rejection {secret}"),
+        &format!(
+            "distinctive final creation rejection {secret} {} beyond-diagnostic-limit",
+            "x".repeat(640)
+        ),
     );
     let result = run_step(&f, &[("CREATE_STATUS", "23")]);
     let error = failed_step_error(&result);
@@ -244,7 +257,10 @@ fn followup_actual_runner_keeps_final_rejection_after_long_retry_warning() {
         error.contains("distinctive final creation rejection"),
         "{error}"
     );
+    assert!(error.contains("gh pr create"), "{error}");
     assert!(error.contains("exit 23"), "{error}");
+    assert!(error.contains("REDACTED_TOKEN"), "{error}");
+    assert!(!error.contains("beyond-diagnostic-limit"), "{error}");
     assert!(!result.to_string().contains(secret), "{result}");
     assert!(
         !result.to_string().contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX"),

@@ -21,13 +21,62 @@ fn followup_canonical_repository_casing_preserves_success_including_recovery() {
 }
 
 #[test]
+fn followup_created_pr_preserves_leading_zeroes_in_a_repository_named_pull() {
+    let f = PublishFixture::new();
+    f.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/owner/pull.git",
+    ]);
+    let url = "https://github.com/owner/pull/pull/099";
+    let output = f
+        .publish_command()
+        .env("CREATE_OUTPUT", url)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", describe(&output));
+    let result = json(&output);
+    assert_eq!(result["terminal_status"], "success");
+    assert_eq!(result["state"], "FOLLOWUP_CREATED");
+    assert_eq!(result["pr_url"], url);
+    assert_eq!(result["pr_number"], "099");
+}
+
+#[test]
+fn followup_rejected_create_identity_stays_out_of_results_and_logs() {
+    let f = PublishFixture::new();
+    let rejected = "https://github.com/foreign-owner/private-repo/pull/99";
+    let output = f
+        .publish_command()
+        .env("CREATE_OUTPUT", rejected)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", describe(&output));
+    let result = json(&output);
+    assert_eq!(result["state"], "FAILED_PR_IDENTITY");
+    assert_eq!(result["terminal_status"], "failure");
+    assert_eq!(result["pr_url"], "");
+    assert_eq!(result["pr_number"], "");
+    assert!(
+        !describe(&output).contains("foreign-owner/private-repo"),
+        "rejected identity leaked: {}",
+        describe(&output)
+    );
+}
+
+#[test]
 fn followup_terminal_rejection_survives_long_retry_history_and_is_redacted() {
     let f = PublishFixture::new();
     f.long_transient_create_failure();
     let secret = "sk-ant-api03-ABCDEFGHIJKLMNOPQRST";
+    let prefix = "distinctive final creation rejection";
     f.write(
         "create.stderr",
-        &format!("distinctive final creation rejection {secret}"),
+        &format!(
+            "{prefix} {secret} {} beyond-diagnostic-limit",
+            "x".repeat(640)
+        ),
     );
     let output = f
         .publish_command()
@@ -37,18 +86,23 @@ fn followup_terminal_rejection_survives_long_retry_history_and_is_redacted() {
     assert_eq!(output.status.code(), Some(23), "{}", describe(&output));
     let result = json(&output);
     assert_eq!(result["state"], "FAILED_PR_CREATE");
+    assert_eq!(result["terminal_status"], "failure");
     let message = result["message"].as_str().unwrap();
-    assert!(!message.contains("HTTP 503"), "{message}");
-    assert!(message.len() < 600, "{message}");
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("HTTP 503"), "{stderr}");
+    assert!(
+        message.contains("gh pr create") && message.contains("exit 23"),
+        "{message}"
+    );
+    assert!(!message.contains("HTTP 503"), "{message}");
+    assert!(message.contains("REDACTED_TOKEN"), "{message}");
+    assert!(message.len() < 600, "{message}");
     for text in [message, stderr.as_ref()] {
-        assert!(
-            text.contains("distinctive final creation rejection"),
-            "{text}"
-        );
+        assert!(text.contains(prefix), "{text}");
         assert!(text.contains("23"), "{text}");
         assert!(!text.contains(secret), "{text}");
         assert!(!text.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX"), "{text}");
+        assert!(!text.contains("beyond-diagnostic-limit"), "{text}");
     }
     assert_eq!(
         std::fs::read_dir(f.tmp.path().join("private"))
@@ -81,11 +135,20 @@ exec "$REAL_TOOL" "$@"
     let output = f.publish_command().output().unwrap();
     assert_eq!(output.status.code(), Some(9), "{}", describe(&output));
     assert!(f.tmp.path().join("first-create").exists());
+    assert!(f.tmp.path().join("capture-failed").exists());
+    assert_eq!(
+        f.read("gh.log")
+            .lines()
+            .filter(|line| line.starts_with("pr create "))
+            .count(),
+        1
+    );
     let result = json(&output);
     assert_eq!(result["state"], "FAILED_PR_CREATE");
     let message = result["message"].as_str().unwrap();
     assert!(
-        message.contains("private stderr temp creation failed (exit 9)"),
+        message.contains("gh pr create")
+            && message.contains("private stderr temp creation failed (exit 9)"),
         "{message}"
     );
     assert!(!message.contains("HTTP 503"), "{message}");
@@ -100,17 +163,64 @@ exec "$REAL_TOOL" "$@"
 }
 
 #[test]
+fn followup_create_result_capture_failure_has_its_own_status_and_operation() {
+    let f = PublishFixture::new();
+    f.shim(
+        "mktemp",
+        r#"
+case "${1:-}" in
+  *workflow-pr-result.*) exit 79 ;;
+esac
+exec "$REAL_TOOL" "$@"
+"#,
+    );
+    let output = f.publish();
+    assert_eq!(output.status.code(), Some(79), "{}", describe(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("gh pr create")
+            && stderr.contains("temp creation")
+            && stderr.contains("79"),
+        "{stderr}"
+    );
+    assert!(!f.read("gh.log").contains("pr create"));
+    assert_eq!(
+        std::fs::read_dir(f.tmp.path().join("private"))
+            .unwrap()
+            .count(),
+        0
+    );
+    let result = json(&output);
+    assert_eq!(result["state"], "FAILED_PR_CREATE");
+    let message = result["message"].as_str().unwrap();
+    assert!(
+        message.contains("gh pr create")
+            && message.contains("temp creation")
+            && message.contains("exit 79"),
+        "{message}"
+    );
+}
+
+#[test]
 fn followup_template_scope_sanitization_failure_warns_without_partial_output() {
     let f = PublishFixture::new();
     f.write("issue.json", r#"{"title":""}"#);
+    let scope = "aaa-ghp_ABCDEFGHIJKLMNOPQRSTUVWX@scope-marker.txt";
+    f.git(&["mv", "feature.txt", scope]);
+    f.git(&["commit", "-m", "rename scope file"]);
     f.shim(
         "awk",
         r#"
 case "$*" in
   *'code = 0'*)
-    cat >/dev/null
-    printf 'ghp_PARTIAL_SECRET_ABCDEFGHIJKLMNOP'
-    exit 76 ;;
+    input=$(cat)
+    if [ "$input" = "aaa-REDACTED_TOKEN@scope-marker.txt" ]; then
+      : > "$CASE_ROOT/scope-sanitizer-failed"
+      printf 'ghp_PARTIAL_SECRET_ABCDEFGHIJKLMNOP'
+      exit 76
+    fi
+    printf '%s\n' "$input" | "$REAL_TOOL" "$@"
+    exit $? ;;
 esac
 exec "$REAL_TOOL" "$@"
 "#,
@@ -121,15 +231,19 @@ exec "$REAL_TOOL" "$@"
         .output()
         .unwrap();
     f.assert_created(&output);
+    assert!(f.tmp.path().join("scope-sanitizer-failed").exists());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let body = f.read("body.md");
     assert!(
-        stderr.contains("WARNING: optional scope sanitization failed (exit 76)"),
-        "{stderr}"
-    );
-    assert!(
-        f.read("body.md")
-            .contains("Concise workflow-generated PR for branch changes.")
+        body.starts_with("## Summary\nConcise workflow-generated PR for branch changes.\n\n"),
+        "{body}"
     );
     assert!(!describe(&output).contains("PARTIAL_SECRET"));
-    assert!(!f.read("body.md").contains("PARTIAL_SECRET"));
+    assert!(!body.contains("PARTIAL_SECRET"));
+    assert!(!body.contains(scope));
+    let warning = stderr
+        .lines()
+        .find(|line| line.contains("WARNING: optional scope sanitization failed (exit 76)"))
+        .unwrap_or_else(|| panic!("scope sanitization warning missing: {stderr}"));
+    assert!(!warning.contains("scope-marker"), "{warning}");
 }

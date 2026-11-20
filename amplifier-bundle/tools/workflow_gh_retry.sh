@@ -283,10 +283,16 @@ gh_pr_number_from_url() {
 }
 
 # --- retry driver ----------------------------------------------------------
-# _gh_retry_core <label> <gh-arg>...
+# _gh_retry_core [--terminal-stdout] <label> <gh-arg>...
 #
 #   stdout : command output on success (or REST fallback output).
-#   return : 0 on success; otherwise the last gh exit status.
+#   return : 0 on success; otherwise the original failure status.
+#
+# --terminal-stdout is for the PR publisher's private result capture. On
+# failure, stdout holds one sanitized, bounded diagnostic or a fixed setup
+# error, emitted after cleanup. Retry warnings still go to stderr. The
+# publisher interprets stdout using the child's wait status and owns its
+# capture. Cancellation can leave the result empty.
 #
 # Behaviour is tuned via environment variables (all optional):
 #   GH_RETRY_RESOURCE       graphql|core       (default: graphql) — resource to
@@ -303,20 +309,16 @@ gh_pr_number_from_url() {
 #                           of blocking, logging a WARNING. Leave UNSET for write
 #                           paths so they wait-for-reset with no REST fallback.
 #
-#   GH_RETRY_DIAGNOSTIC_FILE private file owned by the caller (optional):
-#                           emptied when each attempt starts and overwritten
-#                           with each failed attempt's sanitized, bounded
-#                           diagnostic (or its temp-creation failure);
-#                           independent of retry warnings. Empty after failure
-#                           means no attempt's failure was recorded (e.g.
-#                           cancelled before the next attempt).
-#                           Read only after failure; caller removes the file.
-#
 # Sets GH_RETRY_LAST_CLASS to the class of the final failure (or
 # `success`/`rate_limit_rest`) for callers that need to branch on it.
 _gh_retry_core() {
   local stderr_file="" stdout_file="" GH_OWNED_PID="" retry_status=0 retry_interrupted_status=0
+  local terminal_stdout=false terminal_diagnostic=""
   local retry_int retry_term retry_hup retry_shell_pid
+  if [ "${1:-}" = --terminal-stdout ]; then
+    terminal_stdout=true
+    shift
+  fi
   retry_int=$(trap -p INT); retry_term=$(trap -p TERM); retry_hup=$(trap -p HUP)
   # $$ names the original shell even inside command substitution on Bash 3.2.
   read -r retry_shell_pid < <(exec sh -c 'echo "$PPID"')
@@ -327,11 +329,16 @@ _gh_retry_core() {
     if _gh_retry_attempts "$@"; then retry_status=0; else retry_status=$?; fi
   else
     retry_status=$?
-    printf 'ERROR: gh %s: private stdout temp creation failed (exit %s)\n' "${1:-gh}" "$retry_status" >&2
+    terminal_diagnostic="private stdout temp creation failed (exit $retry_status)"
+    $terminal_stdout || printf 'ERROR: gh %s: %s\n' "${1:-gh}" "$terminal_diagnostic" >&2
   fi
   _gh_retry_cleanup
   _gh_retry_restore_traps
   [ "$retry_interrupted_status" -eq 0 ] || retry_status=$retry_interrupted_status
+  if $terminal_stdout && [ "$retry_status" -ne 0 ] && [ -n "$terminal_diagnostic" ]; then
+    printf '%s\n' "$terminal_diagnostic" ||
+      printf 'WARNING: gh %s: terminal diagnostic write failed\n' "${1:-gh}" >&2
+  fi
   return "$retry_status"
 }
 
@@ -341,9 +348,9 @@ _gh_retry_core() {
 # replace captures and child PID; cleanup cancels/reaps the child, unlinks
 # captures and clears those variables. Interrupt sets retry_interrupted_status;
 # restore uses saved traps/PID to preserve the caller's signal disposition.
-# The core cleans up and restores traps on return. GH_RETRY_LAST_CLASS is the
-# caller-visible result; GH_RETRY_DIAGNOSTIC_FILE belongs to the caller, is
-# overwritten only with safe diagnostics, and is never removed by this owner.
+# Attempts set terminal_diagnostic only when returning a failure. The core
+# cleans up and restores traps before emitting it. GH_RETRY_LAST_CLASS is
+# visible to callers.
 _gh_retry_cleanup() {
   gh_cancel_owned "$GH_OWNED_PID"
   GH_OWNED_PID=""
@@ -390,27 +397,12 @@ _gh_retry_attempts() {
 
   while :; do
     attempt=$((attempt + 1))
-    # Clear the previous attempt's diagnostic first, so a failure before this
-    # attempt runs gh never reports an earlier attempt's text. Temp creation
-    # failure records its own diagnostic below; a cancellation during a
-    # backoff or reset wait leaves the capture empty, and the caller falls
-    # back to its ordinary stderr capture.
-    if [ -n "${GH_RETRY_DIAGNOSTIC_FILE:-}" ]; then
-      if : >"$GH_RETRY_DIAGNOSTIC_FILE"; then :; else
-        printf 'WARNING: gh terminal diagnostic capture reset failed (exit %s)\n' "$?" >&2
-      fi
-    fi
     if stderr_file="$(umask 077; mktemp "${GH_RETRY_TMPDIR:-${TMPDIR:-/tmp}}/.workflow-gh-retry.XXXXXX" 2>/dev/null)"; then
       :
     else
       status=$?
-      diagnostic="private stderr temp creation failed (exit $status)"
-      printf 'ERROR: gh %s: %s\n' "$label" "$diagnostic" >&2
-      # This is the last attempt's failure; record it so the caller does not
-      # have to find it behind earlier retry warnings in ordinary stderr.
-      if [ -n "${GH_RETRY_DIAGNOSTIC_FILE:-}" ]; then
-        printf '%s' "$diagnostic" >"$GH_RETRY_DIAGNOSTIC_FILE" 2>/dev/null || :
-      fi
+      terminal_diagnostic="private stderr temp creation failed (exit $status)"
+      $terminal_stdout || printf 'ERROR: gh %s: %s\n' "$label" "$terminal_diagnostic" >&2
       return "$status"
     fi
     gh_start_owned timeout 60 gh "$@" >"$stdout_file" 2>"$stderr_file"
@@ -427,21 +419,10 @@ _gh_retry_attempts() {
     fi
     GH_OWNED_PID=""
     diagnostic="$(gh_safe_stderr "$stderr_file")"
-    if [ -n "${GH_RETRY_DIAGNOSTIC_FILE:-}" ]; then
-      if printf '%s' "$diagnostic" >"$GH_RETRY_DIAGNOSTIC_FILE"; then :; else
-        printf 'WARNING: gh terminal diagnostic capture failed (exit %s)\n' "$?" >&2
-      fi
-    fi
     class="$(classify_gh_error "$stderr_file")" || class=other
     GH_RETRY_LAST_CLASS="$class"
 
     case "$class" in
-      auth)
-        echo "ERROR: gh ${label} failed with an authentication error (exit ${status}); not retrying: $diagnostic" >&2
-        gh_remove_capture "$stderr_file"
-        stderr_file=""
-        return "$status"
-        ;;
       rate_limit)
         # READ path: prefer an immediate REST fallback when the core budget is
         # still available, rather than blocking for the GraphQL reset.
@@ -483,10 +464,6 @@ _gh_retry_attempts() {
             return 0
           fi
         fi
-        printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
-        gh_remove_capture "$stderr_file"
-        stderr_file=""
-        return "$status"
         ;;
       transient)
         if [ "$attempt" -lt "$max_transient" ]; then
@@ -499,17 +476,16 @@ _gh_retry_attempts() {
           delay=$((delay * 2))
           continue
         fi
-        printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
-        gh_remove_capture "$stderr_file"
-        stderr_file=""
-        return "$status"
-        ;;
-      *)
-        printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
-        gh_remove_capture "$stderr_file"
-        stderr_file=""
-        return "$status"
         ;;
     esac
+    terminal_diagnostic="$diagnostic"
+    if ! $terminal_stdout; then
+      if [ "$class" = auth ]; then
+        printf 'ERROR: gh %s failed with an authentication error (exit %s); not retrying: %s\n' "$label" "$status" "$diagnostic" >&2
+      else
+        printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
+      fi
+    fi
+    return "$status"
   done
 }
