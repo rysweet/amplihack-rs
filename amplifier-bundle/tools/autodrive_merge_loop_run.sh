@@ -175,8 +175,9 @@ fi
 # is the uutils implementation, which Ubuntu 25.10 ships as the default, it
 # can abort part-way through any input larger than one pipe buffer, about one
 # run in ten, and the bytes it has already read die with it, so the copy AND
-# this step's own log lose the driver's output. That is the very loss this change exists to prevent.
-# The panic text and the host it was seen on are in the PR body for #2849.
+# this step's own log lose the driver's output. That is the very loss this
+# change exists to prevent. The panic text and the host it was seen on are
+# in the PR body for #2849.
 # A read loop cannot abort that way and writes the same bytes, reaching the
 # log a line at a time instead of a block at a time. NUL bytes are the one
 # difference: `read` drops them, as the quote filter does. It is also slower

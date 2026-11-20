@@ -1337,18 +1337,19 @@ leave the drive `STUCK` (#2656). The tests
   and the reason reaches the hand-off prompt and probably a public PR
   comment. It reaches that prompt in the fenced untrusted slot, never in the
   trusted sentence, but the comment the hand-off posts is public. A line that
-  matches a list of credential shapes is withheld whole, not masked in place. The shapes are those `mask_secrets`
-  masks in `autodrive_budget.sh`, all three of its groups of rules: GitHub
-  (`gh[pousr]_`, `github_pat_`), `sk-`, AWS (`A3T`, `AKIA`, `ASIA`), Slack,
-  GitLab, npm and Google keys, a three-part JWT, a URL with a password and a
-  private-key header; a key name ending in `authorization`, `token`,
-  `secret`, `password`, `passwd`, `api_key`, `access_key`, `account_key`,
-  `private_key`, `credential(s)`, `signature`, `sig` or `sharedaccesskey`
-  (any case, so `GH_TOKEN` and `Proxy-Authorization` both match) followed by
-  `=` or `:`; and the bare scheme word — 12 or more characters after
-  `Bearer`, `Basic` or `Token` with no `=` or `:` in sight, when those
-  characters hold a digit or one of `_ - / + =`. That last condition is what
-  leaves prose such as `basic authentication failed` its quote. It is a shape
+  matches a list of credential shapes is withheld whole, not masked in place.
+  The shapes are those `mask_secrets` masks in `autodrive_budget.sh`, all
+  three of its groups of rules: GitHub (`gh[pousr]_`, `github_pat_`), `sk-`,
+  AWS (`A3T`, `AKIA`, `ASIA`), Slack, GitLab, npm and Google keys, a
+  three-part JWT, a URL with a password and a private-key header; a key
+  name ending in `authorization`, `token`, `secret`, `password`, `passwd`,
+  `api_key`, `access_key`, `account_key`, `private_key`, `credential(s)`,
+  `signature`, `sig` or `sharedaccesskey` (any case, so `GH_TOKEN` and
+  `Proxy-Authorization` both match) followed by `=` or `:`; and the bare
+  scheme word — 12 or more characters after `Bearer`, `Basic` or `Token`
+  with no `=` or `:` in sight, when those characters hold a digit or one of
+  `_ - / + =`. That last condition is what leaves prose such as
+  `basic authentication failed` its quote. It is a shape
   list, not a guarantee: `SECRET_KEY=<value>` matches neither list, here or in
   `mask_secrets`. `autodrive_budget.sh` is not sourced — its `mask_secrets`
   sits behind a command dispatcher — so the two lists are kept in step by
