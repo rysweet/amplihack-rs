@@ -7,19 +7,32 @@ description: >
   `default-workflow`, in a temporary repository whose origin is a local bare
   repository; then the shipped `auto-drive-to-merge` recipe on the pull
   request that build opened, from a per-PR clone with a linked worktree added
-  from it. Only the outside world is stood in for: `gh` (which answers the
+  from it. The drive is launched with that pull request's number and with the
+  task it implements: the Crusty loop refuses to start a round without a task
+  description, and so does the re-review between merge rounds, so a drive
+  given only a number cannot review the pull request at all.
+  Only the outside world is stood in for: `gh` (which answers the
   pull request, issue and account calls the shipped steps make, records every
   call, and exits 96 on any call it does not answer, GraphQL included),
-  `claude` (one fixed answer whatever step asks, every call recorded) and
-  `codex`. The pull request's checks are PENDING for the build, which is the
-  issue #2343 case:
+  `claude` and `codex`. The `claude` stand-in gives the build one fixed
+  answer whatever step asks, and answers the drive from a dispatch table with
+  one entry per agent step, keyed on a substring that occurs in exactly one
+  shipped prompt, because the drive's preflights and readers need answer
+  shapes that contradict each other and four shipped steps open with the same
+  first line. Each entry reports what a competent agent would report of this
+  fixture, reading the head, branch and base from the PR worktree rather than
+  asserting them, and performs the actions its step asks for (posting the
+  Crusty verdict, writing the completion decision, saving the measured qa
+  record) before reporting them. A prompt matching no entry keeps the fixed
+  answer and is recorded. Every call is recorded. The pull request's checks
+  are PENDING for the build, which is the issue #2343 case:
   finalisation must hand the pull request on and not end
   FAILED_IMPLEMENTATION. They are SUCCESS for the drive, so the merge step's
   precondition holds and the drive ends at a verdict with a merge recorded on
   the stub. Cleanup is left on and no phase is skipped: reflection and power
   steering are not disabled.
 
-  Seven cases, each asserted below, on outcomes only; no internal run-folder
+  Eight cases, each asserted below, on outcomes only; no internal run-folder
   path or layout is asserted. Part 1: `part1_build_opens_pr_and_pushes_branch`
   (the stub recorded a `pr create` for the run's branch, and the bare origin
   holds that branch at the local head) and
@@ -35,7 +48,13 @@ description: >
   `part2_drive_ends_at_verdict_and_merges` (the stub recorded a `pr merge` for
   the pull request and the drive printed its own terminal report, the object
   carrying `stop_reason`, which is its verdict however it ended; the sentence
-  beside it is the product's and is not read). Part 3, over the evidence of
+  beside it is the product's and is not read) and
+  `part2_every_drive_agent_prompt_matched_a_discriminator` (every agent step
+  the drive ran matched an entry of the stand-in's dispatch table, so a
+  shipped prompt reworded out from under its discriminator fails the scenario
+  by name instead of falling back to the fixed answer and quietly changing
+  what part 2 covers; the build's prompts are recorded as falling back and are
+  not read here). Part 3, over the evidence of
   both runs: `part3_committed_work_survives` (the committed work is still on
   the branch in the origin and readable in the per-PR worktree) and
   `part3_unsaved_work_folder_kept_with_reason` (for the repository copy the
@@ -103,6 +122,11 @@ assertions:
     params:
       target: stdout
       expected: "PASS: part2_drive_ends_at_verdict_and_merges"
+  - name: every-drive-agent-prompt-matched-a-discriminator
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: part2_every_drive_agent_prompt_matched_a_discriminator"
   - name: the-committed-work-survives-both-runs
     type: output_contains
     params:
