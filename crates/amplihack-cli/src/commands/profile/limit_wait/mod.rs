@@ -446,12 +446,11 @@ impl Waiter {
     /// same-login refusal is lifted for that one wait, and the step says so
     /// once, on a `reentered` line before the wait's `start`. The budget and
     /// the step timeout still refuse, unchanged, and so does a re-entry with
-    /// nothing to wait on: a reset already behind the clock would plan a wait
-    /// of no length, which spends none of the budget. Where another login
-    /// could take over, such a limit no longer arrives as a reset wait at
-    /// all: the supervisor has already made it a capacity wait
-    /// ([`plan::upgrade_passed_reset`]), which has a deadline of its own and
-    /// so spends the budget that bounds the chain.
+    /// a reset already behind the clock would plan a wait of no length, which
+    /// spends none of the budget. A usage limit stating such a reset no longer
+    /// arrives as a reset wait at all: the supervisor has already made it a
+    /// capacity wait ([`plan::upgrade_passed_reset`]), which has the budget as
+    /// its deadline and so spends the budget that bounds the chain.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
@@ -541,19 +540,19 @@ impl Waiter {
         // login this step has not waited on is that login's first wait and
         // keeps its grace.
         //
-        // This is now the backstop rather than the first answer. A usage
-        // limit stating a passed reset is lifted upstream into a capacity
-        // wait by `plan::upgrade_passed_reset` wherever another login could
-        // take over, and such a plan is never `ends_at_once`. Only a reset
-        // plan can still arrive here with a deadline of now, and three build
-        // one: a usage limit whose passed reset found no login to take over
-        // (no rotator, no other login, or a read that failed); a spend limit
-        // stating a passed session reset, which no other login would lift;
-        // and `plan::from_reading`, which the supervisor builds without
-        // passing through the rule and which rejects only a reset more than
-        // five hours ahead, never one behind. For those the step still ends
-        // here, and loudly. A blocked step never reaches this line at all:
-        // `blocked_skip` is a `WaitFor::Skip`, and the arm above returns.
+        // This is the backstop rather than the first answer. A usage limit
+        // stating a passed reset on a re-entry is planned as a capacity wait
+        // upstream by `plan::upgrade_passed_reset`, and such a plan is never
+        // `ends_at_once`. Only a reset plan can still arrive here with a
+        // deadline of now, and three build one: a spend limit stating a passed
+        // session reset, which no other login would lift; `plan::from_reading`,
+        // which the supervisor builds without passing through the rule and
+        // which rejects only a reset more than five hours ahead, never one
+        // behind; and a limit on an attempt that ran under a profile the
+        // auto-switch chose, which the supervisor does not upgrade. For those
+        // the step still ends here, and loudly. A blocked step never reaches
+        // this line at all: `blocked_skip` is a `WaitFor::Skip`, and the arm
+        // above returns.
         if reentry.is_some() && p.ends_at_once(now) {
             return already_waited();
         }
@@ -630,7 +629,14 @@ impl Waiter {
             plan: &p,
         };
         let waited_from = std::time::Instant::now();
-        let end = wait::wait(&p, &mut deps);
+        let mut end = wait::wait(&p, &mut deps);
+        // Issue #2857: a re-entry planned from a reset the clock had passed
+        // ends on its budget, which is the only deadline it has. It retries
+        // once there, as a reset wait does at its own deadline, instead of
+        // ending without a try (see `Plan::is_passed_reset_capacity`).
+        if end == End::CapacityExpired && p.is_passed_reset_capacity(now) {
+            end = End::MaxReached;
+        }
         // Real time, not the test clock: auto-drive compares it with its own
         // wall time (issue #1743).
         ledger::record(waited_from.elapsed());

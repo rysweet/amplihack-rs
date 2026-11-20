@@ -2140,9 +2140,10 @@ to turn it on there). A failure that is not a usage limit is passed back at once
    There is one exception: when the wait ended because something said to try
    again (the reset arrived, a login had room, or the login changed) and the
    very first attempt after it hits a limit, the step waits again and logs one
-   `reentered` line. A `429`, or a usage-limit message whose reset has already
-   passed, starts that wait only where a capacity wait could start; see
-   [A limit right after a wait](#a-limit-right-after-a-wait).
+   `reentered` line. A usage-limit message whose reset has already passed starts
+   a capacity wait bounded by the step's budget, and the step retries once when
+   that budget runs out. A `429` starts that wait only where a capacity wait
+   could start; see [A limit right after a wait](#a-limit-right-after-a-wait).
 
 Both the auto-switch rerun in step 1 and the usage-reading exit in step 2
 (logged as `end reason=login capacity`) can move a step onto another
@@ -2273,9 +2274,9 @@ took.
 planned as the first wait was, with the same checks, with one exception: a
 message whose stated reset has already passed is waited out as a capacity wait
 instead of being refused. A retry at 08:32 that meets "resets 8:30am" again
-is the usual case. The wait starts only where a capacity wait could, ends at
-the step's remaining `max_wait_secs` budget if no login has room, and does not
-apply to a spend limit. See
+is the usual case. The wait ends early if a login has room, otherwise at the
+step's remaining `max_wait_secs` budget, and the step then retries once. It
+does not apply to a spend limit. See
 [A reset that has already passed](../reference/profile-command.md#a-reset-that-has-already-passed).
 A `429` states no reset,
 so the second wait is a capacity wait, and it starts only when a capacity wait

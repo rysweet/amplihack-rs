@@ -458,16 +458,15 @@ fn a_capacity_wait_ends_at_the_failed_logins_reset_before_the_maximum() {
 //
 // The retry a wait earned met a usage-limit message whose stated reset the
 // clock has already passed. A reset wait for it would end the moment it began
-// and spend none of the budget, so the re-entry is refused for it. A reset in
-// the past shows the stated reset cannot be relied on; it does not show that no
-// wait is owed. Where another login could take over, the wait is planned from
-// capacity instead, which keeps it non-zero and so keeps the budget a bound.
+// and spend none of the budget, and a limit after a wait must go back into a
+// wait. A reset in the past shows the stated reset cannot be relied on; it does
+// not show that no wait is owed. The wait is planned from capacity instead,
+// which keeps it non-zero and so keeps the budget a bound on the chain.
 //
-// The rule is `upgrade_passed_reset(w, seen, reentry_refused, now, takeover)`:
-// the same shape as `upgrade`, with `seen` (the limit as read, `None` for a
-// spend limit) as its gate, `reentry_refused` the narrowing to a retry the
-// ordinary one-wait-per-login rule would have refused, and `takeover` the one
-// authorisation boundary, read last.
+// The rule is `upgrade_passed_reset(w, seen, reentry_refused, now)`: `seen`
+// (the limit as read, `None` for a spend limit) is its gate, and
+// `reentry_refused` the narrowing to a retry the ordinary one-wait-per-login
+// rule would have refused.
 
 fn reset_wait(reset: i64) -> WaitFor {
     WaitFor::Reset {
@@ -487,13 +486,6 @@ fn seen_at(reset: i64) -> Option<(Harness, Option<i64>)> {
     Some((Harness::Claude, Some(reset)))
 }
 
-/// A takeover check that fails the test when it runs. Passing it proves the
-/// profile store and the rotator lock are not read for a limit that cannot
-/// qualify.
-fn never() -> bool {
-    panic!("the takeover check ran for a limit that cannot qualify")
-}
-
 #[test]
 fn a_reset_the_clock_has_passed_on_a_refused_re_entry_becomes_a_capacity_wait() {
     // The stated reset is kept: the `start` line prints it, and a reader of the
@@ -509,7 +501,7 @@ fn a_reset_the_clock_has_passed_on_a_refused_re_entry_becomes_a_capacity_wait() 
         i64::MIN,
     ] {
         assert_eq!(
-            upgrade_passed_reset(reset_wait(reset), seen_at(reset), true, NOW, || true),
+            upgrade_passed_reset(reset_wait(reset), seen_at(reset), true, NOW),
             capacity_wait(reset),
             "reset {reset}"
         );
@@ -519,52 +511,44 @@ fn a_reset_the_clock_has_passed_on_a_refused_re_entry_becomes_a_capacity_wait() 
 #[test]
 fn the_boundary_is_the_clock_itself() {
     assert_eq!(
-        upgrade_passed_reset(reset_wait(NOW), seen_at(NOW), true, NOW, || true),
+        upgrade_passed_reset(reset_wait(NOW), seen_at(NOW), true, NOW),
         capacity_wait(NOW),
         "a reset at now has passed: a wait for it ends at once"
     );
     for ahead in [1, 60, 1800, FIVE_HOURS] {
         let reset = NOW + ahead;
         assert_eq!(
-            upgrade_passed_reset(reset_wait(reset), seen_at(reset), true, NOW, never),
+            upgrade_passed_reset(reset_wait(reset), seen_at(reset), true, NOW),
             reset_wait(reset),
-            "a reset {ahead}s ahead is an ordinary reset wait, and is not asked about"
+            "a reset {ahead}s ahead is an ordinary reset wait"
         );
     }
 }
 
 #[test]
-fn no_login_to_take_over_keeps_the_reset_wait_and_the_check_runs_once() {
-    let calls = std::cell::Cell::new(0);
-    let none_to_take_over = || {
-        calls.set(calls.get() + 1);
-        false
-    };
+fn a_passed_reset_on_a_refused_re_entry_is_a_capacity_wait_with_no_login_to_take_over() {
+    // No login is asked about: a re-entry must go back into a wait, and the
+    // budget bounds the wait when nothing else ends it. Where a login could
+    // take over, the capacity wait ends early on its reading, as it always did.
     let w = reset_wait(NOW - 120);
     assert_eq!(
-        upgrade_passed_reset(w, seen_at(NOW - 120), true, NOW, none_to_take_over),
-        w,
-        "the caller's own refusal (`ends_at_once`) then stands"
-    );
-    assert_eq!(
-        calls.get(),
-        1,
-        "asked once, for the one limit that qualifies"
+        upgrade_passed_reset(w, seen_at(NOW - 120), true, NOW),
+        capacity_wait(NOW - 120),
+        "a limit after a wait does not end the step"
     );
 }
 
 #[test]
-fn only_a_refused_re_entry_for_a_passed_reset_ever_asks_about_a_takeover() {
+fn only_a_refused_re_entry_for_a_passed_reset_is_upgraded() {
     let past = NOW - 120;
     // A retry the ordinary rule would not refuse is a login's first wait and
     // keeps its grace: nothing to lift.
     assert_eq!(
-        upgrade_passed_reset(reset_wait(past), seen_at(past), false, NOW, never),
+        upgrade_passed_reset(reset_wait(past), seen_at(past), false, NOW),
         reset_wait(past),
         "not a refused re-entry"
     );
-    // Only a reset wait is upgraded; every other shape passes through, and
-    // none of them reads the store.
+    // Only a reset wait is upgraded; every other shape passes through.
     let others = [
         capacity_wait(past),
         WaitFor::Capacity {
@@ -582,7 +566,7 @@ fn only_a_refused_re_entry_for_a_passed_reset_ever_asks_about_a_takeover() {
     ];
     for w in others {
         assert_eq!(
-            upgrade_passed_reset(w, seen_at(past), true, NOW, never),
+            upgrade_passed_reset(w, seen_at(past), true, NOW),
             w,
             "{w:?}"
         );
@@ -598,12 +582,12 @@ fn only_a_refused_re_entry_for_a_passed_reset_ever_asks_about_a_takeover() {
 fn a_spend_limit_is_never_made_a_capacity_wait() {
     let past = NOW - 120;
     assert_eq!(
-        upgrade_passed_reset(reset_wait(past), None, true, NOW, never),
+        upgrade_passed_reset(reset_wait(past), None, true, NOW),
         reset_wait(past),
         "a spend limit that states a session reset the clock has passed"
     );
     assert_eq!(
-        upgrade_passed_reset(WaitFor::Skip(NoWait::SpendLimit), None, true, NOW, never),
+        upgrade_passed_reset(WaitFor::Skip(NoWait::SpendLimit), None, true, NOW),
         WaitFor::Skip(NoWait::SpendLimit),
         "a spend limit that states no reset"
     );
@@ -613,38 +597,20 @@ fn a_spend_limit_is_never_made_a_capacity_wait() {
 fn a_reset_at_either_end_of_the_clock_is_compared_and_never_subtracted() {
     // `now - reset` would overflow for these; the rule compares and nothing else.
     assert_eq!(
-        upgrade_passed_reset(
-            reset_wait(i64::MAX),
-            seen_at(i64::MAX),
-            true,
-            i64::MAX,
-            || true
-        ),
+        upgrade_passed_reset(reset_wait(i64::MAX), seen_at(i64::MAX), true, i64::MAX),
         capacity_wait(i64::MAX)
     );
     assert_eq!(
-        upgrade_passed_reset(
-            reset_wait(i64::MIN),
-            seen_at(i64::MIN),
-            true,
-            i64::MAX,
-            || true
-        ),
+        upgrade_passed_reset(reset_wait(i64::MIN), seen_at(i64::MIN), true, i64::MAX),
         capacity_wait(i64::MIN)
     );
     assert_eq!(
-        upgrade_passed_reset(reset_wait(i64::MAX), seen_at(i64::MAX), true, 0, never),
+        upgrade_passed_reset(reset_wait(i64::MAX), seen_at(i64::MAX), true, 0),
         reset_wait(i64::MAX),
         "a reset far ahead is not passed"
     );
     assert_eq!(
-        upgrade_passed_reset(
-            reset_wait(i64::MAX),
-            seen_at(i64::MAX),
-            true,
-            i64::MIN,
-            never
-        ),
+        upgrade_passed_reset(reset_wait(i64::MAX), seen_at(i64::MAX), true, i64::MIN),
         reset_wait(i64::MAX)
     );
 }
@@ -663,7 +629,7 @@ fn the_capacity_wait_for_a_passed_reset_is_not_a_zero_length_wait() {
         reset_plan.until
     );
     let WaitFor::Capacity { reset, .. } =
-        upgrade_passed_reset(reset_wait(past), seen_at(past), true, NOW, || true)
+        upgrade_passed_reset(reset_wait(past), seen_at(past), true, NOW)
     else {
         panic!("a passed reset on a refused re-entry is a capacity wait");
     };
@@ -705,7 +671,7 @@ fn at_the_call_site(
     let spend = message
         .filter(|m| m.spend && m.reset.is_none())
         .map(|m| m.harness);
-    let wait = upgrade_passed_reset(wait, seen, reentry_refused, now, || takeover);
+    let wait = upgrade_passed_reset(wait, seen, reentry_refused, now);
     let wait = upgrade(wait, seen, || takeover);
     upgrade_spend(wait, spend, || rotator)
 }
@@ -730,11 +696,11 @@ fn each_shape_of_limit_on_the_retry_gets_the_documented_wait() {
             capacity_wait(LA_1300),
         ),
         (
-            "the same with no takeover: the caller refuses it",
+            "the same with no takeover: still a capacity wait, so the step waits again",
             SESSION,
             false,
             false,
-            reset_wait(LA_1300),
+            capacity_wait(LA_1300),
         ),
         (
             "a spend limit stating the passed session reset, with a takeover and a rotator",
@@ -809,5 +775,26 @@ fn a_passed_reset_on_a_login_the_step_has_not_waited_on_keeps_its_grace() {
     assert_eq!(
         at_the_call_site(SESSION, late, false, true, true),
         reset_wait(LA_1300)
+    );
+}
+
+/// Only the capacity wait a passed-reset re-entry is planned as retries at its
+/// budget's end (issue #2857). Every other plan ends as it always did.
+#[test]
+fn only_a_capacity_wait_for_a_passed_reset_retries_at_its_budget() {
+    let past = NOW - 120;
+    let passed = plan_capacity(NOW, Some(past), Some(600), None);
+    assert!(passed.is_passed_reset_capacity(NOW), "{passed:?}");
+    assert!(
+        !plan_capacity(NOW, Some(NOW + 60), Some(600), None).is_passed_reset_capacity(NOW),
+        "a capacity wait for a reset still ahead"
+    );
+    assert!(
+        !plan_capacity(NOW, None, Some(600), None).is_passed_reset_capacity(NOW),
+        "a capacity wait with no reset"
+    );
+    assert!(
+        !plan(NOW, past, Some(600), None).is_passed_reset_capacity(NOW),
+        "a reset wait for a passed reset ends at once, and is not a capacity wait"
     );
 }

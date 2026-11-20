@@ -123,23 +123,23 @@ pub(crate) fn upgrade(
 }
 
 /// `w`, made a capacity wait when it is a reset the clock has already passed
-/// on a re-entry the ordinary one-wait-per-login rule would have refused, and
-/// another login could take over (issue #2857).
+/// on a re-entry the ordinary one-wait-per-login rule would have refused
+/// (issue #2857).
 ///
 /// The retry a finished wait earned met a usage limit stating a reset already
 /// behind the clock. [`plan`] gives such a reset a deadline of `now`, which is
 /// how the grace a login's *first* limit gets is spelled: retrying at once is
 /// the right answer there, because the message may be minutes stale. For a
-/// re-entry it is not. The wait would end the moment it began, spend none of
-/// the step's budget, and leave the chain bounded by nothing but how long the
-/// harness kept repeating itself, so the caller refuses it
-/// ([`Plan::ends_at_once`]) and the step ends as already waited.
+/// re-entry it is not: the wait would end the moment it began and spend none
+/// of the step's budget. A limit after a wait must go back into a wait and
+/// must not end the step, so the re-entry is planned as a capacity wait
+/// instead. Its deadline is the step's remaining budget, which keeps
+/// `max_wait_secs` a bound on the chain, and it ends early only on a capacity
+/// reading or a login with room, as every capacity wait does. With no
+/// rotator and no second login nothing ends it early, so it runs the budget
+/// out and the retry follows.
 ///
-/// A reset the clock has passed is evidence that the stated reset cannot be
-/// used, not that no wait is owed. Where another login could take over, the
-/// wait is planned from the capacity evidence the rotator already publishes
-/// instead, which keeps it non-zero and so keeps `max_wait_secs` a bound on
-/// the chain. The stated reset is carried through for the `start` line, and
+/// The stated reset is carried through for the `start` line, and
 /// [`plan_capacity`] ignores one that is already past.
 ///
 /// `reentry_refused` is that narrowing, read from
@@ -147,10 +147,9 @@ pub(crate) fn upgrade(
 /// step has never waited on is that login's first wait and keeps its grace.
 /// `seen` is the limit as read, and `None` for a spend limit, which no other
 /// login of the same organisation would lift (issue #2731): a spend limit that
-/// also states a passed session reset must stay the reset wait it is. `now` is
-/// the wait's own clock. `takeover` reads the profile store and the rotator's
-/// state, so, as in [`upgrade`], it is asked last and only for a limit that
-/// qualifies. The reset is compared with `now` and never subtracted from it.
+/// also states a passed session reset must stay the reset wait it is, and the
+/// caller refuses it ([`Plan::ends_at_once`]). `now` is the wait's own clock.
+/// The reset is compared with `now` and never subtracted from it.
 ///
 /// [`Waiter::ordinarily_refused`]: super::Waiter::ordinarily_refused
 pub(crate) fn upgrade_passed_reset(
@@ -158,12 +157,9 @@ pub(crate) fn upgrade_passed_reset(
     seen: Option<(Harness, Option<i64>)>,
     reentry_refused: bool,
     now: i64,
-    takeover: impl Fn() -> bool,
 ) -> WaitFor {
     match (w, seen) {
-        (WaitFor::Reset { harness, reset }, Some(_))
-            if reentry_refused && reset <= now && takeover() =>
-        {
+        (WaitFor::Reset { harness, reset }, Some(_)) if reentry_refused && reset <= now => {
             WaitFor::Capacity {
                 harness,
                 reset: Some(reset),
@@ -273,11 +269,26 @@ impl Plan {
     /// A capacity wait is never this: it waits for a reading, not for the
     /// reset, and its deadline is its own. Neither is a login-change wait,
     /// whose limit stated no reset at all. That is why
-    /// [`upgrade_passed_reset`] answers the same case where a login could take
-    /// over: the plan it builds is a capacity wait, so it reaches the caller's
-    /// refusal as a wait that will cost something, and the budget binds it.
+    /// [`upgrade_passed_reset`] answers the same case for a usage limit: the
+    /// plan it builds is a capacity wait, so it reaches the caller's refusal
+    /// as a wait that will cost something, and the budget binds it. What is
+    /// still a reset wait here, and is refused, is a spend limit stating a
+    /// passed session reset, and a reset read from the auto-switch readings
+    /// ([`from_reading`]).
     pub(crate) fn ends_at_once(&self, now: i64) -> bool {
         self.kind == PlanKind::Reset && self.reset.is_some_and(|r| r <= now)
+    }
+
+    /// Whether this is the capacity wait a re-entry on a reset the clock had
+    /// already passed was planned as (issue #2857), at `now`.
+    ///
+    /// Such a wait has no reset to end on, so the budget is its only
+    /// deadline. When that deadline is reached the step retries once, as a
+    /// reset wait does at its own deadline: the retry is the check the wait
+    /// was for, and a limit on it is refused by the budget that is now spent.
+    /// Any other capacity wait still ends `capacity expired` at its deadline.
+    pub(crate) fn is_passed_reset_capacity(&self, now: i64) -> bool {
+        self.kind == PlanKind::Capacity && self.reset.is_some_and(|r| r <= now)
     }
 
     /// A plan with a deadline the caller chooses, for the wait's own tests.

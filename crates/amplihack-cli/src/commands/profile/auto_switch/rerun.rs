@@ -642,19 +642,17 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 // Issue #2857, part 1: when this attempt is the retry a wait
                 // earned, and the limit it met states a reset the clock has
                 // already passed, a reset wait for it would end at once and
-                // spend none of the step's budget, so the wait is refused and
-                // the step ends. Where another login could take over, it is
-                // planned from capacity instead. `ordinarily_refused` is read
-                // here, before anything records a mark, and is exactly the
-                // rule `after_limit` applies to this same limit; `now` is the
-                // wait's own clock, the very reading the reset was parsed
-                // against.
+                // spend none of the step's budget. It is planned from capacity
+                // instead, so the step waits again and does not end.
+                // `ordinarily_refused` is read here, before anything records a
+                // mark, and is exactly the rule `after_limit` applies to this
+                // same limit; `now` is the wait's own clock, the very reading
+                // the reset was parsed against.
                 let passed = plan::upgrade_passed_reset(
                     lim.wait,
                     lim.seen,
                     matches!(met, Some(Met::UsageLimit)) && waiter.ordinarily_refused(),
                     now,
-                    || takeover(&waiter),
                 );
                 let wait = plan::upgrade(passed, lim.seen, || takeover(&waiter));
                 // Issue #2731: an organisation spend limit with no reset on a

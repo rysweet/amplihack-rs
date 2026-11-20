@@ -39,14 +39,13 @@
 # then told apart by their reason: `login changed` is the early wake,
 # `reset reached` is the wait that ran to its own end.
 #
-# A second limit states the next window's reset, an hour away, because that is
-# what a harness reports once the first window has turned over, and because a
-# re-entry is only granted a wait that has something to wait for: a reset
-# already behind the clock plans a wait of no length, which spends none of the
-# step's budget, and the binary refuses such a re-entry as `already_waited`.
-# The step's own budget keeps that second wait short:
-# AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS below lowers it to two seconds, so the
-# wait ends on its maximum rather than on the hour. The budget never shortens
+# A second limit repeats the first one's reset, already behind the clock, as a
+# harness does when it repeats the window that has just turned over. A limit
+# after a wait may not end the step, so the binary plans the re-entry as a
+# capacity wait on the budget the step has left. With no login to take over,
+# nothing ends that wait early, so the budget ends it. The step's own budget is
+# lowered by AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS below, to two seconds, so the
+# wait ends on its maximum rather than after hours. The budget never shortens
 # a wait whose deadline has already passed, so case B is unaffected.
 #
 # Every scenario command runs under `env -i` with an explicit allowlist (see
@@ -122,12 +121,8 @@ mkdir -m 700 -- "$PROFILES" "$PROFILES/.auto-switch.d" "$LEDGER_DIR" \
 # it starts, ends and resumes without the scenario sleeping.
 NOW="$(date +%s)"
 LIMIT_EPOCH=$(( NOW - 300 ))
-# The reset a second limit states: the next window, an hour away, still well
-# inside the five hours a reset wait accepts. A re-entry needs a reset it can
-# actually wait for; this is it, and MAX_WAIT_SECS below keeps the wait short.
-LIMIT_EPOCH_NEXT=$(( NOW + 3600 ))
-# The step's whole waiting budget, lowered from its 21600-second default so a
-# wait for that hour-away reset ends after two seconds on `bound=max_wait`.
+# The step's whole waiting budget, lowered from its 21600-second default so the
+# re-entry's capacity wait ends after two seconds on `bound=max_wait`.
 MAX_WAIT_SECS=2
 
 # scenario_env <config-dir|home> <command...>: runs the command with only the
@@ -138,11 +133,10 @@ MAX_WAIT_SECS=2
 #   CLAUDE_CONFIG_DIR                   a scratch Claude config for `config-dir`;
 #                                       absent for `home`, which is a $HOME/.claude step
 #   AMPLIHACK_CLAUDE_BINARY_PATH        the stub agent
-#   RECORD_DIR, LEDGER_DIR, LEDGER_BODY, LIMIT_CALLS,
-#   LIMIT_EPOCH, LIMIT_EPOCH_NEXT       the stub's own inputs
+#   RECORD_DIR, LEDGER_DIR, LEDGER_BODY,
+#   LIMIT_CALLS, LIMIT_EPOCH            the stub's own inputs
 #   AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS the step's waiting budget, lowered so
-#                                       a wait for a future reset ends in
-#                                       seconds
+#                                       a capacity wait ends in seconds
 #   AMPLIHACK_NONINTERACTIVE            the shape a recipe step runs in
 #   AMPLIHACK_NO_FRESHNESS_CHECK,
 #   AMPLIHACK_SKIP_AUTO_INSTALL,
@@ -169,7 +163,6 @@ scenario_env() {
     LEDGER_BODY="${LEDGER_BODY:-}" \
     LIMIT_CALLS="${LIMIT_CALLS:-1}" \
     LIMIT_EPOCH="$LIMIT_EPOCH" \
-    LIMIT_EPOCH_NEXT="$LIMIT_EPOCH_NEXT" \
     AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS="$MAX_WAIT_SECS" \
     AMPLIHACK_NONINTERACTIVE=1 \
     AMPLIHACK_NO_FRESHNESS_CHECK=1 \
@@ -186,10 +179,8 @@ cat > "$TOOLS/claude" <<'STUB'
 #!/bin/sh
 # Stub `claude`: answers --version, counts its calls per $STEP, on its first
 # call replaces the rotate ledger with $LEDGER_BODY (when set) in one private
-# rename, and reports a usage limit on its first $LIMIT_CALLS calls. The first
-# such call states $LIMIT_EPOCH, a reset already past; every later one states
-# $LIMIT_EPOCH_NEXT, the next window's reset, as a harness does once the first
-# window has turned over.
+# rename, and reports a usage limit on its first $LIMIT_CALLS calls, each one
+# stating $LIMIT_EPOCH, a reset already past.
 case "$1" in
   --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
@@ -204,9 +195,7 @@ if [ "$n" = 1 ] && [ -n "${LEDGER_BODY:-}" ]; then
   mv "$LEDGER_DIR/ledger.json.new" "$LEDGER_DIR/ledger.json"
 fi
 if [ "$n" -le "${LIMIT_CALLS:-1}" ]; then
-  epoch="$LIMIT_EPOCH"
-  if [ "$n" != 1 ]; then epoch="$LIMIT_EPOCH_NEXT"; fi
-  printf 'Claude AI usage limit reached|%s\n' "$epoch" >&2
+  printf 'Claude AI usage limit reached|%s\n' "$LIMIT_EPOCH" >&2
   exit 1
 fi
 exit 0
@@ -242,13 +231,13 @@ write_initial_ledger() {
 cd -- "$RUNDIR" || { echo "FAIL: cannot enter the working folder"; echo "SCENARIO_FAILED"; exit 1; }
 
 # --- case A: a limit on the retry a wait earned is waited for again ---------
-# The first attempt reports a reset already past, so its wait ends `reset
-# reached` at once, which says try now. The retry meets a limit stating the
-# next window's reset, so the signal was wrong. Before #2857 the step ended
-# there with `skipped reason=already_waited`, because it had already waited on
-# this login. Now it waits again, writes one `reentered` line before the
-# second `start`, ends that wait on the lowered budget (`bound=max_wait`), and
-# the third attempt succeeds.
+# Both attempts report the same reset, already past. The first wait ends
+# `reset reached` at once, which says try now; the retry meets a limit, so the
+# signal was wrong. Before #2857 the step ended there with
+# `skipped reason=already_waited`, because it had already waited on this login.
+# Now it waits again, writes one `reentered` line before the second `start`,
+# ends that wait on the lowered budget (`bound=max_wait`), and the third
+# attempt succeeds.
 reset_records
 LIMIT_CALLS=2 LEDGER_BODY="" scenario_env config-dir "$BIN" claude --subprocess-safe -- -p step \
   >"$WORK/a.out" 2>"$WORK/a.err" </dev/null && A_RC=0 || A_RC=$?

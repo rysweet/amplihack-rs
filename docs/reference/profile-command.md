@@ -11397,11 +11397,10 @@ The retry is covered when all of these hold:
 - the limit gives the second wait something to wait on: a reset still ahead,
   or a capacity or login-change wait. A message whose reset has already passed
   (the retry meets, at 08:32, the "resets 8:30am" it met before) gives a clock
-  wait nothing to wait on, because it would end at once, spend none of the
-  budget and launch the same attempt again. It is waited out as a capacity
-  wait where another login could take over, and is otherwise refused as
-  `already_waited`. A spend limit is not waited out this way; see
-  [A reset that has already passed](#a-reset-that-has-already-passed).
+  wait nothing to wait on, because it would end at once and spend none of the
+  budget. It is waited out as a capacity wait that the step's budget bounds,
+  so the step does not end on it. A spend limit is not waited out this way;
+  see [A reset that has already passed](#a-reset-that-has-already-passed).
 
 A usage-limit message and a 429 report reach the second wait by different
 paths, set out below.
@@ -11427,7 +11426,7 @@ on which of the two the attempt printed:
 |--------------------|------|-----------------|
 | A usage-limit message that states a reset still ahead, within five hours | The ordinary planner | A [reset wait](#reset-time) for that reset |
 | A usage-limit message for a weekly limit, one that states a reset more than five hours away, or one that states none, and is not a spend limit | The ordinary planner | A [capacity wait](#capacity-wait) when the [start checks](#when-a-capacity-wait-starts) pass, else `skipped reason=reset_too_far` or `no_reset` |
-| A usage-limit message that is not a spend limit and states a reset the clock has already passed, on a login this step has already waited on | The ordinary planner, then the re-entry | A [capacity wait](#capacity-wait) that records the stated reset, when the same start checks pass, else `skipped reason=already_waited`; see [A reset that has already passed](#a-reset-that-has-already-passed) |
+| A usage-limit message that is not a spend limit and states a reset the clock has already passed, on a login this step has already waited on | The ordinary planner, then the re-entry | A [capacity wait](#capacity-wait) that records the stated reset and is bounded by the budget the step has left, then one retry; see [A reset that has already passed](#a-reset-that-has-already-passed) |
 | A spend limit that states no reset | The ordinary planner | A [login-change wait](#login-change-wait) for a `$HOME/.claude` step with a rotator running, else `skipped reason=spend_limit` |
 | A 429 report | The re-entry | A capacity wait with `reset=none` when the same start checks pass, else no wait and the failure goes back to the recipe runner as before |
 
@@ -11491,22 +11490,21 @@ capacity instead of from the clock:
   left. Once the budget is spent a further re-entry is refused as
   `already_waited`, so the chain ends without a retry count, a timer or a
   polling interval.
-- A wait that reaches its deadline with no signal, which is the usual way
-  this chain ends, does not retry. It ends with `end reason=capacity expired`,
-  or `end reason=step timeout` when the step timeout came first, then the
+- When the budget is reached with no signal, the wait ends `end reason=max
+  reached` and the step retries once. That retry is the check the wait was
+  for. A limit on it is refused as `already_waited`, because the budget is
+  spent.
+- Any other capacity wait that reaches its deadline with no signal does not
+  retry. It ends with `end reason=capacity expired`, or `end reason=step
+  timeout` when the step timeout came first, then the
   [closing line](#closing-line) (`failed reason=capacity_expired` or
   `step_timeout`), and the step ends as a usage limit. An example is under
   [Log lines](#log-lines).
 
-The wait starts only where a capacity wait could start for this step: the
-step's login, a running rotator with auto-switch on, and another login that
-could take over (see
-[When a capacity wait starts](#when-a-capacity-wait-starts)). They are the
-checks a 429 report is held to. Where any of them fails, including a read
-error, nothing could end the wait before its deadline, so the message is
-refused as before: `skipped reason=already_waited`, the
-[closing line](#closing-line), and the step ends as a usage limit. A host with
-no running rotator therefore behaves as it did.
+The wait does not depend on another login existing. With no running rotator and
+no second login nothing can end it before the budget does, so it runs the
+budget out and then retries once, as described above. A first limit on a login
+is not a re-entry and keeps its earlier conduct.
 
 The rule applies only to a wait that the one-wait-per-login rule would have
 refused, and never to a spend limit. A spend limit that states a session reset
@@ -11892,8 +11890,8 @@ stored are refused first, with their usual `skipped` reasons.
 | Spend limit, no readable reset | `$HOME/.claude`, no rotator running or auto-switch off | not read | `skipped reason=spend_limit` |
 | Spend limit, no readable reset | any other step | any | `skipped reason=spend_limit` |
 | Spend limit with a weekly reset | any | any | `skipped reason=reset_too_far` |
-| Reset already passed, not a spend limit, on the first attempt after a wait, on a login the step has already waited on | `$HOME/.claude` or inherited profile with auto-switch on, with a rotator running | yes | capacity wait |
-| Reset already passed, not a spend limit, on the first attempt after a wait, on a login the step has already waited on | any other step, or no rotator running, or auto-switch off | any | `skipped reason=already_waited` |
+| Reset already passed, not a spend limit, on the first attempt after a wait, on a login the step has already waited on | `$HOME/.claude` or inherited profile with auto-switch on, with a rotator running | yes | capacity wait, ended early by a login with room |
+| Reset already passed, not a spend limit, on the first attempt after a wait, on a login the step has already waited on | any other step, on its inherited profile, with or without a rotator | any | capacity wait bounded by the budget; at the budget's end the step retries once |
 | Spend limit with a session reset already passed, on the first attempt after a wait, on a login the step has already waited on | any | any | `skipped reason=already_waited`; never a capacity wait |
 | Reset already passed, on any other attempt | any | any | reset wait that ends at once, as before |
 
@@ -12487,8 +12485,7 @@ waiting (see [One wait per login](#one-wait-per-login)): the first wait lasted
 one that follows a new login.
 
 A reset wait whose retry met the same message, now stating a reset that has
-passed (the [re-entry](#a-reset-that-has-already-passed) on a host with a
-rotator running and another login to take over). The second `start` is a
+passed (the [re-entry](#a-reset-that-has-already-passed)). The second `start` is a
 capacity wait whose `reset=` is the time already behind the clock, and whose
 `until=` is the budget the first wait left. The first wait lasted 1920 s
 (08:00:00 to 08:32:00), the retry took 9 s, and 21600 − 1920 = 19680 s remain,
@@ -12506,21 +12503,23 @@ amplihack.recipe.usage_limit_wait end reason=rotator capacity
 amplihack.recipe.usage_limit_wait resume attempt=3
 ```
 
-The same capacity wait when no login has room before its deadline. This is the
-usual ending. The wait reaches the `max_wait` bound, nothing retries, and the
-closing line follows the `end` line:
+The same capacity wait when no login has room before its deadline. The wait
+reaches the `max_wait` bound and the step retries once. Here the retry meets
+the limit again, and that limit is refused because the budget is now spent:
 
 ```
 amplihack.recipe.usage_limit_wait reentered met=usage_limit
 amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=2026-11-19 08:30:00 -08:00 until=2026-11-19 14:00:09 -08:00 bound=max_wait
 amplihack.recipe.usage_limit_wait progress remaining=60s
-amplihack.recipe.usage_limit_wait end reason=capacity expired
-amplihack.recipe.usage_limit_wait failed reason=capacity_expired: usage limit not lifted
+amplihack.recipe.usage_limit_wait end reason=max reached
+amplihack.recipe.usage_limit_wait resume attempt=3
+amplihack.recipe.usage_limit_wait skipped reason=already_waited
+amplihack.recipe.usage_limit_wait failed reason=already_waited: usage limit not lifted
 ```
 
-Where no rotator runs, or no other login could take over, the same retry
-writes no `reentered` line and no second `start`. It writes the `skipped` and
-closing lines and the step ends as a usage limit:
+Where the earlier waits have spent the whole budget, the same retry writes no
+`reentered` line and no second `start`. It writes the `skipped` and closing
+lines and the step ends as a usage limit:
 
 ```
 amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-11-19 08:30:00 -08:00 until=2026-11-19 08:32:00 -08:00 bound=reset+margin

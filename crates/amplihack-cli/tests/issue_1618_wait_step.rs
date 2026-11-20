@@ -196,28 +196,46 @@ fn a_reset_inside_the_ten_minute_grace_retries_at_once() {
     assert_eq!(f.count("0"), 2);
 }
 
-/// Issue #2857 leaves this test as it was. The first wait ends `reset reached`,
+/// Issue #2857 changed what this test pins. The first wait ends `reset reached`,
 /// which says *try now*, and the retry meets the same message, "resets 8:30am",
-/// read at 08:32: a reset two minutes past, inside the grace, so there is
-/// nothing left to wait for. A re-entry needs a reset still ahead or a capacity
-/// signal to wait on, and this has neither, so the limit is passed up as
-/// already waited and no `reentered` line is written. Without that, the stub's
-/// five limits would each be "waited" for in zero time and the run would end
-/// successfully on the sixth call.
+/// read at 08:32: a reset two minutes past. A limit after a wait must go back
+/// into a wait and must not end the step, so that limit is a re-entry: it is
+/// reported once and waits on capacity for the budget the step has left. The
+/// budget ends that wait with `max reached` and the step retries once more.
+/// That retry meets the limit again and is refused, because the budget is now
+/// spent. The chain is bounded by the budget, not by a count, and the stub's
+/// five limits are never waited for in zero time.
 #[test]
-fn ac7_a_second_limit_is_passed_up_after_one_wait() {
+fn ac7_a_second_limit_is_waited_out_by_the_budget_then_refused() {
     let f = Fixture::new();
     let mut c = f.step();
     c.env("LIMIT_CALLS", "5");
     let out = f.run(&mut c);
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(f.count("0"), 2, "one wait, one retry, then give up");
+    assert_eq!(
+        f.count("0"),
+        3,
+        "one wait, one retry, one budget wait, one retry, then give up"
+    );
     let ev = events(&out);
     assert_eq!(
         ev.iter().filter(|l| l.starts_with("start ")).count(),
-        1,
+        2,
         "{ev:?}"
     );
+    assert_eq!(
+        ev.iter()
+            .filter(|l| *l == "reentered met=usage_limit")
+            .count(),
+        1,
+        "one line for the re-entry, before the budget wait's start: {ev:?}"
+    );
+    assert!(
+        ev[4].starts_with("start reason=usage_limit wait=capacity ")
+            && ev[4].ends_with("bound=max_wait"),
+        "the re-entry waits on capacity for the budget: {ev:?}"
+    );
+    assert_eq!(ev[5], "end reason=max reached", "{ev:?}");
     // Issue #1801: the closing line keeps the class in the runner's evidence.
     assert_eq!(
         ev[ev.len() - 2..],
@@ -226,8 +244,7 @@ fn ac7_a_second_limit_is_passed_up_after_one_wait() {
             "failed reason=already_waited: usage limit not lifted",
         ]
     );
-    assert!(!ev.iter().any(|l| l.starts_with("reentered ")), "{ev:?}");
-    assert_eq!(claude_stdout(&out), "attempt 2 output\n");
+    assert_eq!(claude_stdout(&out), "attempt 3 output\n");
     let stderr = text(&out.stderr);
     assert!(
         stderr.contains(LIMIT_TEXT),

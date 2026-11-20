@@ -21,11 +21,11 @@
 //!   429 phrase in the model's prose, or a 429 on a step where no capacity wait
 //!   could start, re-enters nothing;
 //! - a usage-limit message on that attempt whose stated reset the clock has
-//!   already passed is waited for as a capacity wait where another login could
-//!   take over, reported once, and bounded by the budget the step has left. A
-//!   reset wait for it would end at once and spend nothing. Where no capacity
-//!   wait could start, for a spend limit, and for a login the step has never
-//!   waited on, the earlier conduct stands;
+//!   already passed is waited for as a capacity wait, reported once, and
+//!   bounded by the budget the step has left. A reset wait for it would end at
+//!   once and spend nothing. With no login to take over, nothing ends that wait
+//!   before the budget does. For a spend limit, and for a login the step has
+//!   never waited on, the earlier conduct stands;
 //! - the step's `max_wait_secs` budget still bounds the chain.
 //!
 //! Everything runs on the fixture's virtual clock, so no test sleeps, and
@@ -253,8 +253,8 @@ fn a_usage_limit_message_on_the_retry_is_planned_as_the_first_wait_was() {
 // none of the budget and run the same attempt again, so the ordinary planner
 // has nothing to wait on. That is no reason to end the step: a reset in the
 // past shows the stated reset cannot be relied on, not that no wait is owed.
-// Where another login could take over the second wait is planned from capacity,
-// which keeps it non-zero and so keeps the step's budget a bound on the chain.
+// The second wait is planned from capacity, which keeps it non-zero and so keeps
+// the step's budget a bound on the chain.
 //
 // The timeline of the virtual clock, from 08:00:00 (`TEST_NOW`), which the
 // tests below rely on and which a poll of 30 s fixes:
@@ -340,18 +340,28 @@ fn a_reset_that_has_already_passed_is_waited_for_as_capacity_where_another_login
 }
 
 #[test]
-fn a_reset_that_has_already_passed_where_no_capacity_wait_could_start_is_refused_as_before() {
-    // No rotator is running, so nothing could end a capacity wait before its
-    // deadline and no capacity wait is started. The first wait is an ordinary
-    // reset wait, which needs no rotator; the retry meets the same "resets
-    // 8:30am", read at 08:32, and is passed up as already waited on.
+fn a_reset_that_has_already_passed_with_no_login_to_take_over_waits_out_the_budget() {
+    // No rotator is running and there is no second login, so nothing can end a
+    // capacity wait before the budget does. The first wait is an ordinary reset
+    // wait that ends at once, and it spends the 1920 s from 08:00 to 08:32. The
+    // retry meets the same "resets 8:30am", read at 08:32, and is a re-entry:
+    // it is reported once, and the step waits again on capacity, carrying the
+    // passed reset, for the 5280 s the budget has left. That is 10:00:00, the
+    // budget's end. The third attempt then succeeds. Before this, the step
+    // ended here as already waited, which is the run this issue is about.
     let f = with_profiles();
     x_is_live(&f);
     let mut c = home_step(&f);
-    c.env("LIMIT_MESSAGE", LIMIT_TEXT).env("LIMIT_CALLS", "2");
+    c.env("LIMIT_MESSAGE", LIMIT_TEXT)
+        .env("LIMIT_CALLS", "2")
+        .env(MAX_WAIT_ENV, "7200");
     let out = f.run(&mut c);
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(f.count("0"), 2);
+    assert!(
+        out.status.success(),
+        "a limit after a wait must not end the step: {}",
+        describe(&out)
+    );
+    assert_eq!(f.count("0"), 3, "limit, re-entered limit, success");
     let ev = events(&out);
     assert_eq!(
         ev,
@@ -360,15 +370,18 @@ fn a_reset_that_has_already_passed_where_no_capacity_wait_could_start_is_refused
              until=2026-10-18 08:32:00 -07:00 bound=reset+margin",
             "end reason=reset reached",
             "resume attempt=2",
-            "skipped reason=already_waited",
-            FAILED_AGAIN,
+            REENTERED_USAGE,
+            "start reason=usage_limit wait=capacity harness=claude \
+             reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 10:00:00 -07:00 \
+             bound=max_wait",
+            "end reason=max reached",
+            "resume attempt=3",
         ],
-        "no `reentered` line and no second `start`: {ev:?}"
+        "one `reentered` line, before the second wait's `start`: {ev:?}"
     );
-    assert!(
-        text(&out.stderr).contains(LIMIT_TEXT),
-        "the runner's classifier must still see the limit"
-    );
+    assert_eq!(claude_stdout(&out), "attempt 3 output\n");
+    assert_eq!(count(&ev, "skipped "), 0, "{ev:?}");
+    f.assert_isolated("0");
 }
 
 #[test]
@@ -457,13 +470,15 @@ fn a_retry_on_a_login_the_step_has_never_waited_on_keeps_its_first_wait_grace() 
 /// 3810 s: the first wait spends 30 s and the second 3690 s, which leaves 90 s
 /// at 09:02:00. Each capacity wait is planned with what is left and is woken
 /// after one 30 s poll, so the third has 90 s, the fourth 60 s and the fifth
-/// 30 s, which ends at its own deadline before a poll could wake it. The step
-/// ends on the fifth attempt, at 09:03:30, which is the budget's end.
+/// 30 s, which ends at its own deadline before a poll could wake it. That
+/// deadline is the budget's end, 09:03:30. The fifth attempt's wait reaches it
+/// and the step retries once there (`end reason=max reached`); that sixth
+/// attempt's limit is refused, because the budget is spent.
 ///
 /// What the test reads is the clock, not the count: every capacity wait of the
-/// chain ends at `until=09:03:30`, and the last of them is *reached*
-/// (`capacity expired`), which the wait can only report once its clock has got
-/// there. A wake that cost nothing could not.
+/// chain ends at `until=09:03:30`, and the last of them is *reached*, which the
+/// wait can only report once its clock has got there. A wake that cost nothing
+/// could not.
 #[test]
 fn the_budget_still_bounds_a_chain_of_waits_for_a_reset_that_keeps_passing() {
     let f = with_profiles();
@@ -483,14 +498,19 @@ fn the_budget_still_bounds_a_chain_of_waits_for_a_reset_that_keeps_passing() {
     );
     assert_eq!(
         f.count("0"),
-        5,
-        "the budget ends the chain on the fifth attempt, not the eleventh: {}",
+        6,
+        "the budget ends the chain on the sixth attempt, not the eleventh: {}",
         describe(&out)
     );
     let ev = events(&out);
     assert_eq!(
-        ev[ev.len() - 2..],
-        ["end reason=capacity expired", FAILED_EXPIRED],
+        ev[ev.len() - 4..],
+        [
+            "end reason=max reached",
+            "resume attempt=6",
+            "skipped reason=already_waited",
+            FAILED_AGAIN,
+        ],
         "{ev:?}"
     );
     let capacity: Vec<&String> = ev

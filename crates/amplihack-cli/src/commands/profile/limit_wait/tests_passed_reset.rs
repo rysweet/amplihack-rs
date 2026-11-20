@@ -323,8 +323,8 @@ fn a_capacity_wait_for_a_passed_reset_spends_the_budget_and_the_next_is_refused(
         let before = w.now();
         let first = after_a_signal(&mut w, capacity_for(Some(before - 120)), &|_, _| false);
         assert!(
-            matches!(first, AfterLimit::Finish(None)),
-            "nothing lifted the limit, so the wait ran to its deadline and the step ends"
+            matches!(first, AfterLimit::Retry),
+            "nothing lifted the limit, so the wait ran to its budget and the step retries once"
         );
         let spent = w.now() - before;
         assert_eq!(
