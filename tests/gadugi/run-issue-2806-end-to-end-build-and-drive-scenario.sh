@@ -50,11 +50,15 @@
 #         state that is not FAILED_IMPLEMENTATION and names the open pull
 #         request (issue 2343: pending checks hand the pull request on).
 #         Finalisation must have run, and not merely have been spoken for: the
-#         case requires a terminal-evidence line of the product's own, a bare
-#         `key=value` line from amplifier-bundle/tools/workflow_final_status.sh,
-#         which is shell and not an agent. The stand-in prints one JSON object
-#         and nothing else, so it cannot produce that form and cannot satisfy
-#         this case on its own answer.
+#         case requires the hosting call
+#         amplifier-bundle/tools/workflow_final_status.sh makes just after it
+#         emits its terminal evidence, recorded by the gh stand-in. That
+#         helper is shell and not an agent, and the claude stand-in cannot
+#         write gh-calls, so this case cannot be satisfied by an agent's own
+#         answer. The helper's bare `key=value` evidence lines would be the
+#         obvious anchor and are not readable here: the recipe runner captures
+#         a bash step's output at every depth, so nothing a bash step prints
+#         reaches this script.
 # Part 2  the whole drive. Checks are SUCCESS, so the merge step's precondition
 #         (no pending required check) holds. The stub recorded a `pr merge` for
 #         that pull request and the drive printed its own terminal report, the
@@ -586,30 +590,51 @@ agent_reported_state() {
 }
 # The helper form is a bare `key=value` line at the start of a line, which is
 # how amplifier-bundle/tools/workflow_final_status.sh prints its terminal
-# evidence (emit_terminal_evidence). That helper is shell, not an agent.
+# evidence (emit_terminal_evidence). That helper is shell, not an agent. It is
+# read for the report only, and is normally empty: the runner captures a bash
+# step's output, so the helper's own lines do not reach these two files. The
+# case below anchors on the call the helper makes instead.
 helper_reported_state() { grep -hoE '^terminal_state=[A-Z_]+$' "$@" | cut -d= -f2; }
 
 AGENT_STATES="$(agent_reported_state "$WORK/build.out" "$WORK/build.err" | sort -u | tr '\n' ' ')"
 HELPER_STATES="$(helper_reported_state "$WORK/build.out" "$WORK/build.err" | sort -u | tr '\n' ' ')"
 FINAL_STATES="$(printf '%s %s' "$HELPER_STATES" "$AGENT_STATES")"
 
-# Finalisation's own evidence, in a form the stand-in cannot produce: the
-# helper prints these keys as bare `key=value` lines, while the stand-in
-# prints one JSON object and nothing else. A line in this form is therefore
-# proof the finalisation path ran, not proof that an agent said it had.
-HELPER_EVIDENCE_KEYS='^(terminal_success|terminal_state|terminal_reason|implementation_completed|verification_completed|publish_state_reached|terminal_no_op|terminal_failure|observed_phases|missing_evidence|invalid_evidence)='
+# Finalisation's own evidence, in a form the stand-in cannot produce.
+#
+# The helper also prints its terminal evidence as bare `key=value` lines, and
+# that would be the obvious anchor, but it is unreadable from here: the recipe
+# runner captures a bash step's standard output and standard error at every
+# nesting depth, so neither stream reaches build.out or build.err. The
+# `INFO: resolved open PR ... (#1596)` line the helper writes to standard
+# error is unreadable for the same reason. What does reach this script is the
+# call the helper makes after emitting that evidence
+# (amplifier-bundle/tools/workflow_final_status.sh, `gh_pr_view_with_retry
+# "$PR_URL" --json state,mergeable,reviews,statusCheckRollup`): the gh
+# stand-in records every call, that field list appears at exactly that one
+# call site in the whole repository, and it is downstream of
+# emit_terminal_evidence. So a recorded call of that shape is proof the shell
+# helper ran and got past its evidence emission.
+#
+# It keeps the property the case exists to have: the gh stand-in writes
+# gh-calls and the claude stand-in cannot, so no agent answer can produce it.
+# The call is matched by field position rather than as a loose substring, and
+# it is read here, before part 2 runs, so only the build can have made it.
+final_status_call_recorded() {
+  awk '$1 == "pr" && $2 == "view" && $(NF - 1) == "--json" \
+       && $NF == "state,mergeable,reviews,statusCheckRollup" { found = 1 }
+       END { exit !found }' "$WORK/gh-calls"
+}
 
 if printf '%s' "$FINAL_STATES" | grep -qw FAILED_IMPLEMENTATION; then
   flunk "part1_finalization_is_not_failed_implementation: the build reported FAILED_IMPLEMENTATION with the pull request's checks pending (helper: ${HELPER_STATES:-none}, agent: ${AGENT_STATES:-none})"
 elif [ ! -s "$WORK/gh-create.argv" ]; then
   flunk "part1_finalization_is_not_failed_implementation: no pull request was opened, so finalisation had nothing to report on"
-elif ! grep -qE "$HELPER_EVIDENCE_KEYS" "$WORK/build.out" "$WORK/build.err"; then
-  # Read build.err before changing this: if the helper ran but its stdout
-  # never reaches either file, its stderr still carries the fixed phrase
-  # `INFO: resolved open PR ... treating as EXISTING_OPEN_PR (#1596)`, which is
-  # the next anchor. Do not fall back to the agent form, which is the
-  # stand-in's own answer and proves nothing about finalisation.
-  flunk "part1_finalization_is_not_failed_implementation: neither build.out nor build.err, both dumped below, holds a terminal-evidence line of finalisation's own (a bare key=value line from amplifier-bundle/tools/workflow_final_status.sh), so the only state reported is the stand-in agent's (agent: ${AGENT_STATES:-none}, build exit $build_rc)"
+elif ! final_status_call_recorded; then
+  # Do not fall back to the agent form, which is the stand-in's own answer and
+  # proves nothing about finalisation; and do not look for the helper's own
+  # output in build.out or build.err, which cannot hold it (see above).
+  flunk "part1_finalization_is_not_failed_implementation: gh-calls, dumped below, holds no \`pr view ... --json state,mergeable,reviews,statusCheckRollup\` call, the one amplifier-bundle/tools/workflow_final_status.sh makes after emitting its terminal evidence, so finalisation's own shell never ran and the only state reported is the stand-in agent's (agent: ${AGENT_STATES:-none}, build exit $build_rc)"
 elif ! grep -qE '"terminal_state" *: *"EXISTING_OPEN_PR"|^terminal_state=EXISTING_OPEN_PR$|"pr_number" *: *"?42"?|/pull/42' \
     "$WORK/build.out" "$WORK/build.err"; then
   flunk "part1_finalization_is_not_failed_implementation: the run's output does not name the open pull request (build exit $build_rc, helper: ${HELPER_STATES:-none}, agent: ${AGENT_STATES:-none})"
