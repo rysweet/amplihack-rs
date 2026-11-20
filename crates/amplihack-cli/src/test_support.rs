@@ -553,6 +553,12 @@ pub(crate) mod virtual_clock;
 #[path = "../tests/support/unix_process.rs"]
 pub(crate) mod unix_process;
 
+/// A bare origin, clones of it, and the three states a folder's work tree can
+/// be in: clean and pushed, uncommitted, or committed and not pushed (issue
+/// #2785).
+#[path = "test_support/origin_clones.rs"]
+pub(crate) mod origin_clones;
+
 /// A gate that holds one side of a test at a known point (issue #2019).
 #[path = "test_support/test_gate.rs"]
 pub(crate) mod test_gate;

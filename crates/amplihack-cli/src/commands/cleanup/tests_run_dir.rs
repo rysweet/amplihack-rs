@@ -291,8 +291,9 @@ fn a_dry_runtime_records_attempts_as_a_no_op_and_removes_its_folder() {
 // ----- issue #2486: a runtime folder in use is kept; tmp/ is re-created --------
 //
 // Contract:
-// - `pub(crate) enum RuntimeRemoval { Removed, KeptInUse }`
-//   (`Debug`, `PartialEq`); `RuntimeGuard::remove(self) -> Result<RuntimeRemoval>`;
+// - `pub(crate) enum RuntimeRemoval { Removed, KeptInUse }` (`Debug`,
+//   `PartialEq`; issue #2785 adds `KeptUnsavedWork`, see the section at the
+//   end of this file); `RuntimeGuard::remove(self) -> Result<RuntimeRemoval>`;
 //   a failed removal or a replaced folder (issue #2096) is an `Err`.
 //   A missing folder counts as `Removed`.
 // - The guard takes one fresh `ProcScan` from `procfs::proc_root()` and keeps
@@ -682,7 +683,9 @@ fn prepare_attempt_recreates_tmp_in_a_dry_run_workspace() {
 //   removed. Files are never chmodded. Symlinks are neither followed nor
 //   chmodded.
 // - Entries the run does not own are left unchanged, reported in a warning,
-//   and do not fail the run: no new `RuntimeRemoval` variant.
+//   and do not fail the run: no new `RuntimeRemoval` variant for that case.
+//   (Issue #2785 adds `KeptUnsavedWork` for a different one: a folder that
+//   holds unsaved Git work. This bullet is about the not-owned entry only.)
 // - `fn restore_owner_access(root: &Path, uid: u32) -> Vec<PathBuf>` (private,
 //   in `run_dir.rs`) does the walk and returns the paths it skipped because
 //   they are not owned by `uid` or are on another filesystem.
@@ -1013,4 +1016,207 @@ fn a_run_finishes_with_an_older_releases_recording_files_beside_its_report() {
         !run_dir.join("runtime").exists(),
         "the runtime folder outlived the run"
     );
+}
+
+// ----- issue #2785: a runtime folder that holds unsaved Git work is kept -------
+//
+// The runner removes its own `runtime/` folder when the run ends. A step may
+// have left a repository copy in its TMPDIR with a commit it never pushed or a
+// file it never committed; deleting that destroys work that exists nowhere
+// else.
+//
+// Contract:
+// - `RuntimeRemoval::KeptUnsavedWork` (`Debug`, `PartialEq`, beside
+//   `KeptInUse`): `RuntimeGuard::remove` found a Git work tree in the runtime
+//   folder with uncommitted changes or commits that are not on its upstream,
+//   or could not tell, and left the folder in place. It is `Ok`, so it never
+//   fails a run and never changes its outcome or exit status.
+// - Order inside `release`: the process scan (`KeptInUse` wins), then
+//   `restore_owner_access`, then the judgement
+//   (`sweep::keep_and_report_unsaved_work`), then the removal. Judging after
+//   the restore is what keeps a locked folder from hiding a work tree, and
+//   from being kept for ever when it holds none. A folder kept for unsaved
+//   work keeps the owner access the restore gave it; no bit is taken away.
+// - `Drop` takes the same path. One release prints one message, because
+//   `release` takes the path out of the guard before it judges.
+
+use crate::test_support::origin_clones::{Scratch, make_dirty, make_unpushed};
+
+#[test]
+fn runtime_guard_keeps_a_folder_with_a_dirty_clone_in_it() {
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (_tmp, rt) = runtime_with_tmp();
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_dirty(&clone);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptUnsavedWork
+    );
+
+    assert!(clone.join("unsaved.txt").is_file(), "the work survives");
+    assert!(clone.join(".git").is_dir());
+    assert!(rt.join("tmp/scratch").is_file(), "the folder is left whole");
+}
+
+#[test]
+fn runtime_guard_keeps_a_folder_with_a_commit_that_is_on_no_remote() {
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (_tmp, rt) = runtime_with_tmp();
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_unpushed(&clone);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptUnsavedWork
+    );
+    assert!(clone.join(".git").is_dir() && rt.is_dir());
+}
+
+/// Not vacuous: a clean clone that is pushed does not keep the folder.
+#[test]
+fn runtime_guard_removes_a_folder_whose_clone_has_nothing_unsaved() {
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (_tmp, rt) = runtime_with_tmp();
+    s.origin.clone_to(&rt.join("tmp/amplihack-rs"));
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+}
+
+/// A `.git` that cannot be checked is kept, and it is a keep, not an error:
+/// `remove()` is `Ok`, so the run does not fail over it.
+#[test]
+fn runtime_guard_keeps_a_folder_it_cannot_check_without_failing() {
+    let _procs = fake_proc_scope();
+    let (_tmp, rt) = runtime_with_tmp();
+    let broken = rt.join("tmp/broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join(".git"), "gitdir: /nonexistent\n").unwrap();
+
+    let result = RuntimeGuard::new(rt.clone()).unwrap().remove();
+
+    assert_eq!(
+        result.expect("keeping a folder is never an error"),
+        RuntimeRemoval::KeptUnsavedWork
+    );
+    assert!(broken.join(".git").is_file());
+}
+
+#[test]
+fn runtime_guard_drop_also_keeps_a_folder_with_unsaved_work() {
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (_tmp, rt) = runtime_with_tmp();
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_dirty(&clone);
+
+    drop(RuntimeGuard::new(rt.clone()).unwrap());
+
+    assert!(clone.join("unsaved.txt").is_file(), "Drop must judge too");
+}
+
+/// A process that uses the folder is the first reason, and the answer: the
+/// folder is `KeptInUse`, as before, and nothing is said about unsaved work.
+#[test]
+fn a_folder_in_use_is_kept_in_use_even_when_it_also_holds_unsaved_work() {
+    let procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (_tmp, rt) = runtime_with_tmp();
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_dirty(&clone);
+    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptInUse
+    );
+    holder.finish();
+}
+
+/// The folder that holds the work tree is locked (as a step can leave it). The
+/// owner access is restored first, so the judgement can look inside, finds the
+/// uncommitted file, and keeps the folder. It keeps the access it was given.
+#[test]
+fn a_locked_folder_cannot_hide_a_work_tree_from_the_judgement() {
+    note_if_root("a_locked_folder_cannot_hide_a_work_tree_from_the_judgement");
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_dirty(&clone);
+    set_mode(&clone, 0o000);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptUnsavedWork
+    );
+
+    assert_eq!(
+        mode(&clone) & 0o700,
+        0o700,
+        "the restored owner access is not taken away again"
+    );
+    assert!(clone.join("unsaved.txt").is_file());
+}
+
+/// The other half, and the reason the judgement follows the restore: a locked
+/// folder whose work tree is clean and pushed is not kept for the lock. Judged
+/// before the restore, its `.git` could not be probed and the folder would be
+/// kept for ever, which the #2486 case (locked folders are removed) forbids.
+#[test]
+fn a_locked_folder_with_nothing_unsaved_is_still_removed() {
+    note_if_root("a_locked_folder_with_nothing_unsaved_is_still_removed");
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    set_mode(&clone, 0o000);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+}
+
+/// At the end of a run the outcome the run was given is the outcome recorded,
+/// and the end of the run does not fail, when the runtime folder is kept.
+#[test]
+fn finishing_a_run_whose_runtime_holds_unsaved_work_does_not_fail_or_change_the_outcome() {
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let base = tempfile::tempdir().unwrap();
+    let ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    let run_dir = ws
+        .run_dir()
+        .expect("a scoped run has a run folder")
+        .to_path_buf();
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_dirty(&clone);
+
+    ws.finish_checked(Outcome::Success, Vec::new(), None, false)
+        .expect("keeping unsaved work never fails the end of a run");
+
+    assert!(clone.join("unsaved.txt").is_file(), "the work survives");
+    let report = RunReport::read(&run_dir).unwrap();
+    assert_eq!(report.outcome, "success");
+    assert!(report.ended_at.is_some(), "the run is recorded as ended");
 }
