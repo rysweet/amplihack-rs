@@ -721,14 +721,17 @@ order:
 
 | Reason | Meaning |
 | --- | --- |
-| `has uncommitted changes` | `git status` lists a modified, staged or untracked file. Ignored files are not listed. A `git status` that fails counts too. |
+| `has uncommitted changes` | `git status` lists a modified, staged or untracked file. Ignored files are not listed. A `git status` that fails or times out is reported as `cannot check for unpushed commits` instead, so this reason always means changes Git actually saw. |
 | `has unpushed commits` | The checked-out branch has an upstream, and `HEAD` has commits that are not on it. |
 | `has no upstream and commits on no remote branch` | The checked-out branch has no upstream, and `HEAD` has commits that no remote-tracking branch contains. |
 | `cannot check for unpushed commits: <detail>` | Cleanup could not tell. Not knowing is a reason to keep, never to delete. |
 
-These are the same reasons the `run-worktree` category gives. The check reads
-only local state. It runs no `fetch` and contacts no remote, and it runs Git
-with the same hardening as the rest of cleanup.
+These are the reasons the `run-worktree` category gives, with one addition:
+`run-worktree` has only "remove it or keep it" to settle, so it counts a
+`git status` it could not run as uncommitted changes, whereas this check says
+a line and so names what it met. Either way the folder is kept. The check
+reads only local state. It runs no `fetch` and contacts no remote, and it runs
+Git with the same hardening as the rest of cleanup.
 
 ### Which removals are checked
 
@@ -908,12 +911,22 @@ locked folder, or inspect the folder and remove it by hand.
 
 ### What the check does not cover
 
-The check is deliberately narrow, the same as for `run-worktree`:
+The check is deliberately narrow. It asks the same questions as the
+`run-worktree` category, but what a wrong answer costs is not the same. A
+`run-worktree` removal takes away a linked worktree, and the branches and the
+stash stay behind in the main repository. Removing a folder that holds a clone
+takes that clone's branches and stash with it, and nothing is left behind.
 
 - It looks at `HEAD` and the working tree. It does not look at `refs/stash`,
-  at local branches other than the checked-out one, or at ignored files.
+  at local branches other than the checked-out one, or at ignored files. A
+  clone whose checked-out branch is clean and pushed is therefore removed even
+  when another local branch holds a commit that is on no remote, or the stash
+  holds changes.
 - A remote-tracking branch that is out of date can make a commit look pushed.
   Cleanup never fetches to find out.
+- An upstream can itself be a local branch, as `git checkout -b feature
+  --track master` sets up. A commit that has reached that local branch then
+  counts as pushed, even when the local branch has never been pushed anywhere.
 - A bare repository has no work tree, so it is not judged.
 - A repository three or more levels inside the folder is not found, so the
   folder can be removed with it.
