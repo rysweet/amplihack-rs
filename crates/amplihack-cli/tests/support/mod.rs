@@ -7,8 +7,11 @@ pub mod criterion1_world;
 pub mod events;
 pub mod exec_stub;
 pub mod fake_proc;
+/// Issue #2582 — hold a process tree live on a FIFO while a test walks it.
+pub mod fifo_release;
 pub mod git_fixture;
 pub mod proc_root_scan;
+pub mod proc_tree;
 pub mod profile_1962;
 pub mod profile_default;
 pub mod profile_rotate;
@@ -28,6 +31,9 @@ pub mod socket_dir;
 pub mod step_recovery;
 pub mod step_recovery_check;
 pub mod test_path;
+/// Issue #1619 — the fake harness and temp-dir layout the model-tier
+/// propagation and argv-safety tests share.
+pub mod tier_harness;
 pub mod unix_process;
 /// The fake clocks shared with the lib tests and the utils and hooks tests
 /// (issue #2019).

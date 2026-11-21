@@ -64,7 +64,7 @@ fl() { echo "FAIL: $1 — $2"; fail=1; }
 #                                       \-- C (code)
 # origin/main is M0. Commits are written with plumbing, so no hook runs. They
 # are written in the main checkout FX_MAIN; FX is then its linked worktree, as
-# the pull request's worktree is, and FX_MAIN the loop's review dir (#1528).
+# the pull request's worktree is and as the rounds' only checkout (#2808).
 FX_MAIN="$WORK/main-checkout"; FX="$FX_MAIN"; ORIGIN="$WORK/origin.git"; T=1767225600
 git init -q --bare "$ORIGIN" && git init -q "$FX" && git -C "$FX" remote add origin "$ORIGIN" \
   || { echo "FAIL: could not create the fixture repository"; echo "SCENARIO_FAILED"; exit 1; }
@@ -178,7 +178,7 @@ merge_loop() {
     AMPLIHACK_BIN="$WORK/bin/amplihack" REAL_AMPLIHACK="$REAL" FIXTURE="$FX" CALLS="$3" \
     AMPLIHACK_SESSION_DEPTH=2 AMPLIHACK_MAX_DEPTH=3 AMPLIHACK_TREE_ID=scenario \
     bash "$TOOLS/autodrive_loop.sh" --loop-name merge-ready --round-recipe autodrive-merge-round \
-      --clean-token MERGE_READY --verdict-field merge_ready_verdict --repo "$FX" --review-dir "$FX_MAIN" --state-dir "$2" --task-file "$WORK/task.txt" \
+      --clean-token MERGE_READY --verdict-field merge_ready_verdict --repo "$FX" --state-dir "$2" --task-file "$WORK/task.txt" \
       --context "repo_path=$FX" --context "pr_number=42" --context "autodrive_state_dir=$2" \
       --before-round "$TOOLS/autodrive_crusty_rereview.sh"
 }

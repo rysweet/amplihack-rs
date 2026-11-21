@@ -78,6 +78,77 @@ _finalization_pr_gh() {
     _gh_retry_core "$label" "$@" 2>/dev/null
 }
 
+# The one definition of what a statusCheckRollup means, as a jq prelude shared
+# by both readers below, so the rule cannot drift between them. It defines
+# `rollup_class`, which maps a rollup ARRAY to green|failing|pending|none|unknown.
+_FINALIZATION_ROLLUP_JQ='
+  def failing_conclusions: ["FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED","STARTUP_FAILURE","STALE"];
+  def pending_states: ["QUEUED","IN_PROGRESS","WAITING","PENDING","REQUESTED"];
+  def cls:
+    if type != "object" then "unknown"
+    elif .__typename == "CheckRun" then
+      if .status == "COMPLETED" then
+        (.conclusion as $c
+         | if (["SUCCESS","NEUTRAL","SKIPPED"] | index([$c])) != null then "green"
+           elif (failing_conclusions | index([$c])) != null then "failing"
+           else "unknown" end)
+      elif (.status as $s | pending_states | index([$s])) != null then "pending"
+      else "unknown" end
+    elif .__typename == "StatusContext" then
+      (.state as $s
+       | if $s == "SUCCESS" then "green"
+         elif $s == "FAILURE" or $s == "ERROR" then "failing"
+         elif $s == "PENDING" or $s == "EXPECTED" then "pending"
+         else "unknown" end)
+    else "unknown" end;
+  def rollup_class:
+    if type != "array" then "unknown"
+    elif length == 0 then "none"
+    else [.[] | cls] as $classes
+      | if any($classes[]; . == "failing") then "failing"
+        elif any($classes[]; . == "unknown") then "unknown"
+        elif any($classes[]; . == "pending") then "pending"
+        else "green" end
+    end;
+'
+
+# _finalization_pr_rollup_class < view.json -> the view's check class.
+# The rule above applied to whatever pull request the caller read, with no
+# identity gate of its own: the caller reports the PR head as a fact beside it
+# and leaves the comparison to its own reader. Prints `unknown` for anything it
+# cannot classify, and never fails.
+_finalization_pr_rollup_class() {
+  jq -r "$_FINALIZATION_ROLLUP_JQ"'
+    if type == "object" then ((.statusCheckRollup // []) | rollup_class) else "unknown" end' \
+    2>/dev/null || printf 'unknown'
+}
+
+# _finalization_pr_check_states < view.json -> the check states themselves
+# (#2819 R6).
+# The class above is a rollup, and a rollup is a reading. A reader that is
+# handed only `failing` cannot see WHICH check failed or that the one pending
+# check is an unrelated optional job, so this prints the states gh reported,
+# `name=STATUS/CONCLUSION` for a CheckRun and `name=STATE` for a
+# StatusContext, separated by `; `, in the order gh listed them. At most 40
+# entries, with a final `...` when there were more. Empty for a view that
+# carried no rollup; never fails.
+_finalization_pr_check_states() {
+  jq -r '
+    def one:
+      if type != "object" then "?=unknown"
+      else ((.name // .context // "?") | tostring
+            | gsub("[[:cntrl:];=]"; " ") | .[0:60]) as $n
+        | if .__typename == "StatusContext" then $n + "=" + ((.state // "") | tostring)
+          else $n + "=" + ((.status // "") | tostring)
+               + (if (.conclusion // null) == null then "" else "/" + (.conclusion | tostring) end)
+          end
+      end;
+    if type == "object" and ((.statusCheckRollup // []) | type) == "array"
+    then ((.statusCheckRollup // []) | (.[0:40] | map(one) | join("; "))
+          + (if length > 40 then "; ..." else "" end))
+    else "" end' 2>/dev/null || printf ''
+}
+
 # _finalization_pr_checks <branch> <number> <url> <head_sha> < view.json
 #   -> checks class.
 # Fails (no output) unless the PR is OPEN, on <branch>, same-repo (literal
@@ -86,26 +157,8 @@ _finalization_pr_gh() {
 # already proved to be a fast-forward of it. Checks on an older pushed commit
 # therefore never vouch for unpushed local work.
 _finalization_pr_checks() {
-  jq -er --arg branch "$1" --arg num "$2" --arg url "$3" --arg head "$4" '
-    def failing_conclusions: ["FAILURE","CANCELLED","TIMED_OUT","ACTION_REQUIRED","STARTUP_FAILURE","STALE"];
-    def pending_states: ["QUEUED","IN_PROGRESS","WAITING","PENDING","REQUESTED"];
-    def cls:
-      if type != "object" then "unknown"
-      elif .__typename == "CheckRun" then
-        if .status == "COMPLETED" then
-          (.conclusion as $c
-           | if (["SUCCESS","NEUTRAL","SKIPPED"] | index([$c])) != null then "green"
-             elif (failing_conclusions | index([$c])) != null then "failing"
-             else "unknown" end)
-        elif (.status as $s | pending_states | index([$s])) != null then "pending"
-        else "unknown" end
-      elif .__typename == "StatusContext" then
-        (.state as $s
-         | if $s == "SUCCESS" then "green"
-           elif $s == "FAILURE" or $s == "ERROR" then "failing"
-           elif $s == "PENDING" or $s == "EXPECTED" then "pending"
-           else "unknown" end)
-      else "unknown" end;
+  jq -er --arg branch "$1" --arg num "$2" --arg url "$3" --arg head "$4" \
+    "$_FINALIZATION_ROLLUP_JQ"'
     if type == "object"
        and .state == "OPEN"
        and .headRefName == $branch
@@ -115,16 +168,7 @@ _finalization_pr_checks() {
        and .url == $url
        and (.headRefOid | type) == "string"
        and .headRefOid == $head
-    then
-      (.statusCheckRollup // []) as $rollup
-      | if ($rollup | type) != "array" then "unknown"
-        elif ($rollup | length) == 0 then "none"
-        else [$rollup[] | cls] as $classes
-          | if any($classes[]; . == "failing") then "failing"
-            elif any($classes[]; . == "unknown") then "unknown"
-            elif any($classes[]; . == "pending") then "pending"
-            else "green" end
-        end
+    then (.statusCheckRollup // []) | rollup_class
     else empty end' 2>/dev/null
 }
 

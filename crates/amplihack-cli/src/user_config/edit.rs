@@ -42,8 +42,9 @@
 //! (EIO, ENOSPC, EDQUOT, NFS writeback) are not reported on the no-sync path;
 //! errors from the write and the rename still are.
 //!
-//! Out of scope: the syncs in `persist_launcher_context` and in
-//! `user_config::migrate`, and syncing the parent directory.
+//! Out of scope: the syncs in `user_config::migrate` and syncing the parent
+//! directory. The launcher-context sync was removed in #2068; see
+//! `launcher_context::replace_file`.
 
 use std::fs;
 use std::io::Write;
@@ -130,6 +131,17 @@ fn set_value_with(path: &Path, key: &KeyDef, value: &Value, sync: bool) -> Resul
             })?)
         }
         Value::Text(s) => toml_edit::value(s.as_str()),
+        // Issue #2589: `config set` writes scalars. A list key is rejected
+        // by `parse_cli` before it reaches here; this arm keeps that true in
+        // every build rather than half-writing an array.
+        Value::List(_) => {
+            return Err(ConfigError::InvalidValue {
+                key: key.name.to_string(),
+                reason: "is a list and is set by editing the user file \
+                         ~/.amplihack/config.toml, not with `config set`"
+                    .to_string(),
+            });
+        }
     };
     // Replace an existing value in place: `insert` would also replace the key,
     // and with it any comment written above the line.

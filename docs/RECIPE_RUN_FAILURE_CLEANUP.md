@@ -173,15 +173,10 @@ process group.
   uses `pkill` / `killall` / name-based matching, and never touches parent or
   unrelated processes.
 - Contract: **SIGTERM → grace window → SIGKILL**.
-  - `terminate_recipe_runner` handles the timeout path for a runner spawned
-    as a plain child (a dry run on Linux, every run elsewhere).
-  - On Linux every real run is spawned under the native Git observer. Its
-    timeout and stop teardown, `terminate_observed_runner`, sends SIGTERM to
-    the process tree found from the tasks the observer still traces (never
-    from the runner's pid, which the observer's tracing thread may already
-    have reaped), waits the same grace in `stop::sweep_on`, sends SIGKILL to
-    what is left, and then `Observer::terminate` kills every task the
-    observer still traces.
+  - `terminate_recipe_runner` handles the timeout path. The runner is spawned
+    as a plain child on every platform, so its pid is the pgid and the
+    executor is the only waiter: the teardown signals `-pgid` directly,
+    waits the grace in `stop::sweep_on`, and sends SIGKILL to what is left.
   - `reap_recipe_runner_group` sweeps orphaned descendants left behind on any
     non-timeout early-exit (success *or* failure).
   - Every one of these graces is measured on the clock the runner's wait

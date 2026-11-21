@@ -23,15 +23,12 @@ steps:
     recovery: {"replay": "rebind"}
     type: "bash"
     command: |
-      # The 23-step plan banner lives in amplifier-bundle/tools/workflow_plan_banner.sh.
-      # It was extracted, not trimmed: this brick is at its 400-line budget and the rule's
-      # remedy for a full brick is extraction, never compression (scripts/check-brick-budget.sh).
-      B=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_plan_banner.sh" ] && { B="$c/amplifier-bundle/tools/workflow_plan_banner.sh"; break; }; done
-      if [ -n "$B" ]; then bash "$B"; else echo "WARNING: workflow plan banner helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — continuing without the plan listing" >&2; fi
-      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
-      TASK_DESC="$TASK_DESCRIPTION"
-      printf 'Task: %s\n' "$TASK_DESC"
-      printf 'Repository: %s\n' "$REPO_PATH"
+      # The body of this step lives in amplifier-bundle/tools/workflow_prep_banner_step.sh,
+      # extracted for the brick budget (issue #1619). It is unchanged and
+      # reads the same RECIPE_VAR_* variables the runner exports.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_prep_banner_step.sh" ] && { H="$c/amplifier-bundle/tools/workflow_prep_banner_step.sh"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: workflow_prep_banner_step.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      bash "$H"
     output: "workflow_init"
   # STEP 00a: IDENTITY PREFLIGHT (issue #1290)
   # Resolve the acting `gh` login once and verify it can write to the repository this
@@ -122,6 +119,7 @@ steps:
   - id: "step-02-clarify-requirements"
     recovery: {"replay": "reuse"}
     agent: "amplihack:prompt-writer"
+    model: "strong"
     prompt: |
       # Step 2: Rewrite and Clarify Requirements
       **Task Description:** {{task_description}}
@@ -152,6 +150,7 @@ steps:
   - id: "step-02b-analyze-codebase"
     recovery: {"replay": "reuse"}
     agent: "amplihack:architect"
+    model: "strong"
     prompt: |
       # Step 2b: Analyze Existing Codebase Context
       **Task:** {{task_description}}
@@ -194,6 +193,7 @@ steps:
   - id: "step-02c-resolve-ambiguity"
     recovery: {"replay": "reuse"}
     agent: "amplihack:ambiguity"
+    model: "strong"
     prompt: |
       # Step 2c: Resolve Any Remaining Ambiguity
       **Task:** {{task_description}}
@@ -223,7 +223,7 @@ steps:
         echo "[skip] not a git repo — defaulting to 'other'" >&2
         printf 'other'; exit 0
       fi
-      REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
+      REMOTE_URL=$(git config --get remote.origin.url 2>/dev/null || git remote get-url origin 2>/dev/null || echo "")
       # nocasematch (bash 3.1) folds case inside `case` itself. Not bash 4's
       # lowercase expansion, which macOS /bin/bash 3.2 rejects (issue #1423), and
       # not a lowercasing pipe, which would put a possibly-PAT-bearing URL on a

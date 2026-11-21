@@ -22,6 +22,28 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
+/// Git's tracing namespace, which routes diagnostic output to a caller-chosen
+/// file descriptor or path. Deliberately not in `amplihack_git::scrub`, whose
+/// list is repository selection: that list is unset wholesale by
+/// `tests/issue_1278_git_env_isolation.sh` and shared with every other caller.
+pub(super) const CALLER_TRACE_VARS: &[&str] = &[
+    "GIT_TRACE2",
+    "GIT_TRACE2_CONFIG_PARAMS",
+    "GIT_TRACE2_ENV_VARS",
+    "GIT_TRACE2_EVENT",
+    "GIT_TRACE2_PERF",
+    "GIT_TRACE2_REDACT",
+];
+
+/// Remove inherited Git routing and tracing after building all other environment.
+/// User credentials, global/system configuration and identity remain inherited.
+pub(super) fn scrub_runner_git_environment(command: &mut Command) {
+    for var in CALLER_TRACE_VARS {
+        command.env_remove(var);
+    }
+    amplihack_git::scrub(command);
+}
+
 const STDERR_TAIL_LINES: usize = 5;
 const CAPTURED_STDERR_LINES: usize = 200;
 const RECIPE_RUNNER_DEFAULT_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
@@ -54,12 +76,20 @@ const MAX_SESSIONS_ENV: &str = "AMPLIHACK_MAX_SESSIONS";
 /// "the tool declined, and will decline again".
 pub const EXIT_ORCHESTRATION_UNAVAILABLE: i32 = 79;
 
-/// #2663 M1: a merge run succeeds only when it merged. `outcome` is the
+/// #2663 M1: a top-level drive succeeds only when it merged. `outcome` is the
 /// `autodrive_outcome` built by `report()`; success is an allow-list of the
 /// single `stop_reason` value `completed` (merged in this run, already merged
 /// at entry, or, since #2575 B4, a verify-only run that reached `DONE` or
 /// `WAITING`). A missing, non-string or any other value is a failure.
+///
+/// #2769: "a run" here means a top-level drive, `auto-drive-to-merge` or
+/// `auto-drive-light`, as [`trusted::is_top_level_drive`] names them. A nested
+/// `autodrive-*` sub-recipe merges nothing and is judged by its own steps; the
+/// caller applies this only where it belongs.
+///
 /// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
+///
+/// [`trusted::is_top_level_drive`]: crate::commands::orch::autodrive::trusted::is_top_level_drive
 pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
     outcome
         .get("stop_reason")
@@ -67,13 +97,19 @@ pub(crate) fn autodrive_run_succeeded(outcome: &serde_json::Value) -> bool {
         == Some("completed")
 }
 
-/// #2663: the run's final status follows the merge, in both directions. A run
-/// that did not merge is not a success; a run whose merge `report()` read as
-/// `completed` is a success even when a later step failed. Applied only to an
-/// `Ok` run result, after `run_with_transient_retry` has returned, so it never
-/// starts a whole-run re-attempt (#1267) and never touches exit 79 or another
-/// terminal block, which are `Err`. It runs before the failure class is
-/// attached, so a raised run carries none.
+/// #2663: a top-level drive's final status follows the merge, in both
+/// directions. A drive that did not merge is not a success; a drive whose
+/// merge `report()` read as `completed` is a success even when a later step
+/// failed. Applied only to an `Ok` run result, after
+/// `run_with_transient_retry` has returned, so it never starts a whole-run
+/// re-attempt (#1267) and never touches exit 79 or another terminal block,
+/// which are `Err`. It runs before the failure class is attached, so a raised
+/// run carries none.
+///
+/// #2769: the caller applies this only to a top-level drive; both directions
+/// stay exactly as #2663 wrote them, and a nested `autodrive-*` sub-recipe
+/// gets neither of them.
+///
 /// docs/reference/autodrive-merge-ready-round.md#success-means-merged.
 pub(crate) fn apply_autodrive_outcome(
     run_result: &mut RecipeRunResult,
@@ -219,9 +255,10 @@ impl Drop for SpawnGuard {
 /// string longer than `MAX_ARG_STRLEN` (PAGE_SIZE * 32 = 131072 on Linux)
 /// with `E2BIG`. We cap conservatively below that so a pathologically large
 /// value cannot make the spawn fail. Over-limit values are still delivered
-/// to the runner via `--set` for `{{placeholder}}`
-/// substitution; only the env mirror is skipped (issue #784, regression
-/// guard for the E2BIG path).
+/// to the runner for `{{placeholder}}` substitution — since issue #2582 in
+/// the context file, and only on the `--set` path for a runner older than
+/// the pin; only the env mirror is skipped (issue #784, regression guard
+/// for the E2BIG path).
 const CONTEXT_ENV_VALUE_MAX_BYTES: usize = 96 * 1024;
 
 /// Per-entry byte overhead charged to every environment variable when
@@ -296,9 +333,37 @@ const RESERVED_ENV_DENYLIST: &[&str] = &[
     "IFS",
     // interpreter option injection
     "PYTHONPATH",
+    "PYTHONSTARTUP",
     "NODE_OPTIONS",
     "PERL5OPT",
     "RUBYOPT",
+];
+
+/// Names whose VALUE is executed, or which select the executable that will
+/// be. Context cannot set these on either transport — see
+/// [`is_reserved_context_key`], which refuses them outright rather than
+/// merely skipping the env mirror.
+///
+/// The Git/SSH entries are the command-running subset of
+/// `install::clone::GIT_SCRUBBED_ENV`, plus the two named in
+/// `amplihack-hooks`' tmux guard ("`GIT_EXTERNAL_DIFF=…`, `GIT_SSH_COMMAND=…`
+/// and the like run their value"). Both places already classify these as
+/// code execution; this is the same list applied to recipe context, which is
+/// untrusted in exactly the same way.
+const EXECUTABLE_SELECTOR_ENV: &[&str] = &[
+    // The recipe runner this run and every nested `amplihack` execs, and
+    // (issue #2582) the switch deciding whether context lands on argv.
+    "RECIPE_RUNNER_RS_PATH",
+    // Git and SSH names whose value is run as a command.
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_EDITOR",
+    "GIT_PAGER",
 ];
 
 /// `true` when `name` is a valid POSIX environment-variable identifier,
@@ -332,13 +397,34 @@ fn env_entry_bytes(name: &str, value: &str) -> usize {
     name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES
 }
 
-/// Context cannot select an amplihack profile or restore Git routing and
-/// executable configuration that the command policy removed before launch.
-fn is_reserved_context_key(key: &str) -> bool {
+/// Context cannot select an amplihack profile, restore Git routing and
+/// executable configuration that the command policy removed before launch,
+/// or name a program that this run (or anything it spawns) will execute.
+///
+/// Issue #2582: `pub(super)` so `context_transport::refuse_reserved_keys`
+/// applies the same predicate before it writes a context file, rather than
+/// carrying a second copy of the rule that could drift from this one.
+///
+/// [`EXECUTABLE_SELECTOR_ENV`] names are reserved here rather than only in
+/// [`RESERVED_ENV_DENYLIST`] because they are *executable selectors*, not
+/// merely dangerous env names: their value is run, or chooses what is run.
+/// Context is untrusted input — issue bodies and third-party recipes flow
+/// into it — so these must be refused by the same rule BOTH transports
+/// consult, not dropped by the env filter alone. Dropping is wrong here: the
+/// `--set` path would still hand the pair to the runner for `{{placeholder}}`
+/// substitution even after the env mirror skipped it.
+///
+/// `*_BINARY_PATH` is a suffix rule, not a list, because
+/// `amplihack_utils::launch_target` resolves `{TOOL}_BINARY_PATH` for ANY
+/// tool name as an explicit, user-supplied override at the highest
+/// precedence. Enumerating today's tools would leave the next one open.
+pub(super) fn is_reserved_context_key(key: &str) -> bool {
     let name = key.to_ascii_uppercase();
     name.starts_with("AMPLIHACK_")
         || amplihack_git::REPOSITORY_ENV_VARS.contains(&name.as_str())
         || name.starts_with("GIT_CONFIG")
+        || name.ends_with("_BINARY_PATH")
+        || EXECUTABLE_SELECTOR_ENV.contains(&name.as_str())
         || matches!(name.as_str(), "GIT_EXEC_PATH" | "GIT_TEMPLATE_DIR")
 }
 
@@ -509,7 +595,9 @@ pub(super) fn resolve_context_env_budget() -> usize {
 /// 5. Drop values containing a NUL byte (rejected by the OS for env vars;
 ///    would otherwise panic at spawn time).
 /// 6. Drop values larger than [`CONTEXT_ENV_VALUE_MAX_BYTES`] (would risk
-///    `E2BIG`); they are delivered to the runner as `--set` arguments.
+///    `E2BIG`); they still reach the runner through the chosen context
+///    transport — the context file since issue #2582, or `--set` arguments
+///    for a runner older than the pin.
 ///
 /// Aggregate budget (issue #1023): the total bytes of the exported mirror must
 /// stay within `budget` so the environment inherited by every bash step cannot
@@ -682,6 +770,11 @@ pub(super) fn execute_recipe_via_rust_fresh(
     // lookup, temp dirs, bundle copies, spawn) so no descendant is ever
     // created past the limit.
     let guard = enforce_recursion_depth_guard(working_dir)?;
+    // Issues #964/#1903/#2814: read the named checkout's `core.bare` before
+    // anything else runs, so the release step below can tell a flip from the
+    // value it started with. Taken here, after the depth guard and before the
+    // bundle, spawn and every step.
+    let checkout_bare = super::checkout_bare::CheckoutBare::snapshot(working_dir);
     let launch = if let Some(auth) = &mut authorization {
         let env = EnvBuilder::new().with_amplihack_home_from(working_dir);
         let home = env
@@ -707,6 +800,14 @@ pub(super) fn execute_recipe_via_rust_fresh(
         let recipe = super::parse_recipe_from_path(recipe_path)?;
         let (mut expanded, inferred) =
             super::infer_missing_context(&recipe.context, explicit_inputs);
+        // Entry resolved an explicitly selected repo_path against the caller's
+        // directory. Keep that derived path when expanding the trusted recipe,
+        // while authorization continues to read the untouched operator inputs.
+        if explicit_inputs.contains_key("repo_path")
+            && let Some(repo) = context.get("repo_path")
+        {
+            expanded.insert("repo_path".into(), repo.clone());
+        }
         // Recovery identity is normalised on this derived copy only, never on
         // `explicit_inputs`, which stays the raw source of authority.
         super::recovery::normalize(&mut expanded, working_dir);
@@ -732,23 +833,28 @@ pub(super) fn execute_recipe_via_rust_fresh(
         .canonicalize()
         .context("resolve recipe runner before changing its launch directory")?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
-    if let Err(error) = crate::runner_validation::probe(&binary, &agent_binary.binary) {
-        let correlation = RecipeRunCorrelation::new(
-            recipe_name.clone(),
-            working_dir,
-            &BTreeMap::new(),
-            binary.as_path(),
-        );
-        correlation.emit_early();
-        eprintln!("amplihack: runner capability check failed: {error}");
-        return Err(fail_with_final_record(
-            &correlation,
-            RecipeRunFinalStatus::SpawnFailure,
-            None,
-            None,
-            error,
-        ));
-    }
+    // Issue #2582: the report is kept, so the context transport can check
+    // for `context_file_v1` without a second probe.
+    let runner_report = match crate::runner_validation::probe(&binary, &agent_binary.binary) {
+        Ok(report) => report,
+        Err(error) => {
+            let correlation = RecipeRunCorrelation::new(
+                recipe_name.clone(),
+                working_dir,
+                &BTreeMap::new(),
+                binary.as_path(),
+            );
+            correlation.emit_early();
+            eprintln!("amplihack: runner capability check failed: {error}");
+            return Err(fail_with_final_record(
+                &correlation,
+                RecipeRunFinalStatus::SpawnFailure,
+                None,
+                None,
+                error,
+            ));
+        }
+    };
 
     // Issue #1481: the caller resolved the agent binary once, from
     // `working_dir`, while this process could still see the session markers of
@@ -839,20 +945,15 @@ pub(super) fn execute_recipe_via_rust_fresh(
     let authorization = authorization;
     let context = &invocation_context;
 
-    // Prepare private Git metadata outside disposable runtime/ before any
-    // executable step. An unborn or unsupported caller state rejects launch.
-    let scratch = workspace.borrow().runtime_dir().to_path_buf();
-    // Required recording storage is established before preparation. Native
-    // runner supervision starts at spawn; its evidence is finalized after
-    // the observed runner tree has ended and the checkout has been released.
-    // A dry run has no run folder and runs no step, so it records nothing.
-    let recording = if dry_run {
-        Ok(super::git_record::GitRecord::dry_run())
-    } else {
-        super::git_record::GitRecord::begin(workspace.borrow().run_dir())
-    };
-    let git_record = match recording {
-        Ok(record) => record,
+    // Run in the checkout selected by the caller. Recovery and context
+    // transport retain their ordinary durable state outside disposable runtime.
+    let context_runtime_dir = workspace.borrow().runtime_dir().to_path_buf();
+    let transport = match super::context_transport::ContextTransport::choose(
+        &runner_report,
+        &context_runtime_dir,
+        context,
+    ) {
+        Ok(transport) => transport,
         Err(error) => {
             return fail_before_execution(
                 workspace.into_inner(),
@@ -862,89 +963,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
             );
         }
     };
-    // A run with a recovery identity (its own admission, or a nested run under
-    // its parent's delegated recovery) prepares each attempt's fresh checkout
-    // at a path derived from that identity, so a relaunch presents the same
-    // repository path and replay can reuse checkout-dependent steps (#2493).
-    let recovering = admission.is_some() || delegated.is_some();
-    let stable_path = match (recovering, workspace.borrow().work_root_path()) {
-        (true, Some(root)) => {
-            super::recovery::identity(recipe_path, &recipe_name, working_dir, context).map(
-                |identity| {
-                    root.join(crate::commands::cleanup::work_root::EXEC_DIR)
-                        .join(&identity[..identity.len().min(32)])
-                },
-            )
-        }
-        _ => None,
-    };
-    let owner_run_dir = workspace.borrow().run_dir().map(Path::to_path_buf);
-    let stable_storage = match (&stable_path, &owner_run_dir) {
-        (Some(path), Some(owner_run_dir)) => Some(super::run_checkout::StableStorage {
-            path,
-            owner_run_dir,
-            owner_ended: crate::commands::cleanup::eligibility::run_has_ended,
-        }),
-        _ => None,
-    };
-    let mut checkout = match super::run_checkout::RunCheckout::prepare_with_inputs(
-        working_dir,
-        &scratch,
-        dry_run,
-        &[recipe_path.to_path_buf()],
-        stable_storage,
-    ) {
-        Ok(checkout) => checkout,
-        Err(mut error) => {
-            if let Err(discard) = git_record.discard() {
-                error = error.context(format!("Git recording release also failed: {discard:#}"));
-            }
-            return fail_before_execution(
-                workspace.into_inner(),
-                admission.as_ref(),
-                error,
-                dry_run,
-            );
-        }
-    };
-    let exec_dir = checkout.exec_dir().to_path_buf();
-    // The recovery descriptor lives in the run folder; one inside the private
-    // checkout would be state a step could rewrite (S-AZ4). A run outside Git
-    // executes in the caller's own directory, which may hold the work root,
-    // so only a private checkout is checked.
-    let descriptor_outside_checkout = || -> Result<()> {
-        if let Some(admission) = &admission
-            && matches!(checkout, super::run_checkout::RunCheckout::Private { .. })
-        {
-            refuse_descriptor_inside(&admission.descriptor_path(), &exec_dir)?;
-        }
-        Ok(())
-    };
-    let mapped = descriptor_outside_checkout().and_then(|()| {
-        checkout.map_path(recipe_path).and_then(|recipe| {
-            checkout
-                .map_context(context)
-                .map(|context| (recipe, context))
-        })
-    });
-    let (mapped_recipe, mapped_context) = match mapped {
-        Ok(mapped) => mapped,
-        Err(mut error) => {
-            if let Err(release) = checkout.remove() {
-                error = error.context(format!("execution release also failed: {release:#}"));
-            }
-            if let Err(discard) = git_record.discard() {
-                error = error.context(format!("Git recording release also failed: {discard:#}"));
-            }
-            return fail_before_execution(
-                workspace.into_inner(),
-                admission.as_ref(),
-                error,
-                dry_run,
-            );
-        }
-    };
-    let context = &mapped_context;
+    transport.record();
 
     // Issue #1267: a `std::process::Command` is consumed by `spawn`, and every
     // attempt needs its own correlation run id, so command construction is a
@@ -964,6 +983,29 @@ pub(super) fn execute_recipe_via_rust_fresh(
             .as_deref()
             .map_err(|e| *e),
     );
+    // Issue #1619: the run summary's `Model tiers:` section reads the records
+    // this run's agent steps write into the run directory. A top-level
+    // `recipe run` hands AMPLIHACK_RUN_DIR to its children without setting it
+    // on itself, so the directory is named here rather than read back from
+    // the environment.
+    if let Some(run_dir) = workspace.borrow().run_dir() {
+        super::format::remember_run_dir(run_dir);
+    }
+    // Issue #1619: an instance may give one named step a tier of its own. The
+    // step id never reaches the child, so the override is applied recipe-side:
+    // patched copies of only the recipes that declare a named step, written
+    // into this run's own directory and handed to the runner as its first
+    // `-R`. With nothing configured nothing is staged, no argument is added
+    // and the run behaves exactly as it did before. A staging failure is
+    // reported and the run continues on the recipes as written: a tier
+    // preference must never stop a run.
+    let staged_recipes =
+        stage_step_tier_overrides(workspace.borrow().run_dir(), search_dirs, recipe_path);
+    // Issue #2783: the folder this run uses, recorded in every pointer line
+    // it writes, so `recipe guide` finds the run from what it recorded at
+    // start rather than from the caller's work-root variables. Cloned once:
+    // the correlation sites below must not hold a `RefCell` borrow.
+    let run_location: Option<PathBuf> = workspace.borrow().run_dir().map(Path::to_path_buf);
     let build_command = |run_id: &str| -> Result<Command> {
         // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
         // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
@@ -978,17 +1020,25 @@ pub(super) fn execute_recipe_via_rust_fresh(
         // still override the pinned value until the runner refuses that
         // namespace too (rysweet/amplihack-recipe-runner#146).
         let mut command = Command::new(&binary);
+        // Issue #1619: a `-R` directory is searched for a name, and the
+        // top-level recipe is passed as a path, so `-R` alone never reaches
+        // it. When staging patched that recipe, the positional argument is
+        // its staged copy instead — the only route by which a single-step
+        // override covers a step of the recipe named on the command line.
+        let staged_top_level = staged_recipes
+            .as_ref()
+            .and_then(|staged| staged.top_level.as_ref());
+        let recipe_arg = match staged_top_level {
+            Some(path) => path.clone(),
+            None => recipe_path.to_path_buf(),
+        };
         command
-            .current_dir(&exec_dir)
-            .arg(&mapped_recipe)
+            .current_dir(working_dir)
+            .arg(&recipe_arg)
             .arg("--output-format")
             .arg("json")
             .arg("-C")
-            .arg(&exec_dir);
-        // Issue #2096: no inherited GIT_DIR, GIT_INDEX_FILE or git config
-        // override may send the run's git commands back to the caller.
-        checkout.apply_to(&mut command);
-        git_record.apply_to(&mut command)?;
+            .arg(working_dir);
 
         if fresh {
             command.arg("--fresh");
@@ -998,6 +1048,14 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 .arg("--recovery-descriptor")
                 .arg(admission.descriptor_path());
         }
+        // Issue #1619: the staged copies go ahead of every other -R. The
+        // runner resolves a sub-recipe name from its -R list first, in the
+        // order given, and amplihack forwards the bundle below, so anything
+        // offered after it is outranked by the recipe it was patched from.
+        let mut recipe_dir_args: Vec<PathBuf> = Vec::new();
+        if let Some(staged) = &staged_recipes {
+            recipe_dir_args.push(staged.dir.clone());
+        }
         // Issue #494: forward sub-recipe search dirs as -R flags so
         // recipe-runner-rs can resolve sub-recipes the same way amplihack
         // resolves top-level recipes. One -R per non-empty entry, in order.
@@ -1005,24 +1063,47 @@ pub(super) fn execute_recipe_via_rust_fresh(
             if dir.as_os_str().is_empty() {
                 continue;
             }
-            command.arg("-R").arg(checkout.map_path(dir)?);
+            recipe_dir_args.push(dir.clone());
             tracing::debug!(dir = %dir.display(), "forwarding -R to recipe-runner-rs");
+        }
+        // Issue #1619: substituting the positional argument moves the
+        // runner's anchored search — its `recipe_origin_dir` — to the staging
+        // directory, so a recipe that resolves a sibling sub-recipe by name
+        // would stop finding it. The original recipe's own directory goes
+        // back on the end of the list rather than the front: appended, it
+        // cannot shadow anything that already ranked above it, so a
+        // repository-local file still does not displace a bundled one.
+        if staged_top_level.is_some()
+            && let Some(parent) = recipe_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let parent = parent.to_path_buf();
+            if !recipe_dir_args.contains(&parent) {
+                recipe_dir_args.push(parent);
+            }
+        }
+        for dir in &recipe_dir_args {
+            command.arg("-R").arg(dir);
         }
 
         if dry_run {
             command.arg("--dry-run");
         }
 
-        // Issue #1570: context goes to the runner as `--set` arguments; their
-        // size comes out of the env-mirror budget below so argv + envp stay
-        // under ARG_MAX together.
-        let context_argv_bytes = pass_context(&mut command, context)?;
+        // Issue #1570 / #2582: context goes to the runner as `--context-file
+        // <path>` or, for a runner older than the pin, as `--set` arguments.
+        // Whichever it is, the argv bytes it actually costs come out of the
+        // env-mirror budget below, so argv + envp stay under ARG_MAX
+        // together. The file transport costs the flag and the path, which is
+        // why `apply` returns a real count rather than zero.
+        let context_argv_bytes = transport.apply(&mut command, context)?;
         let argv_room = current_arg_max().saturating_sub(inherited_env_bytes());
         if context_argv_bytes > argv_room.saturating_sub(ENV_BUDGET_RESERVATION_BYTES) {
             anyhow::bail!(
-                "recipe context totals {context_argv_bytes} bytes of --set arguments, more than \
+                "recipe context totals {context_argv_bytes} bytes of {} arguments, more than \
                  the {argv_room} bytes of ARG_MAX left after the inherited environment. Pass \
-                 large values as file paths in the context instead"
+                 large values as file paths in the context instead",
+                transport.name()
             );
         }
 
@@ -1139,7 +1220,7 @@ pub(super) fn execute_recipe_via_rust_fresh(
         command.env_remove(super::orphan_record::AUTODRIVE_STATE_DIR_ENV);
         // Apply repository selection last so inherited environment builders
         // cannot reintroduce caller routing or configuration injection.
-        checkout.apply_to(&mut command);
+        scrub_runner_git_environment(&mut command);
 
         Ok(command)
     };
@@ -1170,7 +1251,8 @@ pub(super) fn execute_recipe_via_rust_fresh(
                         context,
                         binary.as_path(),
                     )
-                    .with_settings(run_settings.clone());
+                    .with_settings(run_settings.clone())
+                    .with_run_location(run_location.as_deref());
                     // The pointer contract is one `early` then one `final`
                     // per run_id, even when no runner is spawned.
                     correlation.emit_early();
@@ -1186,7 +1268,8 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 context,
                 binary.as_path(),
             )
-            .with_settings(run_settings.clone());
+            .with_settings(run_settings.clone())
+            .with_run_location(run_location.as_deref());
             if let Err(error) = workspace
                 .borrow_mut()
                 .record_attempt_checked(correlation.run_id())
@@ -1200,9 +1283,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 Err(error) => return AttemptOutcome::Final(Err(error)),
             };
             let mut stderr_tail = String::new();
-            // Issue #2677: the one unobserved fallback start needs the
-            // command built again after the record is downgraded.
-            let correlation_run_id = correlation.run_id().to_string();
             // Cloned so no RefCell borrow is held across the attempt.
             let run_dir = workspace.borrow().run_dir().map(Path::to_path_buf);
             let attempt_result = spawn_with_streaming_stderr(
@@ -1213,8 +1293,6 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 timeout,
                 &guard.tree_id,
                 &mut stderr_tail,
-                &git_record,
-                &|| build_command(correlation_run_id.as_str()),
             );
 
             // Structured runner failures and spawn/parse errors both enter
@@ -1296,7 +1374,28 @@ pub(super) fn execute_recipe_via_rust_fresh(
                     &run_result.context,
                     context.get("pr_number").map(String::as_str),
                 );
-                apply_autodrive_outcome(&mut run_result, &outcome);
+                // #2769: the #2663 rule, that a run succeeds only if it
+                // merged, is the top-level drive's. A nested `autodrive-*`
+                // sub-recipe merges nothing, so its verdict stays its own
+                // steps'. Both halves of the rule go with it, not just the
+                // one the defect showed: a sub-recipe that did not merge is
+                // no longer failed, and a sub-recipe that merged and then
+                // failed at a later step is no longer raised to success. The
+                // second half is observable in one place, the separate
+                // `amplihack recipe run autodrive-finalize` process that
+                // `step-03r-finalize-recovery` starts in
+                // `autodrive-merge-loop.yaml`; a `type: recipe` step runs in
+                // process and never re-enters this function, so it carried
+                // neither half before. That caller reads the merge from
+                // `finalize-merge.json`, keyed by run id, rather than from
+                // the child's exit status, and the `merge` step writes that
+                // record before any step that could fail after it.
+                // The inserts below stay unconditional: the outcome remains
+                // data for the loop script and the completion helpers
+                // whatever the invocation.
+                if trusted::is_top_level_drive(&invocation_name) {
+                    apply_autodrive_outcome(&mut run_result, &outcome);
+                }
                 run_result
                     .extra
                     .insert("autodrive_outcome".into(), outcome.clone());
@@ -1330,14 +1429,19 @@ pub(super) fn execute_recipe_via_rust_fresh(
         }
         Err(error) => Err(error),
     };
-    // Release order: the private checkout, then the Git record, then the
-    // recovery admission (judged from the result after the first two), then
-    // the run folder.
+    // Finish recovery admission and context transport before the run report.
     release_in_order(
         final_result,
         vec![
-            ("execution release", Box::new(|_| checkout.remove())),
-            ("Git recording", Box::new(|_| git_record.finish())),
+            // First, so the checkout is usable again before any later step —
+            // or the operator — runs git in it (#964, #2814).
+            (
+                "named checkout git state",
+                Box::new(|_| match checkout_bare.restore() {
+                    None => Ok(()),
+                    Some(message) => Err(anyhow::anyhow!(message)),
+                }),
+            ),
             (
                 "recovery admission finish",
                 Box::new(|result| {
@@ -1350,6 +1454,18 @@ pub(super) fn execute_recipe_via_rust_fresh(
                             .context("cannot finish recovery admission"),
                         _ => Ok(()),
                     }
+                }),
+            ),
+            // Issue #2582: the context file goes after the last runner child
+            // has been reaped and before the run folder it lives in, so no
+            // value outlives the run and the run report never finds the
+            // folder half-removed. Dropping the transport removes the file
+            // and then its folder.
+            (
+                "recipe context file",
+                Box::new(move |_| {
+                    drop(transport);
+                    Ok(())
                 }),
             ),
             (
@@ -1384,29 +1500,6 @@ pub(super) fn release_in_order(
         }
     }
     result
-}
-
-/// The recovery descriptor lives in the run folder; one whose folder resolves
-/// inside the private checkout would be state a step could rewrite (S-AZ4).
-pub(super) fn refuse_descriptor_inside(descriptor: &Path, exec_dir: &Path) -> Result<()> {
-    let parent = descriptor
-        .parent()
-        .context("recovery descriptor path has no parent folder")?;
-    let resolved = parent
-        .canonicalize()
-        .with_context(|| format!("cannot resolve {}", parent.display()))?;
-    let checkout_root = exec_dir
-        .canonicalize()
-        .with_context(|| format!("cannot resolve {}", exec_dir.display()))?;
-    if resolved.starts_with(&checkout_root) {
-        anyhow::bail!(
-            "recovery descriptor {} resolves inside the run's private checkout {}; \
-             refusing to launch",
-            descriptor.display(),
-            exec_dir.display()
-        );
-    }
-    Ok(())
 }
 
 /// The recovery outcome for a finished run (#2334): `None` for a run stopped
@@ -1514,7 +1607,6 @@ fn terminal_action(summary: &RetrySummary) -> &'static str {
 /// and stderr "teed": each line is forwarded live to our own stderr AND
 /// captured in a buffer so the error path can still surface a meaningful
 /// stderr tail. (#357)
-#[allow(clippy::too_many_arguments)]
 fn spawn_with_streaming_stderr(
     mut command: Command,
     correlation: RecipeRunCorrelation,
@@ -1523,53 +1615,9 @@ fn spawn_with_streaming_stderr(
     timeout: Duration,
     tree_id: &str,
     stderr_sink: &mut String,
-    git_record: &super::git_record::GitRecord,
-    rebuild: &dyn Fn() -> Result<Command>,
 ) -> Result<RecipeRunResult> {
     arm_runner(&mut command);
-    // A required record is spawned under the native observer. A dry run's
-    // record is not required and never reaches `GitRecord::spawn`: it spawns
-    // the runner plainly. A record downgraded by #2677 is also not required,
-    // so later attempts in the same run start unobserved.
-    #[cfg(target_os = "linux")]
-    let (spawned, mut observer) = if git_record.is_required() {
-        match git_record.spawn(command, correlation.run_id()) {
-            Ok((child, observer)) => (Ok(child), Some(observer)),
-            Err(error) => match error
-                .downcast_ref::<super::git_record::observer::ObserverNotEstablished>()
-                .map(|refused| refused.errno())
-            {
-                Some(errno) => {
-                    // Issue #2677: the observer never attached, so it watched
-                    // nothing. Not a retry: this is the single unobserved start
-                    // that replaces the observed one, decided by what happened,
-                    // and it happens at most once because the downgrade makes
-                    // the record not required. If the record refuses (evidence
-                    // may exist), the run fails closed with both errors.
-                    match git_record.attempt_not_established(correlation.run_id(), errno) {
-                        Ok(()) => {
-                            // Built again after the downgrade, so `apply_to`
-                            // removes every observer and trace variable.
-                            let spawned = rebuild().map(|mut command| {
-                                arm_runner(&mut command);
-                                command
-                            });
-                            (spawned.and_then(spawn_unobserved), None)
-                        }
-                        Err(refused) => (Err(error.context(format!("{refused:#}"))), None),
-                    }
-                }
-                None => (Err(error), None),
-            },
-        }
-    } else {
-        (spawn_unobserved(command), None)
-    };
-    #[cfg(not(target_os = "linux"))]
-    let spawned = {
-        let _ = (git_record, rebuild);
-        spawn_unobserved(command)
-    };
+    let spawned = command.spawn().context("failed to spawn recipe-runner-rs");
     let mut child = spawned.map_err(|error| {
         correlation.emit_early();
         fail_with_final_record(
@@ -1646,17 +1694,10 @@ fn spawn_with_streaming_stderr(
         let _ = stdout_tx.send(result);
     });
 
-    // One clock for this attempt's timeout and every teardown grace below,
-    // whichever way the runner was spawned: `terminate_recipe_runner`,
-    // `sweep_runner_tree` (and so `terminate_observed_runner`) and
+    // One clock for this attempt's timeout and every teardown grace below:
+    // `terminate_recipe_runner`, `sweep_runner_tree` and
     // `reap_recipe_runner_group` all wait on it.
     let runner = RunnerClock::current();
-    #[cfg(target_os = "linux")]
-    let waited = match &observer {
-        Some(observer) => wait_for_observed_runner(observer, timeout, &runner),
-        None => wait_for_recipe_runner(&mut child, timeout, &runner),
-    };
-    #[cfg(not(target_os = "linux"))]
     let waited = wait_for_recipe_runner(&mut child, timeout, &runner);
     let status = match waited
         .context("failed to wait for recipe-runner-rs")
@@ -1706,17 +1747,8 @@ fn spawn_with_streaming_stderr(
             // setsid'd again): the whole tree is found before anything is
             // signalled, and swept after the group teardown.
             //
-            // A plain child is reaped only by this executor's own wait, so
-            // its pid is still the runner's and the walk starts there. An
-            // observed runner is reaped by the observer's tracing thread as
-            // soon as it exits, so its pid may already name another process:
-            // the walk starts from the tasks the observer still traces.
-            #[cfg(target_os = "linux")]
-            let roots = match observer.as_ref() {
-                Some(observer) => observer.traced_tasks(),
-                None => std::collections::BTreeSet::from([child.id() as i32]),
-            };
-            #[cfg(not(target_os = "linux"))]
+            // The child is reaped only by this executor's own wait, so its
+            // pid is still the runner's and the walk starts there.
             let roots = std::collections::BTreeSet::from([child.id() as i32]);
             let tree = crate::commands::recipe::stop::snapshot_tree(&roots);
             // Issue #1976: the flag value alone decides the status; a signal
@@ -1734,12 +1766,6 @@ fn spawn_with_streaming_stderr(
             let detail = super::format::format_log_pointer_summary(&summary);
             // The sweep runs whatever the group teardown reports: a runner
             // that could not be reaped must not leave its descendants behind.
-            #[cfg(target_os = "linux")]
-            let teardown = match observer.as_mut() {
-                Some(observer) => terminate_observed_runner(&tree, observer, &runner),
-                None => terminate_recipe_runner(&mut child, &runner),
-            };
-            #[cfg(not(target_os = "linux"))]
             let teardown = terminate_recipe_runner(&mut child, &runner);
             sweep_runner_tree(&tree, &runner);
             let stopped = anyhow::Error::new(super::stop_signal::StoppedBySignal(signal));
@@ -1765,19 +1791,6 @@ fn spawn_with_streaming_stderr(
             );
             let detail = super::format::format_log_pointer_summary(&summary);
             let run_id = summary.run_id.clone();
-            #[cfg(target_os = "linux")]
-            let teardown = match observer.as_mut() {
-                Some(observer) => {
-                    // As for a stop signal above: never seeded from the
-                    // runner's pid, which the tracing thread may already
-                    // have reaped.
-                    let tree =
-                        crate::commands::recipe::stop::snapshot_tree(&observer.traced_tasks());
-                    terminate_observed_runner(&tree, observer, &runner)
-                }
-                None => terminate_recipe_runner(&mut child, &runner),
-            };
-            #[cfg(not(target_os = "linux"))]
             let teardown = terminate_recipe_runner(&mut child, &runner);
             teardown.with_context(|| {
                 format!("recipe run {run_id} timed out and could not be terminated: {detail}")
@@ -1800,7 +1813,7 @@ fn spawn_with_streaming_stderr(
     // process group. Deterministically reap that tree BEFORE draining pipes so
     // a failed/early-exiting runner cannot leak a recursive subprocess tree and
     // cannot wedge the drain by holding the inherited stdout pipe open.
-    #[cfg(all(unix, not(target_os = "linux")))]
+    #[cfg(unix)]
     reap_recipe_runner_group(child.id(), &runner);
 
     let stdout_buf = stdout_rx
@@ -1885,10 +1898,8 @@ fn spawn_with_streaming_stderr(
     }
 }
 
-/// The runner's process setup, shared by the observed start and the single
-/// unobserved fallback (issue #2677), so neither can lose it: captured
-/// stdout and stderr, its own session, and on Linux a SIGTERM when this
-/// process dies.
+/// The runner's process setup: captured stdout and stderr, its own session,
+/// and on Linux a SIGTERM when this process dies.
 fn arm_runner(command: &mut Command) {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
@@ -1923,64 +1934,6 @@ fn arm_runner(command: &mut Command) {
             });
         }
     }
-}
-
-/// Spawns the runner without the native observer: a dry run on Linux, the
-/// single fallback start after the Linux observer could not attach (#2677),
-/// and every launch elsewhere.
-fn spawn_unobserved(mut command: Command) -> Result<Child> {
-    command.spawn().context("failed to spawn recipe-runner-rs")
-}
-
-/// Waits for a runner spawned under the native observer (every real run on
-/// Linux). The observer's tracing thread reaps the runner, so its exit comes
-/// from `observer.try_wait`, never from `Child::try_wait`. The timeout is
-/// measured on `runner`'s clock in [`wait_for_runner`], the same loop as
-/// [`wait_for_recipe_runner`].
-#[cfg(target_os = "linux")]
-fn wait_for_observed_runner(
-    observer: &super::git_record::observer::Observer,
-    timeout: Duration,
-    runner: &RunnerClock,
-) -> std::io::Result<RunnerWait> {
-    wait_for_runner(
-        timeout,
-        runner,
-        || {
-            if let Some(status) = observer.try_wait().map_err(std::io::Error::other)? {
-                return Ok(Some(status));
-            }
-            if let Some(tasks) = observer.finished_scope() {
-                let tree =
-                    crate::commands::recipe::stop::snapshot_tree(&tasks.into_iter().collect());
-                sweep_runner_tree(&tree, runner);
-            }
-            Ok(None)
-        },
-        // Nothing is signalled here. The tracing thread reaps the runner as
-        // soon as it exits, so its pid and group id may already name another
-        // process. The wait then reports a timeout, and the timeout teardown
-        // ends the run without using that pid: it snapshots the tree from
-        // `Observer::traced_tasks`, with start times, sends it SIGTERM,
-        // abandons the grace at once because the run is cancelled (see
-        // `sweep_runner_tree`), sends SIGKILL to what is left of that
-        // snapshot, and `Observer::terminate` then kills every task the
-        // observer still traces.
-        || {},
-    )
-}
-
-/// The teardown for an observed runner: SIGTERM to `tree`, the teardown grace
-/// on `runner`'s clock, SIGKILL to whatever of `tree` is left, then the
-/// observer kills and reaps every task it still traces and joins its thread.
-#[cfg(target_os = "linux")]
-fn terminate_observed_runner(
-    tree: &crate::commands::recipe::stop::Tree,
-    observer: &mut super::git_record::observer::Observer,
-    runner: &RunnerClock,
-) -> Result<()> {
-    sweep_runner_tree(tree, runner);
-    observer.terminate()
 }
 
 /// SIGTERM every process of `tree`, wait up to the teardown grace on
@@ -2103,9 +2056,16 @@ fn parse_recipe_output_with_stderr_drops(
 pub(super) const MAX_ARG_STRLEN_BYTES: usize = 131_072;
 
 /// Pass context key-value pairs to the command as `--set KEY=VALUE`
-/// arguments, the only context input `recipe-runner-rs` accepts (it has no
-/// `--context-file` option; the fallback that used one failed every run
-/// whose context totalled over 128 KiB, issue #1570).
+/// arguments, which puts every value on the runner's argv.
+///
+/// Issue #2582: this runs only for a runner that does not report
+/// `context_file_v1`. The pinned runner reports it, so in a normal run
+/// `context_transport` passes `--context-file <path>` instead and no value is
+/// on argv at all. This path is reached only by a runner older than the pin
+/// supplied through `RECIPE_RUNNER_RS_PATH`; `ContextTransport::record`
+/// prints a line to stderr when it is taken, unconditionally, so that case is
+/// visible to an operator who set no `RUST_LOG` and would otherwise find it
+/// only in `/proc`.
 ///
 /// Returns the argv bytes the pairs occupy, so the caller can take them out
 /// of the env-mirror budget. A pair longer than one argv string allows is
@@ -2114,23 +2074,22 @@ pub(super) fn pass_context(
     command: &mut Command,
     context: &BTreeMap<String, String>,
 ) -> Result<usize> {
-    if let Some(key) = context.keys().find(|k| is_reserved_context_key(k)) {
-        anyhow::bail!(
-            "recipe context key {} is reserved: the AMPLIHACK_ namespace and Git execution configuration cannot be set from recipe context",
-            crate::commands::profile::escape_for_error(key)
-        );
-    }
+    super::context_transport::refuse_reserved_keys(context)?;
     if let Some((key, value)) = context
         .iter()
         .find(|(k, v)| k.len() + 1 + v.len() + 1 > MAX_ARG_STRLEN_BYTES)
     {
         anyhow::bail!(
-            "recipe context value for key {} is {} bytes; recipe-runner-rs takes context only \
-             as --set arguments, and one argument cannot exceed {} bytes. Pass a file path \
-             in the context instead and read the file in the step",
+            "recipe context value for key {} is {} bytes; the runner supplied through \
+             RECIPE_RUNNER_RS_PATH does not report {}, so this run passes context as --set \
+             arguments, and one argument cannot exceed {} bytes. Use a runner that reports \
+             {}, which takes the context as a file and has no per-value limit; failing that, \
+             pass a file path in the context instead and read the file in the step",
             crate::commands::profile::escape_for_error(key),
             value.len(),
-            MAX_ARG_STRLEN_BYTES
+            super::context_transport::CONTEXT_FILE_CAPABILITY,
+            MAX_ARG_STRLEN_BYTES,
+            super::context_transport::CONTEXT_FILE_CAPABILITY
         );
     }
     let mut argv_bytes = 0;
@@ -2284,9 +2243,9 @@ enum RunnerWait {
 /// and whether the attempt has been cancelled. Production reads the system
 /// clock and is never cancelled. A lib test that runs the executor under
 /// `test_runner::RunnerWorker` gets that worker's control instead: its
-/// (optionally virtual) clock and its cancel flag. Both runner paths, the
-/// plain child and the observed one, take it from here, so neither can wait
-/// or tear down on a clock the test does not control.
+/// (optionally virtual) clock and its cancel flag. The wait and every
+/// teardown take it from here, so neither runs on a clock the test does not
+/// control.
 pub(super) struct RunnerClock {
     #[cfg(all(test, unix))]
     control: Option<Arc<super::test_runner::Control>>,
@@ -2319,27 +2278,33 @@ impl RunnerClock {
     }
 }
 
-/// Polls `try_wait` until the runner exits, a stop signal arrives, or
-/// `timeout` passes on `runner`'s clock. Both runner paths wait here.
+/// Polls the runner until it exits, a stop signal arrives, or `timeout`
+/// passes on `runner`'s clock.
 ///
 /// Each poll asks `try_wait` first, so a runner that has exited is reported
 /// as `Exited` even when the run was cancelled in the meantime. A cancelled
-/// run whose runner `try_wait` has just found still running calls
-/// `on_cancel` and is reported as a timeout, so the usual teardown ends it.
-fn wait_for_runner(
+/// run whose runner `try_wait` has just found still running has its process
+/// group killed and is reported as a timeout, so the usual teardown ends it.
+fn wait_for_recipe_runner(
+    child: &mut Child,
     timeout: Duration,
     runner: &RunnerClock,
-    mut try_wait: impl FnMut() -> std::io::Result<Option<ExitStatus>>,
-    on_cancel: impl FnOnce(),
 ) -> std::io::Result<RunnerWait> {
     let clock = runner.clock();
     let started = clock.now();
     loop {
-        if let Some(status) = try_wait()? {
+        if let Some(status) = child.try_wait()? {
             return Ok(RunnerWait::Exited(status));
         }
         if runner.cancelled() {
-            on_cancel();
+            // SAFETY: `try_wait` has just found the child still running, and
+            // only this executor waits on it, so it is still unreaped and its
+            // pid, the id of the group it leads, is still this runner's.
+            // Cancel only that group before the test worker is joined.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL)
+            };
             return Ok(RunnerWait::TimedOut);
         }
         if let Some(signal) = super::stop_signal::pending() {
@@ -2354,34 +2319,6 @@ fn wait_for_runner(
         };
         clock.sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }
-}
-
-/// Waits for a runner spawned as a plain child: a dry run on Linux, and
-/// every run elsewhere.
-fn wait_for_recipe_runner(
-    child: &mut Child,
-    timeout: Duration,
-    runner: &RunnerClock,
-) -> std::io::Result<RunnerWait> {
-    let pid = child.id();
-    wait_for_runner(
-        timeout,
-        runner,
-        || child.try_wait(),
-        || {
-            // SAFETY: `try_wait` has just found the child still running, and
-            // only this executor waits on a plain child, so it is still
-            // unreaped and its pid, the id of the group it leads, is still
-            // this runner's. Cancel only that group before the test worker
-            // is joined.
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(-(pid as libc::pid_t), libc::SIGKILL)
-            };
-            #[cfg(not(unix))]
-            let _ = pid;
-        },
-    )
 }
 
 fn terminate_recipe_runner(child: &mut Child, runner: &RunnerClock) -> Result<()> {
@@ -2719,4 +2656,57 @@ pub(crate) fn new_tree_id() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0) as u64;
     format!("{:016x}{:08x}", nanos, std::process::id())
+}
+
+/// Issue #1619: write this run's patched recipe copies, or `None` when no
+/// per-step tier override is configured, the run has no durable directory, or
+/// no recipe declares a named step.
+///
+/// Reported and never fatal: a tier is a preference about which model runs a
+/// step, so a staging failure leaves the run on the recipes as written rather
+/// than stopping a hundred agent steps.
+fn stage_step_tier_overrides(
+    run_dir: Option<&Path>,
+    search_dirs: &[PathBuf],
+    recipe: &Path,
+) -> Option<super::step_tiers::Staged> {
+    let (overrides, file_notices) = crate::commands::launch::model_tiers::step_tier_overrides();
+    // Once per run, before anything is staged: this process is the only
+    // reader of `[step_tiers]`, so a line it does not print is a line nobody
+    // sees. The file's own diagnostics come first — they explain why a
+    // mapping is not what the operator wrote.
+    for notice in file_notices {
+        eprintln!("{}", notice.render());
+    }
+    if overrides.is_empty() {
+        return None;
+    }
+    // Not `run_dir?` above the emptiness check: an operator who configured
+    // `[step_tiers]` and got nothing must be told why. Without this line a
+    // run with no durable directory — a dry run — discards the whole table
+    // with no `BadStepId`, no `StepTierUnmatched` and no line at all, which
+    // is the silence `step_tiers` says a mistyped step id must never have.
+    let Some(run_dir) = run_dir else {
+        eprintln!(
+            "amplihack: model tiers: per-step tier overrides are configured, but this \
+             run has no durable directory to stage them in; the recipes run with the \
+             tiers they declare."
+        );
+        return None;
+    };
+    match super::step_tiers::stage(run_dir, search_dirs, recipe, overrides) {
+        Ok(outcome) => {
+            for notice in &outcome.notices {
+                eprintln!("{}", notice.render());
+            }
+            outcome.staged
+        }
+        Err(reason) => {
+            eprintln!(
+                "amplihack: model tiers: the per-step tier override could not be staged \
+                 ({reason}); the recipes run with the tiers they declare."
+            );
+            None
+        }
+    }
 }

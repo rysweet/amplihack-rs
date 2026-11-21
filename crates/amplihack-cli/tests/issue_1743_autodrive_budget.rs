@@ -134,7 +134,7 @@ fi
 field=crusty_verdict; [ "$name" = "autodrive-merge-round" ] && field=merge_ready_verdict
 if [ "$verdict" != "-" ]; then
   head="$(git -C "$wd" rev-parse HEAD)"
-  printf '{"%s":"%s","head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s"}\n' "$field" "$verdict" "$head" "$head" "$label" > "$record"
+  printf '{"%s":"%s","head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s","commits_this_round":%s}\n' "$field" "$verdict" "$head" "$head" "$label" "$commit" > "$record"
   : > "$record.findings"
   if [ -n "$items" ]; then printf '%s\n' "$items" | tr ',' '\n' > "$record.findings"; fi
   [ "$light" = "1" ] && printf '{"verdict_source":"light-minor-rule"}\n' > "$record.light.json"

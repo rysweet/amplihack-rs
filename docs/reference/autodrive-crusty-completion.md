@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Crusty Completion Contract
 description: Completion-first dispatch, decision integrity, and follow-up finalization for Crusty reviews.
-last_updated: 2026-11-12
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -84,22 +84,43 @@ After the round record is written, an agent reads the record and its
 
 | Current review state | Action | Next step |
 | --- | --- | --- |
-| `CLEAN`, and `reviewed_head_sha` equals `head_sha` | `complete` | Finalize required follow-ups, then record phase completion. |
-| `MINOR_ONLY`, and `reviewed_head_sha` equals `head_sha` | `complete` | File or verify every minor follow-up before recording phase completion. |
+| `CLEAN`, matching reviewed/resulting heads, and no round commits | `complete` | Finalize required follow-ups, then record phase completion. |
+| `MINOR_ONLY`, matching reviewed/resulting heads, and no round commits | `complete` | File or verify every minor follow-up before recording phase completion. |
 | `CONCERNS` (blocking or major concerns open), including after a round with commits when the heads differ | `evaluate` | Retain remediation, progress and budget checks, then evaluate convergence where applicable. |
-| `CLEAN` or `MINOR_ONLY`, but `reviewed_head_sha` differs from `head_sha` | `evaluate`, with the head mismatch as the reason | The new head is not reviewed yet, so `complete` is not allowed. Dispatch currently refuses this decision too, so the round stops with a dispatch error. It fails closed and grants no merge authority; changing dispatch is a follow-up under #2472. |
+| `CLEAN` or `MINOR_ONLY`, but `reviewed_head_sha` differs from `head_sha` | `evaluate`, with the head mismatch as the reason | The new head is not reviewed yet. Record the reason and use existing evaluation and dispatch handling; this decision grants no merge authority. |
 | Invalid evidence: missing or unreadable record, no verdict, or a failed or refused round (rc not 0, exit `79`) | `evaluate`, with the fault as the reason | Never `complete`. Dispatch keeps its own failure handling: exits `79` and `75` return before the decision is read, a missing or unreadable record fails dispatch validation, and a record with no verdict goes to the evaluator as `MISSING`. |
 
-The PR head is the round record's `head_sha`. The agent compares
-`reviewed_head_sha` only with that field. Step-07 runs in the base checkout,
-so `git rev-parse HEAD` in its working directory gives the base branch, not
-the PR head, and must never be used for this comparison.
+The PR head is the round record's `head_sha`, or the verified PR worktree's
+`HEAD`. The agent compares `reviewed_head_sha` with that PR head. Since #2808
+step-07 runs in the PR worktree, and its own `git rev-parse HEAD` still never
+substitutes for the record's `head_sha`. Any round commits require
+`evaluate`, even if other evidence suggests completion.
+
+### The recorded reviewed head
+
+`reviewed_head_sha` in the record is the commit `autodrive_loop.sh` measured
+with `git rev-parse` in the named checkout before the round started, and
+passed to the round as the `reviewed_head_sha` context value. The round's own
+report stands in only where no measured value reaches the writer, which says so
+on stderr.
+
+Recording that commit is all the writer does with it. It does not compare the
+measurement with the review's own `reviewed_head_sha`, and no round is refused,
+stopped or sent to the evaluator because the two differ (#2814).
+
+Whether a review still covers the PR is judged where it is used, by an agent
+reading the PR rather than by a tool comparing strings: the merge round's
+criterion 3 takes the newest authorised `Crusty verdict:` comment, checks the
+commit it names against the current head, and asks for a fresh review when the
+commits since then are more than base merges or description changes
+(`autodrive-merge-round.yaml`, `crusty-covers`).
 
 `CONCERNS` always means `evaluate`, whatever the head SHAs or sidecars say.
 After a round with commits, `reviewed_head_sha` differing from `head_sha` is
 expected and is not invalid evidence; it only means the new head has not been
-reviewed. The `.minor` sidecar is required only for `MINOR_ONLY`. Dispatch
-checks the sidecars itself: every round needs a `.findings` sidecar, `CLEAN`
+reviewed. A `CLEAN` verdict needs neither `.minor` nor `.severity`; their
+absence does not prevent completion. The `.minor` sidecar is required only
+for `MINOR_ONLY`. Dispatch checks the sidecars itself: every round needs a `.findings` sidecar, `CLEAN`
 and `MINOR_ONLY` need it empty, and `MINOR_ONLY` also needs a non-empty
 `.minor` and a `.severity` sidecar.
 
@@ -179,8 +200,17 @@ record, manifest and sidecar evidence remain valid; failed execution can
 never authorize `complete`. A no-progress exemption does not waive dispatch
 validation. Missing or unreadable required records, invalid decisions or
 evidence-integrity failures stop visibly before evaluation. Terminal
-refusals, orphaning, usage-limit and review-directory failures retain their
+refusals, orphaning, and usage-limit failures retain their
 own stop classifications and cannot use this recovery path.
+
+The child execution status dispatch reads is the round process's own exit
+status, passed by `tools/autodrive_loop.sh` as `--child-exit-code`. A round
+recipe is judged by its own steps, not by whether the PR merged: the auto-drive
+outcome rule applies only to the top-level `auto-drive-to-merge` and
+`auto-drive-light` invocations (#2769). See
+[Which invocations the rule judges](autodrive-merge-ready-round.md#which-invocations-the-rule-judges).
+A CLEAN round whose steps all succeeded therefore exits `0` and can satisfy
+this condition; it still has to pass every other check above.
 
 Private directories and files normally use modes `0700` and `0600`.
 Hashes check integrity against trusted state; they do not authenticate the

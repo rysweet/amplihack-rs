@@ -38,6 +38,7 @@ This page concerns **git hooks**. It has nothing to do with Claude Code hooks
 - [Agent output contract](#agent-output-contract)
 - [Refusal rules](#refusal-rules)
 - [Staging rules](#staging-rules)
+  - [Pulling after staging](#pulling-after-staging)
 - [`hook_repair_run`](#hook_repair_run)
 - [`stage_workflow_changes`](#stage_workflow_changes)
 - [Result line](#result-line)
@@ -61,9 +62,14 @@ Each of these steps sources two helpers from `amplifier-bundle/tools/`. In
 which stages only the paths captured before validation; its untracked paths
 pass through `workflow_stage_filter`, the same exclusions as
 `stage_workflow_changes`, which is then used for the agent's changes between
-rounds. The staging helper is loaded before staging. The driver and the git
-identity helper are loaded only once something is staged, so a checkpoint
-with nothing to commit does not fail because either is missing.
+rounds. That filter sees untracked paths only, so the scoped add is followed
+by `unstage_root_run_reports_here` (#2839) — the same index-only correction
+`stage_workflow_changes` ends with, packaged for a caller that has already
+staged. Without it a `run/reports/` file an earlier agent had already staged,
+or one already tracked and since rewritten, still reached the checkpoint
+commit. The staging helper is loaded before staging. The driver and the git
+identity helper are loaded only once something is staged, so a checkpoint with
+nothing to commit does not fail because either is missing.
 
 | File | Function | Replaces |
 |---|---|---|
@@ -601,25 +607,109 @@ A `target` directory at the top of the repository is always excluded.
 Elsewhere a directory named `target` without `CACHEDIR.TAG`, such as
 `src/target/`, is source and is staged.
 
-and also, at the top of the repository only, when the path is under
-`.claude/runtime/` or `.amplihack/`. An agent session started in the
-worktree, such as a repair round, writes its session log, metrics and code
-graph there; outside amplihack-rs those directories are often not ignored.
+An untracked path is also excluded, at the top of the repository only, when
+it is under `.claude/runtime/`, `.amplihack/` or `run/reports/`. An agent
+session started in the worktree, such as a repair round, writes its session
+log, metrics and code graph under the first two. `run/reports/` holds a run's
+private execution reports, which are evidence for the operator and not source.
+Only the top-level directory is excluded: `crates/foo/run/reports/keep.json`
+and `run/reports.rs` are staged.
 
 Excluded paths are printed on stderr, one per line, prefixed
 `stage_workflow_changes: skipped `. Files the repository already tracks are
 staged when modified, including a tracked file under `.claude/runtime/` or
 `.amplihack/`.
 
-Untracked paths are passed with `git --literal-pathspecs add
---pathspec-from-file=<list> --pathspec-file-nul`, so a file named `*` or `:(glob)x`
-is treated as a name. On git older than 2.25 the helper falls back to
-`xargs -0 git --literal-pathspecs add --`.
+`run/reports/` is also handled in the index (#2839), because `git add -u`
+refreshes every path already staged or tracked, and because a path an earlier
+agent staged is already there before the helper runs at all. After staging,
+the helper drops a staged `run/reports/` addition and resets a rewritten,
+tracked report to its version in `HEAD`; with no commit yet it drops every
+cached path there. A staged deletion is left alone, so a commit that removes
+reports published earlier still works; one consequence is that a source file
+moved *into* `run/reports/` leaves only its deletion staged, so the commit
+takes it out of the product, which is what the move asked for. The operation is index-only: report
+files keep their bytes on disk, unrelated staged source stays staged, and
+earlier commits are not rewritten. Each path is printed on stderr as
+`stage_workflow_changes: unstaged <path>`. The same correction is available on
+its own as `unstage_root_run_reports_here`, for a step that staged by other
+means; the TDD checkpoint's scoped add is the one such step.
 
-The `artifact-guard --mode pre-publish` calls are unchanged.
-`stage_workflow_changes` now runs between the call before staging and the
-call after it in all three steps, so the second call checks what the helper
-staged. A test covers this for each step; see [Tests](#tests).
+Untracked paths are added with `git --literal-pathspecs add
+--pathspec-from-file=<list> --pathspec-file-nul`, so a file named `*` or
+`:(glob)x` is treated as a name. The unstaging calls are also literal. On git
+older than 2.25 the helper falls back to `xargs -0`.
+
+Both entry points take their path lists in one private directory allocated by
+`workflow_stage_scratch`, inside the repository's Git metadata and never
+inside the tree being staged. A failed or malformed allocation is refused with
+status 2 and is never consumed or removed (#1937).
+
+The `artifact-guard` calls are unchanged. `stage_workflow_changes` runs
+between the call before staging and the call after it at each step that stages
+the whole tree. Each step resolves `workflow_stage_changes.sh` through the same
+search chain as its other helpers and exits with status 2 when it is missing,
+rather than falling back to a raw add. This changes the posture of step 20b of
+`workflow-finalize`, which staged with a raw `git add -A` and is still the one
+step that warns and continues when its *runtime artifact* helper is missing: a
+missing staging helper now ends it with status 2 instead. Routing that exit to
+recovery rather than ending the step is tracked in #2855, together with the
+source file moved *into* `run/reports/` whose addition is dropped.
+
+### Pulling after staging
+
+Resetting a rewritten, tracked report in the index leaves it on disk as an
+unstaged modification. `git pull --rebase` refuses to run with one, exiting
+128 with `cannot pull with rebase: You have unstaged changes`, and on the
+publishing path that refusal is a dead end rather than a recoverable failure:
+step 18c of `workflow-pr-review` has `continue_on_error: true`, so
+[`push-failure-recovery`](recipe-push-failure-recovery.md) runs, but that
+recipe refuses to act while `git status --porcelain
+--untracked-files=no` is non-empty, forbids its agent to stage, commit, reset
+or rebase, and fails its gate on `uncommitted-changes`. The run would need a
+person.
+
+So every pull that can follow `stage_workflow_changes` within the same step
+goes through `workflow_pull_rebase`, a third entry point in the same helper —
+each of these steps has already sourced it to stage, and the helper is where
+the state being tolerated is created:
+
+| Recipe | Step |
+|---|---|
+| `workflow-pr-review` | `step-18c-push-feedback-changes` |
+| `workflow-finalize` | `step-20b-push-cleanup` |
+| `workflow-publish` | the outside-in retry loop in `step-16b` |
+| `consensus-publish` | `step9-commit` |
+| `consensus-pr-feedback` | the review-update push |
+
+```
+workflow_pull_rebase [git-option...]
+```
+
+runs `git -c rebase.autoStash=true <git-option...> pull --rebase`. Git stashes
+the report before the rebase and reapplies it afterwards, so the pull and the
+push succeed and the report keeps its bytes on disk. Arguments are passed to
+git before `pull`, which is how step 20b gets `--no-pager`. The setting is
+passed as `-c rebase.autoStash=true` rather than `--autostash` because git
+older than 2.9 has neither, and ignores an unknown configuration key instead
+of failing on an unknown option; on such a git the step behaves as it did
+before. A clean autostash leaves no entry on `refs/stash`, which matters
+because that stack is shared with every other worktree of the repository.
+
+The worktree is still left with the report modified, which is the residue
+described under [Residual risks](#residual-risks-and-detection-limits).
+`step-15-commit-push` of `workflow-publish` needs none of this: it
+fast-forwards or refuses by ancestry (#978) and never rebases.
+
+Two cases remain. If the upstream branch has rewritten the *same* report path
+since the local commit, reapplying the autostash conflicts: git completes the
+rebase and the push, says so on the step's output, and leaves conflict markers
+in the report and one `autostash` entry on the stash stack. Nothing can be
+published from it — the next `stage_workflow_changes` resets that path again —
+but the entry has to be dropped by hand. And a pull is not reached at all when
+the branch has no upstream; those paths push directly. Both end when the
+tracked reports' removal is committed once, after which the directory is
+untracked and none of this recurs.
 
 ## `hook_repair_run`
 
@@ -654,7 +744,7 @@ inputs as arguments:
   the same `usage_limit_failure` check as `autodrive_loop.sh` on the
   evaluator's exit code and output: a non-zero exit with the runner's
   `usage_limit` failure-class marker gives `USAGE_LIMIT`, never `STUCK`. See
-  [Usage limits are not STUCK](auto-drive-to-merge.md#usage-limits-are-not-stuck).
+  [Usage limits are not STUCK](auto-drive-to-merge.md#usage-limits-are-not-stuck-or-hand-off).
 
 **Return codes:**
 
@@ -692,7 +782,9 @@ stage_workflow_changes
 
 Takes no arguments. Returns 0 on success or the failing `git` exit code.
 Writes nothing to stdout, installs no traps, and running it twice in a row
-stages the same set.
+stages the same set, whether the second run starts from untracked reports or
+from reports an earlier step staged. `skipped` and `unstaged` lines go to
+stderr; see [Staging rules](#staging-rules).
 
 ## Result line
 
@@ -829,11 +921,18 @@ fails closed. This is tracked in #1675.
 `hook_repair_terminal_refusal` was copied, still misses the marker under
 `pipefail` when a large log follows it. #1674 tracks it.
 
+A `run/reports/` file that the repository already tracks and that the run has
+since rewritten is reset in the index but kept on disk, so it stays as an
+unstaged modification until someone commits the removal of the tracked
+reports. See [Pulling after staging](#pulling-after-staging) for what the
+publishing steps do with it; the residue itself is harmless, because the next
+run of the helper resets the same path again and no commit can carry it.
+
 ## Tests
 
 | Test | Covers |
 |---|---|
-| `amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh` | staging and exclusions, classification, id sanitising, redaction, verdict parsing, refusal cases, usage errors, result-line JSON, and the extracted checkpoint and step-15 bodies against a stub `AMPLIHACK_BIN` |
+| `amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh` | staging and exclusions (including private `run/reports/` files, in temporary repositories), classification, id sanitising, redaction, verdict parsing, refusal cases, usage errors, result-line JSON, and the extracted checkpoint and step-15 bodies against a stub `AMPLIHACK_BIN` |
 | `tests/integration/issue_1671_hook_rejection_repair_test.rs` | runs the shell test from `cargo test` |
 
 The stub agent is driven by `STUB_AGENT_ACTION`, a space-separated list of
@@ -880,6 +979,11 @@ has its own case in the shell test:
 | a git directory that cannot hold the attempt file still yields redacted stderr and `--output` | [Evidence](#evidence) |
 | `not_fixable_in_code` with no diff and the same output stops without the evaluator; any difference goes to it | [No-progress stop](#no-progress-stop) |
 | lockfiles are staged | [Staging rules](#staging-rules) |
+| top-level `run/reports/` stays out of the index whether untracked, pre-staged, rewritten or in a repository with no commit; a staged deletion still commits | [Staging rules](#staging-rules) |
+| the TDD checkpoint's scoped add also keeps a pre-staged or rewritten tracked report out of the `wip:` commit, through `unstage_root_run_reports_here` | [Where it applies](#where-it-applies) |
+| `workflow-pr-review` step 18c, run whole, commits and pushes the reviewed source with no `run/reports/` path in the commit | [Staging rules](#staging-rules) |
+| step 18c on a branch that already tracks a rewritten report, with origin ahead: the pull autostashes, the rebase and push land, the report keeps its new bytes on disk and its committed bytes in `HEAD`, and the stash stack is left empty | [Pulling after staging](#pulling-after-staging) |
+| `workflow_pull_rebase` on its own, against a repository in that state and a plain `git pull --rebase` refusing the same fixture as a control | [Pulling after staging](#pulling-after-staging) |
 | step-15's commit hook never sees `PRE_COMMIT_ALLOW_NO_CONFIG`; a checkpoint's does without a config | [Where it applies](#where-it-applies) |
 | a kept `HR_DIR` holds no unredacted agent or evaluator log | [Evidence](#evidence) |
 

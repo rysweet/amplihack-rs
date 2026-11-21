@@ -82,6 +82,10 @@ impl IsolatedHome {
             "AMPLIHACK_HOME",
             "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
             "AMPLIHACK_REPAIR_ORIGINAL_PATH",
+            // The launch repair writes `$CLAUDE_CONFIG_DIR/settings.json`
+            // when it is set (#2279), which is outside HOME: a session
+            // started with a login profile exports it.
+            "CLAUDE_CONFIG_DIR",
         ] {
             env.put(name, None);
         }

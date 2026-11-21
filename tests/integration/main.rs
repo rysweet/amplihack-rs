@@ -542,6 +542,15 @@ mod issue_1764_git_never_prompts;
 #[path = "issue_1771_precommit_symlinked_caches_test.rs"]
 mod issue_1771_precommit_symlinked_caches;
 
+// Issue #2712: a recipe shell suite started inside a recipe run inherited
+// AMPLIHACK_WORK_ROOT and AMPLIHACK_WORK_ROOT_EXPLICIT=1 and put its
+// worktrees in the shared work root, outside its own EXIT trap. Runs
+// test-default-workflow-reliability.sh with an explicit work root supplied
+// from outside and requires that directory to stay empty, plus two unit tests
+// of the shared setup fragment the suites source.
+#[path = "issue_2712_recipe_test_work_root.rs"]
+mod issue_2712_recipe_test_work_root;
+
 // Issue #1966: is_critical_code is a required caller input. consensus-workflow
 // step 0 and consensus-tdd-impl reject a missing or malformed value before any
 // route, and the route gate fails unless exactly one route completed. Static
@@ -549,3 +558,19 @@ mod issue_1771_precommit_symlinked_caches;
 // recipe-runner-rs with agent steps stubbed, all under isolated(..).
 #[path = "issue_1966_consensus_criticality.rs"]
 mod issue_1966_consensus_criticality;
+
+// Issue #1619 (TDD): the small-diff combined review. Runs the review-mode
+// step's script against a temporary git repository with the settings in a
+// temporary home, and checks the answer it prints in each case.
+#[path = "issue_1619_review_mode_test.rs"]
+mod issue_1619_review_mode;
+
+// Issue #1619: a step whose shell body was extracted into
+// amplifier-bundle/tools/ for the brick budget still has to be readable by
+// the tests that assert on it. One place follows the call-out.
+#[path = "recipe_step_body.rs"]
+mod recipe_step_body;
+
+// Issues #2343, #1726, #2809: finalization reads the run's real outcome.
+#[path = "issue_2343_finalization_outcome.rs"]
+mod issue_2343_finalization_outcome;

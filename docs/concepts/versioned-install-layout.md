@@ -1,7 +1,7 @@
 ---
 title: Versioned Install Layout
 description: How atomic release switching preserves running processes and trusted auto-drive bundles.
-last_updated: 2026-11-11
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: amplihack-maintainers
 doc_type: explanation
@@ -389,6 +389,7 @@ All install work takes an exclusive lock on `~/.amplihack/.install.lock`:
 - `amplihack update` while it downloads and switches the binaries;
 - the install child that `amplihack update` starts afterwards;
 - the startup self-heal;
+- the launch bootstrap, when it re-stages missing framework assets;
 - `amplihack uninstall`.
 
 Rules:
@@ -404,13 +405,70 @@ Rules:
   install does not deadlock. Another thread in the same process waits.
 - `amplihack update` releases the lock before it starts the post-update
   install child, and the child takes it again.
-- Self-heal re-reads the version stamp once it holds the lock. If another
-  process already installed the same version, self-heal does nothing (#1526).
+- Explicit `install`, including the post-update install child, chooses its
+  framework source and runs any release tag fetch before it takes the lock.
+  Self-heal and the launch bootstrap's re-stage take the lock first, so their
+  fetch runs under it, and other installs and launches that need the lock can
+  wait for that fetch (up to its 60-second limit). Whether to fetch before
+  taking the lock is tracked in
+  [#2798](https://github.com/rysweet/amplihack-rs/issues/2798).
+- Self-heal and the launch bootstrap re-read the version stamp once they hold
+  the lock, through one shared helper (`self_heal::restage_under_install_lock`).
+  If the stamp is now newer than the running binary, they stage nothing. If
+  another process has already brought the assets current, they do nothing
+  (#1526, #1582).
 - The lock file is opened with `O_NOFOLLOW`, mode `0600` and close-on-exec.
   A symlink at the lock path is refused.
 
 An `amplihack` command started inside a run while an update holds the lock
 waits for the update to finish. This is intended.
+
+### The launch bootstrap's re-stage
+
+The launch bootstrap (`ensure_framework_installed`) runs before an
+interactive launch and re-stages the framework when files are missing from
+`~/.amplihack/.claude`. It decides in two stages (issue #1582):
+
+1. Without the lock, it checks whether the stamp is newer than the running
+   binary (#1526) and whether the framework assets are complete. If the
+   assets are complete, it takes no lock and carries on with the launch.
+   This check can only conclude that there is nothing to do; it never starts
+   a re-stage by itself.
+2. Otherwise it takes the lock, re-reads the stamp and checks the assets
+   again. Nothing read before the lock is reused. It re-stages only if the
+   assets are still incomplete and the stamp is not newer than the running
+   binary.
+
+As a result:
+
+- Two launches started together on one home re-stage once. The second waits
+  for the first, then finds the assets complete and stages nothing. Only the
+  launch that re-stages prints
+  `🔧 Bootstrapping amplihack framework assets...`.
+- A launch with missing assets that starts while another install holds the
+  lock waits for it, and prints the `⏳ waiting` line above after about
+  2 seconds. When the assets are complete, the bootstrap takes no lock and
+  does not wait. Startup self-heal, which runs earlier in the same launch,
+  still takes the lock when the stamp differs from the binary's version or
+  the installed bundle is incompatible; see
+  [Self-Heal: Auto-Restage Framework Assets](../features/self-heal-asset-restage.md#concurrency).
+- Any release tag fetch on this path runs under the lock, as it does in
+  self-heal.
+- If the stamp re-read under the lock is newer than the running binary, the
+  bootstrap prints the #1526 downgrade warning (none under
+  `AMPLIHACK_SKIP_AUTO_INSTALL`) and returns at once, exactly as when the
+  stamp is already newer before the lock. It skips the steps that follow the
+  re-stage: the slash-command top-up, the `settings.json` hook repair, the
+  Codex reconciliation, the Codex deny rules and the Claude
+  `permissions.deny` refresh (`refresh_deny_entries`). An older binary
+  therefore writes none of these over a newer install.
+- `AMPLIHACK_SKIP_AUTO_INSTALL` does not stop the bootstrap's re-stage; it
+  only suppresses the downgrade warning.
+
+Self-heal and the bootstrap share the lock, the stamp re-read and the
+downgrade check. Each supplies its own test for "still needed": self-heal
+compares the stamp with the binary version and checks the installed bundle,
+and the bootstrap checks for missing framework files.
 
 ## No signals
 
@@ -673,6 +731,12 @@ These checks accept a link into a release and still reject anything else:
   path into it. A forward step only keeps more. The reasons for using this
   rule are recorded in
   [Decision for #2024: non-dumpable processes](#decision-for-2024-non-dumpable-processes).
+- Within the launch bootstrap, only the re-stage runs under the install
+  lock. The steps that follow it (the slash-command top-up, the
+  `settings.json` hook repair, the Codex reconciliation, the Codex deny rules
+  and the Claude `permissions.deny` refresh) do not take the lock, so two
+  launches started together can run them at the same time. This is tracked in
+  [#2798](https://github.com/rysweet/amplihack-rs/issues/2798).
 - Auto-drive binds its full trusted execution bundle per invocation.
   Other consumers that read `$AMPLIHACK_HOME/amplifier-bundle/<file>` directly
   after a switch can see a different complete file.
@@ -737,6 +801,8 @@ rm -rf ~/.amplihack/releases/1.2.107
 | `tests/issue_1954_no_foreign_signals.rs` | Source scan: no `kill`, `killpg`, `Signal::` or `kill`/`pkill`/`killall` command in install, update, self-heal, lock, layout or uninstall code, except `util.rs` and `Child::kill`. |
 | `commands/install/tests/issue_1954_release_layout.rs` | Release naming, atomic switch over a file, link or directory, switching only planned links, a partial switch report with the per-link keep set, exchange fallback, `EXDEV` retire, in-use cleanup (holders signal readiness on stdout and are released by closing stdin), a non-dumpable process keeps only releases created no later than 2 seconds after it started (#2024), the exact message text and the security rules above. Also the `.installed-by` record (fields, sanitised `exe`, planted symlink not followed, garbage or oversized file reads as `None`) and this release's #1526 downgrade guard (`self_heal_from_older_binary_leaves_newer_release_alone`): self-heal from an older binary leaves a newer release alone. |
 | `commands/install/tests/issue_1954_install_lock.rs` | Lock re-entrancy on one thread, a second thread or process waiting (ordering checked through a channel, not a timer), no lock passed to a child, a symlinked lock path refused, no truncation, mode 0600 and the exact wait message. |
+| `commands/install/tests/issue_1582_bootstrap_lock.rs` | The [launch bootstrap's re-stage](#the-launch-bootstraps-re-stage). Two threads that both find the assets missing before the lock (held together by a barrier) re-stage once: one reports `Installed`, the other `NotNeeded`. A newer stamp written between the unlocked check and the lock stops the whole bootstrap with nothing changed in the home, with the downgrade warning written under the lock, and with no warning under `AMPLIHACK_SKIP_AUTO_INSTALL`. With complete assets, the whole bootstrap of a Claude launch creates no lock file. Under `AMPLIHACK_SKIP_AUTO_INSTALL` the bootstrap's re-stage still installs missing assets. The shared helper re-checks and installs with the lock held, and a failed re-stage still fails the launch and releases the lock. |
+| `tests/gadugi/run-issue-1582-concurrent-launch-scenario.sh` | Outside-in, run by CI in the `install-smoke` job (scenario `tests/gadugi/scenarios/issue-1582-concurrent-launch-restage.yaml`). On a temporary home it installs, removes a framework directory, holds the install lock itself, and starts two `amplihack claude` launches under a pseudo-terminal. Once both report the `⏳ waiting` line it releases the lock. Both launches exit 0, one new release appears, one `🔧 Bootstrapping` line is printed across both, and every file present after the install is present again. |
 | `update/tests/build_install_command.rs` (`exact_handoff_contract_matches_v1_2_107`) | The update hand-off has argv exactly `["install", "--force-refresh"]` and `AMPLIHACK_NO_UPDATE_CHECK=1`, `AMPLIHACK_NONINTERACTIVE=1` and `AMPLIHACK_POST_UPDATE_INSTALL=1` set, as in 1.2.107. Other variables (`AMPLIHACK_REPAIR_ORIGINAL_PATH`, `PATH`) are not part of the check. |
 | `commands/recipe/run/tests_merge_guard_pin.rs` | Current guard pinning rejects unsafe ownership/modes and invalid release paths. Planned trusted-bundle tests must also reject PR-authored instruction fallback; that coverage is not established here. |
 | `commands/install/command_staging/tests.rs` | The previous slash-command set is retired under `releases/.retired/`, not deleted. When it cannot be retired, it is removed only if the scan shows no process uses it, and otherwise kept as `.unretired-<n>` and checked again by the next install; a leftover `.staging` tree is never deleted unchecked. |
@@ -751,6 +817,29 @@ The host-level test reads each link at fixed points rather than sampling it
 continuously. That a link never names a missing target during a switch
 follows from `rename(2)` and is checked at the syscall level in
 `issue_1954_release_layout.rs`.
+
+To run the #1582 tests from the repository root:
+
+```bash
+cargo test -p amplihack-cli --locked issue_1582
+cargo install --path bins/amplihack --locked --root target/qa-1582
+AMPLIHACK_1582_QA_BIN="$PWD/target/qa-1582/bin/amplihack" \
+  bash tests/gadugi/run-issue-1582-concurrent-launch-scenario.sh
+```
+
+The scenario needs an `amplihack` built from this checkout. It stages from
+the checkout through `AMPLIHACK_HOME`, and the bootstrap's re-stage is
+implicit, so it uses that source only when the checkout and the binary have
+the same version
+([source rules](../reference/framework-source-selection.md#source-rules)).
+A binary of any other version skips the checkout and fetches a release tag
+instead. The second command builds the checkout as the `install-smoke` job
+does, but into `target/qa-1582` rather than over an installed `amplihack`.
+
+The scenario prints one `PASS: <case> -` line per assertion and ends with
+`ALL_CASES_PASSED`, or prints `SCENARIO_FAILED` and exits non-zero. It
+installs into a home under its own `mktemp -d` directory and runs every
+child under `env -i`, so it never reads or changes the real `~/.amplihack`.
 
 ## See also
 

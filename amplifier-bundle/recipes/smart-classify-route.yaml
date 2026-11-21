@@ -72,6 +72,7 @@ steps:
     recovery: {"replay": "reuse"}
     type: "agent"
     agent: "amplihack:core:architect"
+    model: "strong"
     prompt: |
       === [RECIPE PROGRESS] Step: classify-and-decompose ===
 

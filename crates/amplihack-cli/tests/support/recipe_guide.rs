@@ -134,6 +134,8 @@ pub struct GuideFixture {
     pub home: PathBuf,
     pub state: PathBuf,
     pub work: PathBuf,
+    /// A work root that is not the default `$HOME/.amplihack/work`.
+    pub alt_work: PathBuf,
     pub recipe_logs: PathBuf,
     pub records: PathBuf,
     pub tools: PathBuf,
@@ -244,6 +246,7 @@ impl GuideFixture {
         let home = root.join("home");
         let state = root.join("state");
         let work = home.join(".amplihack").join("work");
+        let alt_work = root.join("elsewhere").join("work");
         let recipe_logs = home.join(".amplihack").join("recipe-logs");
         let records = root.join("records");
         let tools = root.join("tools");
@@ -285,6 +288,7 @@ impl GuideFixture {
             home,
             state,
             work,
+            alt_work,
             recipe_logs,
             records,
             tools,
@@ -416,13 +420,34 @@ impl GuideFixture {
         self.work.join("runs")
     }
 
-    /// A run folder `<work>/runs/<folder_id>/` with a `run.json` naming
-    /// `correlation_id` as its attempt, as `recipe run` writes it.
-    pub fn make_run(&self, folder_id: &str, correlation_id: &str) -> PathBuf {
-        let dir = self.runs().join(folder_id);
-        private_dir(&self.work);
-        private_dir(&self.runs());
+    /// A run folder `<work_root>/runs/<folder_id>/` with a `run.json` naming
+    /// `correlation_id` as its attempt, as `recipe run` writes it. Every
+    /// level is created 0700, so the folder passes the trust rule
+    /// `recipe guide` applies on the way down.
+    pub fn make_run_in(&self, work_root: &Path, folder_id: &str, correlation_id: &str) -> PathBuf {
+        self.make_run_with_attempts(work_root, folder_id, &[correlation_id])
+    }
+
+    /// Like [`Self::make_run_in`], but with one `attempts[]` entry per
+    /// correlation id, as a run that was retried records it: `recipe run`
+    /// builds a fresh correlation id for each attempt and appends it to
+    /// `run.json`, while the folder stays the one the run started with
+    /// (issue #2818).
+    pub fn make_run_with_attempts(
+        &self,
+        work_root: &Path,
+        folder_id: &str,
+        correlation_ids: &[&str],
+    ) -> PathBuf {
+        let runs = work_root.join("runs");
+        let dir = runs.join(folder_id);
+        private_dir(work_root);
+        private_dir(&runs);
         private_dir(&dir);
+        let attempts: Vec<serde_json::Value> = correlation_ids
+            .iter()
+            .map(|id| serde_json::json!({"correlation_id": id}))
+            .collect();
         let report = serde_json::json!({
             "schema_version": 1,
             "run_id": folder_id,
@@ -431,11 +456,16 @@ impl GuideFixture {
             "cwd": self.root.display().to_string(),
             "started_at": "2026-11-12T09:12:00Z",
             "outcome": "running",
-            "attempts": [{"correlation_id": correlation_id}],
+            "attempts": attempts,
             "steps": [],
         });
         private_file(&dir.join("run.json"), report.to_string());
         dir
+    }
+
+    /// A run folder under the default work root, `$HOME/.amplihack/work`.
+    pub fn make_run(&self, folder_id: &str, correlation_id: &str) -> PathBuf {
+        self.make_run_in(&self.work.clone(), folder_id, correlation_id)
     }
 
     /// `<recipe-logs>/<session>.log` whose first pointer line names `run_id`.
@@ -447,6 +477,65 @@ impl GuideFixture {
             format!("starting run\namplihack.recipe.log_pointer {pointer}\nmore output\n"),
         );
         log
+    }
+
+    /// Like [`Self::make_run`], but under [`Self::alt_work`], the work root a
+    /// run started with `AMPLIHACK_WORK_ROOT` set would use.
+    pub fn make_run_in_alt_work(&self, folder_id: &str, correlation_id: &str) -> PathBuf {
+        self.make_run_in(&self.alt_work.clone(), folder_id, correlation_id)
+    }
+
+    /// The early pointer object a run writes at start, with `run_dir` when
+    /// given, as `recipe run` records it (issue #2783).
+    pub fn pointer(correlation_id: &str, run_dir: Option<&Path>) -> serde_json::Value {
+        let mut v = serde_json::json!({
+            "schema_version": 1,
+            "event": "early",
+            "run_id": correlation_id,
+            "recipe_name": "smart-orchestrator",
+            "cwd": "/tmp/w",
+        });
+        if let Some(d) = run_dir {
+            v["run_dir"] = d.display().to_string().into();
+        }
+        v
+    }
+
+    /// `<recipe-logs>/<session>.log` whose body holds `pointer` as a real
+    /// pointer line between other output.
+    pub fn session_log_from_pointer(&self, session: &str, pointer: &serde_json::Value) -> PathBuf {
+        self.session_log_from_pointers(session, std::slice::from_ref(pointer))
+    }
+
+    /// `<recipe-logs>/<session>.log` holding one pointer line per pointer,
+    /// in the order given, as a run that retried writes one line per attempt
+    /// (issue #2818).
+    pub fn session_log_from_pointers(
+        &self,
+        session: &str,
+        pointers: &[serde_json::Value],
+    ) -> PathBuf {
+        let log = self.recipe_logs.join(format!("{session}.log"));
+        let mut body = String::from("starting run\n");
+        for pointer in pointers {
+            body.push_str(&format!(
+                "amplihack.recipe.log_pointer {pointer}\nmore output\n"
+            ));
+        }
+        private_file(&log, body);
+        log
+    }
+
+    /// `amplihack recipe guide <args…> -` with `text` on stdin and both
+    /// work-root variables unset, whatever the caller's environment.
+    pub fn guide_without_work_root(&self, args: &[&str], text: &str) -> Output {
+        let mut full = vec!["recipe", "guide"];
+        full.extend_from_slice(args);
+        full.push("-");
+        let mut c = self.amplihack(&full);
+        c.env_remove("AMPLIHACK_WORK_ROOT")
+            .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT");
+        self.run_with_stdin(c, Some(text.as_bytes()))
     }
 
     pub fn pr_parent(&self) -> PathBuf {

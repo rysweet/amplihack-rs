@@ -34,6 +34,17 @@ use std::path::{Path, PathBuf};
 const BEGIN: &str = "===== BEGIN OPERATOR INSTRUCTIONS FOR THIS RUN =====";
 const END: &str = "===== END OPERATOR INSTRUCTIONS FOR THIS RUN =====";
 
+/// The `PATH` handed to every child this file starts.
+///
+/// Several tests in this binary set `PATH` process-wide while they run, two
+/// of them to a directory holding nothing
+/// (`install::tests::binary_tests` and `install::recipe_runner`), and the
+/// variable is process-wide, so a `git` or `bash` resolved through the
+/// inherited value fails with `NotFound` at random. `git` and `bash` are in
+/// `/usr/bin` or `/bin` on every platform these tests run on; where they are
+/// not, the tests below skip quietly as they already do.
+const CHILD_PATH: &str = "/usr/bin:/bin";
+
 /// A private (0700) temporary root, canonical so no ancestor is a symlink.
 fn private_root() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
@@ -128,6 +139,30 @@ fn u1_pr_key_matches_autodrive_state_sh_for_an_https_origin() {
 
 #[test]
 fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
+    // Holds the shared environment lock for as long as the spawns below are
+    // in flight. Not because of `PATH` lookup — `Command::env("PATH", ..)`
+    // does set the search path for the program itself, since Rust declines
+    // `posix_spawn` when a custom `PATH` is set for a non-path program and
+    // falls back to `fork` + `execvp` against the assigned environment (see
+    // `test_support::host_path`). The race is `amplihack_git::command()`,
+    // which calls `scrub()`, which iterates `std::env::vars_os()` while
+    // sibling tests in this binary call `set_var` on the same process-global
+    // environment. That is a data race, and the lock is what prevents it.
+    //
+    // Do not call `test_support::host_path()` from inside this block: its
+    // `OnceLock` initializer takes this same non-reentrant lock and would
+    // deadlock. `CHILD_PATH` below is a constant and takes no lock.
+    //
+    // The same lock also covers the two spawns below. `git` and `bash` are
+    // resolved through `PATH`, and several install tests set the process-wide
+    // `PATH` to one temp directory for the length of their own assertion;
+    // without the lock both spawns would fail with ENOENT, reported against
+    // this test rather than against the interleaving. One acquisition serves
+    // both reasons — the lock is not reentrant, so taking it twice here
+    // deadlocks the test.
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     // Runs the real shell function against a scratch repo whose origin is an
     // https remote. Skips quietly where bash or git is missing.
     let (_tmp, root) = private_root();
@@ -142,12 +177,13 @@ fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
         .args(["init", "-q"])
         .current_dir(&repo)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", CHILD_PATH)
         .status()
         .is_ok_and(|s| s.success());
     if !git_ok || !script.is_file() {
         return;
     }
-    amplihack_git::command()
+    let remote_ok = amplihack_git::command()
         .args([
             "remote",
             "add",
@@ -155,8 +191,11 @@ fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
             "https://github.com/octo-org/my.repo.git",
         ])
         .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", CHILD_PATH)
         .status()
-        .unwrap();
+        .is_ok_and(|s| s.success());
+    assert!(remote_ok, "git remote add failed in {}", repo.display());
     let out = std::process::Command::new("bash")
         .arg("-c")
         .arg(format!(
@@ -165,6 +204,7 @@ fn u1_pr_key_parity_with_the_shell_function_when_bash_and_git_exist() {
             repo.display()
         ))
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", CHILD_PATH)
         .stdin(std::process::Stdio::null())
         .output();
     let Ok(out) = out else { return };
@@ -1209,6 +1249,12 @@ fn d6_runner_env_value_without_pr_lists_the_run_folder_only() {
 
 #[test]
 fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
+    // `runner_env_value` resolves `git` through the process `PATH`, which
+    // sibling tests in this binary replace while they run, so this one holds
+    // the shared environment lock for as long as that call is in flight.
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (_tmp, root) = private_root();
     let repo = root.join("repo");
     fs::create_dir(&repo).unwrap();
@@ -1216,16 +1262,20 @@ fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
         .args(["init", "-q"])
         .current_dir(&repo)
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", CHILD_PATH)
         .status()
         .is_ok_and(|s| s.success());
     if !ok {
         return;
     }
-    amplihack_git::command()
+    let remote_ok = amplihack_git::command()
         .args(["remote", "add", "origin", "git@github.com:o/r.git"])
         .current_dir(&repo)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PATH", CHILD_PATH)
         .status()
-        .unwrap();
+        .is_ok_and(|s| s.success());
+    assert!(remote_ok, "git remote add failed in {}", repo.display());
     let state = root.join("state");
     let mut ctx = BTreeMap::new();
     ctx.insert("pr_number".to_string(), "7".to_string());
@@ -1250,4 +1300,37 @@ fn d6_pr_number_uses_the_origin_remote_of_repo_path() {
 fn an_empty_env_list_reads_no_folders() {
     let got = env::dirs_from_env_value(OsStr::new(""));
     assert!(got.is_empty());
+}
+
+/// The two-word rule at its source (issue #2809): the same failing folder
+/// yields a bare reason for a caller that passes it over and a `refusing`
+/// line for a caller that stops on it. A caller that skips a folder must
+/// never print the word, so the word is not built into the check.
+#[test]
+fn a_failing_folder_reads_as_a_bare_reason_until_a_caller_refuses_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("guidance");
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+
+    let reason = match fs_safety::dir_state(&dir).unwrap() {
+        fs_safety::DirState::Untrusted(reason) => reason,
+        other => panic!("expected an untrusted folder, got {other:?}"),
+    };
+    assert!(reason.contains("writable by group or others"), "{reason}");
+    assert!(!reason.contains("refusing"), "{reason}");
+    assert!(!reason.contains(&dir.display().to_string()), "{reason}");
+
+    let refusal = fs_safety::check_dir(&dir).unwrap_err().to_string();
+    assert!(refusal.starts_with("refusing "), "{refusal}");
+    assert!(refusal.contains(&dir.display().to_string()), "{refusal}");
+    assert!(refusal.contains(&reason), "{refusal}");
+
+    // A missing folder is neither: it is just absent.
+    let absent = tmp.path().join("gone");
+    assert_eq!(
+        fs_safety::dir_state(&absent).unwrap(),
+        fs_safety::DirState::Missing
+    );
+    assert!(!fs_safety::check_dir(&absent).unwrap());
 }

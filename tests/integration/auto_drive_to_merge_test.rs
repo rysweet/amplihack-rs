@@ -29,6 +29,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::isolated_amplihack::isolated;
+
 // The brick budget for a recipe or tool: at most this many lines.
 // The #1528 recipe-length test in `artifact_guard_workflow_tests.rs`
 // imports this rather than restating it (PR #1586 review, round 6).
@@ -254,18 +256,34 @@ fn unresolved_loops_use_the_shared_loop_health_evaluator_contract() {
     for ctx in [
         "loop_name=",
         "loop_round_label=",
-        "loop_history=",
-        "loop_last_round_output=",
         "loop_baseline_ref=",
         "loop_child_exit_code=",
-        "loop_findings_current=",
-        "loop_findings_previous=",
-        "loop_test_signal=",
-        "loop_ci_signal=",
     ] {
         assert!(
             driver.contains(ctx),
             "the loop driver must hand `{ctx}` to the evaluator — the evaluator \
+             judges measured evidence, not a prose summary of it"
+        );
+    }
+    // #2582: free-text evidence reaches the evaluator by file, not argv.
+    // eval_ctx_write (autodrive_escalate.sh) writes one file per key and the
+    // driver passes them as `--context-from-file` arguments.
+    let escalate = read(&tool_path("autodrive_escalate.sh"));
+    assert!(
+        driver.contains("eval_ctx_write") && driver.contains("\"${EVAL_CTX_ARGS[@]}\""),
+        "the loop driver must write the evaluator context and pass EVAL_CTX_ARGS"
+    );
+    for key in [
+        "loop_history",
+        "loop_last_round_output",
+        "loop_findings_current",
+        "loop_findings_previous",
+        "loop_test_signal",
+        "loop_ci_signal",
+    ] {
+        assert!(
+            escalate.contains(&format!("\"${{EVAL_CTX}}/{key}\"")),
+            "eval_ctx_write must hand `{key}` to the evaluator — the evaluator \
              judges measured evidence, not a prose summary of it"
         );
     }
@@ -2273,8 +2291,6 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
         "--round-recipe \"autodrive-crusty-round\"",
         "--clean-token \"CLEAN\"",
         "--verdict-field \"crusty_verdict\"",
-        // Its judging agents start in the checked review dir, not the PR worktree (#1528).
-        "--review-dir \"$REVIEW_DIR\"",
         "--state-dir \"$DIR\"",
         "bash \"$HERE/autodrive_crusty_finalize.sh\"",
         "crusty-rereview-not-needed",
@@ -2309,7 +2325,7 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
     let driver = read(&tool_path("autodrive_loop.sh"));
     for needle in [
         "--before-round)",
-        "exec bash \"$BEFORE_ROUND\" --repo \"$REPO\" --review-dir \"$REVIEW_REAL\" --state-dir \"$STATE_DIR\"",
+        "exec bash \"$BEFORE_ROUND\" --repo \"$REPO\" --state-dir \"$STATE_DIR\"",
         "BEFORE_ROUND_FAILED",
         "before_round_result",
         "if terminal_refusal \"$BEFORE_RC\" \"$BEFORE_LOG\"",
@@ -2903,9 +2919,9 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
         }
     }
     // #2575 removed the record-only reads (round-record, merge-ready-verdict),
-    // so the floor counts what remains.
+    // and #2808 removed both review-index reads; count the remaining reads.
     assert!(
-        reads >= 10,
+        reads >= 8,
         "found only {reads} step-output reads in the round recipes; the scan is broken"
     );
     bad.dedup();
@@ -2923,7 +2939,7 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
 // these scenarios with the real gadugi-test, so the harnesses read the
 // shipped step body with `tests/gadugi/recipe-step-command.sh` (awk) rather
 // than python3 and PyYAML.
-const HARNESS_STEPS: [(&str, &str, &str); 2] = [
+const HARNESS_STEPS: [(&str, &str, &str); 5] = [
     (
         "run-step-03b.sh",
         "workflow-prep",
@@ -2933,6 +2949,23 @@ const HARNESS_STEPS: [(&str, &str, &str); 2] = [
         "run-merge-validations.sh",
         "quality-audit-cycle",
         "merge-validations",
+    ),
+    (
+        "run-issue-2784-existing-pr-other-base-scenario.sh",
+        "workflow-publish",
+        "step-16-create-draft-pr",
+    ),
+    // Issue #2343: the finalization pair, run end to end against a local bare
+    // remote and a stub gh reporting a check still in progress.
+    (
+        "run-issue-2343-finalization-outcome-scenario.sh",
+        "workflow-finalize",
+        "collect-finalization-evidence",
+    ),
+    (
+        "run-issue-2343-finalization-outcome-scenario.sh",
+        "workflow-finalize",
+        "validate-agentic-finalization",
     ),
 ];
 
@@ -3570,7 +3603,9 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
         }
     }
 
-    let mut cmd = Command::new("bash");
+    // Issue #2712: `isolated()` keeps a recipe run's AMPLIHACK_WORK_ROOT out
+    // of the suite, so its worktrees cannot land in the shared work root.
+    let mut cmd = isolated("bash");
     cmd.arg(&script)
         .current_dir(&root)
         .env_remove("AMPLIHACK_MERGE_GUARD_USER_BASH_ENV")
@@ -3630,7 +3665,9 @@ fn the_squash_message_suite_passes_and_keeps_its_named_cases() {
     let root = workspace_root();
     let script = root.join("amplifier-bundle/recipes/tests/test-issue-2056-squash-message.sh");
     assert!(script.is_file(), "missing {}", script.display());
-    let out = Command::new("bash")
+    // Issue #2712: `isolated()` keeps a recipe run's AMPLIHACK_WORK_ROOT out
+    // of the suite, so its worktrees cannot land in the shared work root.
+    let out = isolated("bash")
         .arg(&script)
         .current_dir(&root)
         .env_remove("BASH_ENV")
@@ -3740,7 +3777,9 @@ fn run_shell_test_copy(
         Ok(p) => format!("{}:{p}", path_dir.display()),
         Err(_) => path_dir.display().to_string(),
     };
-    let mut cmd = Command::new("bash");
+    // Issue #2712: `isolated()` keeps a recipe run's AMPLIHACK_WORK_ROOT out
+    // of the suite, so its worktrees cannot land in the shared work root.
+    let mut cmd = isolated("bash");
     cmd.arg(&script)
         .current_dir(scratch)
         .env("PATH", path)
@@ -4075,7 +4114,10 @@ fn issue_2033_step_04_test_runs_load_the_helper_in_the_same_shell_call() {
 #[test]
 fn issue_2033_step_00_tools_dir_requires_the_helper() {
     let recipe = recipe_yaml("autodrive-merge-round");
-    let cmd = field(step(&recipe, "step-00-tools-dir"), "command");
+    // Issue #1619: this body was extracted into amplifier-bundle/tools/ for
+    // the brick budget, so the NEED list is read from there.
+    let cmd =
+        crate::recipe_step_body::resolved(field(step(&recipe, "step-00-tools-dir"), "command"));
     let need: String = cmd
         .lines()
         .filter(|l| l.trim_start().starts_with("NEED="))

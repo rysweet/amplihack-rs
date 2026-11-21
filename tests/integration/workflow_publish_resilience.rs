@@ -83,12 +83,16 @@ fn step<'a>(recipe: &'a Value, id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("missing recipe step {id}"))
 }
 
+/// The shell a step runs. Issue #1619: a body extracted into
+/// `amplifier-bundle/tools/` for the brick budget is followed, so these
+/// assertions read the step's real requirements and not its six-line lookup.
 fn step_command(recipe: &Value, id: &str) -> String {
-    step(recipe, id)
-        .get("command")
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("step {id} must be a bash command step"))
-        .to_owned()
+    crate::recipe_step_body::resolved(
+        step(recipe, id)
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("step {id} must be a bash command step")),
+    )
 }
 
 #[test]

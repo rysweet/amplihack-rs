@@ -77,8 +77,15 @@ fi
 . "$here/workflow_finalization_collect.sh"
 . "$here/workflow_gh_retry.sh"
 . "$here/workflow_finalization_pr_signal.sh"
-. "$here/workflow_finalization_open_pr.sh"
+# #2343: the facts of the run's real outcome, read by both collect_evidence
+# and validate_finalization. The reader reuses the pr-signal helpers above, so
+# it is sourced after them. The result brick follows, because the hand-off
+# brick and the validator both emit through it.
+. "$here/workflow_finalization_outcome.sh"
+. "$here/workflow_finalization_result.sh"
 . "$here/workflow_finalization_handoff.sh"
+# The validator's fact helpers, which it calls from inside validate_finalization.
+. "$here/workflow_finalization_facts.sh"
 . "$here/workflow_finalization_validate.sh"
 . "$here/workflow_finalization_complete.sh"
 

@@ -133,7 +133,10 @@ fn check_required_tools() -> Result<()> {
 /// Issue #1274 — one seam. A "choose a file to run" walk (the result names a
 /// prerequisite the user is told to install, and `tool` is spawned by name
 /// elsewhere), so relative entries are dropped like everywhere else.
-fn which(tool: &str) -> Option<PathBuf> {
+///
+/// `pub(crate)` for the vendor-gated tests, which skip rather than fail when
+/// the harness binary they check against is absent.
+pub(crate) fn which(tool: &str) -> Option<PathBuf> {
     launch_target::env_path_dirs().into_iter().find_map(|dir| {
         let full = dir.join(tool);
         if full.is_file() { Some(full) } else { None }

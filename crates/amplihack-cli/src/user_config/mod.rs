@@ -160,9 +160,12 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
     match home_or_reason() {
         Ok(home) => Some(home),
         Err(reason) => {
-            if test_guard() {
-                // Said once per process, on stderr: a guarded run must never
-                // look like a missing HOME.
+            // Said once per process, on stderr, and only when the guard
+            // discarded a HOME that is set: that is the case a guarded run
+            // could otherwise mistake for a missing HOME. A HOME that is
+            // genuinely unset needs no notice, and the command that reports
+            // it must still print only its own line (issue #2783).
+            if test_guard() && std::env::var_os("HOME").is_some_and(|home| !home.is_empty()) {
                 static SAID: std::sync::Once = std::sync::Once::new();
                 SAID.call_once(|| eprintln!("amplihack: {reason}"));
             }
@@ -332,6 +335,34 @@ pub(crate) fn recipe_log_dir() -> Option<PathBuf> {
         .file_value("recipe.log_dir")
         .and_then(Value::as_text)
         .map(PathBuf::from)
+}
+
+/// The key an installation adds dangerous-command entries with (#2589).
+pub(crate) const POLICY_DENY_COMMANDS: &str = "policy.deny_commands";
+
+/// The dangerous-command entries this installation adds to amplihack's
+/// shipped list, from the user file only (issue #2589).
+///
+/// Never fails: a missing, unreadable, insecure or invalid user file
+/// contributes no entry, and the shipped defaults, which live in code, are
+/// written either way. The diagnostics `load` raises are printed once per
+/// process on stderr, so a rejected entry is not silent.
+pub(crate) fn policy_deny_commands() -> Vec<String> {
+    // Quietly: this runs on the launch path, where stderr is the channel the
+    // agent and the tests read, and a HOME the test guard discards is not a
+    // problem to report here. No HOME means no additions, and the shipped
+    // defaults, which live in code, are written either way.
+    load(&LoadCtx {
+        home: home_or_reason().ok(),
+        cwd: PathBuf::from("/"),
+        read_project: false,
+        env: &|name| std::env::var(name).ok(),
+        migrate: false,
+    })
+    .file_value(POLICY_DENY_COMMANDS)
+    .and_then(Value::as_list)
+    .map(<[String]>::to_vec)
+    .unwrap_or_default()
 }
 
 /// `orchestrator.max_depth` from the files. Consumers apply it only where the

@@ -82,11 +82,13 @@ fn step_body(step_id: &str) -> String {
         .expect("workflow-prep must have steps");
     for step in steps {
         if step.get("id").and_then(Value::as_str) == Some(step_id) {
-            return step
-                .get("command")
-                .and_then(Value::as_str)
-                .unwrap_or_else(|| panic!("step {step_id} has no command"))
-                .to_owned();
+            // Issue #1619: follow a brick-budget call-out into
+            // amplifier-bundle/tools/ rather than reading the lookup block.
+            return crate::recipe_step_body::resolved(
+                step.get("command")
+                    .and_then(Value::as_str)
+                    .unwrap_or_else(|| panic!("step {step_id} has no command")),
+            );
         }
     }
     panic!("step {step_id} not found in workflow-prep.yaml");

@@ -1,14 +1,22 @@
+use super::assessed::{assessed, completion};
 use super::fixtures::*;
 use serde_json::json;
 
 #[test]
 fn complete_file_result_preserves_every_validated_field() {
-    let f = Fixture::new()
-        .env("IMPLEMENTATION_COMPLETED", "true")
-        .env("VERIFICATION_COMPLETED", "true");
+    // A published pull request, so the pull request and publish fields are
+    // not the empty defaults that a lossy copy would also produce.
+    let f = Fixture::new().file(assessed(completion(true), "EXISTING_OPEN_PR", "7"));
     let r = f.finalizer("validate");
     r.exit(0);
     let result = r.json();
+    assert_eq!(result["terminal_state"], "EXISTING_OPEN_PR");
+    assert_eq!(result["pr_number"], "7");
+    assert_eq!(result["publish_state_reached"], "true");
+    assert_eq!(
+        result["pr_url"],
+        "https://github.com/rysweet/fixture/pull/7"
+    );
     let out = Fixture::new()
         .file(json!({"workflow_result":result}))
         .env("WORKFLOW_RESULT_TERMINAL_SUCCESS", "false")

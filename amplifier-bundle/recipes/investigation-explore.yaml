@@ -23,6 +23,7 @@ steps:
   # ==========================================================================
   - id: "exploration-strategy"
     agent: "amplihack:architect"
+    model: "strong"
     working_dir: "{{repo_path}}"
     prompt: |
       Design an exploration strategy for this investigation.
@@ -86,6 +87,7 @@ steps:
 
   - id: "check-past-investigations"
     agent: "amplihack:patterns"
+    model: "fast"
     working_dir: "{{repo_path}}"
     prompt: |
       Check for similar past investigations and reusable patterns.
@@ -125,6 +127,7 @@ steps:
 
   - id: "historical-research"
     agent: "amplihack:knowledge-archaeologist"
+    model: "standard"
     working_dir: "{{repo_path}}"
     condition: "strategy and strategy.historical_context_needed"
     prompt: |
@@ -165,6 +168,7 @@ steps:
   # ==========================================================================
   - id: "deep-dive-primary"
     agent: "amplihack:architect"
+    model: "strong"
     working_dir: "{{repo_path}}"
     prompt: |
       Conduct a deep dive exploration as the PRIMARY investigator.
@@ -194,6 +198,7 @@ steps:
 
   - id: "deep-dive-secondary"
     agent: "amplihack:patterns"
+    model: "strong"
     working_dir: "{{repo_path}}"
     prompt: |
       Conduct a deep dive exploration as the SECONDARY investigator.
@@ -222,6 +227,7 @@ steps:
 
   - id: "deep-dive-tertiary"
     agent: "amplihack:architect"
+    model: "strong"
     working_dir: "{{repo_path}}"
     prompt: |
       Conduct a deep dive exploration as the TERTIARY investigator.
@@ -249,6 +255,7 @@ steps:
 
   - id: "deep-dive-specialist"
     agent: "amplihack:security"
+    model: "strong"
     working_dir: "{{repo_path}}"
     condition: "strategy and strategy.parallel_deployment and strategy.parallel_deployment.specialist_agent"
     prompt: |
@@ -272,6 +279,7 @@ steps:
 
   - id: "consolidate-findings"
     agent: "amplihack:patterns"
+    model: "strong"
     working_dir: "{{repo_path}}"
     prompt: |
       Consolidate findings from all parallel deep dives.

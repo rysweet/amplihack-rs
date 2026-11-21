@@ -34,11 +34,10 @@ at the pinned revision. It never uses a runner installed on the host.
 | --- | --- |
 | `amplihack`, `--test integration` | `workflow_publish_pr_metadata::runner::actual_runner_*` (six tests) and `workflow_publish_pr_metadata::runner::persistent_awk_failure_still_serializes_success_after_exactly_one_creation`, in `tests/integration/issue_2306_publish/runner.rs` |
 | `amplihack`, `--test integration` | `pinned_runner_tests::*`, the helper's own unit tests, in `tests/support/pinned_runner_tests.rs` |
-| `amplihack-cli`, `--test cli_integration` | `issue_2096_execution_isolation::recording_coverage::pinned_runner_shell_to_rust_to_absolute_git_keeps_required_coverage`, in `crates/amplihack-cli/tests/issue_2096_recording_coverage.rs` |
 | `amplihack-cli`, `--test cli_integration` | Every test that runs a recipe through `issue_1741_fixture::Fixture`, in the `issue_1741_*` files |
 | `amplihack-cli`, `--test cli_integration` | `issue_2658_routing_replay::*`, in `crates/amplihack-cli/tests/issue_2658_routing_replay.rs` |
 | `amplihack-cli`, `--test cli_integration` | The `issue_2539_step_recovery_*` tests that run a real runner, through `real_runner()` in `crates/amplihack-cli/tests/issue_2539_step_recovery_fixture.rs` |
-| `amplihack-cli`, `--test cli_integration` | `issue_1976_real_runner_nested_run::a_step_under_the_real_runner_gets_the_parent_variables_and_its_nested_run_dies_with_the_observed_tree`, through `real_runner()` in `crates/amplihack-cli/tests/issue_1976_real_runner_nested_run.rs` |
+| `amplihack-cli`, `--test cli_integration` | `issue_1976_real_runner_nested_run::a_step_under_the_real_runner_gets_the_parent_variables_and_its_nested_run_stops_with_75`, through `real_runner()` in `crates/amplihack-cli/tests/issue_1976_real_runner_nested_run.rs` |
 
 Every file calls the same function, so the two targets share one build of the
 runner. None of these tests skips when the runner is missing: the helper builds
@@ -58,15 +57,18 @@ Run the publish tests:
 cargo test -p amplihack --test integration workflow_publish_pr_metadata::runner::
 ```
 
-Run the recording-coverage test:
+Run the nested-run test:
 
 ```bash
-cargo test -p amplihack-cli --test cli_integration issue_2096_execution_isolation::recording_coverage::
+cargo test -p amplihack-cli --test cli_integration issue_1976_real_runner_nested_run::
 ```
+
+That test is Linux only. On another platform the filter selects nothing and
+the command passes without building the runner.
 
 The `amplihack-cli` crate sets `autotests = false` and compiles every file in
 `crates/amplihack-cli/tests/` into the one `cli_integration` target, so
-`--test workflow_publish_pr_metadata` or `--test issue_2096_recording_coverage`
+`--test workflow_publish_pr_metadata` or `--test issue_1976_real_runner_nested_run`
 does not exist.
 
 The first run on a clean target directory builds the runner. With
@@ -316,10 +318,10 @@ export PATH="$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '/.cargo/bin$' | past
 unset RECIPE_RUNNER_RS_PATH RECIPE_RUNNER_QA_BINARY RECIPE_RUNNER_QA_RECEIPT
 
 "$CARGO" test -p amplihack --test integration workflow_publish_pr_metadata::runner:: -- --nocapture
-"$CARGO" test -p amplihack-cli --test cli_integration issue_2096_execution_isolation::recording_coverage:: -- --nocapture
+"$CARGO" test -p amplihack-cli --test cli_integration issue_1976_real_runner_nested_run:: -- --nocapture
 ```
 
-Both commands pass and resolve the runner under `CARGO_TARGET_TMPDIR`. A fresh
+On Linux both commands pass and resolve the runner under `CARGO_TARGET_TMPDIR`. A fresh
 `CARGO_HOME` has no git cache, so a cold cache needs GitHub access in this
 mode.
 

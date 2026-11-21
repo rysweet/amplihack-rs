@@ -31,6 +31,11 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
+[[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=recipe-test-env.sh
+. "${TEST_ENV}"
 SWEEP="${REPO_ROOT}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
 
 if [[ ! -f "$SWEEP" ]]; then
@@ -58,7 +63,6 @@ export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 # The lane exports a ten-year value as a stopgap; this test sets its own.
 export AMPLIHACK_WORKTREE_STALE_SECS=0
 export AMPLIHACK_WORKTREE_BASE_REF=main
-unset AMPLIHACK_WORK_ROOT_EXPLICIT
 
 PASS_COUNT=0
 FAIL_COUNT=0

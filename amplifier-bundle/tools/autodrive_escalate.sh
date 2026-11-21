@@ -4,9 +4,10 @@
 # usage_limit_stop tells a child that failed on a Claude usage limit from any
 # other failure, so the loop stops as USAGE_LIMIT and never as STUCK (#1801).
 # progress_stop and budget_stop are the two stops decided in code (#1743).
-# docs/reference/auto-drive-to-merge.md. Defines functions only; the caller
+# docs/reference/auto-drive-to-merge.md. Defines functions and EVAL_KEYS; the caller
 # sets LOOP_NAME, ROUND_LABEL and RECORD, and for #1743 STATE_DIR, LOOP_HOME,
-# AD_PR and BUDGET_CTX.
+# AD_PR and BUDGET_CTX. eval_ctx_write and eval_ctx_remove hold the evaluator
+# context files (#2582).
 
 # log_body <log_file>: the log without input echoes, as terminal_refusal reads
 # it. workflow_hook_repair.sh keeps a copy, which a test holds equal to this.
@@ -106,7 +107,7 @@ held_by_lines() {
   [ "$n" -le 10 ] || printf '  held by: reported (+%s more)\n' "$((n - 10))"
 }
 
-escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned]
+escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned|local_io|bad_bundle|bad_checkout]
   echo "AUTO_DRIVE_LOOP: ${1} — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}'." >&2
   echo "  Reason: ${2}" >&2
   held_by_lines >&2
@@ -115,6 +116,9 @@ escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned]
     usage_limit) echo "  This is a usage limit, not a judgement about progress. Run again when a login has capacity." >&2 ;;
     orphaned) echo "  This is a lost driver, not a judgement about progress. Relaunch auto-drive to resume from the recorded round." >&2 ;;
     budget) echo "  This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round." >&2 ;;
+    local_io) echo "  This is a local file write failure, not a judgement about progress. Check space and permissions in the state dir, then relaunch to resume from the recorded round." >&2 ;;
+    bad_bundle) echo "  This is an incomplete tool bundle, not a judgement about progress and not a disk problem. Reinstall the amplifier bundle (amplihack install), then relaunch to resume from the recorded round." >&2 ;;
+    bad_checkout) echo "  This is a checkout that could not be read, not a judgement about progress. Check the named checkout (git status, git rev-parse HEAD) and relaunch to resume from the recorded round." >&2 ;;
     *) echo "  This is a judgement about absence of progress, not an attempt count." >&2 ;;
   esac
   local f=() v # JSON-escaped; control characters become spaces (#1801)
@@ -205,6 +209,69 @@ budget_stop() {
   [ "${2:-}" = --force ] || post_stop "${STATE_DIR}/autodrive-budget-summary.md"
   escalate "BUDGET_EXHAUSTED" "usage budget reached (${hit}); see autodrive-budget-summary.md in the state directory" budget
   exit 1
+}
+
+# eval_ctx_write: writes the loop-health evaluator's free-text context (#2582)
+# to one file per key in a new mktemp -d folder under STATE_DIR, and sets
+# EVAL_CTX_ARGS to the matching --context-from-file arguments. Agent output and
+# log text then never reach the nested run's argv, where `ps` and `pkill -f`
+# read it. The loop runs at umask 077, so the folder is 0700 and each file
+# 0600. Text goes through printf, a builtin, or a direct redirect only. Reads
+# HISTORY, LOG, FINDINGS, PREV_FINDINGS, TEST_SIGNAL, PREV_TEST, CI_SIGNAL,
+# PREV_CI, LOOP_HOME, LOOP_NAME and ROUND_LABEL. Returns non-zero, with nothing
+# left behind, when the folder or a file cannot be written.
+#
+# Return codes are meaningful to the caller: 2 = a bundle helper is missing or
+# unreadable (escalates as `bad_bundle`), 1 = a write failed (`local_io`). The
+# caller must capture `$?` on its own line — inside `if ! eval_ctx_write`, `$?`
+# is the negation's status (always 0), not this function's.
+EVAL_KEYS=(loop_history loop_last_round_output loop_findings_current loop_findings_previous
+  loop_test_signal loop_test_signal_previous loop_ci_signal loop_ci_signal_previous)
+EVAL_CTX=""; EVAL_CTX_ARGS=()
+eval_ctx_write() {
+  local k
+  EVAL_CTX_ARGS=()
+  # A missing helper is not a disk problem. Without this check the failure
+  # below reports "check space and permissions in the state dir", which names
+  # the wrong cause and sends the operator to look at a healthy disk. The
+  # round-tail helper is the one bundle script this function runs, and the
+  # caller's preflight covers three other helpers but not this one.
+  #
+  # Returns 2, not 1, so the caller can escalate it as `bad_bundle` rather
+  # than `local_io` — otherwise the RECORDED reason still tells the disk
+  # story even though the stderr line above does not. `-r` as well as `-f`:
+  # a present but unreadable helper is a bundle problem too, and would
+  # otherwise fail inside the pipeline below and take the local_io message.
+  if [ ! -f "${LOOP_HOME}/autodrive_round_tail.sh" ] || [ ! -r "${LOOP_HOME}/autodrive_round_tail.sh" ]; then
+    echo "ERROR: ${LOOP_HOME}/autodrive_round_tail.sh is missing or unreadable; the loop-health evaluator was not started. This is an incomplete tool bundle, not a disk or permission problem in the state dir." >&2
+    return 2
+  fi
+  EVAL_CTX="$(mktemp -d "${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-ctx.XXXXXX")" || EVAL_CTX=""
+  if [ -z "$EVAL_CTX" ] \
+    || ! printf '%s' "$HISTORY" >"${EVAL_CTX}/loop_history" \
+    || ! bash "${LOOP_HOME}/autodrive_round_tail.sh" "$LOG" >"${EVAL_CTX}/loop_last_round_output" \
+    || ! printf '%s' "$FINDINGS" >"${EVAL_CTX}/loop_findings_current" \
+    || ! printf '%s' "$PREV_FINDINGS" >"${EVAL_CTX}/loop_findings_previous" \
+    || ! printf '%s' "$TEST_SIGNAL" >"${EVAL_CTX}/loop_test_signal" \
+    || ! printf '%s' "$PREV_TEST" >"${EVAL_CTX}/loop_test_signal_previous" \
+    || ! printf '%s' "$CI_SIGNAL" >"${EVAL_CTX}/loop_ci_signal" \
+    || ! printf '%s' "$PREV_CI" >"${EVAL_CTX}/loop_ci_signal_previous"; then
+    echo "ERROR: could not write the loop-health evaluator's context files in the state dir; the evaluator was not started" >&2
+    eval_ctx_remove
+    return 1
+  fi
+  for k in "${EVAL_KEYS[@]}"; do EVAL_CTX_ARGS+=(--context-from-file "${k}=${EVAL_CTX}/${k}"); done
+}
+
+# eval_ctx_remove: removes eval_ctx_write's files by their literal paths, then
+# the folder. Never fails: a folder left behind holds the same text as the
+# round log beside it, and must not change the round's outcome.
+eval_ctx_remove() {
+  local k
+  [ -n "$EVAL_CTX" ] || return 0
+  for k in "${EVAL_KEYS[@]}"; do rm -f -- "${EVAL_CTX}/${k}" || true; done
+  rmdir -- "$EVAL_CTX" || true
+  EVAL_CTX=""; EVAL_CTX_ARGS=()
 }
 
 # recovery_stop: before the first round and after each, read the run's step-recovery records

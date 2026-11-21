@@ -324,9 +324,16 @@ fn env_reason(kind: ValueKind, var: &str, raw: &str) -> String {
         ValueKind::AbsPath => format!("{var} is not a valid absolute path"),
         ValueKind::Bool => format!("{var} is not true, false, 1 or 0"),
         ValueKind::Choice(_) | ValueKind::SessionPattern => format!("{var} is not a valid value"),
+        // No key of this kind has a variable (issue #2589), so this is
+        // unreachable in practice; it stays a plain sentence rather than a
+        // panic, because an added variable must not crash a load.
+        ValueKind::CommandList => format!("{var} is not a valid value"),
         ValueKind::AgentBinary => {
             format!("{var} is not one of amplifier, claude, codex or copilot")
         }
+        // Never quotes the value: it is the token that would have gone on a
+        // command line right after `--model` (issue #1619).
+        ValueKind::ModelId => format!("{var} is not a model id amplihack will ask for"),
     }
 }
 

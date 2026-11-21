@@ -402,6 +402,9 @@ agent-prose scraping, and are left unchanged:
   vars and `parse_json` outputs reach bash steps and engine conditions.
 - [Doc-Review Non-Fatal Checkpoint](doc-review-non-fatal-checkpoint.md) — the
   non-fatal semantics preserved by finding A3.
+- [Keep Shell Test Stubs from Blocking on stdin](../howto/keep-test-stubs-from-blocking-on-stdin.md) —
+  which of these helper modes a shell test stub must read stdin for, and why a
+  mode that is piped into stays on the stub's allowlist even unimplemented.
 - [Workflow Terminal State](workflow-terminal-state.md) — no-merge and
   auto-merge semantics consumed by finding B.
 - [Loop-Health Evaluator](loop-health-evaluator.md) — the reusable

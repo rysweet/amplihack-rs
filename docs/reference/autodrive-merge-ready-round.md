@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Merge-ready Round, Merge and Hand-off
-description: how the merge-ready agent writes up the 13 criteria in the PR, how it reads the Crusty verdict from the PR, how the loop reads its outcome and waits for pending checks, the GitHub-only merge conditions, the base sync, the hand-off recipe, the run report, and how the round and loop steps run on private review checkouts with step recovery (#2575, #2628, #2663, #2096, #2539).
-last_updated: 2026-11-14
+description: Merge-ready assessment, direct PR-worktree review, recovery, finalization, and handoff.
+last_updated: 2026-11-19
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -40,30 +40,30 @@ the drive.
 
 ## Round steps
 
-`autodrive-merge-round.yaml` runs these steps in order for each round, after
-`step-00-tools-dir`, `step-00-review-dir-guard` and the evidence steps. Every
-agent step that judges the PR (`step-01`, `step-01b`, `step-02` and `step-03`)
-starts in `{{review_launch_dir}}` and reads the PR from the private review
-checkout by path and SHA (see
-[Review checkout and step recovery](#review-checkout-and-step-recovery)).
-`step-04` alone works in the PR worktree, because it commits and pushes.
+`autodrive-merge-round.yaml` runs its judging agents directly in the actual
+linked PR worktree. Trusted skills and tools come from the launch installation.
+Immediately before the reviewer, read-only tool steps capture ordinary
+pre-review evidence after preceding agents finish. The reviewer is instructed
+to leave files, index, branch, `HEAD`, and workflow state unchanged.
+A following assessment agent inspects any changes before the round continues.
+Fixes, commits, and pushes also use this PR worktree.
 
 | Step | Kind | Output | Responsibility |
 | --- | --- | --- | --- |
 | `step-01b-crusty-evidence` | agent | `crusty_evidence` | Reads the newest authorised `Crusty verdict:` comment on the PR and judges whether it covers the current head. See [Crusty verdict at the head](#crusty-verdict-at-the-head). |
 | `step-01a` | bash | `merge_ready_assessed_head` | Captures `git rev-parse HEAD` in the PR worktree before the assessment and checks it is 40 or 64 lowercase hex characters; any other value exits `2`. |
 | `step-02` | agent, `parse_json: false` | `merge_ready_writeup` | Reads the pinned merge-ready skill, assesses all 13 criteria at `merge_ready_assessed_head`, posts one PR comment naming that SHA and ends with one sentence stating the outcome. Under `autodrive_dry_run=true` it prints the write-up instead of posting it. |
+| `step-02b-assess-review-changes` | agent, no `parse_json` | `review_change_assessment` | Compares status, index, staged/unstaged content, untracked files, and HEAD against pre-review evidence. Preserves existing and uncertain work; differences alone do not fail. |
 | `step-03` | agent | `merge_ready_outcome` | Answers one question about the write-up: did the assessment conclude ready, not ready, waiting, or hand-off? It replies with one word on its last line and, on the line before, `ci: pass`, `ci: pending`, `ci: fail` or `ci: none`. |
 | `step-05a` | bash | `merge_ready_word` | Passes the word, the `ci:` line and `merge_ready_assessed_head` to `autodrive_round_word`. |
 | `step-04` | agent | | Runs only when `merge_ready_word.word == 'not-ready'`. Works on the blockers named in the write-up, commits and pushes in the PR worktree. It does not run for `waiting`. |
 | `step-05` | bash | | Writes the round files through `autodrive_round_file`, passing `merge_ready_assessed_head` and the round's `ci_signal`. |
 
-The head is captured before `step-02` so that the `.head` round file names
-the commit the agent assessed, not a commit made afterwards. `step-02` may
-still commit or push by mistake, and `step-04` commits before `step-05`
-runs; in both cases the worktree head no longer equals the captured head,
-so finalisation refuses the merge and hands the PR off. The write-up is not
-searched for the SHA; the comparison at finalisation is the check.
+The head captured before `step-02` identifies the commit assessed. A later
+commit or unexpected reviewer mutation does not relabel it. The following
+agent assesses the change, preserves prior work, and chooses a continuation
+or handoff. Existing finalization conditions still require the assessed head;
+a review does not authorize merging a different commit.
 
 From round two onwards, `step-02` receives the previous round's write-up as
 `prior_writeup` and works on the blockers it names. Round one receives an
@@ -83,84 +83,67 @@ parsed verdict and no `**Record:**` line.
 
 ## Review checkout and step recovery
 
-The merge round and the merge loop run on the private review generations of
-[checkout isolation](recipe-checkout-isolation.md#private-review-generations)
-(#2096) and under [step failure recovery](step-failure-recovery.md) (#2539).
-Both apply to the steps that remain after #2575; the retired steps listed in
-[What was retired](#what-was-retired) are not wrapped and do not return.
+Both round types and their relevant evaluators run in the actual linked PR
+worktree. The loop resolves it through the named repository using
+`amplihack orch helper autodrive worktree`, retaining registration, branch,
+and intended-head verification. It does not allocate, advance, bind records
+to, or release a private review generation.
 
-### Context keys set by the loop
+### Review evidence and assessment
 
-`autodrive_loop.sh` sets these round keys itself and passes them as `-c`
-values after the caller's context, so the loop's values win. `repo_path`
-comes from the loop's `--repo` argument; the other keys come from the Rust
-helpers `internal review-next`, `review-launch` and `review-head`.
+Immediately before each reviewer invocation, tool steps save repository
+identity, branch, full `HEAD`, NUL-delimited status/index entries, the index
+and split-index dependencies, binary staged/unstaged diffs, and original dirty
+and untracked contents, modes, and symlink targets. Existing artifact storage
+keeps evidence private (`0700` directories, `0600` files). Collection does not
+change the repository or follow symlinks into external content.
 
-| Key | Value |
+The agent after review compares status, index, working content, untracked
+files, and `HEAD` with that baseline. It may safely restore clearly
+attributable reviewer edits, or report them and choose further work or handoff.
+Staged edits, edits to already-dirty files, and changed pre-existing untracked
+files require content comparison. Uncertainty preserves the work. A difference
+alone never fails the run; blanket restoration, cleanup, and wholesale index
+replacement are forbidden. See the
+[assessment contract](recipe-checkout-isolation.md#assessment-after-review).
+
+### Recovery and launch assets
+
+The loop supplies the actual PR worktree, intended reviewed commit, and trusted
+launch-tools path to rounds. Private review checkout and `review_launch_dir`
+context are removed. Trusted asset selection remains independent of cwd.
+`step_recovery_dir` continues through the loop to each round. The loop's own
+context values retain precedence over caller context, and existing completion
+state remains driver-owned.
+
+The merge-loop recovery contracts remain:
+
+| Step | Recovery flags |
 | --- | --- |
-| `repo_path` | The PR worktree. |
-| `review_dir` | The private review checkout, detached at the recorded PR head. |
-| `review_launch_dir` | The trusted launch directory that judging agents start in. |
-| `reviewed_head_sha` | The commit the review checkout holds. |
-| `autodrive_launch_tools` | The launch install's tools directory. |
+| `step-02-merge-ready-loop` | `--essential --stop-on-handoff` |
+| `step-03-finalize`, recovered by `step-03r-finalize-recovery` | `--already-failed --essential` |
 
-`step_recovery_dir` is not one of these keys. `autodrive_merge_loop_run.sh`
-passes it to the loop as a `--context` value; the loop reads it and passes it
-on to each round in the round context.
+Finalization recovery runs only when the loop permits finalization and the
+finalization result is absent. A loop that handed off never gains merge
+authority through recovery.
 
-`--context` refuses `review_dir`, `review_launch_dir`, `reviewed_head_sha`,
-`autodrive_launch_tools` and `autodrive_completion_state`. The round order of
-context is the completion context, then `prior_writeup` (from the state
-directory), then the round context, then the loop's own `-c` values.
+Recovery retains the original baseline for an interrupted reviewer invocation,
+including staged, unstaged, and untracked state. It does not recapture partial
+reviewer edits as pre-existing work. Runtime finalization, loop recovery, and
+finalization recovery retain their responsibilities under
+[step failure recovery](step-failure-recovery.md). The former review-directory
+guards and `step-02b-review-dir-unchanged` deterministic gate are removed.
 
-### Where recovery applies
+### Loop launch and exit
 
-| Recipe | Step | Flags |
-| --- | --- | --- |
-| `autodrive-merge-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
-| `autodrive-merge-loop` | `step-02-merge-ready-loop` | `--essential --stop-on-handoff` |
-| `autodrive-merge-loop` | `step-03-finalize` (sub-recipe, `continue_on_error: true`), recovered by `step-03r-finalize-recovery` | `--already-failed --essential` |
+`autodrive_merge_loop_run.sh` validates its required inputs, resolves the PR
+worktree in the named repository, and runs the loop there. Temporary task text
+is removed on exit. There are no review-generation release traps. Uncommitted
+files, unpushed commits, branches, and worktree registration survive an
+interrupted run. Legacy execution/review directories are left for recovery.
 
-`step-02-merge-ready-loop` reads its short body (`exec bash "$RUN"`, which
-runs `autodrive_merge_loop_run.sh`) from a quoted heredoc into `STEP_BODY` and
-runs it under recovery. A run with no `step_recovery_dir` runs the body
-directly.
-
-```bash
-[ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-02-merge-ready-loop
-exec amplihack orch helper step-recovery run --step-id step-02-merge-ready-loop --essential --stop-on-handoff \
-  --dir "$RECIPE_VAR_step_recovery_dir" \
-  --goal "Run the merge-ready loop to a merge-ready verdict for PR ${RECIPE_VAR_pr_number:-unknown}" \
-  -- bash -c "$STEP_BODY" step-02-merge-ready-loop
-```
-
-`step-03r-finalize-recovery` runs immediately after `step-03-finalize`, only
-when `merge_loop_outcome.finalise == 'true' and not autodrive_finalization`.
-A loop that handed the PR off never reaches finalisation, so recovery never
-runs finalisation without a `DONE` or `WAITING` loop result. The other loop
-steps (`step-02a`, `step-02c` and `step-03b` to `step-03f`) are not wrapped.
-
-### Review checkout lifecycle in `autodrive_merge_loop_run.sh`
-
-The tool allocates the review generation itself:
-
-1. As soon as it creates the task file, it installs
-   `trap 'rm -f -- "$TASK_IN"' EXIT`, so that every exit after that point
-   removes the task text: `task_description` unavailable, the Crusty
-   re-review tool missing, no repository, the round recipe missing, the tool
-   root unresolved, or no PR worktree or review checkout. The round-count,
-   tools-directory and state-directory checks run earlier and exit before the
-   task file exists.
-2. It checks the PR worktree, then runs `amplihack internal review-allocate`
-   on it.
-3. At allocation it replaces the early trap with one that releases the
-   review generation (`release_review_dir`, through `internal review-release`)
-   and removes the task file.
-4. It calls `autodrive_loop.sh` with `--context step_recovery_dir=<dir>`
-   after `repo_path`, and with the allocated checkout as `--review-dir`.
-
-The loop never receives `--invocation`; merge permission is read only by
-`autodrive-finalize` through `helper autodrive authorization --invocation`.
+The loop does not grant merge authority; `autodrive-finalize` reads captured
+invocation authorization through the existing helper.
 
 ## Crusty verdict at the head
 
@@ -385,8 +368,8 @@ is never hidden by `continue_on_error` (#2490).
 | `0` | `DONE` or `WAITING` | `0` |
 | `1` | `USAGE_LIMIT` | `1`: the run stops; a later run continues the work. |
 | `1` | `STUCK`, `BUDGET_EXHAUSTED`, `HANDOFF` | `0`, with the loop line printed. |
-| `1` | result file missing or unreadable, or `DONE` or `WAITING` (the driver writes those only when it exits `0`) | `0`, with loop result `UNREADABLE`. |
-| `0` | anything other than `DONE` or `WAITING`, or no readable result | `0`, with loop result `UNREADABLE`. |
+| `1` | result file missing or unreadable, or `DONE` or `WAITING` (the driver writes those only when it exits `0`) | `0`, with loop result `UNREADABLE` and a reason that names the [kept driver output](#kept-driver-output) or says it could not be kept. |
+| `0` | anything other than `DONE` or `WAITING`, or no readable result | `0`, with loop result `UNREADABLE` and the same kind of reason. |
 | `75` | `ORPHANED` | `75` |
 | `79` | `TERMINAL_REFUSAL`, set by the step; the result file is not consulted | `79` |
 | `2` or any other value | | passed through unchanged |
@@ -397,14 +380,214 @@ Text on standard output, including JSON an agent printed, does not decide it.
 Exit `79` means a `gh` call refused for a terminal reason, such as an
 authentication or account refusal. The step prints a `TERMINAL_REFUSAL` loop
 line as its output and then exits `79`, so the run stops there and no
-hand-off or finalisation runs. The driver's own standard output goes to the
-step's standard error, for the log; the step's output is only the line it
-builds from the result file.
+hand-off or finalisation runs. The driver's own output, standard output and
+standard error together, goes to the step's standard error, for the log, and
+a copy is [kept in the state folder](#kept-driver-output); the step's output
+is only the line it builds from the result file.
 
 A `HANDOFF` round writes a `HANDOFF` line through `record_result` before the
 evaluator runs, then the driver exits `1`. A round that writes no write-up or
 head leaves none behind, so no earlier assessment reaches the next round or
 the hand-off.
+
+### Kept driver output
+
+The loop driver's output goes to the step's standard error and nowhere else.
+A driver that dies before it writes a result file therefore leaves the
+hand-off nothing to name and a person nothing near the PR's state to read. The
+tool keeps a second copy in the PR's
+[state directory](auto-drive-to-merge.md#state-directory), beside the result
+file, because that folder is where hand-offs and people already look. The
+`UNREADABLE` reason names the file. The hand-off agent is told to read it on
+every hand-off, including after a base sync, where the reason reaches the
+hand-off in `handoff_blocker` (see [Hand-off](#hand-off)).
+
+Only the run's `runtime/` folder is removed when a run ends. By default the
+state directory is `autodrive-state` inside the run's durable folder, which is
+never removed (see
+[clean up after recipe runs](../howto/clean-up-after-recipe-runs.md)), so the
+files below stay there. A dry run (`autodrive_dry_run=true`) with no explicit
+`autodrive_state_dir` is the exception: its state directory is in the launch
+bundle and goes with it once the report is produced, so the kept file and the
+path the reason names no longer exist after that. Pass an absolute
+`autodrive_state_dir` to keep them.
+
+| File in the state directory | Content | Lifetime |
+| --- | --- | --- |
+| `merge-ready-driver.err` | Everything the loop driver wrote to standard output and standard error, in the order it wrote it. Mode `0600`. | Replaced at the start of each run of the tool. Stays in the state directory after the run ends, for every outcome, except in a dry run's default state directory. |
+| `merge-ready-result.json` | The driver's own result, or the partial file it left. | Removed at the start of each run of the tool, then written by the driver. Stays on the same terms. |
+
+The file name `merge-ready-driver.err` does not start with `merge-ready-round-`,
+so the round-number readers (`autodrive_last_round.sh`) never see it.
+
+`keep_and_log` is a read loop in the tool itself, not an external
+duplicator. The copy is the step's own account of a driver that died, so it
+cannot rest on a program the host supplies: where the host's coreutils is the
+uutils implementation (Ubuntu 25.10 installs it as the default `tee`), `tee`
+aborts part-way through any input larger than one pipe buffer, roughly one run
+in ten, and the bytes it has already read die with it. The copy and the
+step's own log then lose the driver's output together, which is worse than
+keeping no copy at all. A read loop cannot fail that way and reaches the log a
+line at a time rather than a block at a time. NUL bytes are the one
+difference: `read` drops them.
+
+The kept file is opened once, before the driver starts, as a descriptor the
+step holds for the rest of the run, and falls back to `/dev/null` when the
+open fails. The writer therefore always runs, whatever became of the copy: a
+writer that could be skipped would leave the driver writing into a pipe with
+no reader, and a driver killed by that would lose both its output and its own
+exit status to the copy, which is exactly what the copy must never decide.
+POSIX mode is turned off around the open and restored after it, for the same
+reason: a redirection error on `exec` ends a POSIX-mode shell outright, and
+bash enters that mode on its own when `POSIXLY_CORRECT` is in the
+environment, so the step would end before the driver ran.
+
+The step's standard error carries the same bytes in the same order as before,
+so the run log is unchanged. The driver's exit status is the step's exit
+status; the copy cannot change any exit in the [table above](#how-the-loop-ends).
+The copy is made for every outcome, `DONE` and `WAITING` included, because
+the output of a run that went well is useful when a later one does not.
+
+A second run of the tool in the same state folder (the
+[base sync](#base-sync) round) happens only after `DONE` or `WAITING`, so
+within one drive it cannot replace the output of a run that ended
+`UNREADABLE`. A later drive that passes the same explicit
+`autodrive_state_dir` replaces the file at its first run of the tool, as it
+does `merge-ready-result.json`.
+
+#### What the UNREADABLE reason says
+
+When the loop result is `UNREADABLE`, the tool builds the loop line's `reason`
+from one template:
+
+```text
+the loop driver exited <rc> without a readable merge-ready-result.json; <output clause>; merge-ready-result.json <result state> at <absolute path>
+```
+
+The opening words are the text the tool has always used, so `UNREADABLE` and
+the exit status in it are unchanged. The output clause and the result-file
+clause are new. The outcome step (`step-02a`, and `step-03d` after a base sync)
+prepends `loop result UNREADABLE: ` and cuts the text to 1000 bytes of
+printable ASCII. `step-02c` passes it to the [hand-off](#hand-off) as
+`handoff_reason`, the "Why the drive stopped" sentence, and leaves
+`handoff_blocker` empty. After a base sync, `step-03f` passes a fixed sentence
+as `handoff_reason` and carries the reason in `handoff_blocker`, joined to the
+base-sync reason as `{{base_sync.reason}} {{sync_loop_outcome.reason}}`.
+
+The output clause is exactly one of these:
+
+| Case | Output clause |
+| --- | --- |
+| Kept | `its output was kept in merge-ready-driver.err at <absolute path>` |
+| Kept only in part (the copy failed part-way) | `only part of its output could be kept, in merge-ready-driver.err at <absolute path>` |
+| Not kept | `its output could not be kept (the state folder is missing, is a link, is owned by another user or is not writable)` |
+
+The clause names the file by its bare name first, then its absolute path. When
+nothing was kept the clause names no file, so the reason never says `kept` for
+a file that does not exist.
+
+The reason never contains a line of the file. The tool does not read the kept
+file, not even to learn its size: the hand-off agent opens it by the name the
+reason gives.
+
+A copy that stopped part-way keeps its name and its path, because a truncated
+file is still the evidence to open, but the clause says so before naming it.
+The status of the copy comes from the copier's own exit, read from `PIPESTATUS`
+beside the driver's.
+
+`<result state>` is `is absent`, `is unreadable`, or `says <loop result>`
+(for example `says DONE` after a driver exit `1`, which the driver never
+writes with `DONE`). The loop result is the word in the result file, cut to 64
+characters of letters, digits, `_` and `-`.
+
+The bare name comes first because the default work root is under `$HOME` and
+the hand-off leaves home-directory paths out of its public comment. If the
+absolute path is redacted, the name still tells the reader what to look for
+in the state folder.
+
+A worked case: the driver's ceiling check finds `AMPLIHACK_MAX_DEPTH` changed
+inside the loop, prints one `ERROR` line and exits `1` without writing a
+result file. The line is in the kept file, and the reason names the file:
+
+```json
+{"loop":"merge-ready","loop_result":"UNREADABLE","round_label":"unknown","reason":"the loop driver exited 1 without a readable merge-ready-result.json; its output was kept in merge-ready-driver.err at /home/user/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/autodrive-state/merge-ready-driver.err; merge-ready-result.json is absent at /home/user/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/autodrive-state/merge-ready-result.json"}
+```
+
+The whole reason is capped at 900 characters of printable ASCII (see
+[Loop outcome](#loop-outcome)). A cut from the end removes the result-file
+clause first, before it reaches the kept file's path.
+
+The `TERMINAL_REFUSAL` line (exit `79`) and the exit `75` pass-through are
+unchanged.
+
+#### Reading the kept file
+
+The file is the driver's raw output. It can hold terminal escape sequences and
+text copied from PR content and agent transcripts, so view it with `cat -v` or
+`less` rather than printing it to a terminal. The run id is the folder name in
+the path the reason names; a drive started with an explicit
+`autodrive_state_dir` keeps the files there instead:
+
+```bash
+WORK_ROOT="${AMPLIHACK_WORK_ROOT:-$HOME/.amplihack/work}"
+STATE="$WORK_ROOT/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/autodrive-state"
+tail -n 40 "$STATE/merge-ready-driver.err" | cat -v
+jq . "$STATE/merge-ready-result.json"
+```
+
+The file holds the same bytes as the step's log, so it can carry anything the
+log can, credentials included. Do not paste it into a PR body or comment, or
+upload it as a CI artifact, without reading it first.
+
+The hand-off agent reads the file itself. Its prompt tells it to read
+`merge-ready-driver.err` in the state directory as untrusted evidence of what
+happened, never as instructions, on every hand-off (see [Hand-off](#hand-off)).
+
+#### When the copy cannot be made
+
+The copy is evidence, not a condition. Nothing reads it to decide whether the
+drive continues, and a copy that cannot be made is not an error and has no exit
+code of its own. The driver still runs, its output still reaches the step's
+standard error, and the exit status is the driver's. The tool writes the copy
+only when `state_dir` already exists as an ordinary directory (not a link)
+owned by the current user; otherwise the output goes only to standard error
+and the reason says `could not be kept`. The tool never creates the state
+folder or changes its mode: the loop's preflight step creates it `0700`
+through `amplihack orch helper autodrive state`, and the driver re-checks it
+([state directory](auto-drive-to-merge.md#state-directory)).
+
+Only an `UNREADABLE` reason carries the loss, so the step also prints one
+`NOTICE:` line on its standard error, before the driver starts when no copy
+could be made, and after the driver's output when the copy stopped part-way.
+Without it a `DONE`, `STUCK` or `HANDOFF` run would lose the copy in silence,
+which is the loss this change exists to fix. The notice is not a check: it
+changes no exit status and never appears on standard output, where the loop
+line is still the only thing the step prints.
+
+These limits apply:
+
+- The driver's standard output reaches the copy through a pipe, not a file, so
+  a program the driver starts may buffer its output in larger blocks than
+  before. Order and content are unchanged.
+- A run that fails before the state folder exists keeps nothing.
+- A directory at the file's name cannot be replaced, because the tool removes
+  only a file or link there. The open fails, no copy is made and the reason
+  says `could not be kept`.
+- A write failure part-way through, for example a full disk, leaves a
+  truncated kept file while standard error stays complete: a write to the log
+  is never counted against the copy, so the log goes on receiving every line.
+  The reason then says `only part of its output could be kept`. The exit
+  status is still the driver's.
+- The read loop is slower than a block copy, because bash reads a pipe a byte
+  at a time. Measured at about 0.6 MB/s, so 20 MB of driver output added about
+  34 seconds. A round's own output is tens of kilobytes, so this is below
+  notice there; a driver that prints megabytes will feel it.
+- A process that inherits the driver's standard error and holds it open delays
+  the step until it closes, because the driver's output now reaches the copy
+  through a pipe that the step waits on. Nothing in the driver normally does
+  this: each round and the evaluator redirect to their own log files, and the
+  one `setsid` runs with `-w`. Measured at 3 to 6.5 seconds with a
+  deliberately backgrounded child holding the pipe.
 
 ### A pending check is a wait, not a lack of progress
 
@@ -434,6 +617,18 @@ with the reason cut to 1000 bytes of printable ASCII:
 | `DONE` | `done` | `true` | `step-03` runs [`autodrive-finalize.yaml`](#finalisation-and-merge-conditions). |
 | `WAITING` | `done` | `true` | `step-03` runs finalisation, which merges if the checks have passed by then, or ends `checks-pending` and hands the PR off. |
 | `STUCK`, `BUDGET_EXHAUSTED`, `HANDOFF`, `UNREADABLE`, anything else | `handoff` | `false` | `step-02c` runs [`autodrive-handoff.yaml`](#hand-off). |
+
+The tool caps its own `UNREADABLE` reason at 900 printable-ASCII characters so
+that the prefix `step-02a` prepends (`loop result UNREADABLE: `, 24
+characters; `step-03d` prepends the same one after a base sync) still fits
+inside the 1000-byte cut. A cut from the end removes the result-file clause
+first, before it reaches the kept file's path.
+
+The reason reaches the hand-off by one of two routes. `step-02c` passes the
+`step-02a` reason as `handoff_reason` and leaves `handoff_blocker` empty. After
+a base sync, `step-03d` builds the same kind of reason for `sync_loop_outcome`,
+and `step-03f` carries it in `handoff_blocker`, after the base-sync reason,
+with a fixed sentence as `handoff_reason` (see [Base sync](#base-sync)).
 
 `step-03` runs only when `merge_loop_outcome.finalise == 'true'`. When
 finalisation returns `base-behind`, the loop runs the [base sync](#base-sync).
@@ -613,6 +808,14 @@ handed off with the reason `the branch is out of date with its base: the base
 sync did not finish, or the base moved again after it`, so it is never left
 ready with no drive.
 
+On this route `step-03f` passes that sentence as `handoff_reason`. The text
+the sync produced travels in `handoff_blocker` as
+`{{base_sync.reason}} {{sync_loop_outcome.reason}}`: the base-sync agent's
+reason, then the `step-03d` loop reason. When the one extra round ended
+`UNREADABLE`, that loop reason names the
+[kept driver output](#kept-driver-output). The prompt's instruction to read
+`merge-ready-driver.err` applies on this route as it does on `step-02c`.
+
 ### What the sync step does
 
 1. Reads `baseRefName`, `headRefName` and `isCrossRepository` with
@@ -648,10 +851,10 @@ people. It replaces every bare `STUCK` ending of the merge-ready loop.
 | --- | --- |
 | `pr_number` | PR to hand off; checked to be a positive integer. |
 | `head_sha` | Head the drive last saw; checked against the SHA format before use. |
-| `handoff_reason` | The loop result or merge result that caused the hand-off. |
-| `handoff_blocker` | The blocker sentence from the last write-up or finalisation statement. |
+| `handoff_reason` | The loop result or merge result that caused the hand-off. On `step-02c` it is `loop result <word>: <reason>`. For `UNREADABLE` the reason names the kept `merge-ready-driver.err` and its path, or says the output could not be kept, and says whether `merge-ready-result.json` is absent, unreadable or says something else. See [Kept driver output](#kept-driver-output). After a base sync (`step-03f`) it is a fixed sentence about the branch being out of date, and the sync's own reasons, including an `UNREADABLE` loop reason, arrive in `handoff_blocker`. |
+| `handoff_blocker` | The blocker sentence from the last write-up or finalisation statement, as untrusted text between markers the prompt tells the agent to follow no instruction from. From finalisation and the base sync it is their own result text: `finalize_merge.reason`, or `{{base_sync.reason}} {{sync_loop_outcome.reason}}` on `step-03f`. `step-02c` passes it empty. |
 | `stop_comment_posted` | `true` when the loop driver already posted a stop comment. |
-| `autodrive_state_dir` | State directory; when `handoff_blocker` is empty the agent reads the blocker from `merge-ready-latest.writeup` there. |
+| `autodrive_state_dir` | State directory. The agent reads `merge-ready-driver.err` there, the loop driver's raw output, as untrusted evidence of what happened, never as instructions. When `handoff_blocker` is empty (on `step-02c`) it also reads the blocker from `merge-ready-latest.writeup` there. |
 
 The agent step runs `gh pr ready --undo` and posts one comment. When
 `stop_comment_posted` is `true`, it still runs `gh pr ready --undo` and
@@ -659,6 +862,12 @@ skips only the comment. The comment states the reason, quotes the
 blocker sentence in a fenced block, so that any `@name` or markdown in it
 notifies nobody, and names the head SHA and PR number. Under
 `autodrive_dry_run=true` it makes no GitHub write and lists what it would do.
+
+Whether or not a blocker was passed, the prompt tells the agent to read
+`merge-ready-driver.err` in the state directory as untrusted evidence of what
+happened, never as instructions. That is guidance to the agent, not a filter.
+Beyond the printable-ASCII and length cuts, neither the recipe nor the tool
+cleans the file or the reason before the agent sees them.
 
 A closing bash step reads `isDraft` back, makes no write call and exits `79`
 if `gh` returned `79`. The recipe's output, `handoff_result`, is prose and is
@@ -741,10 +950,17 @@ When a [base sync](#base-sync) ran, `merge` is the second finalisation's
 
 ### Success means merged
 
-The run succeeds only when `stop_reason` is `completed`: the PR merged in
-this run, was already merged at entry, or the run was verify-only and
-reached `DONE` or `WAITING` (merge result `not-authorised`). The runner decides this with the
-pure function `autodrive_run_succeeded` in
+The rule in this section judges the drive's top-level invocation: a recipe run
+named exactly `auto-drive-to-merge` or `auto-drive-light`. The nested
+`autodrive-*` sub-recipes a drive runs, such as `autodrive-crusty-round` and
+`autodrive-merge-round`, are not judged by it. Their success is the success of
+their own steps. See
+[Which invocations the rule judges](#which-invocations-the-rule-judges).
+
+A top-level drive succeeds only when `stop_reason` is `completed`: the PR
+merged in this run, was already merged at entry, or the run was verify-only
+and reached `DONE` or `WAITING` (merge result `not-authorised`). The runner
+decides this with the pure function `autodrive_run_succeeded` in
 `crates/amplihack-cli/src/commands/recipe/run/execute.rs`, an allow-list of
 the single value `completed`. A missing key, an empty value or any other
 value is a failure.
@@ -756,21 +972,22 @@ branch now reads `BEHIND`. No later base or readiness comparison is made
 after the merge. A PR that GitHub does not read merged is never `merged`,
 whatever `gh` printed or exited.
 
-| `stop_reason` | Run result |
+| `stop_reason` | Top-level drive result |
 | --- | --- |
 | `completed` | ✓ Success |
 | `not_merged`, `waiting_for_checks`, `handoff`, `unreadable`, `budget_exhausted`, anything else | not successful |
 
 After `report()` adds `autodrive_outcome`, the runner sets `success` to
 `autodrive_run_succeeded(autodrive_outcome)` in both directions
-(`apply_autodrive_outcome` in `execute.rs`):
+(`apply_autodrive_outcome` in `execute.rs`), and only when the invocation is a
+top-level drive:
 
-- A run the runner reported as a success, but which did not merge, becomes a
-  failure.
-- A run that merged, and then failed at a later step (the state-outcome
-  agent, the hand-off, the base-sync steps or the report agent), becomes a
-  success. It carries no failure class, and admission records it as a
-  success. Only a `merged` record with the expected PR, a valid
+- A top-level drive the runner reported as a success, but which did not merge,
+  becomes a failure.
+- A top-level drive that merged, and then failed at a later step (the
+  state-outcome agent, the hand-off, the base-sync steps or the report agent),
+  becomes a success. It carries no failure class, and admission records it as
+  a success. Only a `merged` record with the expected PR, a valid
   `expected_head` and the runner-assigned state directory raises the status;
   exit `79` and other terminal refusals end the run with an error and are
   never raised.
@@ -783,6 +1000,127 @@ A verify-only run (`no_merge=true` or `autodrive_dry_run=true`) that reaches
 finalisation did what it was asked: it ends `completed` and is ✓ Success, as
 [Verify a PR without merging](../howto/verify-pr-with-auto-drive.md) states.
 A merge run that ends `not-authorised` stays `not_merged`.
+
+#### Which invocations the rule judges
+
+Two predicates in
+`crates/amplihack-cli/src/commands/orch/autodrive/trusted.rs` name auto-drive
+invocations, and they are deliberately different widths (#2769).
+
+| Predicate | True for | Decides |
+| --- | --- | --- |
+| `trusted::applies(name)` | `auto-drive-to-merge`, `auto-drive-light`, and any name beginning `autodrive-` | Whether the run captures a merge authorisation, launches from a private bundle copy, stamps its recipes and steps, and infers auto-drive context |
+| `trusted::is_top_level_drive(name)` | `auto-drive-to-merge` and `auto-drive-light`, by exact match | Whether the outcome rule above sets the run's `success` flag |
+
+`is_top_level_drive` compares the invocation name with two literals. It has no
+prefix rule, no case folding and no configuration, so a sub-recipe cannot
+claim or disclaim the outcome rule by renaming itself into or out of a prefix.
+The predicate reads the name, not the depth, despite what its own name
+suggests: a run named `auto-drive-to-merge` is judged by the rule wherever it
+is invoked from. Nothing invokes one that way today. `auto-drive-light`
+escalates through an in-process `type: recipe` step, which never re-enters the
+run entry point that applies the rule.
+
+`applies` keeps its own width: authorisation capture, bundle selection and
+stamping are unchanged, and every `autodrive-*` sub-recipe still runs under a
+captured authorisation.
+
+A nested round keeps all of its outcome data. Every invocation `applies`
+accepts is written the same five keys, in the same places:
+
+| Key | Result `extra` | Context |
+| --- | --- | --- |
+| `autodrive_outcome` | ✓ | |
+| `autodrive_summary` (the same object) | | ✓ |
+| `autodrive_authorization` | ✓ | ✓ |
+| `no_merge` | | ✓ |
+| `autodrive_dry_run` | | ✓ |
+
+`tools/autodrive_loop.sh` and the completion helpers read them there. Only the
+`success` flag, and with it the process exit status, is left to the run's own
+steps.
+
+`autodrive-finalize` is the one nested invocation whose exit status a caller
+observes directly: `step-03r-finalize-recovery` runs it as a separate
+`amplihack recipe run autodrive-finalize` process. The in-process
+`step-03-finalize` step never carried the rule in either direction, because a
+`type: recipe` step does not re-enter the run entry point that applies it.
+Under the old rule the recovery child's exit status tracked the PR's merge
+state rather than its own work: a finalisation that returned `base-behind`,
+`checks-pending` or `not-authorised` exited non-zero with `stop_reason`
+`not_merged`, or `unreadable` where it wrote no merge result at all, having
+done exactly what was asked of it. It now exits on its own steps. The merge
+result the caller acts on is unaffected, because it is read from
+`finalize-merge.json` keyed by `run_id` and never from the child's exit
+status (see
+[The merge result in the state folder](#the-merge-result-in-the-state-folder)).
+The exit status itself is not inert. The caller is `step-recovery run`, which
+keys on it, so the change decides whether the recovery agent is consulted,
+and it does so in both directions.
+Step recovery's exit `81` is unchanged, and not for the reason the path
+suggests. `failed_run_exit_code` returns `81` only when a step both did not
+complete and carries `81` as its own
+termination code; otherwise a failed run exits `1`. No step that invokes
+`step-recovery run` or `step-recovery report` in any `autodrive-*` recipe
+carries `continue_on_error`, so none can both exit `81` and leave its run
+successful, and the outcome rule therefore never produced `81` on this path:
+it turned a finalisation that had completed its steps into a plain exit `1`.
+The loop's hand-off stop does not read the round's exit status in any case,
+since `recovery_stop` in `tools/autodrive_escalate.sh` escalates on
+`step-recovery report`'s own exit `81` and never consults `ROUND_RC`.
+Narrowing the rule cannot suppress a hand-off exit. What does change is
+that such a finalisation now exits `0` instead of the `1` the #2663 rule
+gave it. The result is read from the state folder rather than from the exit
+status.
+
+The rule's other half goes with it, which is a behaviour change in its own
+right. A finalisation child that merged and then failed at `state-outcome` or
+`handoff`, neither of which carries `continue_on_error`, was raised to exit
+`0` by the old rule and now exits non-zero on the step that failed. Both halves of
+#2663 belong to the top-level drive, so a sub-recipe keeps neither. The merge
+is untouched either way: the `merge` step writes `finalize-merge.json` before
+any step that could fail after it, and the drive's own report reads the merge
+from that record rather than from a child's status. What this direction does
+reach is step recovery: a non-zero child now consults the recovery agent
+after a merge has already happened, which can re-run `autodrive-finalize`
+against an already-merged PR (#2773). That run issues no second merge
+request, because `tools/autodrive_merge.sh` reports `merged` when the PR
+already reads MERGED at the expected head. Both directions are the behaviour
+of every release up to 1.2.164, restored rather than introduced.
+
+```bash
+# A Crusty round, as tools/autodrive_loop.sh starts it: its own process.
+amplihack recipe run "$ROUND_RECIPE_PATH" \
+  --working-dir "$REVIEW_LAUNCH" \
+  -c "autodrive_round_record=${RECORD}" \
+  -c "autodrive_round_label=${ROUND_LABEL}"
+echo $?
+# 0 when the round's own steps succeeded, whatever the PR's merge state.
+```
+
+```bash
+# The drive itself.
+amplihack recipe run auto-drive-to-merge -c pr_number=402
+echo $?
+# 0 only when stop_reason is completed; non-zero when the drive did not merge.
+```
+
+A round's exit status is what the loop acts on. `autodrive_loop.sh` records it
+as `ROUND_RC`, passes it to `autodrive-completion-dispatch` as
+`--child-exit-code` and to the loop-health evaluator as
+`loop_child_exit_code`, and dispatch does not accept `complete` from a round
+whose child execution failed (see
+[Dispatch validation](autodrive-crusty-completion.md#dispatch-validation)).
+Up to 1.2.164 a CLEAN round exited `0` and the loop went on. #2637 added
+`autodrive_run_succeeded` and `apply_autodrive_outcome`, which first shipped
+in 1.2.165, and applied the outcome rule to every name `applies` accepts. From
+1.2.165 until #2769, therefore, a round was judged by whether it had merged,
+which a round never does: a CLEAN round exited non-zero with `stop_reason
+unreadable`, dispatch would not accept `complete`, and the drive ended with no
+evaluator fallback. A CLEAN round exits `0` again, and the loop proceeds to
+merge-ready and merge. #2663 is the rationale the code comment cites for
+applying the rule in both directions, not the change that introduced it; trace
+the regression to #2637.
 
 ### Report step message
 
@@ -908,12 +1246,10 @@ echo $?
 
 ### `autodrive_merge_loop_run.sh`
 
-Holds the command body of `autodrive-merge-loop.yaml` `step-02`, moved into
-a trusted tool so that the base-sync round can run it again. The body keeps
-its behaviour, including the review-generation allocation and release of
-[the review checkout lifecycle](#review-checkout-lifecycle-in-autodrive_merge_loop_runsh);
-the tool adds only the round-count argument and the budget sum described
-below.
+Holds the command body of `autodrive-merge-loop.yaml` `step-02` in a trusted
+tool so the base-sync round can run it again. It resolves and runs in the
+actual PR worktree, retains task-file cleanup, and passes the round count and
+budget sum described below. It allocates no review repository or launch folder.
 
 `autodrive-merge-loop.yaml` has no `step-00-tools-dir`. Both steps take the
 tool from the directory `step-02` already uses for its loop helper,
@@ -932,6 +1268,16 @@ bash "$TOOLS/autodrive_merge_loop_run.sh" 1   # step-03c: one round
 It reads its inputs from the step's `RECIPE_VAR_*` environment variables and
 prints the same loop line and exit statuses as described in
 [How the loop ends](#how-the-loop-ends).
+
+It also keeps the loop driver's combined output in
+`<state_dir>/merge-ready-driver.err`. The tool opens the file new as
+descriptor 4, then runs the driver as
+`{ bash autodrive_loop.sh … 2>&1; } 4>&- | keep_and_log`, which closes the
+descriptor for the driver and its agents, and takes the driver's status from
+`PIPESTATUS[0]` on the next line. The copier's own status reaches the reason
+and nothing else, so no exit in the table changes. What is kept, how long, the
+exact `UNREADABLE` reason and the cases where no copy is made are under
+[Kept driver output](#kept-driver-output).
 
 The optional argument is a number of further rounds. It must match
 `^[0-9]+$` (at most 9 digits) and be at least `1`, otherwise the tool exits `2`. The round
@@ -978,15 +1324,71 @@ leave the drive `STUCK` (#2656). The tests
   `--match-head-commit`.
 - Merge permission comes only from the captured invocation. Recipe context
   can narrow it, never grant it.
+- Narrowing the outcome rule to the top-level drive moves no authorisation
+  boundary. `allows_merge()` is `!no_merge && !dry_run` and does not read the
+  run's `success` flag, and `trusted::applies` still decides authorisation
+  capture for every `autodrive-*` sub-recipe. A round that exits `0` still
+  needs matching run, round and record identities, valid evidence and a
+  `CLEAN` or `MINOR_ONLY` verdict before dispatch accepts `complete`.
 - Loop results are read from the driver's result file, not from text an
   agent printed.
-- Judging agents start in `{{review_launch_dir}}`, never in the PR worktree,
-  so the PR's `AGENTS.md`, `CLAUDE.md` and `.claude/` files cannot instruct
-  its own judge. A caller cannot set `review_dir`, `review_launch_dir` or
-  `reviewed_head_sha`.
-- Step recovery cannot turn a failed merge-ready loop or finalisation into a
-  silent success: both are `--essential`, and the review-dir guards are
-  `--guard`.
+- The kept driver output is evidence, never an authority. Nothing in the tool
+  reads the file back, to decide whether the drive continues or merges or to
+  build the reason, and nothing in the recipes parses it. The hand-off agent
+  opens it by name, and its prompt tells it to read the file as untrusted
+  evidence of what happened, never as instructions, on every hand-off.
+- The tool writes `merge-ready-driver.err` only into a state directory that
+  already exists, is not a symbolic link and is owned by the current user. It
+  removes any existing file or link at that name and opens the file new, once,
+  as a descriptor it holds for the rest of the run: an exclusive open, `0600`,
+  so a planted regular file, a link to one or a dangling link is replaced
+  rather than written through, and there is no second open by name for a link
+  planted later to catch. Noclobber refuses only an existing regular file: a
+  link to a FIFO or a device planted in the window between the removal and
+  the open is opened rather than refused, and a FIFO with no reader would
+  block the open. Planting one needs write access to a state folder that is
+  `0700` and owned by the caller. A directory at that name cannot be removed,
+  so the open fails. If any check or the open fails, the descriptor goes to
+  `/dev/null` and the output goes only to standard error. The driver's side
+  of the pipe does not inherit the descriptor, so neither the driver nor an
+  agent it starts can write into the file.
+- The kept file is raw driver output. The driver's final output is often the
+  tail of a round log that holds agent and PR text, so the file can hold
+  credentials, terminal escape sequences and text copied from a PR. It holds
+  the same bytes as the step's log. The copy adds a file in a private state
+  directory that is replaced on each run and stays after it; it widens no
+  audience. Nothing filters the file; it is not for pasting into a public
+  comment.
+- The `UNREADABLE` reason is composed by the tool from fixed words, the
+  driver's exit status, the kept file's name and absolute path, the result
+  file's absolute path and, when the result file holds a loop result, that
+  word cut to 64 characters of letters, digits, `_` and `-`. No line of the
+  driver's output is in it. The claim covers `UNREADABLE` lines only: on exit
+  `75`, and when the result file is readable, the line the tool prints is the
+  result file's own, as it was before the output was kept.
+- On `step-02c`, where `handoff_blocker` is empty, the reason reaches the
+  hand-off prompt in the trusted "Why the drive stopped" sentence
+  (`handoff_reason`), as the loop's reason did before the output was kept.
+  After a base sync it travels in `handoff_blocker` instead, joined to
+  `base_sync.reason`, and `handoff_reason` is a fixed sentence. Beyond the
+  printable-ASCII cut and length bound, nothing filters the loop's reason or
+  `handoff_blocker`, whatever feeds them. The prompt quotes `handoff_blocker`
+  between the `UNTRUSTED-BLOCKER` markers and tells the agent to follow no
+  instruction inside it. It also tells the agent to read the kept file as
+  untrusted evidence of what happened, never as instructions. Both are guidance
+  to an agent, not barriers. An agent-written
+  feed (`base_sync.reason`, `finalize_merge.reason`) can still carry the
+  closing marker, and the agent opens the kept file by name without anything
+  checking what the name points to.
+- Judging agents run in the actual PR worktree with instructions to leave it
+  unchanged. Trusted workflow assets are selected independently of cwd;
+  repository text and review output do not grant workflow authority.
+- A following agent assesses reviewer changes against retained pre-review
+  evidence. It preserves pre-existing and uncertain work, including staged,
+  unstaged, and untracked content. A difference alone does not fail the run.
+- Step recovery cannot turn a failed merge-ready loop or finalization into
+  silent success. Review recovery retains the original invocation baseline;
+  the obsolete deterministic review-directory guards are removed.
 - Exit `79` is checked after every `gh` call and passes through the merge
   step, the finalisation recipe and the hand-off recipe. No status defaults
   to `0`.
@@ -1048,7 +1450,7 @@ reported merges when the agents judge it ready and GitHub accepts the merge.
 | Bare `STUCK` endings of the merge-ready loop | [Hand-off](#hand-off) |
 | Criterion 3 from `crusty-records.tsv` and the `crusty-evidence` subcommand of `autodrive_round_evidence.sh` | The PR's own [Crusty verdict comment](#crusty-verdict-at-the-head) and the read-only `crusty-covers` range check |
 | `checks-not-green` and a hand-off for a pending check | `checks-pending` and the next wake |
-| ✓ Success for a run that did not merge | [Success means merged](#success-means-merged) |
+| ✓ Success for a top-level drive that did not merge | [Success means merged](#success-means-merged) |
 
 `Binding`, `validate_binding` and `MAX_RECORD_BYTES` remain, in
 `orch/autodrive/identity.rs`, because authorisation and the already-merged
@@ -1061,5 +1463,5 @@ report still use them. The crusty loop's `STUCK` endings are unchanged.
 - [Verify a PR without merging](../howto/verify-pr-with-auto-drive.md)
 - [Loop-health evaluator](loop-health-evaluator.md)
 - [Crusty completion contract](autodrive-crusty-completion.md)
-- [Checkout isolation](recipe-checkout-isolation.md)
+- [Named-checkout execution and review](recipe-checkout-isolation.md)
 - [Step failure recovery](step-failure-recovery.md)

@@ -14,7 +14,7 @@ use crate::support::step_recovery::{Fixture, HANDOFF_EXIT, bundle_recipes, show}
 /// `(recipe, step whose command runs the driver, recorded step id)`. Bash
 /// steps are wrapped in place; an agent or sub-recipe step keeps its type,
 /// gets `continue_on_error`, and is recovered by the bash step after it.
-const CONVERTED: [(&str, &str, &str); 11] = [
+const CONVERTED: [(&str, &str, &str); 7] = [
     (
         "autodrive-crusty-loop",
         "step-02-crusty-loop",
@@ -24,26 +24,6 @@ const CONVERTED: [(&str, &str, &str); 11] = [
         "autodrive-crusty-loop",
         "step-03r-record-crusty-phase-recovery",
         "step-03-record-crusty-phase",
-    ),
-    (
-        "autodrive-crusty-round",
-        "step-00-review-dir-guard",
-        "step-00-review-dir-guard",
-    ),
-    (
-        "autodrive-crusty-round",
-        "step-02b-review-dir-unchanged",
-        "step-02b-review-dir-unchanged",
-    ),
-    (
-        "autodrive-merge-round",
-        "step-00-review-dir-guard",
-        "step-00-review-dir-guard",
-    ),
-    (
-        "autodrive-merge-round",
-        "step-02b-review-dir-unchanged",
-        "step-02b-review-dir-unchanged",
     ),
     (
         "autodrive-merge-loop",
@@ -138,32 +118,22 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
             "{name}/{id}: values come from $RECIPE_VAR_*, never {{{{…}}}}"
         );
     }
-    // A handoff on a guard, or before an outward action, stops the recipe there.
+    // A handoff before an outward action stops the recipe there.
+    //
+    // validate-agentic-finalization is not a guard, but it is `--no-repair`
+    // (#2819). Since #2343 it reports the terminal state assess-finalization
+    // decided, from values all recorded before the step first ran, and the
+    // recovery agent may make no GitHub write and start no recipe -- so it
+    // can neither push the branch nor produce an assessment, and a retry
+    // would read the same bytes and fail identically. The step is
+    // `--essential --stop-on-handoff --no-repair`: no continue_recorded, no
+    // retry that cannot converge, and a handoff still exits 81. See
+    // docs/reference/step-failure-recovery.md#when-a-retry-cannot-observe-a-repair.
     for (name, id, flag) in [
         (
             "workflow-finalize",
             "validate-agentic-finalization",
-            "--guard",
-        ),
-        (
-            "autodrive-crusty-round",
-            "step-00-review-dir-guard",
-            "--guard",
-        ),
-        (
-            "autodrive-crusty-round",
-            "step-02b-review-dir-unchanged",
-            "--guard",
-        ),
-        (
-            "autodrive-merge-round",
-            "step-00-review-dir-guard",
-            "--guard",
-        ),
-        (
-            "autodrive-merge-round",
-            "step-02b-review-dir-unchanged",
-            "--guard",
+            "--essential --stop-on-handoff --no-repair",
         ),
         (
             "workflow-finalize",

@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: small-change eligibility, authorization, escalation, and shared readiness outcomes.
-last_updated: 2026-11-16
+last_updated: 2026-11-21
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -9,9 +9,11 @@ doc_type: reference
 
 # Auto-Drive-Light Recipe
 
-Judging agents review the PR in a private checkout at the recorded PR-head
-SHA and start in a separate trusted launch directory, as in
-[`auto-drive-to-merge`](auto-drive-to-merge.md#review-generations).
+Judging agents run directly in the actual linked PR worktree at the intended
+reviewed commit, as in
+[`auto-drive-to-merge`](auto-drive-to-merge.md#review-in-the-pr-worktree).
+The same pre-review evidence and agentic assessment preserve existing work;
+reviewer differences alone do not fail the run.
 
 Light mode shares the runner-captured authorization, evidence snapshots and agentic finalization of full auto-drive. Its default is `no_merge=true`, preserved through escalation. Controlled tests verify propagation; actual OS/runtime execution remains unverified.
 

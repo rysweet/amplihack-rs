@@ -85,8 +85,6 @@ impl Drive {
             "id":"docs-typo", "severity":"minor", "summary":"Typo in example", "evidence":"README.md:4"
         }]}).to_string());
         for (file, id) in [
-            ("guard.sh", "step-00-review-dir-guard"),
-            ("guard-check.sh", "step-02b-review-dir-unchanged"),
             ("classify.sh", "step-03-extract-crusty-verdict"),
             ("record.sh", "step-06-write-round-record"),
         ] {
@@ -183,15 +181,14 @@ impl Drive {
     pub fn record(&self, n: usize) -> PathBuf {
         let label = format!("round-{n}");
         let record = self.p(&format!("crusty-{label}.json"));
-        let generation = self.review_generation();
         let o = self
             .cmd("bash")
             .arg(self.tmp.path().join("round.sh"))
             .env("AUTODRIVE_ROUND_LABEL", &label)
             .env("AUTODRIVE_ROUND_RECORD", &record)
             .env("AUTODRIVE_LAUNCH_TOOLS", tools_dir())
-            .env("REVIEW_DIR", &generation)
             .env("REVIEWED_HEAD_SHA", self.head())
+            .env("RECIPE_VAR_reviewed_head_sha", self.head())
             .env("REPO_PATH", &self.repo)
             .env("PR_NUMBER", "7")
             .output()
@@ -215,24 +212,6 @@ impl Drive {
         manifest.push_str(&format!("{label}\tcrusty-{label}.json\t{hash}\n"));
         private_file(&self.p("crusty-records.tsv"), &manifest);
         record
-    }
-
-    /// A private review generation of the PR worktree at its current head, as
-    /// the loop allocates for a round (#2096); step-06 binds the record to it.
-    pub fn review_generation(&self) -> PathBuf {
-        let parent = self.tmp.path().join("review-generations");
-        std::fs::create_dir_all(&parent).unwrap();
-        let dest = parent.join(format!("g{}", std::fs::read_dir(&parent).unwrap().count()));
-        let o = self
-            .cmd(amplihack_bin())
-            .args(["internal", "review-checkout"])
-            .arg(&self.repo)
-            .arg(&dest)
-            .arg(self.head())
-            .output()
-            .unwrap();
-        assert!(o.status.success(), "review-checkout: {}", show(&o));
-        PathBuf::from(stdout(&o).trim())
     }
 
     pub fn prepare(&self, n: usize, history: &str) -> Value {
@@ -259,8 +238,6 @@ impl Drive {
                 record.as_os_str(),
                 OsStr::new("--repo"),
                 self.repo.as_os_str(),
-                OsStr::new("--review-dir"),
-                self.review.as_os_str(),
                 OsStr::new("--launch-tools"),
                 tools_dir().as_os_str(),
                 OsStr::new("--evaluator-context-file"),
@@ -314,10 +291,9 @@ impl Drive {
             .env("REPO_PATH", &self.review)
             .env(
                 "RECIPE_VAR_crusty_loop_preflight",
-                // The #2329 preflight agent's contract includes the review dir.
+                // #2808: the preflight names the PR worktree the loop measures.
                 json!({
-                    "should_run":"true", "repo":self.repo, "pr":"7", "state_dir":self.state,
-                    "review_dir":self.review
+                    "should_run":"true", "repo":self.repo, "pr":"7", "state_dir":self.state
                 })
                 .to_string(),
             )
@@ -348,8 +324,6 @@ impl Drive {
         c.arg(tools_dir().join("autodrive_crusty_rereview.sh"))
             .arg("--repo")
             .arg(&self.repo)
-            .arg("--review-dir")
-            .arg(&self.review)
             .arg("--state-dir")
             .arg(&self.state)
             .args(["-c", "pr_number=7", "-c", "plan_task_id=#2336"])

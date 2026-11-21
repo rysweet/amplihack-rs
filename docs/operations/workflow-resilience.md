@@ -1,3 +1,9 @@
+---
+title: Workflow Publish and Finalize Resilience
+description: Publish and finalize outcomes for existing pull requests and terminal branch states.
+doc_type: reference
+---
+
 # Workflow Publish and Finalize Resilience
 
 > Compatibility note: this page now uses the provider-neutral workflow contract.
@@ -17,7 +23,7 @@ that typed evidence, persist normalized terminal fields, and return the process
 exit code. The agentic finalizer contributes a human-readable narrative artifact
 only; it is never parsed. A reporting step that fails after a successful
 implementation classifies as `FAILED_REPORTING` with durable evidence preserved,
-and malformed typed evidence fails closed as `FAILED_INVALID_EVIDENCE`.
+and malformed typed evidence no longer ends the run: finalization classifies on the pushed head and open PR (#2343). `FAILED_INVALID_EVIDENCE` is still recognised in the vocabulary but is no longer emitted by finalization.
 
 ## Observed failure modes
 
@@ -33,7 +39,7 @@ exposed these concrete failure modes:
 | Remaining meaningful diff | Branch changes remain but no valid PR, merge, follow-up, or verified implementation path proves closure. | Finalization returns `FAILED_MEANINGFUL_DIFF` rather than treating the branch as a no-op success. |
 | Missing tooling | Required `git`, `jq`, provider CLI, or provider auth is unavailable on a path that depends on it. | Finalization returns `FAILED_MISSING_TOOLING`, `FAILED_PR_METADATA_UNAVAILABLE`, or `BLOCKED_MANUAL_PROVIDER`; it does not silently skip required proof. |
 | Failed CI | Open PR has failing required checks but final output looks complete. | Finalization returns `BLOCKED_CI` with failing check evidence and nonzero exit. |
-| Hollow success | Workflow exits after setup, design, empty agent output, or inaccessible-codebase messages. | Finalization returns `HOLLOW_SUCCESS` or `FAILED_MISSING_TERMINAL_EVIDENCE`. |
+| Hollow success | Workflow exits after setup, design, empty agent output, or inaccessible-codebase messages. | Finalization returns `HOLLOW_SUCCESS`, which #2343 leaves unchanged. Where the agent output was not empty, the run is classified on its real outcome: no pushed head or open pull request is a failure naming that gap. |
 
 ## Publish behavior
 
@@ -45,26 +51,31 @@ branch state.
 | Azure DevOps host | `ManualRequired` with an Azure Repos pull-request action; no `gh pr create` or `az repos pr create` call. |
 | Local or unsupported host | `ManualRequired` with provider-neutral next action; no remote provider command. |
 | No branch diff against base | Success with `state=no-diff`; no PR is created. |
-| Existing open PR for the same head branch | Success with `state=existing-open-pr`; existing PR URL is returned. |
+| Existing open PR for the same head branch | Success with `state=existing-open-pr`; existing PR URL is returned. On GitHub with `base_branch` empty, an open PR into another base counts too; its base is kept, and it takes precedence over a merged or closed PR into the default branch ([details](../reference/workflow-delivery-inputs.md#an-open-pull-request-on-another-base)). |
 | Existing merged PR for the same head branch | Success with `state=already-merged`; merged PR URL is returned. |
 | Existing closed PR that was merged | Success with `state=closed-after-merge`; merged PR URL is returned. |
-| Existing closed, unmerged PR with branch diff | Failure with a clear action message. |
+| Closed, unmerged PR selected after open-PR discovery, with branch diff | Failure with a clear action message. |
 | Branch has diff and no existing PR | Create one draft PR and return its URL. |
 
-The recipe must check branch diff and PR state before publishing. It never creates an
-empty PR and never creates a second PR for the same live branch when an open or
-merged PR already exists.
+The recipe checks branch diff and PR state before publishing and never creates
+an empty PR. On GitHub with `base_branch` empty, it prefers an eligible open PR
+on the resolved base, otherwise adopts a unique eligible open PR on another
+base. It records that PR's number, URL and actual base. Multiple eligible
+cross-base candidates stop publication before creation. An explicit
+`base_branch` keeps lookup and creation scoped to that base.
 
 Publishing is also collision-tolerant at create time. If `gh pr create` fails
 because a pull request already exists for the branch (a race with the pre-create
 check, or a stale local view), `workflow-publish` re-runs the scoped PR lookup;
 when an OPEN PR now exists it returns `state=existing-open-pr` success rather than
-`FAILED_PR_CREATE`. Only a genuinely absent PR combined with a failed create is a
-hard failure.
+`FAILED_PR_CREATE`. Collision recovery uses the same base-selection rules as
+the initial lookup. If it cannot identify an eligible open PR, including when
+the lookup is ambiguous, publication returns `FAILED_PR_CREATE`.
 
-Closed-unmerged PRs with remaining branch diff are a hard failure. The workflow
-must not silently republish, mark them complete, or hide the fact that user
-action is required.
+When a closed-unmerged PR is selected after open-PR discovery, remaining branch
+diff is a hard failure requiring user action. The workflow must not silently
+republish or mark that PR complete. With `base_branch` empty, an eligible open
+cross-base PR takes precedence over a closed-unmerged PR on the resolved base.
 
 ## Finalize behavior
 
@@ -86,7 +97,7 @@ agentic finalizer described in
 | Missing or ambiguous PR state | Failure; ambiguity is not treated as success. |
 | Implementation or verification evidence absent while work remains | Failure with `terminal_state=FAILED_IMPLEMENTATION`. |
 | Reporting step fails after successful implementation | Failure with `terminal_state=FAILED_REPORTING`; durable `pr_url`/`pr_number` and implementation/verification evidence are preserved. |
-| Success-looking run without completion evidence | Failure with `terminal_state=HOLLOW_SUCCESS` or `FAILED_MISSING_TERMINAL_EVIDENCE`. |
+| Success-looking run without completion evidence | Failure with a gap reported from the pushed head and PR facts, normally `INCOMPLETE` (#2343). |
 
 Already-terminal states are success only when verified through Git branch diff,
 GitHub PR metadata, or both. Pending or failed required checks on active PRs
@@ -102,7 +113,7 @@ These context keys influence publish/finalize behavior:
 | `provider_context` | publish, finalize | Structured provider helper result. `GitHub` enables GitHub PR handling; `AzureDevOps`, `Local`, and `Unsupported` use manual or blocked publication states. |
 | `remote_host_type` | publish | Legacy compatibility input. Implementations may accept `github`, `azure-devops`, `azdo`, or `local`, but must normalize to `provider_context` before provider operations. |
 | `branch_name` | publish, finalize | Current workflow branch or explicit branch to inspect. |
-| `base_branch` | publish, finalize | Base branch for diff checks. Defaults to the detected remote default branch. |
+| `base_branch` | publish, finalize | Explicit base for lookup, creation and diff checks. When empty, publish resolves the default base and can adopt an open GitHub PR on another base; finalize uses the recorded PR base. See [base selection](../reference/workflow-delivery-inputs.md#an-open-pull-request-on-another-base). |
 | `pr_number` | finalize | Existing PR to finalize when known. |
 | `pr_url` | finalize | Existing PR URL to parse when `pr_number` is absent. |
 | `issue_number` | publish | Issue/work item identifier used in PR title/body generation. |
@@ -193,4 +204,4 @@ or finalizer validation.
 | `BLOCKED_CI` | Required checks are pending, failed, or unavailable when required. | Fix CI or wait for checks; terminal-state resilience does not bypass CI. |
 | `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. | Resume `default-workflow` from implementation and verification, or choose a more specific failure state. |
 | `FAILED_REPORTING` | Implementation succeeded but a reporting/finalization step failed. Durable `pr_url`/`pr_number` and implementation/verification evidence are preserved. | Re-run the reporting step; the implementation is intact. Do not re-run the implementation. |
-| `HOLLOW_SUCCESS` | The run looked successful but produced no implementation, verification, publish, or valid no-op evidence. | Resume `default-workflow` from the missing phase or emit a supported no-op state with evidence. |
+| `HOLLOW_SUCCESS` | The run looked successful but its agent output was empty or inaccessible, so it may have produced nothing at all. Unchanged by #2343, and still ahead of every success classification. | Resume `default-workflow` from the missing phase or emit a supported no-op state with evidence. |

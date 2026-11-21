@@ -4,7 +4,7 @@
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_log;`.
 
-use super::events::{Event, FailReason, Skip, line};
+use super::events::{Event, FailReason, Shape, Skip, line};
 use super::plan::{Bound, NoWait};
 use super::wait::End;
 use crate::commands::recipe::run::limit_patterns::{self, Harness};
@@ -22,7 +22,7 @@ fn start(reset: i64, until: i64, bound: Bound) -> Event {
         reset: Some(reset),
         until,
         bound,
-        capacity: false,
+        shape: Shape::Reset,
     }
 }
 
@@ -32,7 +32,7 @@ fn capacity_start(reset: Option<i64>, until: i64, bound: Bound) -> Event {
         reset,
         until,
         bound,
-        capacity: true,
+        shape: Shape::Capacity,
     }
 }
 
@@ -241,7 +241,7 @@ fn a_reset_wait_ended_by_the_step_timeout_keeps_its_class() {
                 reset: Some(T0 + 16_200),
                 until: T0 + 7_140,
                 bound: Bound::StepTimeout,
-                capacity: false,
+                shape: Shape::Reset,
             },
             &LA,
         ),
