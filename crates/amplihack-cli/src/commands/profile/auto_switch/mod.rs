@@ -34,6 +34,8 @@ mod mv;
 #[cfg(unix)]
 mod overflow_inputs;
 #[cfg(unix)]
+mod own_login;
+#[cfg(unix)]
 mod per_token;
 #[cfg(unix)]
 pub(super) mod rerun;
@@ -69,6 +71,8 @@ mod tests_issue_1804;
 mod tests_liveness;
 #[cfg(all(test, unix))]
 mod tests_mv;
+#[cfg(all(test, unix))]
+mod tests_own_login;
 #[cfg(all(test, unix))]
 mod tests_platform_candidate;
 #[cfg(all(test, unix))]

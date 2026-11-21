@@ -15,6 +15,7 @@ use super::candidate::{self, Pool};
 use super::config::{self, Config};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
+use super::own_login::{OwnLogins, unreadable_note};
 use super::per_token;
 use super::state::{Ledger, State};
 use super::takeover::{capacity_candidate, profile_check};
@@ -27,6 +28,7 @@ use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
 use crate::commands::profile::limit_wait::{AfterLimit, Waiter};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use crate::commands::profile::usage_cmd;
 use crate::commands::recipe::run::limit_patterns::Harness;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -149,6 +151,10 @@ fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) 
     let current = ledger.account_in(source_host);
     let now = fsx::now();
     let overflow = OverflowInputs::load(&state.root, cfg, now);
+    // One reader for the whole choice, so each profile is asked about once.
+    let store = ProfileStore::new(state.root.clone());
+    let home = usage_cmd::home_dir();
+    let own = OwnLogins::new(&store, home.as_deref());
     let pool = Pool {
         profiles,
         readings,
@@ -156,13 +162,14 @@ fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) 
         exclude: &cfg.exclude,
         now,
     };
-    let eligible = |c: &ProfileName| {
+    // Free to be moved onto, as far as the caller and the ledger say.
+    let free = |c: &ProfileName| {
         let n = c.as_str();
         !skip.iter().any(|s| s == n)
             && !ledger.hosts.contains_key(n)
             && ledger.leased_to(n).is_none()
-            && login_ready(state, &overflow, c)
     };
+    let eligible = |c: &ProfileName| free(c) && login_ready(state, &overflow, &own, c);
     let on_overflow = overflow.order.iter().any(|p| p.as_str() == current);
     let need = amplihack_utils::organisation_affinity::Need::of(
         on_overflow,
@@ -189,6 +196,21 @@ fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) 
         let held = per_token::key_held(&pool, &overflow, current, eligible);
         per_token::record_key_held(state, &held);
     }
+    if alert == KeyAlert::Write && own.macos() {
+        // Issue #2885: a profile that is out of this choice only because its
+        // Keychain could not be read is named, one line each, so the failure
+        // is not a silent skip. The wait's 30-second probe prints nothing,
+        // as it prints nothing about the held key. Off macOS there is no
+        // Keychain to fail, and nothing more is read.
+        for name in profiles
+            .iter()
+            .filter(|p| !cfg.exclude.contains(p) && free(p))
+        {
+            if let Some(cause) = own.unreadable(name) {
+                eprintln!("{}", unreadable_note(name, cause));
+            }
+        }
+    }
     let profile = picked?.clone();
     // Read again for the detail the reason line gives. A key that went away
     // since the check above is refused like any other failed check.
@@ -198,14 +220,20 @@ fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) 
 }
 
 /// The login checks a move onto `c` must pass, apart from the readings and
-/// the ledger: `c` holds its own login on this platform (macOS keeps logins
-/// in the Keychain: no file to look for), and an API-key profile passes its
-/// login check (issue #1804). [`nested_candidate`] and the takeover check
-/// (`takeover::could_take_over`, issue #1801) both use this one rule, so a
-/// capacity wait never starts for a login the selection would refuse.
-pub(super) fn login_ready(state: &State, overflow: &OverflowInputs, c: &ProfileName) -> bool {
-    (cfg!(target_os = "macos") || fsx::exists(&state.live_creds(c.as_str())))
-        && overflow.check_note(&state.root, c).is_some()
+/// the ledger: `c` holds its own login (a login file; on macOS also an item
+/// in the Keychain, by the launch guard's rule, issue #2885; an API-key
+/// profile there counts too), and an API-key profile passes its login check
+/// (issue #1804). A macOS profile whose Keychain cannot be read holds none.
+/// [`nested_candidate`] and the takeover check (`takeover::could_take_over`,
+/// issue #1801) both use this one rule, so a capacity wait never starts for
+/// a login the selection would refuse.
+pub(super) fn login_ready(
+    state: &State,
+    overflow: &OverflowInputs,
+    own: &OwnLogins<'_>,
+    c: &ProfileName,
+) -> bool {
+    own.of(c).holds() && overflow.check_note(&state.root, c).is_some()
 }
 
 pub fn profile_names(store: &ProfileStore) -> Vec<ProfileName> {

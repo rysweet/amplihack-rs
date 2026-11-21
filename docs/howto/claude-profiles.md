@@ -2074,6 +2074,36 @@ hint: amplihack profile login <name>, or: amplihack profile kind set <name> api-
 A profile whose login is live in `~/.claude`, or lent to a session by
 auto-switch, is not refused.
 
+### Profiles signed in through the macOS Keychain
+
+On macOS, Claude Code keeps a profile's login in the login Keychain and
+writes no `.credentials.json`. amplihack recognises such a profile when its
+`.claude.json` has an `oauthAccount` block and the Keychain holds an item
+for the profile's directory (service `Claude Code-credentials-<h>`, with
+`<h>` the first eight hex digits of the SHA-256 of the directory path). It
+only asks whether the item exists; it never reads the secret.
+
+```
+$ amplihack profile kind list
+work            subscription  (detected: oauth login in the macOS Keychain)
+```
+
+Such a profile launches normally. If the Keychain is locked or cannot be
+reached, the launch is refused with a different message, and the profile is
+not treated as an API-key profile:
+
+```
+error: profile work has no login file and the macOS Keychain could not be read (`security` exit status 51); launching it could bill the Claude Platform API key per token. Unlock the login Keychain and run again, or run 'amplihack profile kind set work api-key' if per-token billing is intended.
+hint: unlock the login Keychain and run again, or: amplihack profile kind set <name> api-key
+```
+
+Unlock the login Keychain (for example with Keychain Access) and run the
+command again. Run `kind set <name> api-key` only if per-token billing is
+intended. If the profile has no `oauthAccount` in `.claude.json`, run
+`amplihack profile login <name>` to sign in again. See
+[Keychain logins](../reference/profile-command.md#keychain-logins) for the
+exact rules and their limits.
+
 ### Logging an API-key profile in to a subscription
 
 `amplihack profile login api-key` works as for any profile and first prints:

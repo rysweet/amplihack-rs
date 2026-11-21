@@ -21,8 +21,7 @@
 
 use super::candidate::OverflowPool;
 use super::config::Config;
-use super::fsx;
-use super::state::CREDS;
+use super::own_login::OwnLogins;
 use crate::commands::profile::kind::{self, Ctx, Resolved};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{self, Gate};
@@ -32,13 +31,24 @@ use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd;
 use std::path::Path;
 
-/// Whether a move onto `name` can find a login: its login file is in its
-/// directory, or the rotator has already moved it into `~/.claude`. Selection
-/// asks the first half (`rerun::nested_candidate`) and a swap needs it too.
-/// macOS keeps logins in the Keychain, so there is no file to look for.
+/// Whether a move onto `name` can find a login: the profile holds one of its
+/// own, or the rotator has already moved it into `~/.claude`. Selection asks
+/// the first half (`rerun::nested_candidate`) and a swap needs it too.
+///
+/// A login of its own is a login file. On macOS, where the login is in the
+/// Keychain, it is what the launch guard counts (issue #2885): an item in
+/// the Keychain for a profile with an identifiable account, or an API-key
+/// profile. A Keychain that cannot be read is no login. The Keychain is
+/// asked with the process's own home.
 pub fn can_take_login(root: &Path, name: &ProfileName) -> bool {
-    cfg!(target_os = "macos")
-        || fsx::exists(&root.join(name.as_str()).join(CREDS))
+    let store = ProfileStore::new(root.to_path_buf());
+    let home = usage_cmd::home_dir();
+    takes_login(root, &OwnLogins::new(&store, home.as_deref()), name)
+}
+
+/// [`can_take_login`] with the own-login answers shared between calls.
+fn takes_login(root: &Path, own: &OwnLogins<'_>, name: &ProfileName) -> bool {
+    own.of(name).holds()
         || RotateState::new(root)
             .load_ledger()
             .ok()
@@ -77,7 +87,8 @@ struct Order {
 ///   live profile stays out of that test: its login is in `~/.claude`, so
 ///   its own directory has none. macOS keeps logins in the Keychain, so a
 ///   missing file proves nothing there and that test lists nothing, which
-///   only holds the key back.
+///   only holds the key back. No Keychain question is asked for this list
+///   (issue #2885), so no Keychain answer can release the hold on the key.
 /// - Those the rotator's last measuring cycle found with no room, while that
 ///   record holds (`rotate::no_room`). Auto-switch cannot read the live
 ///   login itself: the status line records only a session's own
@@ -101,7 +112,7 @@ fn no_login_of(
     now: i64,
 ) -> Vec<ProfileName> {
     let live = kinds.ledger_live();
-    let mut skipped: Vec<ProfileName> = if cfg!(target_os = "macos") {
+    let mut skipped: Vec<ProfileName> = if kinds.macos() {
         Vec::new()
     } else {
         resolved
@@ -347,7 +358,10 @@ impl OverflowInputs {
     /// what the capacity file counts, so the file does not say `ok` for a
     /// profile selection would pass over. Only the capacity writers call this.
     pub fn refuse_no_login(&mut self, root: &Path) {
-        let missing = self.order.iter().filter(|o| !can_take_login(root, o));
+        let store = ProfileStore::new(root.to_path_buf());
+        let home = usage_cmd::home_dir();
+        let own = OwnLogins::new(&store, home.as_deref());
+        let missing = self.order.iter().filter(|o| !takes_login(root, &own, o));
         let missing: Vec<String> = missing.map(ToString::to_string).collect();
         self.blocked.extend(missing);
     }
