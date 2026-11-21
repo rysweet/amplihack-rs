@@ -1076,19 +1076,24 @@ the watches, `wait_event(deadline)` returns one of `Swap`, `Prompted`,
 `SessionGone`, `WatchLost` or `Deadline` (`WatchLost` also when the
 deadline cannot be represented as a clock time), `read_swap()` reads the
 record, `stop_time(transcript, start)` returns the stop time or nothing,
-`pane()` returns the verified pane, `send_keys(pane, key)` sends one key,
-and `session_alive_now()` checks the pidfd and the foreground process
-group without blocking; with no pidfd it reports the session as not
-running, so the check before each key fails and no key is sent. Tests replace
-`Deps` with a fake that scripts the events.
+`pane_check()` returns the pane verdict (a pane proved to be this session's
+terminal, no pane, or a refusal with its reason), `send_keys(pane, key)`
+sends one key, and `session_alive_now()` checks the pidfd and the
+foreground process group without blocking; with no pidfd it reports the
+session as not running, so the check before each key fails and no key is
+sent. Tests replace `Deps` with a fake that scripts the events.
 
 **How it resumes.** It records the resume under its lock first, then takes
 exactly one path:
 
 - **Keys, exit `0`, outcome `resumed-keys`.** When `$TMUX` is set and
-  `$TMUX_PANE` is `%` followed by digits, and that pane's `#{pane_tty}` is
-  Claude Code's standard input with Claude Code as the terminal's foreground
-  process group (checked once, just before the commit), it runs
+  `$TMUX_PANE` is `%` followed by digits, and the pane is proved to be the
+  terminal of this hook's own Claude Code (checked once, just before the
+  commit; see [Resume keys](profile-command.md#resume-keys): the hook walks
+  up its own ancestry to the nearest process whose standard input is a
+  terminal, the pane's `#{pane_tty}` must be that terminal, that process
+  must be its foreground process group, and Claude Code must be reading it),
+  it runs
   `tmux send-keys -t %N Escape`, then `C-u`, then `-l continue`, then
   `Enter`, as four separate commands, each waited on for its exit status.
   Before each key it checks that the session is still running and still in
@@ -1100,16 +1105,43 @@ exactly one path:
   session and did not submit is deleted. Only a submitted prompt counts as
   moving on (hook 6 records it); an unsent draft does not stop the resume.
   The keys are not yet confirmed against a real Claude Code timed wait; see
-  [#2215](https://github.com/rysweet/amplihack-rs/issues/2215).
-- **Wake, exit `2`, outcome `resumed`.** Without such a pane, it exits `2`
-  with a one-line continue message on stderr, which wakes the session.
+  [#2215](https://github.com/rysweet/amplihack-rs/issues/2215). The exit `2`
+  wake has not released the menu in the standing sessions reported in
+  [#2695](https://github.com/rysweet/amplihack-rs/issues/2695), which is
+  why a session with a proved pane gets the keys.
+- **Wake, exit `2`.** Without such a pane, it exits `2` with a one-line
+  continue message on stderr, which wakes the session. The outcome names
+  why there was no keys path: `resumed` when there was no tmux pane to
+  check, `pane-unverified` when a pane was named but not proved to be this
+  session's own terminal, and `pane-not-reading` when it was the terminal
+  but Claude Code is not the process reading it. The three differ only in
+  the log line; each is recorded under the same lock, so the per-session
+  cap and the duplicate guard apply to all of them.
+
+A pane that fails its check is never replaced by another one. The hook does
+not list panes or clients, and sends nothing to any pane but the one its own
+environment named.
+
+**What the pane check does not cover.** The proof establishes that the pane
+is the terminal of this hook's own Claude Code. It does not establish what
+that terminal is showing: the hook reads no screen contents, and
+`#{pane_tty}` reports the pane's terminal device, not its text. What narrows
+the keys is the situation instead. They are sent only after Claude Code ran
+this hook on a `rate_limit` stop, only after the rotator recorded a swap onto
+a login with room, and only once per limit event within the per-session cap.
+A session that had already recovered by itself therefore receives one extra
+`continue` turn. Telling the menu apart from an ordinary prompt would need a
+parser of the screen's text, which this hook does not have; see
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695).
 
 It never sends a digit, `/usage-credits`, `/rate-limit-options` or any text
 other than `continue`, and never sends keys to a pane it did not note at the
 stop. `tmux` is found through `PATH` and uses the server named by `$TMUX`;
 both are trusted because they belong to the same user as the session.
 
-**Exit codes.** `2` only for `resumed`. Every other outcome, including
+**Exit codes.** `2` for the outcomes that wake the session: `resumed`,
+`pane-unverified` and `pane-not-reading`. The continue message is written
+for exactly those three. Every other outcome, including
 `resumed-keys`, `resume-keys-failed`, `watch-lost`, `no-capacity-timeout`,
 `moved-on`, `session-gone`, `disabled`, `duplicate`, `cap`,
 `stop-hook-active`, `rotator-down` and `guard-failed`, exits `0` and prints
@@ -1119,13 +1151,14 @@ It resumes at most once per limit event, once per session per wait, and 3
 times per session in 24 hours, never reads a credentials or token file, and
 reads nothing from the transcript but the last entry's `timestamp`. The
 608400-second timeout covers the 7-day wait plus a 300-second margin; Claude
-Code 2.1.307 accepts it. Requires Claude Code 2.1.306 or later:
-`amplihack install` runs `claude --version` and leaves this entry out (removing an
-earlier one) for an older version, because Claude Code before 2.1.78 ignores
-a settings file that names `StopFailure`. An entry an earlier release wrote
-is also removed by the next launch when that `claude` is too old, and an
-automatic re-stage after an upgrade, which never edits `settings.json`,
-prints a warning naming `amplihack install`.
+Code 2.1.307 accepts it (read at that version; not re-read at 2.1.329).
+Requires Claude Code 2.1.306 or later: `amplihack install` runs
+`claude --version` and leaves this entry out (removing an earlier one) for
+an older version, because Claude Code before 2.1.78 ignores a settings file
+that names `StopFailure`. An entry an earlier release wrote is also removed
+by the next launch when that `claude` is too old, and an automatic re-stage
+after an upgrade, which never edits `settings.json`, prints a warning naming
+`amplihack install`.
 
 ## Capacity notice in hooks
 
