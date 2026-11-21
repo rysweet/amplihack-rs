@@ -565,6 +565,10 @@ fn assert_wakes_without_tmux(ran: &Ran) {
         !line.contains("keys_sent=") && !line.contains("pane="),
         "a wake without keys names neither: {line}"
     );
+    assert!(
+        line.split_whitespace().any(|f| f == "detail=no-tmux-pane"),
+        "a wake without a pane says so: {line}"
+    );
 }
 
 #[test]

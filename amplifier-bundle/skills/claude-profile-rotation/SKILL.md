@@ -434,12 +434,14 @@ turn, and Ctrl+U clears any draft in its input box.
 
 When the pane cannot be proved, or the session is not in tmux, the hook
 sends nothing to any terminal and exits `2` with a continue message. The
-outcome says why: `resumed` (no tmux pane to check), `pane-unverified` (a
-pane was named but not proved to be the session's terminal; `detail=` names
-the check) or `pane-not-reading` (it is the terminal, but Claude Code is not
-reading it). The wake cleared the menu in a Claude Code 2.1.307 check, but
-standing sessions have stayed on the usage-limit menu after a wake and a
-swap, so these three outcomes can leave a session stopped.
+outcome says why: `resumed` with `detail=no-tmux-pane` (the session is not
+in tmux, so there is no pane to check and nothing new is done),
+`pane-unverified` (a pane was named but not proved to be the session's
+terminal; `detail=` names the check) or `pane-not-reading` (it is the
+terminal, but Claude Code is not reading it). The wake cleared the menu in
+a Claude Code 2.1.307 check, but standing sessions have stayed on the
+usage-limit menu after a wake and a swap, so these three outcomes can leave
+a session stopped.
 
 For a session left stopped, and when the hook logs `resume-keys-failed`,
 direct the owner to the
@@ -485,7 +487,7 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 | Outcome | What to tell the user |
 |---------|-----------------------|
 | `resumed-keys` | tmux accepted all four inputs to the session's own pane. Check for a reply in the original conversation. |
-| `resumed` | The session had no tmux pane to check, so the hook exited `2` with a continue message. A session held on the menu stays there. |
+| `resumed` | Logged with `detail=no-tmux-pane`. The session had no tmux pane to check, so the hook exited `2` with a continue message. A session held on the menu stays there. |
 | `pane-unverified` | A pane was named but not proved to be the terminal of the hook's own Claude Code (`detail=` is `bad-pane-id`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or `not-foreground`; `tty-mismatch` also covers `tmux` failing or printing nothing). Nothing was typed and the hook exited `2`. If the session is still on the menu, its owner should follow [Continue a session yourself](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#continue-a-session-yourself). |
 | `pane-not-reading` | The pane is the session's terminal, but Claude Code is not the process reading it. Nothing was typed and the hook exited `2`. Same follow-up as `pane-unverified`. |
 | `resume-keys-failed` | A key failed or the session exited part way (`keys_sent=` says how many went). If the session is still open, its owner should follow [Continue a session yourself](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#continue-a-session-yourself). |

@@ -1411,10 +1411,10 @@ rotator puts them back at the end of its next cycle, and sessions started with
      ```
      amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
      ```
-     The outcome says why: `resumed` when there was no tmux pane to check,
-     `pane-unverified` when a pane was named but not proved to be this
-     session's terminal, and `pane-not-reading` when it was the terminal but
-     Claude Code is not the process reading it.
+     The outcome says why: `resumed` with `detail=no-tmux-pane` when there
+     was no tmux pane to check, `pane-unverified` when a pane was named but
+     not proved to be this session's terminal, and `pane-not-reading` when
+     it was the terminal but Claude Code is not the process reading it.
 
 The hook chooses one delivery path per wake. The proof shows that the keys
 go to this session's own terminal. It does not show that the screen is the
@@ -1523,8 +1523,9 @@ room, check the hook's outcome and the terminal together.
 - `outcome=resumed-keys keys_sent=4` records that tmux accepted all four
   inputs for the proved pane. No further action is needed unless the reply
   does not appear.
-- `outcome=resumed` records a wake with the continue message above, for a
-  session that was not in tmux.
+- `outcome=resumed detail=no-tmux-pane` records a wake with the continue
+  message above, for a session with no usable `$TMUX_PANE` (not in tmux, or
+  the pane id is malformed). No key was typed.
 - `outcome=pane-unverified` records that a pane was named but not proved to
   be this session's terminal. `detail=` is one of `bad-pane-id`,
   `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or
@@ -1552,7 +1553,7 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 ```
 2026-11-09T00:41:07Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=swap-no-room live=work cycle=stayed swap_seq=41 swap_live=third
 2026-11-09T00:43:12Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed-keys live=work cycle=stayed swap_seq=42 swap_live=spare pane=5b0e19c4a7d2 keys_sent=4
-2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=resumed live=work cycle=stayed swap_seq=42 swap_live=spare
+2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=resumed live=work cycle=stayed swap_seq=42 swap_live=spare detail=no-tmux-pane
 2026-11-09T00:43:12Z resume session=c2d7f0a4e913 event=5e8b36d1f0a7 outcome=pane-unverified live=work cycle=stayed swap_seq=42 swap_live=spare detail=tty-mismatch
 ```
 

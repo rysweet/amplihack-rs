@@ -81,6 +81,12 @@ const LOG_KEY_CHARS: usize = 12;
 /// The `detail` logged when the session exits while keys are sent.
 const SESSION_GONE: &str = "session-gone";
 
+/// The `detail` logged with `resumed` when the session named no usable tmux
+/// pane, so there was nothing to send keys to. A fixed word, like the
+/// refusal reasons in [`keys::UNVERIFIED_REASONS`] but distinct from them:
+/// no environment value, pane id or `/proc` text is ever logged.
+const NO_PANE: &str = "no-tmux-pane";
+
 /// How one invocation ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -519,7 +525,13 @@ fn run_with_affinity<D: Deps + ?Sized>(
     // session is not reading this terminal" without reading the pane.
     let pane = match check {
         PaneCheck::Ready(pane) => pane,
-        PaneCheck::None => return note(deps, now, Outcome::Resumed, swap(&record)),
+        PaneCheck::None => {
+            let n = Note {
+                detail: Some(NO_PANE.to_string()),
+                ..swap(&record)
+            };
+            return note(deps, now, Outcome::Resumed, n);
+        }
         PaneCheck::Unverified(reason) => {
             let n = Note {
                 detail: Some(reason.to_string()),

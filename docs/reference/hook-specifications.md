@@ -1111,12 +1111,13 @@ exactly one path:
   why a session with a proved pane gets the keys.
 - **Wake, exit `2`.** Without such a pane, it exits `2` with a one-line
   continue message on stderr, which wakes the session. The outcome names
-  why there was no keys path: `resumed` when there was no tmux pane to
-  check, `pane-unverified` when a pane was named but not proved to be this
-  session's own terminal, and `pane-not-reading` when it was the terminal
-  but Claude Code is not the process reading it. The three differ only in
-  the log line; each is recorded under the same lock, so the per-session
-  cap and the duplicate guard apply to all of them.
+  why there was no keys path: `resumed` with `detail=no-tmux-pane` when
+  there was no tmux pane to check (a fixed value, never a pane id or
+  socket path), `pane-unverified` when a pane was named but not proved to
+  be this session's own terminal, and `pane-not-reading` when it was the
+  terminal but Claude Code is not the process reading it. The three differ
+  only in the log line; each is recorded under the same lock, so the
+  per-session cap and the duplicate guard apply to all of them.
 
 A pane that fails its check is never replaced by another one. The hook does
 not list panes or clients, and sends nothing to any pane but the one its own
