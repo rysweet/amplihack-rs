@@ -341,3 +341,34 @@ exec "$REAL_TOOL" "$@"
     );
     assert_private_empty(&f);
 }
+
+/// A capture that was read successfully and holds nothing is the case the step
+/// describes as empty stderr. The real helper always ends its capture with a
+/// terminal line, so the capture is made empty by a `tail` that prints nothing.
+#[test]
+fn followup_empty_creation_capture_is_reported_as_empty_stderr() {
+    let f = PublishFixture::new();
+    f.shim(
+        "tail",
+        r#"
+case "$*" in
+  *workflow-pr-create.*) exit 0 ;;
+esac
+exec "$REAL_TOOL" "$@"
+"#,
+    );
+    let output = f
+        .publish_command()
+        .env("CREATE_STATUS", "23")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(23), "{}", describe(&output));
+    let result = json(&output);
+    assert_eq!(result["state"], "FAILED_PR_CREATE", "{result}");
+    let message = result["message"].as_str().unwrap();
+    assert_eq!(
+        message, "gh pr create failed (exit 23): empty stderr (no error message)",
+        "{message}"
+    );
+    assert_private_empty(&f);
+}

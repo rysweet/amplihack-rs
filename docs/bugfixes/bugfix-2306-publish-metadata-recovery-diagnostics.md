@@ -201,9 +201,10 @@ remove their captures. If a capture cannot be removed, `WARNING: gh capture
 cleanup failed` follows the terminal line, so a single-line reader sees that
 warning. The status is still returned, and cleanup failures cannot overwrite it
 or disturb caller traps. An interruption prints its terminal line after cleanup,
-and every caller of the helper receives that line. A failed write of that line
-(for example a closed stderr) neither changes the cancellation status nor skips
-the caller's trap. No timers or polling delays are added.
+and every caller of the helper receives that line. A write of that line that
+fails with an error (for example to a closed stderr) neither changes the
+cancellation status nor skips the caller's trap; a broken pipe still ends the
+process with SIGPIPE. No timers or polling delays are added.
 
 ### Diagnostic privacy
 
@@ -350,7 +351,9 @@ the cause of those runs.
 
 Behavior tests use temporary repositories, local base refs, isolated
 configuration, and fake executables on `PATH`. They make no GitHub writes and
-use permanent nonretryable failures without test sleeps.
+use permanent nonretryable failures without test sleeps. The one exception is
+the retry-history test, which replaces the backoff `sleep` with a recorder so it
+can check the delays without waiting.
 
 | Scenario | Required observable behavior |
 | --- | --- |

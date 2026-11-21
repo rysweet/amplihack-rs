@@ -228,7 +228,9 @@ fn publisher_reports_the_terminal_line_when_only_the_retry_helper_is_interrupted
             .success(),
         "helper={helper:?}"
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // After the signal the publisher still runs its collision lookup, which is
+    // many process starts, so allow more time than a bare trap exit needs.
+    let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
