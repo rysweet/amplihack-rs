@@ -146,7 +146,7 @@ fn a_stated_reset_out_of_range_is_reported_and_not_stored() {
 /// cannot be written the wait is planned exactly as it would have been.
 ///
 /// This is the one place the two halves of the change could have been tied
-/// together by a check — "only wait if the block was stored" — and they are
+/// together by a check ("only wait if the block was stored") and they are
 /// deliberately not. `note_spend_block` returns `()` so that no caller can
 /// read its outcome, and the planner never asks whether a block exists.
 /// What follows from that is stated rather than hidden: the blocked login
