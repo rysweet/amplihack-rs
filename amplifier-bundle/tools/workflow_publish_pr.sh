@@ -253,8 +253,7 @@ gh_pr_create_with_retry() (
   GH_OWNED_PID=""
   gh_remove_capture "$body_file"
   body_file=""
-  [ "$status" -eq 0 ] && return 0
-  echo "ERROR: gh pr create failed (exit $status) — PR may already exist for this branch or GitHub API is unavailable" >&2
+  # Last on stderr must stay the helper's terminal rejection; the publisher reads it.
   return "$status"
 )
 
@@ -1033,7 +1032,13 @@ RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/n
 }
 COMMITS_AHEAD="${COMMITS_AHEAD:-unknown}"
 if [ "$PR_TITLE_SOURCE" = template ]; then
-  if safe_scope="$(sanitize_body_evidence "$PR_SCOPE" 2>/dev/null)"; then :; else safe_scope="branch changes"; fi
+  if safe_scope="$(sanitize_body_evidence "$PR_SCOPE" 2>/dev/null)"; then
+    :
+  else
+    scope_status=$?
+    printf 'WARNING: optional scope sanitization failed (exit %s); using safe text\n' "$scope_status" >&2
+    safe_scope="branch changes"
+  fi
   PR_SUMMARY="Concise workflow-generated PR for ${safe_scope}."
 else
   PR_SUMMARY="Workflow-generated PR."
@@ -1125,7 +1130,16 @@ if wait "$PUBLISH_CHILD"; then
 else
   CREATE_STATUS=$?
   PUBLISH_CHILD=""
-  CREATE_DIAGNOSTIC="$(gh_safe_stderr "$CREATE_STDERR_FILE")"
+  # Retry warnings precede the terminal rejection and can fill the bounded
+  # diagnostic, so keep only the last line (the helper's terminal rejection).
+  CREATE_LAST_LINE="$(tail -n 1 -- "$CREATE_STDERR_FILE" 2>/dev/null)" || CREATE_LAST_LINE=""
+  if [ -z "$CREATE_LAST_LINE" ]; then
+    CREATE_DIAGNOSTIC="empty stderr (no error message)"
+  elif printf '%s\n' "$CREATE_LAST_LINE" >"$CREATE_STDERR_FILE"; then
+    CREATE_DIAGNOSTIC="$(gh_safe_stderr "$CREATE_STDERR_FILE")"
+  else
+    CREATE_DIAGNOSTIC="stderr capture unavailable"
+  fi
   gh_remove_capture "$CREATE_STDERR_FILE"
   CREATE_STDERR_FILE=""
   CREATE_MESSAGE="gh pr create failed (exit ${CREATE_STATUS}): ${CREATE_DIAGNOSTIC}"
@@ -1145,20 +1159,28 @@ else
   finish_publish "FAILED_PR_CREATE" "create-pr-failed" "failure" "$CREATE_MESSAGE" "$CREATE_STATUS"
 fi
 PUBLISH_OPERATION="gh pr create result parsing (PR identity)"
-# Require one URL for the expected repository, without trailing messages,
-# query strings or extra path components. The number helper alone is permissive.
-case "$PR_URL_RESULT" in
-  "https://github.com/${REPO_IDENTITY}/pull/"*) : ;;
-  *) finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1 ;;
-esac
-created_number="${PR_URL_RESULT#"https://github.com/${REPO_IDENTITY}/pull/"}"
-case "$created_number" in
-  ''|*[!0-9]*|0)
-    finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1 ;;
-esac
-if PR_NUMBER_RESULT="$(gh_pr_number_from_url "$PR_URL_RESULT")"; then :; else
-  finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing could not resolve PR identity" 1
+# Require exactly https://github.com/<owner>/<repo>/pull/<number>, with no
+# trailing message, query string or extra path. Split at the final /pull/ so a
+# repository named "pull" still parses. The number must be decimal digits with
+# at least one non-zero digit. The repository is compared with ASCII case
+# folding, since GitHub's canonical casing can differ from origin's.
+created_path="${PR_URL_RESULT#https://github.com/}"
+created_repo="${created_path%/pull/*}"
+created_number="${created_path##*/pull/}"
+case "$created_number" in ''|*[!0123456789]*) created_number="" ;; esac
+case "$created_number" in *[1-9]*) ;; *) created_number="" ;; esac
+identity_ok=false
+if [ "$created_path" != "$PR_URL_RESULT" ] && [ -n "$created_number" ] &&
+  (LC_ALL=C; shopt -s nocasematch; [[ "$created_repo" == "$REPO_IDENTITY" ]]); then
+  identity_ok=true
 fi
+if [ "$identity_ok" != true ]; then
+  # A rejected identity must not reach the structured result.
+  PR_URL_RESULT=""
+  PR_NUMBER_RESULT=""
+  finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1
+fi
+PR_NUMBER_RESULT="$created_number"
 # Only a base this step passed with --base; without it GitHub chose the base.
 [ -z "${RECIPE_VAR_base_branch:-}" ] || BASE_BRANCH_RESULT="$BASE_BRANCH"
 finish_publish "$PUBLISH_STATE" "$LEGACY_PUBLISH_STATE" "success" "draft PR created"

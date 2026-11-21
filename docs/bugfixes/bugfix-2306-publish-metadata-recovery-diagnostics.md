@@ -98,7 +98,9 @@ it invents neither a numeric reference nor a suffix for local tracking IDs.
 
 Template titles also pass through normalization, credential redaction and issue-reference
 defusing before capping; their established `Update <scope>` wording remains.
-Template summaries use sanitized scope text.
+Template summaries use sanitized scope text. If that sanitization fails, the step
+warns on stderr with the sanitizer's exit status and uses `branch changes`. The
+warning contains neither the scope text nor any partial sanitizer output.
 
 All accepted titles preserve credential redaction, control removal, reference
 defusing, UTF-8 integrity, and the 200-byte limit including the validated issue
@@ -157,11 +159,14 @@ and `message`. Human-readable warnings and diagnostics use stderr.
 | Already open, already merged, closed after merge, or empty branch | Existing classifications and successful terminal behavior remain intact. |
 | Mandatory gate fails or a closed unmerged PR still has a diff | Existing failure behavior remains enforced with an actionable diagnostic. |
 
-Successful creation is followed by explicit result parsing with the builtin
-`gh_pr_number_from_url` helper. No final `awk` invocation is required. The result
-must be a single GitHub PR URL for the expected repository with a numeric PR
-number. Malformed output reports `FAILED_PR_IDENTITY` and a result-parsing
-diagnostic; it never retries creation or reports that creation itself failed.
+Successful creation is followed by explicit result parsing with Bash builtins. No
+final `awk` invocation is required. The result must be exactly one GitHub PR URL,
+`https://github.com/<owner>/<repo>/pull/<number>`, with a decimal number that has
+a nonzero digit. The repository is compared with `REPO_IDENTITY` using ASCII case
+folding, so `Owner/Repo` matches `owner/repo`; a repository named `pull` still
+parses. Foreign repositories, malformed URLs, extra output and invalid numbers
+report `FAILED_PR_IDENTITY` and leave `pr_url` and `pr_number` empty. Such a
+rejection never retries creation or reports that creation itself failed.
 
 A terminal command diagnostic contains the stable operation name, original exit
 status, and sanitized stderr. Empty stderr receives an explicit explanation.
@@ -172,11 +177,21 @@ empty-stderr explanation. This is a content contract, not an exact message forma
 
 Creation evidence is captured separately from stdout and retained while the
 scoped collision lookup runs. A failed collision lookup adds context; it cannot
-replace the original creation diagnostic. On `FAILED_PR_CREATE`, creation
-evidence appears in stderr and the structured `message`, and survives into the
-runner's serialized step error. Pre-helper failures also identify the operation
-and status or condition. A final-exit backstop prevents unexplained nonzero
-exits without duplicating an existing terminal diagnostic.
+replace the original creation diagnostic. Retry warnings precede the helper's
+terminal rejection in the creation stderr, and a long warning history must not
+hide it. The publisher reports only that final rejection, sanitized and bounded,
+together with the original creation exit status (for example 23). When a signal
+interrupts the helper alone, its last stderr line is
+`ERROR: gh interrupted by <signal> (exit N)`, so the publisher reports it as it
+reports any other terminal rejection. A signal delivered to the publisher itself
+is different: it exits through its own backstop, which cancels the child and
+removes the capture without reading it, then names the failed operation and
+status. An empty creation stderr reports `empty stderr (no error message)`.
+On `FAILED_PR_CREATE`, creation evidence appears in stderr and the structured
+`message`, and survives into the runner's serialized step error. Pre-helper
+failures also identify the operation and status or condition. A final-exit
+backstop prevents unexplained nonzero exits without duplicating an existing
+terminal diagnostic.
 
 The shared retry helper retains retry classification, timing, successful stdout,
 and the original command status. Its terminal paths report diagnostics before
