@@ -623,15 +623,10 @@ fn workflow_worktree_calls() -> Vec<(String, Value)> {
 }
 
 #[test]
-fn workflow_worktree_callers_outside_default_workflow_clear_base_branch() {
-    // Step-04 honours an inherited base_branch, and the runner lays a
-    // caller's whole context over workflow-worktree's defaults. Only
-    // default-workflow opens its pull request on base_branch (step-16). Any
-    // other caller opens it on origin/HEAD's branch, so it clears base_branch
-    // and forbidden_base_branches in its call and the branch starts where the
-    // pull request is aimed. strict_delivery stays inherited: step-04 then
-    // refuses a strict run instead of delivering it on a new branch. See
-    // "Where the inputs apply" in docs/reference/workflow-delivery-inputs.md.
+fn workflow_worktree_callers_scope_delivery_inputs() {
+    // Default workflow and auto-drive-light publish to the requested base.
+    // Quick change publishes to the clone default and clears inherited base.
+    // Strict delivery stays inherited so it cannot silently open a new branch.
     let calls = workflow_worktree_calls();
     let callers: Vec<&str> = calls.iter().map(|(r, _)| r.as_str()).collect();
     for expected in ["default-workflow", "quick-change", "auto-drive-light"] {
@@ -652,13 +647,19 @@ fn workflow_worktree_callers_outside_default_workflow_clear_base_branch() {
             }
             continue;
         }
-        for key in ["base_branch", "forbidden_base_branches"] {
-            assert_eq!(
-                ctx[key].as_str(),
-                Some(""),
-                "{recipe}/{id} must clear {key}: only default-workflow opens its pull request on base_branch"
+        if recipe == "auto-drive-light" {
+            assert!(
+                ctx["base_branch"].is_null(),
+                "{recipe}/{id} uses the inherited publication target"
             );
+        } else {
+            assert_eq!(ctx["base_branch"].as_str(), Some(""), "{recipe}/{id}");
         }
+        assert_eq!(
+            ctx["forbidden_base_branches"].as_str(),
+            Some(""),
+            "{recipe}/{id} clears the inherited deny list"
+        );
         assert!(
             ctx["strict_delivery"].is_null(),
             "{recipe}/{id} must leave strict_delivery inherited, so step-04 refuses a strict run"
@@ -758,20 +759,17 @@ fn pull_request_base(repo: &Repo, recipe: &str, step_id: &str) -> String {
 
 #[test]
 fn light_recipes_start_the_branch_on_the_base_their_pull_request_targets() {
-    // A base_branch given to smart-orchestrator reaches quick-change and
-    // auto-drive-light. Their branch must still start on the branch their
-    // pull request targets, or the pull request carries every commit on dev
-    // that main lacks.
-    for (recipe, pr_step) in [
-        ("quick-change", "quick-change-create-pr"),
-        ("auto-drive-light", "light-open-pr"),
+    for (recipe, requested, expected) in [
+        ("quick-change", "dev", "main"),
+        ("auto-drive-light", "dev", "dev"),
+        ("auto-drive-light", "", "main"),
     ] {
         let repo = Repo::new();
         let out = run_worktree_call(
             &repo,
             recipe,
             &[
-                ("base_branch", "dev"),
+                ("base_branch", requested),
                 ("forbidden_base_branches", "release/*"),
                 ("issue_number", "77"),
                 ("task_description", "fix a typo"),
@@ -779,18 +777,24 @@ fn light_recipes_start_the_branch_on_the_base_their_pull_request_targets() {
         );
         assert!(out.status.success(), "{recipe}: {}", describe(&out));
         let r = receipt(&out);
-        let base = pull_request_base(&repo, recipe, pr_step);
-        assert_eq!(base, "main", "{recipe}");
-        assert_eq!(r["base_ref"], format!("origin/{base}"), "{recipe}: {r}");
+        assert_eq!(r["base_ref"], format!("origin/{expected}"), "{recipe}: {r}");
+        assert_eq!(r["base_branch"], expected, "{recipe}: {r}");
+        if recipe == "quick-change" {
+            assert_eq!(
+                pull_request_base(&repo, recipe, "quick-change-create-pr"),
+                expected
+            );
+        }
         let wt = PathBuf::from(r["worktree_path"].as_str().unwrap());
         assert_eq!(
             git(&wt, &["rev-parse", "HEAD"]),
-            repo.rev("origin/main"),
+            repo.rev(&format!("origin/{expected}")),
             "{recipe}"
         );
-        assert!(
-            !wt.join("dev-only.txt").exists(),
-            "{recipe}: dev's commits stay out of a pull request into main"
+        assert_eq!(
+            wt.join("dev-only.txt").exists(),
+            expected == "dev",
+            "{recipe}"
         );
     }
 }

@@ -1,19 +1,10 @@
 #!/usr/bin/env bash
 # test-issue-1531-qa-evidence-json.sh — regression test for #1531.
 #
-# The merge loop's QA evidence record splices the last lines of the repository
-# test command's log (qa_summary) and the scenario file list (qa_scenarios)
-# into a JSON record built with printf. A runner that prints ANSI colour
-# (gadugi-test does) put raw ESC bytes into qa_summary, the record was invalid
-# JSON, and the merge round read a passing QA run as qa_status=MISSING.
-#
-# The record is built by amplifier-bundle/tools/autodrive_qa_evidence.sh, which
-# step-02-qa-team-scenarios of autodrive-merge-evidence.yaml runs. This runs
-# that tool, unmodified, on a scratch Rust repository whose test command
-# (AUTODRIVE_QA_COMMAND) prints logs with colour, cursor and erase sequences,
-# quotes, backslashes, tabs, multibyte text and control bytes, and over awkward
-# scenario file names. It checks that every record is valid strict-UTF-8 JSON
-# and that the runner's own words survive the sanitising.
+# Exercise the QA measurement on a scratch repository. Its suite prints
+# terminal escapes, quotes, multi-byte text and control bytes. The exit
+# status must survive in strict UTF-8 JSON and in diagnostics, while the
+# suite text stays out of both. Awkward scenario names remain JSON data.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -54,17 +45,13 @@ mkdir -p "$REPO"
 
 # record <log-file> — the tool's qa record for a repository whose test command
 # prints <log-file>. The tool's stderr goes to <log-file>.err.
-# Only the last line of the tool's stdout is the record; take it with a shell
-# substring, not `| tail -n 1` (issue #1434: no early-exit pipeline stages).
 record() {
-    local stdout
-    stdout="$(env -i HOME="$WORK" TMPDIR="$WORK" PATH="/usr/bin:/bin" REPO_PATH="$REPO" \
+    env -i HOME="$WORK" TMPDIR="$WORK" PATH="/usr/bin:/bin" REPO_PATH="$REPO" \
         AUTODRIVE_ROUND_LABEL=round-1 AUTODRIVE_QA_COMMAND="cat $1" \
-        bash "$TOOL" 2>"$1.err")"
-    printf '%s' "${stdout##*$'\n'}"
+        bash "$TOOL" 2>"$1.err"
 }
 
-# check_log <id> <description> <printf-format for the log> [text the summary must keep]...
+# check_log <id> <description> <printf-format for the log> [suite text that must stay private]...
 check_log() {
     local id="$1" desc="$2" fmt="$3" log="$WORK/$1.log" out summary want ok=1
     shift 3
@@ -76,22 +63,26 @@ check_log() {
         return 0
     fi
     summary="$(printf '%s' "$out" | field_of qa_summary)"
+    if [[ -n "$summary" || "$(printf '%s' "$out" | field_of qa_exit_code)" != 0 ]] ||
+        ! grep -Fq 'QA suite command 1 (env) exited 0' "$log.err"; then
+        ok=0
+        fail "$id" "$desc: the tool must report a successful run without a log excerpt"
+    fi
     for want in "$@"; do
-        if [[ "$summary" != *"$want"* ]]; then
+        if [[ "$out" == *"$want"* ]] || grep -Fq -- "$want" "$log.err"; then
             ok=0
-            fail "$id" "$desc: qa_summary lost '$want' (got '$summary')"
+            fail "$id" "$desc: suite text escaped into measurement or diagnostics"
         fi
     done
-    # A partly stripped CSI sequence leaves its tail behind, e.g. `[34m` or `[2K`.
-    if [[ "$fmt" == *'\033['* && "$summary" =~ \[[0-9:\;?\>]+[A-Za-z] ]]; then
+    if [[ "$out" == *$'\033'* || "$(cat "$log.err")" == *$'\033'* ]]; then
         ok=0
-        fail "$id" "$desc: an escape sequence was only partly stripped (got '$summary')"
+        fail "$id" "$desc: terminal escapes reached measurement or diagnostics"
     fi
     if [[ "$ok" -eq 1 ]]; then pass "$id" "$desc"; fi
     return 0
 }
 
-echo "== #1531: qa_summary is valid JSON and keeps the runner's words =="
+echo "== #1531: measurement reports exits and keeps suite output private =="
 check_log colour "ANSI colour (gadugi-test output)" \
     '\033[34mdebug\033[39m: \033[2m Tests \033[22m \033[1m\033[32m 3 passed\033[39m\033[22m\n\033[32m✓\033[39m all scenarios passed\n' \
     "debug:" "3 passed" "all scenarios passed"
@@ -104,7 +95,7 @@ check_log column "cursor-to-column before a path" \
 check_log bare "parameterless erase-to-end and reset (ESC[K, ESC[m)" \
     'A\033[KB\033[mC done\n' "ABC done"
 check_log truecolour "colon-separated and private-parameter sequences" \
-    '\033[38:2:255:0:0mred\033[0m \033[>4;1mkeys\033[0m done\n' "red" "keys" "done"
+    '\033[38:2:255:0:0mcolourfixture\033[0m \033[>4;1mkeys\033[0m done\n' "colourfixture" "keys" "done"
 check_log quotes "double quotes" \
     'assert "a" == "b" failed\n' "assert a == b failed"
 check_log backslash "backslashes become '/'" \

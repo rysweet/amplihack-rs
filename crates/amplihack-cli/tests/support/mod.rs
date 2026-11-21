@@ -2,6 +2,8 @@
 
 pub mod amplihack_bin;
 pub mod auto_drive_light;
+/// Fixture for #2569: the criterion-1 QA judgement.
+pub mod criterion1_world;
 pub mod events;
 pub mod exec_stub;
 pub mod fake_proc;

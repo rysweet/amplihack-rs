@@ -23,8 +23,8 @@ use serde_yaml::Value;
 use sha2::{Digest, Sha256};
 
 use crate::support::auto_drive_light::{
-    Fakes, LightRepo, fake_bin, jq_available, private_dir, read, recipe, repo_root, run_bash, show,
-    stderr, stdout, step_command,
+    Fakes, LightRepo, fake_bin, git, jq_available, private_dir, read, recipe, repo_root, run_bash,
+    show, stderr, stdout, step_command,
 };
 
 const NAME: &str = "auto-drive-light";
@@ -36,6 +36,7 @@ const STEPS: &[&str] = &[
     "light-worktree",
     "light-base-pin",
     "light-implement",
+    "light-qa-inputs",
     "light-qa",
     "light-precommit",
     "light-commit-push",
@@ -53,6 +54,7 @@ const BUILD_STEPS: &[&str] = &[
     "light-worktree",
     "light-base-pin",
     "light-implement",
+    "light-qa-inputs",
     "light-qa",
     "light-precommit",
     "light-commit-push",
@@ -426,18 +428,28 @@ fn check_unmerged_observes_platform_and_retains_failed_attempts() {
 }
 
 #[test]
-fn qa_preserves_selection_and_reports_unavailable_required_tools() {
+fn light_qa_judges_criterion_1_and_records_the_judgement_in_its_reply() {
     let s = step(&r(), "light-qa");
     assert!(is_agent(&s));
     let prompt = s["prompt"].as_str().unwrap();
     for policy in [
         "qa_command",
-        "quick_change_checks.sh",
         "recorded base",
-        "missing required tool",
-        "13 authoritative",
+        "criterion-1-qa-judgement.md",
+        "{{light_qa_inputs}}",
+        "qa_judgement",
+        "qa_handoff",
+        "does not meet criterion 1",
     ] {
-        assert!(prompt.contains(policy));
+        assert!(prompt.contains(policy), "light-qa must mention `{policy}`");
+    }
+    // The parsed record that decided criterion 1 is retired (#2569): the
+    // judgement is the agent's own reply, and the measurement owns its file.
+    for retired in ["qa-record", "qa-inputs.json"] {
+        assert!(
+            !prompt.contains(retired),
+            "light-qa must not name the retired `{retired}`"
+        );
     }
 }
 
@@ -567,7 +579,7 @@ fn quick_change_common_is_loaded_from_amplihack_home_only() {
         }
     }
     assert_eq!(
-        n, 3,
+        n, 4,
         "local preparation steps source trusted quick_change_common.sh"
     );
     let pre = yaml_text(&step(&r(), "light-prereqs"));
@@ -832,8 +844,7 @@ fn prereqs_check_the_follow_up_tools_and_hold_no_task_id_rule() {
     assert!(task.contains("AMPLIHACK_HOME"), "from the tool root only");
 }
 
-/// A scratch repository and the fakes, with a stub `gadugi-test` on `PATH`
-/// so `light-prereqs` can pass its last check.
+/// A scratch repository and the fakes on `PATH`.
 struct StepEnv {
     repo: LightRepo,
     fakes: Fakes,
@@ -844,11 +855,6 @@ impl StepEnv {
     fn new() -> Self {
         let repo = LightRepo::new();
         let fakes = fake_bin(repo.tmp.path());
-        crate::support::exec_stub::write_executable(
-            &fakes.bin.join("gadugi-test"),
-            "#!/usr/bin/env bash\nexit 0\n",
-            0o755,
-        );
         let tmpdir = repo.tmp.path().join("private-tmp");
         private_dir(&tmpdir);
         StepEnv {
@@ -1039,6 +1045,184 @@ fn light_task_id_accepts_exactly_the_task_ids_resolve_task_accepts() {
     );
 }
 
+/// A light-path repository whose clone default is `main` and which also has
+/// an `origin/trunk` at the base commit, so the two answers give different
+/// change sets: against `main` the change is the documentation file alone,
+/// against `trunk` it also carries the source file.
+fn light_world_with_trunk() -> StepEnv {
+    let e = StepEnv::new();
+    let a = e.repo.base.clone();
+    git(&e.repo.wt, &["update-ref", "refs/remotes/origin/trunk", &a]);
+    e.repo
+        .write("crates/foo/src/added.rs", "pub fn added() {}\n");
+    let b = e.repo.commit("feat: add a module");
+    git(&e.repo.wt, &["update-ref", "refs/remotes/origin/main", &b]);
+    git(
+        &e.repo.wt,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/main",
+        ],
+    );
+    e.repo.write("docs/guide.md", "# guide\n\nand more\n");
+    e.repo.commit("docs: extend the guide");
+    e
+}
+
+/// Runs `light-qa-inputs` with `vars` on top of the worktree setup, and
+/// returns the output and the record it printed. `cargo` is kept off PATH:
+/// the measurement runs the suite it detects, and this fixture is not a tree
+/// to build. An absent command is a fact the record carries.
+fn light_qa_record(e: &StepEnv, vars: &[(&str, &str)]) -> (Output, serde_json::Value) {
+    let wt = e
+        .repo
+        .wt
+        .canonicalize()
+        .expect("the worktree path is the one worktree_setup_path.sh accepts");
+    let target = vars
+        .iter()
+        .find_map(|(key, value)| (*key == "RECIPE_VAR_base_branch").then_some(*value))
+        .unwrap_or("main");
+    let setup = serde_json::json!({"worktree_path": wt, "base_branch": target}).to_string();
+    let path = format!("{}:/usr/bin:/bin", e.fakes.bin.display());
+    let mut env: Vec<(&str, &str)> = vec![
+        ("RECIPE_VAR_worktree_setup", setup.as_str()),
+        ("PATH", path.as_str()),
+    ];
+    env.extend_from_slice(vars);
+    let o = e.run("light-qa-inputs", &env);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let line = stdout(&o)
+        .lines()
+        .rev()
+        .find(|l| l.starts_with('{'))
+        .map(str::to_string)
+        .unwrap_or_else(|| panic!("the step prints the measured record: {}", show(&o)));
+    let rec: serde_json::Value = serde_json::from_str(&line).expect("the record is one JSON line");
+    (o, rec)
+}
+
+fn rec_field(rec: &serde_json::Value, k: &str) -> String {
+    rec[k].as_str().unwrap_or_default().to_string()
+}
+
+/// #2569: a `base_branch` the run was given outranks the clone's default on
+/// the light path. It is the branch the PR will be opened against, so the
+/// change set is measured against it and the record names `recipe` as the
+/// source. An `AUTODRIVE_QA_BASE` inherited from the environment is not this
+/// step's to use: the step resolves the base and sets that variable itself.
+/// Both name `trunk` here and the clone's default is `main`, so taking the
+/// wrong one shows in the base, the source and the measured paths alike.
+#[test]
+fn light_qa_inputs_measures_against_the_named_base_branch_first() {
+    if skip() {
+        return;
+    }
+    let e = light_world_with_trunk();
+    let (o, rec) = light_qa_record(
+        &e,
+        &[
+            ("RECIPE_VAR_base_branch", "trunk"),
+            ("AUTODRIVE_QA_BASE", "main"),
+        ],
+    );
+    assert_eq!(
+        (
+            rec_field(&rec, "qa_base"),
+            rec_field(&rec, "qa_base_source")
+        ),
+        ("trunk".into(), "recipe".into()),
+        "the named base is the base, and the record says where it came from: {rec}"
+    );
+    assert_eq!(
+        rec_field(&rec, "docs_only"),
+        "false",
+        "against trunk the change set carries the source file: {rec}"
+    );
+    assert!(
+        rec_field(&rec, "qa_command_paths").contains("added.rs"),
+        "the measured paths are against trunk: {rec}"
+    );
+    assert!(
+        rec_field(&rec, "qa_guidance").ends_with("skills/merge-ready/criterion-1-qa-judgement.md"),
+        "the pinned guidance path is a field of the record: {rec}"
+    );
+    assert!(
+        e.fakes.gh_calls().is_empty(),
+        "there is no PR yet, so the hosting interface is not asked: {:?} {}",
+        e.fakes.gh_calls(),
+        show(&o)
+    );
+}
+
+/// #2569: where no `base_branch` is named, the clone's own default is the
+/// answer, and the record says that is what it is. There is no PR yet, so
+/// there is no PR base for it to be wrong against.
+#[test]
+fn light_qa_inputs_falls_back_to_the_clone_default_when_no_base_is_named() {
+    if skip() {
+        return;
+    }
+    let e = light_world_with_trunk();
+    let (_, rec) = light_qa_record(&e, &[("AUTODRIVE_QA_BASE", "trunk")]);
+    assert_eq!(
+        (
+            rec_field(&rec, "qa_base"),
+            rec_field(&rec, "qa_base_source")
+        ),
+        ("main".into(), "clone-default".into()),
+        "{rec}"
+    );
+    assert_eq!(rec_field(&rec, "docs_only"), "true", "{rec}");
+    assert!(
+        !rec_field(&rec, "qa_command_paths").contains("added.rs"),
+        "taking trunk instead would carry the source file: {rec}"
+    );
+    assert!(
+        e.fakes.gh_calls().is_empty(),
+        "no PR exists, so no base is asked of the hosting interface: {:?}",
+        e.fakes.gh_calls()
+    );
+}
+
+/// #2569: a refused `base_branch` resolves to no base. It does not fall
+/// through to the clone default, which would measure against a branch the
+/// refused source never named. The value is not echoed and nothing in it
+/// runs.
+#[test]
+fn light_qa_inputs_resolves_none_for_every_hostile_base_branch() {
+    if skip() {
+        return;
+    }
+    use crate::support::criterion1_world::hostile_bases;
+    for i in 0..hostile_bases(Path::new("/canary")).len() {
+        let e = light_world_with_trunk();
+        let canary = e.repo.tmp.path().join("canary");
+        let bad = hostile_bases(&canary)[i].clone();
+        let (o, rec) = light_qa_record(&e, &[("RECIPE_VAR_base_branch", bad.as_str())]);
+        assert_eq!(
+            (
+                rec_field(&rec, "qa_base"),
+                rec_field(&rec, "qa_base_source")
+            ),
+            (String::new(), "none".into()),
+            "{bad:?}: refused, and the clone default is not measured against instead: {rec}"
+        );
+        assert_eq!(
+            rec_field(&rec, "qa_command_paths"),
+            "(unknown)",
+            "{bad:?}: {rec}"
+        );
+        assert!(
+            !stdout(&o).contains(&bad) && !stderr(&o).contains(&bad),
+            "{bad:?}: the refused value is never echoed: {}",
+            show(&o)
+        );
+        assert!(!canary.exists(), "{bad:?}: a candidate was evaluated");
+    }
+}
+
 #[test]
 fn light_prereqs_does_not_check_the_task_id() {
     if skip() {
@@ -1049,6 +1233,43 @@ fn light_prereqs_does_not_check_the_task_id() {
     let o = e.run("light-prereqs", &[("RECIPE_VAR_plan_task_id", "task 17")]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert!(!stderr(&o).contains(TASK_ID_ERROR), "{}", show(&o));
+}
+
+/// #2569: criterion 1 is judged by an agent step, so `light-prereqs` no
+/// longer looks for `gadugi-test`. In a Node repository with no
+/// `gadugi-test` on `PATH` (the host's own copy is kept out too), it passes
+/// and prints `{}`.
+#[test]
+fn light_prereqs_passes_in_node_repository_without_gadugi_test() {
+    if skip() {
+        return;
+    }
+    let e = StepEnv::new();
+    assert!(!e.fakes.bin.join("gadugi-test").exists());
+    for rel in ["Cargo.toml", "Cargo.lock", "crates/foo/Cargo.toml"] {
+        e.repo.remove(rel);
+    }
+    e.repo.write(
+        "package.json",
+        r#"{"name":"demo","version":"1.0.0","scripts":{"test":"node test.js"}}"#,
+    );
+    e.repo.commit("node project");
+    let path = format!("{}:/usr/bin:/bin", e.fakes.bin.display());
+    let o = e.run("light-prereqs", &[("PATH", path.as_str())]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    // An absent gadugi-test is a fact the step reports, in either repository
+    // type, and never a stop: criterion 1 is judged in the loop (#2569).
+    assert_eq!(
+        stdout(&o).trim(),
+        r#"{"gadugi_test":"not-installed"}"#,
+        "{}",
+        show(&o)
+    );
+    assert!(
+        !stderr(&o).contains("gadugi-test-not-installed"),
+        "{}",
+        show(&o)
+    );
 }
 
 #[test]

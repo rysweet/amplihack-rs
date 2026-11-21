@@ -1581,12 +1581,13 @@ fn step_index(recipe: &Value, id: &str) -> usize {
 
 // The five agent steps of the auto-drive workflow, by recipe.
 
-const QA_REASON_TOKENS: [&str; 10] = [
+// The qa_reason tokens the measurement can emit. The three the retired
+// scenario run produced -- gadugi-validate-failed, gadugi-scenario-unnamed
+// and gadugi-run-failed -- are gone with it (#2569): the measurement runs no
+// scenario, so it can no longer observe a validation or a run failing.
+const QA_REASON_TOKENS: [&str; 7] = [
     "qa-command-failed",
     "no-scenarios",
-    "gadugi-validate-failed",
-    "gadugi-scenario-unnamed",
-    "gadugi-run-failed",
     "qa-config-invalid",
     "qa-unresolved",
     "qa-command-missing",
@@ -1619,8 +1620,9 @@ fn merge_round_blocker_step_writes_missing_gadugi_scenarios() {
         "gadugi_scenario_dir",
         "gadugi_status",
         "NO_SCENARIOS",
-        "VALIDATE_FAILED",
-        "RUN_FAILED",
+        // The judgement acts on the operator's missing directory instead of
+        // failing every round on it (#2569).
+        "operator-missing",
         "gadugi-test validate -d",
         "--scenario",
         "#207",
@@ -1670,17 +1672,17 @@ fn merge_round_blocker_step_writes_missing_gadugi_scenarios() {
 // measures criterion 1. It is executed, never sourced, and a missing tool
 // fails the step by name instead of producing evidence nobody measured.
 
+/// The measurement measures and runs nothing (#2569). It still selects and
+/// runs the repository's own suite command, still reads the operator's
+/// variables, and still lists the scenario directory; what it no longer does
+/// is validate or run a scenario, because that run is what turned a missing
+/// scenario, a failed validation and a host-caused failure into holds no
+/// round could clear. Only the judgement step runs a scenario, one at a time.
 #[test]
-fn qa_evidence_runs_one_gadugi_process_per_scenario() {
+fn qa_evidence_measures_the_suite_and_runs_no_scenario() {
     let tool = read(&tool_path("autodrive_qa_evidence.sh"));
     let cmd = tool.as_str();
     for needle in [
-        "gadugi-test validate -d \"$",
-        "--scenario \"$",
-        "#207",
-        "mktemp -d",
-        "cp -P",
-        "trap",
         "AUTODRIVE_QA_SCENARIO_DIR",
         "AUTODRIVE_QA_COMMAND",
         "AUTODRIVE_QA_COMMANDS",
@@ -1692,88 +1694,61 @@ fn qa_evidence_runs_one_gadugi_process_per_scenario() {
         "npm test",
         "cargo test --workspace --locked --no-fail-fast",
         "pytest",
+        // The four facts that replace the run, and the record's own fields.
+        "NOT_REQUIRED",
+        "NOT_INSTALLED",
+        "NO_SCENARIOS",
+        "FOUND",
+        "\"gadugi_scenario_dir_state\":\"%s\"",
+        // The run-shaped fields stay in the record so a reader written
+        // against the earlier contract still parses, but nothing here runs
+        // a scenario, so they are structural literals rather than
+        // conversions fed from a measurement.
+        "\"gadugi_scenario_results\":\"\"",
+        "\"gadugi_scenarios_run\":\"0\"",
+        "umask 077",
+        "autodrive_trust.sh",
     ] {
         assert!(
             cmd.contains(needle),
             "autodrive_qa_evidence.sh must contain `{needle}`"
         );
     }
-    // Every gadugi-test run line selects one scenario; the whole-directory
-    // run of the first #1517 commit is gone.
-    for line in cmd.lines().filter(|l| l.contains("gadugi-test run")) {
-        if line.trim_start().starts_with('#') {
-            continue;
-        }
+    // It asks whether gadugi-test is there and never invokes it.
+    assert!(
+        cmd.contains("command -v gadugi-test"),
+        "autodrive_qa_evidence.sh must still report whether gadugi-test is installed"
+    );
+    for invocation in ["gadugi-test validate", "gadugi-test run", "--scenario"] {
         assert!(
-            line.contains("--scenario"),
-            "autodrive_qa_evidence.sh runs a whole directory in one process (#207):\n  {line}"
+            !cmd.contains(invocation),
+            "autodrive_qa_evidence.sh must not run a scenario (#2569): it contains `{invocation}`"
         );
     }
-    assert!(
-        !cmd.contains("gadugi-test run -d \"$SDIR\""),
-        "autodrive_qa_evidence.sh must never run the scenario directory itself"
-    );
-    let validate = cmd.find("gadugi-test validate -d").unwrap();
-    let run = cmd
-        .lines()
-        .scan(0usize, |at, l| {
-            let start = *at;
-            *at += l.len() + 1;
-            Some((start, l))
-        })
-        .find(|(_, l)| l.contains("gadugi-test run") && !l.trim_start().starts_with('#'))
-        .map(|(at, _)| at)
-        .expect("a gadugi-test run line");
-    assert!(
-        validate < run,
-        "gadugi-test validate must run before any gadugi-test run"
-    );
-    for field_name in [
-        "qa_status",
-        "qa_reason",
-        "qa_repo_type",
-        "qa_dir",
-        "qa_command",
-        "qa_command_source",
-        "qa_command_paths",
-        "qa_candidates",
-        "qa_ci_skip",
-        "qa_suite_commands_count",
-        "qa_exit_code",
-        "head_sha",
-        "gadugi_required",
-        "gadugi_status",
-        "gadugi_validate_exit_code",
-        "gadugi_run_exit_code",
-        "gadugi_scenario_count",
-        "gadugi_scenario_dir",
-        "gadugi_scenarios_validated",
-        "gadugi_scenarios_run",
-        "gadugi_scenarios_passed",
-        "gadugi_scenarios_failed",
-        "gadugi_failed_scenarios",
+    // The five scenario-directory states are a closed set written from
+    // literals, so no operator value can reach the field as a state.
+    for state in [
+        "SSTATE=\"not-consulted\"",
+        "SSTATE=\"operator\"",
+        "SSTATE=\"operator-missing\"",
+        "SSTATE=\"detected\"",
+        "SSTATE=\"absent\"",
     ] {
         assert!(
-            cmd.contains(&format!("\"{field_name}\":\"%s\"")),
-            "the qa evidence JSON must record `{field_name}` as a string"
+            cmd.contains(state),
+            "autodrive_qa_evidence.sh must write the scenario-directory state from the literal `{state}`"
         );
     }
+    // The trust helpers come from beside the tool, never from a search a
+    // pull request could populate.
+    assert!(
+        cmd.contains("dirname \"${BASH_SOURCE[0]}\"") && !cmd.contains("for c in"),
+        "autodrive_qa_evidence.sh must source autodrive_trust.sh from its own directory only"
+    );
     for token in QA_REASON_TOKENS {
         assert!(
             cmd.contains(token),
             "autodrive_qa_evidence.sh must be able to emit qa_reason `{token}`"
-        );
-    }
-    for status in [
-        "NOT_REQUIRED",
-        "NOT_INSTALLED",
-        "NO_SCENARIOS",
-        "VALIDATE_FAILED",
-        "RUN_FAILED",
-    ] {
-        assert!(
-            cmd.contains(status),
-            "gadugi_status must include `{status}`"
         );
     }
     // Commands from the environment are never concatenated into one script,
@@ -2863,29 +2838,6 @@ fn autodrive_trust_is_a_side_effect_free_library() {
         "sourced\n",
         "sourcing autodrive_trust.sh under set -u must print nothing and succeed; stderr: {}",
         String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-#[test]
-fn qa_evidence_records_one_result_per_scenario_file() {
-    let tool = read(&tool_path("autodrive_qa_evidence.sh"));
-    for needle in [
-        "\"gadugi_scenario_results\":\"%s\"",
-        "autodrive_scenario_results",
-        "autodrive_trust.sh",
-        "umask 077",
-        "INVALID",
-    ] {
-        assert!(
-            tool.contains(needle),
-            "autodrive_qa_evidence.sh must reference `{needle}`"
-        );
-    }
-    // The trust helpers come from beside the tool, never from a search a
-    // pull request could populate.
-    assert!(
-        tool.contains("dirname \"${BASH_SOURCE[0]}\"") && !tool.contains("for c in"),
-        "autodrive_qa_evidence.sh must source autodrive_trust.sh from its own directory only"
     );
 }
 

@@ -12,14 +12,16 @@ Put them **below** the change's own description, starting with the marker line, 
 - Source -> target: `<source branch> -> <target branch>`
 - Current head revision: `<commit SHA>`
 
-### QA-team evidence
+### QA judgement (criterion 1)
 
-- Scenario files: `<path/to/scenario.yaml>`
-- Validation command: `gadugi-test validate <scenario>`
-- Validation result: `<passed / failed>`
-- Run command: `gadugi-test run <scenario>`
-- Run target: `<local env / deployed env>`
-- Run result: `<passed / failed>`
+- Status: `<PASS / FAIL / HANDOFF>`
+- Judgement: `<user_facing / not_user_facing>`, because `<reason>`
+- Cited files (not user-facing): `<paths from the diff>`
+- Scenario files: `<path/to/scenario.yaml>` (`<written in this PR / existing>`, `<pass / fail>`)
+- Run command and target: `<command>` on `<CI / isolated env / deployed env>`
+- Attempts: `<attempt, cause, fix commit, result>`
+- Declared QA command: `<command>` exited `<status>`
+- Hand-off (if any): `<reason>`, owner `<owner>`, needs `<needs>`
 - Evidence location: `<artifact path or log link>` (must include pass/fail counts and command output, not just a claim)
 
 ### Documentation

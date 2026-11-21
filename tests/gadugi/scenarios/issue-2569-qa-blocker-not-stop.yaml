@@ -1,0 +1,306 @@
+name: issue-2569-qa-blocker-not-stop
+description: >
+  Outside-in QA for issue #2569, merge-ready criterion 1 as a recorded
+  judgement. The scenario (via
+  tests/gadugi/run-issue-2569-qa-blocker-not-stop-scenario.sh) runs the
+  shipped `autodrive-merge-evidence` recipe with the real binary and the pinned
+  recipe runner against scratch Git repositories, with `gh`, `claude` and `npm`
+  as stand-ins on a private PATH that holds no `gadugi-test`. Case A: a Node
+  repository with no scenario directory records a named blocker, never a pass.
+  Case B, in four legs: the change set is measured against the PR's own base,
+  taken from the recipe, then from a lookup of the PR, and where neither
+  answers the record says `none` and measures no change set; a hostile base is
+  rejected, is not replaced by a lookup and reaches no shell. Case C: a scenario
+  directory the operator named that does not exist is the recorded state
+  `operator-missing`, whatever bytes its name holds, and the record stays one
+  clean JSON line. In every run the round ends normally: exit status 0, all
+  three agent steps called, the evidence folder 0700 and the record 0600. The
+  stand-in `gh` answers one read-only call and exits 96 on any other; the
+  stand-in agent records one line for each call and never the prompt.
+  Everything runs under `env -i` with a 0700 root, so the real ~/.claude and
+  ~/.amplihack are never read or written and no token or key of the caller
+  reaches a command. CI's Install Smoke Test job runs the driver script
+  directly against the binary it installs; CI does not run gadugi-test, so this
+  file is for running the same cases through gadugi-test by hand. It is not run
+  on a shared host: run the static checks and read the CI result instead.
+version: "1.0"
+environment:
+  requires: [amplihack, recipe-runner-rs, git, jq]
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, auto-drive, criterion-1, regression]
+  priority: high
+  issues: ["2569"]
+steps:
+  - name: run-issue-2569-qa-blocker-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2569-qa-blocker-not-stop-scenario.sh
+  - name: all-qa-blocker-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+# One assertion per PASS line the script emits, so the descriptor states the
+# scenario in full rather than a subset of it. A line added to the script
+# without an entry here leaves the descriptor understating what runs.
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: set-up-paths
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: set-up paths - "
+  - name: set-up-trees
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: set-up trees - "
+  - name: set-up-gadugi-test-absent
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: set-up gadugi-test-absent - "
+  - name: case-a-exit-status
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-a exit-status - "
+  - name: case-a-agent-calls
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-a agent-calls - "
+  - name: case-a-mode
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-a mode - "
+  - name: case-a-record
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-a record - "
+  - name: case-a-qa-status
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-a qa_status - "
+  - name: case-a-qa-reason
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-a qa_reason - "
+  - name: case-a-gadugi-status
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-a gadugi_status - "
+  - name: case-b-leg-1-exit-status
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-1 exit-status - "
+  - name: case-b-leg-1-agent-calls
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-1 agent-calls - "
+  - name: case-b-leg-1-mode
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-1 mode - "
+  - name: case-b-leg-1-record
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-1 record - "
+  - name: case-b-leg-1-qa-base-source
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-1 qa_base_source - "
+  - name: case-b-leg-1-qa-base
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-1 qa_base - "
+  - name: case-b-leg-1-qa-command-paths
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-1 qa_command_paths - "
+  - name: case-b-leg-1-gh-calls
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-1 gh-calls - "
+  - name: case-b-leg-2-exit-status
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-2 exit-status - "
+  - name: case-b-leg-2-agent-calls
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-2 agent-calls - "
+  - name: case-b-leg-2-mode
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-2 mode - "
+  - name: case-b-leg-2-record
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-2 record - "
+  - name: case-b-leg-2-qa-base-source
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-2 qa_base_source - "
+  - name: case-b-leg-2-qa-base
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-2 qa_base - "
+  - name: case-b-leg-2-qa-command-paths
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-2 qa_command_paths - "
+  - name: case-b-leg-2-gh-calls
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-2 gh-calls - "
+  - name: case-b-leg-3-exit-status
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-3 exit-status - "
+  - name: case-b-leg-3-agent-calls
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-3 agent-calls - "
+  - name: case-b-leg-3-mode
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-3 mode - "
+  - name: case-b-leg-3-record
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-3 record - "
+  - name: case-b-leg-3-qa-base-source
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-3 qa_base_source - "
+  - name: case-b-leg-3-qa-base
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-3 qa_base - "
+  - name: case-b-leg-3-qa-command-paths
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-3 qa_command_paths - "
+  - name: case-b-leg-3-docs-only
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-3 docs_only - "
+  - name: case-b-leg-3-gh-calls
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-3 gh-calls - "
+  - name: case-b-leg-4-exit-status
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-4 exit-status - "
+  - name: case-b-leg-4-agent-calls
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-4 agent-calls - "
+  - name: case-b-leg-4-mode
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-4 mode - "
+  - name: case-b-leg-4-record
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-4 record - "
+  - name: case-b-leg-4-qa-base-source
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-4 qa_base_source - "
+  - name: case-b-leg-4-qa-base
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-4 qa_base - "
+  - name: case-b-leg-4-record-hostile-text
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-4 record-hostile-text - "
+  - name: case-b-leg-4-gh-calls
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-4 gh-calls - "
+  - name: case-b-leg-4-injected-file
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-4 injected-file - "
+  - name: case-c-exit-status
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-c exit-status - "
+  - name: case-c-agent-calls
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-c agent-calls - "
+  - name: case-c-mode
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-c mode - "
+  - name: case-c-record-shape
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-c record-shape - "
+  - name: case-c-gadugi-required
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-c gadugi_required - "
+  - name: case-c-gadugi-scenario-dir-state
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-c gadugi_scenario_dir_state - "
