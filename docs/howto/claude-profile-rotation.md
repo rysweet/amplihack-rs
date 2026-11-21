@@ -1445,11 +1445,11 @@ For a session in a verified tmux pane the hook sends four inputs in order.
   swap carries an organisation-affinity warning, the hook includes it in
   the continuation text.
 
-Nothing else is ever sent. The hook never presses a digit, so it never picks
-a numbered menu option, and never types `/usage-credits` or
-`/rate-limit-options`, so it never buys extra usage or re-arms the wait.
-The keys go only to the pane the hook noted for this session, never to a
-pane found by name or pattern.
+The hook sends a fixed sequence to the pane it verified for the session.
+The sequence excludes digits, `/usage-credits` and `/rate-limit-options`.
+The active prompt determines what the keys do. If a draft, permission
+prompt or billing prompt has replaced the usage-limit menu, Ctrl+U can
+clear a draft and Enter can act on the prompt that is present.
 
 Each key is a separate command so that tmux cannot read Esc and Ctrl+U as
 one Meta key. If a command fails, or the session exits part way through, the
@@ -1562,8 +1562,13 @@ Check the user settings file with `jq`. If the session uses a custom
 `CLAUDE_CONFIG_DIR`, use that directory in the command.
 
 ```bash
-jq -e '{present: has("autoContinueAtUsageLimit"), value: .autoContinueAtUsageLimit}' \
-  "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+jq -e '
+  if type != "object" then error("settings must be a JSON object")
+  elif has("autoContinueAtUsageLimit") and (.autoContinueAtUsageLimit | type != "boolean")
+  then error("autoContinueAtUsageLimit must be a boolean")
+  else {present: has("autoContinueAtUsageLimit"), value: .autoContinueAtUsageLimit}
+  end
+' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
 ```
 
 For a file without the key, the output is:
@@ -1577,8 +1582,9 @@ For a file without the key, the output is:
 
 If the key is present with a value of `false`, that file disables the
 automatic wait when its value takes precedence. If `jq` reports a parse
-error, fix the JSON in the file you inspected. The output describes that
-file alone.
+error, fix the JSON in the file you inspected. If it reports that the key
+must be a boolean, check for a JSON `true` or `false` value. The output
+describes that file alone.
 
 For the effective value, check managed settings first, then any JSON or
 file supplied with `--settings`, then the user settings file. You can run
@@ -1604,14 +1610,15 @@ menu or timed wait remains, or if the hook logs `resume-keys-failed`. Only
 the session's owner should enter recovery input, including with `tmux send-keys`.
 
 1. If the usage-limit menu or timed wait is still showing, press Esc.
-   Confirm that the ordinary prompt is visible before entering more input.
-   If the menu or wait remains, or a different prompt appears, stop there
-   and read what Claude Code is asking. Some numbered menu options buy
-   usage credits.
-2. Check that the input box is empty. Clear any leftover recovery text or
-   dimmed suggestion with Ctrl+U.
-3. Type `continue` and press Enter.
-4. Check for a new reply below the earlier messages in the same conversation.
+   Some numbered menu options buy usage credits.
+2. Confirm that Claude Code shows its ordinary input prompt. If you see
+   the menu, the timed wait or any other prompt, stop and read what Claude
+   Code is asking.
+3. Check that the input box is empty. Save any draft you want to keep,
+   then clear the input box with Ctrl+U if it contains text or a dimmed
+   suggestion.
+4. Type `continue` and press Enter.
+5. Check for a new reply below the earlier messages in the same conversation.
    Confirm that Claude picks up the previous task. If the menu returns,
    the session is still blocked.
 
