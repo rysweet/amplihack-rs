@@ -29,7 +29,7 @@ use amplihack_hooks::limit_resume::decide::{
     Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key,
 };
 use amplihack_hooks::limit_resume::guard::{CommitError, GuardStore};
-use amplihack_hooks::limit_resume::keys::{Key, Pane, PaneCheck, RESUME_KEYS};
+use amplihack_hooks::limit_resume::keys::{Key, Pane, RESUME_KEYS};
 use amplihack_hooks::limit_resume::log::LogEntry;
 use amplihack_hooks::limit_resume::{
     Deps, Event, MAX_RESUMES_PER_SESSION, Outcome, RESUME_MSG, run_with, run_with_io, send_resume,
@@ -343,15 +343,10 @@ impl Deps for Fake {
             .push((transcript.map(Path::to_path_buf), start));
         self.stop
     }
-    fn pane_check(&mut self) -> PaneCheck {
+    fn pane(&mut self) -> Option<Pane> {
         self.pane_calls += 1;
-        match self
-            .pane_id
+        self.pane_id
             .and_then(|id| Pane::parse(Some(TMUX), Some(id)))
-        {
-            Some(p) => PaneCheck::Ready(p),
-            None => PaneCheck::None,
-        }
     }
     fn send_keys(&mut self, _pane: &Pane, key: Key) -> io::Result<()> {
         self.key_attempts += 1;

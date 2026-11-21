@@ -12,10 +12,8 @@
 //! - `send_with(program, &Pane, Key)`: runs `program` with `argv`, no shell,
 //!   null stdio; a non-zero exit is an error. `tmux_send` is
 //!   `send_with("tmux", …)`.
-//! - `parse_stat(text) -> Option<ProcStat { ppid, pgrp, tpgid }>` splits
-//!   after the last `)`; `ProcStat::foreground()` is `pgrp == tpgid`. The
-//!   ancestry walk the pane check uses (#2695) reads `ppid` from the same
-//!   line, so it is asserted here too.
+//! - `parse_stat(text) -> Option<ProcStat { pgrp, tpgid }>` splits after the
+//!   last `)`; `ProcStat::foreground()` is `pgrp == tpgid`.
 //! - `foreground_now(pid)`: one read of `/proc/<pid>/stat`; false when the
 //!   process is gone, unreadable or not in the foreground (S4, Ctrl-Z).
 //! - `same_tty(pane_tty_output, stdin_target)`: the pane's tty (at most 256
@@ -184,7 +182,6 @@ fn parse_stat_reads_pgrp_and_tpgid() {
     assert_eq!(
         s,
         ProcStat {
-            ppid: 4000,
             pgrp: 4321,
             tpgid: 4321
         }
@@ -196,7 +193,6 @@ fn parse_stat_reads_pgrp_and_tpgid() {
 fn parse_stat_splits_after_the_last_paren() {
     // A command name may hold `) (` and digits; only the last `)` ends it.
     let s = parse_stat(&stat_line("x) (S 1 2 3 4 5", 77, 78)).unwrap();
-    assert_eq!(s.ppid, 4000);
     assert_eq!(s.pgrp, 77);
     assert_eq!(s.tpgid, 78);
     assert!(!s.foreground(), "a background process group gets no keys");

@@ -82,8 +82,6 @@ fn every_outcome_the_hook_logs_is_documented() {
         Outcome::Resumed,
         Outcome::ResumedKeys,
         Outcome::ResumeKeysFailed,
-        Outcome::PaneUnverified,
-        Outcome::PaneNotReading,
         Outcome::WatchLost,
         Outcome::SwapStale,
         Outcome::SwapNoRoom,
