@@ -25,7 +25,14 @@ fn rejected(caller: Caller, outcome: &Outcome) -> Result<(), String> {
                     .json()
                     .is_some_and(|json| json["reason"] == "missing_scope")
         }
-        Caller::PublishPr => !outcome.success(),
+        // The structured state proves the identity check ran and refused the
+        // origin, rather than the run failing earlier for another reason.
+        Caller::PublishPr => {
+            !outcome.success()
+                && outcome
+                    .json()
+                    .is_some_and(|json| json["state"] == "FAILED_PR_IDENTITY")
+        }
         Caller::TerminalEvidence => callers::evidence_repo(outcome).is_empty(),
         Caller::PrSignal => {
             !outcome.success() && outcome.stderr.contains("WARNING: no open-PR signal")

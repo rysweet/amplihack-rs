@@ -246,3 +246,66 @@ exec "$REAL_TOOL" "$@"
         .unwrap_or_else(|| panic!("scope sanitization warning missing: {stderr}"));
     assert!(!warning.contains("scope-marker"), "{warning}");
 }
+
+/// The expected repository comes from `origin` alone. When `origin` does not
+/// name a GitHub repository the publisher fails loudly and no provider call is
+/// made, so no write can be addressed to an empty or defaulted repository.
+#[test]
+fn followup_unparseable_origin_stops_with_identity_failure_before_any_provider_call() {
+    for origin in [
+        "https://evil.example/owner/repo.git",
+        "https://evil.example#@github.com/owner/repo",
+        "owner/repo",
+        "",
+    ] {
+        let f = PublishFixture::new();
+        f.git(&["remote", "set-url", "origin", origin]);
+        let output = f
+            .publish_command()
+            .env("WORKFLOW_PR_LABELS", "needs-attention")
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "origin {origin:?} must fail: {}",
+            describe(&output)
+        );
+        let result = json(&output);
+        assert_eq!(
+            result["state"], "FAILED_PR_IDENTITY",
+            "{origin:?}: {result}"
+        );
+        assert_eq!(result["terminal_status"], "failure", "{origin:?}: {result}");
+        assert_eq!(result["pr_url"], "", "{origin:?}: {result}");
+        assert_eq!(result["pr_number"], "", "{origin:?}: {result}");
+        assert_eq!(
+            f.read("gh.log"),
+            "",
+            "origin {origin:?} must not reach the provider"
+        );
+        assert!(!f.tmp.path().join("create.argv").exists(), "{origin:?}");
+        f.assert_private_cleanup();
+    }
+}
+
+/// A host that is not GitHub finishes as a success without a provider call,
+/// including when labels were requested.
+#[test]
+fn followup_non_github_host_finishes_without_a_provider_call() {
+    let f = PublishFixture::new();
+    let output = f
+        .publish_command()
+        .env("REMOTE_HOST_TYPE", "other")
+        .env("WORKFLOW_PR_LABELS", "needs-attention")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", describe(&output));
+    let result = json(&output);
+    assert_eq!(result["state"], "non-github", "{result}");
+    assert_eq!(result["terminal_status"], "success", "{result}");
+    assert_eq!(result["pr_url"], "", "{result}");
+    assert_eq!(result["pr_number"], "", "{result}");
+    assert_eq!(f.read("gh.log"), "", "a non-GitHub host must not call gh");
+    assert!(!f.tmp.path().join("create.argv").exists());
+    f.assert_private_cleanup();
+}

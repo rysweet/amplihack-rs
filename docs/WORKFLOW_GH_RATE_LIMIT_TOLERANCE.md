@@ -98,7 +98,7 @@ scripts to locate the library before it is sourced.
 | `GH_RETRY_MAX_TRANSIENT` | integer (default `3`) | Attempts for the generic transient path (preserves legacy behavior). |
 | `GH_RETRY_MAX_RL_WINDOWS`| integer (default unset) | Optional safety valve capping how many reset windows to wait. **Unset = no arbitrary cap** — keep honoring the authoritative reset. Set to `0` to fail fast on a rate limit (used by display-only reads). |
 | `GH_RETRY_REST_FALLBACK` | function name (default unset) | READ paths only: on a rate limit, serve the request via this REST fallback (core budget) instead of blocking, logging a `WARNING`. Leave **unset** for write paths so they wait-for-reset. |
-| `GH_RETRY_TMPDIR`        | directory (default `.`) | Where the per-attempt stderr capture files are written. |
+| `GH_RETRY_TMPDIR`        | directory (default `$TMPDIR`, then `/tmp`) | Where the per-attempt stderr and stdout capture files are written. Each is created with `mktemp` from an explicit template under a `077` umask. |
 | `WORKFLOW_GH_RETRY_HELPER` | path (default `${SCRIPT_DIR}/workflow_gh_retry.sh`) | Read by the sourcing helper scripts (not `_gh_retry_core`): lets a caller/test point at an alternate library location. |
 
 After a call, `_gh_retry_core` sets the cross-script global
@@ -106,12 +106,40 @@ After a call, `_gh_retry_core` sets the cross-script global
 final failure (`auth`, `rate_limit`, `transient`, `other`), so callers can
 branch on how a result was obtained.
 
+### Terminal diagnostics for `gh pr create`
+
+`_gh_retry_core --create-diagnostics <directory> <label> <gh-arg>...` lets the
+caller keep the terminal failure out of stderr. The directory must already
+exist. The caller pre-creates `provider` and `local` as empty files under a `077`
+umask, so that both have restrictive modes before the helper writes to them. The
+helper would otherwise create a file on its first write. Only
+`workflow_publish_pr.sh` passes the option.
+
+| File | Written when | Content |
+| ---- | ------------ | ------- |
+| `provider` | The attempt that ends the run failed in `gh`: retries are exhausted, the error is not retryable, or it is an authentication error. | That attempt's stderr, redacted and then limited to 500 bytes on one line. |
+| `local` | A local step failed. In the helper: private stdout, stderr or per-attempt capture setup, a transient backoff wait, or a rate-limit reset wait. In the publisher's create wrapper: body temp creation or body-file write. | The operation and its original status, for example `transient backoff wait failed (exit 7)`. |
+
+The file name carries the origin, so the caller does not parse a prefix or
+status record. An attempt that is retried writes only a `WARNING` line to stderr
+and leaves both files untouched, so a retry warning never replaces the final
+rejection. Without the option, the helper prints the terminal `ERROR:` line to
+stderr.
+
+Ownership follows the call. The caller creates the directory and both files,
+reads them after the helper's process has been reaped, and removes both files and
+the directory on exit and on `INT`, `TERM` and `HUP`. `_gh_retry_core` owns only
+its per-attempt stderr and stdout captures, its child process, and the saved
+caller traps. It removes the captures and reaps the child on return or
+cancellation, and restores the caller's `INT`, `TERM` and `HUP` traps before it
+returns the original failure status. Sourcing the library installs no trap.
+
 ### Public functions
 
 | Function | Purpose | Returns |
 | -------- | ------- | ------- |
 | `classify_gh_error <stderr_file> [create]` | Classify captured stderr. | echoes `auth`\|`rate_limit`\|`transient`\|`other` |
-| `_gh_retry_core <label> <gh-arg>...` | Runs `gh <args>` with a 60s per-attempt `timeout` and classifies failures. | Outputs the command or REST fallback result on success. Returns the original status of a terminal command, local setup, or retry wait failure. Sets `GH_RETRY_LAST_CLASS`. |
+| `_gh_retry_core [--create-diagnostics <dir>] <label> <gh-arg>...` | Runs `gh <args>` with a 60s per-attempt `timeout` and classifies failures. See [terminal diagnostics](#terminal-diagnostics-for-gh-pr-create). | Outputs the command or REST fallback result on success. Returns the original status of a terminal command, local setup, or retry wait failure. Sets `GH_RETRY_LAST_CLASS`. |
 | `gh_rate_limit_reset_epoch <resource>` | Authoritative reset epoch via `gh api rate_limit` (does **not** consume the core/graphql budget). | echoes epoch seconds, or returns `1` |
 | `gh_rate_limit_remaining <resource>` | Remaining request count for a resource. | echoes integer, or returns `1` |
 | `gh_reset_epoch_from_stderr <stderr_file>` | Fallback reset lookup that honors a `Retry-After: <seconds>` or `X-RateLimit-Reset: <epoch>` header when `gh api rate_limit` is unavailable. | echoes epoch seconds, or returns `1` |

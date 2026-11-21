@@ -20,7 +20,7 @@ recipe runner for recovery.
 - [Publishing result](#publishing-result)
 - [Created PR identity](#created-pr-identity)
 - [Terminal diagnostics and cleanup](#terminal-diagnostics-and-cleanup)
-- [Portability evidence](#portability-evidence)
+- [Portability](#portability)
 
 ## Invocation and configuration
 
@@ -107,6 +107,16 @@ The publisher passes `--repo github.com/<owner>/<repo>` to draft creation and
 best-effort label edits. Both writes use the repository validated from the
 checkout's `origin`. The linked issue may belong to another repository.
 
+For a host classified as GitHub, the publisher sets the expected repository
+from `origin` before any provider call, with no default and no guard. If
+`origin` does not parse into an owner and repository, the publisher stops with
+`FAILED_PR_IDENTITY` and no write is attempted. Owner and repository names
+contain only ASCII letters, digits, `.`, `_` and `-`.
+
+Other hosts leave this path earlier. Azure DevOps takes its own path. Any other
+host finishes with state `non-github` and a success status, and no provider
+write is attempted.
+
 A successful `gh pr create` must return a single
 `https://github.com/<owner>/<repo>/pull/<number>` URL for the expected
 repository. ASCII case folding applies only to the owner and repository
@@ -138,42 +148,54 @@ wait failure reports its own operation and status. A failed wait stops Step 16
 before the next create attempt. A failed collision lookup can add context while
 the original creation evidence remains available.
 
-The publisher reads the candidate URL from private stdout after a successful
-create. On failure, the publisher reads the terminal diagnostic from private
-captures for GitHub rejections and local failures. Only a terminal GitHub
-rejection triggers the existing collision lookup. If both captures are empty,
-the publisher reports that the diagnostic is unavailable and includes the
-observed exit status. Retry warnings use stderr.
+### Diagnostic captures
 
-The publisher owns the outer captures. On exit and catchable cancellation it
-reaps its child before unlinking those captures. The retry helper owns its
-per-attempt captures, restores caller traps, and preserves the failure status.
-Captures use `mktemp` with an explicit template under the selected temporary
-directory and a restrictive umask.
+The publisher creates a private directory with `mktemp -d` under `TMPDIR` (or
+`/tmp` when unset) and a `077` umask, then creates two empty files in it under
+the same umask. The retry helper writes the terminal diagnostic to exactly one
+of them.
 
-## Portability evidence
+| File | Holds | Effect on recovery |
+| --- | --- | --- |
+| `provider` | The final failed attempt's sanitized GitHub rejection. | A non-empty file starts the scoped collision lookup. |
+| `local` | The operation and status of a local failure, for example `body-file write failed (exit 1)`. | The lookup is skipped, because no create request reached GitHub. |
+
+The file name records where the failure happened. No status record, prefix or
+delimiter is written to stdout or parsed back. Only the attempt that ends the
+run writes a diagnostic, and retry warnings go to stderr, so a warning cannot
+displace the final rejection. The message uses `provider` first, then `local`.
+If both are empty it reads `terminal diagnostic unavailable` with the observed
+exit status. The publisher reads the candidate PR URL from private stdout after
+a successful create.
+
+### Cleanup
+
+The publisher owns the stdout and stderr captures and the diagnostics directory.
+On exit and on `INT`, `TERM` and `HUP` (statuses 130, 143 and 129) it reaps its
+child, removes both files, and removes the directory. The retry helper owns its
+per-attempt captures and child, removes them before returning, restores the
+caller's traps, and preserves the original failure status. See the
+[retry helper contract](../WORKFLOW_GH_RATE_LIMIT_TOLERANCE.md#terminal-diagnostics-for-gh-pr-create).
+The publisher creates its captures, diagnostics directory and body file under
+`TMPDIR`, then `/tmp`. The retry helper creates its per-attempt captures under
+`GH_RETRY_TMPDIR`, then `TMPDIR`, then `/tmp`. Each is created with `mktemp`
+from an explicit template.
+
+## Portability
 
 The shell path targets macOS Bash 3.2 and BSD utilities.
 
-- **Linux with Bash 3.2.** The publishing fixtures run with GNU Bash 3.2.0.
-  The delivery-input helper stores its existing URL pattern in a variable
-  because Bash 3.2 rejects its inline grouping syntax before publishing can run.
-- **Apple `mktemp` behavior reproduced on Linux.** The Apple utility source was
-  compiled on Linux x86_64 with an adapter for the Darwin `confstr` lookup.
-  With a writable `TMPDIR` and a missing Darwin temp directory, an unqualified
-  `mktemp` failed, while a positional template under `TMPDIR` succeeded.
-  The old publisher helper failed in that reproducer. The corrected helper
-  returned the fixture's PR URL under Bash 3.2.0. The publisher, retry helper,
-  and body writer use explicit templates. The
-  [directory-precedence fixture](../../tests/integration/issue_2306_publish/recovery.rs)
+- **Temporary files.** Every `mktemp` call passes an explicit template under
+  `TMPDIR`, or under `GH_RETRY_TMPDIR` for the retry helper's captures. An
+  unqualified `mktemp` on macOS depends on a per-user Darwin
+  directory that can be missing. See the
+  [Apple `mktemp` source](https://github.com/apple-oss-distributions/shell_cmds/blob/shell_cmds-278/mktemp/mktemp.c#L94-L115).
+  The [directory-precedence fixture](../../tests/integration/issue_2306_publish/recovery.rs)
   exercises the body writer's scratch files and cleanup.
-  [Apple `mktemp` source](https://github.com/apple-oss-distributions/shell_cmds/blob/shell_cmds-278/mktemp/mktemp.c#L94-L115)
-- **Native macOS coverage.** Native macOS execution of the publishing fixtures
-  and reproducer remains unverified.
-- **Historical cause.** The failing commands in software-factory #180, #122,
-  #109, and #114 remain unidentified. The reproduced directory-precedence defect
-  establishes a portability problem. Attribution of those four failures remains
-  unverified.
+- **Pattern matching.** `workflow_delivery_inputs.sh` stores its PR URL pattern
+  in a variable, because Bash 3.2 cannot parse the inline grouping syntax.
+- **Case folding.** The repository comparison uses `nocasematch` under
+  `LC_ALL=C`, which Bash 3.2 supports.
 
 See [Read a draft PR publishing result](../tutorials/read-draft-pr-publishing-results.md)
 for examples based on the publishing fixtures.
