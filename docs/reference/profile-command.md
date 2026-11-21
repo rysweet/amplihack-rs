@@ -6852,6 +6852,13 @@ one.
 
 ##### Failed or stale reading near the threshold
 
+This rule runs after the [freshest reading](#freshest-live-reading) has been
+chosen. A stale measured reading is usually replaced by the held reading
+first, which needs no `near` test, so what reaches this rule is mostly a
+failed probe, or a stale reading for which no held reading was available or
+the held one was lower. When a substitution did happen, the week figure here
+is the held reading's own.
+
 When the live probe fails, or the live re-read fails, is refused or is
 itself still more than one interval old, the rotator looks at the last
 point in the series for the same live login. That point counts only while
@@ -6875,9 +6882,10 @@ the rate, and the outcome does not depend on whether the cache's timestamp
 moves.
 
 When it is near, the *substituted figure* is the larger of `--session-at`
-and the last known session use: the last point, and the stale reading
-itself when there is one. The last known week figure is used with it. The
-substituted figure is never lower than the last known figure.
+and the last known session use: the last point, and the reading the cycle
+decided on when there is one. The week figure is the held reading's when one
+was substituted, and otherwise the last measured one. The substituted figure
+is never lower than the last known figure.
 
 **A stale reading** (the re-read failed, was refused or is still old) is
 decided on the substituted figure. The outcome is a swap, logged with
@@ -7027,8 +7035,9 @@ whole number, and never a token, path or account identifier.
 **What is recorded.** A held reading is never recorded as one taken in this
 cycle. The usage history keeps the held reading's own time, so an entry
 whose reading is more than 300 seconds old is recorded as `unknown`, as for
-any other old reading. The capacity file holds figures only and carries the
-held figures. The target gate reads the live reading time as the earlier of
+any other old reading. The capacity file has no per-reading time, so there
+is nothing in it to misdate; it carries the held figures, which is the point
+of the change. The target gate reads the live reading time as the earlier of
 the reading's own time and the start of the measurement, so a held reading
 can only reduce target re-reads: a target read before the held reading's
 time is still read again.
@@ -9613,7 +9622,7 @@ run and prints their `reread:` lines; see
 | Message | Meaning |
 |---------|---------|
 | `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. The line is written after the [live reading freshness](#freshest-live-reading) step, so the live entry shows the figures the cycle decided on, and carries `,cached=<n>s` (whole seconds) when those figures were read before this cycle's measurement began, for example `work:s=5%,w=95%,cached=612s`. Candidate entries show their figures as measured and never carry it. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A live profile in the auto-switch `exclude` list shows `<name>:excluded (not probed)`; see [Rotate excluded live profile](#rotate-excluded-live-profile). A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
-| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|projected\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. The live figures carry ` cached=<n>s` under the same rule as the `cycle` line, for example `live s=5% w=95% cached=612s`; the target figures never do. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, one still running shows `live unknown, still running`, and an excluded live profile shows `live excluded (not probed)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=projected` is a swap made because the live login's [projected session use](#projected-swap) reached `--session-at`, or because its last known reading was near `--session-at` when the live read failed or was stale and the stale reading would not itself have needed a swap (see [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)); the `live` figures are those measured. `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
+| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|projected\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. The live figures carry ` cached=<n>s` under the same rule as the `cycle` line, for example `live s=5% w=95% cached=612s`; the target figures never do. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, one still running shows `live unknown, still running`, and an excluded live profile shows `live excluded (not probed)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=projected` is a swap made because the live login's [projected session use](#projected-swap) reached `--session-at`, or because its last known reading was near `--session-at` when the live read failed or was stale and the stale reading would not itself have needed a swap (see [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)); the `live` figures are those the cycle decided on, as described in [Freshest live reading](#freshest-live-reading). A cycle that decides on a held reading at or above `--session-at` needs a swap on the reading itself, so it is labelled `reason=threshold`, not `reason=projected`. `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
 | `ALERT: home_key (<detail>): <effect>` | A key is in `~/.claude.json` or `~/.claude/settings.json` while a plan login is live, so sessions bill per token. Written once, and again if the setting changes; see [API-key login check](#api-key-login-check). The cycle carries on. |
