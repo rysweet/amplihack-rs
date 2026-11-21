@@ -445,12 +445,15 @@ impl Waiter {
     /// claiming the login was usable and this limit contradicts it: the
     /// same-login refusal is lifted for that one wait, and the step says so
     /// once, on a `reentered` line before the wait's `start`. The budget and
-    /// the step timeout still refuse, unchanged, and so does a re-entry with
-    /// a reset already behind the clock would plan a wait of no length, which
-    /// spends none of the budget. A usage limit stating such a reset no longer
-    /// arrives as a reset wait at all: the supervisor has already made it a
-    /// capacity wait ([`plan::upgrade_passed_reset`]), which has the budget as
-    /// its deadline and so spends the budget that bounds the chain.
+    /// the step timeout still refuse, unchanged, and a re-entry whose reset
+    /// plan would wait for no length at all ([`plan::Plan::ends_at_once`]) is
+    /// refused as well, because such a wait spends none of the budget that
+    /// bounds the chain. Except for the cases listed in the comment above
+    /// that check in the body below, a usage limit stating a reset already
+    /// behind the clock no longer arrives as one: the supervisor has made it a
+    /// capacity wait ([`plan::upgrade_passed_reset`]), which takes the
+    /// remaining budget as its deadline and so spends it. A capacity plan is
+    /// never refused on this ground.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,

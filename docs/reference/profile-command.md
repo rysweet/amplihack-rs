@@ -11432,14 +11432,20 @@ on which of the two the attempt printed:
 
 **A usage-limit message** is planned exactly as the first wait was, by the same
 planner and under every check in
-[When a capacity wait starts](#when-a-capacity-wait-starts). The only check
-lifted is the one-wait-per-login refusal. The one change is a message whose
-stated reset has already passed, which the planner would have refused and which
-is [waited out as a capacity wait](#a-reset-that-has-already-passed) where one
-could start. The first wait having passed those
-checks does not stand in for them: the retry's message can differ from the
-first one, and a reset wait, which needs no rotator and no probe, can be
-followed by a weekly-limit message that does.
+[When a capacity wait starts](#when-a-capacity-wait-starts), with two
+differences. The one-wait-per-login refusal is lifted. The first wait having
+passed those checks does not stand in for them: the retry's message can differ
+from the first one, and a reset wait, which needs no rotator and no probe, can
+be followed by a weekly-limit message that does.
+
+The other difference is a message whose stated reset has already passed. It is
+[waited out as a capacity wait](#a-reset-that-has-already-passed) bounded by
+the step's remaining budget, and it is planned whatever the start checks would
+say. A reset wait on a reset behind the clock would end as it began and spend
+none of the budget, so the chain would be bounded by nothing; a capacity wait
+spends what it lasts. With no rotator and no second login nothing ends it
+early, so the budget does, and the step then retries once. A limit on that
+retry is refused as `already_waited`.
 
 **A 429 report** states no reset and no kind of limit, so there is nothing to
 plan from. It becomes a capacity wait with `reset=none`, which ends on a
