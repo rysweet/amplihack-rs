@@ -32,6 +32,9 @@ mod support;
 #[path = "issue_2808_named_checkout.rs"]
 mod issue_2808_named_checkout;
 
+#[path = "issue_2884_task_conditions.rs"]
+mod issue_2884_task_conditions;
+
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
 #[path = "issue_2556_autodrive_evidence.rs"]
