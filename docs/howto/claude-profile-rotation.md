@@ -1384,9 +1384,14 @@ rotator puts them back at the end of its next cycle, and sessions started with
    that the pane still belongs to the session. It records the resume on disk
    under its lock. Then it takes exactly one of two paths:
    - **The session has a pane:** it types into it, as a person would, and
-     exits `0`. Outcome `resumed-keys`.
+     exits `0`. Outcome `resumed-keys`. This is the path that moves a
+     session held on the usage-limit menu.
    - **No pane** (not in tmux, or the pane check failed): it exits `2`, and
-     the session gets this message and starts a new turn. Outcome `resumed`.
+     the session gets this message and starts a new turn. Outcome `resumed`
+     when there was no tmux pane, `pane-unverified` when the pane could not
+     be proved to be this session's terminal, `pane-not-reading` when
+     Claude Code is not the process reading it. A session held on the menu
+     does not move on this path.
      ```
      amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
      ```
@@ -1452,8 +1457,9 @@ tmux send-keys -t %17 -l continue
 tmux send-keys -t %17 Enter
 ```
 
-- **Esc** leaves the timed wait or closes the limit menu. Claude Code
-  2.1.319's own text for the wait ends `· Esc to cancel`.
+- **Esc** leaves the timed wait or closes the limit menu. The text of the
+  Claude Code 2.1.319 binary for the wait ends `· Esc to cancel` (read at
+  that version, not reproduced, not re-read at 2.1.329).
 - **Ctrl+U** clears the input box. Text shown dimmed there is Claude Code's
   predicted next prompt, and Enter would send it.
 - **`continue`** is typed as literal text, then **Enter** sends it.
@@ -1464,6 +1470,13 @@ a numbered menu option, and never types `/usage-credits` or
 The keys go only to the pane the hook noted for this session, never to a
 pane found by name or pattern.
 
+The hook proves the pane is its own session's before it types. It walks up
+from its own process to the nearest process whose standard input is a
+terminal, which may be a launcher above Claude Code rather than Claude Code
+itself, and requires that terminal to be the pane's, that process to be its
+foreground, and Claude Code to be reading it. Another session's pane is not
+the terminal of anything in the hook's ancestry, so it can never pass.
+
 Each key is a separate command so that tmux cannot read Esc and Ctrl+U as
 one Meta key. If a command fails, or the session exits part way through, the
 remaining keys are not sent and the hook logs `resume-keys-failed` with the
@@ -1473,12 +1486,36 @@ hand as in [Continue a session yourself](#continue-a-session-yourself).
 Typing `continue` is a prompt, so any other hook waiting for the same
 session ends as `moved-on`.
 
+### When the keys path is not taken
+
+The log names the reason, so a session that stays stopped never leaves it
+unexplained:
+
+```
+2026-11-20T22:14:03Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=pane-unverified live=work cycle=stayed swap_seq=44 swap_live=spare pane=5b0e19c4a7d2 keys_sent=0 detail=tty-mismatch
+```
+
+| Outcome and `detail` | Meaning | What to do |
+|----------------------|---------|------------|
+| `resumed` | Not in tmux. | Nothing is typed. A session held on the menu needs you. |
+| `pane-unverified`, `tty-mismatch` | The pane's terminal is not the one this session reads. | Check the session was started in that pane. |
+| `pane-unverified`, `not-foreground` | The session's terminal is held by something else, for example after Ctrl-Z. | Resume the job, then continue by hand. |
+| `pane-unverified`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `bad-pane-id` | The hook could not establish ownership. | Continue by hand and report the line. |
+| `pane-not-reading` | The terminal is the session's, but Claude Code is not reading it. | Continue by hand. |
+
+Each of these also exits `2`, so a session at its ordinary prompt still gets
+the continue message. Continue a held session by hand as in
+[Continue a session yourself](#continue-a-session-yourself).
+
 ### Why keys and not only the wake
 
 The exit `2` wake was verified on Claude Code 2.1.307 for the
 `What do you want to do?` limit menu: it closes the menu and starts a turn.
-It is not known to end the timed wait. The installed Claude Code 2.1.319
-binary shows the wait behind a feature flag, with these texts:
+That check is not repeated at 2.1.329, and field reports on
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695) show standing
+sessions staying on the menu when only the wake ran. The wake is not known
+to end the timed wait. The Claude Code 2.1.319 binary (read at that version,
+not reproduced) shows the wait behind a feature flag, with these texts:
 
 ```
 Usage limit reached · continuing automatically {when} · esc to cancel
@@ -1578,6 +1615,71 @@ The hook acts only when Claude Code runs it, on a `StopFailure` event with
   holds when the swap finishes between the stop and the hook's start. If the
   session then hits a limit on the second login, that is a new event and
   the hook waits for the next swap.
+
+### When a session stays on the usage-limit menu
+
+A standing session is continued by its own owner. The hook acts only on
+its own session, and nobody, person or agent, types into another session's
+pane, including with `tmux send-keys`.
+
+If `resume.log` shows `resumed-keys` and the session is still on the menu,
+or shows `pane-unverified` or `pane-not-reading`, continue it by hand as in
+[Continue a session yourself](#continue-a-session-yourself).
+
+Claude Code can also continue a session by itself when the usage limit
+resets. The setting is "Continue automatically at usage limit" in `/config`,
+stored as `autoContinueAtUsageLimit` in `settings.json` (see the
+[settings reference](https://code.claude.com/docs/en/settings-reference#autocontinueatusagelimit)).
+Claude Code 2.1.325 treated a missing key as on; that was read from the
+binary and not reproduced, and has not been re-read at 2.1.329. Leave the
+key alone: `false` removes that continue at the reset. If the hook has
+already resumed a session, the continue at the reset can add one extra
+turn.
+
+Check what a settings file holds:
+
+```bash
+jq 'has("autoContinueAtUsageLimit"), .autoContinueAtUsageLimit' ~/.claude/settings.json
+```
+
+```
+false
+null
+```
+
+`false` and `null` mean the key is absent from this file. Another settings
+file can still set it to `false`, so run the same check on the profile's
+`$CLAUDE_CONFIG_DIR/settings.json`, the project's `.claude/settings.json`
+and `.claude/settings.local.json`, and any managed settings file. A file
+that `jq` cannot parse is a problem to repair. At 2.1.325 a `settings.json`
+that did not parse turned automatic continuation off when no other file set
+the key; this was read from the binary, not reproduced, and is claimed here
+only for `settings.json`.
+
+Whether a session at its limit gets a continue for the reset or the options
+menu is decided inside Claude Code; neither amplihack nor this setting
+changes that choice, which is why the keys path above exists.
+
+#### Why the keys path and not a setting or a restart
+
+Claude Code 2.1.329 was checked for two other routes before the keys path
+was kept for held sessions:
+
+- **A setting or launch option under which the limit ends the turn.**
+  `claude --help` lists none, and the one limit-related setting,
+  `autoContinueAtUsageLimit`, is present in the binary but only schedules
+  a continue at the reset; it does not remove the menu. Nothing was found
+  that gives a non-interactive limit outcome, so the `StopFailure` wake
+  cannot be the whole answer.
+- **Ending and resuming the conversation with `--continue` or `--resume`.**
+  Both start a new Claude Code process. They do not act on a process held on
+  the menu, and ending that process is not something its launcher can do for
+  a session it does not own.
+
+The keys path remains: the hook of the session itself, which can prove the
+pane is its own terminal, types into that pane. These points were read from
+the help text and the binary, not reproduced against a login spent to its
+limit.
 
 ### Continue a session yourself
 
