@@ -12,10 +12,15 @@ use super::ledger::{RotateLedger, RotateState};
 ///   back to its 60-second margin;
 /// - `last_cycle.overflow` and `overflow_blocked` (issue #1606). An older
 ///   rotator never moves onto an overflow profile, so it has no use for
-///   them. A spend block dropped this way is not a cost: when this binary
+///   them. For an overflow profile the loss costs nothing: when this binary
 ///   runs the rotator again, the blocked profile's probe still reports the
 ///   spend limit, and a profile reporting one is blocked again and never
-///   moved onto;
+///   moved onto. Issue #2890 added a second kind of entry, written by a
+///   failed agent step for the plan login it ran under, and that one is not
+///   re-derived: the `/usage` probe cannot see an individual spend limit, so
+///   a block dropped here is gone until the next step meets the limit and
+///   records it again. Accepted, not fixed: keeping the field would make an
+///   older rotator refuse the whole ledger, which is worse;
 /// - `guidance`, `home_unreadable_since` and `lost_login` (issue #1693),
 ///   which only `rotate status` and this binary's hand-change recovery read;
 /// - `no_room` (issue #1804), set on every measuring cycle. Only this

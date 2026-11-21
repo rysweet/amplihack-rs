@@ -1699,7 +1699,7 @@ The columns are:
 | `SESSION` | The session as a bar; `no session limit` for a reading with [no session limit](#no-session-limit); `-` when the session window is missing. |
 | `S-RESET` | When the session resets; `-` for a row with no session limit. |
 | `STATE` | The [state](#states). |
-| (no heading) | Every other [mark](#marks) (`*`, `leased→<dir>`, `hosts:<account>`, `overflow`, `overflow, blocked until <time>`, `(fallback)`), then `spend:<value>` when the row's [spend status](#spend-status) is not `n/a`, separated by spaces. Empty when there are none. |
+| (no heading) | Every other [mark](#marks) (`*`, `leased→<dir>`, `hosts:<account>`, `overflow`, `overflow, blocked until <time>`, `blocked until <time>`, `(fallback)`), then `spend:<value>` when the row's [spend status](#spend-status) is not `n/a`, separated by spaces. Empty when there are none. |
 
 Rows without a reading have no bars and no reset cells. From `WEEK` to the
 end of `S-RESET` they show one message:
@@ -2032,6 +2032,7 @@ The [spend status](#spend-status) plays no part in the order.
 | `live in ~/.claude` | This profile's login is in the default directory `~/.claude`, and the numbers on this row were read from there. See [Logins in `~/.claude`](#logins-in-claude). |
 | `overflow` | The profile is marked as [credit-backed overflow](#rotate-overflow) in `<root>/.auto-switch`. |
 | `overflow, blocked until <time>` | As `overflow`, and the rotator has [blocked](#overflow-spend-limit-block) it after a spend-limit reading until `<time>` (UTC, `YYYY-MM-DDTHH:MM:SSZ`). |
+| `blocked until <time>` | The profile is not marked as overflow, and a step has [blocked](#a-spend-limit-blocks-the-login-the-step-ran-under) it after a spend-limit failure until `<time>`, in the same format. |
 
 Several marks are separated by a space (`* live in ~/.claude`,
 `overflow (fallback)`); none prints `-`. This is the `MARKS` column of
@@ -2630,7 +2631,7 @@ Each row has these keys:
 | `leased_to` | string or `null` | The directory this profile's login is lent to. |
 | `live_in` | string or `null` | `"~/.claude"` when this profile's login is [live in `~/.claude`](#logins-in-claude) and its numbers were read from there; otherwise `null`. The key is always present, and at most one row has a non-null value. The value is always the literal `~/.claude`, never the expanded home path. |
 | `overflow` | bool | Whether the profile is marked as [credit-backed overflow](#rotate-overflow). Always present. |
-| `overflow_blocked_until` | integer or `null` | Unix epoch seconds until which the rotator has [blocked](#overflow-spend-limit-block) this overflow profile after a spend limit; `null` when it is not blocked or not marked. Always present. |
+| `overflow_blocked_until` | integer or `null` | Unix epoch seconds until which this profile is [blocked](#overflow-spend-limit-block) after a spend limit, whether by the rotator for an overflow profile or by a [step](#a-spend-limit-blocks-the-login-the-step-ran-under) for any login; `null` when it has no active block. Always present. |
 | `state` | string | One of the [states](#states). `"excluded"` for a profile in the auto-switch `exclude` list; such a row has `source`, `account`, `session`, `week_all` and `error` `null`. See [Excluded profiles](#excluded-profiles). |
 | `source` | string or `null` | How the row was read: `"passive"`, `"direct"` or `"fallback"`; see [Reading source](#reading-source). A row that failed on every step has the source of its last attempt. `null` for a row that was never probed, such as an [API-key](#api-key-usage) row or a `profile directory refused` row. Always present, immediately after `state`. |
 | `spend` | string | The [spend status](#spend-status): `"n/a"`, `"ok"`, `"limit_reached"`, `"unknown"` or `"not_probed"`. Always present, immediately after `source`. `"unknown"` means a probe was asked for or needed and gave no reading; `"not_probed"` means usage credits are on and no spend probe was asked for (no `--spend`). Neither says anything about the spend limit. `"n/a"` does not mean that usage credits are off. Scripts should treat a value they do not know as `"unknown"`. |
@@ -5696,7 +5697,7 @@ there gives one source of truth for which profiles are skipped and when.
 | `overflow add <name> [--tier N]` | Appends `<name>` to the `overflow` list in tier `N` (`1` to `9`, default `1`). For an [API-key profile](#api-key-rotation) the mark is the consent to per-token billing: it is stored as the bare name and always read as tier 10, after every credit tier, and `--tier` is refused with `PlatformTierFixed` before anything is written. The name must pass the [name rules](#name-rules) and be an existing profile directory under the root (not a symlink); otherwise the command fails, names the profile and changes nothing. Prints `overflow: added <name> (tier N)` and the cost note below. For a profile already marked, `--tier` moves it (`overflow: <name> moved from tier A to tier B`), and without `--tier` the tier is kept (`overflow: <name> is already marked (tier N)`); both exit 0. Prints a warning when `<name>` is in the `exclude` list, and another when the [default pointer](#clearing-the-default) names it. |
 | `overflow remove <name>` | Removes `<name>` from the list. The name must pass the name rules; it does not have to exist. Prints `overflow: removed <name>`, or `overflow: <name> is not marked` and exits 0; `overflow list` agrees with it, showing the profile as `marked` before a successful `remove` and not at all (or, for an API-key profile, as `not marked (not used)`) after it. A spend block for the profile is left in the ledger and expires on its own. |
 | `overflow list` | **Read-only.** Prints one line per marked profile, in the order the rotator and auto-switch try them (by tier, then list order within a tier): the name, `tier N`, `marked`, then `missing` when the root has no profile directory of that name, then `blocked until <time> (spend_limit)` when it has an active block. After them comes one line per [API-key profile](#api-key-profiles-in-commands), marked or not: `<name>  api-key tier  marked` or `<name>  api-key tier  not marked (not used)`. Prints `overflow: none` when there is no line to print. Takes no lock. A rotate ledger that cannot be read prints a warning on stderr and the marks without blocks; the command still exits 0. |
-| `overflow clear <name>` | Removes the spend block for `<name>` from the rotate ledger. Takes the rotate state lock, retrying for up to 10 seconds; if it is still held, fails with `RotateDaemon` and the message `rotator busy, retry`. Prints `overflow: cleared the spend block on <name>`, or `overflow: <name> has no spend block` and exits 0. The name must pass the name rules; it does not have to be marked or exist, so a block left after `overflow remove` can still be cleared. Never creates the ledger. |
+| `overflow clear <name>` | Removes the spend block for `<name>` from the rotate ledger. Takes the rotate state lock, retrying for up to 10 seconds; if it is still held, fails with `RotateDaemon` and the message `rotator busy, retry`. Prints `overflow: cleared the spend block on <name>`, or `overflow: <name> has no spend block` and exits 0. The name must pass the name rules; it does not have to be marked or exist, so a block left after `overflow remove`, or one a [step wrote](#a-spend-limit-blocks-the-login-the-step-ran-under) for a plan login, can still be cleared. Never creates the ledger. |
 
 What `add` prints for a new mark, with the cost note:
 
@@ -7485,9 +7486,10 @@ classifies the profile as `spend_limit`. The probe is the only detector:
 the rotator probes the live overflow profile on every cycle, including a cycle
 held by a [pin](#pin-and-overflow) on it, so a block is recorded within one
 cycle. (A held cycle probes only the live login, and only while it has no
-active block.) The [usage-limit wait](#usage-limit-wait) and the
-recipe-run classifier see the same message in an agent's output but never
-write a block. A probe that reads
+active block.) The probe cannot see an individual spend limit on a plan login, so for that
+case a failed agent step writes the block itself; see
+[A spend limit blocks the login the step ran under](#a-spend-limit-blocks-the-login-the-step-ran-under).
+The recipe-run classifier writes none. A probe that reads
 [`spend_limit`](#states) for an overflow profile, live or candidate, *blocks*
 that profile:
 
@@ -7530,6 +7532,58 @@ that login keep failing. The two ways out behave differently:
   reading is judged by the ordinary decision rule, as described above.
 - `profile rotate stop` stops all swapping and leaves the login in
   `~/.claude`. Nothing moves it until you start the rotator again.
+
+#### A spend limit blocks the login the step ran under
+
+The usage probe cannot see an individual spend limit on a plan login, so the
+rotator would read such a login as having room while every step on it fails.
+The step that meets the limit therefore records it. When an agent step fails
+with a Claude spend-limit message that states a reset the
+[usage-limit wait](#usage-limit-wait) can parse (`You've hit your individual
+spend limit … your weekly limit resets Nov 24, 2pm (America/Los_Angeles)`), it
+adds `{"at": <now>, "until": <reset>, "reason": "spend_limit"}` to
+`overflow_blocked` in the [ledger](#rotate-state-directory), keyed on the login
+the step ran under: the profile of a named-profile step, or the profile in
+`~/.claude` when the step was launched. This is the record described above, so
+nothing else reads or expires it differently. The record is made once per
+message, before the wait is planned.
+
+| Situation | What the step does |
+|-----------|--------------------|
+| The message states a reset ahead of now and no more than 62 days away | Writes the block, prints `ALERT: login <name> hit its spend limit; blocked until <time>` on stderr once, and plans the wait. |
+| The login already has an active block | Writes nothing and prints no second ALERT; the existing `until` is not extended. |
+| The message states no reset | Writes nothing. [Login-change wait](#login-change-wait) or `skipped reason=spend_limit`, as before. |
+| The stated reset has already passed | Writes nothing and prints `ALERT: login <name> spend limit not blocked (stated reset already passed)`. |
+| The stated reset is more than 62 days away | Writes nothing and prints `ALERT: login <name> spend limit not blocked (stated reset out of range)`. |
+| The rotator holds the ledger lock, the ledger cannot be read or written, or it already holds 256 blocks | Writes nothing and prints `ALERT: login <name> spend limit not blocked (<reason>)`, where `<reason>` is `rotator busy`, `ledger unreadable`, `ledger not written` or `too many blocks`. The login is then not recorded, so the wake condition of the wait is unchanged. |
+| There is no rotate ledger | Writes nothing, and does not create one. |
+
+No row ends, delays or refuses the run: the step takes the lock once, never
+retries, and plans its wait in every case. The ALERT lines carry the profile
+name and a time only, never text from the limit message. Only a failed step is
+read, and only a Claude message.
+
+While the block is recorded:
+
+- The rotator treats the login as having no room, whatever its own probe
+  reading says. If it is live, the next cycle swaps to the login with the most
+  room by the ordinary rules; if no login has room, the usual `no-capacity`
+  ALERT follows.
+- `profile switch`, auto-switch and the wake condition of a
+  [capacity wait](#capacity-wait) do not choose it, so a waiting step resumes
+  on another login.
+- [`rotate status`](#rotate-status) and [`profile usage`](#marks) show it as
+  `blocked until <time>`, in one line of the existing output.
+
+The block is data only. It ends at the reset the message stated, when the
+rotator drops it as it drops any expired block, or earlier with
+[`profile overflow clear <name>`](#overflow-commands). A message that quotes a
+reset the account does not have blocks the login until that time, bounded by
+the 62-day span.
+
+Limitations: the [`no-capacity` ALERT's](#rotate-cycle) list of logins does
+not name a login that only a step has blocked, and a ledger downgraded for an
+older amplihack binary drops the block.
 
 #### Stopping credit use
 
@@ -9717,6 +9771,18 @@ hooks repaired: none in the last 24h
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
+After a step's spend limit blocked the live login `wwest`, the next
+cycle has swapped to `spare`, and `status` lists the block:
+
+```
+live: spare
+last cycle: 2026-11-20T00:31:05Z swapped
+overflow: -
+api key: -
+blocked logins: wwest (blocked until 2026-11-24T14:00:00Z)
+on overflow: no
+```
+
 With two profiles whose last reading had no session window:
 
 ```
@@ -9762,6 +9828,7 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `capacity` | The [capacity summary](#capacity-summary) of the newest [usage history](#usage-history) entry. See [Capacity line](#capacity-line). |
 | `hold` | Only while something is at the [pin](#rotate-pin) path: `hold: <name>`, `hold: <name> (profile missing; ignored)` or `hold: unreadable`. |
 | `overflow` | The marked overflow profiles in list order, separated by `, `, each followed by ` (blocked until <time>)` when it has an active [spend block](#overflow-spend-limit-block); `-` when none is marked or `.auto-switch` is corrupt. When the ledger cannot be read, the list ends with ` (blocks unknown)`. |
+| `blocked logins` | Printed after `overflow` and `api key`, before `on overflow`: the logins with an active [spend block written by a step](#a-spend-limit-blocks-the-login-the-step-ran-under) that `overflow` does not already show, in name order, separated by `, `, each as `<name> (blocked until <time>)`; `-` when there are none. Read from the same ledger read as `overflow`. When the ledger cannot be read it prints `-` and does not append `(blocks unknown)`: that suffix belongs to `overflow` alone, which already reports the failure on the same output. |
 | `api key` | The first API-key profile, followed by ` (blocked until <time>, <reason>)` while the ledger records an active API-key block; `-` when there is no API-key profile. Printed between `overflow` and `on overflow`. |
 | `on overflow` | `yes (<name>, held by switch)` when a [pin](#rotate-pin) names the live overflow profile: a `profile switch` onto it is a choice to spend, and the rotator does not move off it until `profile switch --none` (see [Pin and overflow](#pin-and-overflow)). Otherwise `yes (<name>)` when the profile identified as live in `~/.claude` by account is an overflow profile and the ledger's `last_cycle.overflow` is `in` or `on`, which means the rotator found no plan capacity in its last cycle. `no (<name> is overflow; plan capacity remains)` when the live profile is an overflow profile but the last cycle carries no such tag, for example after the login was put in `~/.claude` by hand. `no` when it is a plan profile, `-` when the live profile cannot be identified. `status` runs no probe; the ledger is its only evidence. |
 | `no session window` | Printed only when the list is not empty: the profiles whose current auto-switch [reading](#readings) has `seven_day` and no `five_hour`, sorted by name and separated by `, `. These profiles are ranked on their week. The line does not say `no session limit`: a stored reading also loses its `five_hour` when a session window was not recorded (see the known limitations under [No session limit](#no-session-limit)). Only profiles that exist now are listed. The line comes after `on overflow` and after the `~/.claude is on API key profile ...` line when that is printed, and before `default` and `hold`. It is read from `usage.json` without a lock; if the file is missing, unreadable or unsafe, the line is left out and nothing is printed to stderr. |
@@ -11428,6 +11495,7 @@ on which of the two the attempt printed:
 | A usage-limit message for a weekly limit, one that states a reset more than five hours away, or one that states none, and is not a spend limit | The ordinary planner | A [capacity wait](#capacity-wait) when the [start checks](#when-a-capacity-wait-starts) pass, else `skipped reason=reset_too_far` or `no_reset` |
 | A usage-limit message that is not a spend limit and states a reset the clock has already passed, on a login this step has already waited on | The ordinary planner, then the re-entry | A [capacity wait](#capacity-wait) that records the stated reset and is bounded by the budget the step has left, then one retry; see [A reset that has already passed](#a-reset-that-has-already-passed) |
 | A spend limit that states no reset | The ordinary planner | A [login-change wait](#login-change-wait) for a `$HOME/.claude` step with a rotator running, else `skipped reason=spend_limit` |
+| A spend limit that states a weekly reset more than five hours away | The ordinary planner, after the step has [blocked its login](#a-spend-limit-blocks-the-login-the-step-ran-under) | A [capacity wait](#capacity-wait) when the [start checks](#when-a-capacity-wait-starts) pass, else `skipped reason=reset_too_far` |
 | A 429 report | The re-entry | A capacity wait with `reset=none` when the same start checks pass, else no wait and the failure goes back to the recipe runner as before |
 
 **A usage-limit message** is planned exactly as the first wait was, by the same
@@ -11549,15 +11617,18 @@ starts with `Claude AI usage limit reached|` and Unix seconds, or with
 | Per-model limit | `You've hit your Opus limit · resets 8:20pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away |
 | Weekly limit | `You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)` | [capacity wait](#capacity-wait) when another login could take over, else `skipped reason=reset_too_far` |
 | Spend limit with a session reset | `You've hit your org's monthly spend limit · run /usage-credits … · your session limit resets 1pm (America/Los_Angeles)` | wait for that reset: the session limit is what stops work |
-| Spend limit with a weekly reset | `… monthly spend limit · … · your weekly limit resets Oct 8, 12am (America/Los_Angeles)` | `skipped reason=reset_too_far`, even when another login could take over |
+| Spend limit with a weekly reset | `… monthly spend limit · … · your weekly limit resets Oct 8, 12am (America/Los_Angeles)` | [capacity wait](#capacity-wait) when another login could take over, as for a weekly limit, else `skipped reason=reset_too_far`. The step also [blocks its login](#a-spend-limit-blocks-the-login-the-step-ran-under) until that reset. |
 | Spend limit, no reset | `You've hit your org's monthly spend limit · run /usage-credits …` | [login-change wait](#login-change-wait) on a `$HOME/.claude` step with a rotator running; otherwise `skipped reason=spend_limit`, because no reset lifts it, and room on another stored login does not either |
 | Epoch | `Claude AI usage limit reached\|1792335000` | reset wait, when at most five hours away; further away, as for a weekly limit |
 | Shape, no readable reset | `You've hit your session limit · try again later` | capacity wait when another login could take over, else `skipped reason=no_reset` |
 | No message in the shape | model prose, `credit balance is too low` | `skipped reason=no_limit_message`, or not a usage limit at all |
 
-The wait never records an overflow block. Only the rotator's own
-`claude -p /usage` probe does; see
-[Overflow spend-limit block](#overflow-spend-limit-block).
+A spend-limit message that states a reset also records a block on the login
+the step ran under, before the wait is planned; see
+[A spend limit blocks the login the step ran under](#a-spend-limit-blocks-the-login-the-step-ran-under).
+A spend limit that states no reset records nothing. The wait never ends or
+refuses a run because of the record: when the block cannot be written, the
+wait is planned as if it had been.
 
 The text after `resets ` is an optional date (`Mon D, `, three-letter
 English month), a clock time (`H[:MM]am`/`pm` or 24-hour `HH:MM`), one space
@@ -11868,7 +11939,8 @@ not make:
 ### Capacity wait
 
 A capacity wait covers a limit that a reset wait would skip as
-`reset_too_far` or `no_reset`, and a limit other than a spend limit on the
+`reset_too_far` or `no_reset`, a spend limit that states a weekly reset, and
+a limit other than a spend limit on the
 first attempt after a wait whose stated reset the clock has already passed (see
 [A reset that has already passed](#a-reset-that-has-already-passed)). It does
 not wait for the failed login's own reset. It waits for any login with
@@ -11895,7 +11967,9 @@ stored are refused first, with their usual `skipped` reasons.
 | Spend limit, no readable reset | `$HOME/.claude`, with a rotator running | not read | [login-change wait](#login-change-wait) |
 | Spend limit, no readable reset | `$HOME/.claude`, no rotator running or auto-switch off | not read | `skipped reason=spend_limit` |
 | Spend limit, no readable reset | any other step | any | `skipped reason=spend_limit` |
-| Spend limit with a weekly reset | any | any | `skipped reason=reset_too_far` |
+| Spend limit with a weekly reset | `$HOME/.claude`, with a rotator running | yes | capacity wait |
+| Spend limit with a weekly reset | inherited profile, auto-switch on, with a rotator running | yes | capacity wait |
+| Spend limit with a weekly reset | any other step, no rotator running, or no other login could take over | any | `skipped reason=reset_too_far` |
 | Reset already passed, not a spend limit, on the first attempt after a wait, on a login the step has already waited on | `$HOME/.claude` or inherited profile with auto-switch on, with a rotator running | yes | capacity wait, ended early by a login with room |
 | Reset already passed, not a spend limit, on the first attempt after a wait, on a login the step has already waited on | any other step, on its inherited profile, with or without a rotator | any | capacity wait bounded by the budget; at the budget's end the step retries once |
 | Spend limit with a session reset already passed, on the first attempt after a wait, on a login the step has already waited on | any | any | `skipped reason=already_waited`; never a capacity wait |
@@ -12258,7 +12332,8 @@ it waits for the login in `~/.claude` to change, and for nothing else.
 | Spend limit, no readable reset | `$HOME/.claude` | none running, or paused | `skipped reason=spend_limit` |
 | Spend limit, no readable reset | inherited profile, `$CLAUDE_CONFIG_DIR`, or a `.default` profile that is not the rotator's live one | any | `skipped reason=spend_limit`, as before |
 | Spend limit with a session reset | any | any | reset wait, as before: the session limit is what stops work |
-| Spend limit with a weekly reset | any | any | `skipped reason=reset_too_far`, as before |
+| Spend limit with a weekly reset | `$HOME/.claude` or inherited profile with auto-switch on, with a rotator running, and another login could take over | any | [capacity wait](#capacity-wait), as for a weekly limit |
+| Spend limit with a weekly reset | any other step, or no other login could take over | any | `skipped reason=reset_too_far` |
 
 **It needs a rotator, and that is the only check it makes.** Only the rotator
 moves a login into `~/.claude`, so with none running there is nothing this

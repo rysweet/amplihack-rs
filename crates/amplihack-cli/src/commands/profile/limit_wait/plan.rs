@@ -103,8 +103,17 @@ pub(crate) fn from_reading(harness: Harness, reset: i64, now: i64) -> WaitFor {
 }
 
 /// `w`, made a capacity wait when it is a far or unreadable reset and another
-/// login could take over. `seen` is the limit as read; `None` for a spend
-/// limit, which another login of the same organisation would not lift.
+/// login could take over. `seen` is the limit as read.
+///
+/// The caller passes `Limited::seen` OR-ed with `Limited::spend_reset`
+/// (issue #2882): an individual spend limit belongs to one account, so when
+/// it states a reset days away another login can take the work and the wait
+/// is judged by that login's room, not by the failed login's own reset. A
+/// spend limit that states *no* reset still arrives here as `None`: nothing
+/// a reading could show would lift it, and `upgrade_spend` owns that row
+/// (issue #2731). The two other promotions keep reading `Limited::seen`
+/// alone, so neither this widening nor #2731 can reach them.
+///
 /// `takeover` reads the profile store, so it runs only for a limit that
 /// qualifies.
 pub(crate) fn upgrade(

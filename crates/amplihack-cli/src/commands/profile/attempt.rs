@@ -279,6 +279,19 @@ pub(crate) struct Limited {
     /// The harness of an organisation spend limit that states no reset, for
     /// a login-change wait (issue #2731); `None` for every other limit.
     pub(crate) spend: Option<Harness>,
+    /// A spend limit that *also* states a reset that parses, with that reset
+    /// (issues #2882, #2890). `None` for every other limit.
+    ///
+    /// It is a field of its own rather than a widening of [`Self::seen`]
+    /// because the three feed different promotions and must stay disjoint:
+    /// `seen` also reaches `plan::upgrade_passed_reset`, where a spend limit
+    /// whose stated reset has passed must keep its documented
+    /// `already_waited` row (issue #2857), and `spend` reaches
+    /// `plan::upgrade_spend`, which is for a limit that states no reset at
+    /// all (issue #2731). Only `plan::upgrade` reads this one, and the step
+    /// also records the login it ran under as spend-blocked until this
+    /// reset (`rotate::step_block`).
+    pub(crate) spend_reset: Option<(Harness, i64)>,
 }
 
 /// A failed attempt's output, read once (issue #2857): the stderr tail it
@@ -344,6 +357,9 @@ impl Output {
             spend: message
                 .filter(|m| m.spend && m.reset.is_none())
                 .map(|m| m.harness),
+            spend_reset: message
+                .filter(|m| m.spend)
+                .and_then(|m| m.reset.map(|r| (m.harness, r))),
         })
     }
 }
@@ -466,3 +482,7 @@ fn tail(file: &fs::File) -> std::io::Result<Vec<u8>> {
     f.seek(SeekFrom::Start(len.saturating_sub(TAIL as u64)))?;
     fsx::read_bounded(f, TAIL as u64)
 }
+
+#[cfg(test)]
+#[path = "tests_limited_spend_reset.rs"]
+mod tests_limited_spend_reset;
