@@ -1352,10 +1352,10 @@ rotator puts them back at the end of its next cycle, and sessions started with
    the background.
 2. If no rotator is running, the hook exits at once (`rotator-down`).
 3. The hook notes the session's tmux pane from `$TMUX_PANE` when `$TMUX`
-   is also set. It checks that the pane matches Claude Code's terminal and
-   that Claude Code is in the terminal's foreground process group. The
-   prompt can still change before or during key delivery. The pane id stays
-   in the hook's memory.
+   is also set. It checks the pane against its parent process's terminal
+   and foreground process group. This checks where the inputs go. The
+   displayed menu is unverified, and the prompt can change before or
+   during delivery. The pane id stays in the hook's memory.
 4. The hook notes the current swap record,
    `<root>/.auto-switch.d/rotate/swap.json`, or that there is none. It
    starts watching that directory, its own `resume/prompted/` directory and
@@ -1551,11 +1551,12 @@ The hook acts only when Claude Code runs it, on a `StopFailure` event with
 
 ### Check automatic continuation at reset
 
-Claude Code's **Continue automatically at usage limit** setting in
-`/config` (`autoContinueAtUsageLimit`) lets an open session wait for its
-usage limit to reset and then continue. The documented default is `true`.
-This setting schedules continuation at the reset. A swap to another login
-can still leave the usage-limit menu open. See the
+Claude Code's **Continue automatically at usage limit** setting
+(`autoContinueAtUsageLimit`) controls whether an open session automatically
+waits for its usage limit to reset and then continues. The documented
+default is `true`. A swap to another login can still leave the usage-limit
+menu open. Claude Code hides the setting in `/config` when managed
+settings or `--settings` supply a value. See the
 [Claude Code settings reference](https://code.claude.com/docs/en/settings-reference#autocontinueatusagelimit).
 
 Check the user settings file with `jq`. If the session uses a custom
@@ -1581,10 +1582,12 @@ error, fix the JSON in the file you inspected. The output describes that
 file alone.
 
 For the effective value, check managed settings first, then any JSON or
-file supplied with `--settings`, then the user settings file. When none
-sets the key, a declaration in the project's `.claude/settings.json` or
-`.claude/settings.local.json` disables the automatic wait. amplihack
-leaves this key for Claude Code and the user to manage. See
+file supplied with `--settings`, then the user settings file. You can run
+the same `jq` query against any settings file you need to check. When none
+of those sources sets the key, its presence in the project's
+`.claude/settings.json` or `.claude/settings.local.json` disables the
+automatic wait. amplihack leaves this key for Claude Code and the user to
+manage. See
 [Claude Code settings precedence](https://code.claude.com/docs/en/settings#settings-precedence).
 
 Inspection of the Claude Code 2.1.325 binary suggested that billing type
@@ -3219,12 +3222,10 @@ full rule is in
   Claude Code runs the hook under a shell that outlives it, the hook can
   wait out the 7 days. Claude Code can also
   [continue at reset](#check-automatic-continuation-at-reset) without a swap.
-- **Keys need tmux; the wake may not end the timed wait.** The hook types
-  into a session's pane only inside tmux, and only when the pane's terminal
-  is the one Claude Code reads from with Claude Code in the foreground.
-  Without such a pane it falls back to the exit `2` wake, which is not known
-  to end Claude Code's timed wait. If the session exits in the instant
-  between two keys, at most one key reaches whatever then reads that pane.
+- **Key delivery requires a verified tmux pane.** The hook checks the
+  [terminal and foreground process group](#what-happens-on-a-limit). Without a
+  verified pane it requests a wake by exiting `2`. A wake can leave the
+  session on the menu or in the timed wait.
 - **Resume is Linux only.** The hook watches for the swap record with
   inotify and for the session's exit with a pidfd (kernel 5.3 or later).
   Elsewhere, or when either cannot be set up, it ends as `watch-lost`.

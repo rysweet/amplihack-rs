@@ -413,9 +413,10 @@ leave the hook waiting. The recipe-step wait uses `last_cycle.live_room`.
 
 The hook attempts to continue the session in one of two ways:
 
-- Inside tmux, the hook checks that the pane matches Claude Code's terminal
-  and that Claude Code is in its foreground process group. The prompt can
-  still change before or during key delivery. The hook sends Esc, Ctrl+U,
+- Inside tmux, the hook checks the pane against its parent process's
+  terminal and foreground process group. These checks establish where the
+  inputs go. They leave the displayed menu unverified, and the prompt can
+  change during delivery. The hook sends Esc, Ctrl+U,
   `continue` and Enter. If the swap carries an organisation-affinity warning,
   the hook includes it in the continuation text. `resumed-keys` records key
   delivery. Confirm continuation in the session.
@@ -480,12 +481,13 @@ per limit event, once per wait and 3 times per session in 24 hours. Each
 when they apply, `swap_seq=`, `swap_live=`, `pane=` (a hash, not the pane
 id), `keys_sent=` and `detail=`.
 
-Claude Code's `autoContinueAtUsageLimit` setting starts a wait that can
-continue the conversation when the limit resets. The documented default is
-`true`. Managed settings take precedence over settings supplied when
-launching Claude Code, which take precedence over user settings. When none
-of these sets the key, a project or local setting for this key disables the
-automatic wait. See the [Claude Code settings reference](https://code.claude.com/docs/en/settings-reference#autocontinueatusagelimit).
+Claude Code's `autoContinueAtUsageLimit` setting controls whether it starts
+a wait that can continue the conversation when the limit resets. The
+documented default is `true`. Managed settings take precedence over
+settings supplied when launching Claude Code, which take precedence over
+user settings. When none of these sets the key, a project or local setting
+for this key disables the automatic wait. See
+[Check automatic continuation at reset](../../../docs/howto/claude-profile-rotation.md#check-automatic-continuation-at-reset).
 
 Inspection of the Claude Code 2.1.325 binary suggested that billing type
 and a server-side flag affect whether it starts a reset wait. The
