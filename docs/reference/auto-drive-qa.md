@@ -1,7 +1,7 @@
 ---
 title: Auto-drive QA (Criterion 1)
 description: How criterion 1 is judged inside auto-drive - the measured QA record, the declared QA command, the named recoverable blockers, and the recorded judgement the merge round reads.
-last_updated: 2026-11-16
+last_updated: 2026-11-21
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -68,15 +68,14 @@ order:
 
 | Step | Type | What it does |
 | --- | --- | --- |
-| `step-02a-qa-inputs` | bash | Resolves the pinned tools directory from `autodrive_tools_dir` or `$AMPLIHACK_HOME`, never through the git toplevel and never from the worktree under review. It resolves that directory and the worktree with `pwd -P` and checks that the first does not lie inside the second, so a PR carrying its own `amplifier-bundle/tools` cannot supply the tool or the guidance that judges it. It then resolves a measurement base — the operator's `AUTODRIVE_QA_BASE`, else the base the round's own preflight observed for this PR, else the PR's own base read with `gh pr view --json baseRefName`, and nothing guessed where none of the three answers or a candidate fails the step's screen, as [resolving the measurement base](#resolving-the-measurement-base) sets out — and runs the trusted `autodrive_qa_evidence.sh` with `AUTODRIVE_QA_BASE` set to it, or unset where there is none, and `AUTODRIVE_QA_BASE_SOURCE` naming which of the four happened. That tool selects and runs the declared QA command, measures the changed files, the documentation-only flag, the repository type and the scenario directory with its tracked scenarios, and writes [the measured record](#the-measured-record). The step checks the shape of what the tool wrote before it uses it: output that is not an object carrying at least one field is treated as no record at all. It runs no scenario and issues no verdict any consumer conditions on. The step prints that record with one field added, `qa_guidance`: the absolute path of the pinned bundle copy of `criterion-1-qa-judgement.md`, checked to be a regular file beside the resolved tools directory. That is the only copy the judgement may read its rules from, so a PR cannot rewrite them. |
+| `step-02a-qa-inputs` | bash | Resolves the pinned tools directory from `autodrive_tools_dir` or `$AMPLIHACK_HOME`, never through the git toplevel and never from the worktree under review. It resolves that directory and the worktree with `pwd -P` and checks that the first does not lie inside the second, so a PR carrying its own `amplifier-bundle/tools` cannot supply the tool or the guidance that judges it. It then resolves a measurement base — the operator's `AUTODRIVE_QA_BASE`, else the base the round's own preflight observed for this PR, else the PR's own base read with `gh pr view --json baseRefName`, and nothing guessed where none of the three answers or a candidate fails the step's screen, as [resolving the measurement base](#resolving-the-measurement-base) sets out — and runs the trusted `autodrive_qa_evidence.sh` with `AUTODRIVE_QA_BASE` set to it, or unset where there is none, and `AUTODRIVE_QA_BASE_SOURCE` naming which of the four happened. That tool selects and runs the declared QA command, measures the changed files, the documentation-only flag, the repository type and the scenario directory with its tracked scenarios, and writes [the measured record](#the-measured-record). It runs no scenario and issues no verdict any consumer conditions on. The step passes the tool the absolute path of the pinned bundle copy of `criterion-1-qa-judgement.md` as `AUTODRIVE_QA_GUIDANCE`, checked to be a regular file beside the resolved tools directory, and the tool records it as `qa_guidance`. The step prints the tool's record unchanged: it parses nothing and splices nothing into it. That path is the only copy the judgement may read its rules from, so a PR cannot rewrite them. |
 | `step-02-qa-team-scenarios` | agent | Reads the guidance from the pinned bundle, the diff, the linked issue, the measured record and the existing scenarios. Judges, writes or extends this PR's scenarios, runs them, fixes and re-runs, and returns the judgement. |
 
 `step-02a-qa-inputs` cannot end a round. The measurement cannot run when a
 tools directory, a tool or a guidance file is absent, is not a regular file
 or is not one plain absolute line; when the resolved tools directory lies
 inside the worktree under review; when the worktree is not a git repository;
-when the tool wrote no record; or when what it wrote is not an object
-carrying at least one field. In each case the step prints an object built
+or when the tool wrote no record at all. In each case the step prints an object built
 from its own literals, naming `qa-measurement-unavailable`, and exits 0:
 
 ```json
@@ -93,28 +92,29 @@ so rather than fall back to the worktree's. That record carries four fields
 and no `docs_only`; an absent `docs_only` is read as `unknown`, under
 [how the merge round reads the judgement](#how-the-merge-round-reads-the-judgement).
 
-A record of `{}`, or any output with no `"field":` pair in it, reaches that
-same path. The shape check runs before the step appends `qa_guidance`, so a
-degenerate record is reported by name rather than handed on as an empty set
-of facts that each read as absent.
+The guidance path is screened the same way before it is exported. A path
+containing any character the tool's sanitiser would alter, or longer than 500
+bytes, is treated as absent and recorded as an empty `qa_guidance`, so the path
+the record names and the path the step used can never differ. The worktree's
+copy of the guidance is never a fallback.
 
-The agent loop inside `step-02-qa-team-scenarios`:
+The step does not inspect the record the tool wrote. A record of `{}` is
+valid JSON with every field absent, and the judgement reads each absent
+field as unknown, as it does for the blocker object above. Only an empty
+output, where the tool wrote nothing or only whitespace, is reported as
+`qa-measurement-unavailable`. The step prints the captured output once and
+writes the same bytes to `AUTODRIVE_QA_EVIDENCE`, so `qa_evidence_sha` covers
+the record the judgement read, `qa_guidance` included.
 
-1. Decide `user_facing` or `not_user_facing`, citing the changed files that
-   support the decision. Every cited file appears in the diff.
-2. For `not_user_facing` (documentation, configuration with no behaviour
-   change), record the reason and the cited files.
-3. For `user_facing`, name the journeys this PR's own change affects and
-   find their outside-in scenarios. Write or extend the missing ones in the
-   scenario directory and commit them to the PR branch. Cross-repository
-   user journeys belong to product management; the drive neither runs nor
-   requires them.
-4. Run only the scenarios this PR changed or added, in CI or isolation, with
-   a private `TMPDIR` and a private `tmux` socket. Never the full suite on a
-   shared host.
-5. On a failure, classify its cause as `product`, `scenario` or
-   `environment`, fix it, commit the fix and run again.
-6. Record a hand-off only when a person must act.
+The agent loop inside `step-02-qa-team-scenarios` follows
+[`criterion-1-qa-judgement.md`](../../amplifier-bundle/skills/merge-ready/criterion-1-qa-judgement.md):
+decide `user_facing` or `not_user_facing` citing diff files, write and run
+this PR's own scenarios where users see the change, fix what fails, and
+record a hand-off only when a person must act. That guidance is the single
+statement of the rules, including the scenario-name rules and the host
+precautions for running scenarios; this page does not repeat them. Those
+scenario-name rules are enforced by the agent following the guidance, not by
+a shell refusing an argument, because the tool no longer runs scenarios.
 
 The record is spliced into the agent step's prompt as data, inside a fence,
 with the step saying so at the point of the splice. Two of its fields hold
@@ -152,14 +152,12 @@ screen below rejects does not hand on to the next: the resolution stops at
 | 3 | `gh pr view <pr_number> --json baseRefName` | `pr-base` | The PR's own base, read from the hosting interface. Attempted only where `pr_number` is set and is one to ten digits. |
 | — | none of the three answered, or a candidate failed the screen | `none` | The step passes no base to the measurement at all. It guesses nothing. |
 
-The step consults nothing else. In particular it no longer reads the clone's
-`refs/remotes/origin/HEAD`. The clone's default branch is this PR's base only
+The step consults nothing else. In particular it does not read the clone's
+`refs/remotes/origin/HEAD`: the clone's default branch is this PR's base only
 where the PR happens to target it, and a PR into any other branch measured
-against the clone default recorded the wrong change set as fact — the same
-hazard the literal `main` fallback had before it. That source is gone from
-this step. It survives only on the light path, where no PR exists yet and so
-no PR base exists for it to be wrong against: see
-[light drives](#light-drives).
+against it would record the wrong change set as fact. The clone default is
+used only on the light path, where no PR exists yet and so no PR base exists
+for it to be wrong against: see [light drives](#light-drives).
 
 Every candidate is screened before it is used, and the screen is fail-closed:
 a candidate that fails it resolves the base to `none`. The step does not fall
@@ -176,8 +174,14 @@ about; refusing to measure is the answer instead.
   it, the base resolves to `none`.
 - a base, from any of the three sources, must be one line of branch-name
   characters and must pass `git check-ref-format --branch`. A name is rejected
-  when it begins with `-`, when it contains `..`, or when it carries any of
-  `@`, `~`, `^`, `:`, `?`, `*`, `[`, a backslash, a space or a control byte.
+  when it begins with `-`, when it contains `..` or `//`, when it ends in `/`,
+  or when it carries any character outside letters, digits, `.`, `_`, `/` and
+  `-`, which excludes `@`, `{`, `$`, `;`, a backtick, a quote, a backslash, a
+  space and any control byte. It is also rejected when
+  `git check-ref-format --branch` returns anything other than the candidate
+  itself, because that command expands `@{-1}` to the previous branch name.
+  Git itself accepts `$`, `;` and parentheses in ref names, so the character
+  set is the first screen and `check-ref-format` the second.
   This is the screen `autodrive_qa_scope.sh` applies one layer down, applied
   here as well so that a rejected value does not travel.
 - the lookup runs non-interactively, with `GH_PAGER=cat`,
@@ -283,8 +287,7 @@ writer: `autodrive_qa_evidence.sh`, at the end of a measurement that ran. It
 writes under `umask 077`, so the file is mode `0600`, and it removes whatever
 is at the path before writing, so a planted symlink there is unlinked rather
 than written through. `step-02a-qa-inputs` neither composes the record nor
-rewrites it; it runs the tool and then checks the shape of the line the tool
-printed. The judging agent reads the file and never writes it, and the round
+rewrites it; it runs the tool and prints what the tool printed. The judging agent reads the file and never writes it, and the round
 hashes it (see [the record hash](#the-record-hash)).
 
 The path where no measurement could run does not touch the file at all. The
@@ -324,7 +327,7 @@ as before, `not pr_number and not existing_branch`.
 
 | Step | Type | What it does |
 | --- | --- | --- |
-| `light-qa-inputs` | bash | Runs the same measurement tool with `AUTODRIVE_QA_EVIDENCE` fixed at `$QUICK_CHANGE_STATE_DIR/qa/qa-evidence.json`, `AUTODRIVE_QA_BASE` set to the clone's `origin/HEAD` — unset, as on the round's path, where the clone names no default — and `AUTODRIVE_QA_HEAD` set to the worktree's `HEAD` commit. It checks the criterion-1 guidance the `light-qa` step then reads is a regular, non-symlinked file under `$AMPLIHACK_HOME`, as the merge path checks it, so one document carries one assurance on both paths. There is no PR yet, so no hosting interface is consulted for the base, and the clone's default stays a legitimate answer on this path: with no PR there is no PR base for it to be wrong against. The record says which answered — `clone-default` for the clone's own default, `none` where the clone has none. Those are the only two outcomes here, and `clone-default` appears in no other step's record. The step resolves the base itself and sets `AUTODRIVE_QA_BASE` from what it found, so an `AUTODRIVE_QA_BASE` already in its environment does not reach the measurement, and the run's own `base_branch` is not consulted either. That is deliberate rather than an oversight: this step runs only on the new-change path, where the `quick/` branch starts from `origin/HEAD` and `light-open-pr` opens the PR against that same default, so the clone's default is both the branch the change was made from and the branch the PR will target. A `base_branch` the operator gave the light run is neither, and ranking it first would measure the change against a branch it was not branched from — the clone-default hazard of the round's path with the two branches swapped. That measurement base is not the commit `light-base-pin` pinned: the pin is a SHA of the worktree's `HEAD` at the start of the change, recorded as `light_base` and used for the change set `light-qa` reads, while the measurement base is a branch name resolved independently of it. |
+| `light-qa-inputs` | bash | Runs the same measurement tool with `AUTODRIVE_QA_EVIDENCE` fixed at `$QUICK_CHANGE_STATE_DIR/qa/qa-evidence.json`, `AUTODRIVE_QA_HEAD` set to the worktree's `HEAD` commit, `AUTODRIVE_QA_GUIDANCE` set to the criterion-1 guidance under `$AMPLIHACK_HOME` (checked to be a regular, non-symlinked file, as the merge path checks it), and `AUTODRIVE_QA_BASE` set from the first of these that answers, with `qa_base_source` naming it: the run's own `base_branch` (`recipe`), then the clone's `origin/HEAD` with the `origin/` prefix removed (`clone-default`), then nothing (`none`, with `AUTODRIVE_QA_BASE` left unset). A `base_branch` the operator named is a declaration of intent and outranks the clone default; where the operator named nothing it is empty and the clone default applies. The same screen as the round's path is applied to each candidate and fails closed: a rejected candidate resolves `none` and does not fall through. There is no PR yet, so no hosting interface is consulted and there is no `gh pr view` lookup, unlike [the round's path](#resolving-the-measurement-base). That asymmetry is deliberate: the step runs only when no PR exists. An `AUTODRIVE_QA_BASE` already in the step's environment does not reach the measurement. The measurement base is a branch name resolved independently of the commit `light-base-pin` pinned, which is the SHA of `HEAD` at the start of the change, recorded as `light_base` and used for the change set `light-qa` reads. |
 | `light-qa` | agent | Follows the same guidance and returns the judgement as `light_checks`. |
 
 `light-prereqs` reports whether `gadugi-test` is on the path and exits 0.
@@ -394,14 +397,13 @@ measured facts. Each one is an input it carries on from, not an outcome.
 | Blocker | Derived from | What the judgement does |
 | --- | --- | --- |
 | `qa-scenario-dir-missing:<path>` | `gadugi_scenario_dir_state` is `operator-missing` | Falls back to the repository's own tracked scenario directory, recording the fallback and the operator path it replaced; otherwise hands off naming the path and the operator; otherwise records `not_user_facing` with cited diff files. Never a per-round QA failure. |
-| `qa-measurement-unavailable` | the record is absent, unparseable, incomplete or not an object carrying at least one field; the pinned tools directory resolved inside the worktree under review; the record carries a value outside its set; or it carries the broken-scope signature: `qa_reason` `qa-command-missing` together with `qa_command_paths` `(unknown)`, `docs_only` `unknown` and `qa_repo_type` `unknown` (see [telling the three causes apart](#telling-the-three-qa-command-missing-causes-apart)) | Judges from the diff and the scenarios; hands off only when it cannot. A broken bundle install surfaces by name; it neither passes silently nor ends the run. `gadugi_required` `true` is not this signature: it is the normal value for a Node repository and for any operator-set scenario directory. |
+| `qa-measurement-unavailable` | the tool wrote no record; the pinned tools directory resolved inside the worktree under review; the record carries a value outside its set; or it carries the broken-scope signature: `qa_reason` `qa-command-missing` together with `qa_command_paths` `(unknown)`, `docs_only` `unknown` and `qa_repo_type` `unknown` (see [telling the three causes apart](#telling-the-three-qa-command-missing-causes-apart)) | Judges from the diff and the scenarios; hands off only when it cannot. A broken bundle install surfaces by name; it neither passes silently nor ends the run. `gadugi_required` `true` is not this signature: it is the normal value for a Node repository and for any operator-set scenario directory. |
 | `qa-tool-not-installed:<tool>` | `gadugi_status` `NOT_INSTALLED`, or `qa_reason` `qa-command-not-installed` | Meets criterion 1 by other evidence — the declared command, the repository's own tests, or a scenario the available tools run — or hands off naming the tool and its owner. Nothing is ever installed automatically. |
 | `qa-command-failed:<name>` | `qa_reason` `qa-command-failed` with `qa_exit_code` | Finds out whether the PR caused the failure and fixes it like any product failure if it did. |
 
-The fallback directory for `qa-scenario-dir-missing` must be one of
-`tests/agentic`, `tests/gadugi/scenarios` or `scenarios`, must resolve
-inside the repository root after `pwd -P`, and must be tracked in Git.
-Nothing else is a fallback, and both paths are recorded.
+The fallback directory rules for `qa-scenario-dir-missing`, and the other
+blockers' handling, are set out in
+[the guidance](../../amplifier-bundle/skills/merge-ready/criterion-1-qa-judgement.md).
 
 ## The measured record
 
@@ -501,7 +503,8 @@ beside `gadugi_status` `FOUND` and state `detected` cannot be produced.
 | `qa_scenarios` | Scenario files, as space-separated repository-relative paths, capped at 2,000 bytes. From `gadugi_scenario_dir` where it was consulted; for a Rust CLI project where it was not, the selected project's `tests/parity/scenarios/*.y{a,}ml`, which `cargo test` runs. Top-level regular files only: a symlinked or non-regular entry is named here and not followed. |
 | `qa_summary` | The recorded causes and the last lines of the command's output, sanitised. |
 | `qa_round` | `AUTODRIVE_ROUND_LABEL`, or `round`. With `head_sha`, this is what binds a record to the round that wrote it: see [the record file](#the-record-file). |
-| `qa_base`, `qa_base_source` | The base the change set was measured against, and how the caller reached it: `operator`, `recipe`, `pr-base`, `clone-default` or `none`. The source is checked against those five literals and never taken from the environment unchecked: a caller that names a base with no source is the `operator`, and no base at all — or any word outside the set — records `none`. `none` and an empty `qa_base` imply each other in both directions, because the measurement clears the base whenever it records `none`; a record saying no base was resolved cannot carry a measured path list beside it. A round writes one of the first three or `none`; `clone-default` is reachable only from `light-qa-inputs` on the light path, before a PR exists, and is that step's ordinary answer. See [resolving the measurement base](#resolving-the-measurement-base). |
+| `qa_guidance` | The absolute path of the pinned bundle copy of `criterion-1-qa-judgement.md`, taken from `AUTODRIVE_QA_GUIDANCE` and sanitised and capped like every other string. Empty where the caller supplied none; the judgement then says it has no pinned guidance and does not read the worktree's copy. A path containing a quote or a newline still yields one parseable object. |
+| `qa_base`, `qa_base_source` | The base the change set was measured against, and how the caller reached it: `operator`, `recipe`, `pr-base`, `clone-default` or `none`. The source is checked against those five literals and never taken from the environment unchecked: a caller that names a base with no source is the `operator`, and no base at all — or any word outside the set — records `none`. `none` and an empty `qa_base` imply each other in both directions, because the measurement clears the base whenever it records `none`; a record saying no base was resolved cannot carry a measured path list beside it. A round writes one of the first three or `none`; the light path writes `recipe`, `clone-default` or `none`, and `clone-default` is reachable only from `light-qa-inputs`, before a PR exists, as that step's ordinary answer. See [resolving the measurement base](#resolving-the-measurement-base). |
 | `head_sha` | The head measured: hexadecimal digits, or empty where the head could not be read. The tool constrains the value to that set before printing it, so a ref name, an option-like string or any other output of a misread head cannot reach a reader through this field. |
 | `docs_only` | `true`, `false` or `unknown`, from the [documentation-only measurement](#documentation-only-measurement). |
 | `gadugi_required` | What `autodrive_gadugi_required` reports: `true` for a Node project, for any repository where `AUTODRIVE_QA_SCENARIO_DIR` is set, and where the scope helper did not load; `false` for a documentation-only PR, for a Rust CLI or Python project, and under a #2458 declaration. It is a fact about the repository and the operator environment; no consumer conditions criterion 1 on it, and it is not a signal that the measurement is broken — see [telling the three `qa-command-missing` causes apart](#telling-the-three-qa-command-missing-causes-apart). |

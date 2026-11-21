@@ -231,7 +231,7 @@ names the blocker and carries on:
 | Fact in the record | Blocker | What the judgement does |
 | --- | --- | --- |
 | `gadugi_scenario_dir_state` `operator-missing` | `qa-scenario-dir-missing:<path>` | Falls back to a tracked `tests/agentic`, `tests/gadugi/scenarios` or `scenarios` inside the repository, recording both paths; otherwise hands off; otherwise records not user-facing with cited files. |
-| the record is absent, unparseable, empty of fields, or carries an unknown value; the resolved tools directory lies inside the worktree under review; or `qa_reason` `qa-command-missing` with `qa_command_paths` `(unknown)`, `docs_only` `unknown` and `qa_repo_type` `unknown` | `qa-measurement-unavailable` | Judges from the diff and the scenarios. The record carries no `docs_only`, so section 2's absent row applies. |
+| the record is absent, empty, unparseable or carries an unknown value; the resolved tools directory lies inside the worktree under review; or `qa_reason` `qa-command-missing` with `qa_command_paths` `(unknown)`, `docs_only` `unknown` and `qa_repo_type` `unknown` | `qa-measurement-unavailable` | Judges from the diff and the scenarios. The record carries no `docs_only`, so section 2's absent row applies. |
 | `gadugi_status` `NOT_INSTALLED`, `qa_reason` `qa-command-not-installed` | `qa-tool-not-installed:<tool>` | Uses other evidence, or hands off naming the tool. Installs nothing. |
 | `qa_reason` `qa-command-failed` | `qa-command-failed:<name>` | Decides whether this PR caused the failure. |
 
@@ -247,7 +247,7 @@ Two record shapes are **not** blockers, however they look:
   says only that this repository declares no suite command, or that
   `AUTODRIVE_QA_DIR` does not exist. `qa_summary` names which.
 
-## 7. Tell the trust-root and record-shape causes apart
+## 7. Tell the trust-root and empty-record causes apart
 
 Several conditions end in `qa-measurement-unavailable`: an absent or
 unparseable record, a value outside its set, the broken-scope signature in
@@ -271,15 +271,19 @@ case "$T" in "$W" | "$W"/*) echo contained ;; *) echo separate ;; esac
 `contained` is the trust-root cause. Run the measurement from the installed
 bundle instead; a copy inside the worktree is never the one to use.
 
-The record shape check requires an object with at least one field. Output of
-`{}` counts as no record, rather than as a record whose fields all read as
-absent. `jq -e` reports the shape through its exit status, so output that
-does not parse at all gives `unavailable` rather than a parse error:
+The guidance path passed as `AUTODRIVE_QA_GUIDANCE` is held to the same rule.
+A path the tool's sanitiser would alter, or one over 500 bytes, is treated as
+absent and recorded as an empty `qa_guidance`. See
+[`qa_guidance`](../reference/auto-drive-qa.md#the-measured-record) for the
+full rule.
+
+The step does not check the shape of the record the tool wrote. Output of
+`{}` is valid JSON with every field absent, and you read each absent field
+as unknown. Only a tool that wrote nothing gives `qa-measurement-unavailable`:
 
 ```bash
-jq -e 'type == "object" and length > 0' "$AUTODRIVE_QA_EVIDENCE" \
-  >/dev/null 2>&1 && echo usable || echo unavailable
-# usable
+test -s "$AUTODRIVE_QA_EVIDENCE" && echo written || echo unavailable
+# written
 ```
 
 A bundle installed before this guidance shipped lacks
