@@ -148,8 +148,8 @@ and the output holds no release for 2.3.0. The write-up records the condition,
 the command and that output, and closes with a sentence such as "Hand-off: the
 task requires an acme-infra release carrying seed pack 2.3.0, and none exists."
 `step-03` reduces this to `hand-off`, the round ends with the outcome word
-`hand-off`, and finalisation, which would call `gh pr merge`, is not reached. The round then
-ends through the [hand-off](#hand-off).
+`hand-off`, and finalisation, which would call `gh pr merge`, is not reached.
+The round then ends through the [hand-off](#hand-off).
 
 **Limits.** This is guidance to an agent step, and a judgement is not a
 mechanical check. The evidence recorded in the write-up is what makes a

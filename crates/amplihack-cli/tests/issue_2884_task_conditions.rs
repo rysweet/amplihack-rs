@@ -38,6 +38,13 @@ const CONDITION: &str = "a release of acme-infra carrying seed pack 2.3.0 exists
 const MERGE_STEP: &str = "step-02-merge-ready-assessment";
 const READER_STEP: &str = "step-03-outcome-reader";
 const FIRST_ROUND_STEP: &str = "step-01-platform-facts";
+/// Every agent step of `autodrive-merge-evidence.yaml`. All three render the
+/// task text, so each must be seen exactly once carrying it.
+const EVIDENCE_STEPS: [&str; 3] = [
+    "step-01-sync-with-base",
+    "step-02-qa-team-scenarios",
+    "step-03-wait-for-ci",
+];
 const AFTER_WORD_STEP: &str = "step-04-address-blockers";
 
 fn task_with_condition() -> String {
@@ -55,9 +62,9 @@ struct World {
 #[derive(Default)]
 struct Seen {
     active: String,
-    /// Prompts handed out before the round's own first step ran, which are
-    /// the prompts of the evidence sub-recipe.
-    evidence_prompts: Vec<String>,
+    /// Step id and prompt for every agent step handed out before the round's
+    /// own first step ran, which are the steps of the evidence sub-recipe.
+    evidence_prompts: Vec<(String, String)>,
     round_started: bool,
 }
 
@@ -138,10 +145,12 @@ impl Adapter for Agents<'_> {
         let f = self.fixture;
         let id = {
             let mut seen = self.seen.lock().unwrap();
+            let active = seen.active.clone();
             if !seen.round_started {
-                seen.evidence_prompts.push(prompt.to_owned());
+                seen.evidence_prompts
+                    .push((active.clone(), prompt.to_owned()));
             }
-            seen.active.clone()
+            active
         };
         match id.as_str() {
             MERGE_STEP => Ok(self.assess(prompt)),
@@ -395,18 +404,26 @@ fn evidence_recipe_agents_receive_the_task_text() {
     );
     assert!(d.result.success, "{:?}", d.result);
     let seen = d.seen.lock().unwrap();
-    assert!(
-        seen.evidence_prompts.len() >= 3,
-        "expected the evidence recipe's three agent steps to run before the round's own steps, saw {}",
-        seen.evidence_prompts.len()
-    );
-    let carrying = seen
+    let ids: Vec<&str> = seen
         .evidence_prompts
         .iter()
-        .filter(|p| p.contains(&task))
-        .count();
-    assert!(
-        carrying >= 1,
-        "no evidence-recipe agent prompt carried the caller's task text"
-    );
+        .map(|(id, _)| id.as_str())
+        .collect();
+    for step in EVIDENCE_STEPS {
+        let prompts: Vec<&String> = seen
+            .evidence_prompts
+            .iter()
+            .filter(|(id, _)| id == step)
+            .map(|(_, prompt)| prompt)
+            .collect();
+        assert_eq!(
+            prompts.len(),
+            1,
+            "{step} must run exactly once before the round's own steps; saw {ids:?}"
+        );
+        assert!(
+            prompts[0].contains(&task),
+            "{step} did not carry the caller's task text"
+        );
+    }
 }
