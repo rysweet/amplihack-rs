@@ -61,18 +61,26 @@ no account.
 
 | Tier | Claude-compatible | Codex | Copilot CLI |
 |------|-------------------|-------|-------------|
-| `strong` | `claude-opus-5[1m]` | no model named, effort `high` | no model named |
+| `strong` | `claude-opus-5[1m]`, effort `xhigh` | no model named, effort `high` | no model named |
 | `standard` | `claude-sonnet-5-5` | no model named, effort `high` | no model named |
 | `fast` | `claude-haiku-5-5` | no model named, effort `low` | no model named |
 
 Claude ids are concrete, never aliases: an alias is resolved by the CLI, so its
-meaning depends on the CLI version (issue #1421). Codex names no model, because
-Opus and Sonnet do not exist there and any id would guess at the account, so
-its tiers differ by effort alone. Codex `strong` ships at `high`, not `xhigh`,
-because not every Codex model accepts `xhigh` and a shipped default must not
-make a step fail; an instance whose model accepts it raises the cell in its own
-file (see [raising a Codex effort](#raising-a-codex-effort)). Copilot ships
-empty and falls back until an instance fills it in.
+meaning depends on the CLI version (issue #1421). Claude `strong` carries an
+effort because the work it is meant for (design, planning, orchestration and
+complex coding) is where a deeper reasoning budget pays for itself; `standard`
+and `fast` name no effort, so Claude Code applies its own default there. The
+shipped `xhigh` raises token consumption on every `strong` step. An instance
+that wants a lower cost lowers the cell, or the column's ceiling, in its own
+file (see [setting a Claude effort](#setting-a-claude-effort)).
+
+Codex names no model, because Opus and Sonnet do not exist there and any id
+would guess at the account, so its tiers differ by effort alone. Codex `strong`
+ships at `high`, not `xhigh`, because not every Codex model accepts `xhigh` and
+a shipped default must not make a step fail; an instance whose model accepts it
+raises the cell in its own file (see
+[raising a Codex effort](#raising-a-codex-effort)). Copilot ships empty and
+falls back until an instance fills it in.
 
 The `claude` column covers every Claude-compatible tool: `amplihack claude`,
 `rusty`, `rustyclawd` and `amplifier`. A harness with no column takes the
@@ -128,13 +136,15 @@ tool is one the gateway routes (Claude Code, RustyClawd or Copilot CLI) and
 `AMPLIHACK_LITELLM_MODEL` is set. The gateway routes on the model name and was
 never configured for the ids in the shipped mapping, so amplihack removes the
 tier's `--model` pair and its existing chain writes `AMPLIHACK_LITELLM_MODEL`
-in its place. Ranks 1 and 3 are dropped on that path for the same reason. Codex
-is not routed by the gateway, so its tiers apply as usual.
+in its place. Ranks 1 and 3 are dropped on that path for the same reason. The
+tier's reasoning effort is not dropped: an effort is a session setting, not a
+routing key, so a gateway-routed Claude launch still receives `--effort` from
+its tier. Codex is not routed by the gateway, so its tiers apply as usual.
 
 `model.force` outranks an explicit `--model`, because the forced value comes
 from your own user config or environment. A forced launch keeps the tier's
 reasoning effort, so forcing one model across a mixed-tier recipe does not
-flatten Codex effort to one value.
+flatten the effort to one value on Claude or on Codex.
 
 ## Falling back to the harness default
 
@@ -158,26 +168,134 @@ come from one value.
 
 ## Reasoning effort, per harness
 
-Codex is the only harness with a launch control for effort, and amplihack
-passes the tier's value as Codex's own `-c model_reasoning_effort=<effort>`,
-prepended so `exec` remains the first positional argument. If your own command
-already carries that key, yours is left alone. Claude Code and Copilot CLI have
-no such argument, so an effort written in their column is recorded as requested
-rather than effective.
+Claude Code and Codex each have a launch control for effort, and amplihack
+passes the tier's value to whichever one it is launching:
 
-Accepted effort values, weakest first, are `minimal`, `low`, `medium`, `high`
-and `xhigh`. That list is amplihack's allowlist, not one read from Codex: the
-value becomes the right-hand side of a `-c` argument, so only these five words
-are written. A value from an override file that is not one of the five is
-reported and dropped, and the tier's model still applies. Model and effort
-resolve independently, so an unavailable or unmapped model drops only the model
+| Harness | Argument written | Prepended so that |
+|---------|------------------|-------------------|
+| Claude-compatible (`claude`, `rusty`, `rustyclawd`, `amplifier`) | `--effort <effort>` | the pair sits inside amplihack's own options, ahead of any positional prompt |
+| Codex | `-c model_reasoning_effort=<effort>` | `exec` remains the first positional argument |
+
+If your own command already carries the argument, yours is left alone, and one
+stderr line says so. On Claude that means an `--effort <value>` or an
+`--effort=<value>` before any bare `--`; an `--effort` written after a bare `--`
+is prompt text for Claude and does not count. On Codex it means the
+`model_reasoning_effort` key. Copilot CLI has no such argument, so an effort
+written in its column is recorded as requested rather than effective.
+
+amplihack does not ask the installed Claude Code whether it knows `--effort`,
+and there is no version check, probe or second launch for it. The flag is
+written at the same point as the tier's `--model`. See
+[a Claude Code that does not know `--effort`](#a-claude-code-that-does-not-know---effort)
+for the one case where that matters and its one-line fix.
+
+Accepted effort values differ by harness, weakest first:
+
+| Column | Accepted values |
+|--------|-----------------|
+| `claude` | `low`, `medium`, `high`, `xhigh`, `max` |
+| `codex` | `minimal`, `low`, `medium`, `high`, `xhigh` |
+| any other column, including `copilot` | all six words: `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+
+Those lists are amplihack's allowlists, not ones read from the CLIs: the value
+becomes part of a command-line argument, so only listed words are ever written.
+Matching is exact apart from ASCII case, so `XHIGH` is the same word as
+`xhigh`: there is no trimming and no prefix matching, and a value carrying a
+stray space or newline is reported rather than guessed at.
+`minimal` is a Codex word, so it is refused for Claude, and `max` is a Claude
+word, so it is refused for Codex. A column amplihack writes nothing onto accepts
+the union, because no word there can be wrong on a command line. A value from an
+override file that is outside its column's list is reported, naming the column
+and tier and listing that column's accepted words, and is dropped; the tier's
+model still applies and the launch succeeds. Model and effort resolve
+independently, so an unavailable or unmapped model drops only the model
 argument.
 
 A recipe's `-c model=...` and `-c reasoning_effort=...` are context variables,
 readable in prompt templates and not passed to the launched CLI, and an outer
 Codex session's own `-c model_reasoning_effort=...` is not inherited by a child
 launch. Issue #1619's 3 November comment reports the consequence: a step
-assigned `high` ran as `xhigh`. Both now reach the child as real arguments.
+assigned `high` ran as `xhigh`. The model and the effort of a tier now both
+reach the launched CLI as real arguments.
+
+### Setting a Claude effort
+
+The shipped `[claude.strong]` cell names both a model and an effort:
+
+```toml
+[claude.strong]
+model = "claude-opus-5[1m]"
+effort = "xhigh"
+```
+
+A `strong` step on a Claude-compatible tool then launches with
+`--model claude-opus-5[1m] --effort xhigh`. `standard` and `fast` name no
+effort, so they launch with a `--model` and no `--effort`.
+
+To change it for one host, write the cell in your own
+[override file](#the-override-file). The cell replaces the shipped one whole, so
+it restates the model it wants and the effort it wants:
+
+```toml
+# ~/.amplihack/model-tiers.toml
+version = 1
+
+# Plan and design on a Fable model, at the strongest effort.
+[claude.strong]
+model = "claude-fable-5-2"
+effort = "max"
+```
+
+A cell that names a model and no `effort` launches that model with no
+`--effort`, and Claude Code applies its own default. That is the way to clear
+the shipped `xhigh` on one host:
+
+```toml
+[claude.strong]
+model = "claude-opus-5[1m]"
+```
+
+To keep the shipped model and only lower the effort, restate the model:
+
+```toml
+[claude.strong]
+model = "claude-opus-5[1m]"
+effort = "high"
+```
+
+A concrete model id written by hand on a step (`--model claude-opus-5[1m]`
+rather than a tier word) gets no tier, no effort and no record line, as before:
+`--effort` appears only where a tier word was present.
+
+### A Claude Code that does not know `--effort`
+
+A Claude Code old enough not to accept `--effort` as an option refuses the
+launch with its own message. amplihack makes no attempt to detect that case
+beforehand: a version check would be a second floor for a binary that already
+has one (amplihack refuses Claude launches below 2.1.319 where it supplies the
+prompt-file contract), and reading the installed Claude's help text would cost a
+subprocess on every agent step. The same applies to a Claude-compatible tool
+launched with that contract opted out.
+
+On such a host, write the cell with no `effort` key, which clears the shipped
+effort:
+
+```toml
+# ~/.amplihack/model-tiers.toml
+version = 1
+
+[claude.strong]
+model = "claude-opus-5[1m]"
+```
+
+Or lower every Claude tier at once with a
+[ceiling](#when-an-account-refuses-an-effort), which bounds an effort without
+removing it.
+
+`rusty`, `rustyclawd` and `amplifier` share the `claude` column and so receive
+the same `--effort`. They already receive Claude's `--model` with Claude-only
+ids, so the column is already treated as command-line compatible with Claude.
+If one of them refuses the flag, clear the cell as above.
 
 ### Raising a Codex effort
 
@@ -215,14 +333,23 @@ Every tier of that column is then written at its own effort or at the ceiling,
 whichever is lower. A ceiling also bounds a cell you raised: with `strong` at
 `xhigh` and `max_effort = "high"`, a `strong` step runs at `high`. A ceiling
 never raises an effort, and never reaches a harness that has no launch control
-for one. The step runs: stepping an effort down is not a fall-back and does not
-fail the launch. The record keeps both values, `requested_effort` beside
+for one. The same holds on the `claude` column: with `[claude] max_effort =
+"high"`, a `strong` step that asks for `xhigh` launches with `--effort high`.
+The step runs: stepping an effort down is not a fall-back and does not fail the
+launch. The record keeps both values, `requested_effort` beside
 `effective_effort`, and the one line the launch already prints says the tier's
 effort was lowered.
 
-A `max_effort` that is not one of the five accepted words is reported where you
-wrote it and leaves the column with no ceiling at all. Applying some default
-cap on a typo would silently change what every step of that column runs at.
+A `max_effort` that is not one of its column's accepted words (see the table
+above) is reported where you wrote it and leaves the column with no ceiling at
+all. Applying some default cap on a typo would silently change what every step
+of that column runs at. A ceiling is validated against its own column, so
+`[claude] max_effort = "minimal"` is reported and `[codex] max_effort = "max"`
+is too.
+
+A ceiling is a cost and policy setting for the efforts amplihack chooses. It is
+advisory against an effort you type yourself: a command that already carries
+`--effort` keeps it, as described above, and the ceiling does not lower it.
 
 The other way is to lower the effort in the cell itself, which the
 [override file](#the-override-file) does cell by cell:
@@ -241,11 +368,14 @@ The difference is reach: a cell changes one tier, a ceiling bounds all three.
 amplihack reads one override file, the first of these that exists: the path in
 `model.tier_map`, then `$AMPLIHACK_HOME/model-tiers.toml`, then
 `~/.amplihack/model-tiers.toml`. Entries merge cell by cell over the shipped
-mapping, so a file naming one cell changes that cell alone. Nothing merges
+mapping, so a file naming one cell changes that cell alone. This file is the
+only source of a table beyond the shipped one: a repository you have cloned
+cannot set a model or an effort. Nothing merges
 inside a cell: a cell you write replaces the shipped cell whole, and a value it
-leaves out is not taken from the shipped one. Every shipped Codex cell carries
-an effort, so a `[codex.<tier>]` cell that names a `model` restates the
-`effort` it wants; without one, that tier launches with no effort argument.
+leaves out is not taken from the shipped one. Every shipped Codex cell and the
+shipped `[claude.strong]` cell carry an effort, so a `[codex.<tier>]` or
+`[claude.strong]` cell that names a `model` restates the `effort` it wants;
+without one, that tier launches with no effort argument.
 
 ```toml
 # ~/.amplihack/model-tiers.toml
@@ -382,10 +512,10 @@ With `AMPLIHACK_DEFAULT_MODEL=claude-sonnet-5-5` set, a `strong` step receives:
 
 | Harness | `--model` | Effort argument |
 |---------|-----------|-----------------|
-| Claude-compatible | `claude-sonnet-5-5` | none; no launch control |
+| Claude-compatible | `claude-sonnet-5-5` | `--effort xhigh` |
 | Codex, shipped mapping | none; the cell names no model, so Codex's own runs | `-c model_reasoning_effort=high` |
 | Codex, with the instance cell below | that cell's model | `-c model_reasoning_effort=high` |
-| Copilot CLI, shipped mapping | none | none; no launch control |
+| Copilot CLI, shipped mapping | none | none; no launch control, so an effort there is recorded as requested only |
 
 To give a Codex tier a model, write the cell in your own `model-tiers.toml`:
 
@@ -414,8 +544,8 @@ Every launch then asks for that model, on every harness, whatever tier the step
 declared, including a launch whose command line carries a concrete `--model` of
 its own. That is the difference from `AMPLIHACK_DEFAULT_MODEL`, which leaves a
 concrete id alone and applies to the `claude` column only. The tier's reasoning
-effort still applies, so on Codex a `fast` step keeps `low` while running the
-forced model. The value is validated exactly as an override-file model id is,
+effort still applies, so on Codex a `fast` step keeps `low`, and on Claude a
+`strong` step keeps `xhigh`, while running the forced model. The value is validated exactly as an override-file model id is,
 and `amplihack config list --show-origin` names its origin. Where the command
 line carries a `--model` the forced value replaces it in place; where it
 carries none the pair is inserted at the end of amplihack's own options, before
@@ -429,6 +559,7 @@ effect.
 ```text
 Model tiers:
   autodrive-prerequisites: fast → claude-haiku-5-5
+  step-04-design: strong → claude-opus-5[1m], effort xhigh
   step-05-architecture: strong → codex default model, effort high (the `codex` entry names no model)
   step-06-documentation: standard → copilot default model (no entry in the `copilot` column)
 ```
@@ -541,7 +672,9 @@ the values it would have accepted.
 
 ```text
 amplihack: model tier `fast` on `claude`: passing `--model claude-haiku-5-5`. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
+amplihack: model tier `strong` on `claude`: passing `--model claude-opus-5[1m]` and `--effort xhigh`. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 amplihack: model tier `strong` on `codex`: passing `-c model_reasoning_effort=high`; the model stays `codex`'s own. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
+amplihack: model tier `strong` on `claude`: leaving the `--effort` already on the command line alone.
 amplihack: model tier `strong` has no entry in the `copilot` column, so `copilot` runs on its own default model. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 amplihack: model tiers: step_tiers.step-99-polish: amplihack staged no recipe declaring a step with that id, so nothing is overridden and every step keeps the tier its recipe declares. Usually the id is mistyped; a recipe amplihack could not read, one larger than the size bound, and one past the candidate cap all look the same from here. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.
 amplihack: AMPLIHACK_DEFAULT_MODEL is set, so `claude` is launched with `--model claude-sonnet-5-5` in place of the model its tier maps to. Unset it to restore the mapping. See `amplihack config get model.tier_map` and docs/reference/model-tiers.md.

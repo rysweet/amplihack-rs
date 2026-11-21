@@ -191,6 +191,21 @@ impl Launch {
             .next_back()
     }
 
+    /// The value of Claude Code's `--effort`, in either spelling, or `None`.
+    /// Occurrence counting stays in the tests, so a duplicate is visible.
+    pub fn claude_effort(&self) -> Option<&str> {
+        let mut found = None;
+        let mut iter = self.argv.iter();
+        while let Some(arg) = iter.next() {
+            if arg == "--effort" {
+                found = iter.next().map(String::as_str);
+            } else if let Some(value) = arg.strip_prefix("--effort=") {
+                found = Some(value);
+            }
+        }
+        found
+    }
+
     pub fn stderr(&self) -> String {
         String::from_utf8_lossy(&self.output.stderr).into_owned()
     }

@@ -65,6 +65,12 @@ impl Tier {
 }
 
 /// A reasoning effort amplihack is willing to put on a command line.
+///
+/// One union of words for every harness, ordered weakest to strongest: the
+/// derived `Ord` is what makes a column's `max_effort` lower an effort
+/// correctly, so a new variant belongs in its place in the ranking rather
+/// than at the end of the list. Which of the words a given harness accepts is
+/// [`Effort::accepted_in`], not this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Effort {
@@ -73,25 +79,74 @@ pub(crate) enum Effort {
     Medium,
     High,
     Xhigh,
+    Max,
 }
+
+/// Claude Code's own vocabulary, as `claude --help` states it on 2.1.330.
+/// It has no `minimal`.
+const CLAUDE_EFFORTS: [Effort; 5] = [
+    Effort::Low,
+    Effort::Medium,
+    Effort::High,
+    Effort::Xhigh,
+    Effort::Max,
+];
+
+/// Codex's own vocabulary. It has no `max`.
+const CODEX_EFFORTS: [Effort; 5] = [
+    Effort::Minimal,
+    Effort::Low,
+    Effort::Medium,
+    Effort::High,
+    Effort::Xhigh,
+];
 
 impl Effort {
     /// Every reasoning effort amplihack will write on a command line. Argv
-    /// safety, not a claim about what the installed harness accepts: the
-    /// value becomes the right-hand side of `-c model_reasoning_effort=…`.
-    pub(crate) const ALL: [Effort; 5] = [
+    /// safety, not a claim about what any one harness accepts: the value
+    /// becomes an argv token, as the right-hand side of
+    /// `-c model_reasoning_effort=…` or as Claude Code's `--effort` value.
+    pub(crate) const ALL: [Effort; 6] = [
         Effort::Minimal,
         Effort::Low,
         Effort::Medium,
         Effort::High,
         Effort::Xhigh,
+        Effort::Max,
     ];
 
+    /// The words `column` itself accepts.
+    ///
+    /// A column amplihack writes no effort onto accepts the union: nothing it
+    /// names can be wrong on a command line, so refusing a word there would
+    /// buy nothing and cost an operator a working cell.
+    pub(crate) fn accepted_in(column: &str) -> &'static [Effort] {
+        match column {
+            "claude" => &CLAUDE_EFFORTS,
+            "codex" => &CODEX_EFFORTS,
+            _ => &Effort::ALL,
+        }
+    }
+
+    /// Whether `column` has a launch control for reasoning effort, so a cell's
+    /// effort reaches the harness as its own argument.
+    ///
+    /// Read by the resolver and by the injection dispatch alike, so a column
+    /// cannot be validated against a vocabulary it is never written with, nor
+    /// written with a word it was never validated against.
+    pub(crate) fn has_effort_control(column: &str) -> bool {
+        matches!(column, "claude" | "codex")
+    }
+
+    /// The effort `raw` names exactly, ignoring ASCII case, or `None`.
+    ///
+    /// Exact: no trimming, no prefix matching. The value becomes an argv
+    /// token, and a word carrying a newline or a trailing space is a typo
+    /// worth reporting rather than one worth guessing at.
     pub(crate) fn parse(raw: &str) -> Option<Effort> {
-        let word = raw.trim();
         Effort::ALL
             .into_iter()
-            .find(|effort| effort.as_str().eq_ignore_ascii_case(word))
+            .find(|effort| effort.as_str().eq_ignore_ascii_case(raw))
     }
 
     pub(crate) fn as_str(self) -> &'static str {
@@ -101,6 +156,7 @@ impl Effort {
             Effort::Medium => "medium",
             Effort::High => "high",
             Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
         }
     }
 }
@@ -254,9 +310,13 @@ impl Table {
 /// The compiled-in shipped mapping.
 const SHIPPED_TEXT: &str = include_str!("../model-tiers.toml");
 
-/// Read one column's `max_effort`. A value that is not an effort leaves the
-/// column with no ceiling: applying some default cap on a typo would silently
-/// change what every step of that column runs at.
+/// Read one column's `max_effort`. A value that is not one of the column's
+/// own words leaves the column with no ceiling: applying some default cap on
+/// a typo would silently change what every step of that column runs at.
+///
+/// The same membership test as [`read_cell`], so a word that could never be
+/// written onto that column's command line cannot enter the `min(cap)`
+/// comparison either.
 fn read_ceiling(
     column: &str,
     value: &toml::Value,
@@ -264,7 +324,7 @@ fn read_ceiling(
     notices: &mut Vec<Notice>,
 ) {
     let raw = value.as_str().unwrap_or_default();
-    match Effort::parse(raw) {
+    match accepted_effort(column, raw) {
         Some(effort) => {
             out.insert(column.to_string(), effort);
         }
@@ -274,6 +334,19 @@ fn read_ceiling(
             value: raw.to_string(),
         }),
     }
+}
+
+/// The effort `raw` names, when `column` accepts that word.
+///
+/// Two gates, not one: `Effort::parse` is argv safety, and
+/// `Effort::accepted_in` is the harness's own vocabulary. Codex has no `max`
+/// and Claude Code has no `minimal`, so a word good for one column is a typo
+/// in the other and is reported where the operator wrote it.
+fn accepted_effort(column: &str, raw: &str) -> Option<Effort> {
+    let effort = Effort::parse(raw)?;
+    Effort::accepted_in(column)
+        .contains(&effort)
+        .then_some(effort)
 }
 
 /// Read a `[step_tiers]` table, dropping and reporting every entry whose
@@ -329,7 +402,10 @@ fn read_cell(
             }
             "effort" => {
                 let raw = item.as_str().unwrap_or_default();
-                match Effort::parse(raw) {
+                // A refused effort drops the effort alone, never the cell:
+                // the model beside it is still good, and clearing it would
+                // take a working model away over a mistyped word.
+                match accepted_effort(column, raw) {
                     Some(effort) => entry.effort = Some(effort),
                     None => notices.push(Notice::BadEffort {
                         column: column.to_string(),

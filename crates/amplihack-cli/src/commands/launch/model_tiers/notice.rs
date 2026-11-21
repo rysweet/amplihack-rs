@@ -7,7 +7,9 @@
 //! A notice never echoes argv, a prompt or a model the operator did not
 //! configure: these lines land in run logs that get pasted into issues.
 
-use super::table::{Effort, Tier};
+use super::claude_effort;
+use super::codex_effort;
+use super::table::{Effort, Tier, column_for};
 use crate::user_config::safe::display_safe;
 
 /// Something amplihack decided about a tier, or found in a tier file.
@@ -23,6 +25,11 @@ pub(crate) enum Notice {
         /// The effort the tier asked for, when the column's declared
         /// `max_effort` stepped it down to the one above.
         capped_from: Option<Effort>,
+        /// Whether the model was decided somewhere this line cannot speak
+        /// for — the LiteLLM gateway, which substitutes its own downstream.
+        /// The line then reports the effort alone and leaves the model to
+        /// the gateway's own line.
+        model_elsewhere: bool,
     },
     /// The command line already set the reasoning effort, so the tier gave
     /// this launch its model only.
@@ -136,16 +143,20 @@ impl Notice {
                 model,
                 effort,
                 capped_from,
+                model_elsewhere,
             } => {
                 let what = match (model.as_deref(), effort) {
                     (Some(model), Some(effort)) => format!(
-                        "passing `--model {model}` and `-c model_reasoning_effort={}`",
-                        effort.as_str()
+                        "passing `--model {model}` and `{}`",
+                        effort_argument(harness, *effort)
                     ),
                     (Some(model), None) => format!("passing `--model {model}`"),
+                    (None, Some(effort)) if *model_elsewhere => {
+                        format!("passing `{}`", effort_argument(harness, *effort))
+                    }
                     (None, Some(effort)) => format!(
-                        "passing `-c model_reasoning_effort={}`; the model stays `{harness}`'s own",
-                        effort.as_str()
+                        "passing `{}`; the model stays `{harness}`'s own",
+                        effort_argument(harness, *effort)
                     ),
                     // The caller does not emit this variant when the tier
                     // gave the launch neither of the two — a fall-back line
@@ -168,9 +179,10 @@ impl Notice {
                 )
             }
             Notice::EffortCallerChose { harness, tier } => format!(
-                "amplihack: model tier `{}` on `{harness}`: leaving the \
-                 `-c model_reasoning_effort` already on the command line alone.",
-                tier.as_str()
+                "amplihack: model tier `{}` on `{harness}`: leaving the `{}` already on the \
+                 command line alone.",
+                tier.as_str(),
+                effort_flag(harness)
             ),
             Notice::NoColumn {
                 harness,
@@ -264,7 +276,7 @@ impl Notice {
                 display_safe(column),
                 display_safe(tier),
                 display_safe(value),
-                Effort::ALL.map(Effort::as_str).join(", ")
+                accepted_efforts(column)
             ),
             Notice::BadStepTier { step, value } => format!(
                 "amplihack: model tiers: step_tiers.{}: `{}` is not a tier; the step keeps \
@@ -317,4 +329,39 @@ impl Notice {
             ),
         }
     }
+}
+
+/// The reasoning-effort argument `harness` is given, spelled as it reaches
+/// that harness: Claude Code's `--effort <level>` or Codex's
+/// `-c model_reasoning_effort=<level>`.
+///
+/// Derived from the harness's own column, the same way the injection decides
+/// which of the two to write, so the line cannot name a flag the launch did
+/// not use.
+fn effort_argument(harness: &str, effort: Effort) -> String {
+    match column_for(harness).as_str() {
+        "codex" => format!("-c {}={}", codex_effort::KEY, effort.as_str()),
+        _ => format!("{} {}", claude_effort::FLAG, effort.as_str()),
+    }
+}
+
+/// Just the flag, for the line that reports a caller's own. Built from the
+/// same two names [`effort_argument`] writes, so the two lines of one launch
+/// cannot name different flags.
+fn effort_flag(harness: &str) -> String {
+    match column_for(harness).as_str() {
+        "codex" => format!("-c {}", codex_effort::KEY),
+        _ => claude_effort::FLAG.to_string(),
+    }
+}
+
+/// The reasoning efforts `column` accepts, for the line that reports one it
+/// does not. Claude Code has no `minimal` and Codex has no `max`, so naming
+/// the union would send an operator back to a word their harness refuses.
+fn accepted_efforts(column: &str) -> String {
+    Effort::accepted_in(column)
+        .iter()
+        .map(|effort| effort.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }

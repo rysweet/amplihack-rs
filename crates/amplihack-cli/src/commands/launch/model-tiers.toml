@@ -16,8 +16,19 @@ version = 1
 # resolved by the CLI, so its meaning depends on the CLI version (issue
 # #1421). `strong` is the id amplihack already defaults to, so the two cannot
 # drift apart.
+#
+# `strong` is the planning, orchestration, design and complex-coding tier, so
+# it ships at the highest reasoning effort Claude Code offers short of `max`.
+# The effort reaches Claude Code as its own `--effort xhigh` argument (issue
+# #2916); Claude's words are `low`, `medium`, `high`, `xhigh` and `max`.
+#
+# An override cell replaces this one whole, so an instance whose Claude Code
+# is too old to know `--effort`, or which wants a different model here, writes
+# its own `[claude.strong]` with no `effort` key and the effort is cleared.
+# `[claude] max_effort = "high"` lowers it for the whole column instead.
 [claude.strong]
 model = "claude-opus-5[1m]"
+effort = "xhigh"
 
 [claude.standard]
 model = "claude-sonnet-5-5"

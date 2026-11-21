@@ -9,17 +9,21 @@
 //! step runs on the harness's own default model: it never fails for this
 //! reason, and there is no retry, no timer and no probe.
 //!
-//! [`table`], [`resolve`], [`codex_effort`] and [`record`] are pure; this
-//! module is the only one that reads a file or the environment, and the only
-//! one that decides nothing. The contract is `docs/reference/model-tiers.md`.
+//! [`table`], [`resolve`], [`codex_effort`], [`claude_effort`] and [`record`]
+//! are pure; this module is the only one that reads a file or the
+//! environment, and the only one that decides nothing. The contract is
+//! `docs/reference/model-tiers.md`.
 
 pub(crate) mod argv_scan;
+pub(crate) mod claude_effort;
 pub(crate) mod codex_effort;
 pub(crate) mod notice;
 pub(crate) mod record;
 pub(crate) mod resolve;
 pub(crate) mod table;
 
+#[cfg(test)]
+mod tests_claude_effort;
 #[cfg(test)]
 mod tests_codex_effort;
 #[cfg(test)]
@@ -126,6 +130,10 @@ fn applied_notice(tool: &str, record: &record::Record, effort: EffortOutcome) ->
         model: record.effective_model.clone(),
         effort: record.effective_effort,
         capped_from: capped_from(record),
+        // Under the gateway the model is substituted downstream, so this line
+        // says nothing about it and the gateway's own line, which still
+        // prints, explains where it came from.
+        model_elsewhere: record.fallback == Some(record::Fallback::Gateway),
     })
 }
 
@@ -143,27 +151,49 @@ fn capped_from(record: &record::Record) -> Option<table::Effort> {
     }
 }
 
-/// The tier's reasoning effort, on the one harness that has a launch control
+/// The tier's reasoning effort, on the harnesses that have a launch control
 /// for it.
 ///
 /// Codex takes it as its own `-c model_reasoning_effort=<value>` argument,
-/// which is the fix for the propagation defect of the issue's 3 November
-/// comment. Claude Code and Copilot CLI have no such control, so a declared
-/// effort for them is recorded rather than written onto a command line.
+/// which is the fix for the propagation defect of issue #1619's 3 November
+/// comment. Claude Code takes `--effort <level>` (issue #2916). Copilot CLI
+/// has no such control, so a declared effort there is recorded rather than
+/// written onto a command line.
 ///
-/// The value is an [`table::Effort`], so a word outside the five is refused at
-/// the table, where the operator wrote it, and never reaches here.
+/// The dispatch is on the column, not the binary name, so `rusty`,
+/// `rustyclawd` and `amplifier` travel with `claude`: they already receive
+/// Claude's `--model` with Claude-only model ids, so they are already treated
+/// as command-line compatible with it.
+///
+/// The value is a [`table::Effort`], so a word outside the column's own
+/// vocabulary is refused at the table, where the operator wrote it, and never
+/// reaches here.
 fn reasoning_effort(
     tool: &str,
     args: Vec<String>,
     effort: Option<table::Effort>,
 ) -> (Vec<String>, EffortOutcome) {
-    let Some(effort) = effort.filter(|_| tool == "codex") else {
+    let column = table::column_for(tool);
+    let Some(effort) = effort.filter(|_| table::Effort::has_effort_control(&column)) else {
         return (args, EffortOutcome::NotApplicable);
     };
-    match codex_effort::inject(&args, effort) {
-        codex_effort::Injection::Added(injected) => (injected, EffortOutcome::Added(effort)),
-        codex_effort::Injection::CallerChose => (args, EffortOutcome::CallerChose),
+    let injected = match column.as_str() {
+        "codex" => match codex_effort::inject(&args, effort) {
+            codex_effort::Injection::Added(injected) => Some(injected),
+            codex_effort::Injection::CallerChose => None,
+        },
+        // `has_effort_control` admits two columns and Codex is the other, so
+        // this is the Claude one. Written as the fall-through rather than a
+        // second name test, so the two readers of `has_effort_control` cannot
+        // disagree about which columns it admits.
+        _ => match claude_effort::inject(&args, effort) {
+            claude_effort::Injection::Added(injected) => Some(injected),
+            claude_effort::Injection::CallerChose => None,
+        },
+    };
+    match injected {
+        Some(injected) => (injected, EffortOutcome::Added(effort)),
+        None => (args, EffortOutcome::CallerChose),
     }
 }
 

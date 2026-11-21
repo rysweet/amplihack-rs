@@ -183,13 +183,13 @@ pub(crate) fn resolve(request: &Request<'_>) -> Resolution {
             request.table.max_effort(&column),
         );
         out.effort = effort;
-        // A fall-back that still carried a reasoning effort is announced by
-        // the caller's one Applied line instead, so a launch never gets two
-        // lines about one tier.
+        // A fall-back to the harness's own model that still carried a
+        // reasoning effort is announced by the caller's one Applied line
+        // instead, so a launch never gets two lines saying the same thing.
         if let Some(notice) = seen
             .decision
             .notice(request, &column, seen.tier)
-            .filter(|_| effort.is_none())
+            .filter(|_| !told_by_the_applied_line(&seen.decision, effort))
         {
             out.notices.push(notice);
         }
@@ -317,8 +317,8 @@ fn decide(
     }
     // Rank 3, Claude column only (`resolve` passes `None` elsewhere): below
     // `model.force` and the concrete id handled above, and above the table.
-    // The Claude column has no effort launch control, so the tier's effort is
-    // recorded but not applied.
+    // It chooses the model only: the tier's own effort still applies, because
+    // the variable names a model and says nothing about reasoning effort.
     if let Some(model) = default_model {
         return Decision::Model(model.to_string());
     }
@@ -334,9 +334,15 @@ fn decide(
     }
 }
 
-/// The effort that actually reaches the harness. Only Codex has a launch
-/// control for it; elsewhere a configured effort is recorded and documented
-/// as not a launch control, never silently written onto a command line.
+/// The effort that actually reaches the harness, on a column that has a
+/// launch control for one. Elsewhere a configured effort is recorded and
+/// documented as not a launch control, never silently written onto a
+/// command line.
+///
+/// `Fallback::Gateway` keeps its effort (issue #2916). A reasoning effort is
+/// a session setting, not a routing key: the gateway chooses the model, the
+/// effort still belongs to the step. Codex has behaved this way since issue
+/// #1619 and the Claude column now matches it.
 ///
 /// `ceiling` is the column's declared `max_effort`, and only ever lowers: an
 /// account whose model refuses `xhigh` says so in its own file, and the step
@@ -349,13 +355,31 @@ fn effective_effort(
     ceiling: Option<Effort>,
 ) -> Option<Effort> {
     match decision {
+        // A concrete model id was typed, so no tier was asked for and there
+        // is no effort to apply (issue #1527).
         Decision::AsTyped => None,
-        _ if column == "codex" => match (requested, ceiling) {
+        _ if Effort::has_effort_control(column) => match (requested, ceiling) {
             (Some(effort), Some(cap)) => Some(effort.min(cap)),
             (effort, _) => effort,
         },
         _ => None,
     }
+}
+
+/// Whether the one `Applied` line the caller prints already tells this
+/// decision's whole story, so printing the fall-back line too would say the
+/// same thing twice.
+///
+/// True only where the fall-back means the harness's own model runs: that is
+/// exactly what `Applied` says when it carries an effort and no model. A
+/// gateway launch is not one of those — another model is substituted
+/// downstream — so its line always prints.
+fn told_by_the_applied_line(decision: &Decision, effort: Option<Effort>) -> bool {
+    effort.is_some()
+        && matches!(
+            decision,
+            Decision::Removed(Fallback::NoColumn | Fallback::NoMapping | Fallback::NoModel)
+        )
 }
 
 /// Mark what happens to one occurrence's positions.

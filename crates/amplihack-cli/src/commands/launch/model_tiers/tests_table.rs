@@ -4,6 +4,7 @@
 //! is the one `Table::shipped()` returns, and an override is parsed from text
 //! the test writes.
 
+use super::notice::Notice;
 use super::table::{Effort, Table, Tier, column_for, validate_model_id};
 use crate::commands::launch::DEFAULT_MODEL;
 
@@ -56,20 +57,219 @@ fn a_tier_is_matched_trimmed_and_case_insensitively() {
 }
 
 #[test]
-fn the_effort_allowlist_is_exactly_five_words() {
+fn the_effort_union_is_exactly_six_words_ranked_weakest_to_strongest() {
     assert_eq!(
         Effort::ALL.map(Effort::as_str),
-        ["minimal", "low", "medium", "high", "xhigh"]
+        ["minimal", "low", "medium", "high", "xhigh", "max"]
     );
     for word in Effort::ALL.map(Effort::as_str) {
         assert_eq!(Effort::parse(word).map(Effort::as_str), Some(word));
     }
-    for word in ["turbo", "max", "none", "", "HIGH ", "high;id"] {
-        // The allowlist is argv safety: the value becomes the right-hand side
-        // of `-c model_reasoning_effort=…` on a command line.
-        assert!(
-            Effort::parse(word).is_none() || word.trim().eq_ignore_ascii_case("high"),
-            "`{word}` must not be accepted as an effort"
+    // The derived `Ord` is what makes `min(cap)` correct, so `Max` must be
+    // the strongest and the declaration order must match the word order.
+    assert!(Effort::Max > Effort::Xhigh);
+    assert!(Effort::Xhigh > Effort::High);
+    assert!(Effort::Minimal < Effort::Low);
+    let mut sorted = Effort::ALL;
+    sorted.sort();
+    assert_eq!(sorted, Effort::ALL);
+}
+
+#[test]
+fn each_column_accepts_its_own_vocabulary() {
+    let words = |column: &str| {
+        Effort::accepted_in(column)
+            .iter()
+            .map(|e| e.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(words("claude"), ["low", "medium", "high", "xhigh", "max"]);
+    assert_eq!(
+        words("codex"),
+        ["minimal", "low", "medium", "high", "xhigh"]
+    );
+}
+
+#[test]
+fn a_column_without_a_launch_control_accepts_the_union() {
+    for column in ["copilot", "gemini", "an-invented-column", ""] {
+        assert_eq!(
+            Effort::accepted_in(column),
+            &Effort::ALL[..],
+            "`{column}`: amplihack writes nothing there, so no word can be wrong"
+        );
+    }
+}
+
+#[test]
+fn only_claude_and_codex_have_an_effort_control() {
+    assert!(Effort::has_effort_control("claude"));
+    assert!(Effort::has_effort_control("codex"));
+    for column in ["copilot", "gemini", "", "Claude"] {
+        assert!(!Effort::has_effort_control(column), "`{column}`");
+    }
+}
+
+#[test]
+fn hostile_words_are_never_an_effort() {
+    for word in [
+        "turbo",
+        "none",
+        "",
+        "high;id",
+        "xhigh --model x",
+        "max\n",
+        "--effort",
+        "\u{1b}[31mmax",
+        &"x".repeat(10 * 1024),
+    ] {
+        assert!(Effort::parse(word).is_none(), "`{word:?}` must not parse");
+    }
+}
+
+/// The notices an override file produces, and the table it merges into.
+fn read(text: &str) -> (Table, Vec<Notice>) {
+    let (overrides, notices) = Table::parse_override(text).expect("valid override");
+    (overrides.merged_over(Table::shipped()), notices)
+}
+
+fn bad_efforts(notices: &[Notice]) -> Vec<(&str, &str, &str)> {
+    notices
+        .iter()
+        .filter_map(|n| match n {
+            Notice::BadEffort {
+                column,
+                tier,
+                value,
+            } => Some((column.as_str(), tier.as_str(), value.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn claude_takes_max_in_a_cell_and_codex_refuses_it() {
+    let (table, notices) = read("version = 1\n[claude.strong]\nmodel = \"m\"\neffort = \"max\"\n");
+    assert!(bad_efforts(&notices).is_empty(), "{notices:?}");
+    assert_eq!(
+        table.entry("claude", Tier::Strong).and_then(|e| e.effort),
+        Some(Effort::Max)
+    );
+
+    let (table, notices) = read("version = 1\n[codex.strong]\neffort = \"max\"\n");
+    assert_eq!(
+        bad_efforts(&notices),
+        [("codex", "strong", "max")],
+        "{notices:?}"
+    );
+    assert_eq!(
+        table.entry("codex", Tier::Strong).and_then(|e| e.effort),
+        None
+    );
+}
+
+#[test]
+fn codex_takes_minimal_and_claude_refuses_it_but_keeps_the_model() {
+    let (table, notices) = read("version = 1\n[codex.fast]\neffort = \"minimal\"\n");
+    assert!(bad_efforts(&notices).is_empty(), "{notices:?}");
+    assert_eq!(
+        table.entry("codex", Tier::Fast).and_then(|e| e.effort),
+        Some(Effort::Minimal)
+    );
+
+    let (table, notices) =
+        read("version = 1\n[claude.strong]\nmodel = \"claude-x\"\neffort = \"minimal\"\n");
+    assert_eq!(
+        bad_efforts(&notices),
+        [("claude", "strong", "minimal")],
+        "{notices:?}"
+    );
+    let entry = table.entry("claude", Tier::Strong).expect("cell");
+    assert_eq!(
+        entry.model.as_deref(),
+        Some("claude-x"),
+        "the model still applies"
+    );
+    assert_eq!(entry.effort, None);
+}
+
+#[test]
+fn a_ceiling_is_validated_against_its_columns_vocabulary() {
+    let (table, notices) = read("version = 1\n[claude]\nmax_effort = \"max\"\n");
+    assert!(bad_efforts(&notices).is_empty(), "{notices:?}");
+    assert_eq!(table.max_effort("claude"), Some(Effort::Max));
+
+    let (table, notices) = read("version = 1\n[claude]\nmax_effort = \"minimal\"\n");
+    assert!(!notices.is_empty(), "minimal is not a Claude word");
+    assert_eq!(table.max_effort("claude"), None);
+
+    let (table, notices) = read("version = 1\n[codex]\nmax_effort = \"max\"\n");
+    assert!(!notices.is_empty(), "max is not a Codex word");
+    assert_eq!(table.max_effort("codex"), None);
+}
+
+#[test]
+fn hostile_cell_values_are_reported_and_the_model_still_applies() {
+    for hostile in [
+        "xhigh --model x",
+        "max\\n",
+        "MAX ",
+        "--effort",
+        "",
+        "\\u001b[31mmax",
+    ] {
+        let text =
+            format!("version = 1\n[claude.strong]\nmodel = \"claude-x\"\neffort = \"{hostile}\"\n");
+        let (table, notices) = read(&text);
+        let entry = table.entry("claude", Tier::Strong).expect("cell");
+        assert_eq!(entry.model.as_deref(), Some("claude-x"), "{hostile:?}");
+        // `Effort::parse` trims and ignores case, so "MAX " is the one word
+        // here that is legitimately accepted; everything else is refused.
+        if Effort::parse(hostile).is_some() {
+            assert_eq!(entry.effort, Some(Effort::Max), "{hostile:?}");
+        } else {
+            assert_eq!(entry.effort, None, "{hostile:?}");
+            assert_eq!(bad_efforts(&notices).len(), 1, "{hostile:?}: {notices:?}");
+        }
+    }
+}
+
+#[test]
+fn the_bad_effort_notice_lists_the_columns_own_words() {
+    let claude = Notice::BadEffort {
+        column: "claude".into(),
+        tier: "strong".into(),
+        value: "minimal".into(),
+    }
+    .render();
+    assert!(claude.contains("low, medium, high, xhigh, max"), "{claude}");
+    assert!(!claude.contains("minimal,"), "{claude}");
+
+    let codex = Notice::BadEffort {
+        column: "codex".into(),
+        tier: "strong".into(),
+        value: "max".into(),
+    }
+    .render();
+    assert!(
+        codex.contains("minimal, low, medium, high, xhigh"),
+        "{codex}"
+    );
+    assert!(!codex.contains("xhigh, max"), "{codex}");
+}
+
+#[test]
+fn the_shipped_claude_strong_tier_asks_for_xhigh_and_the_others_ask_for_nothing() {
+    let table = Table::shipped();
+    assert_eq!(
+        table.entry("claude", Tier::Strong).and_then(|e| e.effort),
+        Some(Effort::Xhigh)
+    );
+    for tier in [Tier::Standard, Tier::Fast] {
+        assert_eq!(
+            table.entry("claude", tier).and_then(|e| e.effort),
+            None,
+            "{tier:?}"
         );
     }
 }
@@ -200,10 +400,10 @@ fn the_shipped_table_parses_and_declares_its_version() {
     // them is a deliberate change to this test too.
     let table = Table::shipped();
 
-    for (tier, model) in [
-        (Tier::Strong, "claude-opus-5[1m]"),
-        (Tier::Standard, "claude-sonnet-5-5"),
-        (Tier::Fast, "claude-haiku-5-5"),
+    for (tier, model, effort) in [
+        (Tier::Strong, "claude-opus-5[1m]", Some(Effort::Xhigh)),
+        (Tier::Standard, "claude-sonnet-5-5", None),
+        (Tier::Fast, "claude-haiku-5-5", None),
     ] {
         let entry = table
             .entry("claude", tier)
@@ -214,7 +414,9 @@ fn the_shipped_table_parses_and_declares_its_version() {
             "claude/{}",
             tier.as_str()
         );
-        assert_eq!(entry.effort, None, "claude/{}", tier.as_str());
+        // Issue #2916: `strong` is the planning and design tier and ships at
+        // `xhigh`, which Claude Code takes as `--effort xhigh`.
+        assert_eq!(entry.effort, effort, "claude/{}", tier.as_str());
     }
     assert_eq!(
         table

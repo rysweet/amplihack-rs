@@ -133,11 +133,10 @@ fn a_ceiling_never_becomes_a_model_or_another_argument() {
     );
 }
 
-/// Claude Code has no launch control for reasoning effort, so a declared
-/// effort there is recorded and documented as not a launch control. A ceiling
-/// must not invent one.
+/// Issue #2916: Claude Code takes `--effort`, so a Claude ceiling now caps
+/// the effort written there. Same fixture as before, flipped question.
 #[test]
-fn a_ceiling_writes_no_effort_onto_a_harness_that_has_no_control_for_one() {
+fn a_ceiling_lowers_the_effort_written_onto_a_claude_command_line() {
     let f = Fixture::new();
     f.write_override(
         "version = 1\n[claude]\nmax_effort = \"low\"\n[claude.strong]\n\
@@ -145,10 +144,15 @@ fn a_ceiling_writes_no_effort_onto_a_harness_that_has_no_control_for_one() {
     );
     let launch = f.run("claude", &["--model", "strong", "-p"]);
     assert_eq!(
+        launch.claude_effort(),
+        Some("low"),
+        "the tier asks for xhigh and the ceiling is low. argv: {:?}",
+        launch.argv
+    );
+    assert_eq!(
         launch.effort(),
         None,
-        "no reasoning-effort argument belongs on a Claude command line. argv: {:?}",
-        launch.argv
+        "and no Codex setting leaks onto Claude"
     );
     assert_eq!(launch.model(), Some("claude-opus-5[1m]"));
 }

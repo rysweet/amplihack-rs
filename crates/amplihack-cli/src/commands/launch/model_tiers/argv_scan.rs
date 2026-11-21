@@ -87,6 +87,24 @@ pub(crate) fn find_model_options(args: &[String], arity_aware: bool) -> Vec<Mode
     out
 }
 
+/// Whether the caller already wrote `flag` before the end-of-options marker,
+/// in either the `--flag value`, `--flag=value` or bare-trailing spelling.
+///
+/// Not arity-aware: on a Claude command line there is no option table to walk
+/// (see the module header), so an option whose *value* happens to be the word
+/// `--effort` reads as caller-set. The consequence is that amplihack writes
+/// nothing, which is the direction this must fail in — it can never add a
+/// flag the caller did not expect.
+///
+/// Shares [`options_end`] with the insertion, so text after a bare `--` is
+/// prompt text that neither suppresses nor triggers an injection.
+pub(crate) fn caller_set_flag(args: &[String], flag: &str) -> bool {
+    let attached = format!("{flag}=");
+    args[..options_end(args)]
+        .iter()
+        .any(|arg| arg == flag || arg.starts_with(&attached))
+}
+
 /// Whether `-c`/`--config` already sets `key` before the end-of-options
 /// marker, in any spelling Codex accepts.
 pub(crate) fn caller_set_config_key(args: &[String], key: &str) -> bool {
