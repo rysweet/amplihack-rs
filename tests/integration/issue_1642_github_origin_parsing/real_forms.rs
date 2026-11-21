@@ -1,9 +1,11 @@
 //! Group (c): every real origin form still resolves to `o/r` through every
-//! caller, gh is addressed with exactly `--repo o/r`, and the dummy token
-//! never reaches stdout or stderr (P3).
+//! caller. Draft creation explicitly addresses `github.com/o/r`, other calls
+//! use `o/r`, and the dummy token never reaches stdout or stderr (P3).
 
 use super::callers::{self, Caller};
 use super::fixture::{Fixture, Outcome, REAL_ORIGINS};
+
+const DRAFT_CREATE: &str = "pr create --draft --repo github.com/o/r ";
 
 fn resolved(caller: Caller, fx: &Fixture, outcome: &Outcome) -> bool {
     let calls = fx.all_gh_calls();
@@ -11,6 +13,10 @@ fn resolved(caller: Caller, fx: &Fixture, outcome: &Outcome) -> bool {
         Caller::TerminalEvidence => callers::evidence_repo(outcome) == "o/r",
         Caller::Collect => callers::github_remote(outcome) == "true",
         Caller::FinalStatusBranchLookup => calls.contains("pr list --repo o/r --head feat/x"),
+        Caller::PublishPr => {
+            calls.contains("--repo o/r ")
+                && calls.lines().any(|call| call.starts_with(DRAFT_CREATE))
+        }
         _ => calls.contains("--repo o/r "),
     }
 }
@@ -52,7 +58,11 @@ fn caller_failures(caller: Caller) -> Vec<String> {
         let stray: Vec<String> = fx
             .repo_gh_calls()
             .into_iter()
-            .filter(|call| call.contains("--repo ") && !call.contains("--repo o/r "))
+            .filter(|call| {
+                call.contains("--repo ")
+                    && !(call.contains("--repo o/r ")
+                        || (matches!(caller, Caller::PublishPr) && call.starts_with(DRAFT_CREATE)))
+            })
             .collect();
         if !stray.is_empty() {
             failures.push(format!(
