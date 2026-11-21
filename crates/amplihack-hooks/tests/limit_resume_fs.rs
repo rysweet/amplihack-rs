@@ -852,6 +852,7 @@ impl Deps for DiskDeps {
             live: Some("work".into()),
             overflow: None,
             platform_live: false,
+            live_room: None,
         })
     }
     fn guard(&mut self) -> &mut dyn GuardStore {

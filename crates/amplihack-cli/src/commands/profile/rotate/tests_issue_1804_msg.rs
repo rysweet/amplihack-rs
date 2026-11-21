@@ -333,11 +333,22 @@ fn decide_on_unmarked(
     })
 }
 
+/// Issue #2857 changed this test's expectation and kept it. 92/40 at
+/// `--session-at 85` has room but is at its threshold, so it is no longer a
+/// login the rotator leaves the key for: nothing moves.
+#[test]
+fn the_rotator_does_not_leave_an_unmarked_live_api_key_for_a_plan_login_past_session_at() {
+    let v = decide_on_unmarked(&[("work", measured(92.0, 40.0)), ("spare", exhausted())]);
+    assert_eq!(v.decision, Decision::Stay, "{v:?}");
+    assert_eq!(v.tag, Some(Tag::On));
+}
+
 #[test]
 fn the_rotator_leaves_an_unmarked_live_api_key_for_a_plan_login_with_room() {
-    // 92/40 at --session-at 85: no capacity, but room. D6 says the rotator
-    // leaves the unmarked key as soon as a plan login has room.
-    let v = decide_on_unmarked(&[("work", measured(92.0, 40.0)), ("spare", exhausted())]);
+    // 60/95 at --session-at 85: no capacity (the week is past --week-at), but
+    // room under the session threshold. D6 says the rotator leaves the
+    // unmarked key as soon as a plan login has room.
+    let v = decide_on_unmarked(&[("work", measured(60.0, 95.0)), ("spare", exhausted())]);
     assert_eq!(
         v.decision,
         Decision::Swap {

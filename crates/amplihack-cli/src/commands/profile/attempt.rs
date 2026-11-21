@@ -281,27 +281,71 @@ pub(crate) struct Limited {
     pub(crate) spend: Option<Harness>,
 }
 
-/// `Some` when `attempt` hit its usage limit. `now` is the wait's clock.
-pub(crate) fn usage_limited(attempt: &Attempt, now: i64) -> Option<Limited> {
-    if attempt.signalled || attempt.code == 0 {
-        return None; // no need to read the output
+/// A failed attempt's output, read once (issue #2857): the stderr tail it
+/// streamed and the last 64 KiB of its buffered stdout.
+///
+/// Both limit readings ([`Output::usage_limited`] for the usage-limit
+/// message, [`Output::rate_limited`] for the 429 envelope) are taken from
+/// the same bytes, so the two can never answer about different output. Empty
+/// for an attempt that succeeded or was signalled, which is how both keep
+/// their "no need to read the output" shortcut. The bytes are matched and
+/// dropped: never stored, logged or printed.
+pub(crate) struct Output {
+    /// The attempt failed on its own, so its output is worth reading.
+    failed: bool,
+    stderr: Vec<u8>,
+    stdout: Vec<u8>,
+}
+
+impl Attempt {
+    /// This attempt's output for the limit readings, read through its own
+    /// file handle rather than by reopening its path.
+    pub(crate) fn output(&self) -> Output {
+        if self.signalled || self.code == 0 {
+            return Output {
+                failed: false,
+                stderr: Vec::new(),
+                stdout: Vec::new(),
+            };
+        }
+        let stdout = tail(&self.stdout).unwrap_or_else(|e| {
+            eprintln!("amplihack: could not read this step's buffered output: {e}");
+            Vec::new()
+        });
+        Output {
+            failed: true,
+            stderr: self.stderr_tail.clone(),
+            stdout,
+        }
     }
-    let out_tail = tail(&attempt.stdout).unwrap_or_else(|e| {
-        eprintln!("amplihack: could not read this step's buffered output: {e}");
-        Vec::new()
-    });
-    let (err, out) = (&attempt.stderr_tail, &out_tail);
-    let text = joined(err, out);
-    let ledger_reset = classified_reset(&text, err, out, fsx::now())?;
-    let message = limit_patterns::limit_message(err, out, now);
-    Some(Limited {
-        ledger_reset,
-        wait: plan::wait_for_message(message, now),
-        seen: message.filter(|m| !m.spend).map(|m| (m.harness, m.reset)),
-        spend: message
-            .filter(|m| m.spend && m.reset.is_none())
-            .map(|m| m.harness),
-    })
+}
+
+impl Output {
+    /// Whether this output carries a harness 429 envelope at the position
+    /// [`limit_patterns::rate_limit`] reads one at (issue #2857). An attempt
+    /// that succeeded or was signalled never does.
+    pub(crate) fn rate_limited(&self) -> bool {
+        self.failed && limit_patterns::rate_limit(&self.stderr, &self.stdout)
+    }
+
+    /// `Some` when this output is a usage limit. `now` is the wait's clock.
+    pub(crate) fn usage_limited(&self, now: i64) -> Option<Limited> {
+        if !self.failed {
+            return None; // no need to read the output
+        }
+        let (err, out) = (&self.stderr, &self.stdout);
+        let text = joined(err, out);
+        let ledger_reset = classified_reset(&text, err, out, fsx::now())?;
+        let message = limit_patterns::limit_message(err, out, now);
+        Some(Limited {
+            ledger_reset,
+            wait: plan::wait_for_message(message, now),
+            seen: message.filter(|m| !m.spend).map(|m| (m.harness, m.reset)),
+            spend: message
+                .filter(|m| m.spend && m.reset.is_none())
+                .map(|m| m.harness),
+        })
+    }
 }
 
 /// Issue #1700: when a failed attempt ran on an API-key profile (`profile`,

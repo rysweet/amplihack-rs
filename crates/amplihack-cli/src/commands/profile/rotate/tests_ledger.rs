@@ -53,6 +53,7 @@ fn ledger() -> RotateLedger {
             measured_at: Some(130),
             outcome: "stayed".into(),
             overflow: None,
+            live_room: None,
         }),
         ..RotateLedger::default()
     }
@@ -622,6 +623,7 @@ fn a_cycle_that_measured_nothing_writes_no_measured_at() {
         measured_at: None,
         outcome: "alerted".into(),
         overflow: None,
+        live_room: None,
     });
     r.rs.save_ledger(&l).unwrap();
     let raw = fs::read_to_string(&r.rs.ledger).unwrap();
@@ -741,6 +743,7 @@ fn overflow_ledger(outcome: &str, tag: &str, measured_at: i64) -> RotateLedger {
             measured_at: Some(measured_at),
             outcome: outcome.into(),
             overflow: Some(tag.into()),
+            live_room: None,
         }),
         ..RotateLedger::default()
     };
@@ -901,4 +904,83 @@ fn guidance_or_lost_login_outside_the_limits_fails_closed() {
         inconsistent(r.rs.load_ledger());
         assert_eq!(fs::read(&r.rs.ledger).unwrap(), before, "left as it was");
     }
+}
+
+// --- Issue #2857: `last_cycle.live_room` -------------------------------------
+//
+// One optional bit, written by the cycle that measured the login now live and
+// read by the limit wait. It follows the ledger's rules for every field added
+// after the format first shipped: left out of the file when there is none,
+// accepted when absent, and left out for an older rotator, whose strict reader
+// would otherwise reject the whole ledger.
+
+#[test]
+fn a_cycle_with_no_room_reading_writes_no_live_room() {
+    let r = root();
+    let mut l = ledger();
+    l.last_cycle.as_mut().unwrap().live_room = None;
+    r.rs.save_ledger(&l).unwrap();
+    let raw = fs::read_to_string(&r.rs.ledger).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(json["last_cycle"].get("live_room").is_none(), "{raw}");
+    assert_eq!(r.rs.load_ledger().unwrap(), Some(l));
+}
+
+#[test]
+fn live_room_round_trips_true_and_false_and_the_limit_wait_reads_it() {
+    for room in [true, false] {
+        let r = root();
+        let mut l = ledger();
+        l.last_cycle.as_mut().unwrap().live_room = Some(room);
+        r.rs.save_ledger(&l).unwrap();
+        assert_eq!(r.rs.load_ledger().unwrap(), Some(l), "{room}");
+        let status = amplihack_utils::rotator_status::read_cycle(&r.rs.root, 200).unwrap();
+        assert_eq!(status.live_room, Some(room));
+    }
+}
+
+/// A ledger an older binary wrote has no bit; one from a newer binary may have
+/// fields this one does not know. Neither is an inconsistency.
+#[test]
+fn a_ledger_with_no_live_room_loads_as_none() {
+    let r = root();
+    let body = r#"{"version":1,"live":"spare","last_cycle":{"at":5,"outcome":"stayed"}}"#;
+    fs::write(&r.rs.ledger, body).unwrap();
+    fs::set_permissions(&r.rs.ledger, fs::Permissions::from_mode(0o600)).unwrap();
+    let l = r.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(l.last_cycle.unwrap().live_room, None);
+}
+
+/// While a rotator from an older binary runs, what this binary writes is a
+/// ledger that rotator parses (`OldLedger` rejects unknown fields). The bit is
+/// left out for it, beside `measured_at`, and kept when no older rotator runs.
+#[test]
+fn a_ledger_with_a_live_room_bit_written_beside_an_older_rotator_is_one_it_can_read() {
+    let mut l = ledger();
+    l.last_cycle.as_mut().unwrap().live_room = Some(true);
+    let full = for_older_readers(&l, false);
+    assert_eq!(full, l, "nothing is dropped without an older rotator");
+    assert!(
+        serde_json::to_string(&full).unwrap().contains("live_room"),
+        "the full form keeps the bit"
+    );
+    let older = serde_json::to_vec(&for_older_readers(&l, true)).unwrap();
+    serde_json::from_slice::<OldLedger>(&older).expect("the old reader accepts it");
+    let raw = String::from_utf8(older).unwrap();
+    assert!(!raw.contains("live_room"), "{raw}");
+}
+
+/// The other half of the downgrade: leaving the bit out must not change
+/// anything else the older rotator reads.
+#[test]
+fn leaving_the_bit_out_for_an_older_rotator_changes_nothing_else() {
+    let mut l = ledger();
+    l.last_cycle.as_mut().unwrap().live_room = Some(false);
+    let mut without = l.clone();
+    without.last_cycle.as_mut().unwrap().live_room = None;
+    assert_eq!(
+        for_older_readers(&l, true),
+        for_older_readers(&without, true),
+        "the bit is the only difference between the two"
+    );
 }

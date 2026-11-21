@@ -380,6 +380,7 @@ fn record_idle(rs: &RotateState, store: &ProfileStore) {
             measured_at: None,
             outcome: "idle".into(),
             overflow: None,
+            live_room: None,
         });
         if let Err(e) = rs.save_ledger(&l) {
             log_line(rs, &format!("skip: could not record the idle cycle: {e}"));

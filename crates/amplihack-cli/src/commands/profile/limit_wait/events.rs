@@ -75,6 +75,24 @@ pub(super) enum Event {
     /// keeps the failure class in the recipe runner's 40-line evidence tail
     /// when progress lines have pushed the harness's own message out.
     Failed(FailReason),
+    /// The retry a wait earned met a limit of its own, so the signal that
+    /// ended that wait was wrong and the step waits again (issue #2857).
+    /// Written once per re-entry, immediately before the new wait's
+    /// [`Event::Start`], so a reader can tell a second wait that follows a
+    /// contradicted signal from one that follows a new login.
+    Reentered {
+        met: Met,
+    },
+}
+
+/// Which limit met the retry a wait earned (issue #2857). A closed set, so
+/// the line it builds carries no text from the attempt's output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Met {
+    /// The harness's own usage-limit message, planned as any other is.
+    UsageLimit,
+    /// A bare 429 envelope, which states no reset.
+    RateLimit,
 }
 
 /// Why the step ended on a usage limit after a wait could not lift it.
@@ -145,16 +163,18 @@ where
 }
 
 /// The line a wait appends to the run's recipe log, or `None` for an event
-/// that does not belong there (issue #2731). Only a wait's `start` and `end`
-/// do: the recipe log says that the step is waiting, on which login, until
-/// when and how the wait ended, and the step's stderr keeps the rest.
+/// that does not belong there (issue #2731). Only a wait's `start` and `end`,
+/// and the `reentered` between two of them (issue #2857), do: the recipe log
+/// says that the step is waiting, on which login, until when, how the wait
+/// ended and whether the step went back into one, and the step's stderr keeps
+/// the rest.
 ///
-/// The `end` line is the stderr one. The `start` line is the stderr one with
-/// `harness=` dropped and `account=` put in its place, so one `grep` over
-/// both sinks reads as one stream. `account` is re-validated here, at the
-/// one point where a login name can reach a file: a name outside the
-/// rotator's own form is written as `unknown` whole rather than trimmed to
-/// fit, so two logins can never collapse onto one identity in the log.
+/// The `end` and `reentered` lines are the stderr ones. The `start` line is
+/// the stderr one with `harness=` dropped and `account=` put in its place, so
+/// one `grep` over both sinks reads as one stream. `account` is re-validated
+/// here, at the one point where a login name can reach a file: a name outside
+/// the rotator's own form is written as `unknown` whole rather than trimmed
+/// to fit, so two logins can never collapse onto one identity in the log.
 pub(super) fn recipe_line<Z: TimeZone>(e: &Event, account: Option<&str>, tz: &Z) -> Option<String>
 where
     Z::Offset: Display,
@@ -174,7 +194,7 @@ where
                 start_body(*shape, &who, *reset, *until, *bound, tz)
             ))
         }
-        Event::End(_) => Some(line(e, tz)),
+        Event::End(_) | Event::Reentered { .. } => Some(line(e, tz)),
         _ => None,
     }
 }
@@ -213,6 +233,13 @@ where
             }
         ),
         Event::Failed(why) => format!("failed reason={}: usage limit not lifted", why.as_str()),
+        Event::Reentered { met } => format!(
+            "reentered met={}",
+            match met {
+                Met::UsageLimit => "usage_limit",
+                Met::RateLimit => "rate_limit",
+            }
+        ),
     };
     format!("{PREFIX} {rest}")
 }

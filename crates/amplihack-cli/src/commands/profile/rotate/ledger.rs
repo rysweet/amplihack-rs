@@ -53,6 +53,11 @@ pub struct LastCycle {
     /// The credit-backed overflow tag (issue #1606): `in`, `out` or `on`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overflow: Option<String>,
+    /// Room on the login live after this cycle, by `plan_room::room_under`
+    /// (issue #2857). Absent when nothing was measured; the wait reads that
+    /// as no room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_room: Option<bool>,
 }
 
 /// Whether `last` was written after a cycle began measuring at

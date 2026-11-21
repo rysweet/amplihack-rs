@@ -376,6 +376,7 @@ fn ledger(live: &str) -> CycleStatus {
         live: Some(live.into()),
         overflow: None,
         platform_live: false,
+        live_room: None,
     }
 }
 
