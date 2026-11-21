@@ -144,7 +144,7 @@ pub struct Verdict {
 mod blocked_room;
 #[path = "overflow_capacity.rs"]
 mod capacity;
-use blocked_room::{active, measured_without_room, without_room};
+use blocked_room::{active, no_room};
 #[cfg(test)]
 pub use capacity::regains;
 pub use capacity::{earliest_plan_reset, gate, plan_usable};
@@ -182,30 +182,21 @@ pub fn decide_restricted(
     // unchanged. Overflow profiles keep the block rules they already have
     // (`blocked` below), which is why the substitution asks `!is_overflow`.
     let blocked_plan = |n: &ProfileName| !is_overflow(n) && active(i.blocks, n, i.now);
-    let live_sub;
-    let live: &Probed = if i.live_name.is_some_and(&blocked_plan) {
-        live_sub = without_room(i.live);
-        &live_sub
-    } else {
-        i.live
-    };
-    let candidates_sub;
-    let candidates: &[Measured] = if i.candidates.iter().any(|c| blocked_plan(&c.name)) {
-        candidates_sub = i
-            .candidates
-            .iter()
-            .map(|c| {
-                if blocked_plan(&c.name) {
-                    measured_without_room(c)
-                } else {
-                    c.clone()
-                }
-            })
-            .collect::<Vec<_>>();
-        &candidates_sub
-    } else {
-        i.candidates
-    };
+    let mut live = i.live.clone();
+    if i.live_name.is_some_and(&blocked_plan) {
+        (live.reading, live.windows) = no_room();
+    }
+    let candidates: Vec<Measured> = i
+        .candidates
+        .iter()
+        .map(|c| {
+            let mut c = c.clone();
+            if blocked_plan(&c.name) {
+                (c.reading, c.windows) = no_room();
+            }
+            c
+        })
+        .collect();
 
     // Spend-limit evidence on any overflow profile, live or candidate,
     // blocks it once.
@@ -309,7 +300,7 @@ pub fn decide_restricted(
             return verdict(d, None, None);
         }
         // The plan login with the most room costs nothing.
-        let live_measured = i.live_name.map(|n| Measured::new(n.clone(), live));
+        let live_measured = i.live_name.map(|n| Measured::new(n.clone(), &live));
         let choice = plan_room::choose(s, live_measured.as_ref(), &same_targets);
         if let Some(to) = choice {
             let same = matches!(&d, Decision::Swap { to: t, .. } if *t == to);

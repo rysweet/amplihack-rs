@@ -648,14 +648,14 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             // out, with no second mechanism.
             if let Some((Harness::Claude, reset)) = lim.spend_reset
                 && let Some(login) = waiter.attempt_profile(profile.as_ref())
-                && let Some(root) = waiter.store_root().map(PathBuf::from)
+                && let Some(root) = waiter.store_root()
             {
                 // The reset was read against the wait's clock, which a test
                 // may set; the ledger is expired against the real one. Move
                 // it over as the distance it is, saturating.
                 let at = fsx::now();
                 let until = at.saturating_add(reset.saturating_sub(now));
-                rotate::step_block::note_spend_block(&root, &login, at, until);
+                rotate::step_block::note_spend_block(root, &login, at, until);
             }
             if profile.is_none() {
                 // This attempt ran under the inherited profile: its limit is the

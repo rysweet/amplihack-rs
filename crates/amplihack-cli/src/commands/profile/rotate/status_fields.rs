@@ -1,6 +1,7 @@
 //! The `key: value` fields of `rotate status` that are built from the
 //! ledger: `overflow:`, `api key:` and `blocked logins:`. Pure formatting,
-//! split from `control.rs` to keep each file within the rotate line budget.
+//! split from `control.rs`, which starts and stops the rotator process, to
+//! keep each file within the rotate line budget.
 
 use super::super::ledger::{RotateLedger, active_blocks};
 use super::super::log::timestamp;

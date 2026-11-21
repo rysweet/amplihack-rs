@@ -27,7 +27,7 @@
 //! 5. **An active block is kept as it is**: never extended, never alerted
 //!    about twice. An expired one is pruned and replaced.
 //! 6. **The cardinality cap**, before the insert.
-//! 7. **Save**, then release the lock.
+//! 7. **Save**; the lock is released as `store` returns.
 //! 8. **Log**, outside the lock.
 
 use super::control::CLEAR_LOCK_WAIT;
@@ -59,7 +59,7 @@ const TOO_MANY: &str = "too many blocks";
 /// but a stored block is a line on stderr and in the rotate log.
 pub fn note_spend_block(root: &Path, login: &ProfileName, at: i64, until: i64) {
     let rs = RotateState::new(root);
-    match store(&rs, root, login, at, until) {
+    match store(&rs, login, at, until) {
         Ok(Some(until)) => report(&rs, at, &msg::alert_step_spend_limit(login, until)),
         Ok(None) => {}
         Err(why) => report(&rs, at, &msg::step_spend_limit_not_blocked(login, why)),
@@ -71,7 +71,6 @@ pub fn note_spend_block(root: &Path, login: &ProfileName, at: i64, until: i64) {
 /// on every path before this returns, so the log append never holds it.
 fn store(
     rs: &RotateState,
-    root: &Path,
     login: &ProfileName,
     at: i64,
     until: i64,
@@ -89,11 +88,11 @@ fn store(
     // 3. The rotate state lock, as `profile overflow clear` takes it. No
     //    retry loop: a rotator that holds it longer loses this block, and
     //    the next failing step records one.
-    let state = State::new(root).map_err(|e| {
+    let state = State::new(&rs.root).map_err(|e| {
         eprintln!("amplihack: could not open the rotate state: {e}");
         NOT_WRITTEN
     })?;
-    let lock = match state.try_lock(CLEAR_LOCK_WAIT) {
+    let _lock = match state.try_lock(CLEAR_LOCK_WAIT) {
         Ok(Some(lock)) => lock,
         Ok(None) => return Err(BUSY),
         Err(e) => {
@@ -103,14 +102,13 @@ fn store(
     };
     // 4. Load under the lock. A ledger removed since step 1 is left alone:
     //    returning here is what keeps the writer from creating one.
-    let loaded = rs.load_ledger().map_err(|e| {
-        eprintln!("amplihack: could not read the rotate ledger: {e}");
-        UNREADABLE
-    });
-    let mut l = match loaded {
+    let mut l = match rs.load_ledger() {
         Ok(Some(l)) => l,
         Ok(None) => return Ok(None),
-        Err(why) => return Err(why),
+        Err(e) => {
+            eprintln!("amplihack: could not read the rotate ledger: {e}");
+            return Err(UNREADABLE);
+        }
     };
     // 5. An active block stands as it is: no extension and no second ALERT,
     //    so a run of failing steps writes one line, not one per step.
@@ -122,13 +120,13 @@ fn store(
     if l.overflow_blocked.len() >= MAX_BLOCKS {
         return Err(TOO_MANY);
     }
-    // 7. Save, then release the lock.
+    // 7. Save. The lock is released as this returns, before the log
+    //    append in `report`.
     l.overflow_blocked.insert(login.to_string(), block);
     rs.save_ledger(&l).map_err(|e| {
         eprintln!("amplihack: could not write the rotate ledger: {e}");
         NOT_WRITTEN
     })?;
-    drop(lock);
     Ok(Some(until))
 }
 

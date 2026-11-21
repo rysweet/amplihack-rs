@@ -54,7 +54,6 @@ pub(super) fn valid_span(b: &OverflowBlock) -> bool {
 /// absent or `platform` with a `live`, and `platform_block` has a key
 /// reason and the same time rules.
 pub(super) fn valid_overflow(l: &RotateLedger) -> bool {
-    let span_ok = valid_span;
     let live_kind_ok = l
         .live_kind
         .as_deref()
@@ -62,7 +61,7 @@ pub(super) fn valid_overflow(l: &RotateLedger) -> bool {
     let platform_block_ok = l
         .platform_block
         .as_ref()
-        .is_none_or(|b| KEY_REASONS.contains(&b.reason.as_str()) && span_ok(b));
+        .is_none_or(|b| KEY_REASONS.contains(&b.reason.as_str()) && valid_span(b));
     let tag_ok = l
         .last_cycle
         .as_ref()
@@ -73,7 +72,7 @@ pub(super) fn valid_overflow(l: &RotateLedger) -> bool {
         && platform_block_ok
         && l.overflow_blocked.len() <= MAX_BLOCKS
         && l.overflow_blocked.iter().all(|(name, b)| {
-            ProfileName::parse(name).is_ok() && b.reason == SPEND_LIMIT && span_ok(b)
+            ProfileName::parse(name).is_ok() && b.reason == SPEND_LIMIT && valid_span(b)
         })
 }
 
