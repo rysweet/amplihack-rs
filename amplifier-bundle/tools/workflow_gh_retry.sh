@@ -286,6 +286,10 @@ gh_pr_number_from_url() {
 # _gh_retry_core <label> <gh-arg>...
 #
 #   stdout : command output on success (or REST fallback output).
+#   stderr : retry WARNINGs first, then the terminal diagnostic as the LAST
+#            line. Callers that report a single line (workflow_publish_pr.sh)
+#            read that final line, so every failing exit path, cancellation
+#            included, ends with its own terminal line.
 #   return : 0 on success; otherwise the last gh exit status.
 #
 # Behaviour is tuned via environment variables (all optional):
