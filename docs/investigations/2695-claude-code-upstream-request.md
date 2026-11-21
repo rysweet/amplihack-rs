@@ -1,6 +1,6 @@
 # Continue the same interactive conversation after a stored login change
 
-amplihack answers a held usage-limit menu itself by sending keys to its own session's tmux pane (see [Resume sessions stopped by a usage limit](../howto/claude-profile-rotation.md#resume-sessions-stopped-by-a-usage-limit)). Its run against a live usage limit is not yet confirmed. That route needs a terminal that tmux controls and a screen the hook cannot read. This request stands for a route that needs neither.
+amplihack answers a held usage-limit menu itself by sending keys to its own session's tmux pane (see [Resume sessions stopped by a usage limit](../howto/claude-profile-rotation.md#resume-sessions-stopped-by-a-usage-limit)). Its run against a live usage limit is not yet confirmed. That route needs a terminal that tmux controls and a screen the hook can recognise from a short list of fixed phrases, which is a match and not a parser. This request stands for a route that needs neither.
 
 We observed interactive Claude Code sessions remain on the usage-limit menu after a login rotator switched to a login with available capacity. A hook wake can run while the menu still holds the session. Without tmux, the session owner currently has to dismiss the menu by hand and confirm that the original conversation continues.
 
