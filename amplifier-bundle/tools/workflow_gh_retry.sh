@@ -62,7 +62,9 @@ gh_safe_stderr() {
 }
 
 gh_remove_capture() {
-  rm -f -- "$1" 2>/dev/null || printf '%s\n' 'WARNING: gh capture cleanup failed' >&2
+  # The warning is a courtesy: with stderr unwritable it must not end a set -e
+  # caller before the remaining captures are removed or its traps have run.
+  rm -f -- "$1" 2>/dev/null || printf '%s\n' 'WARNING: gh capture cleanup failed' >&2 || :
   return 0
 }
 

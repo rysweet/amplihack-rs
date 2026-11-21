@@ -61,7 +61,12 @@ fn interrupt(f: &PublishFixture, mut command: Command, signal: &str) -> Output {
         permissions.lines().all(|l| l.starts_with("-rw-------")),
         "{permissions}"
     );
-    // The blocked executable and its blocking child must both have been reaped.
+    assert_owned_processes_reaped(f);
+    output
+}
+
+/// The blocked executable and its blocking child must both have been reaped.
+fn assert_owned_processes_reaped(f: &PublishFixture) {
     for pid in f.read("owned.pids").lines() {
         assert!(
             !Command::new("kill")
@@ -74,7 +79,6 @@ fn interrupt(f: &PublishFixture, mut command: Command, signal: &str) -> Output {
             "owned process {pid} survived"
         );
     }
-    output
 }
 
 const BLOCK: &str = r#"
@@ -256,6 +260,32 @@ fn publisher_reports_the_terminal_line_when_only_the_retry_helper_is_interrupted
         0,
         "owned captures must be removed"
     );
+    assert_owned_processes_reaped(&f);
+}
+
+/// The cleanup warning is a courtesy too. With stderr unwritable, a `set -e`
+/// caller must still get control back after a capture cannot be removed.
+#[test]
+fn failed_capture_removal_with_unwritable_stderr_does_not_end_a_set_e_caller() {
+    let f = PublishFixture::new();
+    f.shim("rm", "exit 80\n");
+    let mut command = f.command("bash");
+    command
+        .args([
+            "-c",
+            r#"
+set -e
+. "$1/amplifier-bundle/tools/workflow_gh_retry.sh"
+exec 2</dev/null
+gh_remove_capture "$TMPDIR/absent"
+printf reached
+"#,
+            "remove-test",
+        ])
+        .arg(root());
+    let output = command.output().unwrap();
+    assert!(output.status.success(), "{}", describe(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "reached");
 }
 
 #[test]
