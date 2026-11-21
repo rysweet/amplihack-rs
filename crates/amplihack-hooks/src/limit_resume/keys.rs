@@ -73,18 +73,25 @@ const MAX_TTY_BYTES: usize = 256;
 #[derive(Clone, PartialEq, Eq)]
 pub struct Pane(String);
 
+/// Whether `id` is a pane id as a whole: `%` and 1 to 9 digits, nothing
+/// else. The only statement of the rule: [`Pane::parse`] admits an id by
+/// it, and [`check_pane_with`] and [`check_pane_owned`] apply it again
+/// before any tmux call, so an id can never be an option such as `-t` or
+/// carry a separator. One rule, so the two uses cannot drift apart.
+fn valid_pane_id(id: &str) -> bool {
+    id.strip_prefix('%').is_some_and(|d| {
+        !d.is_empty() && d.len() <= MAX_PANE_DIGITS && d.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
 impl Pane {
     /// `$TMUX` and `$TMUX_PANE` to a pane: `$TMUX` set and non-empty (an
     /// inherited `$TMUX_PANE` alone is not a pane, D6), and `$TMUX_PANE`
-    /// exactly `^%[0-9]{1,9}$`.
+    /// exactly `^%[0-9]{1,9}$`, by the one `valid_pane_id` rule.
     pub fn parse(tmux: Option<&str>, tmux_pane: Option<&str>) -> Option<Self> {
         tmux.filter(|t| !t.is_empty())?;
         let id = tmux_pane?;
-        let digits = id.strip_prefix('%')?;
-        let ok = !digits.is_empty()
-            && digits.len() <= MAX_PANE_DIGITS
-            && digits.bytes().all(|b| b.is_ascii_digit());
-        ok.then(|| Self(id.to_string()))
+        valid_pane_id(id).then(|| Self(id.to_string()))
     }
 
     /// The pane id, `%N`, for tmux's `-t`.
@@ -426,15 +433,6 @@ pub enum PaneCheck {
     NotReading,
 }
 
-/// Whether `id` is a pane id as a whole: `%` and 1 to 9 digits, nothing
-/// else. Checked again here, before any tmux call, so an id can never be
-/// an option such as `-t` or carry a separator.
-fn valid_pane_id(id: &str) -> bool {
-    id.strip_prefix('%').is_some_and(|d| {
-        !d.is_empty() && d.len() <= MAX_PANE_DIGITS && d.bytes().all(|b| b.is_ascii_digit())
-    })
-}
-
 /// The pane check once the terminal's holder is known: the whole of the
 /// decision and the only place `Ready` is produced.
 ///
@@ -478,7 +476,7 @@ pub(crate) fn check_pane_held<V: ProcView + ?Sized>(
 
 /// The pane check, with `/proc` and tmux's answer supplied: a pane id that
 /// is one, one walk up the hook's ancestry ([`tty_ancestor`]), then
-/// [`check_pane_held`]. This is the pure core the tests drive.
+/// `check_pane_held`. This is the pure core the tests drive.
 pub fn check_pane_with<V: ProcView + ?Sized>(
     view: &V,
     hook_pid: u32,
