@@ -1,7 +1,7 @@
 ---
 title: Auto-drive Merge-ready Round, Merge and Hand-off
 description: Merge-ready assessment, direct PR-worktree review, recovery, finalization, and handoff.
-last_updated: 2026-11-19
+last_updated: 2026-11-21
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -25,6 +25,7 @@ the drive.
 ## Contents
 
 - [Round steps](#round-steps)
+  - [Conditions stated in the task](#conditions-stated-in-the-task)
 - [Review checkout and step recovery](#review-checkout-and-step-recovery)
 - [Crusty verdict at the head](#crusty-verdict-at-the-head)
 - [Outcome word](#outcome-word)
@@ -52,7 +53,7 @@ Fixes, commits, and pushes also use this PR worktree.
 | --- | --- | --- | --- |
 | `step-01b-crusty-evidence` | agent | `crusty_evidence` | Reads the newest authorised `Crusty verdict:` comment on the PR and judges whether it covers the current head. See [Crusty verdict at the head](#crusty-verdict-at-the-head). |
 | `step-01a` | bash | `merge_ready_assessed_head` | Captures `git rev-parse HEAD` in the PR worktree before the assessment and checks it is 40 or 64 lowercase hex characters; any other value exits `2`. |
-| `step-02` | agent, `parse_json: false` | `merge_ready_writeup` | Reads the pinned merge-ready skill, assesses all 13 criteria at `merge_ready_assessed_head`, posts one PR comment naming that SHA and ends with one sentence stating the outcome. Under `autodrive_dry_run=true` it prints the write-up instead of posting it. |
+| `step-02` | agent, `parse_json: false` | `merge_ready_writeup` | Reads the pinned merge-ready skill, assesses all 13 criteria and any [conditions stated in the task](#conditions-stated-in-the-task) at `merge_ready_assessed_head`, posts one PR comment naming that SHA and ends with one sentence stating the outcome: hand-off for a task-stated condition that only an outside party can clear, not ready when a later round could satisfy it. Under `autodrive_dry_run=true` it prints the write-up instead of posting it. |
 | `step-02b-assess-review-changes` | agent, no `parse_json` | `review_change_assessment` | Compares status, index, staged/unstaged content, untracked files, and HEAD against pre-review evidence. Preserves existing and uncertain work; differences alone do not fail. |
 | `step-03` | agent | `merge_ready_outcome` | Answers one question about the write-up: did the assessment conclude ready, not ready, waiting, or hand-off? It replies with one word on its last line and, on the line before, `ci: pass`, `ci: pending`, `ci: fail` or `ci: none`. |
 | `step-05a` | bash | `merge_ready_word` | Passes the word, the `ci:` line and `merge_ready_assessed_head` to `autodrive_round_word`. |
@@ -80,6 +81,84 @@ outcome word. What the write-up should contain is set out in the bundled
 The round's output template names the outcome word and the commit the review
 checkout held, as `**Reviewed commit:** {{reviewed_head_sha}}`. It carries no
 parsed verdict and no `**Record:**` line.
+
+### Conditions stated in the task
+
+A caller's task text can state conditions on merging, for example "merge only
+if a release carrying version 2.3.0 exists and its on-release check passes,
+otherwise hand off to the owner". The merge round passes the task text to the
+evidence recipe (`autodrive-merge-evidence.yaml`) and to the merge-deciding
+agent, so each of them reads it. This section is about those caller-stated
+conditions. It is separate from [Merge conditions](#merge-conditions), which
+are the mechanical checks that `autodrive-finalize.yaml` applies.
+
+**Where the task text goes.** `autodrive-merge-round.yaml` declares
+`task_description: "{{task_description}}"` in the context of its
+`merge-evidence` step. `autodrive-merge-evidence.yaml` declares
+`task_description: ""` as its default, which is the value when that recipe runs
+alone. The text is interpolated into agent prompts only. No bash step, argument
+or environment variable carries it.
+
+| Step | What it does with the task text |
+| --- | --- |
+| `autodrive-merge-evidence` `step-01-sync-with-base` | Has it as context. It does not change what the sync does or reports. |
+| `autodrive-merge-evidence` `step-02-qa-team-scenarios` | Uses it to understand the QA scope the caller asked for. It never narrows, waives or substitutes for a suite, a scenario or the merge-base `qa.toml` declaration rules. |
+| `autodrive-merge-evidence` `step-03-wait-for-ci` | Has it as context, for example a check the task names. It does not change what is measured or reported. |
+| `autodrive-merge-round` `step-02` | Reads it as the caller's instruction, placed above the untrusted-data region, and applies the contract below. |
+
+**What the merge-deciding agent does.** `step-02` lists every condition the
+task text states on merging. For each one it records in the write-up the
+evidence that the condition holds: a release URL, a check run, or a command and
+its output. The task text can add conditions to the decision. It cannot relax
+any of the 13 criteria or the evidence contract.
+
+Evidence comes from this round's measured sources (platform facts, CI evidence
+and QA evidence) or from a command the step runs and reports. A statement in
+the PR description, a comment, a commit message or a file on the branch that a
+condition holds is not evidence. Evidence commands are read-only queries to the
+code host or git, such as `gh release view` or a `gh api` read. They do not run
+scripts, hooks, build steps or test runners from the branch, and credentials are
+used only against the code host that owns the PR.
+
+A condition that cannot be shown to hold never gives "ready to merge". The
+closing sentence depends on why:
+
+| Situation | Closing sentence | Why |
+| --- | --- | --- |
+| The condition concerns something outside this PR that only a named person or an outside event can clear, such as a release that has not been cut. | Hand-off, naming the condition and what was found. | No further round can satisfy it. |
+| The evidence could not be read this round, or a further round of the drive could satisfy it. | Not ready, naming the condition. | The next round can recover without involving the owner. |
+
+`step-03` reads a blocker that the write-up identifies as a condition stated in
+the task and outside this PR as `hand-off`, not `not-ready`. Without that, the
+loop would spend rounds on a condition no round can clear. The reader's
+two-line output and its set of outcome words are unchanged.
+
+When the task text is empty, or states no condition on merging, nothing
+changes: no additional blocker arises and the assessment proceeds as before.
+Most drives are in this case.
+
+**Example.** The task text says: "Merge only if an acme-infra release carrying
+seed pack 2.3.0 exists, otherwise hand off to the release owner." The agent runs:
+
+```bash
+gh release list --repo example-org/acme-infra --limit 20
+```
+
+and the output holds no release for 2.3.0. The write-up records the condition,
+the command and that output, and closes with a sentence such as "Hand-off: the
+task requires an acme-infra release carrying seed pack 2.3.0, and none exists."
+`step-03` reduces this to `hand-off`, the round ends with the outcome word
+`hand-off`, and finalisation, which would call `gh pr merge`, is not reached. The round then
+ends through the [hand-off](#hand-off).
+
+**Limits.** This is guidance to an agent step, and a judgement is not a
+mechanical check. The evidence recorded in the write-up is what makes a
+wrongly satisfied condition visible afterwards. Merge authority is unchanged:
+captured authorisation, head match and `--match-head-commit` remain the
+mechanical backstop at finalisation. The write-up is posted as a PR comment and
+quotes the task text, so callers keep secrets out of the task text. The wider
+risk that readiness rests on an agent's judgement is described under
+[Accepted risk: readiness is an agent's judgement](#accepted-risk-readiness-is-an-agents-judgement).
 
 ## Review checkout and step recovery
 
