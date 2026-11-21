@@ -188,6 +188,76 @@ _gh_retry_core 'pr create' pr create
     }
 }
 
+/// A signal delivered to the retry helper alone, not to the publisher, ends
+/// the creation attempt with the helper's terminal line. The publisher reports
+/// that line like any other terminal rejection, keeps the conventional status,
+/// and removes its captures.
+#[test]
+fn publisher_reports_the_terminal_line_when_only_the_retry_helper_is_interrupted() {
+    let f = PublishFixture::new();
+    let gh = fs::read_to_string(f.bin.join("gh")).unwrap();
+    // The blocked gh runs under timeout, whose parent is the retry helper.
+    executable(
+        &f.bin.join("gh"),
+        &gh.replace(
+            "  'pr create')",
+            &format!(
+                "  'pr create')\nps -o ppid= -p \"$PPID\" > \"$CASE_ROOT/helper.pid\"\n{BLOCK}"
+            ),
+        ),
+    );
+    let stdout = fs::File::create(f.tmp.path().join("cancel.stdout")).unwrap();
+    let stderr = fs::File::create(f.tmp.path().join("cancel.stderr")).unwrap();
+    let mut child = f
+        .publish_command()
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
+    wait_for_file(&f, &mut child, "ready");
+    let helper = f.read("helper.pid");
+    assert!(
+        Command::new("kill")
+            .args(["-s", "TERM", helper.trim()])
+            .status()
+            .unwrap()
+            .success(),
+        "helper={helper:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("publisher hung: {}", f.read("cancel.stderr"));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let output = Output {
+        status,
+        stdout: fs::read(f.tmp.path().join("cancel.stdout")).unwrap(),
+        stderr: fs::read(f.tmp.path().join("cancel.stderr")).unwrap(),
+    };
+    assert_eq!(output.status.code(), Some(143), "{}", describe(&output));
+    let result = super::fixture::json(&output);
+    assert_eq!(result["state"], "FAILED_PR_CREATE", "{result}");
+    assert_eq!(result["terminal_status"], "failure", "{result}");
+    let message = result["message"].as_str().unwrap();
+    assert!(
+        message.contains("exit 143") && message.contains("gh interrupted by TERM"),
+        "{message}"
+    );
+    assert!(!describe(&output).contains("ghp_CANCEL_SECRET_ABCDEFGHIJKLMNOP"));
+    assert_eq!(
+        fs::read_dir(f.tmp.path().join("private")).unwrap().count(),
+        0,
+        "owned captures must be removed"
+    );
+}
+
 #[test]
 fn publishing_cancellation_cleans_creation_body_and_nested_retry_captures() {
     let f = PublishFixture::new();

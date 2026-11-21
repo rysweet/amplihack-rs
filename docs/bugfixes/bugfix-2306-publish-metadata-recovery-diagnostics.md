@@ -163,7 +163,9 @@ final `awk` invocation is required. The result must be exactly one GitHub PR URL
 a nonzero digit. The repository is compared with `REPO_IDENTITY` without regard to
 case, so `Owner/Repo` matches `owner/repo`; a repository named `pull` still
 parses. Foreign repositories, malformed URLs, extra output and invalid numbers
-report `FAILED_PR_IDENTITY` and leave `pr_url` and `pr_number` empty. Such a
+report `FAILED_PR_IDENTITY` and leave `pr_url` and `pr_number` empty. The
+rejected value is not echoed, but the message says that a draft PR may exist for
+the branch, so the reader looks it up before creating another. Such a
 rejection never retries creation or reports that creation itself failed.
 
 A terminal command diagnostic contains the stable operation name, original exit

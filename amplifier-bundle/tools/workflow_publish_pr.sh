@@ -1166,8 +1166,10 @@ PUBLISH_OPERATION="gh pr create result parsing (PR identity)"
 # trailing message, query string or extra path. Split at the final /pull/ so a
 # repository named "pull" still parses. The number must be decimal digits with
 # at least one non-zero digit. The repository is compared without regard to
-# case (same_github_repository), since GitHub's canonical casing can differ
-# from origin's.
+# case, since GitHub's canonical casing can differ from origin's. [[ ]] is used
+# rather than same_github_repository, whose command substitution would drop a
+# trailing newline from created_repo and accept "owner/repo<LF>/pull/5". LC_ALL=C
+# keeps the fold to ASCII, as a UTF-8 locale folds the Kelvin sign to "k".
 created_path="${PR_URL_RESULT#https://github.com/}"
 created_repo="${created_path%/pull/*}"
 created_number="${created_path##*/pull/}"
@@ -1175,14 +1177,14 @@ case "$created_number" in ''|*[!0123456789]*) created_number="" ;; esac
 case "$created_number" in *[1-9]*) ;; *) created_number="" ;; esac
 identity_ok=false
 if [ "$created_path" != "$PR_URL_RESULT" ] && [ -n "$created_number" ] &&
-  same_github_repository "$created_repo" "$REPO_IDENTITY"; then
+  (LC_ALL=C; shopt -s nocasematch; [[ "$created_repo" == "$REPO_IDENTITY" ]]); then
   identity_ok=true
 fi
 if [ "$identity_ok" != true ]; then
   # A rejected identity must not reach the structured result.
   PR_URL_RESULT=""
   PR_NUMBER_RESULT=""
-  finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1
+  finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL; a draft PR may exist for this branch, so look it up before creating another" 1
 fi
 PR_NUMBER_RESULT="$created_number"
 # Only a base this step passed with --base; without it GitHub chose the base.

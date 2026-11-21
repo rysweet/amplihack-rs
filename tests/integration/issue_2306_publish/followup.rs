@@ -89,6 +89,8 @@ fn followup_malformed_created_identity_is_rejected() {
         "https://github.com/owner/repo/pull/5/pull/9",
         "https://github.com/owner/repo/pull/",
         "https://github.com/owner/repo/pull/12\nextra text",
+        "https://github.com/owner/repo\n/pull/5",
+        "https://github.com/owner/repository/pull/5",
         "https://github.com/owner/repo/issues/12",
         "https://github.com/owner/repo/pull/-1",
         "http://github.com/owner/repo/pull/12",
@@ -116,6 +118,11 @@ fn followup_malformed_created_identity_is_rejected() {
         );
         assert_eq!(result["pr_url"], "", "{created:?}: {result}");
         assert_eq!(result["pr_number"], "", "{created:?}: {result}");
+        let message = result["message"].as_str().unwrap();
+        assert!(
+            message.contains("a draft PR may exist for this branch"),
+            "a rejected identity must tell the reader where to look: {message}"
+        );
         assert_private_empty(&f);
     }
 }
