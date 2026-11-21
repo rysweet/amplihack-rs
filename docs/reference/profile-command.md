@@ -6637,8 +6637,10 @@ that rises by about 10 points a cycle can also go from below `--session-at`
 to its limit between two cycles, so a rule that waits for the threshold
 swaps too late.
 
-The step runs once per cycle, after the `cycle` line and before the
-decision. It applies only when the live login is a known profile and is not
+The step runs once per cycle, after the measurement and before both the
+`cycle` line and the decision, so the `cycle` line reports the live figures
+the cycle decided on (see [Freshest live reading](#freshest-live-reading)).
+It applies only when the live login is a known profile and is not
 the [platform tier](#overflow-tiers). An excluded live login, one in the
 auto-switch `exclude` list, is never re-read: the step checks the same
 `exclude` rule as every other reader before it reads anything, and the cycle
@@ -6868,9 +6870,18 @@ this step.
 
 The projection affects only the decision. The ledger, the `cycle` line, the
 `swap` line's `live s=<n>% w=<n>%` figures and the usage history all show
-the reading as measured.
+the reading the cycle decided on before the projection: the reading as
+measured, or the [held reading](#freshest-live-reading) that replaced a stale
+one.
 
 ##### Failed or stale reading near the threshold
+
+This rule runs after the [freshest reading](#freshest-live-reading) has been
+chosen. A stale measured reading is usually replaced by the held reading
+first, which needs no `near` test, so what reaches this rule is mostly a
+failed probe, or a stale reading for which no held reading was available or
+the held one was lower. When a substitution did happen, the week figure here
+is the held reading's own.
 
 When the live probe fails, or the live re-read fails, is refused or is
 itself still more than one interval old, the rotator looks at the last
@@ -6895,9 +6906,10 @@ the rate, and the outcome does not depend on whether the cache's timestamp
 moves.
 
 When it is near, the *substituted figure* is the larger of `--session-at`
-and the last known session use: the last point, and the stale reading
-itself when there is one. The last known week figure is used with it. The
-substituted figure is never lower than the last known figure.
+and the last known session use: the last point, and the reading the cycle
+decided on when there is one. The week figure is the held reading's when one
+was substituted, and otherwise the last measured one. The substituted figure
+is never lower than the last known figure.
 
 **A stale reading** (the re-read failed, was refused or is still old) is
 decided on the substituted figure. The outcome is a swap, logged with
@@ -6962,6 +6974,122 @@ failure swaps with `reason=projected`. With `spare` at 68% and another
 stored login, `third`, at 0%, the outcome is the 68% one: `third` beats 70%
 easily, but the failed-probe rules chose `spare`, and only `spare` is
 tested against the substituted figure.
+
+##### Freshest live reading
+
+For the live login, each cycle decides on the freshest reading it holds. The
+reading chosen is the one used throughout the cycle: the decision rule, the
+[plan room](#plan-room-in-the-ledger) test behind `last_cycle.live_room`, the
+`cycle` line, the `swap` line, the [capacity file](#capacity-file) and the
+[usage history](#usage-history). Readings are ranked by how they were
+obtained, never by the observation time they carry, because the status line
+rewrites old figures with new times (see
+[Live reading series](#live-reading-series)).
+
+| Rank | Reading | Used when |
+|------|---------|-----------|
+| 1 | Taken from the usage source in this cycle: a direct probe, or a successful live re-read | Always, over every lower rank |
+| 2 | The *held reading*: the last point the series accepted | The step judged the cycle's cached reading stale, no reading could be taken in this cycle, and the held reading is not lower than the cached one |
+| 3 | The cycle's own cached (passive) reading | Nothing fresher is available to it |
+
+A cached reading therefore decides the cycle only when nothing fresher is
+available. A newer observation time on a cached reading never promotes it
+over a held point; the [contradicted cache](#stale-live-reading) rule already
+covers that case and is unchanged.
+
+**The held reading.** It is the last accepted point for the same live login:
+its session figure, week figure, and session and week reset times. It is
+offered only while both windows can still be open, by the same rule the
+[near-threshold substitution](#failed-or-stale-reading-near-the-threshold)
+applies to its last known point: a window is open before its reset time when
+the reading gave one, and in every case for less than five hours after the
+reading was taken. So a held week figure is not carried past the end of its
+week, and a week at `100%` that has since reset no longer denies room; a
+reading with no week reset time is bounded by the five hours alone. The held
+reading is kept in memory with the series, is cleared with it, and is never
+offered for a different login, including a new login that takes the same
+profile slot.
+
+**When it replaces the cached reading.** All of these hold:
+
+- the step judged the cached reading stale (frozen, old, lagging or
+  contradicted);
+- the live re-read failed, was refused or could not be made, so no reading
+  was taken in this cycle;
+- the cached reading is a measured one;
+- the held reading is not lower than the cached reading on either the
+  session or the week figure.
+
+A held reading that is lower on either figure is not substituted, and the
+cached reading, which is the higher and so the more cautious, is used as
+measured. There is no `near` condition on this path: unlike the
+[near-threshold rule](#failed-or-stale-reading-near-the-threshold), the held
+reading is an actual measurement of the login that is older than this cycle,
+not an inference, so it is used whether or not it is near `--session-at`.
+The near-threshold rule still runs on top of the held reading when it
+applies, with the held week figure as its week. A failed probe is unchanged:
+the held reading replaces only a measured reading, and an exhausted cached
+reading is decided as measured. An exhausted cached reading that decides the
+cycle still carries the `cached=<n>s` annotation described below.
+
+The `STALE_LIVE` and `reread:` lines are still written, so a substitution
+never hides an unavailable live source.
+
+**The `cached=<n>s` annotation.** The live figures on the `cycle` and `swap`
+lines carry `cached=<n>s` when, and only when, they were read before this
+cycle's measurement began. `<n>` is whole seconds:
+
+- for a held reading, the age is taken from the held point's own reading
+  time;
+- for a cached reading that decides the cycle, it is taken from that
+  reading's [reading time](#reading-time);
+- a direct probe and a successful re-read carry no annotation;
+- the annotation is written for measured and exhausted live readings alike;
+- a negative age is shown as `0`, and an unknown reading time omits the
+  annotation rather than guess one.
+
+It is set for the live login only, never for a candidate, and the ALERT
+lines are not annotated: the `cycle` line of the same cycle already gives
+the live figures and their age. Because a passive live reading is the
+usual case in production, most `cycle` lines for the live login will carry
+`cached=` once this step is in place. Match `cycle live=` lines by prefix
+rather than by exact text. The annotation holds fixed text and one
+whole number, and never a token, path or account identifier.
+
+**What is recorded.** A held reading is never recorded as one taken in this
+cycle. The usage history keeps the held reading's own time, so an entry
+whose reading is more than 300 seconds old is recorded as `unknown`, as for
+any other old reading. The capacity file has no per-reading time, so there
+is nothing in it to misdate; it carries the held figures, which is the point
+of the change. The target gate reads the live reading time as the earlier of
+the reading's own time and the start of the measurement, so a held reading
+can only reduce target re-reads: a target read before the held reading's
+time is still read again.
+
+For example, with `--interval 120 --session-at 70 --margin 5`, live `work`
+reads `s=56% w=100%` directly on one cycle. On the next, the cache still
+holds `s=5% w=95%` from when `work` was swapped in, and the re-read fails.
+The cached figure is below the held point in the same window, so it is
+contradicted, and the cycle decides on the held `s=56% w=100%`, so
+`live_room` is `false`. On the next, a direct read gives `s=58% w=100%`, and
+on the one after the cache and the failed re-read repeat:
+
+```
+2026-11-21T00:26:02Z cycle live=work work:s=56%,w=100% spare:s=0%,w=30%
+2026-11-21T00:28:10Z cycle live=work work:s=56%,w=100%,cached=128s spare:s=0%,w=30%
+2026-11-21T00:28:10Z stale live reading; re-read
+2026-11-21T00:28:10Z reread: work failed; treated as unknown
+2026-11-21T00:29:53Z cycle live=work work:s=58%,w=100% spare:s=0%,w=30%
+2026-11-21T00:32:07Z cycle live=work work:s=58%,w=100%,cached=134s spare:s=0%,w=30%
+2026-11-21T00:32:07Z stale live reading; re-read
+2026-11-21T00:32:07Z reread: work failed; treated as unknown
+```
+
+The live figures no longer return to the stale `5%`/`95%` pair, and the
+stale pair no longer records room that the fresh reading denies. When the
+re-read succeeds, the cycle decides on its figures and the line carries no
+`cached=`. In the example, the `stale live reading` and `reread:` lines
+follow the `cycle` line of the same cycle.
 
 ##### Outlook and organisation affinity
 
@@ -9451,6 +9579,9 @@ when the rotator holds a measured reading of that login from the cycle and the
 reading passes the test of a [plan-room target](#rotate-plan-room-swap):
 session use below `--session-at` and week use below 100%. The test is applied
 to the reading of whichever login is live after the cycle, whatever its kind.
+For the live login that is the [freshest reading](#freshest-live-reading) the
+cycle holds, so a stale cached figure never records room that a fresher
+reading of the same login denies.
 There is no exclusion for a credit-backed overflow profile or the API-key
 profile, so a cycle that moves onto either can record `true`. The rotator
 decides this, from the measurement it already holds, so a reader never
@@ -9514,8 +9645,8 @@ run and prints their `reread:` lines; see
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A live profile in the auto-switch `exclude` list shows `<name>:excluded (not probed)`; see [Rotate excluded live profile](#rotate-excluded-live-profile). A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
-| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|projected\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, one still running shows `live unknown, still running`, and an excluded live profile shows `live excluded (not probed)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=projected` is a swap made because the live login's [projected session use](#projected-swap) reached `--session-at`, or because its last known reading was near `--session-at` when the live read failed or was stale and the stale reading would not itself have needed a swap (see [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)); the `live` figures are those measured. `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. The line is written after the [live reading freshness](#freshest-live-reading) step, so the live entry shows the figures the cycle decided on, and carries `,cached=<n>s` (whole seconds) when those figures were read before this cycle's measurement began, for example `work:s=5%,w=95%,cached=612s`. Candidate entries show their figures as measured and never carry it. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A live profile in the auto-switch `exclude` list shows `<name>:excluded (not probed)`; see [Rotate excluded live profile](#rotate-excluded-live-profile). A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
+| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|projected\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. The live figures carry ` cached=<n>s` under the same rule as the `cycle` line, for example `live s=5% w=95% cached=612s`; the target figures never do. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, one still running shows `live unknown, still running`, and an excluded live profile shows `live excluded (not probed)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=projected` is a swap made because the live login's [projected session use](#projected-swap) reached `--session-at`, or because its last known reading was near `--session-at` when the live read failed or was stale and the stale reading would not itself have needed a swap (see [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)); the `live` figures are those the cycle decided on, as described in [Freshest live reading](#freshest-live-reading). A cycle that decides on a held reading at or above `--session-at` needs a swap on the reading itself, so it is labelled `reason=threshold`, not `reason=projected`. `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
 | `ALERT: home_key (<detail>): <effect>` | A key is in `~/.claude.json` or `~/.claude/settings.json` while a plan login is live, so sessions bill per token. Written once, and again if the setting changes; see [API-key login check](#api-key-login-check). The cycle carries on. |
@@ -10478,10 +10609,14 @@ anything under a profile directory.
 The hook resumes a session in one of two ways, never both:
 
 - **Keys** (outcome `resumed-keys`, exit `0`): when the session runs in a
-  [verified tmux pane](#resume-keys), it types Esc, Ctrl+U, `continue` and
-  Enter into that pane.
-- **Wake** (outcome `resumed`, exit `2`): otherwise it exits `2` with the
-  resume message on stderr.
+  [proved tmux pane](#resume-keys), it types Esc, Ctrl+U, `continue` and
+  Enter into that pane. The exit `2` wake has not released Claude Code's
+  usage-limit menu in the standing sessions reported in
+  [#2695](https://github.com/rysweet/amplihack-rs/issues/2695), so a session
+  with a proved pane gets the keys.
+- **Wake** (outcome `resumed` with `detail=no-tmux-pane`, `pane-unverified`
+  or `pane-not-reading`, exit `2`): otherwise it exits `2` with the resume
+  message on stderr. The outcome says why the keys path was not taken.
 
 Every other outcome exits `0` with nothing on stdout or stderr. The hook
 never writes to stdout and never exits with any other status. A panic exits
@@ -10496,9 +10631,9 @@ The message does not claim the limit is gone: the rotator's reading can be
 wrong, so the model is told to stop again if it is not.
 
 The hook relies on Claude Code behaviours that a live check against Claude
-Code 2.1.306 confirmed. It used a stub `StopFailure` hook with
-`asyncRewake: true`, triggered by an invalid API key (matcher
-`authentication_failed`):
+Code 2.1.306 confirmed (not re-read at 2.1.329). It used a stub
+`StopFailure` hook with `asyncRewake: true`, triggered by an invalid API key
+(matcher `authentication_failed`):
 
 - a turn that ends on an API error runs `StopFailure`, not `Stop`;
 - the payload has `session_id`, `transcript_path`, `cwd`, `hook_event_name`,
@@ -10523,13 +10658,14 @@ again.
 
 Claude Code's timed wait (`Usage limit reached · continuing automatically
 {when} · esc to cancel`) is not covered by either check. The strings of the
-Claude Code 2.1.319 binary show the wait behind a feature flag, with
+Claude Code 2.1.319 binary (read at that version, not reproduced, and not
+re-read at 2.1.329) show the wait behind a feature flag, with
 `Continuing automatically {when} · Esc to cancel`, `Usage limit reached
 again · …`, `/usage-credits to continue now` and `/rate-limit-options to
 re-arm`. They do not show whether `StopFailure` runs when the wait starts or
 whether an exit `2` ends it. Esc is the exit the wait names, so the hook
-sends keys whenever it has a verified pane and uses the exit `2` wake only
-when it does not.
+sends keys whenever it has a pane proved to be its own terminal and uses the
+exit `2` wake only when it does not.
 
 #### Resume decision
 
@@ -10545,9 +10681,9 @@ The checks run in this order. The first one that fails decides the outcome.
 | 6 | The rotator is running: `<root>/.auto-switch.d/rotate/rotate.pid` names a running `amplihack profile rotate watch` process of yours (checked in `/proc`; skipped where there is none), and the ledger, if present, can be read by the trust rules in [Rotator capacity rule](#rotator-capacity-rule). | Exit `0` without waiting, outcome `rotator-down`. |
 | 7 | `resume/` and `resume/prompted/` exist or can be created safely, so a prompt during the wait can be recorded; prompt markers older than 7 days and 1 hour are removed. | Exit `0`, outcome `guard-failed`. |
 | 8 | The hook keeps the swap record it noted in step 3 (or that there was none), sets up the [event wait](#event-wait), and reads the swap record once. Then it waits for a record that passes [Capacity for a resume](#capacity-for-a-resume), for at most 7 days from its start. A record that fails is logged (`swap-stale` or `swap-no-room`) and the wait goes on. | Exit `0`, outcome `watch-lost` if the wait cannot be set up or a watch is lost; `moved-on` if you sent a prompt in that session; `session-gone` if the session exited; `no-capacity-timeout` at the 7-day deadline; `guard-failed` if a prompt marker cannot be read safely. |
-| 9 | Auto-switch is still on, no prompt was sent in the session since the hook started, and, if the hook noted a pane, the pane still [passes its check](#resume-keys); a pane that fails now is dropped and the wake is used instead. Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `disabled` if auto-switch was turned off; `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `cap` if the session reached its cap; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
+| 9 | Auto-switch is still on, no prompt was sent in the session since the hook started, and, if the hook noted a pane, the pane still [passes its check](#resume-keys); a pane that fails now is dropped and the wake is used instead, with outcome `pane-unverified` or `pane-not-reading`. Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `disabled` if auto-switch was turned off; `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `cap` if the session reached its cap; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
 | 10 | With a pane: send the [resume keys](#resume-keys). | Exit `0`, outcome `resume-keys-failed`, with the number of keys sent. The resume stays recorded and the hook does not exit `2`. |
-| 11 | — | Exit `0`, outcome `resumed-keys`, when keys were sent; exit `2` with the resume message, outcome `resumed`, when there was no pane. |
+| 11 | No further check | Exit `0`, outcome `resumed-keys`, when keys were sent; exit `2` with the resume message when there was no keys path: outcome `resumed` with `detail=no-tmux-pane` for no pane, `pane-unverified` for a pane that was not proved to be this session's terminal, `pane-not-reading` for a terminal Claude Code is not reading. |
 
 Steps 4 and 5 run once without the lock, so a duplicate or capped session
 exits at once instead of waiting up to 7 days, and again under the lock in
@@ -10765,21 +10901,62 @@ waiting hook ends as `disabled` at the next swap that would resume it.
 The hook notes a pane once, when it starts, from its own environment: only
 when `$TMUX` is set and not empty and `$TMUX_PANE` is exactly `%` followed
 by 1 to 9 digits. The pane id is kept in memory only, never written to disk,
-and logged only as the first 12 hex digits of its SHA-256.
+and logged only as the first 12 hex digits of its SHA-256. That tag is a
+correlation aid, not a secret: the salt is a fixed constant and pane ids are
+few, so the tag can be enumerated. It keeps the pane id and the terminal path
+out of `resume.log`; it does not hide them from someone who already holds the
+log. No `$TMUX` value, terminal path, or `tmux` or `/proc` output is ever
+written to the log.
+
+The pane id is checked as a whole against `^%[0-9]+$` before any `tmux`
+call, and is passed as its own argument after `-t`, never through a shell.
+`$TMUX_PANE` is inherited environment, so it is treated as a claim to be
+proved, never as evidence.
 
 The pane is used only if it passes this check, made once, right before the
-commit:
+commit. Claude Code does not always hold the terminal itself (a launcher or
+wrapper can sit between it and the pane), so the check starts from the
+hook's own process and walks up, not from the hook's parent:
 
-1. `tmux display-message -p -t %N '#{pane_tty}'` exits 0 and prints an
-   absolute path under `/dev/` of at most 256 bytes;
-2. that path is the target of `/proc/<parent>/fd/0`, Claude Code's standard
-   input; and
-3. `/proc/<parent>/stat` shows Claude Code's process group as the
-   terminal's foreground process group.
+1. The hook walks up its ancestry through `/proc/<pid>/stat` to the nearest
+   process whose standard input (`/proc/<pid>/fd/0`) is a terminal. The walk
+   stops at pid 0 or 1, visits at most 16 processes, never visits one
+   twice, and requires every process it passes to have the hook's effective
+   user id.
+2. `tmux display-message -p -t %N '#{pane_tty}'` exits 0 and prints an
+   absolute path under `/dev/` of at most 256 bytes, and that path is the
+   terminal found in step 1.
+3. The process found in step 1 is the terminal's foreground process group
+   (`/proc/<pid>/stat`).
+4. The hook's parent, which shares Claude Code's process group, is reading
+   that terminal: its process group is the terminal's foreground process
+   group. Step 3 already makes the process from step 1 the foreground group,
+   so this step fails only when Claude Code sits in a different, background
+   group, for example behind a wrapper that holds the terminal. Without it,
+   the keys could land on a launcher or shell prompt.
 
-A pane inherited from a shell that started Claude Code outside that pane,
-or a pane where something else is in the foreground, fails the check, and
-the hook uses the exit `2` wake instead.
+The check is made once. Between it and the first key the hook adds no
+delay, retry or poll. The process ids it used belong to the hook's own
+ancestors under its own user, so a process id reused in that instant is an
+accepted residual risk, not a case the hook guards against.
+
+A failure at step 1, 2 or 3 gives outcome `pane-unverified`, with a `detail`
+from this closed list:
+
+| `detail` | Cause |
+|----------|-------|
+| `bad-pane-id` | `$TMUX_PANE` is not `%` followed by digits. |
+| `no-tty-ancestor` | No process in the walk has a terminal on its standard input, the walk reached pid 1, or it reached a process with a different user id. |
+| `walk-limit` | The walk visited 16 processes, or the chain looped. |
+| `unreadable-proc` | A `/proc` entry cannot be read or its `stat` cannot be parsed, or a parent pid of 0 ended the chain. |
+| `tty-mismatch` | The pane's `#{pane_tty}` is not the terminal the walk found, or `tmux` failed or printed nothing. |
+| `not-foreground` | The process holding the terminal is not its foreground process group. |
+
+A failure at step 4 gives `pane-not-reading`. Every one of these exits `2`
+with the resume message. None of them tries another pane: the hook never
+runs `list-panes` or `list-clients`. A pane inherited from a shell that
+started Claude Code outside that pane, or a pane another session owns, is not
+the terminal of any process in this hook's ancestry, so it fails at step 2.
 
 The keys are four separate `tmux` runs, each with a fixed argument list, no
 shell, null standard input and output, and each waited on for its exit
@@ -10981,7 +11158,7 @@ and epoch seconds. No pane id is stored.
 ```
 2026-11-09T00:41:07Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=swap-no-room live=work cycle=stayed swap_seq=41 swap_live=third
 2026-11-09T00:43:12Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed-keys live=work cycle=stayed swap_seq=42 swap_live=spare pane=5b0e19c4a7d2 keys_sent=4
-2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=resumed live=work cycle=stayed swap_seq=42 swap_live=spare
+2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=resumed live=work cycle=stayed swap_seq=42 swap_live=spare detail=no-tmux-pane
 2026-11-09T02:10:55Z resume session=c41d7a9e0b13 event=e9f2b6a01c7d outcome=resume-keys-failed live=spare cycle=stayed swap_seq=43 swap_live=spare pane=0d3a8f61e2b9 keys_sent=2 detail=session-gone
 2026-11-09T02:15:01Z resume session=6a0b3c9d1e42 event=17c5e8d2f0a6 outcome=watch-lost live=spare cycle=stayed detail=NotFound
 ```
@@ -10998,7 +11175,7 @@ after `cycle` appear only when they apply:
 | `swap_live` | That record's `live_login`. |
 | `pane` | The first 12 hex digits of the SHA-256 of the pane id, when keys were sent or tried. |
 | `keys_sent` | How many of the four keys were sent (0–4). |
-| `detail` | Why a watch or key failed: `session-gone` (the session exited, or was suspended while keys were sent), or the name of the I/O error kind, such as `NotFound` or `PermissionDenied`. |
+| `detail` | Why there was no keys path, or why a watch or key failed: `session-gone` (the session exited, or was suspended while keys were sent), or the name of the I/O error kind, such as `NotFound` or `PermissionDenied`. For `resumed`, the one fixed word `no-tmux-pane` (the session named no usable pane). For `pane-unverified`, one of `bad-pane-id`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or `not-foreground`; the value is always one of these fixed words, never text taken from `tmux`, `/proc` or the environment. |
 
 Every field holds only `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`; any other
 character is written as `-`. The log never holds message text, error text,
@@ -11009,7 +11186,9 @@ outcome.
 | Outcome | Exit | Meaning |
 |---------|------|---------|
 | `resumed-keys` | `0` | A swap record with room arrived, the resume was recorded, and all four keys were sent to the session's pane. |
-| `resumed` | `2` | The same, for a session with no verified pane: the hook exited `2` and the session was told to continue. |
+| `resumed` | `2` | The same, logged with `detail=no-tmux-pane`, for a session with no usable tmux pane to check: the hook exited `2` and the session was told to continue. |
+| `pane-unverified` | `2` | A pane was named, but it was not proved to be the terminal of this hook's own Claude Code (`detail` says which check failed). The resume was recorded, nothing was typed, and the hook exited `2` with the continue message. A session held on the usage-limit menu stays there, so this outcome in `resume.log` is the sign to continue the session by hand. |
+| `pane-not-reading` | `2` | The pane is this session's terminal, but Claude Code is not the process reading it (for example it is in a background process group behind a wrapper). Nothing was typed; the hook exited `2` with the continue message. |
 | `resume-keys-failed` | `0` | The resume was recorded, but a key failed or the session exited part way; `keys_sent` says how many went. No exit `2` follows. |
 | `swap-stale` | — | A new swap record was swapped at or before the stop. The hook keeps waiting. Never the final outcome. |
 | `swap-no-room` | — | A new swap record shows the new login at 100% on a window. The hook keeps waiting. Never the final outcome. |

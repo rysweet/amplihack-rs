@@ -55,7 +55,8 @@ pub struct LogEntry {
     pub pane: Option<String>,
     /// How many resume keys were sent.
     pub keys_sent: Option<u8>,
-    /// Why a step failed: an `io::ErrorKind` name or `session-gone`.
+    /// Why a step failed: an `io::ErrorKind` name, `session-gone`, or, for
+    /// `pane-unverified`, one of [`super::keys::UNVERIFIED_REASONS`].
     pub detail: Option<String>,
 }
 

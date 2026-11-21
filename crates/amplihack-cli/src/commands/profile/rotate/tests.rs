@@ -30,10 +30,13 @@ mod tests_issue_1947;
 mod tests_issue_2136;
 #[path = "tests_issue_2211.rs"]
 mod tests_issue_2211;
+#[macro_use]
 #[path = "tests_issue_2211_cycle.rs"]
 mod tests_issue_2211_cycle;
 #[path = "tests_issue_2885.rs"]
 mod tests_issue_2885;
+#[path = "tests_issue_2889_cycle.rs"]
+mod tests_issue_2889_cycle;
 #[path = "tests_ledger.rs"]
 mod tests_ledger;
 #[path = "tests_live_readers.rs"]

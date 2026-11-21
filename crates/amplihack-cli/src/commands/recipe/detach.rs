@@ -359,7 +359,7 @@ fn session_exists(session: &str) -> bool {
 /// (issue #1976, D8): it must not watch the launching run as its parent, nor
 /// write into another drive's state directory. The governor markers are
 /// issue #1811's.
-pub(crate) const PANE_ENV_REMOVED: [&str; 8] = [
+pub(crate) const PANE_ENV_REMOVED: [&str; 9] = [
     "AMPLIHACK_RECOVERY_ATTACHMENT",
     "AMPLIHACK_RECOVERY_DESCRIPTOR",
     crate::commands::governor::GOVERNOR_PARENT_ENV,
@@ -369,6 +369,9 @@ pub(crate) const PANE_ENV_REMOVED: [&str; 8] = [
     super::run::parent_watch::PARENT_WATCH_ENV[2],
     // Issue #2535: a new top-level run reads only its own guidance.
     crate::run_guidance::GUIDANCE_DIRS_ENV,
+    // Issue #2886: a pane root is an outermost run, so it owns the build
+    // output it makes and the launcher's claim still applies to it.
+    "AMPLIHACK_RUN_ID",
 ];
 
 /// Where a detached run's steps append their usage-limit wait lines (issue
@@ -991,6 +994,8 @@ mod tests {
             "AMPLIHACK_PARENT_RECIPE_PID",
             "AMPLIHACK_PARENT_RECIPE_STARTTIME",
             "AMPLIHACK_AUTODRIVE_STATE_DIR",
+            // Issue #2886: a pane root is an outermost run.
+            "AMPLIHACK_RUN_ID",
         ] {
             assert!(PANE_ENV_REMOVED.contains(&name), "{name} missing");
             assert!(!keeps_in_pane(name), "{name} reaches the pane");
