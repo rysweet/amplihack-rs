@@ -121,18 +121,7 @@ steps:
       PRN="${RECIPE_VAR_pr_number:-}"
       if [ -z "$CAND" ] && [[ "$PRN" =~ ^[0-9]{1,10}$ ]]; then
         FROM="pr-base"
-        REPO=""
-        if [ ! -L "$T/workflow_github_repo.sh" ] && . "$T/workflow_github_repo.sh"; then
-          REPO="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null)")" || REPO=""
-        fi
-        if [ -n "$REPO" ]; then
-          CAND="$(GH_PAGER=cat GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 GIT_TERMINAL_PROMPT=0 \
-            env -u GH_REPO -u GH_HOST gh pr view "$PRN" --repo "github.com/$REPO" \
-              --json baseRefName --jq .baseRefName </dev/null 2>/dev/null)" \
-            || { CAND=""; echo "[base] could not read the PR target from GitHub" >&2; }
-        else
-          echo "[base] could not establish the GitHub repository from origin" >&2
-        fi
+        CAND="$(bash "$T/autodrive_round_evidence.sh" qa-pr-base "$PRN")" || CAND=""
       fi
       if [ -n "$CAND" ]; then
         if base_ok "$CAND"; then
