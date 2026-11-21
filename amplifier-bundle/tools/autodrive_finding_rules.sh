@@ -25,6 +25,22 @@
 # cell <text>     one Markdown table cell or body line (break_refs after
 #                 HTML escaping): needs
 #                 sanitize_cli_output (workflow_issue_tracking.sh) loaded
+# issue_title <text> <fallback>
+#                 one GitHub issue title from agent text (#2915): sanitised,
+#                 with control characters and the bidirectional overrides and
+#                 isolates (U+202A to U+202E, U+2066 to U+2069) removed, then
+#                 break_refs. Titles are not HTML-escaped and an issue title
+#                 now opens with agent text, so an override left in it could
+#                 reorder what a reader sees. Above GitHub's 256 characters it
+#                 is cut back to the last space, with no truncation marker; a
+#                 256-character run with no space in it has no boundary to
+#                 keep and is cut where the limit falls. break_refs runs first
+#                 and never spans a space, so the cut cannot rejoin a broken
+#                 @ or #N, and jq counts codepoints, so no character is split.
+#                 <fallback> is the title when the result is empty or only
+#                 [[:space:]], because gh refuses an empty title; a text of
+#                 only zero-width characters is not caught by that test.
+#                 Needs sanitize_cli_output and jq.
 # AUTODRIVE_FINDING_JQ
 #                 jq definitions: `clean` (any value to a one-line string of
 #                 at most 200 characters) and `minor_finding($kw; $tkw)`,
@@ -57,6 +73,17 @@ break_refs() {
   local s="${1//@/@$ZW}"
   printf '%s' "$s" | sed -E -e "s/#([0-9])/#${ZW}\\1/g" -e "s#(github\\.com)/#\\1/${ZW}#Ig" \
     -e "s/\\b(GH)-([0-9])/\\1-${ZW}\\2/Ig"
+}
+
+issue_title() {
+  local t
+  t="$(break_refs "$(sanitize_cli_output "$1" | LC_ALL=C tr -d '[:cntrl:]' \
+    | LC_ALL=C sed -e $'s/\xe2\x80[\xaa-\xae]//g' -e $'s/\xe2\x81[\xa6-\xa9]//g')")"
+  t="$(jq -rn --arg t "$t" '
+    if ($t | length) <= 256 then $t
+    else $t[0:256] | (if test(" ") then sub(" [^ ]*\\z"; "") else . end) | sub("[[:space:]]+\\z"; "")
+    end')"
+  if [[ "$t" =~ ^[[:space:]]*$ ]]; then printf '%s' "$2"; else printf '%s' "$t"; fi
 }
 
 cell() {

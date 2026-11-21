@@ -267,6 +267,17 @@ Re-reviews carry the same obligations. Failure to file, resolve the task, or
 record the parent comment blocks readiness. Dry-run suppresses creation and
 reports missing obligations; `no_merge=true` alone permits follow-up work.
 
+Every follow-up issue carries the `follow-up` label, created once per run with
+`gh label create follow-up --force`. The force flag overwrites the colour and
+description of an existing `follow-up` label, including one set by a
+maintainer. An issue is never filed without the label: if it cannot be created,
+the create step fails and `followup-create-failed` reports gh's message. The
+title is the finding's summary with no task id, sanitised with mentions and
+references broken, and cut at the last space only above 256 characters. Because
+the summary is already clipped to 200 characters upstream, usually mid-word,
+that cut rarely applies. The body names the task, the PR and the last crusty
+round recorded at filing time (`not recorded` when none can be read).
+
 After each round record is written, an agent step
 (`autodrive-crusty-round.yaml` `step-07-select-next-action`) selects
 `complete` or `evaluate`. Rust validates the decision, the child status

@@ -25,24 +25,26 @@
 #           crusty-latest.json) is MINOR_ONLY, adds its .minor findings to the
 #           follow-up set followups.jsonl, first entry per id kept. A bad line
 #           fails; it is never dropped.
-# file      One `gh issue create --repo <owner/repo of the PR>` per finding id
-#           with no row in followups.tsv; the row (id, issue, task, PR) is
-#           appended straight after each create. The task id: --task-id, else
-#           the first Closes/Fixes/Resolves #N in the PR body, else in
-#           --task-text-file; an empty set needs none. When the task is an
-#           issue (#N), one `gh issue comment` on it then lists every
-#           follow-up, because merging the PR closes that issue while the
-#           follow-ups stay open; followups.parent records the list posted, and
-#           a changed list is posted again. On failure: followups.error, exit 1
-#           (gh's 79 is final and passed through); a full run removes it.
+# file      One labelled follow-up issue per unfiled finding, and the comment
+#           listing them on the plan task (autodrive_followups_file.sh). The
+#           task id: --task-id, else the first Closes/Fixes/Resolves #N in the
+#           PR body, else in --task-text-file; an empty set needs none.
 # check     No network: is every finding filed, and the parent comment posted?
 # gate      check as one evidence or blocker line (autodrive_followups_check.sh).
 # resolve-task  The one task-id rule (#1982): prints the id `file` uses for --task-id
 #           (#N, zeros dropped, or the id), else exit 2; the value is never logged.
 #
 # Exit 2 is a usage error. Agent text reaches gh only through --body-file,
-# after cell() (sanitised, HTML-escaped, mentions and links broken); the title
-# is sanitised text with the same breaks (break_refs), clipped to 80, one argument.
+# after cell(), and as one --title argument from issue_title() (both in
+# autodrive_finding_rules.sh): the finding in plain words, no task id, no
+# truncation marker, cut at a space only above GitHub's 256 characters. The
+# upstream clean() clips a summary to 200 first, so that cut rarely applies.
+# Every issue carries the follow-up label, made once per run by gh label
+# create --force, which settles an existing label's colour and description on
+# the fixed pair below. A refused label is logged with gh's own message and
+# does not end the drive; no issue is filed without the label, because the
+# create then fails into followup-create-failed. Task, PR and the last crusty
+# round recorded go in the body.
 # State files are private (umask 077, written through mktemp and mv -f), and a
 # symlinked or loose state file is refused. Logs carry ids, numbers and tokens.
 # A row append failing after gh succeeded refiles that finding on a rerun
@@ -56,6 +58,10 @@ umask 077
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 ID_RE='^[A-Za-z0-9._-]{1,64}$'
+# The label every follow-up carries (#2915) and the appearance --force settles
+# it on: fixed, so a repeat run does not recolour it at random.
+LABEL=follow-up; LABEL_COLOUR=0366d6
+LABEL_DESC='Follow-up work filed by auto-drive from a review'
 
 usage() {
   echo "ERROR: autodrive_followups: $1" >&2
@@ -299,102 +305,17 @@ fail() { # fail <token> <detail> [exit code]: records the token in followups.err
 }
 gh_line() { clip_line "$(cat -- "$1" 2>/dev/null)"; } # the first line of a gh stderr file
 
-# post_parent: one comment on the task issue listing every follow-up, posted
-# again only when the list changed; followups.parent records the list posted.
-post_parent() {
-  local key num tf rc
-  key="$(parent_key)"
-  if [ -z "$key" ]; then
-    [ ! -s "$TSV" ] || echo "INFO: followups: the task is not an issue number; no comment lists the follow-ups" >&2
-    return 0
-  fi
-  parent_commented && return 0
-  num="${key%%:*}"; tf="$PRIV/parent.md"
-  { printf 'Auto-drive filed follow-up issues for the minor crusty findings on PR #%s.\n' "$PR"
-    printf 'Merging that PR closes this issue. The task is not complete until these are done:\n\n'
-    LC_ALL=C awk -F '\t' 'NF { printf "- #%s (finding `%s`)\n", $2, $1 }' "$TSV"
-    printf '\n<!-- autodrive-followups-parent pr=%s -->\n' "$PR"
-  } > "$tf" || fail followup-comment-failed "the comment body for #${num} could not be written"
-  gh issue comment "$num" --repo "$repo" --body-file "$tf" < /dev/null > /dev/null 2>"$PRIV/gh.err"; rc=$?
-  [ "$rc" -ne 79 ] || fail followup-comment-failed "gh issue comment on #${num} exited 79; that code is final and is not retried" 79
-  [ "$rc" -eq 0 ] || fail followup-comment-failed "gh issue comment on #${num} exited ${rc}: $(gh_line "$PRIV/gh.err")"
-  printf '%s\n' "$key" | write_state followups.parent \
-    || fail followup-state-unsafe "the comment on #${num} was posted but followups.parent could not be written; a rerun posts it again"
-  echo "INFO: followups: the follow-up list is posted on task #${num}" >&2
-}
-
-cmd_file() {
-  local fset filed n task="" prj url body repo out rc num re title plain id summary evidence created=0 tf
-  [ -z "${JQ_MISSING:-}" ] || { echo "ERROR: followup-create-failed: jq is not on PATH" >&2; exit 1; }
-  state_ok || { echo "ERROR: followup-state-unsafe: the state dir is not private to this user" >&2; exit 1; }
-  for n in followups.jsonl followups.tsv followups.error followups.parent; do
-    safe_file "$STATE/$n" || fail followup-state-unsafe "$n is a symlink, not a regular file, or not private"
-  done
-  fset="$(norm_set "$SET_FILE")" || fail followup-set-invalid "followups.jsonl has a line that is not a valid finding"
-  rows_ok || fail followup-row-malformed "followups.tsv has a row that is not id, issue, task, PR #${PR}"
-  filed="$(filed_ids)"
-  n="$(printf '%s' "$fset" | jq --argjson d "$filed" '[.[] | select(.id as $i | $d | index([$i]) | not)] | length')"
-  if [ "$n" = 0 ] && parent_commented; then
-    rm -f -- "$ERR_FILE"
-    echo "INFO: followups: every minor finding has an issue ($(printf '%s' "$fset" | jq length) in the set)" >&2
-    printf 'followups-ok %s\n' "$(printf '%s' "$fset" | jq length)"
-    exit 0
-  fi
-  if [ "$n" != 0 ] && [ -n "$TASK_ID" ]; then
-    task="$(resolve_task "$TASK_ID")" || fail followup-task-unresolved "the plan task id is neither #N nor 1 to 64 of A-Za-z0-9._:/-"
-  fi
-  . "$HERE/workflow_issue_tracking.sh" 2>/dev/null && declare -F sanitize_cli_output >/dev/null \
-    || fail followup-create-failed "workflow_issue_tracking.sh is missing beside autodrive_followups.sh"
-  priv_dir || fail followup-create-failed "no private temporary directory"
-  prj="$(gh pr view "$PR" --json url,body < /dev/null 2>"$PRIV/gh.err")"; rc=$?
-  [ "$rc" -ne 79 ] || fail followup-repo-unresolved "gh exited 79 reading PR #${PR}; that code is final and is not retried" 79
-  [ "$rc" -eq 0 ] || fail followup-repo-unresolved "gh pr view ${PR} exited ${rc}: $(gh_line "$PRIV/gh.err")"
-  url="$(printf '%s' "$prj" | jq -r '.url // "" | strings' 2>/dev/null)"
-  re="^https://github\\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/pull/${PR}\$"
-  [[ "$url" =~ $re ]] || fail followup-repo-unresolved "the URL of PR #${PR} is not https://github.com/<owner>/<repo>/pull/${PR}"
-  repo="${BASH_REMATCH[1]}"
-  if [ "$n" != 0 ] && [ -z "$task" ]; then
-    body="$(printf '%s' "$prj" | jq -r '.body // "" | strings' 2>/dev/null)"
-    num="$(printf '%s' "$body" | closing_ref)"
-    if [ -z "$num" ] && [ -n "$TASK_FILE" ] && [ -f "$TASK_FILE" ]; then num="$(closing_ref < "$TASK_FILE")"; fi
-    [ -n "$num" ] && task="$(resolve_task "$num")" \
-      || fail followup-task-unresolved "no plan task id, and neither the PR body nor the task names Closes/Fixes/Resolves #N"
-  fi
-  [ "$n" = 0 ] || echo "INFO: followups: filing ${n} follow-up issue(s) in ${repo} for task ${task}, PR #${PR}" >&2
-  tf="$PRIV/body.md"
-  while IFS=$'\x1f' read -r id summary evidence; do
-    [[ "$id" =~ $ID_RE ]] || fail followup-set-invalid "a finding id is not valid"
-    plain="$(break_refs "$(sanitize_cli_output "$summary" | LC_ALL=C tr -d '[:cntrl:]')")"
-    title="$(jq -rn --arg t "Follow-up (${task}): ${plain}" '$t[0:80]')"
-    { printf 'Follow-up from the auto-drive crusty review of PR #%s.\n\n' "$PR"
-      printf 'Task: %s\nFinding: %s (severity: minor)\n\n' "$task" "$id"
-      printf 'Summary: %s\nEvidence: %s\n\n' "$(cell "$summary")" "$(cell "$evidence")"
-      printf '<!-- autodrive-followup task=%s finding=%s -->\n' "$task" "$id"
-    } > "$tf" || fail followup-create-failed "the issue body for ${id} could not be written"
-    out="$(gh issue create --repo "$repo" --title "$title" --body-file "$tf" < /dev/null 2>"$PRIV/gh.err")"; rc=$?
-    [ "$rc" -ne 79 ] || fail followup-create-failed "gh issue create for ${id} exited 79; that code is final and is not retried" 79
-    [ "$rc" -eq 0 ] || fail followup-create-failed "gh issue create for ${id} exited ${rc}: $(gh_line "$PRIV/gh.err")"
-    out="${out%$'\n'}"; out="${out##*$'\n'}"
-    re="^https://github\\.com/${repo//./\\.}/issues/([1-9][0-9]{0,9})\$"
-    [[ "$out" =~ $re ]] || fail followup-create-failed "gh issue create for ${id} printed no issue URL of ${repo}"
-    num="${BASH_REMATCH[1]}"
-    { safe_file "$TSV" && printf '%s\t%s\t%s\t%s\n' "$id" "$num" "$task" "$PR" >> "$TSV"; } \
-      || fail followup-state-unsafe "issue #${num} was created for ${id} but its followups.tsv row could not be written; a rerun files it again"
-    created=$((created + 1))
-    echo "INFO: followup ${id} -> #${num} (task ${task}, PR #${PR})" >&2
-  done < <(printf '%s' "$fset" | jq -r --argjson d "$filed" \
-             '.[] | select(.id as $i | $d | index([$i]) | not) | [.id, .summary, .evidence] | join("\u001f")')
-  [ "$created" = "$n" ] || fail followup-create-failed "${created} of ${n} follow-up issue(s) were filed"
-  post_parent
-  rm -f -- "$ERR_FILE"
-  printf 'followups-ok %s\n' "$(printf '%s' "$fset" | jq length)"
-}
-
-# --- check, gate --------------------------------------------------------------
+# --- file, check, gate -----------------------------------------------------
+# Each command that outgrew this brick lives in its own file beside it, loaded
+# only when that command runs. A missing file is an error, never a fallback.
 case "$CMD" in
-  check|gate)
-    # shellcheck source=/dev/null
-    . "$HERE/autodrive_followups_check.sh" 2>/dev/null \
-      || { echo "ERROR: autodrive_followups: autodrive_followups_check.sh is missing beside it" >&2; exit 1; } ;;
+  file) SUB=autodrive_followups_file.sh ;;
+  check|gate) SUB=autodrive_followups_check.sh ;;
+  *) SUB="" ;;
 esac
+if [ -n "$SUB" ]; then
+  # shellcheck source=/dev/null
+  . "$HERE/$SUB" 2>/dev/null \
+    || { echo "ERROR: autodrive_followups: $SUB is missing beside it" >&2; exit 1; }
+fi
 "cmd_${CMD}"
