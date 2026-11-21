@@ -9,10 +9,15 @@
 pub mod lock;
 pub mod power_steering;
 pub mod reflection;
+mod state_paths;
+
+#[cfg(test)]
+mod issue_2053_tests;
 
 use crate::protocol::{FailurePolicy, Hook};
-use amplihack_types::{HookInput, ProjectDirs};
+use amplihack_types::{HookInput, ProjectDirs, session_state_dir};
 use serde_json::Value;
+use state_paths::StopStatePaths;
 
 /// Default continuation prompt when lock mode is active.
 const DEFAULT_CONTINUATION_PROMPT: &str =
@@ -43,18 +48,22 @@ impl Hook for StopHook {
             _ => return Ok(approve()),
         };
 
-        let session_id = session_id.unwrap_or_else(get_session_id);
+        let Some(session_dir) = session_state_dir(session_id.as_deref()) else {
+            tracing::warn!("Stop state unavailable: no amplihack state root, approving");
+            return Ok(approve());
+        };
+        let state = StopStatePaths::new(session_dir);
         let dirs = ProjectDirs::from_cwd();
 
         // Check lock mode.
         if lock::is_lock_active(&dirs) {
-            return lock::handle_lock_mode(&dirs, &session_id);
+            return lock::handle_lock_mode_with_state(&dirs, &state);
         }
 
         // Check power steering (if enabled).
         if power_steering::should_run(&dirs)
             && let Some(block) =
-                power_steering::check(&dirs, &session_id, transcript_path.as_deref())?
+                power_steering::check_with_state(&dirs, &state, transcript_path.as_deref())?
         {
             return Ok(block);
         }
@@ -62,7 +71,7 @@ impl Hook for StopHook {
         // Run reflection (if enabled).
         if reflection::should_run(&dirs)
             && let Some(block) =
-                reflection::run_reflection(&dirs, &session_id, transcript_path.as_deref())?
+                reflection::run_reflection_with_state(&dirs, &state, transcript_path.as_deref())?
         {
             return Ok(block);
         }
@@ -74,18 +83,6 @@ impl Hook for StopHook {
 /// Approve (allow session to exit).
 fn approve() -> Value {
     serde_json::json!({"decision": "approve"})
-}
-
-/// Get the current session ID from env or generate one.
-fn get_session_id() -> String {
-    if let Ok(id) = std::env::var("CLAUDE_SESSION_ID") {
-        return id;
-    }
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("session-{}", now.as_secs())
 }
 
 #[cfg(test)]

@@ -113,6 +113,12 @@ impl Drop for CwdGuard {
 #[allow(dead_code)]
 pub(crate) mod scratch_base;
 
+/// A temporary fixture outside installed framework ancestors and real homes.
+/// Callers hold [`env_lock`] while selecting the scratch base.
+pub(crate) fn isolated_tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(scratch_base::scratch_base()).expect("isolated hook fixture directory")
+}
+
 #[cfg(unix)]
 #[path = "../../amplihack-cli/tests/support/exec_stub.rs"]
 #[allow(dead_code)]
