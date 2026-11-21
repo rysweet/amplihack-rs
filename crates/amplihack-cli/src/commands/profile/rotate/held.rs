@@ -48,10 +48,11 @@ pub(super) fn held_cycle(
         // the limit-resume hook wake sessions stopped before the switch.
         ctx.rs.save_ledger(&l)?;
     } else {
-        // Nothing was measured, so no `measured_at` (#1659), and `held`
-        // is not capacity: a hold with no switch record (a pin written
-        // by hand or by an older build) wakes no session.
-        save(ctx, &mut l, CycleOutcome::Held, t, None, None)?;
+        // Nothing was measured, so no `measured_at` (#1659), no room
+        // reading (#2857), and `held` is not capacity: a hold with no
+        // switch record (a pin written by hand or by an older build)
+        // wakes no session.
+        save(ctx, &mut l, CycleOutcome::Held, t, None, None, None)?;
     }
     drop(lock);
     match watch {

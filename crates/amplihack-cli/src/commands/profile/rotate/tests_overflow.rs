@@ -652,18 +652,24 @@ fn one_unknown_plan_probe_among_exhausted_ones_blocks_overflow() {
     assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
 }
 
+/// Issue #2857 changed this test's expectation and kept it. `decide` swaps
+/// onto spare, itself at a threshold (86% session at `--session-at` 85); that
+/// swap used to stand because the second pass of `plan_room::choose` took it.
+/// It no longer does, and with `extra` unknown nothing is spent either: the
+/// cycle is the ALERT, not overflow.
 #[test]
 fn an_unknown_plan_probe_keeps_a_threshold_swap_off_overflow() {
-    // decide swaps onto spare, itself at a threshold; with extra unknown that
-    // swap stands instead of overflow.
     let v = Case::new("work", measured(95.0, 40.0, FAR, FAR))
         .cand("spare", measured(86.0, 10.0, FAR, FAR))
         .cand("extra", timed_out())
         .cand("cred", exhausted(None, None))
         .overflow(&["cred"])
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::Threshold));
-    assert_eq!(v.tag, None);
+    assert_eq!(v.decision, Decision::Alert, "{v:?}");
+    assert_eq!(
+        v.tag, None,
+        "no overflow while a plan login is unknown or has room"
+    );
 }
 
 #[test]
@@ -1149,18 +1155,35 @@ fn either_plan_limit_takes_away_capacity() {
     assert_eq!(v.tag, Some(Tag::In));
 }
 
+/// Issue #2857 changed this test's expectation and kept it. `spare` at 86%
+/// session is past `--session-at` (85), so it is not plan capacity, and it is
+/// no longer a plan-room target either: `decide`'s swap onto it used to stand
+/// because the second pass of `plan_room::choose` took it. It has room, so no
+/// credit is spent (issue #1804), and nothing moves: the ALERT.
 #[test]
 fn a_plan_login_over_a_threshold_comes_before_overflow() {
-    // `spare` at 86% session is at `--session-at` (85), so it is not plan
-    // capacity, but it has room: `decide`'s free swap stands wherever the
-    // plan reset is, and no credit is spent (issue #1804).
     for reset in [Some(NOW + 5 * HOUR), Some(NOW + 600)] {
         let v = Case::new("work", exhausted(reset, reset))
             .cand("spare", measured(86.0, 10.0, reset, reset))
             .cand("cred", exhausted(reset, reset))
             .overflow(&["cred"])
             .run();
-        assert_eq!(v.decision, swap("spare", Reason::Threshold));
+        assert_eq!(v.decision, Decision::Alert, "{v:?}");
+        assert_eq!(v.tag, None, "no credit spend while a plan login has room");
+    }
+}
+
+/// The same cycle with the plan login under `--session-at` and a gain short of
+/// `--margin`: the free swap still happens, as a plan-room move.
+#[test]
+fn a_plan_login_under_the_session_threshold_without_capacity_comes_before_overflow() {
+    for reset in [Some(NOW + 5 * HOUR), Some(NOW + 600)] {
+        let v = Case::new("work", exhausted(reset, reset))
+            .cand("spare", measured(50.0, 97.0, reset, reset))
+            .cand("cred", exhausted(reset, reset))
+            .overflow(&["cred"])
+            .run();
+        assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
         assert_eq!(v.tag, None);
     }
 }

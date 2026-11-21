@@ -56,6 +56,46 @@ impl Marks {
         self.waited.contains(mark) || (self.used() && self.remaining(max) == Some(0))
     }
 
+    /// Whether the one wait a *contradicted signal* earns is refused (issue
+    /// #2857).
+    ///
+    /// The retry a wait earned met a limit at once, so what ended that wait
+    /// was wrong about the login. Waiting again on that same login is the
+    /// right answer, and the same-login rule is the one thing lifted here:
+    /// it exists to stop a step sleeping twice for the same reason, and this
+    /// is a different reason. This takes no mark for that reason.
+    ///
+    /// The budget rule is not lifted, and that is what bounds the chain. An
+    /// unset `max_wait_secs` is not an unlimited one: the step's budget is
+    /// then the length a capacity wait is planned with when nothing sets one
+    /// ([`plan::CAPACITY_DEFAULT_MAX`]), so a login that keeps claiming room
+    /// and keeps rejecting the retry runs out of budget rather than running
+    /// for ever. No count and no timer is added.
+    ///
+    /// The budget bounds a chain of waits that sleep. A wait that ends the
+    /// moment it starts spends none of it, so the budget alone does not bound
+    /// a chain of those. A re-entry for a reset that has already passed is
+    /// therefore not left as one: it is planned from capacity instead
+    /// ([`plan::upgrade_passed_reset`]), which gives it the step's remaining
+    /// budget as its deadline and so brings it back under this rule. That
+    /// holds whether or not another login could take over: with no rotator
+    /// and no second login nothing ends the wait early, so it spends the
+    /// budget out and the retry follows. Such a chain therefore ends.
+    ///
+    /// A reset plan with a deadline of now can still reach the caller from
+    /// three other sources. They are listed in a comment inside the body of
+    /// [`Waiter::after_limit`], above its [`Plan::ends_at_once`] check, which
+    /// rustdoc does not render, so read it in the source. For those sources
+    /// that check ends the step as a backstop.
+    ///
+    /// [`Plan::ends_at_once`]: super::plan::Plan::ends_at_once
+    /// [`Waiter::after_limit`]: super::Waiter::after_limit
+    /// [`plan::upgrade_passed_reset`]: super::plan::upgrade_passed_reset
+    /// [`plan::CAPACITY_DEFAULT_MAX`]: super::plan::CAPACITY_DEFAULT_MAX
+    pub(crate) fn refuses_reentry(&self, max: Option<u64>) -> bool {
+        self.spent >= max.unwrap_or(super::plan::CAPACITY_DEFAULT_MAX)
+    }
+
     /// Records a wait on `mark`, whether or not it slept.
     pub(crate) fn record(&mut self, mark: Option<String>) {
         self.waited.push(mark);

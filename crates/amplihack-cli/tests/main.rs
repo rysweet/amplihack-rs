@@ -407,6 +407,10 @@ mod issue_2731_login_change_wait;
 mod issue_2783_recipe_guide_work_root;
 #[path = "issue_2815_piped_prompt_wait.rs"]
 mod issue_2815_piped_prompt_wait;
+#[path = "issue_2857_limit_after_a_wait.rs"]
+mod issue_2857_limit_after_a_wait;
+#[path = "issue_2857_wakes_only_on_room.rs"]
+mod issue_2857_wakes_only_on_room;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
