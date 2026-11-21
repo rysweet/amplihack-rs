@@ -192,8 +192,10 @@ The shell path targets macOS Bash 3.2 and BSD utilities.
   [Apple `mktemp` source](https://github.com/apple-oss-distributions/shell_cmds/blob/shell_cmds-278/mktemp/mktemp.c#L94-L115).
   The [directory-precedence fixture](../../tests/integration/issue_2306_publish/recovery.rs)
   exercises the body writer's scratch files and cleanup.
-- **Pattern matching.** `workflow_delivery_inputs.sh` stores its PR URL pattern
-  in a variable, because Bash 3.2 cannot parse the inline grouping syntax.
+- **Pattern matching.** `delivery_run_base` holds its PR URL pattern in a
+  variable rather than writing it inline on the right of `=~`. Other bundled
+  tools still use the inline form, so treat this as the shape to copy when
+  touching that function, not as a swept rule.
 - **Case folding.** The repository comparison uses `nocasematch` under
   `LC_ALL=C`, which Bash 3.2 supports.
 

@@ -132,7 +132,10 @@ delivery_base_ref() {
 delivery_run_base() {
   local explicit="${1:-}" recorded="${2:-}" pr_ref="${3:-}" repo="${4:-}" branch="${5:-}" forbidden="${6:-}"
   local candidate="" url_repo raw ref
-  # Bash 3.2 cannot parse the inline grouping parentheses in [[ =~ ]].
+  # Held in a variable rather than written inline on the right of `=~`, which
+  # is the form that behaves the same across the Bash 3.2 that macOS ships and
+  # the Bash 5 used elsewhere. Quoting this expansion at the match site would
+  # make it a literal string, so it stays unquoted there.
   local pr_url_re='^https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/[1-9][0-9]*/?$'
   # 1. The run's own base_branch is never replaced.
   if [ -n "$explicit" ]; then

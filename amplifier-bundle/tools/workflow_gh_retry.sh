@@ -106,6 +106,12 @@ classify_gh_error() {
     printf 'auth\n'; return 0
   fi
 
+  # A validation rejection is permanent in every mode: 422, "validation failed"
+  # and "no commits between" never succeed on a retry, and such a rejection can
+  # quote a branch, title or Retry-After header matching the rate-limit or
+  # transient words below, so this stays ahead of them. Deliberately not scoped
+  # to create mode: az_repos_pr_create_with_retry classifies a create without
+  # passing one, and retrying a validation failure there risks a duplicate PR.
   if grep -Eiq 'HTTP(/[0-9.]+)?[[:space:]]+422([[:space:]:()]|$)|validation failed|no commits between' "$f"; then
     printf 'other\n'; return 0
   fi
