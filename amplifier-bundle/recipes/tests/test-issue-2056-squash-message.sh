@@ -146,7 +146,8 @@ if [ -n "$MARKER_LINE" ]; then
     "$(pv t "Desc.${NL}${NL}$(sed -n '/^<!-- merge-ready-report/,$p' "$TEMPLATE")")" "Desc." yes
 else fail MSG-template-marker "pr-description-template.md has no <!-- merge-ready-report marker line"; fi
 
-# ── 6. The merge tool uses the helper (#2575) ────────────────────────────────
+# ── 6. The merge tool uses the helper (#2575), and pins the head on every
+#      merge method (#1888) ────────────────────────────────
 FP="$(grep -v '^[[:space:]]*#' "$MERGE_TOOL" 2>/dev/null | tr '\n' ' ')"
 for clause in \
   'case "${AMPLIHACK_HOME:-}" in' \
@@ -155,6 +156,9 @@ for clause in \
   'autodrive_merge_subject "$json" "$pr"' \
   '! autodrive_merge_body "$json"' \
   '--match-head-commit "$sha" --subject "$subject" --body-file -' \
+  '--squash --match-head-commit "$sha" --subject "$subject" --body-file -' \
+  '--merge --match-head-commit "$sha" --subject "$subject" --body-file -' \
+  '--rebase --match-head-commit "$sha"' \
   "printf '%s' \"\$MERGE_BODY\" | gh pr merge"; do
   case "$FP" in *"$clause"*) pass MSG-finalize-prompt "autodrive_merge.sh says: ${clause:0:70}" ;;
     *) fail MSG-finalize-prompt "autodrive_merge.sh lacks: $clause" ;; esac

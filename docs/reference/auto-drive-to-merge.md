@@ -35,6 +35,7 @@ alternatives within the existing loop-health and budget rules.
 - [Crusty review](#crusty-review)
 - [Crusty completion decision contract](autodrive-crusty-completion.md)
 - [Readiness and finalization](#readiness-and-finalization)
+  - [Choosing the merge method](#choosing-the-merge-method-1888)
 - [Merge-ready round, merge and hand-off](autodrive-merge-ready-round.md)
 - [Loop health and budgets](#loop-health-and-budgets)
 - [Resumability](#resumability)
@@ -112,6 +113,7 @@ commands and expected outcomes.
 | `base_branch` | empty | Branch a new build starts from and its PR targets. Passed to `autodrive-build` and from there to `default-workflow`; see [`base_branch`](workflow-delivery-inputs.md#base_branch). Empty keeps the remote default branch, and finalize takes the base from the PR the build opened ([How finalize finds the base](workflow-delivery-inputs.md#how-finalize-finds-the-base)). |
 | `plan_task_id` | empty | Follow-up task: issue `N` or `#N`, or 1–64 characters from `A-Za-z0-9._:/-`. Otherwise resolve `Closes #N`, `Fixes #N`, or `Resolves #N` from the PR body, then task description. |
 | `no_merge` | `false` in the full composer | Prevent merging throughout the invocation when `true`. Build always receives `true`, independently of this outer value. |
+| `merge_method` | empty | The merge method this drive is to use: `merge`, `squash` or `rebase`. Empty leaves the choice to the repository's own allowed methods. A method the repository does not allow is never used; the drive hands the PR off instead. See [Choosing the merge method](#choosing-the-merge-method-1888). |
 | `autodrive_dry_run` | `false` | Prevent merging and follow-up issue creation. Still assesses readiness and reports missing obligations. |
 | `autodrive_state_dir` | runner-assigned | Private state for this run's round files and budgets. Omitted: the runner assigns a directory inside the run's durable folder. Supplied: must be non-empty, absolute and free of `..` components. See [state directory](#state-directory). |
 
@@ -364,10 +366,58 @@ path a same-user process could rewrite between a check and the read:
 
 ```bash
 printf '%s' "$MERGE_BODY" | gh pr merge <N> --squash --match-head-commit <sha> --subject "$subject" --body-file -
+printf '%s' "$MERGE_BODY" | gh pr merge <N> --merge --match-head-commit <sha> --subject "$subject" --body-file -
+printf '' | gh pr merge <N> --rebase --match-head-commit <sha>
 ```
 
+A merge commit takes the same composed subject and body as a squash, so a
+repository whose `merge_commit_message` is `PR_BODY` does not commit the
+merge-ready report either. A rebase writes no commit of its own, so it takes
+neither and no body is piped to it.
+
 A refusal from either function gives `message-unavailable` and a hand-off;
-the step does not fall back to the platform's default message.
+the step does not fall back to the platform's default message. The helper is
+called whichever method the drive settles on, so that result stays reachable
+exactly as it was.
+
+### Choosing the merge method (#1888)
+
+Some repositories require merge commits, and a squash would drop a commit
+that another repository pins. A pin of that kind cannot be restored
+afterwards, because force-pushes are blocked. So the method is chosen rather
+than fixed.
+
+`autodrive_merge` settles it immediately before the merge request, after every
+other condition has been met:
+
+1. The method the run was given in the `merge_method` context value, used only
+   where the repository allows it. The recipe reads that context value alone:
+   a method stated in a task description counts only if whoever launches the
+   run passes it as `-c merge_method=...`.
+2. Otherwise the first the repository allows, of squash, a merge commit, then
+   rebase, from one read of
+   `gh api "repos/{owner}/{repo}" --jq '[.allow_merge_commit,.allow_squash_merge,.allow_rebase_merge]|@tsv'`.
+
+A method the repository does not allow is never used, and no other method
+takes its place: an explicit method the repository disallows is refused.
+Where the method cannot be settled the result is `refused` with a reason
+beginning `the merge method could not be settled:` and naming what was found,
+which is the existing hand-off path rather than a new way for a run to stop.
+
+`--match-head-commit <expected sha>` accompanies every method, and no method
+is ever given `--admin`, `--auto` or `--bypass`. The caller's string never reaches the
+command line: it selects a branch in the tool, and the flag is a literal of
+the tool. Where a reason echoes the string it was given, the string is cut to
+32 characters and every non-printable or non-ASCII byte is replaced first;
+the finalisation statement and the hand-off treat that reason as a record of
+what the step found, not as an instruction.
+
+Every result line carries `merge_method` and `merge_method_reason`, and the
+finalisation statement says which method was used and why. See
+[Merge method](autodrive-merge-ready-round.md#merge-method).
+
+The separate `amplihack pr merge` command and the quality loop's own
+drive-green-PRs step still squash; they are not part of this drive.
 
 Two limitations stay open. An empty description gives `gh` an empty body;
 whether GitHub then falls back to its default message is unverified (#2263).

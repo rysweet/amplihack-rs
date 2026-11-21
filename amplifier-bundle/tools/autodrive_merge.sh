@@ -11,12 +11,13 @@
 #
 # This file only DEFINES a function; sourcing it has no other effect.
 #
-#   autodrive_merge <pr> <expected_sha>
+#   autodrive_merge <pr> <expected_sha> [merge_method]
 #       Calls gh once for each, in order: PR state, title, body and
 #       mergeStateStatus (one read), `checks --required` (falling back to all
-#       checks only when gh reports that no required checks exist), the merge,
-#       then either the PR state after the merge or, after a refusal, the
-#       mergeStateStatus once more.
+#       checks only when gh reports that no required checks exist), the
+#       repository's allowed merge methods, the merge, then either the PR
+#       state after the merge or, after a refusal, the mergeStateStatus once
+#       more.
 #       No retries and no waits: a pending check ends this call with
 #       checks-pending, and the next drive run reads the checks again. A PR
 #       with no checks reported at all goes on to GitHub's own decision.
@@ -34,17 +35,40 @@
 #            after GitHub declined it; the merge loop merges the base in
 #         79 a gh call exited 79 (terminal refusal); passed through at once
 #
-# The squash subject and body come from the trusted launch-bundle copy of
+# The merge subject and body come from the trusted launch-bundle copy of
 # autodrive_merge_message.sh (#2056), sourced only from the absolute
 # AMPLIHACK_HOME and never through a symbolic link. The body reaches gh on
 # standard input.
+#
+# The merge method (#1888). A repository that requires merge commits cannot be
+# merged with --squash, so the method is chosen rather than fixed: the method
+# the run was given when the repository allows it, otherwise squash, then a
+# merge commit, then rebase, from what `gh api repos/{owner}/{repo}` reports
+# the repository allows. A method the repository does not allow is never used
+# and no other method takes its place. The caller's string never reaches the
+# argv: it selects a branch, and the flag is a literal written here. Where the
+# method cannot be settled the result is `refused` (4), which finalisation
+# already hands to an agent step, with a reason naming what was found. The
+# chosen method and the reason are recorded on every result line as
+# `merge_method` and `merge_method_reason`.
 
 autodrive_merge() {
   local -x LC_ALL=C
-  local pr="${1:-}" sha="${2:-}" mm state rc vrc out errf json subject ms
+  local pr="${1:-}" sha="${2:-}" given="${3:-}" mm state rc vrc out errf json subject ms
+  local method="" method_reason="" allow_merge="" allow_squash="" allow_rebase=""
+  local api_out api_rc parsed shown
+  local -a argv
   _autodrive_merge_emit() { # <result> <reason>
     jq -cn --arg r "$1" --argjson pr "$pr" --arg sha "$sha" --arg why "$2" \
-      '{result:$r,pr:$pr,expected_head:$sha,reason:$why}'
+      --arg mm "$method" --arg mmr "$method_reason" \
+      '{result:$r,pr:$pr,expected_head:$sha,reason:$why,merge_method:$mm,merge_method_reason:$mmr}'
+  }
+  # _autodrive_merge_shown <text>: a caller's own string made safe to name in a
+  # reason. Bytes outside printable ASCII become '?', and the result is cut at
+  # 32 bytes, so no quote, newline or escape sequence travels on into the
+  # finalisation statement or the hand-off comment.
+  _autodrive_merge_shown() {
+    printf '%s' "$1" | tr -c '\040-\176' '?' | head -c 32
   }
   # _autodrive_merge_wait <gh pr checks output>: checks-pending, naming the
   # pending checks with control characters removed and cut at 300 bytes.
@@ -54,8 +78,8 @@ autodrive_merge() {
       | tr '\n' ',' | tr -d '\000-\037\177' | sed 's/,$//; s/,/, /g' | head -c 300)"
     _autodrive_merge_emit checks-pending "waiting for ${names:-required checks} at ${sha}"
   }
-  if [ "$#" -ne 2 ] || ! [[ "$pr" =~ ^[1-9][0-9]{0,9}$ ]] || ! [[ "$sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
-    echo "ERROR: autodrive_merge: expected <pr> (a positive integer) and <expected_sha> (40 or 64 lowercase hex characters)" >&2
+  if { [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; } || ! [[ "$pr" =~ ^[1-9][0-9]{0,9}$ ]] || ! [[ "$sha" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+    echo "ERROR: autodrive_merge: expected <pr> (a positive integer), <expected_sha> (40 or 64 lowercase hex characters) and an optional <merge_method>" >&2
     return 2
   fi
   case "${AMPLIHACK_HOME:-}" in
@@ -119,11 +143,87 @@ autodrive_merge() {
   fi
 
   if ! subject="$(autodrive_merge_subject "$json" "$pr")" || ! autodrive_merge_body "$json"; then
-    _autodrive_merge_emit message-unavailable "the PR title or body could not be read into a squash message (#2056)"
+    _autodrive_merge_emit message-unavailable "the PR title or body could not be read into a merge message (#2056)"
     return 6
   fi
 
-  printf '%s' "$MERGE_BODY" | gh pr merge "$pr" --squash --match-head-commit "$sha" --subject "$subject" --body-file -
+  # The merge method (#1888). Every path that ends before this point makes no
+  # repository call, so a PR that is not open, whose checks are not green or
+  # whose branch conflicts still ends exactly as it did.
+  case "$given" in
+    ""|merge|squash|rebase) ;;
+    *)
+      shown="$(_autodrive_merge_shown "$given")"
+      method_reason="the run was given '${shown}', which is not merge, squash or rebase"
+      _autodrive_merge_emit refused "the merge method could not be settled: ${method_reason}"
+      return 4 ;;
+  esac
+  # One read of the repository's own settings. An explicit method is checked
+  # against it too: GitHub refuses a method the repository disallows, so a run
+  # that was given one is handed off with the reason rather than sent to a
+  # certain refusal.
+  api_out="$(gh api "repos/{owner}/{repo}" --jq '[.allow_merge_commit,.allow_squash_merge,.allow_rebase_merge]|@tsv')"; api_rc=$?
+  [ "$api_rc" -eq 79 ] && return 79
+  if [ "$api_rc" -ne 0 ]; then
+    method_reason="the repository's allowed methods could not be read (gh exit ${api_rc})"
+    _autodrive_merge_emit refused "the merge method could not be settled: ${method_reason}"
+    return 4
+  fi
+  # One line of exactly three true/false fields, or nothing: a reading that is
+  # anything else is unsettled, never guessed at.
+  parsed="$(printf '%s' "$api_out" | awk -F '\t' '
+    NR > 1 { bad = 1 }
+    NR == 1 && NF == 3 \
+      && ($1 == "true" || $1 == "false") \
+      && ($2 == "true" || $2 == "false") \
+      && ($3 == "true" || $3 == "false") { ok = 1; m = $1; s = $2; r = $3 }
+    END { if (ok && !bad) printf "%s %s %s", m, s, r }')"
+  if [ -z "$parsed" ]; then
+    method_reason="the repository's allowed methods did not read as three true or false values"
+    _autodrive_merge_emit refused "the merge method could not be settled: ${method_reason}"
+    return 4
+  fi
+  read -r allow_merge allow_squash allow_rebase <<<"$parsed"
+  if [ -n "$given" ]; then
+    case "$given" in
+      merge)  [ "$allow_merge" = true ] && method=merge ;;
+      squash) [ "$allow_squash" = true ] && method=squash ;;
+      rebase) [ "$allow_rebase" = true ] && method=rebase ;;
+    esac
+    if [ -z "$method" ]; then
+      method_reason="the run was given '$(_autodrive_merge_shown "$given")', which this repository does not allow (merge commits ${allow_merge}, squash ${allow_squash}, rebase ${allow_rebase})"
+      _autodrive_merge_emit refused "the merge method could not be settled: ${method_reason}"
+      return 4
+    fi
+    method_reason="the run was given the merge method '${method}', and the repository allows it"
+  elif [ "$allow_squash" = true ]; then
+    method=squash
+    method_reason="no merge method was given to the run, and the repository allows squash"
+  elif [ "$allow_merge" = true ]; then
+    method=merge
+    method_reason="no merge method was given to the run; the repository does not allow squash and does allow merge commits"
+  elif [ "$allow_rebase" = true ]; then
+    method=rebase
+    method_reason="no merge method was given to the run; the repository allows neither squash nor merge commits, and does allow rebase"
+  else
+    method_reason="the repository allows no merge method (merge commits ${allow_merge}, squash ${allow_squash}, rebase ${allow_rebase})"
+    _autodrive_merge_emit refused "the merge method could not be settled: ${method_reason}"
+    return 4
+  fi
+
+  # The flag is a literal of this file, chosen by the branch above. A merge
+  # commit takes the same cut message as a squash (#2056); a rebase writes no
+  # commit of its own, so it takes neither, and no body is piped to it.
+  case "$method" in
+    squash) argv=(--squash --match-head-commit "$sha" --subject "$subject" --body-file -) ;;
+    merge)  argv=(--merge --match-head-commit "$sha" --subject "$subject" --body-file -) ;;
+    rebase) argv=(--rebase --match-head-commit "$sha") ;;
+  esac
+  if [ "$method" = rebase ]; then
+    printf '' | gh pr merge "$pr" "${argv[@]}"
+  else
+    printf '%s' "$MERGE_BODY" | gh pr merge "$pr" "${argv[@]}"
+  fi
   rc="${PIPESTATUS[1]}"
   [ "$rc" -eq 79 ] && return 79
   if [ "$rc" -ne 0 ]; then
@@ -136,7 +236,7 @@ autodrive_merge() {
     ms=""
     if [ "$vrc" -eq 0 ]; then
       if _autodrive_merge_at_head "$json"; then
-        _autodrive_merge_emit merged "GitHub reads the PR merged at the expected head although gh exited ${rc}; report cut from the squash body: ${MERGE_REPORT_CUT:-no}"
+        _autodrive_merge_emit merged "GitHub reads the PR merged at the expected head although gh exited ${rc}; report cut from the merge body: ${MERGE_REPORT_CUT:-no}"
         return 0
       fi
       ms="$(printf '%s' "$json" | jq -r '.mergeStateStatus // empty | strings' 2>/dev/null)"
@@ -158,6 +258,6 @@ autodrive_merge() {
     _autodrive_merge_emit refused "the merge request returned but the PR does not read MERGED at the expected head (state '${state:-unreadable}')"
     return 4
   fi
-  _autodrive_merge_emit merged "merged at the expected head; report cut from the squash body: ${MERGE_REPORT_CUT:-no}"
+  _autodrive_merge_emit merged "merged at the expected head; report cut from the merge body: ${MERGE_REPORT_CUT:-no}"
   return 0
 }

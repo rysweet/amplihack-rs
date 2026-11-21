@@ -54,6 +54,9 @@ context:
   autodrive_state_dir: ""
   autodrive_dry_run: "false"
   no_merge: "true"
+  # #1888: as in auto-drive-to-merge; empty leaves the choice to the
+  # repository's own allowed methods.
+  merge_method: ""
   light_prereqs: ""
   autodrive_pr_input: ""
   light_task_id: ""
@@ -445,6 +448,7 @@ steps:
       autodrive_dry_run: "{{autodrive_dry_run}}"
       plan_task_id: "{{light_task_id}}"
       no_merge: "{{no_merge}}"
+      merge_method: "{{merge_method}}"
       build_result: "{{build_result}}"
   - id: "light-report"
     type: "bash"
