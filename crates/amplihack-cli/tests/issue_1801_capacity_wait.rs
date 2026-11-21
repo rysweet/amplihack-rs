@@ -43,7 +43,6 @@ const NO_RESET_TEXT: &str = "You've hit your session limit · try again later";
 /// `WEEKLY_TEXT` read at `TEST_NOW`: October 8 has passed, so it is next year's.
 pub(crate) const WEEKLY_RESET: &str = "2027-10-08 00:00:00 -07:00";
 const FAILED_EXPIRED: &str = "failed reason=capacity_expired: usage limit not lifted";
-const FAILED_AGAIN: &str = "failed reason=already_waited: usage limit not lifted";
 
 pub(crate) fn real_now() -> i64 {
     SystemTime::now()
@@ -76,13 +75,16 @@ fn replace(path: &Path, body: &str) {
     fs::rename(&tmp, path).unwrap();
 }
 
-/// The rotate ledger: `live` is live, its last cycle measured at `at`.
+/// The rotate ledger: `live` is live, its last cycle measured at `at`. Since
+/// issue #2857 the cycle also records `live_room: true`, as the rotator writes it
+/// for a login below its own thresholds: a wait wakes on the rotator's capacity
+/// only with it (`issue_2857_wakes_only_on_room.rs` covers a cycle without).
 pub(crate) fn write_cycle(profiles: &Path, live: &str, at: i64) {
     private_dirs(profiles);
     replace(
         &rotate_ledger(profiles),
         &format!(
-            r#"{{"version":1,"live":"{live}","alert":null,"last_cycle":{{"at":{at},"measured_at":{at},"outcome":"swapped"}}}}"#
+            r#"{{"version":1,"live":"{live}","alert":null,"last_cycle":{{"at":{at},"measured_at":{at},"outcome":"swapped","live_room":true}}}}"#
         ),
     );
 }
@@ -652,13 +654,23 @@ fn the_exit_code_passes_through_unchanged() {
 /// *login*, not one per step, so what the retry runs on decides whether a
 /// second wait starts. Here the rotator's cycle keeps X live, so the retry
 /// runs on the login the step already waited on and AC15 holds unchanged.
+///
+/// Issue #2857 changed it again and kept it. The wait ended on the rotator's
+/// fresh capacity, which says *try now*; the retry ran on X, the login that
+/// already had its wait, and was limited, so the signal was wrong. That is the
+/// case the same-login refusal was never meant to cover: the step waits again
+/// and says so once. The second wait is bounded by what the first left of
+/// `max_wait_secs` (120 here, so about 90 virtual seconds), and nothing lifts
+/// X's limit, so it ends as a capacity wait does, at its deadline. The refusal
+/// for a wait that ended at its own ceiling is in
+/// `issue_2857_limit_after_a_wait.rs`.
 #[test]
-fn ac15_a_retry_on_the_same_login_gets_no_second_wait() {
+fn ac15_a_retry_on_the_same_login_after_a_wake_waits_again_inside_the_budget() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
-    c.env("LIMIT_CALLS", "5");
+    c.env("LIMIT_CALLS", "5").env(MAX_WAIT_ENV, "120");
     real_clock(&mut c);
     let profiles = f.profiles.clone();
     let out = run_during_wait(&f, &mut c, move || {
@@ -667,14 +679,20 @@ fn ac15_a_retry_on_the_same_login_gets_no_second_wait() {
         write_cycle(&profiles, "X", real_now());
     });
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(f.count("0"), 2, "one wait, one retry, then give up");
+    assert_eq!(f.count("0"), 2, "one wait, one retry, one more wait");
     let ev = events(&out);
-    assert_eq!(ev.iter().filter(|l| l.starts_with("start ")).count(), 1);
+    assert_eq!(ev.iter().filter(|l| l.starts_with("start ")).count(), 2);
     assert_eq!(
         ev[ev.len() - 2..],
-        ["skipped reason=already_waited", FAILED_AGAIN],
+        ["end reason=capacity expired", FAILED_EXPIRED],
         "{ev:?}"
     );
+    assert_eq!(
+        ev.iter().filter(|l| l.starts_with("reentered ")).count(),
+        1,
+        "reported once: {ev:?}"
+    );
+    assert!(!ev.iter().any(|l| l.contains("already_waited")), "{ev:?}");
     assert!(
         text(&out.stderr).contains("You've hit your weekly limit"),
         "the runner's classifier must still see the limit"

@@ -313,10 +313,18 @@ fn cycle1_f(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 
 /// Cycle 2: `spare` is now live and full; `work`'s stored reading is the
 /// one taken before the swap, on which it looks better than `spare`.
+///
+/// Issue #2857 moved that stored reading from 86% to 80% session. At 86% it
+/// was past `--session-at` (85) and swapped back only through the second pass
+/// of `plan_room::choose`, which no longer exists: the rotator makes no swap
+/// onto a login at its threshold, so there was no decision left for the gate
+/// to hold. At 80% the swap back is a threshold swap onto a login with
+/// capacity, so this cycle still reaches the gate, which is what the replay
+/// tests.
 fn cycle2_f(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let before_swap = CYCLE1_F.load(Ordering::SeqCst);
-    let probes = probes_for(snap, &[("work", rd(86.0, 20.0, Some(before_swap)))]);
+    let probes = probes_for(snap, &[("work", rd(80.0, 20.0, Some(before_swap)))]);
     let m = decide_measured(ctx, snap, rd(95.0, 35.0, None), probes, at)?;
     assert!(
         matches!(&m.decision, Decision::Swap { to, .. } if to == &n("work")),
@@ -466,7 +474,7 @@ fn cycle1_h(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 fn cycle2_h(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let before_swap = CYCLE1_H.load(Ordering::SeqCst);
-    let probes = probes_for(snap, &[("work", rd(86.0, 20.0, Some(before_swap)))]);
+    let probes = probes_for(snap, &[("work", rd(80.0, 20.0, Some(before_swap)))]);
     decide_measured(ctx, snap, rd(95.0, 35.0, None), probes, at)
 }
 

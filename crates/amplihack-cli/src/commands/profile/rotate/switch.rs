@@ -355,6 +355,7 @@ fn record_switch(rs: &RotateState) -> Result<(), ProfileError> {
         measured_at: Some(t),
         outcome: SWITCHED.into(),
         overflow: None,
+        live_room: None,
     });
     rs.save_ledger(&l)
 }

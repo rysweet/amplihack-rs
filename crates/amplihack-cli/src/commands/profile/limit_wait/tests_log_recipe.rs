@@ -17,6 +17,7 @@
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_log_recipe;`.
 
+use super::Met;
 use super::events::{Event, FailReason, Shape, Skip, line, recipe_line};
 use super::plan::{Bound, NoWait};
 use super::wait::End;
@@ -285,5 +286,46 @@ fn only_start_and_end_reach_the_recipe_log() {
             None,
             "only the start and end of a wait belong in the recipe log"
         );
+    }
+}
+
+// --- Issue #2857: the re-entry line in its two sinks ---------------------------
+//
+// `reentered` is the third event that reaches the run's recipe log, beside a
+// wait's `start` and `end`. It is the stderr line, unchanged, and it carries
+// no `account=`: it says that this wait follows a contradicted signal, and
+// which wait it is is already on the `start` line after it. Nothing in the
+// control path reads the log back, so the line is for a person.
+
+#[test]
+fn issue_2857_the_re_entry_line_reaches_the_recipe_log_unchanged() {
+    for met in [Met::UsageLimit, Met::RateLimit] {
+        let e = Event::Reentered { met };
+        assert_eq!(recipe(&e, Some("work")), Some(stderr(&e)), "{met:?}");
+        assert_eq!(recipe(&e, None), Some(stderr(&e)), "{met:?}");
+    }
+}
+
+#[test]
+fn issue_2857_the_re_entry_line_never_carries_the_login() {
+    let e = Event::Reentered {
+        met: Met::RateLimit,
+    };
+    let l = recipe(&e, Some("work")).expect("it reaches the recipe log");
+    assert!(!l.contains("account="), "{l}");
+    assert!(!l.contains("work"), "{l}");
+}
+
+/// The recipe log still carries nothing but a wait's `start`, its `end` and
+/// this line: no `progress`, `resume`, `skipped` or `failed`.
+#[test]
+fn issue_2857_the_re_entry_line_is_the_only_addition_to_what_the_recipe_log_carries() {
+    for e in [
+        Event::Progress { remaining: 5 },
+        Event::Resume { attempt: 2 },
+        Event::Skipped(Skip::AlreadyWaited),
+        Event::Failed(FailReason::AlreadyWaited),
+    ] {
+        assert_eq!(recipe(&e, Some("work")), None);
     }
 }

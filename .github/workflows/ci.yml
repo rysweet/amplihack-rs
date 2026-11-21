@@ -770,6 +770,14 @@ jobs:
       - name: "Outside-in - Usage limit on a piped prompt (issue #2815)"
         shell: bash
         run: AMPLIHACK_2815_QA_REQUIRE_ALL=1 AMPLIHACK_2815_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2815-piped-prompt-wait-scenario.sh
+      # Issue #2857: a limit on the retry a wait earned is waited for again and
+      # reported once, and a wait wakes on a login change only when the rotator's
+      # last cycle records room on the login now live. Runs against the binary
+      # installed above, with a stub agent and a stub rotator ledger; no real
+      # account, rotator or network.
+      - name: "Outside-in - Limit wait wakes only on room (issue #2857)"
+        shell: bash
+        run: AMPLIHACK_2857_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2857-wait-wakes-on-room-scenario.sh
       # Issue #2343: finalization reports the run's real outcome. A pull request
       # open at the pushed head with checks still pending is a success that
       # hands the pull request on, not an implementation failure; one at an

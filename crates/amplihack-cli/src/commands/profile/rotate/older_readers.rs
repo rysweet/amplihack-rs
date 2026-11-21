@@ -25,13 +25,17 @@ use super::ledger::{RotateLedger, RotateState};
 ///   `platform_block` and `live_kind`, nothing is gained by keeping it for a
 ///   rotator that would refuse the whole ledger;
 /// - `advisory_alert` (issue #1907). Without it an older rotator logs the
-///   advisory ALERT once more; `alert` stays empty, so no hook is blocked.
+///   advisory ALERT once more; `alert` stays empty, so no hook is blocked;
+/// - `last_cycle.live_room` (issue #2857). Only this binary's usage-limit
+///   wait reads it, and without it a wait sleeps to its reset instead of
+///   waking on a login change, which is the safe direction.
 pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
     let mut out = l.clone();
     if older {
         if let Some(c) = &mut out.last_cycle {
             c.measured_at = None;
             c.overflow = None;
+            c.live_room = None;
         }
         out.overflow_blocked.clear();
         out.guidance = None;

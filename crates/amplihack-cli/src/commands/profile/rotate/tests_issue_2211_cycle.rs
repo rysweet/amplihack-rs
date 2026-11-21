@@ -702,39 +702,64 @@ fn e2_an_old_reading_near_the_threshold_whose_reread_fails_swaps() {
 
 lane!(lsf);
 
+/// The substitution's floor (`live_fresh::step`: `at.max(last.session)
+/// .max(stale)`) carries the decision only when the last known figure is above
+/// `--session-at`. A stale reading that is itself at or above the threshold
+/// needs a swap on its own, so `with_outlook` keeps the measured verdict and
+/// the outlook is discarded. So the 95% goes into the series in cycle 1, and
+/// cycle 2's stale reading sits below the threshold at 66%.
+///
+/// `spare` sits at 68%, under `--session-at`, so it is a login with capacity:
+/// a login at or above the threshold is never a threshold target. Decided on
+/// the last known 95%, it has 27 points more headroom than the live login,
+/// above `--margin` 5: a swap, relabelled `reason=projected` because the 66%
+/// as read needs none (`map_reason`). Decided on the threshold 70% it has 2
+/// more, below `--margin`, so there is no swap and no capacity to name. The
+/// outcome is what tells the two apart. The log does not: `msg::swap` shows
+/// the reading as read, never the figure the decision ran on.
+///
+/// That the rotator makes no plan-room swap onto a login at `--session-at` is
+/// pinned by `choose_treats_a_login_exactly_at_session_at_as_at_its_threshold`
+/// (`tests_issue_1804.rs`), the one test of that property, not by this one.
 #[test]
-fn e2b_a_stale_95_percent_whose_reread_fails_still_swaps_to_a_70_percent_candidate() {
+fn e2b_a_stale_reading_after_95_percent_is_decided_on_95_not_the_threshold() {
     let e = env();
     seed(&lsf::CLOCK);
     let at1 = lsf::clock();
-    set(&lsf::LIVE, &[Live::Direct(66.0, 41.0)]);
-    set(
-        &lsf::OTHERS,
-        &[
-            ("spare", rd(70.0, 40.0, None)),
-            ("work", rd(0.0, 40.0, None)),
-        ],
-    );
+    // Cycle 1 reads 95% directly and nothing has room. The ALERT is advisory
+    // while the live login still has room, so the cycle stays. It puts the
+    // 95% in the series as the last known figure.
+    set(&lsf::LIVE, &[Live::Direct(95.0, 41.0)]);
+    set(&lsf::OTHERS, &spare_full());
     let mut c = ctx(&e, lsf::clock, lsf::measure, Some(lsf::reread));
-    assert_eq!(step(&mut c, &lsf::CLOCK), CycleOutcome::Stayed);
-    // Cycle 2 sees a stale 95%, and its re-read fails.
+    assert_eq!(
+        step(&mut c, &lsf::CLOCK),
+        CycleOutcome::Stayed,
+        "nothing has room in cycle 1"
+    );
+    let cycle1 = log_of(&e).len();
+    // Cycle 2 sees a stale 66%, below `--session-at`, and its re-read fails.
+    // `spare` is at 68%: 32 points of headroom, 27 more than the live login
+    // has at 95%, and 2 more than it has at 70%.
     lsf::CLOCK.store(at1 + 2 * INTERVAL, std::sync::atomic::Ordering::SeqCst);
-    set(&lsf::LIVE, &[Live::Passive(95.0, 41.0, 2 * INTERVAL)]);
+    set(&lsf::LIVE, &[Live::Passive(66.0, 41.0, 2 * INTERVAL)]);
+    set(&lsf::OTHERS, &spare_at_68());
     lsf::STEP.store(0, std::sync::atomic::Ordering::SeqCst);
     let got = step(&mut c, &lsf::CLOCK);
     let log = log_of(&e);
+    let cycle2 = &log[cycle1..];
     assert_eq!(lsf::live_calls(), 1, "{log}");
     assert_eq!(got, CycleOutcome::Swapped, "decided on 95, not 70: {log}");
-    // Decided on the measured 95% by the rules as merged with #2136: `spare`
-    // at 70% has room but not capacity at `--session-at 70`, so its pools
-    // label the move `plan-room`. On the substituted 70% it would be the
-    // ALERT (0 points of gain), and it is never a projected swap.
     assert!(
-        log.contains("swap work->spare live s=95% w=41% target s=70% w=40% reason=plan-room"),
-        "95% needs a swap: {log}"
+        cycle2.contains("swap work->spare live s=66% w=41% target s=68% w=40% reason=projected"),
+        "{log}"
     );
-    assert!(!log.contains("reason=projected"), "{log}");
-    assert!(!log.contains("ALERT: no profile has capacity"), "{log}");
+    assert!(!cycle2.contains("ALERT: no profile has capacity"), "{log}");
+    let (stale, failed) = (log.find(STALE), log.find(FAILED));
+    assert!(
+        stale.is_some() && failed.is_some() && stale < failed,
+        "failure logged:\n{log}"
+    );
 }
 
 lane!(lsg);
@@ -1213,6 +1238,12 @@ fn a_creeping_cache_in_the_same_window_never_clears_the_lag() {
 }
 
 // Issue comment: 100% -> 90%, then an older 0%/0% for the login just left.
+//
+// Issue #2857 moved the login swapped to from 90% to 65% session
+// (`--session-at 70`). At 90% the swap was the plan-room swap onto a login
+// past the threshold, which the rotator no longer makes, so there was no swap
+// to bounce back from; at 65% it is a threshold swap onto a login with
+// capacity, which is the swap the replay needs.
 lane!(bounce);
 
 #[test]
@@ -1222,11 +1253,11 @@ fn a_hundred_to_ninety_swap_never_bounces_back_on_older_zero_capacity() {
     seed(&bounce::CLOCK);
     let before_use = bounce::CLOCK.load(Ordering::SeqCst) - 1;
     set(&bounce::LIVE, &[Live::Direct(100.0, 20.0)]);
-    set(&bounce::OTHERS, &[("spare", rd(90.0, 20.0, None))]);
+    set(&bounce::OTHERS, &[("spare", rd(65.0, 20.0, None))]);
     set(&bounce::REREAD, &[exh(100.0, 20.0)]);
     let mut c = ctx(&e, bounce::clock, bounce::measure, Some(bounce::reread));
     assert_eq!(step(&mut c, &bounce::CLOCK), CycleOutcome::Swapped);
-    assert_eq!(ino_at(&e.live()), Some(e.t), "90% spare becomes live");
+    assert_eq!(ino_at(&e.live()), Some(e.t), "65% spare becomes live");
     // Its next measured value is 100%. Work looks completely unused, but
     // that measurement predates its most recent use.
     set(&bounce::OTHERS, &[("work", rd(0.0, 0.0, Some(before_use)))]);

@@ -71,6 +71,18 @@ pub(crate) trait WaitDeps {
     fn rotator_capacity(&mut self, start: i64) -> bool;
     /// A reading taken after `start` shows another stored login has capacity.
     fn other_capacity(&mut self, start: i64) -> bool;
+    /// Whether a login change that has been seen may end this wait: the
+    /// login now live has room (issue #2857).
+    ///
+    /// Asked only once a change has been seen, and last in the conjunction,
+    /// so a wait that sees no change makes no extra reading. A change the
+    /// answer holds back is not forgotten: the wait keeps polling and ends
+    /// on the change at the first poll where the answer is yes.
+    ///
+    /// It has no default body on purpose. An implementor that forgot it
+    /// would fail open, which is the one direction this must not fail in,
+    /// so such an implementor does not compile.
+    fn change_may_end(&mut self) -> bool;
     fn log(&mut self, line: &str);
 }
 
@@ -103,6 +115,21 @@ impl End {
             End::SessionEnded => "session ended",
             End::Signal(_) => "signal",
         }
+    }
+
+    /// Whether this end claimed the retry it earns should work, so a limit
+    /// on that retry contradicts it (issue #2857).
+    ///
+    /// A reset that arrived, the rotator's capacity, a login change and
+    /// another login's room each say *try now*. The rest (a maximum, a
+    /// capacity wait's deadline, the step's timeout, the session's end and a
+    /// stop signal) are the wait running out, and claim nothing, so a limit
+    /// after one of them is no contradiction and the ordinary refusals hold.
+    pub(crate) fn said_try_now(self) -> bool {
+        matches!(
+            self,
+            End::ResetReached | End::RotatorCapacity | End::LoginChanged | End::OtherCapacity
+        )
     }
 
     fn at_deadline(bound: Bound, kind: PlanKind) -> Self {
@@ -144,7 +171,12 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
                 None if probe == last => baseline = Some(std::mem::replace(&mut last, probe)),
                 None => last = probe,
                 Some(base) => {
-                    if probe != base && probe == last {
+                    // Issue #2857: the fingerprint says the login moved, not
+                    // that the one it moved to can be used. The baseline is
+                    // put back when the room gate says no, so the change is
+                    // still a change at the next poll and ends the wait as
+                    // soon as the login now live has room.
+                    if probe != base && probe == last && deps.change_may_end() {
                         return End::LoginChanged;
                     }
                     baseline = Some(base);
@@ -174,7 +206,10 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
             // case no capacity source speaks for: a login-change wait,
             // where both are suppressed and the fingerprint's baseline has
             // not settled yet (issue #2731).
-            if deps.login_changed() {
+            // Issue #2857: gated on room, as the fingerprint above is. The
+            // key is read first, so a wait that sees no change still asks
+            // nothing about room.
+            if deps.login_changed() && deps.change_may_end() {
                 return End::LoginChanged;
             }
             next_poll = now.saturating_add(POLL_SECS);
