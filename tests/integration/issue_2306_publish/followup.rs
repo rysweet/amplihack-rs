@@ -302,7 +302,7 @@ fn followup_unreadable_creation_capture_is_not_reported_as_empty_stderr() {
         "tail",
         r#"
 case "$*" in
-  *workflow-pr-create.*) printf 'injected capture read failure\n' >&2; exit 71 ;;
+  *workflow-pr-create.*) exit 71 ;;
 esac
 exec "$REAL_TOOL" "$@"
 "#,
