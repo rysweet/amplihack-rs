@@ -127,6 +127,36 @@ fn followup_malformed_created_identity_is_rejected() {
     }
 }
 
+/// The case comparison must stay ASCII-only. In a UTF-8 locale a wider fold
+/// maps the Kelvin sign (U+212A) to `k`, so `owner/kite` would accept a URL for
+/// a different repository. The fixture pins `LC_ALL=C`; this test overrides it.
+/// Where the locale is not installed the shell falls back to `C` and the test
+/// still passes.
+#[test]
+fn followup_case_comparison_does_not_fold_beyond_ascii_in_a_utf8_locale() {
+    let f = PublishFixture::new();
+    f.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/owner/kite.git",
+    ]);
+    let output = f
+        .publish_command()
+        .env("LC_ALL", "C.UTF-8")
+        .env(
+            "CREATE_OUTPUT",
+            "https://github.com/owner/\u{212A}ite/pull/5",
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", describe(&output));
+    let result = json(&output);
+    assert_eq!(result["state"], "FAILED_PR_IDENTITY", "{result}");
+    assert_eq!(result["pr_url"], "", "{result}");
+    assert_eq!(result["pr_number"], "", "{result}");
+}
+
 /// Two transient 503 attempts write retry warnings into the publisher's
 /// capture before the third attempt's terminal rejection. Each warning carries
 /// a diagnostic at the helper's 500-byte bound, so the history alone exceeds
