@@ -426,12 +426,9 @@ The hook attempts to continue the session in one of two ways:
 
 Automatic recovery in the same conversation after a swap remains unverified
 on Claude Code 2.1.329. If the menu or timed wait remains, or the hook logs
-`resume-keys-failed`, direct the owner to recover the session in their own
-terminal. Only the owner should enter recovery input, including with
-`tmux send-keys`. Have them confirm that the ordinary prompt is visible
-before entering more input. Recovery is confirmed when Claude responds in
-the original conversation and picks up the previous task. See
-[Continue a session yourself](../../../docs/howto/claude-profile-rotation.md#continue-a-session-yourself).
+`resume-keys-failed`, direct the owner to the
+[manual recovery steps](../../../docs/howto/claude-profile-rotation.md#continue-a-session-yourself).
+Only the owner should enter recovery input, including with `tmux send-keys`.
 
 It never presses a digit or types `/usage-credits` or `/rate-limit-options`.
 If a session does not resume, read `resume.log` first. The tmux limit

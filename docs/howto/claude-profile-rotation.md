@@ -203,10 +203,10 @@ It also does three more things:
 - **Does not wake sessions stopped by a usage limit.** `switch` writes no
   [swap record](#the-swap-record), so the
   [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit) keeps
-  waiting. Each session's owner can [continue it in their own terminal](#continue-a-session-yourself).
-  A recipe step waiting in the
-  [usage-limit wait](../reference/profile-command.md#usage-limit-wait) still
-  counts the switch as capacity and reruns.
+  waiting. Each session's owner can
+  [continue it in their own terminal](#continue-a-session-yourself).
+  A waiting recipe step follows the
+  [recipe-step switch rule](#steps-that-wait-on-a-usage-limit).
 
 If no profile owned the login in `~/.claude`, `switch` first keeps it as
 `default-original` (or the next free name), as the rotator does, and the
@@ -1507,8 +1507,7 @@ of the pane id, not the id. The other outcomes are listed in the
 ### How the hook limits repeated wakes
 
 - **One record per swap.** Only a swap writes `swap.json`. Stays, ALERTs
-  and the passing of time never do, and the hook acts only when the file
-  changes.
+  and the passing of time leave it alone.
 - **Newer than the last hook wake.** The hook compares `swapped_at` with the
   session's last recorded wake before it acts on the record again.
 - **Room by a fresh reading.** A swap onto a login at 100% on either window
