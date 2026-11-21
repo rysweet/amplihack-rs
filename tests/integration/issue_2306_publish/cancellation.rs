@@ -137,6 +137,12 @@ exit "$status"
             f.read("caller-signal"),
             format!("caller-{}", signal.to_lowercase())
         );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr.lines().last(),
+            Some(format!("ERROR: gh interrupted by {signal} (exit {expected})").as_str()),
+            "{stderr}"
+        );
     }
 }
 
