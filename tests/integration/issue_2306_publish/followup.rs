@@ -121,8 +121,10 @@ fn followup_malformed_created_identity_is_rejected() {
 }
 
 /// Two transient 503 attempts write retry warnings into the publisher's
-/// capture before the third attempt's terminal rejection. The publisher must
-/// report that rejection, not the head of the warning history. The real retry
+/// capture before the third attempt's terminal rejection. Each warning carries
+/// a diagnostic at the helper's 500-byte bound, so the history alone exceeds
+/// the bound the publisher applies to what it reports. It must report the
+/// terminal rejection, not the head of the warning history. The real retry
 /// helper runs; only its backoff sleep is replaced by a recorder, so the test
 /// checks the delays without waiting.
 #[test]
@@ -137,7 +139,7 @@ fn followup_terminal_rejection_survives_long_retry_history_and_is_redacted() {
 if [ "${{1:-}} ${{2:-}}" = "pr create" ]; then
   n=$(( $(cat "$CASE_ROOT/creates" 2>/dev/null || echo 0) + 1 ))
   printf '%s' "$n" > "$CASE_ROOT/creates"
-  if [ "$n" -lt 3 ]; then echo "HTTP 503 Service Unavailable on attempt $n" >&2; exit 23; fi
+  if [ "$n" -lt 3 ]; then printf 'HTTP 503 Service Unavailable on attempt %s %0600d\n' "$n" 0 >&2; exit 23; fi
   cat "$CASE_ROOT/final.stderr" >&2; exit 23
 fi
 exec '{}' "$@"

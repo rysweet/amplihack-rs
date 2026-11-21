@@ -160,8 +160,8 @@ and `message`. Human-readable warnings and diagnostics use stderr.
 Successful creation is followed by explicit result parsing with Bash builtins. No
 final `awk` invocation is required. The result must be exactly one GitHub PR URL,
 `https://github.com/<owner>/<repo>/pull/<number>`, with a decimal number that has
-a nonzero digit. The repository is compared with `REPO_IDENTITY` using ASCII case
-folding, so `Owner/Repo` matches `owner/repo`; a repository named `pull` still
+a nonzero digit. The repository is compared with `REPO_IDENTITY` without regard to
+case, so `Owner/Repo` matches `owner/repo`; a repository named `pull` still
 parses. Foreign repositories, malformed URLs, extra output and invalid numbers
 report `FAILED_PR_IDENTITY` and leave `pr_url` and `pr_number` empty. Such a
 rejection never retries creation or reports that creation itself failed.
@@ -199,7 +199,9 @@ remove their captures. If a capture cannot be removed, `WARNING: gh capture
 cleanup failed` follows the terminal line, so a single-line reader sees that
 warning. The status is still returned, and cleanup failures cannot overwrite it
 or disturb caller traps. An interruption prints its terminal line after cleanup,
-and every caller of the helper receives that line. No timers or polling delays are added.
+and every caller of the helper receives that line. A failed write of that line
+(for example a closed stderr) neither changes the cancellation status nor skips
+the caller's trap. No timers or polling delays are added.
 
 ### Diagnostic privacy
 
@@ -331,9 +333,9 @@ All fixtures use temporary repositories, fake executables and local refs.
 No test opens a GitHub PR or contacts GitHub. Cancellation fixtures block on a
 local executable and signal only after a readiness marker confirms private files
 exist and sensitive data has been written; they assert termination, cleanup,
-permissions, statuses and caller trap behavior. The suite also runs under a
+permissions, statuses and caller trap behavior. The suite has also been run once under a
 locally built GNU Bash 3.2.0, which verifies Bash syntax and semantics, not Darwin
-libc or every BSD utility.
+libc or every BSD utility. No repository script or CI job does this.
 
 ### Historical attribution
 

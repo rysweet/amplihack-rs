@@ -146,6 +146,48 @@ exit "$status"
     }
 }
 
+/// The terminal line is a courtesy to the caller. When stderr cannot be
+/// written (here: a read-only descriptor, which fails on every platform), a
+/// `set -e` caller must still see the conventional cancellation status and
+/// still run its own trap.
+#[test]
+fn retry_cancellation_keeps_its_status_when_stderr_cannot_be_written() {
+    for (signal, expected) in [("TERM", 143), ("HUP", 129), ("INT", 130)] {
+        let f = PublishFixture::new();
+        executable(&f.bin.join("gh"), &format!("#!/bin/bash\n{BLOCK}"));
+        let mut command = f.command("bash");
+        command
+            .args([
+                "-c",
+                r#"
+set -e
+. "$1/amplifier-bundle/tools/workflow_gh_retry.sh"
+trap 'printf caller-term > "$CASE_ROOT/caller-signal"' TERM
+trap 'printf caller-hup > "$CASE_ROOT/caller-signal"' HUP
+trap 'printf caller-int > "$CASE_ROOT/caller-signal"' INT
+trap 'printf "%s" "$?" > "$CASE_ROOT/caller-exit"' EXIT
+exec 2</dev/null
+_gh_retry_core 'pr create' pr create
+"#,
+                "cancel-test",
+            ])
+            .arg(root());
+        let output = interrupt(&f, command, signal);
+        assert_eq!(
+            output.status.code(),
+            Some(expected),
+            "{signal}: {}",
+            describe(&output)
+        );
+        assert_eq!(f.read("caller-exit"), expected.to_string(), "{signal}");
+        assert_eq!(
+            f.read("caller-signal"),
+            format!("caller-{}", signal.to_lowercase()),
+            "{signal}"
+        );
+    }
+}
+
 #[test]
 fn publishing_cancellation_cleans_creation_body_and_nested_retry_captures() {
     let f = PublishFixture::new();

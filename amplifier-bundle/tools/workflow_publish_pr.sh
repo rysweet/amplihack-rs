@@ -1165,8 +1165,9 @@ PUBLISH_OPERATION="gh pr create result parsing (PR identity)"
 # Require exactly https://github.com/<owner>/<repo>/pull/<number>, with no
 # trailing message, query string or extra path. Split at the final /pull/ so a
 # repository named "pull" still parses. The number must be decimal digits with
-# at least one non-zero digit. The repository is compared with ASCII case
-# folding, since GitHub's canonical casing can differ from origin's.
+# at least one non-zero digit. The repository is compared without regard to
+# case (same_github_repository), since GitHub's canonical casing can differ
+# from origin's.
 created_path="${PR_URL_RESULT#https://github.com/}"
 created_repo="${created_path%/pull/*}"
 created_number="${created_path##*/pull/}"
@@ -1174,7 +1175,7 @@ case "$created_number" in ''|*[!0123456789]*) created_number="" ;; esac
 case "$created_number" in *[1-9]*) ;; *) created_number="" ;; esac
 identity_ok=false
 if [ "$created_path" != "$PR_URL_RESULT" ] && [ -n "$created_number" ] &&
-  (LC_ALL=C; shopt -s nocasematch; [[ "$created_repo" == "$REPO_IDENTITY" ]]); then
+  same_github_repository "$created_repo" "$REPO_IDENTITY"; then
   identity_ok=true
 fi
 if [ "$identity_ok" != true ]; then

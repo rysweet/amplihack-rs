@@ -355,7 +355,9 @@ _gh_retry_interrupt() {
   _gh_retry_cleanup
   # Terminal line for the caller: it must be the last stderr line, as with a
   # rejection, so a retry warning before the signal is not reported instead.
-  printf 'ERROR: gh interrupted by %s (exit %s)\n' "$1" "$2" >&2
+  # A failed write (closed or full stderr) must not replace the cancellation
+  # status or skip the caller's trap, which `set -e` would otherwise do.
+  printf 'ERROR: gh interrupted by %s (exit %s)\n' "$1" "$2" >&2 || :
   local previous_trap
   case "$1" in INT) previous_trap=$retry_int ;; TERM) previous_trap=$retry_term ;; HUP) previous_trap=$retry_hup ;; esac
   _gh_retry_restore_traps
