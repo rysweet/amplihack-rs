@@ -2,7 +2,9 @@
 //! #1618). A reset wait needs the harness's own limit message with a reset
 //! at most five hours away. A far or unreadable reset is skipped, because no
 //! amount of waiting is known to help, unless another login could take over:
-//! [`upgrade`] then makes it a capacity wait (issue #1801). An organisation
+//! [`upgrade`] then makes it a capacity wait (issue #1801), as does a reset
+//! already behind the clock met on the retry a wait earned
+//! ([`upgrade_passed_reset`], issue #2857). An organisation
 //! spend limit on a `$HOME/.claude` step becomes a login-change wait instead
 //! ([`upgrade_spend`], issue #2731). The deadline is
 //! the earliest row of the deadline table that applies, a tie named by the
@@ -120,6 +122,53 @@ pub(crate) fn upgrade(
     }
 }
 
+/// `w`, made a capacity wait when it is a reset the clock has already passed
+/// on a re-entry the ordinary one-wait-per-login rule would have refused
+/// (issue #2857).
+///
+/// The retry a finished wait earned met a usage limit stating a reset already
+/// behind the clock. [`plan`] gives such a reset a deadline of `now`, which is
+/// how the grace a login's *first* limit gets is spelled: retrying at once is
+/// the right answer there, because the message may be minutes stale. For a
+/// re-entry it is not: the wait would end the moment it began and spend none
+/// of the step's budget. A limit after a wait must go back into a wait and
+/// must not end the step, so the re-entry is planned as a capacity wait
+/// instead. Its deadline is the step's remaining budget, which keeps
+/// `max_wait_secs` a bound on the chain, and it ends early only on a capacity
+/// reading or a login with room, as every capacity wait does. With no
+/// rotator and no second login nothing ends it early, so it runs the budget
+/// out and the retry follows.
+///
+/// The stated reset is carried through for the `start` line, and
+/// [`plan_capacity`] ignores one that is already past.
+///
+/// `reentry_refused` is that narrowing, read from
+/// [`Waiter::ordinarily_refused`]: a retry that merely landed on a login this
+/// step has never waited on is that login's first wait and keeps its grace.
+/// `seen` is the limit as read, and `None` for a spend limit, which no other
+/// login of the same organisation would lift (issue #2731): a spend limit that
+/// also states a passed session reset must stay the reset wait it is, and the
+/// caller refuses it ([`Plan::ends_at_once`]). `now` is the wait's own clock.
+/// The reset is compared with `now` and never subtracted from it.
+///
+/// [`Waiter::ordinarily_refused`]: super::Waiter::ordinarily_refused
+pub(crate) fn upgrade_passed_reset(
+    w: WaitFor,
+    seen: Option<(Harness, Option<i64>)>,
+    reentry_refused: bool,
+    now: i64,
+) -> WaitFor {
+    match (w, seen) {
+        (WaitFor::Reset { harness, reset }, Some(_)) if reentry_refused && reset <= now => {
+            WaitFor::Capacity {
+                harness,
+                reset: Some(reset),
+            }
+        }
+        _ => w,
+    }
+}
+
 /// `w`, made a login-change wait when it is an organisation spend limit
 /// that states no reset on a `$HOME/.claude` step and a rotator is running
 /// (issue #2731). `spend` is the harness of such a limit, and `None` for
@@ -188,6 +237,12 @@ pub(crate) struct Plan {
 }
 
 impl Plan {
+    /// Whether this wait is for the login in `$HOME/.claude` changing, and
+    /// for nothing else (issue #2731). The reader of the private field.
+    pub(crate) fn is_login_change(&self) -> bool {
+        self.login_change
+    }
+
     /// Whether a capacity reading may end this wait.
     ///
     /// True for a reset wait (issue #2694: a login with room ends it rather
@@ -198,7 +253,42 @@ impl Plan {
     /// looking healthy, so a reading would end the wait and send the step
     /// back onto the same spent login.
     pub(crate) fn capacity_may_end(&self) -> bool {
-        !self.login_change
+        !self.is_login_change()
+    }
+
+    /// Whether this wait would end the moment it began, because the reset it
+    /// waits for has already passed at `now`.
+    ///
+    /// [`plan`] gives such a wait a deadline of `now`, which is how the grace
+    /// a step's first limit on a login gets is spelled: the reset in the
+    /// message may be minutes behind the clock the retry reads, and retrying
+    /// at once is the right answer. The wait sleeps for nothing, so it spends
+    /// none of the step's budget, and a chain of them is bounded by nothing.
+    /// The caller asks this where that matters (issue #2857) and nowhere else.
+    ///
+    /// A capacity wait is never this: it waits for a reading, not for the
+    /// reset, and its deadline is its own. Neither is a login-change wait,
+    /// whose limit stated no reset at all. That is why
+    /// [`upgrade_passed_reset`] answers the same case for a usage limit: the
+    /// plan it builds is a capacity wait, so it reaches the caller's refusal
+    /// as a wait that will cost something, and the budget binds it. What is
+    /// still a reset wait here, and is refused, is a spend limit stating a
+    /// passed session reset, and a reset read from the auto-switch readings
+    /// ([`from_reading`]).
+    pub(crate) fn ends_at_once(&self, now: i64) -> bool {
+        self.kind == PlanKind::Reset && self.reset.is_some_and(|r| r <= now)
+    }
+
+    /// Whether this is the capacity wait a re-entry on a reset the clock had
+    /// already passed was planned as (issue #2857), at `now`.
+    ///
+    /// Such a wait has no reset to end on, so the budget is its only
+    /// deadline. When that deadline is reached the step retries once, as a
+    /// reset wait does at its own deadline: the retry is the check the wait
+    /// was for, and a limit on it is refused by the budget that is now spent.
+    /// Any other capacity wait still ends `capacity expired` at its deadline.
+    pub(crate) fn is_passed_reset_capacity(&self, now: i64) -> bool {
+        self.kind == PlanKind::Capacity && self.reset.is_some_and(|r| r <= now)
     }
 
     /// A plan with a deadline the caller chooses, for the wait's own tests.
