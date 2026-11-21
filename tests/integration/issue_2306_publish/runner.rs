@@ -1,5 +1,5 @@
 //! Execute the real step with the pinned runner; helper stderr is insufficient.
-use super::fixture::{BRANCH, PublishFixture, describe, root};
+use super::fixture::{PublishFixture, describe, root};
 use std::fs;
 use std::path::PathBuf;
 
@@ -43,8 +43,6 @@ fn run_step(f: &PublishFixture, extra: &[(&str, &str)]) -> serde_json::Value {
         .arg(&path)
         .arg("--working-dir")
         .arg(&f.repo)
-        .arg("--log-dir")
-        .arg(f.tmp.path().join("runner-logs"))
         .args(["--no-auto-stage", "--output-format", "json"])
         .envs(extra.iter().copied());
     let output = command.output().unwrap();
@@ -79,30 +77,6 @@ fn failed_step_error(result: &serde_json::Value) -> &str {
         "serialized StepResult.error must never be empty"
     );
     error
-}
-
-fn failed_publish_result(f: &PublishFixture, diagnostic: &str) -> serde_json::Value {
-    // The runner retains failed-step stdout separately from its serialized error.
-    let logs: Vec<_> = fs::read_dir(f.tmp.path().join("runner-logs"))
-        .unwrap()
-        .map(|entry| entry.unwrap())
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("amplihack-failed-bash-stdout-")
-        })
-        .collect();
-    assert_eq!(logs.len(), 1, "{logs:?}");
-    let published: serde_json::Value =
-        serde_json::from_slice(&fs::read(logs[0].path()).unwrap()).unwrap();
-    assert_eq!(published["state"], "FAILED_PR_CREATE");
-    assert_eq!(published["terminal_status"], "failure");
-    assert_eq!(published["pr_url"], "");
-    assert_eq!(published["pr_number"], "");
-    let message = published["message"].as_str().unwrap();
-    assert!(message.contains(diagnostic), "{message}");
-    published
 }
 
 #[test]
@@ -235,180 +209,4 @@ fn persistent_awk_failure_still_serializes_success_after_exactly_one_creation() 
             .count(),
         1
     );
-}
-
-#[test]
-fn followup_actual_runner_accepts_canonical_repository_casing() {
-    let f = PublishFixture::new();
-    f.git(&[
-        "remote",
-        "set-url",
-        "origin",
-        "https://github.com/Owner/Repo.git",
-    ]);
-    let result = run_step(&f, &[]);
-    assert_eq!(result["success"], true, "{result}");
-    assert_eq!(result["step_results"][0]["status"], "completed");
-    let published = &result["context"]["pr_publish_result"];
-    assert_eq!(published["state"], "FOLLOWUP_CREATED");
-    assert_eq!(published["pr_number"], "99");
-    assert_eq!(published["pr_url"], "https://github.com/owner/repo/pull/99");
-}
-
-#[test]
-fn followup_actual_runner_keeps_rejected_create_identity_private() {
-    let f = PublishFixture::new();
-    let rejected = "https://github.com/foreign-owner/private-repo/pull/99";
-    let result = run_step(&f, &[("CREATE_OUTPUT", rejected)]);
-    let error = failed_step_error(&result);
-    assert!(error.contains("invalid PR identity URL"), "{error}");
-    assert!(!result.to_string().contains(rejected), "{result}");
-}
-
-#[test]
-fn followup_actual_runner_keeps_final_rejection_after_long_retry_warning() {
-    let f = PublishFixture::new();
-    f.long_transient_create_failure();
-    let secret = "sk-ant-api03-ABCDEFGHIJKLMNOPQRST";
-    f.write(
-        "create.stderr",
-        &format!(
-            "distinctive final creation rejection {secret} {} beyond-diagnostic-limit",
-            "x".repeat(640)
-        ),
-    );
-    let result = run_step(&f, &[("CREATE_STATUS", "23")]);
-    let error = failed_step_error(&result);
-    assert!(
-        error.contains("distinctive final creation rejection"),
-        "{error}"
-    );
-    assert!(error.contains("gh pr create"), "{error}");
-    assert!(error.contains("exit 23"), "{error}");
-    assert!(error.contains("REDACTED_TOKEN"), "{error}");
-    assert!(!error.contains("beyond-diagnostic-limit"), "{error}");
-    assert!(!result.to_string().contains(secret), "{result}");
-    assert!(
-        !result.to_string().contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX"),
-        "{result}"
-    );
-}
-
-#[test]
-fn failed_retry_waits_preserve_status_in_publish_result_and_pinned_runner() {
-    let secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWX";
-    for (failure, operation) in [
-        (
-            "Post \"https://api.github.com/graphql\": dial tcp: i/o timeout",
-            "transient backoff wait",
-        ),
-        (
-            "HTTP 429: secondary rate limit exceeded",
-            "rate-limit reset wait",
-        ),
-    ] {
-        let f = PublishFixture::new();
-        f.offer_collision_pr(BRANCH);
-        f.create_fails_once(&format!("{failure} {secret}"));
-        f.shim("sleep", "exit 76\n");
-        let diagnostic = format!("{operation} failed (exit 76)");
-        let result = run_step(&f, &[]);
-        let error = failed_step_error(&result);
-        assert!(
-            error.contains("Command failed (exit 76)") && error.contains(&diagnostic),
-            "{error}"
-        );
-        assert!(error.contains("REDACTED_TOKEN"), "{error}");
-        assert!(!result.to_string().contains(secret), "{result}");
-        let published = failed_publish_result(&f, &diagnostic);
-        assert!(!published.to_string().contains(secret), "{published}");
-        f.assert_create_attempts_and_scoped_lookups(1, 1);
-        f.assert_private_cleanup();
-    }
-}
-
-#[test]
-fn actual_runner_keeps_body_temp_failure_visible_when_a_matching_pr_appears() {
-    let f = PublishFixture::new();
-    f.offer_collision_pr(BRANCH);
-    f.fail_body_temp_creation();
-    let result = run_step(&f, &[]);
-    let error = failed_step_error(&result);
-    let diagnostic = "body temp creation failed (exit 77)";
-    assert!(
-        error.contains("Command failed (exit 77)") && error.contains(diagnostic),
-        "{error}"
-    );
-    failed_publish_result(&f, diagnostic);
-    assert!(f.tmp.path().join("collision-ready").is_file());
-    f.assert_create_attempts_and_scoped_lookups(0, 1);
-    f.assert_private_cleanup();
-}
-
-#[test]
-fn actual_runner_does_not_retry_branch_names_or_explicit_validation_errors() {
-    for rejection in [
-        "HTTP 422 Validation Failed: no commits between main and fix/network",
-        "HTTP 422: invalid head fix/network (Retry-After: 5)",
-        "pull request create failed: GraphQL: head SHA is blank for fix/network",
-    ] {
-        let f = PublishFixture::new();
-        f.git(&["branch", "-m", "fix/network"]);
-        f.write("create.stderr", rejection);
-        let result = run_step(&f, &[("CREATE_STATUS", "23")]);
-        let error = failed_step_error(&result);
-        assert!(
-            error.contains("Command failed (exit 23)") && error.contains(rejection),
-            "{error}"
-        );
-        failed_publish_result(&f, rejection);
-        f.assert_create_attempts_and_scoped_lookups(1, 2);
-        f.assert_private_cleanup();
-    }
-}
-
-#[test]
-fn actual_runner_pins_both_writes_to_origin_with_a_selected_base_and_branch_alias() {
-    let f = PublishFixture::new();
-    f.git(&["update-ref", "refs/remotes/origin/dev", "origin/main"]);
-    let alias = format!("{BRANCH}--wt-1");
-    f.git(&["branch", "-m", &alias]);
-    f.git(&["config", &format!("branch.{alias}.remote"), "origin"]);
-    f.git(&[
-        "config",
-        &format!("branch.{alias}.merge"),
-        &format!("refs/heads/{BRANCH}"),
-    ]);
-    let result = run_step(
-        &f,
-        &[
-            ("GH_REPO", "elsewhere/wrong"),
-            ("WORKFLOW_PR_LABELS", "review"),
-            ("RECIPE_VAR_base_branch", "dev"),
-            ("RECIPE_VAR_strict_delivery", "true"),
-            ("RECIPE_VAR_repository", "plan/tasks"),
-            ("RECIPE_VAR_pr_repository", "owner/repo"),
-            ("RECIPE_VAR_closing_reference", "plan/tasks#2306"),
-        ],
-    );
-    assert_eq!(result["success"], true, "{result}");
-    assert_eq!(result["context"]["pr_publish_result"]["base_branch"], "dev");
-    let log = f.read("gh.log");
-    assert!(
-        log.lines().any(|line| line.starts_with(&format!(
-            "pr create --draft --repo github.com/owner/repo --base=dev --head={BRANCH} "
-        ))),
-        "{log}"
-    );
-    assert!(
-        log.lines()
-            .any(|line| line == "pr edit 99 --repo github.com/owner/repo --add-label review"),
-        "{log}"
-    );
-    assert!(
-        log.contains("issue view 2306 --repo plan/tasks --json title"),
-        "{log}"
-    );
-    f.assert_create_attempts_and_scoped_lookups(1, 1);
-    f.assert_private_cleanup();
 }

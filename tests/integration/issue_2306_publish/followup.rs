@@ -1,5 +1,15 @@
-//! Regressions found during the PR #2313 code and philosophy reviews.
-use super::fixture::{PublishFixture, describe, json};
+//! Regressions for the #2306 follow-up: mixed-case repository identity, the
+//! terminal create rejection after retry warnings, and the scope warning.
+use super::fixture::{PublishFixture, describe, executable, json};
+use std::fs;
+
+fn assert_private_empty(f: &PublishFixture) {
+    assert_eq!(
+        fs::read_dir(f.tmp.path().join("private")).unwrap().count(),
+        0,
+        "owned captures must be removed"
+    );
+}
 
 #[test]
 fn followup_canonical_repository_casing_preserves_success_including_recovery() {
@@ -72,132 +82,64 @@ fn followup_rejected_create_identity_stays_out_of_results_and_logs() {
     }
 }
 
+/// Two transient 503 attempts write retry warnings into the publisher's
+/// capture before the third attempt's terminal rejection. The publisher must
+/// report that rejection, not the head of the warning history. The real retry
+/// helper runs; only its backoff sleep is replaced by a recorder, so the test
+/// checks the delays without waiting.
 #[test]
 fn followup_terminal_rejection_survives_long_retry_history_and_is_redacted() {
     let f = PublishFixture::new();
-    f.long_transient_create_failure();
+    let real_gh = f.tmp.path().join("gh-original");
+    fs::copy(f.bin.join("gh"), &real_gh).unwrap();
+    executable(
+        &f.bin.join("gh"),
+        &format!(
+            r#"#!/bin/bash
+if [ "${{1:-}} ${{2:-}}" = "pr create" ]; then
+  n=$(( $(cat "$CASE_ROOT/creates" 2>/dev/null || echo 0) + 1 ))
+  printf '%s' "$n" > "$CASE_ROOT/creates"
+  if [ "$n" -lt 3 ]; then echo "HTTP 503 Service Unavailable on attempt $n" >&2; exit 23; fi
+  cat "$CASE_ROOT/final.stderr" >&2; exit 23
+fi
+exec '{}' "$@"
+"#,
+            real_gh.display()
+        ),
+    );
+    executable(
+        &f.bin.join("sleep"),
+        "#!/bin/bash\nprintf '%s\\n' \"$1\" >> \"$CASE_ROOT/sleeps\"\n",
+    );
     let secret = "sk-ant-api03-ABCDEFGHIJKLMNOPQRST";
     let prefix = "distinctive final creation rejection";
     f.write(
-        "create.stderr",
+        "final.stderr",
         &format!(
             "{prefix} {secret} {} beyond-diagnostic-limit",
             "x".repeat(640)
         ),
     );
-    let output = f
-        .publish_command()
-        .env("CREATE_STATUS", "23")
-        .output()
-        .unwrap();
+    let output = f.publish();
     assert_eq!(output.status.code(), Some(23), "{}", describe(&output));
+    assert_eq!(f.read("creates"), "3");
+    assert_eq!(f.read("sleeps"), "1\n2\n");
     let result = json(&output);
     assert_eq!(result["state"], "FAILED_PR_CREATE");
     assert_eq!(result["terminal_status"], "failure");
     let message = result["message"].as_str().unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("HTTP 503"), "{stderr}");
     assert!(
         message.contains("gh pr create") && message.contains("exit 23"),
         "{message}"
     );
-    assert!(!message.contains("HTTP 503"), "{message}");
+    assert!(message.contains(prefix), "{message}");
     assert!(message.contains("REDACTED_TOKEN"), "{message}");
-    assert!(message.len() < 600, "{message}");
-    for text in [message, stderr.as_ref()] {
-        assert!(text.contains(prefix), "{text}");
-        assert!(text.contains("23"), "{text}");
-        assert!(!text.contains(secret), "{text}");
-        assert!(!text.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX"), "{text}");
-        assert!(!text.contains("beyond-diagnostic-limit"), "{text}");
-    }
-    assert_eq!(
-        std::fs::read_dir(f.tmp.path().join("private"))
-            .unwrap()
-            .count(),
-        0
-    );
-}
-
-#[test]
-fn followup_failure_before_a_later_attempt_runs_gh_is_not_reported_as_the_earlier_rejection() {
-    let f = PublishFixture::new();
-    f.offer_collision_pr(super::fixture::BRANCH);
-    // Attempt 1 is rejected with HTTP 503 and retried. Attempt 2 fails to
-    // create its private stderr capture, so gh never runs again.
-    f.long_transient_create_failure();
-    f.shim(
-        "mktemp",
-        r#"
-case "$*" in
-  *workflow-gh-retry.*)
-    # Earlier gh calls use the same helper; fail once, after create was tried.
-    if [ -e "$CASE_ROOT/first-create" ] && [ ! -e "$CASE_ROOT/capture-failed" ]; then
-      : > "$CASE_ROOT/capture-failed"
-      exit 9
-    fi ;;
-esac
-exec "$REAL_TOOL" "$@"
-"#,
-    );
-    let output = f.publish_command().output().unwrap();
-    assert_eq!(output.status.code(), Some(9), "{}", describe(&output));
-    assert!(f.tmp.path().join("first-create").exists());
-    assert!(f.tmp.path().join("capture-failed").exists());
-    f.assert_create_attempts_and_scoped_lookups(1, 1);
-    let result = json(&output);
-    assert_eq!(result["state"], "FAILED_PR_CREATE");
-    assert_eq!(result["pr_url"], "");
-    assert_eq!(result["pr_number"], "");
-    let message = result["message"].as_str().unwrap();
-    assert!(
-        message.contains("gh pr create")
-            && message.contains("private stderr temp creation failed (exit 9)"),
-        "{message}"
-    );
     assert!(!message.contains("HTTP 503"), "{message}");
-    assert!(!message.contains("collision lookup failed"), "{message}");
-    assert!(!describe(&output).contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX"));
-    f.assert_private_cleanup();
-}
-
-#[test]
-fn followup_create_result_capture_failure_has_its_own_status_and_operation() {
-    let f = PublishFixture::new();
-    f.shim(
-        "mktemp",
-        r#"
-case "${1:-}" in
-  *workflow-pr-result.*) exit 79 ;;
-esac
-exec "$REAL_TOOL" "$@"
-"#,
-    );
-    let output = f.publish();
-    assert_eq!(output.status.code(), Some(79), "{}", describe(&output));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("gh pr create")
-            && stderr.contains("temp creation")
-            && stderr.contains("79"),
-        "{stderr}"
-    );
-    assert!(!f.read("gh.log").contains("pr create"));
-    assert_eq!(
-        std::fs::read_dir(f.tmp.path().join("private"))
-            .unwrap()
-            .count(),
-        0
-    );
-    let result = json(&output);
-    assert_eq!(result["state"], "FAILED_PR_CREATE");
-    let message = result["message"].as_str().unwrap();
-    assert!(
-        message.contains("gh pr create")
-            && message.contains("temp creation")
-            && message.contains("exit 79"),
-        "{message}"
-    );
+    assert!(!message.contains(secret), "{message}");
+    assert!(!message.contains("beyond-diagnostic-limit"), "{message}");
+    assert!(message.len() < 600, "{message}");
+    assert!(!describe(&output).contains(secret));
+    assert_private_empty(&f);
 }
 
 #[test]
@@ -284,7 +226,7 @@ fn followup_unparseable_origin_stops_with_identity_failure_before_any_provider_c
             "origin {origin:?} must not reach the provider"
         );
         assert!(!f.tmp.path().join("create.argv").exists(), "{origin:?}");
-        f.assert_private_cleanup();
+        assert_private_empty(&f);
     }
 }
 
@@ -307,5 +249,5 @@ fn followup_non_github_host_finishes_without_a_provider_call() {
     assert_eq!(result["pr_number"], "", "{result}");
     assert_eq!(f.read("gh.log"), "", "a non-GitHub host must not call gh");
     assert!(!f.tmp.path().join("create.argv").exists());
-    f.assert_private_cleanup();
+    assert_private_empty(&f);
 }

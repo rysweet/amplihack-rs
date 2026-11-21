@@ -5,7 +5,7 @@
 # Contract under test:
 #   1. When WORKFLOW_PR_LABELS is set, the host is GitHub, a numeric PR number
 #      was resolved, and `gh` is present, the RAW comma-separated value is passed
-#      verbatim to a SINGLE `gh pr edit <number> --repo <repo> --add-label <csv>` call. `gh`
+#      verbatim to a SINGLE `gh pr edit <number> --add-label <csv>` call. `gh`
 #      splits comma-separated labels natively, so the bundle no longer parses,
 #      trims, or fans out per label.
 #   2. When WORKFLOW_PR_LABELS is empty/unset, NO `gh pr edit` runs.
@@ -85,8 +85,6 @@ run_case() {
         PR_NUMBER_RESULT="${prnum}"
         # shellcheck disable=SC2034  # consumed by the sourced apply_pr_labels_best_effort
         PR_STATE="${pr_state}"
-        # shellcheck disable=SC2034  # consumed by the sourced apply_pr_labels_best_effort
-        REPO_IDENTITY="owner/repo"
         apply_pr_labels_best_effort
         echo "rc=$?"
     )
@@ -99,15 +97,15 @@ edit_calls() { grep -cE '^pr edit ' "${GH_LOG}" 2>/dev/null || true; }
 # as one `--add-label <csv>` argv, NOT fanned out into per-label invocations.
 out="$(run_case github 4321 'simard-autonomous,needs-attention' 1)"
 [[ "${out##*rc=}" == "0" ]] || fail 1 "function did not return 0 on happy path (got '${out}')"
-grep -Fxq 'pr edit 4321 --repo github.com/owner/repo --add-label simard-autonomous,needs-attention' "${GH_LOG}" \
-    || fail 1 "expected a single edit on the origin with the verbatim label CSV"
+grep -qE '^pr edit 4321 --add-label simard-autonomous,needs-attention$' "${GH_LOG}" \
+    || fail 1 "expected verbatim 'pr edit 4321 --add-label simard-autonomous,needs-attention' not recorded"
 [[ "$(edit_calls)" == "1" ]] || fail 1 "expected exactly 1 pr-edit call (CSV passed verbatim), got $(edit_calls)"
 
 # --- Case 1b: single label is still passed as-is in one call ----------------
 out="$(run_case github 4321 'simard-autonomous' 1)"
 [[ "${out##*rc=}" == "0" ]] || fail 1b "function did not return 0 for single label (got '${out}')"
-grep -Fxq 'pr edit 4321 --repo github.com/owner/repo --add-label simard-autonomous' "${GH_LOG}" \
-    || fail 1b "expected an edit on the origin with the single label"
+grep -qE '^pr edit 4321 --add-label simard-autonomous$' "${GH_LOG}" \
+    || fail 1b "expected 'pr edit 4321 --add-label simard-autonomous' not recorded"
 [[ "$(edit_calls)" == "1" ]] || fail 1b "expected exactly 1 pr-edit call, got $(edit_calls)"
 
 # --- Case 2: no labels configured → no edits -------------------------------
@@ -139,7 +137,7 @@ run_case github 4321 'simard-autonomous' 1 OPEN >/dev/null
 # --- Case 5: failing label edit is best-effort (function still returns 0) ---
 out="$(run_case github 4321 'does-not-exist' 1)"
 [[ "${out##*rc=}" == "0" ]] || fail 5 "function did not return 0 when gh pr edit failed"
-grep -Fxq 'pr edit 4321 --repo github.com/owner/repo --add-label does-not-exist' "${GH_LOG}" \
+grep -qE '^pr edit 4321 --add-label does-not-exist$' "${GH_LOG}" \
     || fail 5 "failing label edit was not attempted"
 
 echo "PASS: apply_pr_labels_best_effort applies WORKFLOW_PR_LABELS best-effort on GitHub PRs only."

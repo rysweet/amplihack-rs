@@ -32,7 +32,7 @@ at the pinned revision. It never uses a runner installed on the host.
 
 | Test target | Tests |
 | --- | --- |
-| `amplihack`, `--test integration` | `workflow_publish_pr_metadata::runner::*`, in `tests/integration/issue_2306_publish/runner.rs` |
+| `amplihack`, `--test integration` | `workflow_publish_pr_metadata::runner::actual_runner_*` (six tests) and `workflow_publish_pr_metadata::runner::persistent_awk_failure_still_serializes_success_after_exactly_one_creation`, in `tests/integration/issue_2306_publish/runner.rs` |
 | `amplihack`, `--test integration` | `pinned_runner_tests::*`, the helper's own unit tests, in `tests/support/pinned_runner_tests.rs` |
 | `amplihack-cli`, `--test cli_integration` | Every test that runs a recipe through `issue_1741_fixture::Fixture`, in the `issue_1741_*` files |
 | `amplihack-cli`, `--test cli_integration` | `issue_2658_routing_replay::*`, in `crates/amplihack-cli/tests/issue_2658_routing_replay.rs` |
@@ -391,6 +391,6 @@ Replace it with the full commit SHA on one line.
 - [CI pipeline: pinned recipe runner](../reference/ci-pipeline.md) - How CI
   installs the pinned runner and sets `RECIPE_RUNNER_RS_PATH`
 - [Publish metadata recovery diagnostics](../bugfixes/bugfix-2306-publish-metadata-recovery-diagnostics.md) -
-  Step 16's publishing result and failure diagnostics
+  What the seven publish runner tests check
 - [Keep Tests from Changing PATH and HOME](keep-tests-from-changing-path-and-home.md) -
   How tests give a child process its environment without changing their own

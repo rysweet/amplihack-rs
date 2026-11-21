@@ -338,8 +338,7 @@ exit 77
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains(r#""state":"FAILED_DIRTY_WORKTREE""#),
-        "publish helper must emit structured dirty-worktree failure\nstdout:\n{stdout}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stderr)
+        "publish helper must emit structured dirty-worktree failure, stdout:\n{stdout}"
     );
     assert!(
         !stdout.contains("NO_DIFF_SUCCESS"),

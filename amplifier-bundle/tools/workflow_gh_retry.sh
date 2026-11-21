@@ -94,26 +94,17 @@ gh_cancel_owned() {
 }
 
 # --- classifier ------------------------------------------------------------
-# classify_gh_error <stderr_file> [create] -> auth | rate_limit | transient | other
+# classify_gh_error <stderr_file> -> echoes: auth | rate_limit | transient | other
 #
-# Check permanent errors before rate-limit and transient signals.
+# Order matters: permanent auth errors are checked first (never retried), then
+# rate-limit signals (wait-for-reset), then generic transient signals.
 classify_gh_error() {
-  local f="${1:-}" mode="${2:-}"
+  local f="${1:-}"
   [ -n "$f" ] && [ -s "$f" ] || { printf 'other\n'; return 0; }
 
   # Permanent authentication/authorisation failures — must NOT be retried.
   if grep -Eiq 'bad credentials|HTTP 401|(^|[^0-9])401([^0-9]|$)|unauthorized|authentication failed|requires authentication|gh auth login|not logged in|token .*(expired|invalid)|invalid .*token' "$f"; then
     printf 'auth\n'; return 0
-  fi
-
-  # A validation rejection is permanent in every mode: 422, "validation failed"
-  # and "no commits between" never succeed on a retry, and such a rejection can
-  # quote a branch, title or Retry-After header matching the rate-limit or
-  # transient words below, so this stays ahead of them. Deliberately not scoped
-  # to create mode: az_repos_pr_create_with_retry classifies a create without
-  # passing one, and retrying a validation failure there risks a duplicate PR.
-  if grep -Eiq 'HTTP(/[0-9.]+)?[[:space:]]+422([[:space:]:()]|$)|validation failed|no commits between' "$f"; then
-    printf 'other\n'; return 0
   fi
 
   # Explicit rate-limit signals (primary + secondary + abuse detection).
@@ -130,16 +121,8 @@ classify_gh_error() {
     printf 'rate_limit\n'; return 0
   fi
 
-  # A create rejection can quote a branch or title containing words such as
-  # "network". Only retry the write on recognizable HTTP or transport errors.
-  if [ "$mode" = create ]; then
-    if grep -Eiq \
-      -e 'HTTP(/[0-9.]+)?[[:space:]]+5[0-9][0-9]([[:space:]:()]|$)' \
-      -e 'i/o timeout|TLS handshake timeout|connection (reset|refused|timed out)|network is unreachable|no such host' \
-      -e 'context deadline exceeded|(^|:[[:space:]]+)(unexpected )?EOF[[:space:]]*$' "$f"; then
-      printf 'transient\n'; return 0
-    fi
-  elif grep -Eiq 'HTTP 5[0-9][0-9]|(^|[^0-9])(500|502|503|504)([^0-9]|$)|timed out|timeout|temporar|connection reset|connection refused|TLS handshake|network|server error|i/o timeout|no such host|EOF' "$f"; then
+  # Generic transient server/network errors — short-backoff retry.
+  if grep -Eiq 'HTTP 5[0-9][0-9]|(^|[^0-9])(500|502|503|504)([^0-9]|$)|timed out|timeout|temporar|connection reset|connection refused|TLS handshake|network|server error|i/o timeout|no such host|EOF' "$f"; then
     printf 'transient\n'; return 0
   fi
 
@@ -300,14 +283,10 @@ gh_pr_number_from_url() {
 }
 
 # --- retry driver ----------------------------------------------------------
-# _gh_retry_core [--create-diagnostics <directory>] <label> <gh-arg>...
+# _gh_retry_core <label> <gh-arg>...
 #
 #   stdout : command output on success (or REST fallback output).
-#   return : 0 on success; otherwise the original failure status.
-#
-# The PR publisher can supply a private directory for terminal diagnostics.
-# The helper writes the terminal failure to either provider or local in that
-# directory. Retry warnings still go to stderr.
+#   return : 0 on success; otherwise the last gh exit status.
 #
 # Behaviour is tuned via environment variables (all optional):
 #   GH_RETRY_RESOURCE       graphql|core       (default: graphql) — resource to
@@ -329,11 +308,6 @@ gh_pr_number_from_url() {
 _gh_retry_core() {
   local stderr_file="" stdout_file="" GH_OWNED_PID="" retry_status=0 retry_interrupted_status=0
   local retry_int retry_term retry_hup retry_shell_pid
-  local create_diagnostics_dir=""
-  if [ "${1:-}" = --create-diagnostics ]; then
-    create_diagnostics_dir="$2"
-    shift 2
-  fi
   retry_int=$(trap -p INT); retry_term=$(trap -p TERM); retry_hup=$(trap -p HUP)
   # $$ names the original shell even inside command substitution on Bash 3.2.
   read -r retry_shell_pid < <(exec sh -c 'echo "$PPID"')
@@ -344,29 +318,12 @@ _gh_retry_core() {
     if _gh_retry_attempts "$@"; then retry_status=0; else retry_status=$?; fi
   else
     retry_status=$?
-    _gh_retry_local_failure "${1:-gh}" 'private stdout temp creation' "$retry_status"
+    printf 'ERROR: gh %s: private stdout temp creation failed (exit %s)\n' "${1:-gh}" "$retry_status" >&2
   fi
   _gh_retry_cleanup
   _gh_retry_restore_traps
   [ "$retry_interrupted_status" -eq 0 ] || retry_status=$retry_interrupted_status
   return "$retry_status"
-}
-
-# _gh_retry_core owns local stderr_file/stdout_file, GH_OWNED_PID, retry_status,
-# retry_interrupted_status, retry_int/term/hup and retry_shell_pid. Attempts
-# replace captures and child PID; cleanup cancels/reaps the child, unlinks
-# captures and clears those variables. Interrupt sets retry_interrupted_status;
-# restore uses saved traps/PID to preserve the caller's signal disposition.
-# Attempts record a provider diagnostic only when returning that attempt's
-# status. The core and publisher's create wrapper both set create_diagnostics_dir
-# for local failure reporting. The publisher owns the captures and reads them
-# after reaping the subprocess. GH_RETRY_LAST_CLASS is visible to callers.
-_gh_retry_local_failure() {
-  GH_RETRY_LAST_CLASS=other
-  if [ -n "$create_diagnostics_dir" ]; then
-    printf '%s failed (exit %s)\n' "$2" "$3" >"$create_diagnostics_dir/local" && return 0
-  fi
-  printf 'ERROR: gh %s: %s failed (exit %s)\n' "$1" "$2" "$3" >&2
 }
 
 _gh_retry_cleanup() {
@@ -410,8 +367,7 @@ _gh_retry_attempts() {
   local max_windows="${GH_RETRY_MAX_RL_WINDOWS:-}"
   local rest_fallback="${GH_RETRY_REST_FALLBACK:-}"
   local attempt=0 rl_windows=0 delay=1
-  local output status class fb_out diagnostic error_mode=""
-  if [ "${1:-} ${2:-}" = 'pr create' ]; then error_mode=create; fi
+  local output status class fb_out diagnostic
   GH_RETRY_LAST_CLASS=""
 
   while :; do
@@ -420,14 +376,10 @@ _gh_retry_attempts() {
       :
     else
       status=$?
-      _gh_retry_local_failure "$label" 'private stderr temp creation' "$status"
+      printf 'ERROR: gh %s: private stderr temp creation failed (exit %s)\n' "$label" "$status" >&2
       return "$status"
     fi
-    if gh_start_owned timeout 60 gh "$@" >"$stdout_file" 2>"$stderr_file"; then :; else
-      status=$?
-      _gh_retry_local_failure "$label" 'private attempt capture setup' "$status"
-      return "$status"
-    fi
+    gh_start_owned timeout 60 gh "$@" >"$stdout_file" 2>"$stderr_file"
     if wait "$GH_OWNED_PID"; then
       GH_OWNED_PID=""
       output=$(<"$stdout_file")
@@ -441,10 +393,16 @@ _gh_retry_attempts() {
     fi
     GH_OWNED_PID=""
     diagnostic="$(gh_safe_stderr "$stderr_file")"
-    class="$(classify_gh_error "$stderr_file" "$error_mode")" || class=other
+    class="$(classify_gh_error "$stderr_file")" || class=other
     GH_RETRY_LAST_CLASS="$class"
 
     case "$class" in
+      auth)
+        echo "ERROR: gh ${label} failed with an authentication error (exit ${status}); not retrying: $diagnostic" >&2
+        gh_remove_capture "$stderr_file"
+        stderr_file=""
+        return "$status"
+        ;;
       rate_limit)
         # READ path: prefer an immediate REST fallback when the core budget is
         # still available, rather than blocking for the GraphQL reset.
@@ -469,12 +427,7 @@ _gh_retry_attempts() {
             echo "WARNING: gh ${label} hit a GitHub rate limit (exit ${status}); waiting for reset (window ${rl_windows}, no arbitrary cap): $diagnostic" >&2
           fi
           gh_start_owned gh_wait_for_rate_limit "$resource" "$stderr_file"
-          if wait "$GH_OWNED_PID"; then :; else
-            status=$?
-            GH_OWNED_PID=""
-            _gh_retry_local_failure "$label" 'rate-limit reset wait' "$status"
-            return "$status"
-          fi
+          wait "$GH_OWNED_PID"
           GH_OWNED_PID=""
           gh_remove_capture "$stderr_file"
           stderr_file=""
@@ -491,6 +444,10 @@ _gh_retry_attempts() {
             return 0
           fi
         fi
+        printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
+        gh_remove_capture "$stderr_file"
+        stderr_file=""
+        return "$status"
         ;;
       transient)
         if [ "$attempt" -lt "$max_transient" ]; then
@@ -498,27 +455,22 @@ _gh_retry_attempts() {
           gh_remove_capture "$stderr_file"
           stderr_file=""
           gh_start_owned sleep "$delay"
-          if wait "$GH_OWNED_PID"; then :; else
-            status=$?
-            GH_OWNED_PID=""
-            _gh_retry_local_failure "$label" 'transient backoff wait' "$status"
-            return "$status"
-          fi
+          wait "$GH_OWNED_PID"
           GH_OWNED_PID=""
           delay=$((delay * 2))
           continue
         fi
+        printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
+        gh_remove_capture "$stderr_file"
+        stderr_file=""
+        return "$status"
+        ;;
+      *)
+        printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
+        gh_remove_capture "$stderr_file"
+        stderr_file=""
+        return "$status"
         ;;
     esac
-    if [ -n "$create_diagnostics_dir" ] &&
-      printf '%s\n' "$diagnostic" >"$create_diagnostics_dir/provider"; then
-      return "$status"
-    fi
-    if [ "$class" = auth ]; then
-      printf 'ERROR: gh %s failed with an authentication error (exit %s); not retrying: %s\n' "$label" "$status" "$diagnostic" >&2
-    else
-      printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
-    fi
-    return "$status"
   done
 }

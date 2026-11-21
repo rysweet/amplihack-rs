@@ -168,38 +168,6 @@ exec "$REAL_TOOL" "$@"
         self.publish_command().output().unwrap()
     }
 
-    pub fn assert_create_attempts_and_scoped_lookups(&self, attempts: usize, lookups: usize) {
-        let log = self.read("gh.log");
-        assert_eq!(
-            log.lines().filter(|s| s.starts_with("pr create ")).count(),
-            attempts,
-            "{log}"
-        );
-        assert_eq!(
-            log.lines()
-                .filter(|s| s.starts_with("pr list ") && s.contains(" --head "))
-                .count(),
-            lookups,
-            "{log}"
-        );
-    }
-
-    pub fn assert_private_cleanup(&self) {
-        assert_eq!(
-            fs::read_dir(self.tmp.path().join("private"))
-                .unwrap()
-                .count(),
-            0
-        );
-    }
-
-    pub fn offer_collision_pr(&self, head: &str) {
-        self.write(
-            "collision.json",
-            &serde_json::json!([self.pr("OPEN", head)]).to_string(),
-        );
-    }
-
     pub fn assert_created(&self, output: &Output) -> serde_json::Value {
         assert!(
             output.status.success(),
@@ -241,45 +209,6 @@ exec "$REAL_TOOL" "$@"
             "publishing must clean its private capture files"
         );
         result
-    }
-
-    /// Exercise a real retry without a wall-clock wait or provider access.
-    pub fn long_transient_create_failure(&self) {
-        self.create_fails_once(&format!(
-            "HTTP 503 temporary network error {} ghp_ABCDEFGHIJKLMNOPQRSTUVWX",
-            "x".repeat(2048)
-        ));
-        self.shim("sleep", "exit 0\n");
-    }
-
-    pub fn create_fails_once(&self, diagnostic: &str) {
-        self.write("first-create.stderr", diagnostic);
-        let gh = fs::read_to_string(self.bin.join("gh")).unwrap();
-        let marker = "    if [ \"${CREATE_STATUS:-0}\" != 0 ]; then";
-        assert!(gh.contains(marker));
-        let first = r#"
-    if [ ! -e "$CASE_ROOT/first-create" ]; then
-      : > "$CASE_ROOT/first-create"
-      cat "$CASE_ROOT/first-create.stderr" >&2
-      exit 1
-    fi
-"#;
-        executable(
-            &self.bin.join("gh"),
-            &gh.replace(marker, &format!("{first}{marker}")),
-        );
-    }
-
-    pub fn fail_body_temp_creation(&self) {
-        self.shim(
-            "mktemp",
-            r#"
-case "${1:-}" in
-  *workflow-pr-body.*) : > "$CASE_ROOT/collision-ready"; exit 77 ;;
-esac
-exec "$REAL_TOOL" "$@"
-"#,
-        );
     }
 
     pub fn inject_scope_failure(&self) {
@@ -344,10 +273,7 @@ case "${1:-} ${2:-}" in
     fi
     case " $* " in
       *' --head '*)
-        if [ "${SCOPE_RATE_LIMIT:-0}" = 1 ]; then
-          echo 'GraphQL: API rate limit exceeded' >&2; exit 1
-        fi
-        if [ -e "$CASE_ROOT/create.argv" ] || [ -e "$CASE_ROOT/collision-ready" ]; then
+        if [ -e "$CASE_ROOT/create.argv" ]; then
           if [ "${COLLISION_LOOKUP_FAIL:-0}" = 1 ]; then
             echo 'distinctive collision lookup rejection' >&2; exit 42
           fi
@@ -356,8 +282,6 @@ case "${1:-} ${2:-}" in
       *) printf '[]\n' ;;
     esac ;;
   'repo view') printf 'main\n' ;;
-  'api rate_limit') printf '{"resources":{"core":{"remaining":1},"graphql":{"reset":1}}}\n' ;;
-  'api repos/owner/repo/pulls?head='*) cat "$CASE_ROOT/rest-prs.json" ;;
   'issue view')
     : > "$CASE_ROOT/issue-looked-up"
     case "${ISSUE_MODE:-ok}" in

@@ -315,9 +315,9 @@ fn labels_apply_to_an_adopted_pr_whose_base_is_allowed() {
     let output = publish_labelled(&f, "release/*");
     assert_adopted(&output, 615, "dev", KEPT_DEV);
     assert!(
-        f.read("gh.log").lines().any(
-            |l| l == "pr edit 615 --repo github.com/owner/repo --add-label self-merge-eligible"
-        ),
+        f.read("gh.log")
+            .lines()
+            .any(|l| l == "pr edit 615 --add-label self-merge-eligible"),
         "gh.log:\n{}",
         f.read("gh.log")
     );

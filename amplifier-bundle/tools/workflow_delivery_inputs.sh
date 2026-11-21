@@ -132,11 +132,6 @@ delivery_base_ref() {
 delivery_run_base() {
   local explicit="${1:-}" recorded="${2:-}" pr_ref="${3:-}" repo="${4:-}" branch="${5:-}" forbidden="${6:-}"
   local candidate="" url_repo raw ref
-  # Held in a variable rather than written inline on the right of `=~`, which
-  # is the form that behaves the same across the Bash 3.2 that macOS ships and
-  # the Bash 5 used elsewhere. Quoting this expansion at the match site would
-  # make it a literal string, so it stays unquoted there.
-  local pr_url_re='^https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/[1-9][0-9]*/?$'
   # 1. The run's own base_branch is never replaced.
   if [ -n "$explicit" ]; then
     if ! git check-ref-format --branch "$explicit" >/dev/null 2>&1; then
@@ -159,7 +154,7 @@ delivery_run_base() {
     # a shape gh cannot read as an option or another repository.
     if [[ "$pr_ref" =~ ^[1-9][0-9]*$ ]]; then
       :
-    elif [[ "$pr_ref" =~ $pr_url_re ]]; then
+    elif [[ "$pr_ref" =~ ^https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/[1-9][0-9]*/?$ ]]; then
       url_repo="${BASH_REMATCH[1]}"
       if ! same_github_repository "$url_repo" "$repo"; then
         printf 'ERROR: pull request %q is not in this repository %q; its base is not read\n' "$pr_ref" "$repo" >&2
