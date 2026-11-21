@@ -55,8 +55,6 @@ struct World {
 #[derive(Default)]
 struct Seen {
     active: String,
-    /// (step id the listener last reported, prompt) for every agent call.
-    prompts: Vec<(String, String)>,
     /// Prompts handed out before the round's own first step ran, which are
     /// the prompts of the evidence sub-recipe.
     evidence_prompts: Vec<String>,
@@ -85,8 +83,7 @@ struct Agents<'a> {
 impl Agents<'_> {
     /// The compliant merge-deciding agent. Sees only its prompt and the world.
     fn assess(&self, prompt: &str) -> String {
-        let states_condition = !self.task.is_empty() && prompt.contains(&self.task);
-        if states_condition && self.task.contains(CONDITION) {
+        if self.task.contains(CONDITION) && prompt.contains(&self.task) {
             if self.world.release_exists {
                 return format!(
                     "Condition: {CONDITION}. Evidence: `gh release list --repo example-org/acme-infra` \
@@ -118,8 +115,6 @@ impl Agents<'_> {
             .to_lowercase();
         let word = if closing.contains("hand-off") {
             "hand-off"
-        } else if closing.contains("not ready") {
-            "not-ready"
         } else if closing.contains("ready to merge") {
             "ready"
         } else {
@@ -143,12 +138,10 @@ impl Adapter for Agents<'_> {
         let f = self.fixture;
         let id = {
             let mut seen = self.seen.lock().unwrap();
-            let id = seen.active.clone();
-            seen.prompts.push((id.clone(), prompt.to_owned()));
             if !seen.round_started {
                 seen.evidence_prompts.push(prompt.to_owned());
             }
-            id
+            seen.active.clone()
         };
         match id.as_str() {
             MERGE_STEP => Ok(self.assess(prompt)),
@@ -259,12 +252,7 @@ fn drive(task: &str, world: World) -> Drive {
     copy_tools(&workspace().join("amplifier-bundle/tools"), &tools);
     let agents = f.temp.path().join("agents");
     private(&agents.join("core"));
-    for file in [
-        "builder.md",
-        "reviewer.md",
-        "core/builder.md",
-        "core/reviewer.md",
-    ] {
+    for file in ["core/builder.md", "core/reviewer.md"] {
         fs::write(
             agents.join(file),
             "---\nname: fixture\ndescription: scripted test agent\n---\nReturn fixture facts.\n",
@@ -316,23 +304,15 @@ fn drive(task: &str, world: World) -> Drive {
     }
 }
 
-fn context_text(result: &RecipeResult, key: &str) -> String {
-    match result.context.get(key) {
-        Some(Value::String(s)) => s.clone(),
-        Some(v) => v.to_string(),
-        None => String::new(),
-    }
-}
-
-fn outcome_word(result: &RecipeResult) -> String {
-    match result.context.get("merge_ready_word") {
-        Some(Value::Object(o)) => o["word"].as_str().unwrap_or("").to_owned(),
-        Some(Value::String(s)) => serde_json::from_str::<Value>(s)
-            .ok()
-            .and_then(|v| v["word"].as_str().map(str::to_owned))
-            .unwrap_or_default(),
-        _ => String::new(),
-    }
+/// `step-05a-outcome-word` is a `parse_json` bash step, so its result is stored
+/// as parsed JSON.
+fn outcome_word(result: &RecipeResult) -> &str {
+    result
+        .context
+        .get("merge_ready_word")
+        .and_then(|v| v.get("word"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
 }
 
 /// Case A: an unmet external condition ends in a hand-off naming it, with no merge.
@@ -351,7 +331,12 @@ fn unmet_external_condition_ends_in_hand_off_naming_it_and_does_not_merge() {
         "{:?}",
         d.result.context
     );
-    let writeup = context_text(&d.result, "merge_ready_writeup");
+    let writeup = d
+        .result
+        .context
+        .get("merge_ready_writeup")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     assert!(
         writeup.contains(CONDITION),
         "the recorded write-up must name the condition: {writeup}"
