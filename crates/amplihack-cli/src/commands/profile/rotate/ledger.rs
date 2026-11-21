@@ -99,13 +99,10 @@ impl OverflowBlock {
         }
     }
 
-    /// A spend-limit block recorded at `at`.
+    /// A spend-limit block recorded at `at`, ending at the inferred monthly
+    /// reset. [`OverflowBlock::spend_limit_until`] takes a stated end instead.
     pub fn spend_limit(at: i64) -> Self {
-        Self {
-            at,
-            until: spend_reset(at),
-            reason: SPEND_LIMIT.to_string(),
-        }
+        Self::spend_limit_until(at, spend_reset(at))
     }
 }
 
