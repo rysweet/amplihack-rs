@@ -528,3 +528,106 @@ pub fn check_pane_owned(pane: Option<&Pane>, parent: u32) -> PaneCheck {
     let out = pane_tty(pane).unwrap_or_default();
     check_pane_held(&view, holder_pid, parent, pane.clone(), &out)
 }
+
+// ── What the proved pane is showing (issue #2695) ───────────────────────────
+
+/// Longest capture the screen check looks at. A pane is at most a few
+/// hundred columns by a few hundred rows, so this is far above any real
+/// screen; bytes past it are ignored rather than matched.
+const MAX_CAPTURE_BYTES: usize = 64 * 1024;
+
+/// The fixed phrases that make a pane's visible screen one the resume keys
+/// answer, matched as lowercase substrings.
+///
+/// A closed set, and deliberately short. `What do you want to do?` is the
+/// menu the three standing sessions in #2695 were held on; `usage limit`
+/// and `continuing automatically` are the line five sessions were held on
+/// in #2085; the three window names are what Claude Code prints when a
+/// usage limit stops a turn.
+///
+/// `amplihack-cli`'s `limit_patterns.rs` holds the recipe runner's own
+/// limit vocabulary. It is not shared here: this crate does not depend on
+/// the CLI, and the two answer different questions. That list asks whether
+/// a run's *output* reported a limit; this one asks whether a *terminal* is
+/// showing a prompt that Escape and a typed `continue` are the answer to.
+pub const SCREEN_MARKERS: [&str; 6] = [
+    "what do you want to do?",
+    "usage limit",
+    "continuing automatically",
+    "session limit",
+    "5-hour limit",
+    "weekly limit",
+];
+
+/// tmux could not be asked what the pane shows, or it printed nothing.
+pub const SCREEN_UNREADABLE: &str = "screen-unreadable";
+/// The pane was read and shows none of [`SCREEN_MARKERS`].
+pub const SCREEN_UNKNOWN: &str = "screen-unknown";
+
+/// Every reason a screen can be refused. The log's `detail` for
+/// `screen-unrecognised` is always one of these, so no captured text can
+/// reach the file.
+pub const UNRECOGNISED_REASONS: [&str; 2] = [SCREEN_UNREADABLE, SCREEN_UNKNOWN];
+
+/// The verdict on what the proved pane is showing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenCheck {
+    /// The screen holds one of [`SCREEN_MARKERS`]: the keys answer it.
+    Held,
+    /// It does not, or it could not be read. The reason is one of
+    /// [`UNRECOGNISED_REASONS`].
+    Unrecognised(&'static str),
+}
+
+/// The `tmux` argv that prints what `pane` is showing. `-p` writes to
+/// standard output; no `-S` is given, so only the visible screen is read
+/// and never the scrollback.
+pub fn capture_argv(pane: &Pane) -> Vec<String> {
+    vec![
+        "capture-pane".to_string(),
+        "-p".to_string(),
+        "-t".to_string(),
+        pane.id().to_string(),
+    ]
+}
+
+/// The verdict on text tmux printed: the whole rule, and the only place a
+/// marker is matched. Bytes past [`MAX_CAPTURE_BYTES`] are ignored, and
+/// nothing read here is returned, so no screen text can reach a log or a
+/// message.
+pub fn recognise(capture: &[u8]) -> ScreenCheck {
+    let head = &capture[..capture.len().min(MAX_CAPTURE_BYTES)];
+    if head.iter().all(u8::is_ascii_whitespace) {
+        return ScreenCheck::Unrecognised(SCREEN_UNREADABLE);
+    }
+    let text = String::from_utf8_lossy(head).to_ascii_lowercase();
+    if SCREEN_MARKERS.iter().any(|m| text.contains(m)) {
+        ScreenCheck::Held
+    } else {
+        ScreenCheck::Unrecognised(SCREEN_UNKNOWN)
+    }
+}
+
+/// [`recognise`] for what the tmux server `$TMUX` names shows in `pane`.
+///
+/// The pane id is checked against the one `valid_pane_id` rule again before
+/// the call, so it can never become an option. A run that cannot start,
+/// exits non-zero or prints nothing leaves the screen unrecognised, which
+/// sends no keys. The capture runs once: no retry, delay or poll.
+pub fn screen_of(pane: &Pane) -> ScreenCheck {
+    if !valid_pane_id(pane.id()) {
+        return ScreenCheck::Unrecognised(SCREEN_UNREADABLE);
+    }
+    let Ok(out) = Command::new("tmux")
+        .args(capture_argv(pane))
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return ScreenCheck::Unrecognised(SCREEN_UNREADABLE);
+    };
+    if !out.status.success() {
+        return ScreenCheck::Unrecognised(SCREEN_UNREADABLE);
+    }
+    recognise(&out.stdout)
+}

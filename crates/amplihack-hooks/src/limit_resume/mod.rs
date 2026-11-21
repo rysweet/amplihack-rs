@@ -17,26 +17,31 @@
 //! stop, onto a login below 100% on both windows.
 //!
 //! On a resume the hook re-checks the toggle and moved-on, takes a verdict
-//! on its tmux pane ([`keys::PaneCheck`]), records the resume with
+//! on its tmux pane ([`keys::PaneCheck`]) and, for a proved pane, on what
+//! that pane is showing ([`keys::ScreenCheck`]), records the resume with
 //! [`guard::GuardStore::commit`] under the lock, and then takes exactly one
-//! path (D7): with a pane proved to be its own terminal it sends Escape,
-//! C-u, `continue` and Enter ([`keys::RESUME_KEYS`]) and exits 0
-//! (`resumed-keys`); otherwise it exits 2 with exactly `RESUME_MSG` and a
-//! newline on stderr. A key that fails stops the rest
-//! (`resume-keys-failed`) and never falls back to exit 2. Stdout is never
-//! written.
+//! path (D7): with a pane proved to be its own terminal, showing a screen
+//! the keys answer, it sends Escape, C-u, `continue` and Enter
+//! ([`keys::RESUME_KEYS`]) and exits 0 (`resumed-keys`); otherwise it exits
+//! 2 with `RESUME_MSG` and a newline on stderr. A key that fails stops the
+//! rest (`resume-keys-failed`) and never falls back to exit 2. Stdout is
+//! never written.
 //!
 //! The exit-2 wake cannot answer Claude Code's usage-limit menu, which
-//! holds the session's input, so the three outcomes that take it are told
+//! holds the session's input, so the four outcomes that take it are told
 //! apart in the log instead of falling through silently (issue #2695):
 //! `resumed` when the session named no pane, `pane-unverified` when it
 //! named one that was not proved to be its own terminal (with the reason in
-//! `detail`), and `pane-not-reading` when the terminal is the session's but
-//! the session is not the process reading it.
+//! `detail`), `pane-not-reading` when the terminal is the session's but the
+//! session is not the process reading it, and `screen-unrecognised` when
+//! the terminal is the session's but it was not showing a screen the keys
+//! answer. The last also writes [`UNRECOGNISED_MSG`] before `RESUME_MSG`,
+//! so a refusal to type is not left to the log alone.
 //!
 //! The hook reads only the toggle, the profile-root pointer, the rotate
 //! ledger, swap record and pid file, the rotator's `/proc/<pid>/cmdline`,
-//! Claude Code's `/proc/<pid>/{stat,fd/0}`, `$TMUX` and `$TMUX_PANE`, and
+//! Claude Code's `/proc/<pid>/{stat,fd/0}`, `$TMUX`, `$TMUX_PANE` and the
+//! visible text of its own pane (matched and dropped; never logged), and
 //! its own resume state; it never opens a login file. Of the transcript it
 //! reads only the last entry's `timestamp`, through
 //! [`swap_record::read_stop_time`] in `amplihack-utils`, to learn when the
@@ -57,7 +62,7 @@ use amplihack_utils::rotator_status::{self, CycleStatus, MAX_WAIT};
 use amplihack_utils::secure_files::{euid, read_bounded};
 use decide::{Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key};
 use guard::{CommitError, FsGuard, GuardStore};
-use keys::{Key, Pane, PaneCheck, RESUME_KEYS};
+use keys::{Key, Pane, PaneCheck, RESUME_KEYS, ScreenCheck};
 use log::LogEntry;
 use std::io::{self, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -68,6 +73,13 @@ use std::time::{Duration, Instant};
 /// from the payload is echoed into the model's context.
 pub const RESUME_MSG: &str = "amplihack: the login rotator reports a login with capacity. \
      Continue the task you were working on; if the usage limit is still in place, stop and wait.";
+
+/// What the woken model is told before [`RESUME_MSG`] when the hook proved
+/// the pane but did not recognise what it was showing, so it typed nothing.
+/// Fixed text: no part of the capture is echoed into the model's context.
+pub const UNRECOGNISED_MSG: &str = "amplihack: limit-resume proved this session's terminal but did not recognise what it was \
+     showing, so it typed nothing into it. If a usage-limit prompt is still there, press Esc \
+     and continue the session by hand.";
 
 /// Resumes allowed per session in any 24 hours.
 pub const MAX_RESUMES_PER_SESSION: u32 = 3;
@@ -101,6 +113,11 @@ pub enum Outcome {
     /// As `Resumed`, for a session whose pane is its own terminal but which
     /// is not the process reading it.
     PaneNotReading,
+    /// As `Resumed`, for a session whose pane was proved but whose screen
+    /// held none of [`keys::SCREEN_MARKERS`], or could not be read at all.
+    /// `detail` carries one of [`keys::UNRECOGNISED_REASONS`]. Nothing was
+    /// typed, and the wake says so on stderr as well as in the log.
+    ScreenUnrecognised,
     /// As `Resumed`, but the resume keys were sent to the session's pane
     /// and the hook exits 0.
     ResumedKeys,
@@ -145,6 +162,7 @@ impl Outcome {
             Self::Resumed => "resumed",
             Self::PaneUnverified => "pane-unverified",
             Self::PaneNotReading => "pane-not-reading",
+            Self::ScreenUnrecognised => "screen-unrecognised",
             Self::ResumedKeys => "resumed-keys",
             Self::ResumeKeysFailed => "resume-keys-failed",
             Self::WatchLost => "watch-lost",
@@ -170,7 +188,7 @@ impl Outcome {
     pub fn wakes(self) -> bool {
         matches!(
             self,
-            Self::Resumed | Self::PaneUnverified | Self::PaneNotReading
+            Self::Resumed | Self::PaneUnverified | Self::PaneNotReading | Self::ScreenUnrecognised
         )
     }
 
@@ -224,6 +242,10 @@ pub trait Deps {
     /// The verdict on the session's tmux pane, taken now. Every refusal
     /// names itself, so no branch is silent.
     fn pane_check(&mut self) -> PaneCheck;
+    /// Whether the proved `pane` is showing a screen the resume keys
+    /// answer. Read once, after the pane is proved and before anything is
+    /// typed; no screen text is returned.
+    fn screen_check(&mut self, pane: &Pane) -> ScreenCheck;
     /// Sends one key to `pane`; an error when it was not delivered.
     fn send_keys(&mut self, pane: &Pane, key: Key) -> io::Result<()>;
     /// Whether the session still runs and is in its terminal's foreground,
@@ -306,6 +328,39 @@ fn swap(r: &SwapRecord) -> Note<'_> {
     Note {
         swap: Some(r),
         ..Note::default()
+    }
+}
+
+/// How this resume reaches the session.
+enum Delivery {
+    /// The pane is this session's own terminal and it is showing a screen
+    /// the keys answer: type into it.
+    Keys(Pane),
+    /// Type nothing. The session gets the exit-2 wake under this outcome,
+    /// with this fixed `detail`.
+    Wake(Outcome, Option<&'static str>),
+}
+
+/// Chooses the path for one resume, before the commit (D7), so a session
+/// never gets both keys and an exit-2 wake. Each refusal is its own
+/// outcome with its own reason, so the operator can tell "no tmux" from
+/// "ownership unproven" from "the session is not reading this terminal"
+/// from "that is not a screen the keys answer", without reading the pane.
+///
+/// Nothing is typed until both questions are answered: the pane is this
+/// session's terminal, and it is showing a prompt Escape and `continue`
+/// are the right answer to.
+fn delivery<D: Deps + ?Sized>(deps: &mut D) -> Delivery {
+    match deps.pane_check() {
+        PaneCheck::None => Delivery::Wake(Outcome::Resumed, Some(NO_PANE)),
+        PaneCheck::Unverified(reason) => Delivery::Wake(Outcome::PaneUnverified, Some(reason)),
+        PaneCheck::NotReading => Delivery::Wake(Outcome::PaneNotReading, None),
+        PaneCheck::Ready(pane) => match deps.screen_check(&pane) {
+            ScreenCheck::Held => Delivery::Keys(pane),
+            ScreenCheck::Unrecognised(reason) => {
+                Delivery::Wake(Outcome::ScreenUnrecognised, Some(reason))
+            }
+        },
     }
 }
 
@@ -505,7 +560,7 @@ fn run_with_affinity<D: Deps + ?Sized>(
     }
     // D7: the path is chosen before the commit, so a session never gets
     // both keys and an exit-2 wake.
-    let check = deps.pane_check();
+    let check = delivery(deps);
     match deps.guard().commit(&event, &session, start, now) {
         Ok(()) => {}
         Err(e) => {
@@ -520,27 +575,14 @@ fn run_with_affinity<D: Deps + ?Sized>(
     // The swap that woke this wait carries its own organisation outcome
     // (#2136). Nothing else is consulted: there is no per-session state.
     *affinity = record.affinity.filter(|a| a.warning().is_some());
-    // Each refusal is logged under its own name with its reason, so the
-    // operator can tell "no tmux" from "ownership unproven" from "the
-    // session is not reading this terminal" without reading the pane.
     let pane = match check {
-        PaneCheck::Ready(pane) => pane,
-        PaneCheck::None => {
+        Delivery::Keys(pane) => pane,
+        Delivery::Wake(outcome, reason) => {
             let n = Note {
-                detail: Some(NO_PANE.to_string()),
+                detail: reason.map(str::to_string),
                 ..swap(&record)
             };
-            return note(deps, now, Outcome::Resumed, n);
-        }
-        PaneCheck::Unverified(reason) => {
-            let n = Note {
-                detail: Some(reason.to_string()),
-                ..swap(&record)
-            };
-            return note(deps, now, Outcome::PaneUnverified, n);
-        }
-        PaneCheck::NotReading => {
-            return note(deps, now, Outcome::PaneNotReading, swap(&record));
+            return note(deps, now, outcome, n);
         }
     };
     let (outcome, keys_sent, detail) = match send_resume_affinity(deps, &pane, *affinity) {
@@ -560,7 +602,9 @@ fn run_with_affinity<D: Deps + ?Sized>(
 /// Reads at most `MAX_STDIN_BYTES` of payload from `stdin`, decides, and
 /// writes `RESUME_MSG` to `stderr` for every outcome [`Outcome::wakes`]
 /// holds for, preceded by the swap record's organisation warning when it
-/// has one (#2136). On `ResumedKeys` the warning went with the keys
+/// has one (#2136), and, for `ScreenUnrecognised` alone, by
+/// [`UNRECOGNISED_MSG`], so a refusal to type reaches the model and not
+/// only the log. On `ResumedKeys` the warning went with the keys
 /// instead. Returns the exit code: 2 for those outcomes, 0 otherwise,
 /// including after keys were sent, for an oversized or malformed payload
 /// and for a panic.
@@ -582,6 +626,9 @@ pub fn run_with_io<D: Deps + ?Sized>(
         Ok(Some(outcome)) if outcome.wakes() => {
             // The resume is already recorded; exit 2 alone wakes the
             // session, so a failed write still exits 2.
+            if outcome == Outcome::ScreenUnrecognised {
+                let _ = writeln!(stderr, "{UNRECOGNISED_MSG}");
+            }
             if let Some(text) = affinity.and_then(Affinity::warning) {
                 let _ = writeln!(stderr, "{text}");
             }
@@ -727,6 +774,10 @@ impl Deps for SystemDeps {
 
     fn pane_check(&mut self) -> PaneCheck {
         keys::check_pane_owned(self.pane.as_ref(), self.parent)
+    }
+
+    fn screen_check(&mut self, pane: &Pane) -> ScreenCheck {
+        keys::screen_of(pane)
     }
 
     fn send_keys(&mut self, pane: &Pane, key: Key) -> io::Result<()> {

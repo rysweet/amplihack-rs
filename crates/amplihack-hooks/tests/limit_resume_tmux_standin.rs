@@ -8,10 +8,18 @@
 //!   program through `keys::tmux_send`, which is `Command::new("tmux")`, so
 //!   the stand-in is reached by the same lookup a real session uses.
 //! - With a swap record on disk onto a login with room, `$TMUX` and
-//!   `$TMUX_PANE=%5`, the stand-in is run exactly four times, in order, each
-//!   `send-keys -t %5` with `Escape`, `C-u`, `-l continue` and `Enter`. The
-//!   outcome is `resumed-keys` with `keys_sent=4`; the exit code is 0 and
-//!   nothing is written to stderr.
+//!   `$TMUX_PANE=%5`, and a pane showing the usage-limit menu, the stand-in
+//!   is run exactly five times for `%5` and no other target: one
+//!   `capture-pane -p` to read the screen, then `send-keys` with `Escape`,
+//!   `C-u`, `-l continue` and `Enter`, in that order. The outcome is
+//!   `resumed-keys` with `keys_sent=4`; the exit code is 0 and nothing is
+//!   written to stderr.
+//! - With the same record and pane but a screen the hook does not
+//!   recognise, or one `capture-pane` prints nothing for, it reads the
+//!   screen once and types nothing: no `send-keys` is run at all, the
+//!   outcome is `screen-unrecognised` with `detail=screen-unknown` or
+//!   `detail=screen-unreadable`, and the exit-2 wake carries
+//!   `UNRECOGNISED_MSG` before `RESUME_MSG`.
 //! - With a swap record onto a login with no room (a window at 100%), the
 //!   stand-in is never run. The hook goes on waiting, ends on its deadline
 //!   (`no-capacity-timeout`) and exits 0.
@@ -45,9 +53,9 @@
 #![cfg(unix)]
 
 use amplihack_hooks::limit_resume::guard::{FsGuard, GuardStore};
-use amplihack_hooks::limit_resume::keys::{self, Key, Pane, PaneCheck};
+use amplihack_hooks::limit_resume::keys::{self, Key, Pane, PaneCheck, ScreenCheck};
 use amplihack_hooks::limit_resume::log::{LogEntry, append, format_line};
-use amplihack_hooks::limit_resume::{Deps, Event, RESUME_MSG, run_with_io};
+use amplihack_hooks::limit_resume::{Deps, Event, RESUME_MSG, UNRECOGNISED_MSG, run_with_io};
 use amplihack_utils::rotator_status::CycleStatus;
 use amplihack_utils::rotator_status::swap_record::{
     SwapReading, SwapRecord, read_swap, rotate_dir,
@@ -73,14 +81,36 @@ const PANE: &str = "%5";
 /// A made-up session id and tmux socket, shaped like the real ones.
 const SESSION: &str = "s2695";
 const SOCKET_AND_SESSION: &str = "tmux.sock,4242,0";
-/// What the stand-in records for each of the four keys, one line per run,
-/// every argument in brackets so spaces cannot blur two arguments into one.
-const EXPECTED_RECORD: [&str; 4] = [
+/// What the stand-in records for the screen read and each of the four
+/// keys, one line per run, every argument in brackets so spaces cannot blur
+/// two arguments into one.
+const EXPECTED_RECORD: [&str; 5] = [
+    "[capture-pane][-p][-t][%5]",
     "[send-keys][-t][%5][Escape]",
     "[send-keys][-t][%5][C-u]",
     "[send-keys][-t][%5][-l][continue]",
     "[send-keys][-t][%5][Enter]",
 ];
+
+/// What the stand-in prints for `capture-pane` in the scenarios whose pane
+/// is held on the usage-limit menu: the screen the three standing sessions
+/// in #2695 were found on.
+const MENU_SCREEN: &str = "\
+Claude usage limit reached - resets at 3:00pm
+
+What do you want to do?
+
+  1. Buy more usage
+  2. Wait for the limit to reset
+";
+
+/// What it prints for a pane that is not on any prompt the keys answer.
+const OTHER_SCREEN: &str = "\
+user@host:~/src$ git status
+On branch main
+nothing to commit, working tree clean
+user@host:~/src$
+";
 
 const NOW: i64 = 1_792_592_000;
 
@@ -101,6 +131,11 @@ enum Scenario {
     PaneWithoutTmux,
     /// Room, `$TMUX` set, `$TMUX_PANE` not an id.
     MalformedPane,
+    /// Room and its own pane, but the pane is showing a shell prompt and
+    /// not a screen the keys answer.
+    UnknownScreen,
+    /// Room and its own pane, but `capture-pane` prints nothing.
+    BlankScreen,
 }
 
 impl Scenario {
@@ -111,6 +146,25 @@ impl Scenario {
             Self::NoPane => "no-pane",
             Self::PaneWithoutTmux => "pane-without-tmux",
             Self::MalformedPane => "malformed-pane",
+            Self::UnknownScreen => "unknown-screen",
+            Self::BlankScreen => "blank-screen",
+        }
+    }
+
+    /// What the stand-in prints for `capture-pane`, or nothing at all.
+    fn screen(self) -> Option<&'static str> {
+        match self {
+            Self::UnknownScreen => Some(OTHER_SCREEN),
+            Self::BlankScreen => None,
+            _ => Some(MENU_SCREEN),
+        }
+    }
+
+    /// The `detail` the log carries when the screen is refused.
+    fn screen_detail(self) -> &'static str {
+        match self {
+            Self::BlankScreen => "screen-unreadable",
+            _ => "screen-unknown",
         }
     }
 
@@ -122,6 +176,8 @@ impl Scenario {
             Self::NoPane => "a_session_with_no_pane_runs_tmux_not_at_all",
             Self::PaneWithoutTmux => "an_inherited_pane_without_a_tmux_server_runs_tmux_not_at_all",
             Self::MalformedPane => "a_malformed_pane_id_runs_tmux_not_at_all",
+            Self::UnknownScreen => "a_screen_the_hook_does_not_recognise_gets_no_keys",
+            Self::BlankScreen => "a_screen_that_cannot_be_read_gets_no_keys",
         }
     }
 
@@ -172,8 +228,10 @@ fn private_dir(p: &Path) {
 }
 
 /// A stand-in `tmux` in `<root>/bin`: a shell script that appends its
-/// arguments, in brackets, to `<root>/record` and exits 0. It reads neither
-/// the environment nor its arguments as anything but text.
+/// arguments, in brackets, to `<root>/record`, prints `<root>/screen` for
+/// `capture-pane` and exits 0. It reads neither the environment nor its
+/// arguments as anything but text, and a scenario that writes no screen
+/// file makes `capture-pane` print nothing.
 fn write_standin(root: &Path) -> PathBuf {
     let bin = root.join("bin");
     private_dir(&bin);
@@ -183,9 +241,19 @@ fn write_standin(root: &Path) -> PathBuf {
         !record.contains('\'') && !record.contains('\n'),
         "the sandbox path must be quotable: {record}"
     );
+    let screen = root.join("screen");
+    let screen = screen.to_str().unwrap();
+    assert!(
+        !screen.contains('\'') && !screen.contains('\n'),
+        "the sandbox path must be quotable: {screen}"
+    );
+    // Only shell built-ins: `PATH` is this directory alone, so the script
+    // cannot reach `cat` or any other program.
     let script = format!(
         "#!/bin/sh\n{MARKER}\n{{\n  for a in \"$@\"; do printf '[%s]' \"$a\"; done\n  \
-         printf '\\n'\n}} >> '{record}'\n"
+         printf '\\n'\n}} >> '{record}'\nif [ \"$1\" = capture-pane ] && [ -f '{screen}' ]; \
+         then\n  while IFS= read -r l; do printf '%s\\n' \"$l\"; done < '{screen}'\nfi\n\
+         exit 0\n"
     );
     let path = bin.join("tmux");
     let mut f = fs::OpenOptions::new()
@@ -206,6 +274,9 @@ fn parent(scenario: Scenario) -> Ran {
     fs::set_permissions(sandbox.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let root = sandbox.path();
     let bin = write_standin(root);
+    if let Some(screen) = scenario.screen() {
+        fs::write(root.join("screen"), screen).unwrap();
+    }
     let home = root.join("home");
     private_dir(&home);
 
@@ -393,6 +464,11 @@ impl Deps for StandInDeps {
             None => PaneCheck::None,
         }
     }
+    /// The production screen check: `tmux capture-pane -p` against the
+    /// stand-in, then the hook's own rule on what it printed.
+    fn screen_check(&mut self, pane: &Pane) -> ScreenCheck {
+        keys::screen_of(pane)
+    }
     fn send_keys(&mut self, pane: &Pane, key: Key) -> io::Result<()> {
         self.attempts += 1;
         keys::tmux_send(pane, key)
@@ -510,13 +586,20 @@ fn a_session_with_room_and_its_own_pane_gets_four_send_keys_for_that_pane() {
     };
     assert_eq!(
         ran.record, EXPECTED_RECORD,
-        "tmux must run exactly four times, each send-keys for the session's own pane"
+        "tmux must run exactly five times: one capture-pane, then the four keys"
     );
     assert!(
+        ran.record.iter().all(|l| l.contains("[-t][%5]")),
+        "every run targets %5 and nothing else: {:?}",
+        ran.record
+    );
+    assert_eq!(
         ran.record
             .iter()
-            .all(|l| l.starts_with("[send-keys][-t][%5]")),
-        "every run targets %5 and nothing else: {:?}",
+            .filter(|l| l.starts_with("[capture-pane]"))
+            .count(),
+        1,
+        "the screen is read once, before the keys: {:?}",
         ran.record
     );
     assert_eq!(ran.attempts, 4);
@@ -593,6 +676,61 @@ fn a_malformed_pane_id_runs_tmux_not_at_all() {
         return;
     };
     assert_wakes_without_tmux(&ran);
+}
+
+// ── What a pane the hook cannot recognise gets ──────────────────────────────
+
+/// The pane was proved, so the screen is read once; it is not one the keys
+/// answer, so nothing is typed. The wake says so on stderr before the
+/// continue message, and the log names the reason.
+fn assert_reads_then_types_nothing(ran: &Ran, scenario: Scenario) {
+    assert_eq!(
+        ran.record,
+        ["[capture-pane][-p][-t][%5]"],
+        "the screen is read once and nothing is typed"
+    );
+    assert_eq!(ran.attempts, 0, "no key may even be attempted");
+    assert_eq!(ran.exit, 2, "the exit-2 wake is what is left");
+    assert_eq!(
+        ran.stderr,
+        debug_str(&format!("{UNRECOGNISED_MSG}\n{RESUME_MSG}\n")),
+        "the wake names the unrecognised screen before the continue message"
+    );
+    let line = ran
+        .log
+        .lines()
+        .find(|l| l.contains("outcome=screen-unrecognised"))
+        .unwrap_or_else(|| panic!("no screen-unrecognised line in the log:\n{}", ran.log));
+    assert!(
+        line.split_whitespace()
+            .any(|f| f == format!("detail={}", scenario.screen_detail())),
+        "the line names why the screen was refused: {line}"
+    );
+    assert!(
+        !line.contains("keys_sent=") && !line.contains("pane="),
+        "a wake without keys names neither: {line}"
+    );
+    assert!(
+        !ran.log.contains("What do you want to do") && !ran.log.contains("git status"),
+        "no screen text reaches the log:\n{}",
+        ran.log
+    );
+}
+
+#[test]
+fn a_screen_the_hook_does_not_recognise_gets_no_keys() {
+    let Some(ran) = run(Scenario::UnknownScreen) else {
+        return;
+    };
+    assert_reads_then_types_nothing(&ran, Scenario::UnknownScreen);
+}
+
+#[test]
+fn a_screen_that_cannot_be_read_gets_no_keys() {
+    let Some(ran) = run(Scenario::BlankScreen) else {
+        return;
+    };
+    assert_reads_then_types_nothing(&ran, Scenario::BlankScreen);
 }
 
 // ── What a swap onto a full login gets ──────────────────────────────────────

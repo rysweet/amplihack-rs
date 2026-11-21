@@ -28,8 +28,8 @@
 
 use amplihack_hooks::limit_resume::guard::{FsGuard, GuardStore};
 use amplihack_hooks::limit_resume::keys::{
-    Key, MAX_ANCESTRY, Pane, PaneCheck, ProcEntry, ProcView, RESUME_KEYS, UNVERIFIED_REASONS,
-    check_pane_with, parse_stat, tty_ancestor,
+    Key, MAX_ANCESTRY, Pane, PaneCheck, ProcEntry, ProcView, RESUME_KEYS, ScreenCheck,
+    UNVERIFIED_REASONS, check_pane_with, parse_stat, tty_ancestor,
 };
 use amplihack_hooks::limit_resume::log::{LogEntry, append, format_line};
 use amplihack_hooks::limit_resume::{Deps, Event, Outcome, RESUME_MSG, run_with, run_with_io};
@@ -446,6 +446,12 @@ impl Deps for PaneDeps {
     }
     fn pane_check(&mut self) -> PaneCheck {
         self.check.clone()
+    }
+    /// This file covers the ownership proof; the screen is the subject of
+    /// `limit_resume_tmux_standin.rs`, so a proved pane is taken to be
+    /// showing the menu here.
+    fn screen_check(&mut self, _pane: &Pane) -> ScreenCheck {
+        ScreenCheck::Held
     }
     fn send_keys(&mut self, _pane: &Pane, key: Key) -> io::Result<()> {
         self.sent.push(key);
