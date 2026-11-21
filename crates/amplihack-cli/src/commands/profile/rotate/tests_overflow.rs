@@ -1126,15 +1126,32 @@ fn an_expired_block_is_ignored() {
     );
 }
 
+/// Issue #2890 supersedes the earlier row, which read "a block for an
+/// unmarked profile changes nothing". A step now writes a block for the plan
+/// login it met a spend limit on, and the `/usage` probe cannot see that
+/// limit, so a blocked plan login reads as healthy and must still be left
+/// alone. An expired block changes nothing, as it always did.
 #[test]
-fn a_block_for_an_unmarked_profile_changes_nothing() {
+fn a_block_on_an_unmarked_plan_login_takes_its_room_away() {
     let far = Some(NOW + 50 * HOUR);
-    let mut c = Case::new("work", measured(90.0, 40.0, far, far))
-        .cand("spare", measured(10.0, 20.0, far, far));
+    let case = || {
+        Case::new("work", measured(90.0, 40.0, far, far))
+            .cand("spare", measured(10.0, 20.0, far, far))
+    };
+    assert_eq!(case().run().decision, swap("spare", Reason::Threshold));
+
+    let mut c = case();
     c.blocks
         .insert("spare".into(), block(NOW - HOUR, NOW + 24 * HOUR));
-    let v = c.run();
-    assert_eq!(v.decision, swap("spare", Reason::Threshold));
+    assert_eq!(
+        c.run().decision,
+        Decision::Alert,
+        "the only candidate cannot be used"
+    );
+
+    let mut c = case();
+    c.blocks.insert("spare".into(), block(NOW - HOUR, NOW));
+    assert_eq!(c.run().decision, swap("spare", Reason::Threshold));
 }
 
 // --- Fail-closed and fallback cases (issue #1606, step 6) ------------------

@@ -212,6 +212,25 @@ pub fn spend_limit_not_blocked(name: &ProfileName, why: &str) -> String {
     format!("ALERT: overflow profile {name} hit its spend limit; not blocked ({why})")
 }
 
+/// A spend block a failed agent step recorded for the login it ran under
+/// (issue #2890). It says `login`, not `overflow profile`: the login is
+/// usually a plan login, which the rotator's own probe cannot see a spend
+/// limit on. `until` is the reset the message stated.
+pub fn alert_step_spend_limit(name: &ProfileName, until: i64) -> String {
+    format!(
+        "ALERT: login {name} hit its spend limit; blocked until {}",
+        timestamp(until)
+    )
+}
+
+/// A step's spend limit that could not be stored as a block, and why. `why`
+/// comes from a closed set of fixed strings in `step_block`; no text from
+/// the limit message, and no path, ever reaches it. The step plans its wait
+/// either way.
+pub fn step_spend_limit_not_blocked(name: &ProfileName, why: &str) -> String {
+    format!("ALERT: login {name} spend limit not blocked ({why})")
+}
+
 #[cfg(test)]
 pub fn alert_no_capacity(live: &ProfileName, reading: &Reading) -> String {
     alert_no_capacity_for(live.as_str(), reading, &[])

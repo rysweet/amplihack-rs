@@ -62,6 +62,8 @@ mod tests_scratch;
 #[cfg(test)]
 mod tests_settings;
 #[cfg(test)]
+mod tests_spend_reset;
+#[cfg(test)]
 mod tests_wait;
 #[cfg(test)]
 mod tests_wait_ends;
@@ -69,6 +71,7 @@ mod tests_wait_ends;
 mod tests_wait_room;
 
 use super::attempt::Signals;
+use super::name::ProfileName;
 use super::store::ProfileStore;
 use amplihack_utils::rotator_status::Ledger;
 use anyhow::Result;
@@ -328,6 +331,33 @@ impl Waiter {
     /// rotator swaps logins into.
     pub(crate) fn is_home(&self) -> bool {
         self.watch.is_home()
+    }
+
+    /// The profile root whose rotate ledger this step's login is recorded
+    /// in (issue #2890); `None` when the step has no store to record in.
+    pub(crate) fn store_root(&self) -> Option<&std::path::Path> {
+        self.watch.store_root()
+    }
+
+    /// Which login the attempt now running ran under (issue #2890), as a
+    /// profile name: `profile` when the supervisor launched it under one,
+    /// else the inherited profile this step's watch names, else the login
+    /// key read before the attempt started ([`Waiter::note_attempt_login`]),
+    /// which for a `$HOME/.claude` step is the rotator's live profile.
+    ///
+    /// Every name goes through [`ProfileName::parse`], so a value from a
+    /// file can never become a path segment; `None` when none parses, and
+    /// then nothing is recorded.
+    pub(crate) fn attempt_profile(&self, profile: Option<&ProfileName>) -> Option<ProfileName> {
+        if let Some(p) = profile {
+            return Some(p.clone());
+        }
+        if let Some(p) = self.watch.inherited_profile() {
+            return Some(p);
+        }
+        self.attempt_login
+            .as_ref()
+            .and_then(|(_, name)| ProfileName::parse(name).ok())
     }
 
     /// Whether a rotator is running that could move another login in.

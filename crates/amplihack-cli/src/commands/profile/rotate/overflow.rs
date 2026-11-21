@@ -140,15 +140,14 @@ pub struct Verdict {
     pub key_held: Vec<ProfileName>,
 }
 
+#[path = "overflow_blocked.rs"]
+mod blocked_room;
 #[path = "overflow_capacity.rs"]
 mod capacity;
+use blocked_room::{active, measured_without_room, without_room};
 #[cfg(test)]
 pub use capacity::regains;
 pub use capacity::{earliest_plan_reset, gate, plan_usable};
-
-fn active(blocks: &BTreeMap<String, OverflowBlock>, name: &ProfileName, now: i64) -> bool {
-    blocks.get(name.as_str()).is_some_and(|b| now < b.until)
-}
 
 #[cfg(test)]
 pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
@@ -176,6 +175,38 @@ pub fn decide_restricted(
     let platform_blocked = i.platform_block.is_some_and(|b| i.now < b.until);
     let live_platform = platform.is_some() && i.live_name == platform;
 
+    // Issue #2890: a plan login with an active spend block contributes a
+    // reading with no room, whatever its probe said. One substitution on
+    // the inputs, applied to the live login and to the plan candidates;
+    // every rule below reads the substituted values and is itself
+    // unchanged. Overflow profiles keep the block rules they already have
+    // (`blocked` below), which is why the substitution asks `!is_overflow`.
+    let blocked_plan = |n: &ProfileName| !is_overflow(n) && active(i.blocks, n, i.now);
+    let live_sub;
+    let live: &Probed = if i.live_name.is_some_and(&blocked_plan) {
+        live_sub = without_room(i.live);
+        &live_sub
+    } else {
+        i.live
+    };
+    let candidates_sub;
+    let candidates: &[Measured] = if i.candidates.iter().any(|c| blocked_plan(&c.name)) {
+        candidates_sub = i
+            .candidates
+            .iter()
+            .map(|c| {
+                if blocked_plan(&c.name) {
+                    measured_without_room(c)
+                } else {
+                    c.clone()
+                }
+            })
+            .collect::<Vec<_>>();
+        &candidates_sub
+    } else {
+        i.candidates
+    };
+
     // Spend-limit evidence on any overflow profile, live or candidate,
     // blocks it once.
     let mut new_blocks = Vec::new();
@@ -190,7 +221,7 @@ pub fn decide_restricted(
         if Some(o) == i.live_name || active(i.blocks, o, i.now) {
             continue;
         }
-        if i.candidates.iter().any(|c| &c.name == o && c.spend_limit) {
+        if candidates.iter().any(|c| &c.name == o && c.spend_limit) {
             new_blocks.push(o.clone());
         }
     }
@@ -210,14 +241,13 @@ pub fn decide_restricted(
             .filter(|o| Some(*o) != i.live_name && !blocked(o))
             .filter(|o| allowed(o))
             .find_map(|o| {
-                i.candidates
+                candidates
                     .iter()
                     .find(|c| &c.name == o && c.reading != Reading::Failed && !c.spend_limit)
             })
             .map(|c| c.name.clone())
     };
-    let plan: Vec<Measured> = i
-        .candidates
+    let plan: Vec<Measured> = candidates
         .iter()
         .filter(|c| !is_overflow(&c.name))
         .cloned()
@@ -260,7 +290,7 @@ pub fn decide_restricted(
     let swap = |to: ProfileName, reason| Decision::Swap { to, reason };
 
     if !live_over {
-        let d = decide(s, &i.live.reading, &targets, i.swapped_at, i.now);
+        let d = decide(s, &live.reading, &targets, i.swapped_at, i.now);
         // Everything below replaces only a move off a live login at a
         // threshold (an ALERT, or a threshold swap onto a plan login that is
         // itself without capacity), and never for a login whose state is
@@ -275,11 +305,11 @@ pub fn decide_restricted(
                 .any(|c| &c.name == to && plan_usable(s, &c.reading)),
             _ => false,
         };
-        if !moving_without_capacity || i.live.reading == Reading::Failed {
+        if !moving_without_capacity || live.reading == Reading::Failed {
             return verdict(d, None, None);
         }
         // The plan login with the most room costs nothing.
-        let live_measured = i.live_name.map(|n| Measured::new(n.clone(), i.live));
+        let live_measured = i.live_name.map(|n| Measured::new(n.clone(), live));
         let choice = plan_room::choose(s, live_measured.as_ref(), &same_targets);
         if let Some(to) = choice {
             let same = matches!(&d, Decision::Swap { to: t, .. } if *t == to);
@@ -288,7 +318,7 @@ pub fn decide_restricted(
         }
         // Per-token profiles only when no measured plan login, live
         // included, has room. The API key also needs every one measured.
-        let room = std::iter::once(&i.live.reading)
+        let room = std::iter::once(&live.reading)
             .chain(plan.iter().map(|c| &c.reading))
             .any(plan_room::has_room);
         if room {
@@ -300,7 +330,7 @@ pub fn decide_restricted(
         // `not_logged_in`, `unparsed`, `spend_limit`, or `ok` with no week
         // figure does not.
         let held = plan.iter().any(|c| c.unknown) || i.refused.iter().any(|n| !is_overflow(n));
-        let pool = std::iter::once((&i.live.reading, &i.live.windows))
+        let pool = std::iter::once((&live.reading, &live.windows))
             .chain(plan.iter().map(|c| (&c.reading, &c.windows)));
         let earliest = earliest_plan_reset(s, pool);
         if !held

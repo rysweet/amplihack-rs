@@ -99,7 +99,7 @@ impl OverflowBlock {
         }
     }
 
-    /// A spend-limit block recorded at `at`.
+    /// A spend-limit block recorded at `at`; see also `spend_limit_until`.
     pub fn spend_limit(at: i64) -> Self {
         Self {
             at,

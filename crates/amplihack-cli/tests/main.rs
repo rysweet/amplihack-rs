@@ -411,6 +411,10 @@ mod issue_2815_piped_prompt_wait;
 mod issue_2857_limit_after_a_wait;
 #[path = "issue_2857_wakes_only_on_room.rs"]
 mod issue_2857_wakes_only_on_room;
+#[path = "issue_2882_spend_limit_capacity_wait.rs"]
+mod issue_2882_spend_limit_capacity_wait;
+#[path = "issue_2890_spend_blocked_login.rs"]
+mod issue_2890_spend_blocked_login;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

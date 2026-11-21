@@ -16,6 +16,36 @@ pub const KEY_REVOKED: &str = "key_revoked";
 pub const KEY_RATE_LIMITED: &str = "key_rate_limited";
 pub const KEY_REASONS: [&str; 3] = [KEY_EXHAUSTED, KEY_REVOKED, KEY_RATE_LIMITED];
 
+impl OverflowBlock {
+    /// A spend-limit block recorded at `at` that ends at the time the limit
+    /// message stated (issue #2890), rather than at the inferred monthly
+    /// reset of [`OverflowBlock::spend_limit`]. The reason is the same, so
+    /// every reader, [`valid_overflow`] included, is unchanged. The caller
+    /// checks the span with [`valid_span`].
+    pub fn spend_limit_until(at: i64, until: i64) -> Self {
+        Self {
+            at,
+            until,
+            reason: SPEND_LIMIT.to_string(),
+        }
+    }
+}
+
+/// The time rule every stored block obeys: recorded at a positive time,
+/// ending after it, and within [`MAX_BLOCK_SECS`] of it, so no block can be
+/// made to last for ever. An end that cannot be computed counts as invalid.
+///
+/// The one expression, shared by the loader's [`valid_overflow`] and by
+/// `step_block`, which applies it *before* inserting so that a block a step
+/// writes can never make the whole ledger unreadable.
+pub(super) fn valid_span(b: &OverflowBlock) -> bool {
+    b.at > 0
+        && b.at < b.until
+        && b.at
+            .checked_add(MAX_BLOCK_SECS)
+            .is_some_and(|max| b.until <= max)
+}
+
 /// The overflow fields of a loaded ledger: a known tag, at most
 /// [`MAX_BLOCKS`] blocks, each keyed by a profile name, for a spend limit,
 /// recorded at a positive time and ending after it but within
@@ -24,13 +54,7 @@ pub const KEY_REASONS: [&str; 3] = [KEY_EXHAUSTED, KEY_REVOKED, KEY_RATE_LIMITED
 /// absent or `platform` with a `live`, and `platform_block` has a key
 /// reason and the same time rules.
 pub(super) fn valid_overflow(l: &RotateLedger) -> bool {
-    let span_ok = |b: &OverflowBlock| {
-        b.at > 0
-            && b.at < b.until
-            && b.at
-                .checked_add(MAX_BLOCK_SECS)
-                .is_some_and(|max| b.until <= max)
-    };
+    let span_ok = valid_span;
     let live_kind_ok = l
         .live_kind
         .as_deref()

@@ -602,19 +602,27 @@ fn a_spend_limit_on_a_config_dir_step_still_skips() {
     assert_eq!(events(&out), ["skipped reason=spend_limit"]);
 }
 
+/// Issue #2882 supersedes the old row: a spend limit that states a reset is
+/// a capacity wait when another login could take over, not `reset_too_far`.
+/// Only a spend limit with no readable reset reaches a login-change wait.
 #[test]
-fn a_spend_limit_with_a_weekly_reset_is_unchanged() {
+fn a_spend_limit_with_a_weekly_reset_is_a_capacity_wait_not_a_login_change_wait() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
-    c.env("LIMIT_MESSAGE", SPEND_WEEKLY_TEXT);
+    c.env("LIMIT_MESSAGE", SPEND_WEEKLY_TEXT)
+        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0");
     let out = f.run(&mut c);
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(
-        events(&out),
-        ["skipped reason=reset_too_far"],
-        "only a spend limit with no readable reset reaches a login-change wait"
+    let ev = events(&out);
+    assert!(
+        ev[0].starts_with("start reason=usage_limit wait=capacity harness=claude reset=2"),
+        "{ev:?}: {}",
+        describe(&out)
+    );
+    assert!(
+        !ev.iter().any(|l| l.contains("reason=spend_limit")),
+        "a stated reset is not a login-change wait: {ev:?}"
     );
 }
 

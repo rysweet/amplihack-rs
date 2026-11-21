@@ -799,23 +799,25 @@ fn ac3_one_stored_login_with_no_reset_skips() {
 /// `issue_2731_login_change_wait`; here the weekly-reset case and the
 /// no-rotator case keep their skips.
 #[test]
-fn ac3_a_spend_limit_never_starts_a_capacity_wait() {
-    let f = with_profiles();
-    x_is_live(&f);
-    let _rotator = rotator_running(&f);
-    let mut c = home_step(&f);
-    c.env("LIMIT_MESSAGE", SPEND_WEEKLY_TEXT);
-    let out = f.run(&mut c);
-    assert_skipped(&f, &out, "reset_too_far");
-
-    // No rotator: nothing could move another login in, so the no-reset
-    // spend limit still ends the step at once.
+fn ac3_a_spend_limit_with_no_reset_never_starts_a_capacity_wait() {
+    // Issue #2882: a spend limit that states a reset now starts a capacity
+    // wait (`issue_2882_spend_limit_capacity_wait`). One that states none
+    // keeps its skip, or #2731's login-change wait with a rotator.
+    // No rotator: nothing could move another login in, so it ends at once.
     let g = with_profiles();
     x_is_live(&g);
     let mut c = home_step(&g);
     c.env("LIMIT_MESSAGE", SPEND_TEXT);
     let out = g.run(&mut c);
     assert_skipped(&g, &out, "spend_limit");
+
+    // A stated reset with no rotator is still `reset_too_far`.
+    let h = with_profiles();
+    x_is_live(&h);
+    let mut c = home_step(&h);
+    c.env("LIMIT_MESSAGE", SPEND_WEEKLY_TEXT);
+    let out = h.run(&mut c);
+    assert_skipped(&h, &out, "reset_too_far");
 }
 
 #[test]
