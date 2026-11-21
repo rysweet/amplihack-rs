@@ -411,24 +411,47 @@ writes only after a successful swap. A wake requires a
 with a reading below 100% on both windows. Stays, ALERTs and `profile switch`
 leave the hook waiting. The recipe-step wait uses `last_cycle.live_room`.
 
-The hook attempts to continue the session in one of two ways:
+For a session in tmux, the hook answers the usage-limit menu itself. It runs
+in the session's own process tree, so once the rotator reports a login with
+room it answers its own session's pane (`$TMUX_PANE`) and no other. It walks
+up its own ancestry to the nearest process whose standard input is a
+terminal, and uses the pane only if tmux reports that terminal as the pane's
+`#{pane_tty}`, that process holds the terminal's foreground process group,
+and Claude Code is reading it. It then sends Esc, Ctrl+U, `continue` and
+Enter as four separate `tmux send-keys` runs. Esc is the key that dismisses
+the usage-limit menu and the timed wait. If the swap carries an
+organisation-affinity warning, the hook includes it in the continuation
+text. `resumed-keys` records key delivery; confirm continuation in the
+session. The hook's own run against a live usage limit is not confirmed;
+what is tested, against a stand-in `tmux`, is that a session with room and a
+proved pane receives exactly these four inputs for that pane and no other,
+and that a session with no room or no proved pane receives none.
 
-- Inside tmux, the hook checks the pane against its parent process's
-  terminal and foreground process group. These checks establish where the
-  inputs go. They leave the displayed menu unverified, and the prompt can
-  change during delivery. The hook sends Esc, Ctrl+U,
-  `continue` and Enter. If the swap carries an organisation-affinity warning,
-  the hook includes it in the continuation text. `resumed-keys` records key
-  delivery. Confirm continuation in the session.
-- Otherwise the hook exits `2` with a continue message (`resumed`). The wake
-  cleared the menu in a Claude Code 2.1.307 check. Standing sessions can
-  stay on the usage-limit menu after a wake and a swap to a login with room.
+The proof shows that the keys go to the session's own terminal. It does not
+show that the screen is the usage-limit menu, and the hook reads no screen
+text. A session that had already recovered receives one extra `continue`
+turn, and Ctrl+U clears any draft in its input box.
 
-Automatic recovery in the same conversation after a swap remains unverified
-on Claude Code 2.1.329. If the menu or timed wait remains, or the hook logs
-`resume-keys-failed`, direct the owner to the
+When the pane cannot be proved, or the session is not in tmux, the hook
+sends nothing to any terminal and exits `2` with a continue message. The
+outcome says why: `resumed` (no tmux pane to check), `pane-unverified` (a
+pane was named but not proved to be the session's terminal; `detail=` names
+the check) or `pane-not-reading` (it is the terminal, but Claude Code is not
+reading it). The wake cleared the menu in a Claude Code 2.1.307 check, but
+standing sessions have stayed on the usage-limit menu after a wake and a
+swap, so these three outcomes can leave a session stopped.
+
+For a session left stopped, and when the hook logs `resume-keys-failed`,
+direct the owner to the
 [manual recovery steps](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#continue-a-session-yourself).
-Only the owner should enter recovery input, including with `tmux send-keys`.
+The hook types only into its own session's pane; recovery input for any
+other session, including `tmux send-keys` to its pane, is entered by that
+session's owner.
+
+The keys are the ones a person used by hand in the sessions reported in
+[#2085](https://github.com/rysweet/amplihack-rs/issues/2085) and
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695), not the result
+of the hook's own run on a live usage limit.
 
 It never presses a digit or types `/usage-credits` or `/rate-limit-options`.
 If a session does not resume, read `resume.log` first. The tmux limit
@@ -441,7 +464,11 @@ Tell the user it needs:
   older `claude`);
 - auto-switch on and a rotator from this amplihack version running (a
   rotator started before the upgrade writes no swap record: restart it);
-- Linux (elsewhere the hook ends as `watch-lost`).
+- Linux (elsewhere the hook ends as `watch-lost`);
+- tmux, for a session that may be held on the usage-limit menu: the
+  session must run in a pane, so that `$TMUX` and `$TMUX_PANE` are set.
+  Without tmux the hook can only wake the session, which has not released
+  the menu in the sessions reported in #2695.
 
 Check it is registered:
 
@@ -457,8 +484,10 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 
 | Outcome | What to tell the user |
 |---------|-----------------------|
-| `resumed-keys` | tmux accepted all four inputs to the session's pane. Check for a reply in the original conversation. |
-| `resumed` | The session had no verified pane, so the hook exited `2` with a continue message. |
+| `resumed-keys` | tmux accepted all four inputs to the session's own pane. Check for a reply in the original conversation. |
+| `resumed` | The session had no tmux pane to check, so the hook exited `2` with a continue message. A session held on the menu stays there. |
+| `pane-unverified` | A pane was named but not proved to be the terminal of the hook's own Claude Code (`detail=` is `bad-pane-id`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or `not-foreground`; `tty-mismatch` also covers `tmux` failing or printing nothing). Nothing was typed and the hook exited `2`. If the session is still on the menu, its owner should follow [Continue a session yourself](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#continue-a-session-yourself). |
+| `pane-not-reading` | The pane is the session's terminal, but Claude Code is not the process reading it. Nothing was typed and the hook exited `2`. Same follow-up as `pane-unverified`. |
 | `resume-keys-failed` | A key failed or the session exited part way (`keys_sent=` says how many went). If the session is still open, its owner should follow [Continue a session yourself](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#continue-a-session-yourself). |
 | `swap-no-room` / `swap-stale` | A swap record was at 100% or swapped before the stop; the hook kept waiting. |
 | `watch-lost` | The hook could not watch for swaps (not Linux, old kernel, unsafe or deleted directory; see `detail=`). It never resumes. |

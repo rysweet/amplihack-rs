@@ -1289,9 +1289,26 @@ account ID or an e-mail address. The full rules are in
 
 A swap only helps a session that sends another request. When a turn ends
 on a usage limit, amplihack's `limit-resume` hook waits for the rotator to
-swap `~/.claude` to a login with room, then asks the session to continue.
-A standing session can stay on Claude Code's usage-limit menu after the
-swap and hook wake. Its owner can [continue it in the same terminal](#continue-a-session-yourself).
+swap `~/.claude` to a login with room, then continues the session.
+
+For a session that runs in tmux, the hook answers the usage-limit menu
+itself. It runs inside the session's own process tree, and once the rotator
+reports a login with room it proves that the tmux pane named by
+`$TMUX_PANE` is the terminal of its own Claude Code. It then types Esc,
+Ctrl+U, `continue` and Enter into that pane. Esc is the key that dismisses
+the usage-limit menu and the timed wait, which hold the input. The hook acts
+on its own session's pane only, and never lists or targets any other pane.
+Its own run against a live usage limit is not yet confirmed; see
+[The keys it sends](#the-keys-it-sends).
+
+When the hook cannot prove the pane, or the session does not run in tmux,
+it sends nothing to the terminal and falls back to the exit `2` wake. In the
+standing sessions reported in
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695), that wake has
+not released the menu, so the owner
+[continues that session by hand](#continue-a-session-yourself). The hook
+logs which case applied, and [Verify a wake](#verify-a-wake) shows how to
+read it.
 
 You need:
 
@@ -1314,9 +1331,11 @@ You need:
   amplihack profile rotate stop
   amplihack profile rotate start
   ```
-- For sessions in Claude Code's timed wait: the session runs inside tmux.
-  The hook types into the session's own pane; without tmux it can only use
-  the wake described below, which is not known to end the timed wait.
+- For a session held on the usage-limit menu or in Claude Code's timed wait:
+  the session runs inside tmux, so that `$TMUX` and `$TMUX_PANE` are set in
+  the hook's environment. The hook types into the session's own pane. Without
+  tmux it can only use the wake described below, which has not released the
+  menu in the sessions reported in #2695.
 
 Check that the hook is registered:
 
@@ -1351,11 +1370,10 @@ rotator puts them back at the end of its next cycle, and sessions started with
 1. The turn ends with a usage-limit error, and Claude Code runs the hook in
    the background.
 2. If no rotator is running, the hook exits at once (`rotator-down`).
-3. The hook notes the session's tmux pane from `$TMUX_PANE` when `$TMUX`
-   is also set. It checks the pane against its parent process's terminal
-   and foreground process group. This checks where the inputs go. The
-   displayed menu is unverified, and the prompt can change before or
-   during delivery. The pane id stays in the hook's memory.
+3. The hook notes the session's tmux pane from `$TMUX_PANE`, when `$TMUX`
+   is also set and the pane id is `%` followed by digits. The pane id is a
+   claim made by inherited environment, not evidence, so the hook proves it
+   later (step 6). The pane id stays in the hook's memory.
 4. The hook notes the current swap record,
    `<root>/.auto-switch.d/rotate/swap.json`, or that there is none. It
    starts watching that directory, its own `resume/prompted/` directory and
@@ -1376,19 +1394,34 @@ rotator puts them back at the end of its next cycle, and sessions started with
    - **7 days pass**, the longest any usage limit lasts. The hook ends as
      `no-capacity-timeout` and the session stays stopped.
 6. Before it resumes, the hook checks again that auto-switch is on
-   (otherwise `disabled`), that you have not sent a prompt (`moved-on`), and
-   that the pane still belongs to the session. It records the resume on disk
-   under its lock. Then it takes exactly one of two paths:
-   - **The session has a verified pane.** The hook sends Esc, Ctrl+U,
-     `continue` and Enter, then exits `0`. Outcome `resumed-keys` records
-     key delivery. Check the session for a reply in the original conversation.
-   - **No pane** (not in tmux, or the pane check failed): it exits `2`, and
-     sends this continue message. Outcome `resumed`.
+   (otherwise `disabled`) and that you have not sent a prompt (`moved-on`).
+   Then it proves the pane, once. It walks up its own ancestry to the nearest
+   process whose standard input is a terminal, which can be Claude Code or a
+   launcher around it. The pane's `#{pane_tty}`, as tmux reports it, must be
+   that terminal, that process must hold the terminal's foreground process
+   group, and Claude Code must be reading it. A pane inherited from another
+   shell, or one that another session owns, is not the terminal of any
+   process in the hook's ancestry and fails. The hook then records the resume
+   on disk under its lock and takes exactly one of two paths:
+   - **The pane is proved.** The hook sends Esc, Ctrl+U, `continue` and
+     Enter, then exits `0`. Outcome `resumed-keys` records key delivery.
+     Check the session for a reply in the original conversation.
+   - **There is no keys path.** The hook sends nothing to any terminal,
+     exits `2` and sends this continue message:
      ```
      amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
      ```
+     The outcome says why: `resumed` when there was no tmux pane to check,
+     `pane-unverified` when a pane was named but not proved to be this
+     session's terminal, and `pane-not-reading` when it was the terminal but
+     Claude Code is not the process reading it.
 
-The hook chooses one delivery path per wake.
+The hook chooses one delivery path per wake. The proof shows that the keys
+go to this session's own terminal. It does not show that the screen is the
+usage-limit menu: the hook runs only after a `rate_limit` stop and a swap
+record with room, and that is its only evidence of what the screen holds.
+A session that had already recovered by itself receives one extra
+`continue` turn, and Ctrl+U clears any draft in its input box.
 
 The hook trusts the rotator's reading. It never applies the thresholds
 itself and never reads a login or a credentials file. From the transcript
@@ -1436,7 +1469,8 @@ swapped away from, and the swap can trigger a wake.
 
 ### The keys it sends
 
-For a session in a verified tmux pane the hook sends four inputs in order.
+For a session in a tmux pane proved to be its own terminal, the hook sends
+four inputs in order.
 
 - **Esc** requests dismissal of the limit menu or timed wait.
 - **Ctrl+U** clears the input box. Text shown dimmed there is Claude Code's
@@ -1445,29 +1479,41 @@ For a session in a verified tmux pane the hook sends four inputs in order.
   swap carries an organisation-affinity warning, the hook includes it in
   the continuation text.
 
-The hook sends a fixed sequence to the pane it verified for the session.
-The sequence excludes digits, `/usage-credits` and `/rate-limit-options`.
-The active prompt determines what the keys do. If a draft, permission
-prompt or billing prompt has replaced the usage-limit menu, Ctrl+U can
-clear a draft and Enter can act on the prompt that is present.
+The hook sends a fixed sequence to the pane it proved for the session. The
+sequence excludes digits, `/usage-credits` and `/rate-limit-options`, so no
+numbered menu option is ever chosen. The active prompt determines what the
+keys do. If a draft, permission prompt or billing prompt has replaced the
+usage-limit menu, Ctrl+U can clear a draft and Enter can act on the prompt
+that is present.
 
-Each key is a separate command so that tmux cannot read Esc and Ctrl+U as
-one Meta key. If a command fails, or the session exits part way through, the
-remaining keys are not sent and the hook logs `resume-keys-failed` with the
-number already sent. It does not fall back to the exit `2` wake. Finish by
-hand as in [Continue a session yourself](#continue-a-session-yourself).
+Each key is a separate `tmux` command, with the pane as its own argument
+after `-t`, and the hook waits for each to finish before it sends the next.
+Enter is never sent in the same call as the text. If a command fails, or the
+session exits part way through, the remaining keys are not sent and the hook
+logs `resume-keys-failed` with the number already sent. It does not fall back
+to the exit `2` wake. Finish by hand as in
+[Continue a session yourself](#continue-a-session-yourself).
 
 Typing `continue` is a prompt, so any other hook waiting for the same
 session ends as `moved-on`.
 
+These are the keys a person used by hand. In
+[#2085](https://github.com/rysweet/amplihack-rs/issues/2085), five sessions
+held on "Usage limit reached · Continuing automatically at 12:30am" resumed
+only when a person pressed Esc and typed `continue`. In
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695), three standing
+sessions held on the `What do you want to do?` menu were cleared by hand.
+The hook's own run against a live usage limit is not confirmed. What is
+tested is the sending: driven against a stand-in `tmux`, a session with room
+and a proved pane receives exactly these four inputs, for that pane and no
+other, and a session with no room or no proved pane receives none.
+
 The exit `2` wake cleared the `What do you want to do?` menu in a Claude
-Code 2.1.307 check. Other sessions have stayed on the menu after the wake
-and a swap. Automatic recovery in the same conversation after a swap
-remains unverified on Claude Code 2.1.329. If the session stays on the menu
-or in a timed wait, ask its owner to
-[continue it in its own terminal](#continue-a-session-yourself).
-See [the timed-wait report](https://github.com/rysweet/amplihack-rs/issues/2085)
-and [the usage-limit menu report](https://github.com/rysweet/amplihack-rs/issues/2695).
+Code 2.1.307 check. It has not released the menu in the standing sessions
+reported in #2695, which is why the keys path exists. A route that needs no
+terminal input depends on Claude Code, and the
+[upstream request](../investigations/2695-claude-code-upstream-request.md)
+describes it.
 
 ### Verify a wake
 
@@ -1475,11 +1521,24 @@ When your session hits a usage limit and the rotator swaps to a login with
 room, check the hook's outcome and the terminal together.
 
 - `outcome=resumed-keys keys_sent=4` records that tmux accepted all four
-  inputs for the verified pane.
-- `outcome=resumed` records a wake with the continue message above.
+  inputs for the proved pane. No further action is needed unless the reply
+  does not appear.
+- `outcome=resumed` records a wake with the continue message above, for a
+  session that was not in tmux.
+- `outcome=pane-unverified` records that a pane was named but not proved to
+  be this session's terminal. `detail=` is one of `bad-pane-id`,
+  `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or
+  `not-foreground`. `tty-mismatch` is also logged when `tmux` fails or
+  prints nothing. Nothing was typed, and a session held on the menu stays
+  there.
+- `outcome=pane-not-reading` records that the pane is this session's
+  terminal but Claude Code is not the process reading it. Nothing was typed.
+- `outcome=resume-keys-failed keys_sent=N` records that a key failed or the
+  session exited after `N` of the four keys.
 
 A new reply that picks up the prior task in the original conversation
-confirms recovery. If the menu or timed wait remains, follow
+confirms recovery. For `pane-unverified`, `pane-not-reading` and
+`resume-keys-failed`, or if the menu or timed wait remains, follow
 [Continue a session yourself](#continue-a-session-yourself).
 
 ### See what it did
@@ -1494,14 +1553,17 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 2026-11-09T00:41:07Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=swap-no-room live=work cycle=stayed swap_seq=41 swap_live=third
 2026-11-09T00:43:12Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed-keys live=work cycle=stayed swap_seq=42 swap_live=spare pane=5b0e19c4a7d2 keys_sent=4
 2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=resumed live=work cycle=stayed swap_seq=42 swap_live=spare
+2026-11-09T00:43:12Z resume session=c2d7f0a4e913 event=5e8b36d1f0a7 outcome=pane-unverified live=work cycle=stayed swap_seq=42 swap_live=spare detail=tty-mismatch
 ```
 
 `rotator-down` means the rotator was not running when the limit hit; start
 it with `amplihack profile rotate start`. `no-capacity-timeout` means no
 swap to a login with room came within 7 days. `moved-on` means you sent a
 prompt in that session during the wait. `watch-lost` means the hook could
-not watch for swaps; the `detail` field names the reason. `pane` is a hash
-of the pane id, not the id. The other outcomes are listed in the
+not watch for swaps; the `detail` field names the reason. `pane-unverified`
+and `pane-not-reading` mean the hook typed nothing; see
+[Verify a wake](#verify-a-wake). `pane` is a hash of the pane id, not the
+id. The other outcomes are listed in the
 [resume log reference](../reference/profile-command.md#resume-log).
 
 ### How the hook limits repeated wakes
@@ -1610,13 +1672,19 @@ live sessions. See the
 
 ### Continue a session yourself
 
-Once the active login has room, check your own terminal if the session is
-still open and stalled. Follow these steps if the usage-limit
-menu or timed wait remains, or if the hook logs `resume-keys-failed`. Only
-the session's owner should enter recovery input, including with `tmux send-keys`.
+This is the fallback for a session the hook could not continue itself. Use
+it when `resume.log` shows `pane-unverified`, `pane-not-reading` or
+`resume-keys-failed`, when the session does not run in tmux and still shows
+the usage-limit menu or timed wait, or when the keys were sent and the menu
+returned.
+
+The hook types only into its own session's pane. Recovery input for any
+other session, including `tmux send-keys` to its pane, is entered by that
+session's owner, from that owner's own terminal. Once the active login has
+room:
 
 1. If the usage-limit menu or timed wait is still showing, press Esc.
-   Some numbered menu options buy usage credits.
+   Some numbered menu options buy usage credits, so do not press a digit.
 2. Confirm that Claude Code shows its ordinary input prompt. If you see
    the menu, the timed wait or any other prompt, stop and read what Claude
    Code is asking.
@@ -1627,6 +1695,19 @@ the session's owner should enter recovery input, including with `tmux send-keys`
 5. Check for a new reply below the earlier messages in the same conversation.
    Confirm that Claude picks up the previous task. If the menu returns,
    the session is still blocked.
+
+If you send the keys with `tmux send-keys` to your own session's pane
+`%5`, send each key in its own call, and send Enter after the text, not with
+it:
+
+```bash
+tmux send-keys -t %5 Escape
+tmux send-keys -t %5 C-u
+tmux send-keys -t %5 -l continue
+tmux send-keys -t %5 Enter
+```
+
+Find the pane id of the pane you are in with `echo "$TMUX_PANE"`.
 
 ### Stop using the tmux nudger
 
@@ -3234,10 +3315,12 @@ full rule is in
   Claude Code runs the hook under a shell that outlives it, the hook can
   wait out the 7 days. Claude Code can also
   [continue at reset](#check-automatic-continuation-at-reset) without a swap.
-- **Key delivery requires a verified tmux pane.** The hook checks the
-  [terminal and foreground process group](#what-happens-on-a-limit). Without a
-  verified pane it requests a wake by exiting `2`. A wake can leave the
-  session on the menu or in the timed wait.
+- **Key delivery requires a proved tmux pane.** The hook proves that the pane
+  is the terminal of its own Claude Code by
+  [walking its ancestry and checking the foreground process group](#what-happens-on-a-limit).
+  Without a proved pane it sends nothing and requests a wake by exiting `2`.
+  A wake can leave the session on the menu or in the timed wait, and the
+  owner then [continues it by hand](#continue-a-session-yourself).
 - **Resume is Linux only.** The hook watches for the swap record with
   inotify and for the session's exit with a pidfd (kernel 5.3 or later).
   Elsewhere, or when either cannot be set up, it ends as `watch-lost`.
