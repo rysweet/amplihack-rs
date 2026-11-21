@@ -3,7 +3,7 @@
 //! `docs/howto/clean-up-after-recipe-runs.md`.
 
 pub(crate) mod archive;
-pub(crate) mod build_output;
+mod build_output;
 pub(crate) mod eligibility;
 pub(crate) mod procs;
 pub(crate) mod run_dir;
