@@ -149,14 +149,19 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         Some(stub) => stub(ctx, &first)?,
         None => measure_and_decide(ctx, &first)?,
     };
-    let (live_shown, others_shown) = shown(&m, first.live_excluded);
+    // Issues #2211, #1870: before `failed_live` moves on, so it is counted once.
+    let m = fresh::live::step(ctx, &first, m)?;
+    // Issue #2889: after the live step, so the line reports the live figures
+    // the cycle decided on and not the ones its probe happened to read, and
+    // before the target gate, so the candidate figures on it stay as
+    // measured. The `fresh_lines` of both steps are emitted below, so the
+    // stale-reading and re-read lines still follow this one.
+    let (live_shown, others_shown) = shown(&m, first.live_excluded, (ctx.now)());
     let (name, platform) = (live_name(&first.live), first.shown_platform());
     out.emit(
         now(),
         &msg::cycle(name, &live_shown, &others_shown, platform),
     );
-    // Issues #2211, #1870: before `failed_live` moves on, so it is counted once.
-    let m = fresh::live::step(ctx, &first, m)?;
     let m = fresh::gate(ctx, &first, m, Reread::Allowed)?;
     ctx.identity_budget.exclude_measurement(measuring.elapsed());
     m.fresh_lines.iter().for_each(|line| out.emit(now(), line));
@@ -205,7 +210,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             return Ok(CycleOutcome::Skipped);
         }
     };
-    let (live_shown, others_shown) = shown(&m, first.live_excluded);
+    let (live_shown, others_shown) = shown(&m, first.live_excluded, (ctx.now)());
     let Measurement {
         live,
         others,
