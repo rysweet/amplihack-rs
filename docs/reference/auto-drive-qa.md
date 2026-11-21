@@ -597,6 +597,7 @@ checks. See [evidence validity](auto-drive-evidence.md) and
 ## Related
 
 - [Record a criterion-1 QA judgement by hand](../howto/record-criterion-1-qa-judgement.md)
+- [QA blocker scenario](qa-blocker-not-stop-scenario.md): the outside-in check that a QA blocker is recorded and does not end the round
 - [Criterion-1 judgement guidance](../../amplifier-bundle/skills/merge-ready/criterion-1-qa-judgement.md)
 - [Auto-drive evidence and outcomes](auto-drive-evidence.md)
 - [Auto drive to merge reference](auto-drive-to-merge.md)

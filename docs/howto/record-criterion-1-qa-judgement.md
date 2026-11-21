@@ -107,3 +107,6 @@ If only an operator can resolve a blocker, record the step, failure,
 `choice: handoff`, and the reason you need help. Name a person or team
 as `owner` and state the action they need to take in `needs`. Use the
 [step failure recovery contract](../reference/step-failure-recovery.md).
+
+To check that a blocker in the measurement is recorded without ending the
+round, see [run the QA blocker scenario](run-the-qa-blocker-scenario.md).
