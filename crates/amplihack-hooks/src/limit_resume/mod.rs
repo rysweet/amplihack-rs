@@ -522,9 +522,8 @@ fn run_with_affinity<D: Deps + ?Sized>(
         PaneCheck::None => return note(deps, now, Outcome::Resumed, swap(&record)),
         PaneCheck::Unverified(reason) => {
             let n = Note {
-                swap: Some(&record),
                 detail: Some(reason.to_string()),
-                ..Note::default()
+                ..swap(&record)
             };
             return note(deps, now, Outcome::PaneUnverified, n);
         }

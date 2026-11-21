@@ -207,10 +207,19 @@ pub struct ProcStat {
     pub tpgid: i32,
 }
 
+/// The one foreground rule: a process's group is its terminal's foreground
+/// process group. `tpgid` is -1 for a process with no controlling terminal,
+/// so such a process is never foreground. Both [`ProcStat`], which
+/// [`foreground_now`] reads, and [`ProcEntry`], which the pane check reads,
+/// state the rule through this, so the two cannot drift apart.
+const fn is_foreground(pgrp: i32, tpgid: i32) -> bool {
+    tpgid > 0 && pgrp == tpgid
+}
+
 impl ProcStat {
     /// The process's group is its terminal's foreground group.
     pub fn foreground(&self) -> bool {
-        self.tpgid > 0 && self.pgrp == self.tpgid
+        is_foreground(self.pgrp, self.tpgid)
     }
 }
 
@@ -308,15 +317,10 @@ pub struct ProcEntry {
 }
 
 impl ProcEntry {
-    /// The `/proc/<pid>/stat` fields the foreground rule reads, so one
-    /// predicate, [`ProcStat::foreground`], serves both the pane check and
-    /// [`foreground_now`].
-    pub fn stat(&self) -> ProcStat {
-        ProcStat {
-            ppid: i32::try_from(self.ppid).unwrap_or(-1),
-            pgrp: self.pgrp,
-            tpgid: self.tpgid,
-        }
+    /// The process's group is its terminal's foreground group, by the one
+    /// `is_foreground` rule [`ProcStat::foreground`] also states.
+    pub fn foreground(&self) -> bool {
+        is_foreground(self.pgrp, self.tpgid)
     }
 }
 
@@ -443,7 +447,7 @@ pub enum PaneCheck {
 ///
 /// `Ready` needs all of: `pane_tty_output` naming the holder's own terminal
 /// ([`same_tty`]); the holder being that terminal's foreground process
-/// group ([`ProcStat::foreground`]'s rule); and `parent`, the session,
+/// group ([`ProcEntry::foreground`]); and `parent`, the session,
 /// sharing that foreground group, so the keys reach the session and not a
 /// launcher or a shell prompt behind it. Every other path refuses.
 pub(crate) fn check_pane_held<V: ProcView + ?Sized>(
@@ -462,7 +466,7 @@ pub(crate) fn check_pane_held<V: ProcView + ?Sized>(
     if !same_tty(pane_tty_output, tty) {
         return PaneCheck::Unverified(TTY_MISMATCH);
     }
-    if !holder.stat().foreground() {
+    if !holder.foreground() {
         return PaneCheck::Unverified(NOT_FOREGROUND);
     }
     let Some(session) = view.entry(parent) else {
