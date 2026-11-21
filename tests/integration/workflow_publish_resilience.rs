@@ -267,7 +267,7 @@ fn publish_helper_fails_dirty_no_diff_instead_of_terminal_success() {
     let tmp = TempDir::new().expect("tempdir");
     let repo = tmp.path().join("repo");
     fs::create_dir(&repo).expect("create repo");
-    run_cmd(&repo, "git", &["init", "-b", "main"]);
+    run_cmd(&repo, "git", &["init", "-b", "feature"]);
     run_cmd(&repo, "git", &["config", "user.email", "test@example.com"]);
     run_cmd(&repo, "git", &["config", "user.name", "Workflow Test"]);
     write_file(&repo.join("README.md"), "base\n");
@@ -286,7 +286,7 @@ fn publish_helper_fails_dirty_no_diff_instead_of_terminal_success() {
     run_cmd(
         &repo,
         "git",
-        &["update-ref", "refs/remotes/origin/main", "main"],
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
     );
     write_file(&repo.join("dirty.txt"), "uncommitted\n");
 
@@ -307,7 +307,11 @@ exit 77
     let output = Command::new("bash")
         .arg(workspace_helper_path("workflow_publish_pr.sh"))
         .current_dir(&repo)
+        // Use the fixture's local base ref and isolate recipe inputs from the hook caller.
+        .env_clear()
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+        .env("HOME", tmp.path())
+        .env("RECIPE_VAR_base_branch", "main")
         .env("REMOTE_HOST_TYPE", "github")
         .env("ISSUE_NUMBER", "7")
         .output()
@@ -322,7 +326,8 @@ exit 77
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains(r#""state":"FAILED_DIRTY_WORKTREE""#),
-        "publish helper must emit structured dirty-worktree failure, stdout:\n{stdout}"
+        "publish helper must emit structured dirty-worktree failure\nstdout:\n{stdout}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
     assert!(
         !stdout.contains("NO_DIFF_SUCCESS"),
