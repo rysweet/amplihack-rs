@@ -188,7 +188,7 @@ impl Item {
 #[path = "execute.rs"]
 mod execute;
 #[path = "target_remove.rs"]
-mod target_remove;
+pub(crate) mod target_remove;
 
 use super::procs::ProcScan;
 use execute::{Refusal, execute, other_live_owner};
@@ -196,7 +196,7 @@ use target_remove::{LinkRoots, Shape};
 
 // ----- filesystem helpers ---------------------------------------------------
 
-fn euid() -> u32 {
+pub(super) fn euid() -> u32 {
     // SAFETY: geteuid has no preconditions and cannot fail.
     unsafe { libc::geteuid() }
 }
@@ -247,7 +247,7 @@ fn tree_stats(path: &Path) -> Option<TreeStats> {
 }
 
 /// Total bytes under `path`, not following symlinks. `None` past the limit.
-fn tree_size(path: &Path) -> Option<u64> {
+pub(super) fn tree_size(path: &Path) -> Option<u64> {
     tree_stats(path).map(|t| t.size)
 }
 
@@ -748,6 +748,18 @@ pub(super) fn judge_unsaved_work(dir: &Path, owner: u32) -> Option<KeepReason> {
 /// pass with no bookkeeping: a folder kept while planning becomes a skip and
 /// never reaches the removal that would judge it again.
 pub(super) fn keep_and_report_unsaved_work(dir: &Path) -> Option<KeepReason> {
+    // Not `eprintln!`, which panics when stderr is closed; this can run from
+    // `Drop`.
+    keep_and_report_unsaved_work_to(dir, &mut std::io::stderr().lock())
+}
+
+/// [`keep_and_report_unsaved_work`] writing to `out` instead of standard
+/// error, so the end-of-run build output removal (issue #2886) says this in
+/// the same place as its own lines and the wording stays in one place.
+pub(super) fn keep_and_report_unsaved_work_to(
+    dir: &Path,
+    out: &mut dyn std::io::Write,
+) -> Option<KeepReason> {
     let keep = judge_unsaved_work(dir, euid())?;
     tracing::warn!(
         folder = ?dir,
@@ -755,10 +767,9 @@ pub(super) fn keep_and_report_unsaved_work(dir: &Path) -> Option<KeepReason> {
         reason = %keep,
         "leaving a folder in place: it holds Git work that exists nowhere else"
     );
-    // Not `eprintln!`, which panics when stderr is closed; this can run from
-    // `Drop`. One write, so the line cannot be split by another thread's.
+    // One write, so the line cannot be split by another thread's.
     let line = format!("amplihack: leaving {dir:?} in place: {keep}\n");
-    let _ = std::io::Write::write_all(&mut std::io::stderr().lock(), line.as_bytes());
+    let _ = out.write_all(line.as_bytes());
     Some(keep)
 }
 
