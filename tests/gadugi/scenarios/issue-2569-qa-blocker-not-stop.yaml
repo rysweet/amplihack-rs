@@ -7,15 +7,16 @@ description: >
   recipe runner against scratch Git repositories, with `gh`, `claude` and `npm`
   as stand-ins on a private PATH that holds no `gadugi-test`. Case A: a Node
   repository with no scenario directory records a named blocker, never a pass.
-  Case B, in four legs: the change set is measured against the PR's own base,
-  taken from the recipe, then from a lookup of the PR, and where neither
-  answers the record says `none` and measures no change set; a hostile base is
-  rejected, is not replaced by a lookup and reaches no shell. Case C: a scenario
+  Case B, in three legs: the change set is measured against the base the round
+  observed for this PR; where no round passed one down, no base and no change
+  set are recorded and none is guessed; and a base that names no branch of the
+  clone reaches no shell and measures nothing. Case C: a scenario
   directory the operator named that does not exist is the recorded state
   `operator-missing`, whatever bytes its name holds, and the record stays one
   clean JSON line. In every run the round ends normally: exit status 0, all
   three agent steps called, the evidence folder 0700 and the record 0600. The
-  stand-in `gh` answers one read-only call and exits 96 on any other; the
+  stand-in `gh` exits 96 on all but one read-only form, and the measurement
+  asks it nothing; the
   stand-in agent records one line for each call and never the prompt.
   Everything runs under `env -i` with a 0700 root, so the real ~/.claude and
   ~/.amplihack are never read or written and no token or key of the caller
@@ -124,11 +125,6 @@ assertions:
     params:
       target: stdout
       expected: "PASS: case-b leg-1 record - "
-  - name: case-b-leg-1-qa-base-source
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-1 qa_base_source - "
   - name: case-b-leg-1-qa-base
     type: output_contains
     params:
@@ -164,11 +160,6 @@ assertions:
     params:
       target: stdout
       expected: "PASS: case-b leg-2 record - "
-  - name: case-b-leg-2-qa-base-source
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-2 qa_base_source - "
   - name: case-b-leg-2-qa-base
     type: output_contains
     params:
@@ -179,6 +170,11 @@ assertions:
     params:
       target: stdout
       expected: "PASS: case-b leg-2 qa_command_paths - "
+  - name: case-b-leg-2-docs-only
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: case-b leg-2 docs_only - "
   - name: case-b-leg-2-gh-calls
     type: output_contains
     params:
@@ -204,76 +200,26 @@ assertions:
     params:
       target: stdout
       expected: "PASS: case-b leg-3 record - "
-  - name: case-b-leg-3-qa-base-source
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-3 qa_base_source - "
-  - name: case-b-leg-3-qa-base
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-3 qa_base - "
   - name: case-b-leg-3-qa-command-paths
     type: output_contains
     params:
       target: stdout
       expected: "PASS: case-b leg-3 qa_command_paths - "
-  - name: case-b-leg-3-docs-only
+  - name: case-b-leg-3-record-shape
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: case-b leg-3 docs_only - "
+      expected: "PASS: case-b leg-3 record-shape - "
   - name: case-b-leg-3-gh-calls
     type: output_contains
     params:
       target: stdout
       expected: "PASS: case-b leg-3 gh-calls - "
-  - name: case-b-leg-4-exit-status
+  - name: case-b-leg-3-injected-file
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: case-b leg-4 exit-status - "
-  - name: case-b-leg-4-agent-calls
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-4 agent-calls - "
-  - name: case-b-leg-4-mode
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-4 mode - "
-  - name: case-b-leg-4-record
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-4 record - "
-  - name: case-b-leg-4-qa-base-source
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-4 qa_base_source - "
-  - name: case-b-leg-4-qa-base
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-4 qa_base - "
-  - name: case-b-leg-4-record-hostile-text
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-4 record-hostile-text - "
-  - name: case-b-leg-4-gh-calls
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-4 gh-calls - "
-  - name: case-b-leg-4-injected-file
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-4 injected-file - "
+      expected: "PASS: case-b leg-3 injected-file - "
   - name: case-c-exit-status
     type: output_contains
     params:

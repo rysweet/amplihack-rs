@@ -3,11 +3,10 @@
 # judged from, for one round of the auto-drive-to-merge merge loop.
 # step-02a-qa-inputs of autodrive-merge-evidence.yaml runs this file.
 #
-# This file MEASURES; it decides nothing. Criterion 1 itself is a judgement an
-# agent step records inside the loop (#2569): the agent reads this record,
-# decides whether the PR changes behaviour a user sees, and writes, extends and
-# runs the scenarios this PR needs. Two measurements are taken here, both
-# always, so the record lists every fact at once:
+# This file MEASURES; it decides nothing. Criterion 1 is a judgement an agent
+# step records inside the loop (#2569): it reads this record, decides whether
+# the PR changes behaviour a user sees, and writes and runs the scenarios the
+# PR needs. Two measurements are taken, both always:
 #
 #  (1) The suite command from the first source present (#1763): env,
 #      .amplihack/qa.toml, one clean CI step, or `cargo test`, `npm test` or
@@ -17,39 +16,37 @@
 #  (2) Where autodrive_gadugi_required says true (a Node project, or
 #      AUTODRIVE_QA_SCENARIO_DIR set): whether gadugi-test is on PATH, which
 #      scenario directory applies and in what state, and which scenario files
-#      it holds. NO SCENARIO IS RUN OR VALIDATED HERE. gadugi_status is one of
-#      NOT_REQUIRED, NOT_INSTALLED, NO_SCENARIOS and FOUND, and the eight
-#      run-shaped fields stay empty or 0 so existing readers stay valid.
-#      Elsewhere gadugi-test is never consulted: Rust CLI substitutes `cargo
-#      test`, and a measured docs_only (#2219) or a base qa.toml declaration
-#      (#2458) drops (2) in Node too.
+#      it holds. NO SCENARIO IS RUN OR VALIDATED HERE. gadugi_status is
+#      NOT_REQUIRED, NOT_INSTALLED, NO_SCENARIOS or FOUND. Elsewhere
+#      gadugi-test is never consulted: Rust CLI substitutes `cargo test`, and
+#      a measured docs_only (#2219) or a base qa.toml declaration (#2458)
+#      drops (2) in Node too.
 #
-# No value here is a verdict a consumer conditions criterion 1 on. Delete this
-# record and criterion 1 still reaches a verdict: worse-informed, never stuck.
-# What a reader may not do is read an unknown value as a pass; every enum
-# below is closed, and an unknown value is the judgement's named blocker
-# qa-measurement-unavailable.
+# No value here is a verdict a consumer conditions criterion 1 on: delete this
+# record and criterion 1 is worse-informed, never stuck. What any field means
+# for criterion 1 is the judgement's, and an unrecognised value is never a pass.
 #
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
 #   AUTODRIVE_QA_EVIDENCE  file the record is written to, private (optional)
 #   AUTODRIVE_QA_GUIDANCE  trusted guidance path resolved by the caller (optional)
 #   AUTODRIVE_ROUND_LABEL  recorded as qa_round
-#   AUTODRIVE_QA_BASE      the base branch name; set empty for an unresolved workflow target, unset for direct preflight
-#   AUTODRIVE_QA_BASE_SOURCE  how the caller reached that base, checked here: operator, recipe, pr-base, clone-default or none. Unset beside a base is operator; no base is none, and any other word is none with the base cleared, so a newer caller's name reaching an older copy of this tool never records a source beside a change set it did not measure
+#   AUTODRIVE_QA_BASE      the base the caller resolved, recorded as qa_base;
+#                          empty for an unresolved target, unset for direct
+#                          preflight. autodrive_qa_scope.sh decides whether it
+#                          names a branch this clone has; one it cannot use
+#                          leaves the change set unknown, never guessed at.
 #   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
 #   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
 # Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE
-# itself, never at a sibling path, so step-00d's hash of that path stays a
-# tamper check on what was measured. Exit 0 whenever a record was produced,
-# PASS or not; exit 1 when REPO_PATH, a temporary file or the helpers beside
-# this file are unavailable, so no record exists. Executed, never sourced;
-# helpers come from beside this file only.
-# NO-TIMEOUT POLICY (issue #439): a test suite is never cut off mid-run.
+# itself, never a sibling path, so step-00d's hash of that path stays a tamper
+# check on what was measured. Exit 0 whenever a record was produced, PASS or
+# not; exit 1 when REPO_PATH, a temporary file or the helpers beside this file
+# are unavailable, so no record exists. Executed, never sourced.
 set -uo pipefail
 # This file's own directory, found before the cd below (BASH_SOURCE may be
 # relative); without the helpers there, no evidence. An exported CDPATH would
-# make a relative `cd` run the suite outside the repository (#1516 review).
+# make a relative `cd` run the suite outside the repository (#1516).
 # Inherited GIT_* and outer-run AMPLIHACK_* are cleared before any cd or git (#2033).
 unset CDPATH
 H="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
@@ -98,10 +95,10 @@ case "${KIND}:${GREQ}:${X}" in # node:false is legal only beside docs_only=true 
      exit 1 ;;
 esac
 [ -z "$NOSCOPE" ] || PATHS="(unknown)"
-# Where a detected command runs: `<type><TAB><dir>` or `unresolved<TAB><candidates>`,
-# checked again here: an odd token, an unsafe directory, or a type that
-# disagrees with KIND leaves no detected command, so the evidence is BLOCKED
-# rather than run at the root.
+# Where a detected command runs: `<type><TAB><dir>` or `unresolved<TAB><cands>`,
+# checked again here: an odd token, an unsafe directory or a type disagreeing
+# with KIND leaves no detected command, so the evidence is BLOCKED, not run at
+# the root.
 TKIND="${TARGET%%$'\t'*}"; TDIR="${TARGET#*$'\t'}"; UNRES=""; TBAD=""
 case "$TARGET" in *$'\t'*) ;; *) TBAD="1" ;; esac
 case "$TKIND" in
@@ -117,24 +114,22 @@ fi
 # Free text is sanitised before it reaches the JSON: no quotes, backslashes or
 # control bytes, so a hostile log line or directory name can neither break the
 # evidence nor carry terminal escapes. ANSI CSI sequences (ECMA-48) go whole;
-# tabs, CRs and newlines become spaces and backslashes '/', so a coloured or
-# tabular runner log keeps its words (#1531).
+# tabs, CRs and newlines become spaces and backslashes '/' (#1531).
 san() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr '\t\r\n\\' '   /' \
   | LC_ALL=C tr -d '\000-\037\177"'; }
-# Text cut to a byte length is made ASCII first: a cut through a multibyte
-# character leaves invalid UTF-8, which every JSON reader rejects.
+# Cut text is made ASCII first: a cut multibyte char is invalid UTF-8.
 ascii() { LC_ALL=C tr -d '\200-\377'; }
-CAUSES=""; QBASE="$(printf '%s' "${AUTODRIVE_QA_BASE:-}" | san | ascii | cut -c1-200)"; QBSRC="${AUTODRIVE_QA_BASE_SOURCE-operator}"
-case "$QBSRC" in operator|recipe|pr-base|clone-default) [ -n "$QBASE" ] || QBSRC="none" ;; *) QBSRC="none"; QBASE="" ;; esac
-# No base means no change set was measured: the scope helper's `(none)` would read as a pull request that changed nothing.
+CAUSES=""; QBASE="$(printf '%s' "${AUTODRIVE_QA_BASE:-}" | san | ascii | cut -c1-200)"
+# qa_base names what the measurement was pointed at, so a base this clone cannot
+# resolve is reported rather than dropped and the change set reads `(unknown)`.
+# No base means none was measured; `(none)` would read as an empty diff.
 [ -n "$QBASE" ] || PATHS="(unknown)"
 cause() { CAUSES="${CAUSES}${CAUSES:+; }$1"; }
 # --- suite commands --------------------------------------------------
-# The first source present wins, even when it gives no usable command: env,
-# repo-file (an invalid qa.toml is BLOCKED, qa-config-invalid), ci (when it
-# gives none, its reason is qa_ci_skip), then detected. The operator variables
-# come from the environment only (a recipe context default would hide them).
-# Set but empty means "no command", never "detect one":
+# The first source present wins, even giving no usable command: env, repo-file
+# (an invalid qa.toml is BLOCKED, qa-config-invalid), ci (giving none, its
+# reason is qa_ci_skip), then detected. The operator variables come from the
+# environment only; set but empty means "no command", never "detect one":
 #   AUTODRIVE_QA_COMMAND   one command, word-split with globbing off, run in
 #                          AUTODRIVE_QA_DIR (the issue #1516 semantics)
 #   AUTODRIVE_QA_COMMANDS  one command per line (blank and # lines skipped),
@@ -180,12 +175,29 @@ else
     fi
   fi
 fi
-# Suite processes run repository code. Keep publishing credentials and agent
-# sockets out of their environment. The host must isolate untrusted checkouts.
+# Suite processes run repository code: credentials and agent sockets stay out.
 SUITE_ENV=(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN
   -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u CODEX_HOME -u CLAUDE_CONFIG_DIR
   -u SSH_AUTH_SOCK -u GH_CONFIG_DIR -u AMPLIHACK_HOME -u BASH_ENV -u ENV --)
-CMDTEXT=""; RAN=0; FIRST_NZ=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
+# A failing suite reports why it failed, not only that it did. Each command's
+# output passes through `tail -c` into one temporary file, so that file holds
+# the last 64 KiB of that one command, never the whole run: a suite printing
+# megabytes cannot fill /tmp, which a whole suite on a shared host has already
+# done twice (#2569). Only the first command to fail is read back, so the kept
+# lines belong to the recorded exit code: 40 on stderr for the round log, 5 cut
+# to 300 bytes in qa_summary. `scrub` replaces the token shapes a suite
+# sometimes prints before either is written (#1531).
+LOG="$(mktemp -t autodrive-qa-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
+trap 'rm -f -- "$LOG"' EXIT HUP INT TERM
+scrub() { LC_ALL=C sed -E -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}/[redacted]/g' \
+  -e 's/sk-[A-Za-z0-9_-]{16,}/[redacted]/g' -e 's/eyJ[A-Za-z0-9._-]{20,}/[redacted]/g' \
+  -e 's/(AKIA|ASIA)[A-Z0-9]{12,}/[redacted]/g'; }
+# `san` folds newlines into spaces, which one JSON field needs and the round's
+# log does not: 40 lines would arrive as one, behind a single 300-byte cut.
+# `sanl` strips the same ANSI sequences and control bytes but keeps the line
+# breaks, so `cut`, working a line at a time, bounds each line on its own.
+sanl() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr -d '\000-\010\013-\037\177'; }
+CMDTEXT=""; RAN=0; FIRST_NZ=""; TAIL=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
 if [ "${#TEXTS[@]}" -eq 0 ] && [ -z "${QUNRES}${CFGBAD}" ]; then
   S_MISSING="true"; [ -n "$NOSCOPE" ] || cause "no repository test command for repository type ${TYPE}"
 fi
@@ -194,10 +206,9 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
   kind="${KINDS[$i]}"; text="${TEXTS[$i]}"; i=$((i + 1))
   CMDTEXT="${CMDTEXT}${CMDTEXT:+; }${text}"
   if [ "$kind" = "entry" ]; then
-    # Its own process from the repository root: a `cd` in one entry
-    # never reaches the next, and entries are never joined or sourced.
-    ( cd -- "$ROOT" && "${SUITE_ENV[@]}" bash -c "$text" ) >/dev/null 2>&1 </dev/null
-    rc=$?
+    # Its own process from the root: a `cd` never reaches the next entry.
+    ( cd -- "$ROOT" && "${SUITE_ENV[@]}" bash -c "$text" ) </dev/null 2>&1 | tail -c 65536 >"$LOG"
+    rc="${PIPESTATUS[0]}"
   else
     dir="$QA_DIR"
     first="$(set -f; set -- $text; printf '%s' "${1:-}")"
@@ -207,12 +218,10 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       continue
     fi
     # One run path for every word and detected command. Installed means
-    # `command -v` finds it on PATH from qa_dir (a word may also be
-    # ./<first> there). Where it resolves is not checked, and this is not a
-    # sandbox: `npm test` runs scripts.test, pytest imports conftest.py and
-    # cargo runs build.rs, so a suite always runs branch code; a project
-    # `.venv/bin/pytest` on PATH is used as it is. `./` keeps a relative `-`
-    # from meaning $OLDPWD. No timeout: a suite is never cut off mid-run.
+    # `command -v` finds it on PATH from qa_dir (a word may also be ./<first>
+    # there); where it resolves is not checked, and this is no sandbox: a
+    # suite always runs branch code. `./` keeps a relative `-` from meaning
+    # $OLDPWD. No timeout: a suite is never cut off mid-run (#439).
     case "$dir" in /*) ;; *) dir="./$dir" ;; esac
     if ! ( cd -- "$dir" 2>/dev/null && { command -v -- "$first" >/dev/null 2>&1 \
            || { [ "$kind" = "word" ] && [ -x "./${first}" ]; }; } ); then
@@ -220,31 +229,37 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       continue
     fi
     # shellcheck disable=SC2086
-    ( set -f; cd -- "$dir" && "${SUITE_ENV[@]}" $text ) >/dev/null 2>&1 </dev/null
-    rc=$?
+    ( set -f; cd -- "$dir" && "${SUITE_ENV[@]}" $text ) </dev/null 2>&1 | tail -c 65536 >"$LOG"
+    rc="${PIPESTATUS[0]}"
   fi
   RAN=$((RAN + 1))
   echo "INFO: QA suite command ${i} (${SRC}) exited ${rc}" >&2
-  if [ "$rc" -ne 0 ]; then S_FAILED="true"; [ -n "$FIRST_NZ" ] || FIRST_NZ="$rc"; fi
+  # Read back here, while $LOG still holds this command; the next overwrites
+  # it. Only the first failure is kept, matching the recorded exit code.
+  if [ "$rc" -ne 0 ]; then
+    if [ "$S_FAILED" = "false" ]; then
+      FIRST_NZ="$rc"
+      TAIL="$(tail -n 5 "$LOG" | scrub | san | ascii | cut -c1-300)"
+      { echo "INFO: QA suite command ${i} (${SRC}) failed; its last lines, scrubbed:"
+        tail -n 40 "$LOG" | scrub | sanl | ascii | cut -c1-300; } >&2
+    fi
+    S_FAILED="true"
+  fi
 done
 [ "$S_FAILED" = "true" ] && cause "repository test failure"
 RC=""; [ "$RAN" -gt 0 ] && RC="${FIRST_NZ:-0}"
+rm -f -- "$LOG"
 # --- the scenario directory ------------------------------------------
-# Consulted only where gadugi is required. AUTODRIVE_QA_SCENARIO_DIR comes
-# from the environment only. Without it the directory is the first of
-# tests/agentic, tests/gadugi/scenarios and scenarios that exists, else
-# tests/agentic. An operator path that does not exist is a named state the
-# judgement can act on, not a per-round failure: on 13 November a launcher
-# named a directory that did not exist and every round failed with "explicit
-# operator selection preserved", which no round could clear (#2569).
-#
-# gadugi_scenario_dir_state is a closed set, written from one of these
-# literals and never interpolated from the operator's value:
-#   not-consulted     gadugi is not required, so no directory was looked for
-#   operator          the operator named a directory and it exists
-#   operator-missing  the operator named one that does not exist
-#   detected          one of the three names above exists
-#   absent            none of the three exists
+# Consulted only where gadugi is required. AUTODRIVE_QA_SCENARIO_DIR comes from
+# the environment only; without it the directory is the first of tests/agentic,
+# tests/gadugi/scenarios and scenarios that exists, else tests/agentic. An
+# operator path that does not exist is a named state the judgement acts on, not
+# a per-round failure: a launcher naming a directory that did not exist once
+# failed every round with a hold no round could clear (#2569).
+# gadugi_scenario_dir_state is written from one of these literals, never from
+# the operator's value, so a directory name cannot put free text in the field:
+# not-consulted (gadugi not required), operator (named and present),
+# operator-missing (named, absent), detected and absent.
 COUNT=0; SCEN=""; SYMLINKED=""; NONREG=""; SDIR=""; SREL=""; SSTATE="not-consulted"
 if [ "$GREQ" = "true" ]; then
   SDIR_IN="${AUTODRIVE_QA_SCENARIO_DIR:-}"
@@ -262,18 +277,15 @@ if [ "$GREQ" = "true" ]; then
     echo "WARNING: the scenario directory the operator named does not exist: $(printf '%s' "$SREL" | san | ascii | cut -c1-200). The judgement falls back to the repository's own tracked directory or hands off; it does not fail the round." >&2
   fi
 elif [ "$KIND" = "rust-cli" ] && [ -d "${ROOT}/${TDIR}/tests/parity/scenarios" ]; then
-  # qa-team's Rust CLI parity fixtures of the detected workspace, named from
-  # the repository root; cargo test runs them. Informational: nothing
-  # decides a pass from the list.
+  # qa-team's Rust CLI parity fixtures, named from the root; cargo test runs them.
   PFX="tests/parity/scenarios"; [ "$TDIR" = "." ] || PFX="${TDIR}/${PFX}"
   while IFS= read -r f; do
     [ -n "$f" ] && SCEN="${SCEN}${SCEN:+ }${PFX}/${f##*/}"
   done < <(find "${ROOT}/${TDIR}/tests/parity/scenarios" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | LC_ALL=C sort)
 fi
-# Top-level regular files only, because the tool that validates a directory
-# of scenarios does not read subdirectories. A symlinked or non-regular
-# *.yaml entry is named here and is not a file the judgement may run: the
-# listing declined to follow the link, so the judgement does not either.
+# Top-level regular files only: the tool that validates a directory of scenarios
+# does not read subdirectories, and a symlinked or non-regular *.yaml entry is
+# named here rather than being a file the judgement may run.
 if [ -n "$SDIR" ] && [ -d "$SDIR" ]; then
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -288,18 +300,13 @@ if [ -n "$SDIR" ] && [ -d "$SDIR" ]; then
 fi
 
 # --- gadugi-test -----------------------------------------------------
-# NO SCENARIO RUNS HERE (#2569). Running the suite was what turned a missing
-# scenario, a failed validation and a host-caused scenario failure into holds
-# no round could clear, and on 12 November running the whole suite on a shared
-# host emptied /tmp twice. What is measured instead is the presence of the
-# tool and the contents of the directory. The judgement step writes, extends,
-# stages and runs the scenarios this PR changed or added, one at a time, and
-# records what it did.
-#
-# Where gadugi is not required the tool is not consulted at all, installed or
-# not. Elsewhere the four states are facts, each one something the judgement
-# can act on: NOT_INSTALLED is a named recoverable blocker, NO_SCENARIOS is a
-# journey to write, FOUND is a list to choose from.
+# NO SCENARIO RUNS HERE (#2569). Running them was what turned a missing
+# scenario, a failed validation and a host-caused failure into holds no round
+# could clear. The tool's presence and the directory's contents are measured
+# instead; the judgement step writes, extends, stages and runs the scenarios
+# this PR changed or added, one at a time. Where gadugi is not required the
+# tool is not consulted. Elsewhere the four states are facts: NOT_INSTALLED a
+# named recoverable blocker, NO_SCENARIOS a journey to write, FOUND a list.
 G_STATUS=""
 if [ "$GREQ" = "false" ]; then
   G_STATUS="NOT_REQUIRED"
@@ -318,12 +325,11 @@ fi
 [ -n "$SYMLINKED" ] && cause "symlinked scenario named and not runnable: ${SYMLINKED}"
 [ -n "$NONREG" ] && cause "non-regular scenario entry named and not runnable: ${NONREG}"
 # --- qa_status and qa_reason -----------------------------------------
-# qa_reason is the first token that applies, in this fixed order; the
-# FAIL tokens come first because the merge round can act on them.
+# qa_reason is the first token that applies; FAIL tokens come first.
 REASON=""
 pick() { [ -n "$REASON" ] || REASON="$1"; }
-# A missing scope helper, QA_UNRESOLVED and an invalid qa.toml come first: no
-# suite ran, an operator must act, and gadugi is then named in qa_summary only.
+# A missing helper, QA_UNRESOLVED and an invalid qa.toml come first: no suite
+# ran and an operator must act, so gadugi is named in qa_summary only.
 [ -n "$NOSCOPE" ] && pick "qa-command-missing"
 [ -n "$QUNRES" ] && pick "qa-unresolved"
 [ -n "$CFGBAD" ] && pick "qa-config-invalid"
@@ -332,19 +338,18 @@ pick() { [ -n "$REASON" ] || REASON="$1"; }
 [ "$S_MISSING" = "true" ] && pick "qa-command-missing"
 [ "$S_NOTINST" = "true" ] && pick "qa-command-not-installed"
 [ "$G_STATUS" = "NOT_INSTALLED" ] && pick "gadugi-test-missing"
-# The gadugi half is a complete measurement in exactly two states: it was not
-# required, so no directory was consulted; or scenarios were found and listed.
-# NOT_INSTALLED and NO_SCENARIOS have already named their own reason above.
-#
+# The gadugi half is complete in exactly two states: not required, so nothing
+# was consulted; or scenarios found and listed. The other two named a reason.
 G_DONE="false"
 { [ "$G_STATUS" = "NOT_REQUIRED" ] || [ "$G_STATUS" = "FOUND" ]; } && G_DONE="true"
 if [ -z "$REASON" ] && { [ "$RAN" -eq 0 ] || [ "$G_DONE" != "true" ]; }; then
   echo "ERROR: nothing failed by name, yet the measurement is incomplete (suite commands run=${RAN}, gadugi=${G_STATUS}); recording it as incomplete so the judgement sees a fact rather than a pass." >&2
   REASON="qa-command-missing"
 fi
-# Four values, closed. Each one is a fact the judgement reads and can act on;
-# none of them is a criterion-1 verdict, and no consumer conditions criterion
-# 1 on this field.
+# The four words this file writes. Each is a fact the judgement reads and acts
+# on; none is a criterion-1 verdict. REASON only holds a token `pick` was
+# called with above, so the last branch is a safety net: a token added later
+# and never classified here is recorded as incomplete.
 case "$REASON" in
   '') STATUS="PASS" ;;
   qa-command-failed|no-scenarios) STATUS="FAIL" ;;
@@ -353,22 +358,20 @@ case "$REASON" in
   *) echo "ERROR: unknown qa_reason '${REASON}'; recording an incomplete measurement rather than inventing a verdict." >&2
      STATUS="BLOCKED"; REASON="qa-command-missing" ;;
 esac
-SUMMARY="$(printf '%s' "$CAUSES" | san | ascii)"
+SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san | ascii)"
 # The evidence format: every field a string, so a reader never has to guess a type.
 F='{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_dir":"%s","qa_command":"%s",'
 F="${F}"'"qa_command_source":"%s","qa_criterion1_declaration":"%s","qa_command_paths":"%s","qa_candidates":"%s","qa_ci_skip":"%s",'
 F="${F}"'"qa_suite_commands_count":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s",'
 F="${F}"'"qa_round":"%s","head_sha":"%s","docs_only":"%s","gadugi_required":"%s","gadugi_status":"%s",'
-# The eight run-shaped fields are literals: this file runs no scenario, so
-# each is structurally empty or zero rather than a measurement. They stay in
-# the record so a reader written against the earlier record is still valid,
-# and autodrive_scenario_results stays in autodrive_trust.sh for the readers
-# that do have a result list (#1517 D7). The agent's own scenario runs are
-# reported in qa_judgement_notes, not here.
+# The eight run-shaped fields are literals: this file runs no scenario, so each
+# is structurally empty or zero. They stay so a reader written against the
+# earlier record is still valid (#1517 D7); the agent's own runs go in
+# qa_judgement_notes.
 F="${F}"'"gadugi_validate_exit_code":"","gadugi_run_exit_code":"","gadugi_scenario_count":"%s",'
 F="${F}"'"gadugi_scenario_dir":"%s","gadugi_scenario_dir_state":"%s","gadugi_scenarios_validated":"0",'
 F="${F}"'"gadugi_scenarios_run":"0","gadugi_scenarios_passed":"0","gadugi_scenarios_failed":"0",'
-F="${F}"'"gadugi_failed_scenarios":"","gadugi_scenario_results":"","qa_base":"%s","qa_base_source":"%s","git_env_cleared":"%s","run_env_cleared":"%s","qa_guidance":"%s"}'
+F="${F}"'"gadugi_failed_scenarios":"","gadugi_scenario_results":"","qa_base":"%s","git_env_cleared":"%s","run_env_cleared":"%s","qa_guidance":"%s"}'
 # shellcheck disable=SC2059 # F is the fixed format above, never input
 OUT="$(printf "$F" \
   "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$QD" | san | ascii | cut -c1-200)" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" \
@@ -377,11 +380,11 @@ OUT="$(printf "$F" \
   "$(printf '%s' "$SCEN" | san | ascii | cut -c1-2000)" "$RC" "$SUMMARY" \
   "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
   "$DOCSONLY" "$GREQ" "$G_STATUS" "$COUNT" "$(printf '%s' "$SREL" | san | ascii | cut -c1-200)" "$SSTATE" \
-  "$QBASE" "$QBSRC" "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)" \
+  "$QBASE" "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)" \
   "$(printf '%s' "${AUTODRIVE_QA_GUIDANCE:-}" | san)")"
 
 # Write the complete record beside its destination under a private mode, then
-# replace that directory entry. A symlink at the destination is never followed.
+# replace that entry. A symlink at the destination is never followed.
 if [ -n "$EVIDENCE" ]; then
   (
     umask 077

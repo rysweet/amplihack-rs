@@ -816,9 +816,9 @@ tag and publish, and `sccache-prune` alone takes `actions: write`.
 - [A release follows green CI on the same commit](#a-release-follows-green-ci-on-the-same-commit)
   (on this page) — the rule that decides which commits **Auto Release**
   publishes, and how to release by hand.
-- [QA Blocker Scenario](qa-blocker-not-stop-scenario.md): the outside-in
-  scenario that the `install-smoke` job runs against the installed binary for
-  the criterion 1 QA blockers.
+- [Record a criterion-1 QA judgement by hand](../howto/record-criterion-1-qa-judgement.md):
+  includes the outside-in scenario that the `install-smoke` job runs against
+  the installed binary for the criterion 1 QA blockers.
 - [CI Wall-Clock Parallelization](ci-wallclock-parallelization.md) — parallel
   fan-out job graph and tag-conditional release optimization.
 - [CI Resource Discipline](ci-resource-discipline.md) — concurrency, timeout,

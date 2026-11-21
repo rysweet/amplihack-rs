@@ -68,24 +68,25 @@ invocation context and actual diff.
 ### Resolving the measurement base
 
 The target determines the merge base used for the changed-path set,
-`docs_only`, and the repository's committed QA configuration.
+`docs_only`, and the repository's committed QA configuration. The
+measurement takes it from `AUTODRIVE_QA_BASE` and records it as `qa_base`;
+it resolves nothing itself.
 
-| Invocation | Base selection | `qa_base_source` |
-| --- | --- | --- |
-| Existing PR, including light | The PR target already observed by the drive. When absent, use an authenticated, repository-scoped `gh pr view --json baseRefName` lookup for that PR. | `recipe` for the observed target, `pr-base` for the lookup. |
-| New light PR with `base_branch` | The explicit validated target used to start the branch and publish the PR. | `recipe` |
-| New light PR without `base_branch` | The verified clone default when it is also the publication target. | `clone-default` |
-| Direct measurement with `AUTODRIVE_QA_BASE` | The branch supplied by the caller. | `operator` by default. |
-| Unresolved target | Workflow measurement records an unknown change scope and no applicable declaration. | `none` |
+On the merge path, `step-02a-qa-inputs` passes down the base the round's own
+preflight observed for this PR (`autodrive_base_branch`) and nothing else.
+Before a PR exists, `light-qa-inputs` passes the target worktree setup
+selected, which is also the branch `light-open-pr` publishes against; where
+the run named no `base_branch`, the clone's observed default stands in only
+while it is that same branch. A direct caller supplies its own
+`AUTODRIVE_QA_BASE`.
 
-The merge path uses the actual PR target even when it inherits an operator
-measurement base or the clone default differs. A target that cannot be
-resolved or validated leaves the scope unknown. If the target name is valid
-but the worktree lacks its remote-tracking ref, `qa_base` names the attempted
-branch and the scope remains unknown. When the drive cannot resolve the PR
-target, it passes an explicitly unknown base to the measurement. Direct
-preflight with `AUTODRIVE_QA_BASE` unset has a different purpose and can
-inspect a declaration at HEAD. See
+No step guesses a base. Where none is passed, or where
+`autodrive_qa_scope.sh` cannot resolve the one that was, the changed-path
+set reads `(unknown)` and `docs_only` reads `unknown`: the change was not
+measured, rather than measured against a branch that is this PR's target
+only by coincidence. `qa_base` still names what was tried, so the judgement
+can say why the scope is unknown. Direct preflight with `AUTODRIVE_QA_BASE`
+unset has a different purpose and can inspect a declaration at HEAD. See
 [declaring how criterion 1 is met](#declaring-how-criterion-1-is-met).
 
 ### The record file
@@ -174,15 +175,15 @@ summary.
 | `qa_command_paths` | The changed-path set the scope was taken from, or `(unknown)`. |
 | `qa_candidates`, `qa_ci_skip`, `qa_suite_commands_count` | Unresolved candidate projects, why CI selection was skipped, and how many suite commands ran. |
 | `qa_scenarios` | Scenario files, as space-separated repository-relative paths, capped at 2,000 bytes. From `gadugi_scenario_dir` where it was consulted; for a Rust CLI project where it was not, the selected project's `tests/parity/scenarios/*.y{a,}ml`, which `cargo test` runs. Top-level regular files only: a symlinked or non-regular entry is named here and not followed. |
-| `qa_summary` | Actionable outcome summaries, including failure causes when known. Raw suite output is excluded from shared diagnostics. |
-| `qa_round` | `AUTODRIVE_ROUND_LABEL`, or `round`. See the [head, round, and target requirements](#the-record-file) for declaration applicability. |
+| `qa_summary` | The causes, in the order they were found. Where a suite command failed, the last lines of its output follow them: at most 300 bytes, scrubbed of control bytes, quotes and the common token shapes, so a failure carries evidence rather than an exit code alone. It is the branch's own output and every reader treats it as data; the judgement's notes keep raw output out of the PR comment. |
+| `qa_round` | `AUTODRIVE_ROUND_LABEL`, or `round`. With `head_sha` and `qa_base` it says which change, at which commit, this record describes, which is what a reader judges a declaration's applicability from. |
 | `qa_guidance` | The measurement's copy of the absolute path of the pinned `criterion-1-qa-judgement.md`, supplied through `AUTODRIVE_QA_GUIDANCE`. The agent uses the independently validated bundle path. |
-| `qa_base`, `qa_base_source` | The target branch used for measurement and the source that supplied it. An unresolved target records an empty `qa_base` and source `none`. See [resolving the measurement base](#resolving-the-measurement-base). |
+| `qa_base` | The target branch the change set was measured against, as the caller supplied it; empty where no target was resolved. See [resolving the measurement base](#resolving-the-measurement-base). |
 | `head_sha` | The head measured: hexadecimal digits, or empty where the head could not be read. The tool constrains the value to that set before printing it, so a ref name, an option-like string or any other output of a misread head cannot reach a reader through this field. |
 | `docs_only` | `true`, `false` or `unknown`, from the [documentation-only measurement](#documentation-only-measurement). |
 | `gadugi_required` | What `autodrive_gadugi_required` reports: `true` for a Node project, for any repository where `AUTODRIVE_QA_SCENARIO_DIR` is set, and where the scope helper did not load; `false` for a documentation-only PR, for a Rust CLI or Python project, and under a #2458 declaration. It is a fact about the repository and the operator environment; no consumer conditions criterion 1 on it, and it is not a signal that the measurement is broken — see [telling the three `qa-command-missing` causes apart](#telling-the-three-qa-command-missing-causes-apart). |
 | `gadugi_status` | `NOT_REQUIRED`, `NOT_INSTALLED`, `NO_SCENARIOS` or `FOUND`. `NOT_REQUIRED` whenever `gadugi_required` is `false`, which is a Rust CLI or Python repository, a documentation-only PR or a #2458 declaration, in each case only while `AUTODRIVE_QA_SCENARIO_DIR` is unset; the tool then consults no scenario directory and calls no tool. `FOUND` means scenarios were discovered and listed; the tool runs none. |
-| `gadugi_scenario_dir`, `gadugi_scenario_dir_state` | The scenario directory and how it was arrived at. The state is written from a closed-set literal, never from the operator's value: `not-consulted` (`gadugi_required` is `false`, so no directory was looked for; `gadugi_scenario_dir` is empty), `operator` (named by `AUTODRIVE_QA_SCENARIO_DIR` and present), `operator-missing` (named and absent), `detected` (the first present of `tests/agentic`, `tests/gadugi/scenarios` and `scenarios`) or `absent` (gadugi required, none of the three present; the default `tests/agentic` is reported). `not-consulted` is the common value: it holds for a Rust CLI or Python repository, a documentation-only PR and a PR under a #2458 declaration. Each of those depends on `gadugi_required` being `false`, so an operator who sets `AUTODRIVE_QA_SCENARIO_DIR` overrides all of them: the directory is then consulted in any repository type, and the state is `operator` or `operator-missing`. |
+| `gadugi_scenario_dir`, `gadugi_scenario_dir_state` | The scenario directory and how it was arrived at. The state is written from one of these literals, never interpolated from the operator's value, so a directory name cannot put free text in the field: `not-consulted` (`gadugi_required` is `false`, so no directory was looked for; `gadugi_scenario_dir` is empty), `operator` (named by `AUTODRIVE_QA_SCENARIO_DIR` and present), `operator-missing` (named and absent), `detected` (the first present of `tests/agentic`, `tests/gadugi/scenarios` and `scenarios`) or `absent` (gadugi required, none of the three present; the default `tests/agentic` is reported). `not-consulted` is the common value: it holds for a Rust CLI or Python repository, a documentation-only PR and a PR under a #2458 declaration. Each of those depends on `gadugi_required` being `false`, so an operator who sets `AUTODRIVE_QA_SCENARIO_DIR` overrides all of them: the directory is then consulted in any repository type, and the state is `operator` or `operator-missing`. |
 | `gadugi_scenario_count` | How many scenario files were found in a consulted scenario directory. `0` when the state is `not-consulted`, even where `qa_scenarios` lists parity fixtures. |
 | `gadugi_validate_exit_code`, `gadugi_run_exit_code`, `gadugi_scenarios_validated`, `gadugi_scenarios_run`, `gadugi_scenarios_passed`, `gadugi_scenarios_failed`, `gadugi_failed_scenarios`, `gadugi_scenario_results` | Run-shaped fields kept so a reader written against the earlier record still parses. **They are not measurements.** The tool runs no scenario, so each is permanently `""` or `0`, whatever `gadugi_scenario_count` says beside them: a reader comparing `gadugi_scenarios_passed` against `gadugi_scenario_count` is not reading a failure, it is reading two fields that do not describe the same thing. The agent's own scenario runs are reported in `qa_judgement_notes`. |
 | `git_env_cleared`, `run_env_cleared` | See [git repository environment helper](git-repo-env-helper.md). |
@@ -597,7 +598,6 @@ checks. See [evidence validity](auto-drive-evidence.md) and
 ## Related
 
 - [Record a criterion-1 QA judgement by hand](../howto/record-criterion-1-qa-judgement.md)
-- [QA blocker scenario](qa-blocker-not-stop-scenario.md): the outside-in check that a QA blocker is recorded and does not end the round
 - [Criterion-1 judgement guidance](../../amplifier-bundle/skills/merge-ready/criterion-1-qa-judgement.md)
 - [Auto-drive evidence and outcomes](auto-drive-evidence.md)
 - [Auto drive to merge reference](auto-drive-to-merge.md)

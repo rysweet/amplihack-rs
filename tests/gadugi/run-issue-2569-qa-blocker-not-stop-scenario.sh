@@ -2,8 +2,8 @@
 # Self-asserting gadugi-test scenario body for issue #2569: merge-ready
 # criterion 1 is a recorded judgement. A QA measurement that cannot be
 # completed is recorded as a named blocker the judgement carries on from, and
-# it never ends the round; and the change set is measured against the PR's own
-# base, never a guessed one.
+# it never ends the round; and the change set is measured against the base the
+# round observed for this PR, never a guessed one.
 #
 # Black box, all shipped code, run unchanged: the real `amplihack` binary and
 # the pinned recipe runner execute the shipped `autodrive-merge-evidence`
@@ -11,11 +11,9 @@
 # and helpers that step runs from this checkout's amplifier-bundle.
 #
 # What is stood in for, and nothing else, in one private PATH directory:
-#   gh      answers one read-only call, the form the shipped base lookup makes:
-#           `pr view <digits> --repo github.com/<owner>/<name> --json
-#           baseRefName --jq .baseRefName`. It records every call and exits 96
-#           on any other, so a write call or a lookup in another form fails the
-#           case that made it.
+#   gh      records every call and exits 96 on all but one read-only form, so
+#           any hosting call the recipe makes fails the case that made it. The
+#           measurement asks it nothing: the base comes from the round.
 #   claude  stands for the recipe's three agent steps. It answers `--version`,
 #           records one line for each call that carried a prompt (never the
 #           prompt), prints one fixed JSON object and takes no action.
@@ -26,10 +24,10 @@
 # Cases (each runs the recipe once, in a fresh scratch Git repository):
 #   A  a Node repository with no scenario directory: the record names a
 #      blocker, not a pass, and the round carries on.
-#   B  where the change set is measured against, in four legs: 1 the recipe
-#      supplies the base; 2 the lookup of the PR supplies it; 3 nothing
-#      answers, so no base and no change set are recorded; 4 a hostile base is
-#      rejected and no substitution reaches a shell.
+#   B  where the change set is measured against, in three legs: 1 the round
+#      supplies the base and it is measured against; 2 no round did, so no
+#      base and no change set are recorded and none is guessed; 3 a base that
+#      names no branch reaches no shell and measures nothing.
 #   C  a scenario directory the operator named that does not exist, whatever
 #      bytes its name holds, is a recorded state and the record stays one
 #      clean JSON line.
@@ -54,7 +52,8 @@
 # A missing binary, runner or host tool is a failure that names it, never a
 # skip. CI's Install Smoke Test job runs this script directly against the
 # binary it installs. It is not run on a shared host: run the static checks
-# and read the CI result instead (docs/howto/run-the-qa-blocker-scenario.md).
+# and read the CI result instead
+# (docs/howto/record-criterion-1-qa-judgement.md).
 #
 # Run by hand: bash tests/gadugi/run-issue-2569-qa-blocker-not-stop-scenario.sh
 # Set AMPLIHACK_2569_QA_BIN to an amplihack binary to skip the build, and
@@ -405,7 +404,9 @@ if check_record "case-a" "$REC_A"; then
 fi
 
 # --- G: case B, the base the change set is measured against ------------------
-# Leg 1: the recipe supplies the base. It is used before any lookup.
+# Leg 1: the round passed a base down, and the change set is measured against
+# it. Nothing is asked of the hosting interface: the step resolves no base of
+# its own.
 begin_case case-b-leg-1
 { new_node_repo "$WORK/repo-b1" && add_change "$WORK/repo-b1" && add_origin "$WORK/repo-b1"; } \
   || die "set-up: cannot create the case B leg 1 repository"
@@ -415,73 +416,50 @@ run_recipe case-b-leg-1 "$WORK/repo-b1" 7
 REC_B1="$WORK/ev-case-b-leg-1/qa-evidence.json"
 round_continued "case-b leg-1" case-b-leg-1
 if check_record "case-b leg-1" "$REC_B1"; then
-  eq "case-b leg-1 qa_base_source" recipe "$(field "$REC_B1" qa_base_source)"
   eq "case-b leg-1 qa_base" qa-base "$(field "$REC_B1" qa_base)"
   eq "case-b leg-1 qa_command_paths" src/index.js "$(field "$REC_B1" qa_command_paths)"
 fi
 eq "case-b leg-1 gh-calls" "" "$(file_text "$WORK/rec-case-b-leg-1/gh-calls")"
 
-# Leg 2: the recipe supplies none, so the lookup of the PR supplies it. This is
-# the one leg that exercises the pr-base source. A lookup in any other form is
-# not answered by the stand-in, the record then reads none, and the leg fails
-# on the source.
+# Leg 2: no round passed one down. The clone's own default is not taken and the
+# literal `main` is not substituted: the change set is not measured, and the
+# record says so rather than naming a base nobody chose.
 begin_case case-b-leg-2
-{ new_node_repo "$WORK/repo-b2" && add_change "$WORK/repo-b2" && add_origin "$WORK/repo-b2"; } \
-  || die "set-up: cannot create the case B leg 2 repository"
+new_node_repo "$WORK/repo-b2" || die "set-up: cannot create the case B leg 2 repository"
 guard_tree "$WORK/repo-b2"
 EXTRA_ENV=(); EXTRA_CTX=()
 run_recipe case-b-leg-2 "$WORK/repo-b2" 7
 REC_B2="$WORK/ev-case-b-leg-2/qa-evidence.json"
 round_continued "case-b leg-2" case-b-leg-2
 if check_record "case-b leg-2" "$REC_B2"; then
-  eq "case-b leg-2 qa_base_source" pr-base "$(field "$REC_B2" qa_base_source)"
-  eq "case-b leg-2 qa_base" qa-base "$(field "$REC_B2" qa_base)"
-  eq "case-b leg-2 qa_command_paths" src/index.js "$(field "$REC_B2" qa_command_paths)"
+  eq "case-b leg-2 qa_base" "" "$(field "$REC_B2" qa_base)"
+  eq "case-b leg-2 qa_command_paths" "(unknown)" "$(field "$REC_B2" qa_command_paths)"
+  # The changed-path list is not known, and the predicate reads true only for a
+  # known, non-empty list.
+  eq "case-b leg-2 docs_only" unknown "$(field "$REC_B2" docs_only)"
 fi
-eq "case-b leg-2 gh-calls" \
-  "pr view 7 --repo github.com/qa-owner/qa-repo --json baseRefName --jq .baseRefName" \
-  "$(file_text "$WORK/rec-case-b-leg-2/gh-calls")"
+eq "case-b leg-2 gh-calls" "" "$(file_text "$WORK/rec-case-b-leg-2/gh-calls")"
 
-# Leg 3: nothing answers. The repository has no origin, so the lookup stops
-# before it calls gh. No change set is guessed and the literal `main` is never
-# substituted. A lookup that reaches gh and is not answered is covered by no leg.
+# Leg 3: a base that names no branch of this clone is data all the way through.
+# Nothing in it is evaluated, no change set is measured against some other
+# branch instead, and the record stays one clean JSON line.
 begin_case case-b-leg-3
-new_node_repo "$WORK/repo-b3" || die "set-up: cannot create the case B leg 3 repository"
+{ new_node_repo "$WORK/repo-b3" && add_origin "$WORK/repo-b3"; } \
+  || die "set-up: cannot create the case B leg 3 repository"
 guard_tree "$WORK/repo-b3"
-EXTRA_ENV=(); EXTRA_CTX=()
+# shellcheck disable=SC2016 # the command substitution is data and must not run here
+HOSTILE_BASE='-HOSTILEBASE2569$(touch injected2569)'
+EXTRA_ENV=(); EXTRA_CTX=(-c "autodrive_base_branch=$HOSTILE_BASE")
 run_recipe case-b-leg-3 "$WORK/repo-b3" 7
 REC_B3="$WORK/ev-case-b-leg-3/qa-evidence.json"
 round_continued "case-b leg-3" case-b-leg-3
 if check_record "case-b leg-3" "$REC_B3"; then
-  eq "case-b leg-3 qa_base_source" none "$(field "$REC_B3" qa_base_source)"
-  eq "case-b leg-3 qa_base" "" "$(field "$REC_B3" qa_base)"
   eq "case-b leg-3 qa_command_paths" "(unknown)" "$(field "$REC_B3" qa_command_paths)"
-  # The changed-path list is not known, and the predicate reads true only for a
-  # known, non-empty list.
-  eq "case-b leg-3 docs_only" unknown "$(field "$REC_B3" docs_only)"
+  eq "case-b leg-3 record-shape" "lines=1 esc=0" \
+    "lines=$(count_lines "$REC_B3") esc=$(LC_ALL=C tr -cd '\033' < "$REC_B3" | LC_ALL=C wc -c | tr -d ' ')"
 fi
 eq "case-b leg-3 gh-calls" "" "$(file_text "$WORK/rec-case-b-leg-3/gh-calls")"
-
-# Leg 4: a hostile base is rejected, is not replaced by a lookup, and reaches no
-# shell. Only the record, which the tool writes, is read for the value: the
-# runner may echo the context it was given in its own output.
-begin_case case-b-leg-4
-{ new_node_repo "$WORK/repo-b4" && add_origin "$WORK/repo-b4"; } \
-  || die "set-up: cannot create the case B leg 4 repository"
-guard_tree "$WORK/repo-b4"
-# shellcheck disable=SC2016 # the command substitution is data and must not run here
-HOSTILE_BASE='-HOSTILEBASE2569$(touch injected2569)'
-EXTRA_ENV=(); EXTRA_CTX=(-c "autodrive_base_branch=$HOSTILE_BASE")
-run_recipe case-b-leg-4 "$WORK/repo-b4" 7
-REC_B4="$WORK/ev-case-b-leg-4/qa-evidence.json"
-round_continued "case-b leg-4" case-b-leg-4
-if check_record "case-b leg-4" "$REC_B4"; then
-  eq "case-b leg-4 qa_base_source" none "$(field "$REC_B4" qa_base_source)"
-  eq "case-b leg-4 qa_base" "" "$(field "$REC_B4" qa_base)"
-  eq "case-b leg-4 record-hostile-text" 0 "$(count_text "$REC_B4" HOSTILEBASE2569)"
-fi
-eq "case-b leg-4 gh-calls" "" "$(file_text "$WORK/rec-case-b-leg-4/gh-calls")"
-eq "case-b leg-4 injected-file" 0 \
+eq "case-b leg-3 injected-file" 0 \
   "$(find "$WORK" -maxdepth 8 -name injected2569 2>/dev/null | awk 'END { print NR }')"
 
 # --- H: case C, an operator-named scenario directory that does not exist -----

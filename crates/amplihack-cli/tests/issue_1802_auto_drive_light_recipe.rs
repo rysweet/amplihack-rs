@@ -1109,11 +1109,11 @@ fn rec_field(rec: &serde_json::Value, k: &str) -> String {
 
 /// #2569: a `base_branch` the run was given outranks the clone's default on
 /// the light path. It is the branch the PR will be opened against, so the
-/// change set is measured against it and the record names `recipe` as the
-/// source. An `AUTODRIVE_QA_BASE` inherited from the environment is not this
-/// step's to use: the step resolves the base and sets that variable itself.
-/// Both name `trunk` here and the clone's default is `main`, so taking the
-/// wrong one shows in the base, the source and the measured paths alike.
+/// change set is measured against it. An `AUTODRIVE_QA_BASE` inherited from
+/// the environment is not this step's to use: the step resolves the base and
+/// sets that variable itself. Both name `trunk` here and the clone's default
+/// is `main`, so taking the wrong one shows in the recorded base and in the
+/// measured paths alike.
 #[test]
 fn light_qa_inputs_measures_against_the_named_base_branch_first() {
     if skip() {
@@ -1128,12 +1128,9 @@ fn light_qa_inputs_measures_against_the_named_base_branch_first() {
         ],
     );
     assert_eq!(
-        (
-            rec_field(&rec, "qa_base"),
-            rec_field(&rec, "qa_base_source")
-        ),
-        ("trunk".into(), "recipe".into()),
-        "the named base is the base, and the record says where it came from: {rec}"
+        rec_field(&rec, "qa_base"),
+        "trunk",
+        "the named base is the base the record was measured against: {rec}"
     );
     assert_eq!(
         rec_field(&rec, "docs_only"),
@@ -1166,14 +1163,7 @@ fn light_qa_inputs_falls_back_to_the_clone_default_when_no_base_is_named() {
     }
     let e = light_world_with_trunk();
     let (_, rec) = light_qa_record(&e, &[("AUTODRIVE_QA_BASE", "trunk")]);
-    assert_eq!(
-        (
-            rec_field(&rec, "qa_base"),
-            rec_field(&rec, "qa_base_source")
-        ),
-        ("main".into(), "clone-default".into()),
-        "{rec}"
-    );
+    assert_eq!(rec_field(&rec, "qa_base"), "main", "{rec}");
     assert_eq!(rec_field(&rec, "docs_only"), "true", "{rec}");
     assert!(
         !rec_field(&rec, "qa_command_paths").contains("added.rs"),
@@ -1186,12 +1176,12 @@ fn light_qa_inputs_falls_back_to_the_clone_default_when_no_base_is_named() {
     );
 }
 
-/// #2569: a refused `base_branch` resolves to no base. It does not fall
-/// through to the clone default, which would measure against a branch the
-/// refused source never named. The value is not echoed and nothing in it
-/// runs.
+/// #2569: a `base_branch` that names no branch of this clone leaves the
+/// change set unmeasured. It does not fall through to the clone default,
+/// which would measure against a branch nobody named. The value is not
+/// echoed and nothing in it runs.
 #[test]
-fn light_qa_inputs_resolves_none_for_every_hostile_base_branch() {
+fn light_qa_inputs_measures_nothing_when_the_target_names_no_branch() {
     if skip() {
         return;
     }
@@ -1202,12 +1192,9 @@ fn light_qa_inputs_resolves_none_for_every_hostile_base_branch() {
         let bad = hostile_bases(&canary)[i].clone();
         let (o, rec) = light_qa_record(&e, &[("RECIPE_VAR_base_branch", bad.as_str())]);
         assert_eq!(
-            (
-                rec_field(&rec, "qa_base"),
-                rec_field(&rec, "qa_base_source")
-            ),
-            (String::new(), "none".into()),
-            "{bad:?}: refused, and the clone default is not measured against instead: {rec}"
+            rec_field(&rec, "qa_base"),
+            "",
+            "{bad:?}: no base resolved, and the clone default is not measured against instead: {rec}"
         );
         assert_eq!(
             rec_field(&rec, "qa_command_paths"),

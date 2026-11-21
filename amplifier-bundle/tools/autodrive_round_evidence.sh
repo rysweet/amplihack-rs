@@ -14,10 +14,6 @@
 #       the current head before the next round assesses anything? One JSON line:
 #       {"rereview":"true|false","range":"...","first_unreviewed_sha":"...","base_sha":"..."}
 #
-#   autodrive_round_evidence.sh qa-pr-base <pr>
-#       Optional repository-scoped lookup for QA in the current worktree.
-#       A failed lookup leaves the base unknown and returns a diagnostic.
-#
 #   autodrive_round_evidence.sh qa-evidence-sha <file>
 #       step-00d-qa-evidence-hash. The hash of the qa evidence file as
 #       autodrive_qa_evidence_sha computes it, or nothing when the file is not
@@ -79,26 +75,6 @@ pr_base_ref() {
   local pr="${PR_NUMBER:-}"
   case "$pr" in *[!0-9]*) pr="" ;; esac
   gh pr view ${pr:+"$pr"} --json baseRefName --jq .baseRefName 2>/dev/null || printf ''
-}
-
-qa_pr_base() {
-  local pr="$1" repo=""
-  [[ "$pr" =~ ^[0-9]{1,10}$ ]] || return 2
-  if [ ! -L "$HERE/workflow_github_repo.sh" ] && . "$HERE/workflow_github_repo.sh"; then
-    repo="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null)")" || repo=""
-  fi
-  if [ -z "$repo" ]; then
-    echo "[base] could not establish the GitHub repository from origin" >&2
-    return 1
-  fi
-  local base
-  if ! base="$(GH_PAGER=cat GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 GIT_TERMINAL_PROMPT=0 \
-    env -u GH_REPO -u GH_HOST gh pr view "$pr" --repo "github.com/$repo" \
-      --json baseRefName --jq .baseRefName </dev/null 2>/dev/null)"; then
-    echo "[base] could not read the PR target from GitHub" >&2
-    return 1
-  fi
-  printf '%s\n' "$base"
 }
 
 # field <json> <name> <default>: the canonical structured read
@@ -264,11 +240,10 @@ review_baseline() (
 case "${1:-}" in
   review-baseline) review_baseline ;;
   crusty-range) crusty_range ;;
-  qa-pr-base) qa_pr_base "${2:-}" ;;
   qa-evidence-sha) qa_evidence_sha "${2:-}" ;;
   qa-evidence-hash) qa_evidence_hash "${2:-}" ;;
   crusty-covers) crusty_covers "${2:-}" ;;
   *) echo "ERROR: autodrive_round_evidence.sh: unknown subcommand '${1:-}' (crusty-range," \
-       "qa-pr-base <pr>, qa-evidence-sha <file>, qa-evidence-hash <file>, crusty-covers <sha>)" >&2
+       "qa-evidence-sha <file>, qa-evidence-hash <file>, crusty-covers <sha>)" >&2
      exit 2 ;;
 esac

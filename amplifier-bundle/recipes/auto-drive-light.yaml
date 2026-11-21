@@ -228,20 +228,21 @@ steps:
       case "$G" in "$QC_WT"/*) unavailable "the pinned QA guidance resolves inside the worktree" ;; esac
       [ -f "$G" ] && [ ! -L "$G" ] || unavailable "the pinned criterion-1 guidance is unavailable"
       ( umask 077 && mkdir -p "$QUICK_CHANGE_STATE_DIR/qa" ) || unavailable "cannot create private QA storage"
+      # Before a PR exists the target is the one worktree setup selected, which
+      # is also the branch light-open-pr publishes against. Where the run named
+      # none, the clone's observed default stands in only while it is that same
+      # branch. A target this clone cannot resolve is measured against nothing,
+      # never against a guess.
       TARGET="$(bash "$QC_TOOLS/recipe_context_value.sh" worktree_setup.base_branch - 2>/dev/null)" || TARGET=""
-      BSRC=recipe
       if [ -z "${RECIPE_VAR_base_branch:-}" ]; then
         DEFAULT="$(git -C "$QC_WT" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null)" || DEFAULT=""
         [ "$DEFAULT" = "refs/remotes/origin/$TARGET" ] || TARGET=""
-        BSRC=clone-default
       fi
-      case "$TARGET" in ''|-*|*[!A-Za-z0-9._/-]*) TARGET="" ;; esac
-      if [ "${#TARGET}" -gt 200 ] || ! git -C "$QC_WT" rev-parse --verify --quiet "refs/remotes/origin/${TARGET}^{commit}" >/dev/null; then
+      if [ "${#TARGET}" -gt 200 ] || ! git -C "$QC_WT" rev-parse --verify --quiet "refs/remotes/origin/${TARGET}^{commit}" >/dev/null 2>&1; then
         TARGET=""
       fi
-      [ -n "$TARGET" ] || BSRC=none
       REC="$(REPO_PATH="$QC_WT" AUTODRIVE_QA_EVIDENCE="$QUICK_CHANGE_STATE_DIR/qa/qa-evidence.json" \
-        AUTODRIVE_QA_BASE="$TARGET" AUTODRIVE_QA_BASE_SOURCE="$BSRC" AUTODRIVE_QA_GUIDANCE="$G" \
+        AUTODRIVE_QA_BASE="$TARGET" AUTODRIVE_QA_GUIDANCE="$G" \
         AUTODRIVE_ROUND_LABEL="light-qa" bash "$T" || echo "ERROR: QA measurement tool failed" >&2; printf x)"
       REC="${REC%x}"
       [[ -n "${REC//[[:space:]]/}" ]] || unavailable "the measurement tool produced no output"

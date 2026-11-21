@@ -72,12 +72,11 @@ pub fn step_command(recipe: &str, id: &str) -> String {
         .to_string()
 }
 
-/// Base-branch candidates a caller must treat as hostile. Git itself
-/// accepts several of them in a ref name (`$`, backticks, `;`, parentheses),
-/// and `git check-ref-format --branch` expands `@{-1}` to a previous branch,
-/// so a character screen and git's own check are both needed. `canary` is a
-/// path the command-substitution candidate would create if it were ever
-/// evaluated; no case may find it afterwards.
+/// Base-branch candidates a caller must treat as data. None of them names a
+/// branch this clone has, so each one leaves the change set unmeasured
+/// rather than measured against a guess, and none of them may reach a
+/// shell. `canary` is a path the command-substitution candidate would create
+/// if it were ever evaluated; no case may find it afterwards.
 pub fn hostile_bases(canary: &Path) -> Vec<String> {
     vec![
         "-x".to_string(),
@@ -321,22 +320,14 @@ exit 0
             &self.bin.join("qa-suite"),
             &format!("#!/bin/sh\nprintf 'qa-suite %s\\n' \"$*\" >> '{log}'\necho ok\nexit 0\n"),
         );
-        // The hosting interface, which logs every call it is given. By
-        // default it answers nothing and exits 1: that is the offline
-        // fixture, and it is also the real "the lookup could not be made"
-        // case. With `FAKE_GH_BASE_REF` set it answers a `pr view` with that
-        // branch name on one line, as `gh pr view <n> --json baseRefName
-        // --jq .baseRefName` does. No other verb ever answers, so a step
-        // that asks it anything else is as offline as before.
+        // The hosting interface, which logs every call it is given and
+        // answers nothing: the steps under test ask it nothing, and a case
+        // that finds a call here has found a step that did.
         write_exec(
             &self.bin.join("gh"),
             &format!(
                 r#"#!/bin/sh
 printf 'gh %s\n' "$*" >> '{log}'
-if [ -n "${{FAKE_GH_BASE_REF:-}}" ] && [ "${{1:-}}" = pr ] && [ "${{2:-}}" = view ]; then
-  printf '%s\n' "$FAKE_GH_BASE_REF"
-  exit 0
-fi
 echo 'gh: offline fixture' >&2
 exit 1
 "#
@@ -729,10 +720,9 @@ printf '"qa_cited_files":%s,"qa_blockers":%s,"qa_scenario_runs":%s,"qa_fallback_
 
     // ── the real pieces ──────────────────────────────────────────────────
 
-    /// The measurement, as `step-02a-qa-inputs` runs it. The step names the
-    /// base it resolved and how it reached it, so this does too: a base
-    /// with no source beside it is a shape no caller produces, and the
-    /// record contract rejects it.
+    /// The measurement, as `step-02a-qa-inputs` runs it: the base the round
+    /// observed, the record's destination and the round's label, and nothing
+    /// else.
     pub fn measure(&self, extra: &[(&str, &str)]) -> Output {
         let mut c = self.cmd("bash");
         c.arg(bundle_tools().join("autodrive_qa_evidence.sh"))
@@ -740,7 +730,6 @@ printf '"qa_cited_files":%s,"qa_blockers":%s,"qa_scenario_runs":%s,"qa_fallback_
             .env("REPO_PATH", &self.repo)
             .env("AUTODRIVE_QA_EVIDENCE", self.evidence_path())
             .env("AUTODRIVE_QA_BASE", "main")
-            .env("AUTODRIVE_QA_BASE_SOURCE", "operator")
             .env("AUTODRIVE_ROUND_LABEL", "round-1");
         for (k, v) in extra {
             c.env(k, v);

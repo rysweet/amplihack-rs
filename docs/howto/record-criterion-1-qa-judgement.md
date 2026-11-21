@@ -108,5 +108,36 @@ If only an operator can resolve a blocker, record the step, failure,
 as `owner` and state the action they need to take in `needs`. Use the
 [step failure recovery contract](../reference/step-failure-recovery.md).
 
-To check that a blocker in the measurement is recorded without ending the
-round, see [run the QA blocker scenario](run-the-qa-blocker-scenario.md).
+## 5. Check that a blocker does not end the round
+
+`tests/gadugi/run-issue-2569-qa-blocker-not-stop-scenario.sh` drives the
+shipped binary through `autodrive-merge-evidence` and checks that a QA
+measurement blocker is recorded and the round carries on. CI runs it in the
+`Install Smoke Test` job, in the step `Outside-in: QA blockers are named, not
+stops (issue #2569)`; the log ends with `ALL_CASES_PASSED` or
+`SCENARIO_FAILED`. Read that result rather than running the script where
+`/tmp` is shared or limited.
+
+To run it by hand, give it a private `TMPDIR` you own. The script needs the
+pinned recipe runner, through `RECIPE_RUNNER_RS_PATH` or as
+`recipe-runner-rs` on `PATH`, and it stops at set-up if `gadugi-test` is on
+its private search path.
+
+```bash
+export TMPDIR="$HOME/tmp/qa-2569"
+mkdir -p -m 700 "$TMPDIR"
+AMPLIHACK_2569_QA_BIN="$(command -v amplihack)" \
+  bash tests/gadugi/run-issue-2569-qa-blocker-not-stop-scenario.sh
+```
+
+With `AMPLIHACK_2569_QA_BIN` set, the script writes nothing outside its
+scratch root, reads neither `~/.claude` nor `~/.amplihack`, and removes the
+scratch root on exit. The same cases run through the harness with
+`gadugi-test run tests/gadugi/scenarios/issue-2569-qa-blocker-not-stop.yaml`.
+
+A failing run prints one line per failed assertion, naming the case, the
+expected value and the observed one, and ends with `SCENARIO_FAILED`. Each
+case's comment in the script says what it measures and which file owns the
+behaviour. Do not repair a failure by weakening an assertion: where the
+behaviour changed on purpose, change the assertion to one of equal power and
+say why in the pull request.

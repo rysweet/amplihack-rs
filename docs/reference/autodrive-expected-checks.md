@@ -472,12 +472,14 @@ fact; it is advisory only.
 
 ### Declared scenarios job
 
-Step-03 uses a declaration only from the current `step-02a-qa-inputs`
-measurement saved at `{{autodrive_qa_evidence}}`. The record must match the
-assessed `head_sha`, `qa_round`, and actual PR target (`qa_base`). An
-unavailable, unreadable, or stale measurement supplies no declaration.
-PR text, the QA agent's summary, and configuration from the PR head
-cannot supply it. See the [QA record requirements](auto-drive-qa.md#the-record-file).
+Step-03 uses a declaration only from the measurement saved at
+`{{autodrive_qa_evidence}}`, and only where that record describes the PR's
+change at the head being measured. The record names the head, the round and
+the base it measured, so the step can see whether it does; an earlier
+round's record may still be on disk. An unavailable or unreadable
+measurement supplies no declaration, and neither do PR text, the QA agent's
+summary or configuration from the PR head. See the
+[QA record contract](auto-drive-qa.md#the-record-file).
 
 For an applicable `qa_criterion1_declaration` of `ci-job:<name>`, step-03
 passes the name as a single third argument to the same command. The
