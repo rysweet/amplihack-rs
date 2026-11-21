@@ -1050,36 +1050,12 @@ fn light_task_id_accepts_exactly_the_task_ids_resolve_task_accepts() {
     );
 }
 
-/// #2569: `light-qa-inputs` measures the change set against the clone's own
-/// default branch, and consults nothing else.
-///
-/// This step runs only on the new-change path, where the `quick/` branch
-/// starts from `origin/HEAD` and `light-open-pr` opens the PR against that
-/// same default. The clone's default is therefore both the branch the change
-/// was made from and the branch the PR will target, and it stays a legitimate
-/// answer here: with no PR open there is no PR base for it to be wrong
-/// against, which is why the merge path dropped it and this path keeps it.
-///
-/// A `base_branch` the operator gave the run is neither of those branches,
-/// and an `AUTODRIVE_QA_BASE` inherited from the environment is not this
-/// step's to use: the step resolves the base itself and sets that variable
-/// from what it found. Both are set to `trunk` here, and `trunk` would give a
-/// different change set, so taking either would show in all three of the base
-/// name, the source and the measured paths.
-///
-/// No PR exists yet, so nothing is asked of the hosting interface:
-/// `clone-default` and `none` are this step's only two answers.
-#[test]
-fn light_qa_inputs_measures_against_the_clone_default_only() {
-    if skip() {
-        return;
-    }
+/// A light-path repository whose clone default is `main` and which also has
+/// an `origin/trunk` at the base commit, so the two answers give different
+/// change sets: against `main` the change is the documentation file alone,
+/// against `trunk` it also carries the source file.
+fn light_world_with_trunk() -> StepEnv {
     let e = StepEnv::new();
-
-    // origin/trunk keeps the base commit; origin/main moves on with a source
-    // file and is the clone's default. Measured against main the change set is
-    // the documentation file alone; measured against trunk it also carries
-    // the source file.
     let a = e.repo.base.clone();
     git(&e.repo.wt, &["update-ref", "refs/remotes/origin/trunk", &a]);
     e.repo
@@ -1096,28 +1072,28 @@ fn light_qa_inputs_measures_against_the_clone_default_only() {
     );
     e.repo.write("docs/guide.md", "# guide\n\nand more\n");
     e.repo.commit("docs: extend the guide");
+    e
+}
 
+/// Runs `light-qa-inputs` with `vars` on top of the worktree setup, and
+/// returns the output and the record it printed. `cargo` is kept off PATH:
+/// the measurement runs the suite it detects, and this fixture is not a tree
+/// to build. An absent command is a fact the record carries.
+fn light_qa_record(e: &StepEnv, vars: &[(&str, &str)]) -> (Output, serde_json::Value) {
     let wt = e
         .repo
         .wt
         .canonicalize()
         .expect("the worktree path is the one worktree_setup_path.sh accepts");
     let setup = format!(r#"{{"worktree_path":"{}"}}"#, wt.display());
-    // `cargo` is kept off PATH: the measurement runs the suite it detects,
-    // and this fixture is not a tree to build. An absent command is a fact
-    // the record carries, which is all this case needs of it.
     let path = format!("{}:/usr/bin:/bin", e.fakes.bin.display());
-    let o = e.run(
-        "light-qa-inputs",
-        &[
-            ("RECIPE_VAR_worktree_setup", setup.as_str()),
-            ("RECIPE_VAR_base_branch", "trunk"),
-            ("AUTODRIVE_QA_BASE", "trunk"),
-            ("PATH", path.as_str()),
-        ],
-    );
+    let mut env: Vec<(&str, &str)> = vec![
+        ("RECIPE_VAR_worktree_setup", setup.as_str()),
+        ("PATH", path.as_str()),
+    ];
+    env.extend_from_slice(vars);
+    let o = e.run("light-qa-inputs", &env);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-
     let line = stdout(&o)
         .lines()
         .rev()
@@ -1125,27 +1101,127 @@ fn light_qa_inputs_measures_against_the_clone_default_only() {
         .map(str::to_string)
         .unwrap_or_else(|| panic!("the step prints the measured record: {}", show(&o)));
     let rec: serde_json::Value = serde_json::from_str(&line).expect("the record is one JSON line");
-    let f = |k: &str| rec[k].as_str().unwrap_or_default().to_string();
+    (o, rec)
+}
 
-    assert_eq!(
-        (f("qa_base"), f("qa_base_source")),
-        ("main".into(), "clone-default".into()),
-        "the base is the clone's own default, and the record says that is what it is: {rec}"
+fn rec_field(rec: &serde_json::Value, k: &str) -> String {
+    rec[k].as_str().unwrap_or_default().to_string()
+}
+
+/// #2569: a `base_branch` the run was given outranks the clone's default on
+/// the light path. It is the branch the PR will be opened against, so the
+/// change set is measured against it and the record names `recipe` as the
+/// source. An `AUTODRIVE_QA_BASE` inherited from the environment is not this
+/// step's to use: the step resolves the base and sets that variable itself.
+/// Both name `trunk` here and the clone's default is `main`, so taking the
+/// wrong one shows in the base, the source and the measured paths alike.
+#[test]
+fn light_qa_inputs_measures_against_the_named_base_branch_first() {
+    if skip() {
+        return;
+    }
+    let e = light_world_with_trunk();
+    let (o, rec) = light_qa_record(
+        &e,
+        &[
+            ("RECIPE_VAR_base_branch", "trunk"),
+            ("AUTODRIVE_QA_BASE", "main"),
+        ],
     );
     assert_eq!(
-        f("docs_only"),
-        "true",
-        "against the clone's default the committed change set is documentation only: {rec}"
+        (
+            rec_field(&rec, "qa_base"),
+            rec_field(&rec, "qa_base_source")
+        ),
+        ("trunk".into(), "recipe".into()),
+        "the named base is the base, and the record says where it came from: {rec}"
+    );
+    assert_eq!(
+        rec_field(&rec, "docs_only"),
+        "false",
+        "against trunk the change set carries the source file: {rec}"
     );
     assert!(
-        !f("qa_command_paths").contains("added.rs"),
+        rec_field(&rec, "qa_command_paths").contains("added.rs"),
+        "the measured paths are against trunk: {rec}"
+    );
+    assert!(
+        rec_field(&rec, "qa_guidance").ends_with("skills/merge-ready/criterion-1-qa-judgement.md"),
+        "the pinned guidance path is a field of the record: {rec}"
+    );
+    assert!(
+        e.fakes.gh_calls().is_empty(),
+        "there is no PR yet, so the hosting interface is not asked: {:?} {}",
+        e.fakes.gh_calls(),
+        show(&o)
+    );
+}
+
+/// #2569: where no `base_branch` is named, the clone's own default is the
+/// answer, and the record says that is what it is. There is no PR yet, so
+/// there is no PR base for it to be wrong against.
+#[test]
+fn light_qa_inputs_falls_back_to_the_clone_default_when_no_base_is_named() {
+    if skip() {
+        return;
+    }
+    let e = light_world_with_trunk();
+    let (_, rec) = light_qa_record(&e, &[("AUTODRIVE_QA_BASE", "trunk")]);
+    assert_eq!(
+        (
+            rec_field(&rec, "qa_base"),
+            rec_field(&rec, "qa_base_source")
+        ),
+        ("main".into(), "clone-default".into()),
+        "{rec}"
+    );
+    assert_eq!(rec_field(&rec, "docs_only"), "true", "{rec}");
+    assert!(
+        !rec_field(&rec, "qa_command_paths").contains("added.rs"),
         "taking trunk instead would carry the source file: {rec}"
     );
     assert!(
         e.fakes.gh_calls().is_empty(),
-        "there is no PR yet, so no base is asked of the hosting interface: {:?}",
+        "no PR exists, so no base is asked of the hosting interface: {:?}",
         e.fakes.gh_calls()
     );
+}
+
+/// #2569: a refused `base_branch` resolves to no base. It does not fall
+/// through to the clone default, which would measure against a branch the
+/// refused source never named. The value is not echoed and nothing in it
+/// runs.
+#[test]
+fn light_qa_inputs_resolves_none_for_every_hostile_base_branch() {
+    if skip() {
+        return;
+    }
+    use crate::support::criterion1_world::hostile_bases;
+    for i in 0..hostile_bases(Path::new("/canary")).len() {
+        let e = light_world_with_trunk();
+        let canary = e.repo.tmp.path().join("canary");
+        let bad = hostile_bases(&canary)[i].clone();
+        let (o, rec) = light_qa_record(&e, &[("RECIPE_VAR_base_branch", bad.as_str())]);
+        assert_eq!(
+            (
+                rec_field(&rec, "qa_base"),
+                rec_field(&rec, "qa_base_source")
+            ),
+            (String::new(), "none".into()),
+            "{bad:?}: refused, and the clone default is not measured against instead: {rec}"
+        );
+        assert_eq!(
+            rec_field(&rec, "qa_command_paths"),
+            "(unknown)",
+            "{bad:?}: {rec}"
+        );
+        assert!(
+            !stdout(&o).contains(&bad) && !stderr(&o).contains(&bad),
+            "{bad:?}: the refused value is never echoed: {}",
+            show(&o)
+        );
+        assert!(!canary.exists(), "{bad:?}: a candidate was evaluated");
+    }
 }
 
 #[test]

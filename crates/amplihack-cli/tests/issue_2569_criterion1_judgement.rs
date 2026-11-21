@@ -1077,55 +1077,186 @@ fn a_tools_directory_inside_the_worktree_under_review_is_not_a_trust_root() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// S5 — a record with no fields in it
+// S5 — what the step does with the tool's output: nothing but pass it on
 // ─────────────────────────────────────────────────────────────────────────
 
-/// `step-02a-qa-inputs` appends the guidance path to the record it was
-/// given, by dropping the record's closing brace and writing a new one. A
-/// record with no fields has nothing to append to: dropping its brace
-/// leaves `{`, and the step would print `{,"qa_guidance":"…"}`, which the
-/// runner cannot parse under `parse_json: true`. The step must read a
-/// record with no fields as the named blocker instead, and its own output
-/// must stay one parseable object.
+/// The step in `autodrive-merge-evidence.yaml` that measures. Every case in
+/// this section runs it against a private bundle whose tool says exactly
+/// what the case needs it to say.
+fn run_with_tool(w: &World, name: &str, tool_body: &str) -> Output {
+    let tools = w.private_bundle(name, tool_body);
+    w.run_step(
+        "autodrive-merge-evidence.yaml",
+        "step-02a-qa-inputs",
+        &[
+            (
+                "RECIPE_VAR_autodrive_tools_dir",
+                &tools.display().to_string(),
+            ),
+            (
+                "RECIPE_VAR_autodrive_qa_evidence",
+                &w.evidence_path().display().to_string(),
+            ),
+        ],
+    )
+}
+
+/// An object with no fields, and a value that is not an object at all, are
+/// valid JSON that says nothing. The step does not screen their shape and
+/// does not edit them: it prints what the tool wrote, byte for byte, and the
+/// judgement reads every absent field as unknown. The judgement, not the
+/// step, is where such a record becomes `qa-measurement-unavailable`, and it
+/// must never become a pass.
 #[test]
-fn a_record_with_no_fields_is_a_named_blocker_rather_than_a_broken_line() {
+fn a_record_with_no_fields_reaches_the_judgement_with_every_field_absent() {
+    let w = World::new();
+    w.node_repo(&[]);
+    w.feature_pr();
+
+    for (name, printed) in [
+        ("empty-record-bundle", "{}"),
+        ("blank-record-bundle", "{ }"),
+        ("array-record-bundle", "[]"),
+    ] {
+        let o = run_with_tool(
+            &w,
+            name,
+            &format!("#!/bin/sh\nprintf '%s\\n' '{printed}'\n"),
+        );
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{name}: the step exits 0: {}",
+            show(&o)
+        );
+        assert_eq!(
+            text(&o.stdout).trim(),
+            printed,
+            "{name}: the step prints the tool's output unchanged and splices nothing in: {}",
+            show(&o)
+        );
+        assert!(
+            !text(&o.stdout).contains("qa_guidance"),
+            "{name}: the step adds no field of its own: {}",
+            show(&o)
+        );
+
+        // The judgement layer reads that very record.
+        std::fs::write(w.evidence_path(), text(&o.stdout).trim()).expect("save the record");
+        let j = w.judgement("auto", "pass");
+        assert_judgement_shape(&j);
+        assert!(
+            blockers(&j).contains(&"qa-measurement-unavailable".to_string()),
+            "{name}: every field absent is the named blocker: {:?}",
+            blockers(&j)
+        );
+        assert_ne!(
+            field(&j, "qa_judgement"),
+            "",
+            "{name}: the judgement still records a judgement and carries on: {j}"
+        );
+    }
+}
+
+/// Nothing written is the one thing the step names for itself. Empty output,
+/// blank output, and a tool that fails after printing nothing all reach the
+/// same blocker, as one parseable object, with the drive carrying on.
+#[test]
+fn empty_tool_output_names_qa_measurement_unavailable() {
     let w = World::new();
     w.node_repo(&[]);
     w.feature_pr();
 
     for (name, body) in [
-        ("empty-record-bundle", "#!/bin/sh\nprintf '{}\\n'\n"),
-        ("blank-record-bundle", "#!/bin/sh\nprintf '{ }\\n'\n"),
-        ("array-record-bundle", "#!/bin/sh\nprintf '[]\\n'\n"),
+        ("silent-bundle", "#!/bin/sh\nexit 0\n"),
+        ("blank-bundle", "#!/bin/sh\nprintf '  \\n\\n'\n"),
+        ("failing-bundle", "#!/bin/sh\nexit 3\n"),
     ] {
-        let tools = w.private_bundle(name, body);
-        let o = w.run_step(
-            "autodrive-merge-evidence.yaml",
-            "step-02a-qa-inputs",
-            &[(
-                "RECIPE_VAR_autodrive_tools_dir",
-                &tools.display().to_string(),
-            )],
-        );
+        let o = run_with_tool(&w, name, body);
         assert_eq!(
             o.status.code(),
             Some(0),
-            "{name}: step-02a names a blocker and exits 0: {}",
+            "{name}: the blocker is named and the step exits 0: {}",
             show(&o)
         );
+        // The step sets `parse_json`, so the runner reads its last non-empty
+        // line. That line, and not merely some line on the way, is the object
+        // naming the blocker.
         let line = last_line(&o);
         let v: Value = serde_json::from_str(&line).unwrap_or_else(|e| {
-            panic!(
-                "{name}: step-02a sets parse_json, so its last line is one JSON object; {e}: {line}"
-            )
+            panic!("{name}: the step's last line is one JSON object; {e}: {line}")
         });
         assert_eq!(
             field(&v, "qa_reason"),
             "qa-measurement-unavailable",
-            "{name}: a record carrying no field is unavailable, never a pass: {v}"
+            "{name}: {v}"
         );
         assert_eq!(field(&v, "qa_status"), "BLOCKED", "{name}: {v}");
+        assert_eq!(
+            field(&v, "qa_guidance"),
+            "",
+            "{name}: no measurement, so no pinned guidance is handed on: {v}"
+        );
     }
+}
+
+/// The guidance path is a field the tool writes, from the path the step
+/// passes it. The step's own output and the record file are therefore the
+/// same bytes: nothing is spliced on the way out, and the digest taken of the
+/// record covers the guidance path as well.
+#[test]
+fn the_guidance_path_is_a_field_the_tool_writes_and_the_step_splices_nothing() {
+    let w = World::new();
+    w.node_repo(&[]);
+    w.feature_pr();
+
+    // A stand-in tool that writes one field and no guidance: whatever the
+    // step prints must be exactly that.
+    let o = run_with_tool(
+        &w,
+        "plain-bundle",
+        "#!/bin/sh\nprintf '%s\\n' '{\"qa_status\":\"PASS\",\"qa_summary\":\"stand-in\"}'\n",
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(
+        text(&o.stdout).trim(),
+        r#"{"qa_status":"PASS","qa_summary":"stand-in"}"#,
+        "the step splices no guidance into a record whose tool wrote none: {}",
+        show(&o)
+    );
+
+    // The real tool: the step passes the path, the tool records it, and the
+    // step's output is the record file.
+    let o = w.run_step(
+        "autodrive-merge-evidence.yaml",
+        "step-02a-qa-inputs",
+        &[(
+            "RECIPE_VAR_autodrive_qa_evidence",
+            &w.evidence_path().display().to_string(),
+        )],
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let out = json_of(&o);
+    assert_record_contract(&out);
+    let on_disk = std::fs::read_to_string(w.evidence_path()).expect("the record file");
+    assert_eq!(
+        text(&o.stdout).trim(),
+        on_disk.trim(),
+        "the step's output and the record file are one set of bytes: {}",
+        show(&o)
+    );
+    let disk = read_json(&w.evidence_path());
+    let guide = field(&disk, "qa_guidance");
+    assert!(
+        guide.ends_with("skills/merge-ready/criterion-1-qa-judgement.md"),
+        "the tool recorded the guidance path it was given: {guide}"
+    );
+    assert!(
+        !guide.starts_with(&w.repo.display().to_string()),
+        "the guidance path is never inside the worktree under review: {guide}"
+    );
+    let meta = std::fs::symlink_metadata(&guide).expect("the guidance path exists");
+    assert!(meta.is_file(), "a regular file, not a link: {guide}");
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1779,4 +1910,46 @@ fn a_stale_record_still_names_the_round_and_the_head_it_measured() {
         second_head,
         "a reader comparing head_sha against the head under review sees the difference"
     );
+}
+
+/// One refused base candidate, however it is shaped, resolves to no base and
+/// never reaches a command line: the record says `none`, carries no change
+/// set, does not echo the value, and no command it contains has run. The
+/// light path is driven with the same set in
+/// `issue_1802_auto_drive_light_recipe`.
+#[test]
+fn every_hostile_base_candidate_resolves_none_on_the_merge_path() {
+    use crate::support::criterion1_world::hostile_bases;
+    for i in 0..hostile_bases(std::path::Path::new("/canary")).len() {
+        let w = divergent_default_world();
+        let canary = w.base.join("canary");
+        let bad = hostile_bases(&canary)[i].clone();
+        let o = run_qa_inputs(
+            &w,
+            &Sources {
+                operator: Some(&bad),
+                recipe: Some("main"),
+                ..Sources::default()
+            },
+        );
+        assert_eq!(
+            o.status.code(),
+            Some(0),
+            "{bad:?}: the step still reports and exits 0: {}",
+            show(&o)
+        );
+        let j = json_of(&o);
+        assert_eq!(
+            base_of(&j),
+            (String::new(), "none".into()),
+            "{bad:?}: refused, and the recipe's base below it is not used instead: {j}"
+        );
+        assert_eq!(field(&j, "qa_command_paths"), "(unknown)", "{bad:?}: {j}");
+        assert!(
+            !text(&o.stdout).contains(&bad) && !text(&o.stderr).contains(&bad),
+            "{bad:?}: the refused value is never echoed: {}",
+            show(&o)
+        );
+        assert!(!canary.exists(), "{bad:?}: a candidate was evaluated");
+    }
 }

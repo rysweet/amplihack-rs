@@ -72,6 +72,27 @@ pub fn step_command(recipe: &str, id: &str) -> String {
         .to_string()
 }
 
+/// Base-branch candidates a caller must treat as hostile. Git itself
+/// accepts several of them in a ref name (`$`, backticks, `;`, parentheses),
+/// and `git check-ref-format --branch` expands `@{-1}` to a previous branch,
+/// so a character screen and git's own check are both needed. `canary` is a
+/// path the command-substitution candidate would create if it were ever
+/// evaluated; no case may find it afterwards.
+pub fn hostile_bases(canary: &Path) -> Vec<String> {
+    vec![
+        "-x".to_string(),
+        format!("$(touch {})", canary.display()),
+        format!("`touch {}`", canary.display()),
+        "a;b".to_string(),
+        "@{-1}".to_string(),
+        "a..b".to_string(),
+        "a//b".to_string(),
+        "main/".to_string(),
+        "a\nb".to_string(),
+        "a".repeat(300),
+    ]
+}
+
 pub fn private_dir(dir: &Path) {
     fs::create_dir_all(dir).expect("mkdir");
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).expect("chmod 0700");
