@@ -74,15 +74,15 @@ impl Shown {
 /// A direct probe and a successful re-read are both dated at or after
 /// `measured_at`, so neither is annotated, and a reading with no reading
 /// time (carried, unknown, still running or failed, `fresh::read_at`) gives
-/// no age rather than a guessed one. Every difference is taken with
-/// saturating arithmetic on `i64` and clamped at 0, so a reading time in the
-/// future reports no age rather than a negative or wrapped one.
+/// no age rather than a guessed one. The difference is taken with saturating
+/// arithmetic on `i64` and a reading time in the future reports `0`, so no
+/// age is ever negative or wrapped.
 fn cached_age(live: &Probed, measured_at: i64, now: i64) -> Option<u64> {
     let read = read_at(live, measured_at)?;
     if read >= measured_at {
         return None;
     }
-    u64::try_from(now.saturating_sub(read).max(0)).ok()
+    Some(u64::try_from(now.saturating_sub(read)).unwrap_or(0))
 }
 
 /// What the log shows for the live login and each candidate (issue #1844):

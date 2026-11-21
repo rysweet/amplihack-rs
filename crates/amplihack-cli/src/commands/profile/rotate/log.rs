@@ -228,8 +228,7 @@ pub mod msg {
             }
             Reading::Exhausted { session, week: w } => {
                 let s = session.or(r.session).unwrap_or(0.0);
-                let w = week(w.or(r.week));
-                format!("s={}%{sep}w={w}{}", pct(s), r.age(sep))
+                format!("s={}%{sep}w={}{}", pct(s), week(w.or(r.week)), r.age(sep))
             }
             Reading::Failed => "failed".to_string(),
         }

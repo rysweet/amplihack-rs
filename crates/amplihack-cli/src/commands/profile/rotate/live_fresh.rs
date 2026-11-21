@@ -256,6 +256,9 @@ pub(in crate::commands::profile::rotate) fn step(
 /// the held reading's. `passive` is left as it was and `observed_at` is the
 /// held reading's own time, so the usage history and the capacity file
 /// record it by its real age and never as a reading taken in this cycle.
+/// `carried` is cleared, as it is after a re-read: the held reading was read
+/// from the usage source and `fresh::read_at` dates it, where a probe still
+/// marked carried would have no reading time and would count as unusable.
 ///
 /// A window the cached probe did not read is not invented: a login with no
 /// session window keeps none, so no session limit is claimed for it.
