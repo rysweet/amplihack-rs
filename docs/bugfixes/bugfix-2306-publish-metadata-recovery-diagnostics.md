@@ -180,7 +180,10 @@ scoped collision lookup runs. A failed collision lookup adds context; it cannot
 replace the original creation diagnostic. Retry warnings precede the helper's
 terminal rejection in the creation stderr, and a long warning history must not
 hide it. The publisher reports only that final rejection, sanitized and bounded,
-together with the original creation exit status (for example 23). On `FAILED_PR_CREATE`, creation
+together with the original creation exit status (for example 23). An attempt
+interrupted by a signal ends with `ERROR: gh interrupted by <signal> (exit N)`,
+so it is reported in the same way. An empty creation stderr reports
+`empty stderr (no error message)`. On `FAILED_PR_CREATE`, creation
 evidence appears in stderr and the structured `message`, and survives into the
 runner's serialized step error. Pre-helper failures also identify the operation
 and status or condition. A final-exit backstop prevents unexplained nonzero

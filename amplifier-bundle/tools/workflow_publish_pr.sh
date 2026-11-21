@@ -1132,8 +1132,10 @@ else
   PUBLISH_CHILD=""
   # Retry warnings precede the terminal rejection and can fill the bounded
   # diagnostic, so keep only the last line (the helper's terminal rejection).
-  if CREATE_LAST_LINE="$(tail -n 1 -- "$CREATE_STDERR_FILE")" &&
-    printf '%s\n' "$CREATE_LAST_LINE" >"$CREATE_STDERR_FILE"; then
+  CREATE_LAST_LINE="$(tail -n 1 -- "$CREATE_STDERR_FILE" 2>/dev/null)" || CREATE_LAST_LINE=""
+  if [ -z "$CREATE_LAST_LINE" ]; then
+    CREATE_DIAGNOSTIC="empty stderr (no error message)"
+  elif printf '%s\n' "$CREATE_LAST_LINE" >"$CREATE_STDERR_FILE"; then
     CREATE_DIAGNOSTIC="$(gh_safe_stderr "$CREATE_STDERR_FILE")"
   else
     CREATE_DIAGNOSTIC="stderr capture unavailable"
@@ -1169,7 +1171,6 @@ case "$created_number" in ''|*[!0123456789]*) created_number="" ;; esac
 case "$created_number" in *[1-9]*) ;; *) created_number="" ;; esac
 identity_ok=false
 if [ "$created_path" != "$PR_URL_RESULT" ] && [ -n "$created_number" ] &&
-  [ "$created_repo/pull/$created_number" = "$created_path" ] &&
   (LC_ALL=C; shopt -s nocasematch; [[ "$created_repo" == "$REPO_IDENTITY" ]]); then
   identity_ok=true
 fi

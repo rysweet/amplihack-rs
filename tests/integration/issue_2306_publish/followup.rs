@@ -12,7 +12,7 @@ fn assert_private_empty(f: &PublishFixture) {
 }
 
 #[test]
-fn followup_canonical_repository_casing_preserves_success_including_recovery() {
+fn followup_canonical_repository_casing_preserves_success_with_and_without_scope_failure() {
     for recover in [false, true] {
         let f = PublishFixture::new();
         f.git(&[
@@ -56,29 +56,67 @@ fn followup_created_pr_preserves_leading_zeroes_in_a_repository_named_pull() {
 #[test]
 fn followup_rejected_create_identity_stays_out_of_results_and_logs() {
     let rejected = "https://github.com/foreign-owner/private-repo/pull/99";
-    for partial_lookup in [false, true] {
+    let f = PublishFixture::new();
+    let output = f
+        .publish_command()
+        .env("CREATE_OUTPUT", rejected)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", describe(&output));
+    let result = json(&output);
+    assert_eq!(result["state"], "FAILED_PR_IDENTITY");
+    assert_eq!(result["terminal_status"], "failure");
+    assert_eq!(result["pr_url"], "", "{result}");
+    assert_eq!(result["pr_number"], "", "{result}");
+    assert!(
+        !describe(&output).contains("foreign-owner/private-repo"),
+        "rejected identity leaked: {}",
+        describe(&output)
+    );
+}
+
+/// Only one exact PR URL for the expected repository with a positive decimal
+/// number is accepted. Each other shape is a loud identity failure with no
+/// PR identity in the structured result.
+#[test]
+fn followup_malformed_created_identity_is_rejected() {
+    for created in [
+        "https://github.com/owner/repo/pull/0",
+        "https://github.com/owner/repo/pull/00",
+        "https://github.com/owner/repo/pull/1x",
+        "https://github.com/owner/repo/pull/1/files",
+        "https://github.com/owner/repo/pull/5?x=1",
+        "https://github.com/owner/repo/pull/5/pull/9",
+        "https://github.com/owner/repo/pull/",
+        "https://github.com/owner/repo/pull/12\nextra text",
+        "https://github.com/owner/repo/issues/12",
+        "https://github.com/owner/repo/pull/-1",
+        "http://github.com/owner/repo/pull/12",
+        "owner/repo/pull/12",
+    ] {
         let f = PublishFixture::new();
-        if partial_lookup {
-            let mut pr = f.pr("CLOSED", super::fixture::BRANCH);
-            pr["url"] = "".into();
-            f.write("prs.json", &serde_json::json!([pr]).to_string());
-        }
         let output = f
             .publish_command()
-            .env("CREATE_OUTPUT", rejected)
+            .env("CREATE_OUTPUT", created)
             .output()
             .unwrap();
-        assert!(!output.status.success(), "{}", describe(&output));
-        let result = json(&output);
-        assert_eq!(result["state"], "FAILED_PR_IDENTITY");
-        assert_eq!(result["terminal_status"], "failure");
-        assert_eq!(result["pr_url"], "", "{result}");
-        assert_eq!(result["pr_number"], "", "{result}");
         assert!(
-            !describe(&output).contains("foreign-owner/private-repo"),
-            "rejected identity leaked: {}",
+            !output.status.success(),
+            "{created:?}: {}",
             describe(&output)
         );
+        let result = json(&output);
+        assert_eq!(
+            result["state"], "FAILED_PR_IDENTITY",
+            "{created:?}: {result}"
+        );
+        assert_eq!(
+            result["terminal_status"], "failure",
+            "{created:?}: {result}"
+        );
+        assert_eq!(result["pr_url"], "", "{created:?}: {result}");
+        assert_eq!(result["pr_number"], "", "{created:?}: {result}");
+        assert_private_empty(&f);
     }
 }
 
