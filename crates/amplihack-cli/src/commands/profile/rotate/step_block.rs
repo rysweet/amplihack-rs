@@ -21,8 +21,9 @@
 //! 2. **The span is valid** ([`valid_span`], the loader's own rule). A block
 //!    outside it would make the whole ledger unreadable on the next load,
 //!    which would stop the rotator's prelude on every cycle.
-//! 3. **The lock**, waited for a bounded time and then given up. A step is
-//!    never stalled by a busy rotator.
+//! 3. **The lock**, waited for at most [`CLEAR_LOCK_WAIT`] and then given
+//!    up. A busy rotator can hold a step up for that long and no longer;
+//!    there is no retry, so the wait has a ceiling even under contention.
 //! 4. **Load**; a ledger that disappeared between 1 and 3 is left alone.
 //! 5. **Expired blocks are pruned**, so that a block left for this login is
 //!    an active one. **It is then kept as it is**: never extended, never
@@ -44,6 +45,7 @@ use std::path::Path;
 /// time, and nothing else. No limit-message text, no reset as read, no
 /// process output and no path can reach the log through them.
 const OUT_OF_RANGE: &str = "stated reset out of range";
+const ALREADY_PASSED: &str = "stated reset already passed";
 const BUSY: &str = "rotator busy";
 const UNREADABLE: &str = "ledger unreadable";
 const NOT_WRITTEN: &str = "ledger not written";
@@ -81,7 +83,14 @@ fn store(
     if !exists(&rs.ledger) {
         return Ok(None);
     }
-    // 2. The loader's own span rule, applied before the insert.
+    // 2. The loader's own span rule, applied before the insert. A reset
+    //    the clock has already gone past is named separately: `valid_span`
+    //    refuses it for the same reason it refuses a reset beyond the cap,
+    //    but the two read nothing alike to whoever finds the ALERT, so the
+    //    lapsed one is taken first and `OUT_OF_RANGE` keeps the rest.
+    if until <= at {
+        return Err(ALREADY_PASSED);
+    }
     let block = OverflowBlock::spend_limit_until(at, until);
     if !valid_span(&block) {
         return Err(OUT_OF_RANGE);

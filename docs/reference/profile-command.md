@@ -7553,7 +7553,8 @@ message, before the wait is planned.
 | The message states a reset ahead of now and no more than 62 days away | Writes the block, prints `ALERT: login <name> hit its spend limit; blocked until <time>` on stderr once, and plans the wait. |
 | The login already has an active block | Writes nothing and prints no second ALERT; the existing `until` is not extended. |
 | The message states no reset | Writes nothing. [Login-change wait](#login-change-wait) or `skipped reason=spend_limit`, as before. |
-| The stated reset is in the past or more than 62 days away | Writes nothing and prints `ALERT: login <name> spend limit not blocked (stated reset out of range)`. |
+| The stated reset has already passed | Writes nothing and prints `ALERT: login <name> spend limit not blocked (stated reset already passed)`. |
+| The stated reset is more than 62 days away | Writes nothing and prints `ALERT: login <name> spend limit not blocked (stated reset out of range)`. |
 | The rotator holds the ledger lock, the ledger cannot be read or written, or it already holds 256 blocks | Writes nothing and prints `ALERT: login <name> spend limit not blocked (<reason>)`, where `<reason>` is `rotator busy`, `ledger unreadable`, `ledger not written` or `too many blocks`. The login is then not recorded, so the wake condition of the wait is unchanged. |
 | There is no rotate ledger | Writes nothing, and does not create one. |
 

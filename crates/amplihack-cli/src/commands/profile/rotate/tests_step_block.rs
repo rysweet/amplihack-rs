@@ -14,8 +14,9 @@
 //!   extends an active block, never stores a block `valid_overflow` would
 //!   refuse, never panics, and reports every failure on stderr and in the
 //!   rotate log as `ALERT: login <name> spend limit not blocked (<why>)`
-//!   with `<why>` one of `stated reset out of range`, `rotator busy`,
-//!   `ledger unreadable`, `ledger not written`, `too many blocks`.
+//!   with `<why>` one of `stated reset already passed`, `stated reset out
+//!   of range`, `rotator busy`, `ledger unreadable`, `ledger not written`,
+//!   `too many blocks`.
 //! - `msg::alert_step_spend_limit(&ProfileName, until) -> String` and
 //!   `msg::step_spend_limit_not_blocked(&ProfileName, why: &str) -> String`
 //!   with the two texts above (without the `ALERT: ` prefix being optional:
@@ -197,23 +198,30 @@ fn a_missing_ledger_is_not_created() {
 
 #[test]
 fn a_reset_in_the_past_or_out_of_range_is_reported_and_not_stored() {
-    for (label, until) in [
-        ("past", NOW - 1),
-        ("equal to now", NOW),
-        ("beyond the cap", NOW + MAX_BLOCK_SECS + 1),
-        ("maximum integer", i64::MAX),
-        ("minimum integer", i64::MIN),
+    // The two cases read differently to whoever finds the line: a reset the
+    // clock has already gone past is an ordinary limit that has lapsed, not
+    // a reset too far ahead to store.
+    for (label, until, why) in [
+        ("past", NOW - 1, "stated reset already passed"),
+        ("equal to now", NOW, "stated reset already passed"),
+        ("minimum integer", i64::MIN, "stated reset already passed"),
+        (
+            "beyond the cap",
+            NOW + MAX_BLOCK_SECS + 1,
+            "stated reset out of range",
+        ),
+        ("maximum integer", i64::MAX, "stated reset out of range"),
     ] {
         let r = root();
         note_spend_block(&r.path, &n("wwest"), NOW, until);
         let l = loaded(&r);
         assert!(l.overflow_blocked.is_empty(), "{label}: stored");
-        let why = msg::step_spend_limit_not_blocked(&n("wwest"), "stated reset out of range");
+        let line = msg::step_spend_limit_not_blocked(&n("wwest"), why);
         assert_eq!(
-            why,
-            "ALERT: login wwest spend limit not blocked (stated reset out of range)"
+            line,
+            format!("ALERT: login wwest spend limit not blocked ({why})")
         );
-        assert!(log_text(&r).contains(&why), "{label}: {}", log_text(&r));
+        assert!(log_text(&r).contains(&line), "{label}: {}", log_text(&r));
     }
 }
 
@@ -315,6 +323,7 @@ fn the_alert_lines_carry_only_a_name_a_time_and_a_closed_reason() {
     let line = msg::alert_step_spend_limit(&n("wwest"), NOW + WEEK);
     assert!(!line.contains('\n') && !line.contains('\u{1b}'));
     for why in [
+        "stated reset already passed",
         "stated reset out of range",
         "rotator busy",
         "ledger unreadable",
