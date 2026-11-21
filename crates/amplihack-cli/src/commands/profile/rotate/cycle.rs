@@ -16,17 +16,14 @@ use super::log::{msg, shown, shown_of};
 use super::observe::{Measurement, Snap, live_name, measure_and_decide, platform_block_reason};
 use super::overflow::Tag;
 use super::overflow_record::{
-    self, alert_line, block_spend_limited, note_home_key, note_keychain, note_live, note_move,
-    note_per_token, refresh_capacity, refuse_key, stay_note, target_check,
+    self, alert_line, block_spend_limited, note_home_key, note_live, note_move, note_per_token,
+    refuse_key, stay_note, target_check,
 };
 use super::pin::{self, Gate as PinGate}; // the switch-hold gate
-use super::plan_room::no_room;
 pub use super::prelude::prototype_guard;
 use super::prelude::{Prelude, locked_prelude};
 use super::revalidate::{self, Verdict};
 use super::swap::{self, Source};
-use super::swap_back;
-use super::swap_record;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::shared_dirs;
@@ -37,13 +34,21 @@ pub(super) const LOCK_WAIT: Duration = Duration::from_secs(2);
 mod ctx;
 #[path = "cycle_outcome.rs"]
 mod outcome;
+#[path = "cycle_record.rs"]
+mod record;
 pub use ctx::Ctx;
 pub use outcome::{CycleOutcome, Mode};
 /// Steps 4 and 5 of a cycle: measure, then decide.
 pub(super) type MeasureFn = fn(&Ctx, &Snap) -> Result<Measurement, ProfileError>;
 
 /// Records the cycle as ended at `t`, after measuring from `measured_at`,
-/// with its overflow tag; see [`overflow_record::record`].
+/// with its overflow tag and its room reading; see
+/// [`overflow_record::record`].
+///
+/// `live_room` is `None` for every cycle that measured nothing about the
+/// login left in place: a guided cycle, a cycle skipped because the ledger
+/// moved under it, an idle record and a `profile switch` record all pass
+/// `None`, and every reader of the ledger takes that as no room.
 pub(super) fn save(
     ctx: &Ctx,
     l: &mut RotateLedger,
@@ -51,8 +56,9 @@ pub(super) fn save(
     t: i64,
     measured_at: Option<i64>,
     tag: Option<Tag>,
+    live_room: Option<bool>,
 ) -> Result<(), ProfileError> {
-    overflow_record::record(&ctx.rs, l, o.as_str(), t, measured_at, tag)
+    overflow_record::record(&ctx.rs, l, o.as_str(), t, measured_at, tag, live_room)
 }
 
 pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError> {
@@ -103,7 +109,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         // Issue #1693: the prelude already wrote the guidance.
         Prelude::Guided => {
             let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-            save(ctx, &mut l, CycleOutcome::Alerted, now(), None, None)?;
+            save(ctx, &mut l, CycleOutcome::Alerted, now(), None, None, None)?;
             return Ok(CycleOutcome::Alerted);
         }
     };
@@ -194,7 +200,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             // stopped before the switch (#1691).
             if !newer_than(l.last_cycle.as_ref(), m.measured_at) {
                 let at = Some(m.measured_at);
-                save(ctx, &mut l, CycleOutcome::Skipped, t, at, None)?;
+                save(ctx, &mut l, CycleOutcome::Skipped, t, at, None, None)?;
             }
             return Ok(CycleOutcome::Skipped);
         }
@@ -339,50 +345,23 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             room.alert(&mut out, &mut l, kind, &key, t, &line)
         }
     };
-    // Issue #2218: nothing measured is recorded under an excluded live
-    // login's name; it was never probed.
-    let recorded_live = live_name(&first.live).filter(|_| !first.live_excluded);
-    let unreadable = refresh_capacity(
+    record::record(
         ctx,
-        recorded_live,
-        &live,
-        &others,
-        t,
-        tag,
-        first.shown_platform(),
-    );
-    note_keychain(ctx, &mut out, t, unreadable);
-    no_room::record(
+        &mut out,
         &mut l,
-        ctx,
-        &first,
-        (&live, &others),
-        probed.as_ref(),
-        measured_at,
-    );
-    let left = swapped
-        .as_ref()
-        .filter(|_| !first.live_excluded)
-        .map(|[_, from]| (from, &live));
-    let (s, live_n) = (&ctx.settings, recorded_live);
-    for line in swap_back::update(&mut l, s, live_n, probed.as_ref(), left, measured_at, t) {
-        out.emit(now(), &line);
-    }
-    let at = capacity::recorded_at(outcome, probed.as_ref(), measured_at);
-    save(ctx, &mut l, outcome, now(), Some(at), tag)?;
-    // Issue #2085: the record the limit-resume hook waits for, under the lock.
-    if let Some([to, from]) = &swapped {
-        swap_record::after_swap(
-            &ctx.rs,
-            &mut out,
-            from,
-            to,
-            &others,
+        &record::Done {
+            outcome,
+            first: &first,
+            live: &live,
+            others: &others,
+            probed: probed.as_ref(),
             measured_at,
+            t,
+            tag,
+            swapped: swapped.as_ref(),
             swapped_at,
-            (first.source_org(), first.org_of(to)),
-        );
-    }
+        },
+    )?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
     drop(lock);

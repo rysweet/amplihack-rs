@@ -20,7 +20,7 @@ use super::super::fsx;
 use super::super::name::ProfileName;
 use super::super::rotate::identify::Account;
 use super::super::store::ProfileStore;
-use amplihack_utils::rotator_status::{CycleStatus, read_cycle, swap_record};
+use amplihack_utils::rotator_status::{CycleStatus, Ledger, read_cycle, read_ledger, swap_record};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -115,6 +115,27 @@ impl Watch {
         matches!(self.kind, Kind::Home { .. })
     }
 
+    /// The profile root this watch was built with (issue #2890), where the
+    /// rotate ledger lives; `None` for a `$CLAUDE_CONFIG_DIR` step and for
+    /// a `$HOME/.claude` step with no store.
+    pub(crate) fn store_root(&self) -> Option<&Path> {
+        match &self.kind {
+            Kind::Profile { root, .. } => Some(root),
+            Kind::Home { root, .. } => root.as_deref(),
+            Kind::ConfigDir => None,
+        }
+    }
+
+    /// The inherited profile this watch names, parsed (issue #2890); `None`
+    /// for a `$HOME/.claude` or `$CLAUDE_CONFIG_DIR` step, and for a name
+    /// the rules refuse.
+    pub(crate) fn inherited_profile(&self) -> Option<ProfileName> {
+        match &self.kind {
+            Kind::Profile { name, .. } => ProfileName::parse(name).ok(),
+            Kind::Home { .. } | Kind::ConfigDir => None,
+        }
+    }
+
     /// The fingerprint now; `None` only when no directory is watched.
     pub(crate) fn probe(&self) -> Option<Fingerprint> {
         let dir = self.dir()?;
@@ -181,7 +202,24 @@ impl Watch {
     /// that hit the limit (its limit has since reset). The rule is
     /// [`CycleStatus::fresh_capacity`], shared with the limit-resume hook.
     pub(crate) fn rotator_capacity(&self, start: i64) -> bool {
-        self.cycle().is_some_and(|c| c.fresh_capacity(start))
+        self.cycle().is_some_and(|c| c.fresh_room(start))
+    }
+
+    /// The rotate ledger under this watch's root, as the checked reader
+    /// sees it (issue #2857).
+    ///
+    /// [`Ledger::Missing`] and [`Ledger::Unreadable`] are different answers
+    /// and the room gate treats them differently: nothing to consult, as
+    /// against a record that cannot be trusted. A watch the rotator never
+    /// touches, and a `$HOME/.claude` watch with no profile root, have
+    /// nothing to consult either, so both read as missing.
+    pub(crate) fn rotator_state(&self) -> Ledger {
+        match &self.kind {
+            Kind::Home {
+                root: Some(root), ..
+            } => read_ledger(root, fsx::now()),
+            _ => Ledger::Missing,
+        }
     }
 }
 

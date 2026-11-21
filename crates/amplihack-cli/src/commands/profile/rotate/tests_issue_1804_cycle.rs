@@ -489,7 +489,7 @@ fn a_live_api_key_that_fails_its_check_does_not_read_as_ok() {
             week: 0.0,
         };
         let tag = Some(super::overflow::Tag::On);
-        let _ = refresh_capacity(c, Some(&key), &live, &plan, t, tag, Some(&key));
+        refresh_capacity(c, Some(&key), &live, &plan, t, tag, Some(&key));
     };
     let read = || {
         let at = chrono::DateTime::from_timestamp(t, 0).unwrap();

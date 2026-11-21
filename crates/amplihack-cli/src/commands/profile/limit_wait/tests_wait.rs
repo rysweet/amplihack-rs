@@ -51,6 +51,15 @@ pub(super) struct Fake {
     /// The virtual second of each reading of another login's capacity, so a
     /// test can show the wait adds no cadence of its own (issue #2694).
     pub(super) other_probes: Vec<i64>,
+    /// Virtual second from which the login the retry would use has room, as
+    /// the rotator's last cycle records it (issue #2857). It defaults to room
+    /// from the start, so a test that is not about the room gate sees a wait
+    /// that is never held back; the tests that are about it close it with
+    /// `None` or open it later.
+    pub(super) change_room_from: Option<i64>,
+    /// The virtual second of each question "may this change end the wait",
+    /// which is asked only after a login change has been seen.
+    pub(super) change_probes: Vec<i64>,
 }
 
 impl Fake {
@@ -71,6 +80,8 @@ impl Fake {
             other_probes: Vec::new(),
             login_changed_from: None,
             login_probes: Vec::new(),
+            change_room_from: Some(0),
+            change_probes: Vec::new(),
         }
     }
 
@@ -141,6 +152,11 @@ impl WaitDeps for Fake {
         assert_eq!(start, T0, "capacity is judged from the wait's start");
         self.capacity_probes.push(self.elapsed());
         self.capacity_from.is_some_and(|t| self.elapsed() >= t)
+    }
+
+    fn change_may_end(&mut self) -> bool {
+        self.change_probes.push(self.elapsed());
+        self.change_room_from.is_some_and(|t| self.elapsed() >= t)
     }
 
     fn other_capacity(&mut self, start: i64) -> bool {

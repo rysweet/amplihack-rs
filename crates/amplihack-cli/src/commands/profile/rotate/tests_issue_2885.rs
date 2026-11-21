@@ -8,11 +8,11 @@
 //!   one line for each such profile: `auto-switch: profile <name> was passed
 //!   over: it has no login file and the macOS Keychain could not be read
 //!   (<cause>)`, the line selection prints.
-//! - `overflow_record::note_keychain(&mut Ctx, &mut Sink, t, notes)` logs
-//!   only the lines the previous cycle did not give, and keeps this cycle's
-//!   in `Ctx.keychain_notes`. A Keychain that stays locked is logged once,
-//!   not once a cycle; one that was readable for a cycle and is locked again
-//!   is logged again. The cycle calls the two one after the other.
+//! - `Ctx::note_keychain(&mut self, &mut Sink, t, notes)` logs only the
+//!   lines the previous cycle did not give, and keeps this cycle's in
+//!   `Ctx.keychain_notes`. A Keychain that stays locked is logged once, not
+//!   once a cycle; one that was readable for a cycle and is locked again is
+//!   logged again. `cycle_record::record` calls the two one after the other.
 //! - A Keychain that answers, either way, logs nothing.
 //!
 //! Every test names the platform through `keychain::test_seam`, so none
@@ -23,7 +23,7 @@ use super::super::cycle::Ctx;
 use super::super::decide::Reading;
 use super::super::ledger::RotateState;
 use super::super::log::{Sink, open_or_warn};
-use super::super::overflow_record::{note_keychain, refresh_capacity};
+use super::super::overflow_record::refresh_capacity;
 use super::super::settings;
 use super::super::tests_swap::{login, private};
 use crate::commands::profile::auto_switch::kit::now;
@@ -107,7 +107,7 @@ impl Fx {
         let live = Reading::EXHAUSTED;
         let t = now();
         let notes = refresh_capacity(ctx, Some(&work), &live, &[], t, None, None);
-        note_keychain(ctx, &mut out, t, notes);
+        ctx.note_keychain(&mut out, t, notes);
     }
 
     fn sink(&self) -> Sink {
@@ -160,7 +160,7 @@ fn note_keychain_logs_only_the_lines_the_last_cycle_did_not_give() {
     let mut out = f.sink();
     for notes in [vec!["a"], vec!["a", "b"], vec!["b"], vec![], vec!["a", "b"]] {
         let notes = notes.into_iter().map(str::to_string).collect();
-        note_keychain(&mut ctx, &mut out, now(), notes);
+        ctx.note_keychain(&mut out, now(), notes);
     }
     assert_eq!(f.logged(), ["a", "b", "a", "b"]);
     assert_eq!(ctx.keychain_notes, ["a", "b"]);

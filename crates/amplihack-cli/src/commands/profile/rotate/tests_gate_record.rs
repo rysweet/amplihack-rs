@@ -564,8 +564,20 @@ fn auto_switch_returns(threshold: u8, g: Gate, session: f64, week: f64) -> bool 
 /// thresholds. The move back off overflow is the rotator's: a plan profile
 /// with room (issue #1804: both windows below 100%) brings both back,
 /// whatever the auto-switch threshold.
+///
+/// Issue #2857 changed this test's expectation and kept it. The rotator's move
+/// back now needs the plan login to be under the rotator's own `--session-at`
+/// (85 here) as well as below 100% on both windows, because it no longer swaps
+/// onto a login at or above its threshold. Auto-switch's rule is the
+/// unchanged 100% rule (`plan_room::room`, which it calls), so the two no
+/// longer agree on a login between the rotator's threshold and 100%. What must
+/// still hold is that the rotator never moves back where auto-switch would
+/// refuse, and that where the rotator moves back, auto-switch does too: the
+/// rotator's rule is the narrower one. The residual (auto-switch may move onto
+/// a login at 85-99% session) is the one named for `other_capacity`, not
+/// changed here.
 #[test]
-fn the_rotator_and_auto_switch_agree_on_the_move_back_for_any_auto_switch_threshold() {
+fn the_rotator_moves_back_only_where_auto_switch_does_for_any_auto_switch_threshold() {
     let s = settings(1800, false);
     let g = gate(&s);
     for threshold in [70u8, 80, 90] {
@@ -585,14 +597,20 @@ fn the_rotator_and_auto_switch_agree_on_the_move_back_for_any_auto_switch_thresh
         ] {
             let r = rotator_returns(&s, session, week);
             let a = auto_switch_returns(threshold, g, session, week);
+            assert!(
+                !r || a,
+                "threshold {threshold}, plan {session}% session {week}% week: \
+                 the rotator moves back and auto-switch refuses"
+            );
             assert_eq!(
-                r, a,
-                "threshold {threshold}, plan {session}% session {week}% week: rotator {r}, auto-switch {a}"
+                a,
+                session < 100.0 && week < 100.0,
+                "threshold {threshold}, plan {session}/{week}: auto-switch's rule is unchanged"
             );
             assert_eq!(
                 r,
-                session < 100.0 && week < 100.0,
-                "threshold {threshold}, plan {session}/{week}"
+                session < f64::from(s.session_at) && week < 100.0,
+                "threshold {threshold}, plan {session}/{week}: the rotator needs --session-at too"
             );
         }
     }

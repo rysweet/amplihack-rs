@@ -5,6 +5,7 @@ use super::super::fresh::{RereadFn, live};
 use super::super::identify::Skip;
 use super::super::key_check::{self, KeyCheckFn};
 use super::super::ledger::RotateState;
+use super::super::log::Sink;
 use super::super::revalidate;
 use super::super::settings::Settings;
 use super::MeasureFn;
@@ -58,7 +59,7 @@ pub struct Ctx {
     /// The seed note this process last logged; a repeat is not logged.
     pub(in crate::commands::profile::rotate) last_seed_note: Option<String>,
     /// Issue #2885: the unreadable-Keychain lines the last cycle's capacity
-    /// write gave; a line it already gave is not logged again.
+    /// write gave ([`Ctx::note_keychain`]).
     pub(in crate::commands::profile::rotate) keychain_notes: Vec<String>,
     /// Issue #2211: the live login's recent readings, kept across cycles.
     pub(in crate::commands::profile::rotate) live_series: live::Series,
@@ -129,6 +130,25 @@ impl Ctx {
             return None;
         }
         no_refresh_dirs(&self.store)
+    }
+
+    /// Issue #2885: logs the lines a cycle's capacity write handed back
+    /// (`overflow_record::refresh_capacity`), one for each overflow profile
+    /// it left out because its macOS Keychain could not be read, so the log
+    /// does not leave such a profile looking like one with no login. A line
+    /// the previous cycle gave is not logged again: a Keychain that stays
+    /// locked is logged once, and one locked again after a cycle in which it
+    /// answered is logged again.
+    pub(in crate::commands::profile::rotate) fn note_keychain(
+        &mut self,
+        out: &mut Sink,
+        t: i64,
+        notes: Vec<String>,
+    ) {
+        for line in notes.iter().filter(|n| !self.keychain_notes.contains(n)) {
+            out.emit(t, line);
+        }
+        self.keychain_notes = notes;
     }
 
     pub(in crate::commands::profile::rotate) fn stopping(&self) -> bool {

@@ -911,7 +911,7 @@ fn read_marks(store: &ProfileStore) -> Marks {
         None
     });
     let overflow = super::overflow::overflow_names(store.root());
-    let blocked = overflow_blocks(store, &overflow);
+    let blocked = overflow_blocks(store);
     Marks {
         default,
         lease,
@@ -920,15 +920,14 @@ fn read_marks(store: &ProfileStore) -> Marks {
     }
 }
 
-/// The active spend blocks, read only when a profile is marked overflow.
+/// The active spend blocks, by profile name.
+///
+/// Issue #2890: read for every run, not only when something is marked
+/// overflow. A failed agent step blocks the plan login it ran under, and
+/// such a login is in no overflow list, so an early return on an empty list
+/// would hide exactly the blocks this reads for.
 #[cfg(unix)]
-fn overflow_blocks(
-    store: &ProfileStore,
-    overflow: &[ProfileName],
-) -> std::collections::BTreeMap<String, i64> {
-    if overflow.is_empty() {
-        return Default::default();
-    }
+fn overflow_blocks(store: &ProfileStore) -> std::collections::BTreeMap<String, i64> {
     super::rotate::overflow_blocks(store.root(), now_secs()).unwrap_or_else(|e| {
         eprintln!("warning: could not read the rotate ledger ({e}); no spend-block marks");
         Default::default()
@@ -936,10 +935,7 @@ fn overflow_blocks(
 }
 
 #[cfg(not(unix))]
-fn overflow_blocks(
-    _store: &ProfileStore,
-    _overflow: &[ProfileName],
-) -> std::collections::BTreeMap<String, i64> {
+fn overflow_blocks(_store: &ProfileStore) -> std::collections::BTreeMap<String, i64> {
     Default::default()
 }
 
@@ -1048,10 +1044,9 @@ fn build_rows(
                     .map(str::to_string),
                 live_in: live == Some(name),
                 overflow: overflow.contains(name),
-                overflow_blocked_until: overflow
-                    .contains(name)
-                    .then(|| blocked.get(n).copied())
-                    .flatten(),
+                // Issue #2890: any login with an active block, not only a
+                // marked overflow profile.
+                overflow_blocked_until: blocked.get(n).copied(),
                 api_key: false,
                 api_key_blocked: None,
                 report: p.report,
@@ -1968,11 +1963,13 @@ pub(super) fn marks_parts(row: &Row, with_live: bool) -> Vec<String> {
     if let Some((reason, until)) = &row.api_key_blocked {
         parts.push(format!("blocked until {} ({reason})", utc_time(*until)));
     }
-    if row.overflow {
-        parts.push(match row.overflow_blocked_until {
-            Some(t) => format!("overflow, blocked until {}", utc_time(t)),
-            None => "overflow".to_string(),
-        });
+    match (row.overflow, row.overflow_blocked_until) {
+        (true, Some(t)) => parts.push(format!("overflow, blocked until {}", utc_time(t))),
+        (true, None) => parts.push("overflow".to_string()),
+        // Issue #2890: a plan login a step blocked carries the same
+        // wording without the `overflow` prefix, which would be untrue.
+        (false, Some(t)) => parts.push(format!("blocked until {}", utc_time(t))),
+        (false, None) => {}
     }
     if row.source == Some(Source::Fallback) {
         parts.push("(fallback)".to_string());

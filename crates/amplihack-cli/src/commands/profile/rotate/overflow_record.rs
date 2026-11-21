@@ -222,12 +222,6 @@ pub fn stay_note(
 /// reads this file: it resumes only on the ledger's `last_cycle.measured_at`,
 /// which a `stayed` cycle records at the time the live reading was taken
 /// ([`super::capacity::recorded_at`], issue #1907).
-///
-/// Issue #2885: returns one line for each overflow profile the file leaves
-/// out because its macOS Keychain could not be read. The cycle logs them
-/// with [`note_keychain`], so the log does not leave such a profile looking
-/// like one with no login.
-#[must_use]
 pub fn refresh_capacity(
     ctx: &Ctx,
     live: Option<&ProfileName>,
@@ -247,21 +241,33 @@ pub fn refresh_capacity(
     capacity_from_rotation(root, &readings, t, on_overflow, key_usable, Some(&ctx.home))
 }
 
-/// Logs each of this cycle's unreadable-Keychain lines ([`refresh_capacity`])
-/// that the previous cycle did not give, and keeps this cycle's for the
-/// next. A Keychain that stays locked is therefore logged once, not once a
-/// cycle, and logged again when it is locked again after a cycle in which it
-/// could be read.
-pub fn note_keychain(ctx: &mut Ctx, out: &mut Sink, t: i64, notes: Vec<String>) {
-    for line in notes.iter().filter(|n| !ctx.keychain_notes.contains(n)) {
-        out.emit(t, line);
+/// The reading of the login that is live *after* this cycle (issue #2857):
+/// the swap target's when the cycle swapped, else the live login's own.
+///
+/// The target is found by name, never by position: the readings arrive in
+/// whatever order they were probed in, and a swap from a full login to one
+/// with room would otherwise record the wrong one. `None` when the cycle
+/// swapped to a login none of the readings names, which is a cycle that
+/// measured nothing about the login now in place.
+pub fn live_reading<'a>(
+    swapped_to: Option<&ProfileName>,
+    live: &'a Reading,
+    others: &'a [(ProfileName, Reading)],
+) -> Option<&'a Reading> {
+    match swapped_to {
+        Some(to) => others.iter().find(|(n, _)| n == to).map(|(_, r)| r),
+        None => Some(live),
     }
-    ctx.keychain_notes = notes;
 }
 
 /// Records the cycle as ended at `t` with `outcome`, after measuring from
-/// `measured_at`, with its overflow tag, drops expired spend blocks, and
-/// saves the ledger.
+/// `measured_at`, with its overflow tag and `live_room`, drops expired
+/// spend blocks, and saves the ledger.
+///
+/// `live_room` is the rotator's own reading of whether the login live after
+/// this cycle has plan room (issue #2857), for the usage-limit wait. `None`
+/// leaves the field out of the file, which every reader takes as no room:
+/// that is what a cycle which measured nothing about that login records.
 pub fn record(
     rs: &RotateState,
     l: &mut RotateLedger,
@@ -269,12 +275,14 @@ pub fn record(
     t: i64,
     measured_at: Option<i64>,
     tag: Option<Tag>,
+    live_room: Option<bool>,
 ) -> Result<(), ProfileError> {
     l.last_cycle = Some(LastCycle {
         at: t,
         measured_at,
         outcome: outcome.into(),
         overflow: tag.map(|t| t.as_str().to_string()),
+        live_room,
     });
     prune_blocks(l, t);
     rs.save_ledger(l)

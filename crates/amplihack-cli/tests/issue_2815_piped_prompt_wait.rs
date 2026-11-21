@@ -168,7 +168,11 @@ fn a_limit_still_failing_after_the_wait_ends_the_step_and_leaves_no_capture() {
     let out = child.wait_with_output().unwrap();
     feeder.join().unwrap();
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(f.count("0"), 2, "one wait, then terminal");
+    assert_eq!(
+        f.count("0"),
+        3,
+        "one wait, one budget wait for the re-entry, then terminal"
+    );
     assert_eq!(leftovers(&f), Vec::<String>::new(), "removed on error too");
 }
 
