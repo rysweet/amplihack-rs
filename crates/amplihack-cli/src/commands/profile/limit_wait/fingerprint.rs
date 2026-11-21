@@ -115,6 +115,27 @@ impl Watch {
         matches!(self.kind, Kind::Home { .. })
     }
 
+    /// The profile root this watch was built with (issue #2890), where the
+    /// rotate ledger lives; `None` for a `$CLAUDE_CONFIG_DIR` step and for
+    /// a `$HOME/.claude` step with no store.
+    pub(crate) fn store_root(&self) -> Option<&Path> {
+        match &self.kind {
+            Kind::Profile { root, .. } => Some(root),
+            Kind::Home { root, .. } => root.as_deref(),
+            Kind::ConfigDir => None,
+        }
+    }
+
+    /// The inherited profile this watch names, parsed (issue #2890); `None`
+    /// for a `$HOME/.claude` or `$CLAUDE_CONFIG_DIR` step, and for a name
+    /// the rules refuse.
+    pub(crate) fn inherited_profile(&self) -> Option<ProfileName> {
+        match &self.kind {
+            Kind::Profile { name, .. } => ProfileName::parse(name).ok(),
+            Kind::Home { .. } | Kind::ConfigDir => None,
+        }
+    }
+
     /// The fingerprint now; `None` only when no directory is watched.
     pub(crate) fn probe(&self) -> Option<Fingerprint> {
         let dir = self.dir()?;

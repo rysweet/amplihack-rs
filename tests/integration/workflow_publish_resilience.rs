@@ -267,7 +267,7 @@ fn publish_helper_fails_dirty_no_diff_instead_of_terminal_success() {
     let tmp = TempDir::new().expect("tempdir");
     let repo = tmp.path().join("repo");
     fs::create_dir(&repo).expect("create repo");
-    run_cmd(&repo, "git", &["init", "-b", "feature"]);
+    run_cmd(&repo, "git", &["init", "-b", "main"]);
     run_cmd(&repo, "git", &["config", "user.email", "test@example.com"]);
     run_cmd(&repo, "git", &["config", "user.name", "Workflow Test"]);
     write_file(&repo.join("README.md"), "base\n");
@@ -286,7 +286,7 @@ fn publish_helper_fails_dirty_no_diff_instead_of_terminal_success() {
     run_cmd(
         &repo,
         "git",
-        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+        &["update-ref", "refs/remotes/origin/main", "main"],
     );
     write_file(&repo.join("dirty.txt"), "uncommitted\n");
 
@@ -303,19 +303,31 @@ exit 77
     );
     make_executable(&gh);
 
+    // The fixture's branch is `main` and so is its base. An inherited
+    // `RECIPE_VAR_base_branch` (every recipe step exports one, and this test
+    // also runs from the pre-push hook of a workflow run) would make
+    // `resolve_pr_base_ref` reject the base as the branch being delivered and
+    // abort before the dirty-worktree check, with nothing on stdout. Clear the
+    // environment and name what the helper needs, as the other helper
+    // invocation in this file does.
     let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = Command::new("bash")
-        .arg(workspace_helper_path("workflow_publish_pr.sh"))
+    let mut cmd = Command::new("bash");
+    cmd.arg(workspace_helper_path("workflow_publish_pr.sh"))
         .current_dir(&repo)
-        // Use the fixture's local base ref and isolate recipe inputs from the hook caller.
         .env_clear()
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
         .env("HOME", tmp.path())
-        .env("RECIPE_VAR_base_branch", "main")
+        .env("TMPDIR", tmp.path())
         .env("REMOTE_HOST_TYPE", "github")
         .env("ISSUE_NUMBER", "7")
-        .output()
-        .expect("run workflow_publish_pr.sh");
+        .env(
+            "WORKFLOW_RUNTIME_ARTIFACT_HELPER",
+            workspace_helper_path("workflow_runtime_artifacts.sh"),
+        );
+    // The script runs `git remote set-head origin -a` against a github.com
+    // origin; env_clear() dropped the [env] prompt suppressors (#1764).
+    crate::isolated_amplihack::no_git_prompt(&mut cmd);
+    let output = cmd.output().expect("run workflow_publish_pr.sh");
 
     assert!(
         !output.status.success(),
