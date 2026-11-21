@@ -13,7 +13,7 @@
 //! never panics and never changes the run's result, its exit status or its
 //! standard output.
 
-use super::run_dir::{OwnedKind, read_owned_paths};
+use super::run_dir::{OWNED_PATHS, OwnedKind, read_owned_paths};
 use super::target_remove::{self, Refusal};
 use super::targets::is_cargo_target;
 use super::{human_size, sweep};
@@ -78,9 +78,13 @@ pub(super) fn end_of_run(end: &RunEnd, launch: &Launch) {
     end_of_run_with(end, launch, &mut std::io::stderr().lock());
 }
 
-/// Removes this run's own build output and says what it did on `out`.
+/// [`end_of_run_in`] with the context read from this process's environment.
 fn end_of_run_with(end: &RunEnd, launch: &Launch, out: &mut dyn Write) {
-    let ctx = Ctx::new(end);
+    end_of_run_in(end, launch, &Ctx::new(end), out);
+}
+
+/// Removes this run's own build output and says what it did on `out`.
+fn end_of_run_in(end: &RunEnd, launch: &Launch, ctx: &Ctx, out: &mut dyn Write) {
     let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
     let mut removed: Vec<Option<u64>> = Vec::new();
 
@@ -90,21 +94,54 @@ fn end_of_run_with(end: &RunEnd, launch: &Launch, out: &mut dyn Write) {
         && !launch.nested
         && let Some(claimed) = &launch.cargo_target_dir
     {
-        handle(claimed, &ctx, &mut seen, &mut removed, out);
+        if ctx.home.is_none() {
+            // The claim is the launcher's word alone, and the home guard is
+            // the only check standing between it and a home folder. Without
+            // it the claim is refused rather than quietly trusted. A worktree
+            // `target/` needs no such rule: it is reached through a git
+            // worktree check, not through a path the launcher chose.
+            report(
+                claimed.clone(),
+                warning_line(
+                    claimed,
+                    "the home folder is unknown, so it cannot be protected",
+                ),
+                &mut seen,
+                out,
+            );
+        } else {
+            handle(claimed, ctx, &mut seen, &mut removed, out);
+        }
     }
 
     // `target/` at the root of every linked worktree this run is responsible
-    // for: the ones it recorded, then the one it was launched in.
-    let mut worktrees: Vec<PathBuf> = owned_worktrees(&end.run_dir);
+    // for: the ones it recorded, then the one it was launched in. The two
+    // stay apart, because only a recorded entry that is not a worktree is
+    // worth a line; a launch folder that is a main checkout is the ordinary
+    // case.
+    let mut worktrees: Vec<(PathBuf, bool)> = owned_worktrees(&end.run_dir, out)
+        .into_iter()
+        .map(|path| (path, true))
+        .collect();
     if !launch.nested {
-        worktrees.push(end.cwd.clone());
+        worktrees.push((end.cwd.clone(), false));
     }
     let mut judged: BTreeSet<PathBuf> = BTreeSet::new();
-    for worktree in worktrees {
-        if !judged.insert(worktree.clone()) || !is_linked_worktree(&worktree) {
+    for (worktree, recorded) in worktrees {
+        if !judged.insert(worktree.clone()) {
             continue;
         }
-        if handle(&worktree.join("target"), &ctx, &mut seen, &mut removed, out) {
+        if !is_linked_worktree(&worktree) {
+            // Silent when the path is not there at all: a worktree removed
+            // earlier in the run is not a fault, which is the same silence
+            // `Verdict::Absent` keeps.
+            if recorded && fs::symlink_metadata(&worktree).is_ok() {
+                let line = skipped_line(&worktree, "not a linked worktree");
+                report(worktree, line, &mut seen, out);
+            }
+            continue;
+        }
+        if handle(&worktree.join("target"), ctx, &mut seen, &mut removed, out) {
             // The worktree stays whatever it holds; #2861's judgement says
             // once when it holds work that exists nowhere else.
             sweep::keep_and_report_unsaved_work_to(&worktree, out);
@@ -158,10 +195,16 @@ fn handle(
             }
         }
     };
+    report(key, line, seen, out);
+    false
+}
+
+/// Writes one line about a folder, at most once for that folder however many
+/// times it was named.
+fn report(key: PathBuf, line: String, seen: &mut BTreeSet<PathBuf>, out: &mut dyn Write) {
     if seen.insert(key) {
         let _ = out.write_all(line.as_bytes());
     }
-    false
 }
 
 /// What the ending run must never remove, and who it is.
@@ -177,15 +220,24 @@ struct Ctx {
 
 impl Ctx {
     fn new(end: &RunEnd) -> Self {
+        Self::with_home(
+            end,
+            std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|value| resolved(Path::new(&value))),
+        )
+    }
+
+    /// [`Ctx::new`] with the home folder given rather than read, so the
+    /// unresolved case can be exercised without writing to the environment.
+    fn with_home(end: &RunEnd, home: Option<PathBuf>) -> Self {
         Self {
             protected: [&end.run_dir, &end.work_root, &end.cwd]
                 .into_iter()
                 .filter(|path| !path.as_os_str().is_empty())
                 .map(|path| resolved(path))
                 .collect(),
-            home: std::env::var_os("HOME")
-                .filter(|value| !value.is_empty())
-                .map(|value| resolved(Path::new(&value))),
+            home,
             uid: sweep::euid(),
         }
     }
@@ -350,13 +402,23 @@ fn remove(approved: Approved) -> Result<(), String> {
 /// That file lives in the run folder, which steps can write, so nothing in it
 /// is trusted: a relative path is already dropped by the parser, and every
 /// entry still has to be a linked worktree and pass the whole guard chain.
-fn owned_worktrees(run_dir: &Path) -> Vec<PathBuf> {
-    read_owned_paths(run_dir)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|owned| owned.kind == OwnedKind::Worktree)
-        .map(|owned| owned.path)
-        .collect()
+///
+/// A missing file is an empty list and says nothing. A file that is there and
+/// cannot be read is reported, because it leaves every worktree this run owns
+/// unexamined and nothing else would show that.
+fn owned_worktrees(run_dir: &Path, out: &mut dyn Write) -> Vec<PathBuf> {
+    match read_owned_paths(run_dir) {
+        Ok(owned) => owned
+            .into_iter()
+            .filter(|owned| owned.kind == OwnedKind::Worktree)
+            .map(|owned| owned.path)
+            .collect(),
+        Err(error) => {
+            let line = skipped_line(&run_dir.join(OWNED_PATHS), &error.to_string());
+            let _ = out.write_all(line.as_bytes());
+            Vec::new()
+        }
+    }
 }
 
 /// Whether `dir` is a linked worktree: its `.git` is a regular file naming
@@ -419,6 +481,16 @@ fn total_line(count: usize, known_bytes: u64, any_unknown: bool) -> String {
 fn warning_line(path: &Path, reason: &str) -> String {
     format!(
         "amplihack: warning: end-of-run cleanup could not remove {path:?}: {}\n",
+        display_safe(reason)
+    )
+}
+
+/// One thing that was not examined, and why. Separate from [`warning_line`]
+/// because nothing was attempted on the path: it names a file that could not
+/// be read, or a recorded folder that was never a candidate.
+fn skipped_line(path: &Path, reason: &str) -> String {
+    format!(
+        "amplihack: warning: end-of-run cleanup skipped {path:?}: {}\n",
         display_safe(reason)
     )
 }

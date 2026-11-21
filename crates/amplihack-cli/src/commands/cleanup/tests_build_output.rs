@@ -13,10 +13,13 @@
 //!   non-empty `AMPLIHACK_RUN_ID`;
 //! - `end_of_run_with(&RunEnd, &Launch, &mut dyn Write)`: returns unit on every
 //!   path; one `amplihack: ...` line per removal, per refusal and per kept
-//!   worktree on the sink;
+//!   worktree on the sink; `end_of_run_in` is the same with the [`Ctx`] given
+//!   rather than read from the environment, and `Ctx::with_home` builds one
+//!   with the home folder given;
 //! - pure formatters `removed_line(&Path, Option<u64>) -> String`,
-//!   `total_line(count: usize, known_bytes: u64, any_unknown: bool) -> String`
-//!   and `warning_line(&Path, &str) -> String`, each ending in one newline;
+//!   `total_line(count: usize, known_bytes: u64, any_unknown: bool) -> String`,
+//!   `warning_line(&Path, &str) -> String` and `skipped_line(&Path, &str) ->
+//!   String`, each ending in one newline;
 //! - `same_device(a: u64, b: u64) -> bool` is the pure device comparison;
 //! - `REASON_IN_USE`, `REASON_NOT_CARGO` and `REASON_FOREIGN_OWNER` are the
 //!   guard reason texts, equal to the `Display` of the matching
@@ -119,6 +122,15 @@ fn launch(claimed: Option<&Path>, private: bool, nested: bool) -> Launch {
 fn run_end(fx: &Fx, cwd: &Path, l: &Launch) -> String {
     let mut sink: Vec<u8> = Vec::new();
     end_of_run_with(&fx.run(cwd), l, &mut sink);
+    String::from_utf8(sink).unwrap()
+}
+
+/// [`run_end`] with the home folder given rather than read from `HOME`.
+fn run_end_with_home(fx: &Fx, cwd: &Path, l: &Launch, home: Option<PathBuf>) -> String {
+    let end = fx.run(cwd);
+    let ctx = Ctx::with_home(&end, home);
+    let mut sink: Vec<u8> = Vec::new();
+    end_of_run_in(&end, l, &ctx, &mut sink);
     String::from_utf8(sink).unwrap()
 }
 
@@ -266,6 +278,41 @@ fn the_home_folder_and_its_ancestors_are_never_removed() {
 }
 
 #[test]
+fn a_claimed_folder_is_refused_when_the_home_folder_is_unknown() {
+    let fx = Fx::new();
+    let t = cargo_target(&fx.root.join("claimed"), 64);
+    let out = run_end_with_home(&fx, &fx.main, &launch(Some(&t), true, false), None);
+    assert!(t.join("debug/blob").is_file(), "{out}");
+    let l = lines(&out);
+    assert_eq!(l.len(), 1, "{out}");
+    assert!(
+        l[0].starts_with("amplihack: warning: end-of-run cleanup could not remove "),
+        "{out}"
+    );
+    assert!(l[0].contains("home folder is unknown"), "{out}");
+}
+
+#[test]
+fn an_unknown_home_folder_does_not_stop_a_worktree_target_being_removed() {
+    let fx = Fx::new();
+    let wt = fx.worktree("feat-no-home");
+    cargo_target(&wt.join("target"), 64);
+    fx.own(&wt);
+    let out = run_end_with_home(&fx, &fx.root, &launch(None, false, false), None);
+    assert!(!wt.join("target").exists(), "{out}");
+}
+
+#[test]
+fn a_known_home_folder_still_allows_the_claimed_folder_through() {
+    let fx = Fx::new();
+    let t = cargo_target(&fx.root.join("claimed"), 64);
+    let home = fx.root.join("home/user");
+    fs::create_dir_all(&home).unwrap();
+    let out = run_end_with_home(&fx, &fx.main, &launch(Some(&t), true, false), Some(home));
+    assert!(!t.exists(), "{out}");
+}
+
+#[test]
 fn a_hostile_folder_name_yields_exactly_one_line() {
     let fx = Fx::new();
     let t = fx.root.join("evil\n\u{1b}[31mname");
@@ -350,12 +397,57 @@ fn a_main_checkout_target_is_never_removed() {
 }
 
 #[test]
-fn an_owned_paths_entry_naming_a_main_checkout_is_left_alone() {
+fn an_owned_paths_entry_naming_a_main_checkout_is_left_alone_and_said_once() {
     let fx = Fx::new();
     let t = cargo_target(&fx.main.join("target"), 128);
     fx.own(&fx.main);
     let out = run_end(&fx, &fx.root, &launch(None, false, false));
     assert!(t.join("debug/blob").is_file(), "{out}");
+    let l = lines(&out);
+    assert_eq!(l.len(), 1, "{out}");
+    assert!(
+        l[0].starts_with("amplihack: warning: end-of-run cleanup skipped "),
+        "{out}"
+    );
+    assert!(l[0].contains("not a linked worktree"), "{out}");
+    assert!(l[0].contains(fx.main.to_str().unwrap()), "{out}");
+}
+
+#[test]
+fn the_launch_folder_is_never_reported_as_not_a_worktree() {
+    let fx = Fx::new();
+    // A main checkout is the ordinary launch folder; it must stay silent.
+    cargo_target(&fx.main.join("target"), 128);
+    let out = run_end(&fx, &fx.main, &launch(None, false, false));
+    assert!(out.is_empty(), "{out}");
+}
+
+#[test]
+fn a_recorded_worktree_that_no_longer_exists_is_silent() {
+    let fx = Fx::new();
+    let gone = fx.work_root.join("worktrees/already-removed");
+    fx.own(&gone);
+    let out = run_end(&fx, &fx.root, &launch(None, false, false));
+    assert!(out.is_empty(), "{out}");
+}
+
+#[test]
+fn an_unreadable_owned_paths_file_is_reported_and_removes_nothing() {
+    let fx = Fx::new();
+    let wt = fx.worktree("feat-unreadable");
+    let t = cargo_target(&wt.join("target"), 64);
+    // Larger than the parser's cap, which fails the read the same way for
+    // every user, unlike a mode the test's own uid might ignore.
+    fs::write(fx.run_dir.join("owned-paths"), vec![b'x'; 2 * 1024 * 1024]).unwrap();
+    let out = run_end(&fx, &fx.root, &launch(None, false, false));
+    assert!(t.join("debug/blob").is_file(), "{out}");
+    let l = lines(&out);
+    assert_eq!(l.len(), 1, "{out}");
+    assert!(
+        l[0].starts_with("amplihack: warning: end-of-run cleanup skipped "),
+        "{out}"
+    );
+    assert!(l[0].contains("owned-paths"), "{out}");
 }
 
 #[test]
@@ -439,9 +531,17 @@ fn an_owned_paths_entry_that_is_not_a_linked_worktree_is_ignored() {
     let ft = cargo_target(&forged.join("target"), 64);
     fs::write(forged.join(".git"), "not a gitdir pointer\n").unwrap();
     fx.own(&forged);
-    run_end(&fx, &fx.root, &launch(None, false, false));
+    let out = run_end(&fx, &fx.root, &launch(None, false, false));
     assert!(t.join("debug/blob").is_file());
     assert!(ft.join("debug/blob").is_file());
+    // One line each: a recorded entry that was never a candidate is said.
+    let l = lines(&out);
+    assert_eq!(l.len(), 2, "{out}");
+    assert!(
+        l.iter()
+            .all(|line| line.contains("skipped") && line.contains("not a linked worktree")),
+        "{out}"
+    );
 }
 
 #[test]
@@ -538,6 +638,17 @@ fn warning_line_uses_the_end_of_run_wording_and_escapes_the_path() {
     );
     assert!(line.contains("not a cargo target"));
     assert_eq!(line.matches('\n').count(), 1, "{line:?}");
+}
+
+#[test]
+fn skipped_line_names_the_path_and_escapes_the_reason() {
+    let line = skipped_line(Path::new("/w/a\nb"), "bad\n\u{1b}[31mreason");
+    assert!(
+        line.starts_with("amplihack: warning: end-of-run cleanup skipped "),
+        "{line}"
+    );
+    assert_eq!(line.matches('\n').count(), 1, "{line:?}");
+    assert!(!line.contains('\u{1b}'), "{line:?}");
 }
 
 #[test]

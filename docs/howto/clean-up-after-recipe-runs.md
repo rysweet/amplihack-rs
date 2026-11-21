@@ -742,6 +742,11 @@ The reason after the colon is the wording of whichever check applied, so it
 varies. `in use: .cargo-lock is held`, `not a cargo target` and `owned by
 another user` are the same words the sweep uses for the same findings.
 
+A second wording, `end-of-run cleanup skipped`, names something that was never
+examined rather than a removal that was attempted and refused: a file the step
+could not read, or a recorded path that was never a candidate. See
+[Entries in owned-paths are checked](#entries-in-owned-paths-are-checked).
+
 Every folder passes the same checks, whichever setting or file named it. It is
 removed only when all of these hold. Otherwise it is skipped with a reason:
 
@@ -752,8 +757,11 @@ removed only when all of these hold. Otherwise it is skipped with a reason:
 - it has a parent folder, so `/` is refused, and it is neither the folder
   `HOME` names nor an ancestor of it, and neither the run's folder, its work
   root nor its launch folder nor an ancestor of any of them. The home folder
-  is read from `HOME` alone; when `HOME` is unset or empty there is no home
-  folder to protect and the other checks still apply;
+  is read from `HOME` alone; when `HOME` is unset or empty a claimed
+  `CARGO_TARGET_DIR` is refused outright, because the launcher's claim names a
+  path nothing else constrains and the home guard is what stands between it
+  and your files. A worktree `target/` is unaffected, because it is reached
+  through the worktree check rather than through a path the launcher chose;
 - it is on the same device as its parent, and so are its immediate
   subfolders, so a mount point at the folder or directly inside it is refused;
 - it has no `.git` at its root;
@@ -765,11 +773,12 @@ removed only when all of these hold. Otherwise it is skipped with a reason:
 - it is still the same folder (same device and inode) immediately before the
   removal, and links inside it are never followed.
 
-These checks have limits. A volume mounted more than one level inside the
-folder is not detected. A folder that carries a Cargo marker next to unrelated
-files, and has no `.git`, is still removed. An active build is protected only
-by the single `.cargo-lock` attempt, and only where Cargo has written one.
-This is why the claim must be accurate.
+These checks have limits. The device comparison reaches the folder itself and
+its immediate subfolders only, so a volume mounted deeper inside it is not
+detected. A folder that carries a Cargo marker next to unrelated files, and
+has no `.git`, is still removed. An active build is protected only by the
+single `.cargo-lock` attempt, and only where Cargo has written one. This is
+why the claim must be accurate.
 
 A `CARGO_TARGET_DIR` that is unset or does not exist is skipped silently.
 
@@ -778,9 +787,39 @@ A `CARGO_TARGET_DIR` that is unset or does not exist is skipped silently.
 The `owned-paths` file lives in the run's folder, which steps can write, so
 its entries are not trusted. An entry is used only when it is an absolute path
 to a linked worktree: a folder whose `.git` is a regular file starting with
-`gitdir:`. A main checkout, a path that does not resolve and an entry that
-fails the checks above are skipped, with a warning where the entry looked like
-a worktree. Only the `target/` at the worktree root is ever removed.
+`gitdir:`. Only the `target/` at the worktree root is ever removed.
+
+An entry that is not a linked worktree, a main checkout among them, is skipped
+with one line:
+
+```text
+amplihack: warning: end-of-run cleanup skipped "<work root>/checkouts/<repository>": not a linked worktree
+```
+
+An entry whose path is no longer there says nothing, because a worktree
+removed earlier in the same run is not a fault. The folder the run was started
+in is checked the same way but never produces this line: it is a main checkout
+in the ordinary case.
+
+A missing `owned-paths` file is silent. A file that is there and cannot be
+read, because it is too large, is not a regular file or cannot be opened,
+leaves every owned worktree unexamined, so it is named:
+
+```text
+amplihack: warning: end-of-run cleanup skipped "<work root>/r/<id>/owned-paths": <reason>
+```
+
+Three properties of that worktree test, stated plainly:
+
+- it also matches a Git submodule, whose `.git` is likewise a file starting
+  with `gitdir:`. That is intended: a submodule still has to pass ownership,
+  the Cargo evidence and every other check before its `target/` is removed;
+- an entry a step forged can therefore name any linked worktree on the
+  machine, including one belonging to another project. The guard chain bounds
+  what that achieves to removing a folder that is cargo-shaped, owned by you,
+  not a checkout root and not locked by a running build;
+- nothing is read from the named folder but the first seven bytes of its
+  `.git` file.
 
 ### Nested runs
 
