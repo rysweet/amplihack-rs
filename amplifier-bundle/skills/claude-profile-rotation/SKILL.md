@@ -468,6 +468,26 @@ event and once per wait, and at most 3 times per session per day. Each
 when they apply, `swap_seq=`, `swap_live=`, `pane=` (a hash, not the pane
 id), `keys_sent=` and `detail=`.
 
+Claude Code can also continue a session by itself at the reset ("Continue
+automatically at usage limit" in `/config`, key `autoContinueAtUsageLimit`,
+documented in the
+[settings reference](https://code.claude.com/docs/en/settings-reference#autocontinueatusagelimit)).
+In Claude Code 2.1.325 a missing key counts as on, and amplihack does not
+write it. Tell the user to leave it on: `false` removes that fallback. If
+the hook has already resumed a session, the automatic continue at the
+reset adds at most one extra turn. A key absent from one file can still be
+`false` in another: check the profile's `$CLAUDE_CONFIG_DIR/settings.json`,
+the project's `.claude/settings.json` and `.claude/settings.local.json`,
+managed settings and any `--settings` file. In 2.1.325, when no file that
+parses sets the key, any of these files that does not parse turns
+automatic continuation off; a `jq` parse error on a file shows this, and
+the fix is to repair it. A server-side control in Claude Code and the
+account's billing type (usage-billed accounts never continue
+automatically) decide whether a session at its limit gets a continue put
+in place for the reset or the options menu instead. When the menu opens and the
+hook does not move it on, the session waits for a person or for the reset;
+amplihack cannot change that choice ([#2695](https://github.com/rysweet/amplihack-rs/issues/2695)).
+
 The tmux limit nudger (`~/.claude-profiles/.backups/limit-nudger.sh`) is no
 longer needed once the hook is registered. Ask the user before stopping it,
 and stop it by pid, not by pattern.

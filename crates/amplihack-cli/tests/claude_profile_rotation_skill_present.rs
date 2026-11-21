@@ -125,10 +125,11 @@ fn every_flag_the_skill_cites_exists() {
     assert!(!cited.is_empty());
     for f in cited {
         // Flags of other amplihack commands the skill mentions (`--tier` is
-        // `profile overflow add`, `--platform` is `profile overflow clear`, `--profile` is `launch`).
+        // `profile overflow add`, `--platform` is `profile overflow clear`, `--profile` is `launch`;
+        // `--settings` is Claude Code's own flag, cited in the usage-limit section, issue #2695).
         if matches!(
             f,
-            "--json" | "--yes" | "--none" | "--tier" | "--platform" | "--profile"
+            "--json" | "--yes" | "--none" | "--tier" | "--platform" | "--profile" | "--settings"
         ) {
             continue;
         }
