@@ -267,11 +267,14 @@ test `shell_wrapped_hook_delivers_the_warning_from_the_swap_record_alone`
 (`bins/amplihack-hooks/tests/limit_resume_binary.rs`) runs the real binary
 through `/bin/sh -c` twice to cover this.
 
-The same shell wrapper means the tmux route's pane check, which compares the
-pane's terminal with the hook parent's standard input, does not match on
-such hosts, and the hook falls back to the exit-2 wake. That behaviour
-predates this feature; the warning goes out on whichever route the resume
-takes.
+The same shell wrapper once stopped the tmux route: the pane check compared
+the pane's terminal with the hook parent's standard input, and on such hosts
+the parent is the shell, whose standard input is the payload pipe. The check
+now walks up the hook's own ancestry to the nearest process whose standard
+input is a terminal, which passes the shell and reaches Claude Code, so the
+route is available on those hosts too (issue
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695)). The warning
+goes out on whichever route the resume takes.
 
 Warning delivery does not change `judge()` or resume authorisation. A
 failure to write the warning to stderr still exits 2. The tmux route sends
