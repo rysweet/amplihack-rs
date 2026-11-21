@@ -294,6 +294,10 @@ case "${{GADUGI_PLAN:-pass}}" in
       echo "step 2: expected 'Order placed', saw 'TypeError: total is undefined'" >&2
       exit 1
     fi
+    if ! grep -Fq 'const total = 3;' '{repo}/src/app.js'; then
+      echo "checkout still has no order total" >&2
+      exit 1
+    fi
     echo "1 scenario passed"; exit 0 ;;
   unreachable) echo "connect ECONNREFUSED 127.0.0.1:8443" >&2; exit 1 ;;
   *) echo "fake gadugi-test: unknown plan" >&2; exit 97 ;;
@@ -448,10 +452,10 @@ WANT="${{AGENT_JUDGEMENT:-auto}}"
 CITED=()
 case "$WANT" in
   not_user_facing)
-    if [ "$DOCS" = "false" ]; then
-      echo "agent: docs_only is false, so the PR may not be judged not user-facing" >&2
-      exit 8
-    fi
+    case " $PATHS " in *" src/app.js "*)
+      echo "agent: the checkout command changed, so a behaviour-neutral judgement has no basis" >&2
+      exit 8 ;;
+    esac
     JUDGEMENT="not_user_facing" ;;
   user_facing) JUDGEMENT="user_facing" ;;
   *) if [ "$DOCS" = "true" ]; then JUDGEMENT="not_user_facing"; else JUDGEMENT="user_facing"; fi ;;
@@ -461,9 +465,12 @@ HANDOFF="null"
 if [ "$JUDGEMENT" = "not_user_facing" ]; then
   # Every cited file must appear in the diff the measurement recorded.
   for f in $PATHS; do
-    case "$f" in *.md|*.txt) CITED+=("$(jstr "$f")"); note "cited $f, prose only." ;; esac
+    case "$f" in
+      *.md|*.txt) CITED+=("$(jstr "$f")"); note "cited $f, prose only." ;;
+      .editorconfig) CITED+=("$(jstr "$f")"); note "cited $f, editor formatting preferences only." ;;
+    esac
   done
-  note "not user-facing: only prose changed."
+  note "not user-facing: the cited files leave product behaviour unchanged."
 else
   # --- step 2b: exercise this PR's own change, outside-in ----------------
   for f in $PATHS; do
@@ -652,6 +659,11 @@ printf '"qa_cited_files":%s,"qa_blockers":%s,"qa_scenario_runs":%s,"qa_fallback_
         let skills = root.join("skills/merge-ready");
         fs::create_dir_all(&skills).expect("mkdir merge-ready skills");
         write_exec(&tools.join("autodrive_qa_evidence.sh"), tool_body);
+        fs::copy(
+            bundle_tools().join("git-repo-env.sh"),
+            tools.join("git-repo-env.sh"),
+        )
+        .expect("install the Git environment helper in the fixture bundle");
         fs::write(
             skills.join("criterion-1-qa-judgement.md"),
             "# Criterion 1\n\nThe fixture's stand-in for the bundle guidance.\n",

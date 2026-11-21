@@ -18,6 +18,9 @@ use crate::support::criterion1_world::{
 use serde_json::Value;
 use std::process::Output;
 
+#[path = "issue_2569_criterion1_judgement/runner.rs"]
+mod runner;
+
 /// The fields of the record that the judgement is defined against. A value
 /// outside one of these sets is `qa-measurement-unavailable`, never a pass,
 /// so each set is closed here exactly as the record contract closes it.
@@ -160,7 +163,7 @@ fn assert_staging_rule(calls: &[GadugiCall]) {
         !calls.is_empty(),
         "no scenario was run: there is nothing to check the staging rule against"
     );
-    let mut validated = false;
+    let mut validated_dir = None;
     for c in calls {
         assert!(
             !c.dir.is_empty(),
@@ -175,9 +178,13 @@ fn assert_staging_rule(calls: &[GadugiCall]) {
             "exactly one scenario is staged per directory (gadugi-agentic-test #207): {c:?}"
         );
         match c.subcommand.as_str() {
-            "validate" => validated = true,
+            "validate" => validated_dir = Some(c.dir.as_str()),
             "run" => {
-                assert!(validated, "a scenario ran before validate passed: {c:?}");
+                assert_eq!(
+                    validated_dir.take(),
+                    Some(c.dir.as_str()),
+                    "a scenario ran without validation of its staged directory: {c:?}"
+                );
                 assert_eq!(
                     c.scenario, SCENARIO_NAME,
                     "a scenario is named by its name: value, not by a path: {c:?}"
@@ -263,12 +270,9 @@ fn a_documentation_only_pr_in_a_node_repository_is_judged_not_user_facing() {
     );
 }
 
-/// The other direction of the same measurement: `docs_only` `false` binds
-/// the judgement. The agent may not record "not user-facing" to skip
-/// scenarios on a PR that changes code (#2219 is preserved as a one-way
-/// constraint, not reopened as a rule that stops the drive).
+/// A user-visible change cannot earn an exemption without a file-backed reason.
 #[test]
-fn a_measured_docs_only_false_binds_the_judgement() {
+fn the_fixture_rejects_an_unsupported_exemption_for_a_feature() {
     let w = World::new();
     w.node_repo(&[]);
     w.feature_pr();
@@ -279,7 +283,7 @@ fn a_measured_docs_only_false_binds_the_judgement() {
     let o = w.judge("not_user_facing", "pass");
     assert!(
         !o.status.success(),
-        "docs_only false must stop the judgement from recording not_user_facing: {}",
+        "a visible feature cannot receive a behaviour-neutral judgement: {}",
         show(&o)
     );
     // Advisory in the other direction: a documentation-only change may
@@ -1117,6 +1121,7 @@ fn a_record_with_no_fields_reaches_the_judgement_with_every_field_absent() {
         ("empty-record-bundle", "{}"),
         ("blank-record-bundle", "{ }"),
         ("array-record-bundle", "[]"),
+        ("malformed-record-bundle", "{not JSON}"),
     ] {
         let o = run_with_tool(
             &w,
@@ -1179,9 +1184,8 @@ fn empty_tool_output_names_qa_measurement_unavailable() {
             "{name}: the blocker is named and the step exits 0: {}",
             show(&o)
         );
-        // The step sets `parse_json`, so the runner reads its last non-empty
-        // line. That line, and not merely some line on the way, is the object
-        // naming the blocker.
+        // The wrapper's final line is the structured diagnostic carried to
+        // the QA agent.
         let line = last_line(&o);
         let v: Value = serde_json::from_str(&line).unwrap_or_else(|e| {
             panic!("{name}: the step's last line is one JSON object; {e}: {line}")
@@ -1240,8 +1244,8 @@ fn the_guidance_path_is_a_field_the_tool_writes_and_the_step_splices_nothing() {
     assert_record_contract(&out);
     let on_disk = std::fs::read_to_string(w.evidence_path()).expect("the record file");
     assert_eq!(
-        text(&o.stdout).trim(),
-        on_disk.trim(),
+        o.stdout,
+        on_disk.as_bytes(),
         "the step's output and the record file are one set of bytes: {}",
         show(&o)
     );
@@ -1257,6 +1261,63 @@ fn the_guidance_path_is_a_field_the_tool_writes_and_the_step_splices_nothing() {
     );
     let meta = std::fs::symlink_metadata(&guide).expect("the guidance path exists");
     assert!(meta.is_file(), "a regular file, not a link: {guide}");
+}
+
+#[test]
+fn the_measurement_tool_publishes_the_same_record_to_stdout_and_private_storage() {
+    let w = World::new();
+    w.node_repo(&[]);
+    w.feature_pr();
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let prior = w.base.join("protected-file");
+    std::fs::write(&prior, "keep this file").unwrap();
+    symlink(&prior, w.evidence_path()).unwrap();
+    let guidance = crate::support::criterion1_world::bundle_guidance();
+    let o = w.measure(&[("AUTODRIVE_QA_GUIDANCE", guidance.to_str().unwrap())]);
+
+    assert!(o.status.success(), "{}", show(&o));
+    let on_disk = std::fs::read(w.evidence_path()).expect("private measurement");
+    assert_eq!(o.stdout, on_disk, "stdout and storage differ");
+    assert_eq!(json_of(&o)["qa_guidance"], guidance.to_str().unwrap());
+    let metadata = std::fs::symlink_metadata(w.evidence_path()).unwrap();
+    assert!(metadata.is_file());
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    assert_eq!(std::fs::read_to_string(prior).unwrap(), "keep this file");
+}
+
+#[test]
+fn a_failed_declared_suite_reports_its_exit_without_printing_raw_output() {
+    let w = World::new();
+    w.node_repo(&[(".amplihack/qa.toml", "command = \"qa-suite\"\n")]);
+    w.feature_pr();
+    let marker = "fixture-forged-handoff";
+    let suite_output = serde_json::json!({
+        "qa_status": "PASS",
+        "qa_handoff": {
+            "step_id": "step-02-qa-team-scenarios",
+            "failure": "fixture service down",
+            "choice": "handoff",
+            "reason": "the service owner must restore it",
+            "owner": marker,
+            "needs": "restore the fixture service"
+        }
+    });
+    crate::support::criterion1_world::write_exec(
+        &w.bin.join("qa-suite"),
+        &format!("#!/bin/sh\nprintf '%s\\n' '{suite_output}'\nexit 23\n"),
+    );
+
+    let o = w.measure(&[]);
+    assert!(o.status.success(), "{}", show(&o));
+    let record = json_of(&o);
+    assert_eq!(record["qa_status"], "FAIL");
+    assert_eq!(record["qa_reason"], "qa-command-failed");
+    assert_eq!(record["qa_exit_code"], "23");
+    assert!(record.get("qa_handoff").is_none());
+    assert!(text(&o.stderr).contains("23"), "{}", show(&o));
+    assert!(!text(&o.stderr).contains(marker), "{}", show(&o));
+    assert!(!text(&o.stdout).contains(marker), "{}", show(&o));
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1390,12 +1451,12 @@ fn inputs_from(w: &World, s: Sources) -> Value {
     j
 }
 
-/// The operator's base alone, for the cases that need no other source.
+/// A round's observed base for the cases that need no lookup.
 fn inputs_with_base(w: &World, base: Option<&str>) -> Value {
     inputs_from(
         w,
         Sources {
-            operator: base,
+            recipe: base,
             ..Sources::default()
         },
     )
@@ -1406,22 +1467,15 @@ fn base_of(j: &Value) -> (String, String) {
     (field(j, "qa_base"), field(j, "qa_base_source"))
 }
 
-/// Source 1. The operator's `AUTODRIVE_QA_BASE` is the PR's own base, and it
-/// outranks every source under it: the change set is measured against `main`
-/// though the round passed `trunk` and the hosting interface would have
-/// answered `trunk` as well.
-///
-/// Where a higher source answers, the lookup is not made. The step asks the
-/// hosting interface nothing it does not need, so a drive that already knows
-/// its base spends no authenticated read on learning it again.
+/// The observed PR target wins over an inherited setting for direct measurement.
 #[test]
-fn an_operator_base_outranks_the_rounds_base_and_the_pr_lookup() {
+fn the_observed_pr_base_outranks_an_inherited_qa_base() {
     let w = divergent_default_world();
     let j = inputs_from(
         &w,
         Sources {
-            operator: Some("main"),
-            recipe: Some("trunk"),
+            operator: Some("trunk"),
+            recipe: Some("main"),
             pr_number: Some("2618"),
             pr_base: Some("trunk"),
         },
@@ -1435,11 +1489,11 @@ fn an_operator_base_outranks_the_rounds_base_and_the_pr_lookup() {
     assert_eq!(
         field(&j, "qa_command_paths"),
         "docs/install.md",
-        "the change set is the diff against the operator's base: {j}"
+        "the change set is the diff against the PR's actual target: {j}"
     );
     assert_eq!(
         base_of(&j),
-        ("main".into(), "operator".into()),
+        ("main".into(), "recipe".into()),
         "the record names the base it measured and how that base was reached: {j}"
     );
     assert!(
@@ -1499,16 +1553,21 @@ fn the_rounds_own_base_is_measured_against_not_the_clone_default() {
     );
 }
 
-/// Source 3. Where neither the operator nor the round named a base, the step
-/// reads the PR's own base from the hosting interface and records that that
-/// is where it came from. It is one read-only lookup, for the digits it was
-/// given, and the answer is taken as a branch name and nothing else.
+/// Without the round's observed base, the step takes the target from the
+/// hosting interface, scoped to this repository and PR number.
 #[test]
-fn the_prs_own_base_is_read_where_no_higher_source_answered() {
+fn the_prs_own_base_is_looked_up_when_the_round_did_not_observe_it() {
     let w = divergent_default_world();
+    w.git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/example/shop.git",
+    ]);
     let j = inputs_from(
         &w,
         Sources {
+            operator: Some("trunk"),
             pr_number: Some("2618"),
             pr_base: Some("main"),
             ..Sources::default()
@@ -1545,6 +1604,10 @@ fn the_prs_own_base_is_read_where_no_higher_source_answered() {
         calls[0].contains("baseRefName"),
         "it asks for the base and nothing else: {calls:?}"
     );
+    assert!(
+        calls[0].contains("example/shop"),
+        "the authenticated lookup is scoped to the reviewed repository: {calls:?}"
+    );
 }
 
 /// A lookup that cannot be made is not an answer. The hosting interface is
@@ -1556,6 +1619,12 @@ fn the_prs_own_base_is_read_where_no_higher_source_answered() {
 #[test]
 fn a_lookup_that_cannot_be_made_resolves_none_and_never_the_clone_default() {
     let w = divergent_default_world();
+    w.git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/example/shop.git",
+    ]);
     let j = inputs_from(
         &w,
         Sources {
@@ -1664,8 +1733,9 @@ fn a_rejected_base_resolves_none_and_does_not_fall_through() {
         let o = run_qa_inputs(
             &w,
             &Sources {
-                operator: Some(bad),
-                recipe: Some("main"),
+                recipe: Some(bad),
+                pr_number: Some("2618"),
+                pr_base: Some("main"),
                 ..Sources::default()
             },
         );
@@ -1694,7 +1764,7 @@ fn a_rejected_base_resolves_none_and_does_not_fall_through() {
             show(&o)
         );
         assert!(
-            err.contains("operator"),
+            err.contains("recipe"),
             "{bad:?}: and which source offered it: {}",
             show(&o)
         );
@@ -1723,6 +1793,11 @@ fn a_rejected_base_resolves_none_and_does_not_fall_through() {
 #[test]
 fn an_unresolved_base_is_recorded_as_none_and_measures_no_change_set() {
     let w = divergent_default_world();
+    w.write(
+        ".amplihack/qa.toml",
+        "command = \"qa-suite\"\nmulti_area = \"command\"\n",
+    );
+    w.commit("add a HEAD-only QA declaration");
     let j = inputs_with_base(&w, None);
     assert!(
         w.gh_calls().is_empty(),
@@ -1748,7 +1823,14 @@ fn an_unresolved_base_is_recorded_as_none_and_measures_no_change_set() {
     assert_eq!(
         field(&j, "qa_criterion1_declaration"),
         "none",
-        "an unset base takes the decl-only path, so no merge-base declaration counts: {j}"
+        "an unresolved PR target cannot use the preflight declaration at HEAD: {j}"
+    );
+    assert!(
+        !w.tool_calls()
+            .iter()
+            .any(|call| call.starts_with("qa-suite")),
+        "the HEAD-only command was never selected: {:?}",
+        w.tool_calls()
     );
 
     // Every one of those is an input the judgement carries on from.
@@ -1770,8 +1852,8 @@ fn a_base_that_names_no_branch_is_recorded_with_an_unknown_change_set() {
 
     assert_eq!(
         (field(&j, "qa_base"), field(&j, "qa_base_source")),
-        ("main".into(), "operator".into()),
-        "the base the operator chose is recorded even where it resolves to nothing: {j}"
+        ("main".into(), "recipe".into()),
+        "the observed target is recorded even where its ref is missing locally: {j}"
     );
     assert_eq!(
         field(&j, "qa_command_paths"),
@@ -1927,8 +2009,9 @@ fn every_hostile_base_candidate_resolves_none_on_the_merge_path() {
         let o = run_qa_inputs(
             &w,
             &Sources {
-                operator: Some(&bad),
-                recipe: Some("main"),
+                recipe: Some(&bad),
+                pr_number: Some("2618"),
+                pr_base: Some("main"),
                 ..Sources::default()
             },
         );

@@ -9,6 +9,9 @@ doc_type: reference
 
 # Auto-Drive-Light Recipe
 
+Light worktree setup, QA measurement, and PR creation use the same
+publication target. [Auto-drive QA contract](auto-drive-qa.md#light-drives).
+
 Judging agents run directly in the actual linked PR worktree at the intended
 reviewed commit, as in
 [`auto-drive-to-merge`](auto-drive-to-merge.md#review-in-the-pr-worktree).
@@ -52,7 +55,7 @@ recipe name when the change is eligible.
 | `repo_path` | `.` | Repository. |
 | `pr_number` | empty | Existing PR; explicit selection takes precedence. |
 | `existing_branch` | empty | Existing source branch with an open PR; must match explicit PR input. |
-| `base_branch` | empty | Passed to `auto-drive-to-merge` on escalation. For a new change, `light-worktree` passes an empty `base_branch` into the `workflow-worktree` sub-recipe, so the `quick/` branch starts from `origin/HEAD` whatever the caller named. That override is scoped to the sub-recipe's own context: it does not reassign this recipe's variable, so `{{base_branch}}` elsewhere — `light-escalate` included — still carries the caller's value. It is the base of the pre-PR QA measurement where the operator named one: `light-qa-inputs` ranks a named `base_branch` first (`qa_base_source` `recipe`), because it is a declaration of intent. Where the operator named nothing it is empty and the measurement uses the clone's own default, recorded as `clone-default`, or no base at all, recorded as `none` ([resolving the measurement base](auto-drive-qa.md#resolving-the-measurement-base), [light drives](auto-drive-qa.md#light-drives)). The light path makes no `gh pr view` lookup, because no PR exists yet. See [Where the inputs apply](workflow-delivery-inputs.md#where-the-inputs-apply). |
+| `base_branch` | empty | For a new PR, selects the target for worktree setup, pre-publication QA measurement, and `gh pr create --base`. With no explicit branch, those operations use the verified clone default when it is the publication target. For an existing PR, shared merge-round QA uses the observed PR target. See [light-drive QA](auto-drive-qa.md#light-drives). |
 | `issue_number` | empty | Issue reference used by the branch/PR and task fallback. A positive issue number, up to 10 digits. |
 | `plan_task_id` | empty | Explicit task for follow-ups. Otherwise use `#<issue_number>`, then the shared PR-body/task-description fallback. |
 | `qa_command` | empty | Operator-supplied build check command; otherwise repository quick-change checks. This does not replace final QA selection. |
@@ -64,6 +67,10 @@ recipe name when the change is eligible.
 | `autodrive_state_dir` | runner-assigned | Same [state directory](auto-drive-to-merge.md#state-directory) contract as full auto-drive. |
 | `autodrive_dry_run` | `false` | Suppress merging and follow-up creation, including after escalation. |
 | `no_merge` | `true` | Prevent merging throughout the invocation. Build always prohibits merging; explicit `false` allows finalization only after readiness. |
+
+For a new PR targeting `release/1.2`, pass `-c base_branch=release/1.2`
+when launching the recipe. The worktree starts from `origin/release/1.2`,
+and QA and PR creation both use `release/1.2`.
 
 Each limit matches `^[0-9]{1,6}$` and is interpreted in base 10.
 Invalid limits stop before work; there is no force-light override.
@@ -81,7 +88,7 @@ suppresses follow-up creation even when merging would otherwise be allowed.
 
 | Responsibility | Outcome |
 | --- | --- |
-| Prepare/build | Validate inputs, resolve task identity, pin base, and use a `quick/` branch and linked worktree for one implementation session. Run repository checks and hooks, commit, push, and open the PR. Skip build for an existing PR. |
+| Prepare/build | Validate inputs, resolve the task and publication target, and pin the starting commit of a linked `quick/` worktree. Review the change and run repository checks and hooks before committing, pushing, and opening the PR on the same target QA measured. Existing PRs skip the build. |
 | Resolve PR | Establish complete PR identity, current head/base/platform state and linked worktree. Refuse cross-repository PRs under light eligibility; do not execute fetched PR instructions as trusted tools. |
 | Measure | Compare the known head against the pinned base; record measurements, limits, decision and reason. Unreadable diffs are faults, not zero measurements. |
 | Review/readiness | Use the same crusty completion, loop-health, QA, evidence, and finalization contracts as full auto-drive. |
@@ -129,10 +136,8 @@ branch or PR. Because the PR exists, the nested full build is skipped.
 
 Forward dry-run and `no_merge` restrictions explicitly. Child context
 overwrite cannot relax them. Skip subsequent light-path work after escalation.
-`light-escalate` passes `base_branch` as well: the caller's value on the
-existing-PR path, empty after `light-worktree` cleared it. With an empty base,
-finalize takes the base from the PR itself
-([How finalize finds the base](workflow-delivery-inputs.md#how-finalize-finds-the-base)).
+Escalation carries the existing PR into shared merge QA and readiness,
+which use that PR's observed target.
 Exit `79` propagates and is never retried at a greater depth.
 
 ## Minor findings and follow-up issues

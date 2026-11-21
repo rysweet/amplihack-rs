@@ -1080,7 +1080,11 @@ fn light_qa_record(e: &StepEnv, vars: &[(&str, &str)]) -> (Output, serde_json::V
         .wt
         .canonicalize()
         .expect("the worktree path is the one worktree_setup_path.sh accepts");
-    let setup = format!(r#"{{"worktree_path":"{}"}}"#, wt.display());
+    let target = vars
+        .iter()
+        .find_map(|(key, value)| (*key == "RECIPE_VAR_base_branch").then_some(*value))
+        .unwrap_or("main");
+    let setup = serde_json::json!({"worktree_path": wt, "base_branch": target}).to_string();
     let path = format!("{}:/usr/bin:/bin", e.fakes.bin.display());
     let mut env: Vec<(&str, &str)> = vec![
         ("RECIPE_VAR_worktree_setup", setup.as_str()),

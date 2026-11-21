@@ -33,8 +33,9 @@
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
 #   AUTODRIVE_QA_EVIDENCE  file the record is written to, private (optional)
+#   AUTODRIVE_QA_GUIDANCE  trusted guidance path resolved by the caller (optional)
 #   AUTODRIVE_ROUND_LABEL  recorded as qa_round
-#   AUTODRIVE_QA_BASE      the base branch name, for the changed paths; unset means no base was resolved, and nothing here guesses one
+#   AUTODRIVE_QA_BASE      the base branch name; set empty for an unresolved workflow target, unset for direct preflight
 #   AUTODRIVE_QA_BASE_SOURCE  how the caller reached that base, checked here: operator, recipe, pr-base, clone-default or none. Unset beside a base is operator; no base is none, and any other word is none with the base cleared, so a newer caller's name reaching an older copy of this tool never records a source beside a change set it did not measure
 #   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
 #   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
@@ -59,6 +60,9 @@ amplihack_clear_git_repo_env; amplihack_clear_run_identity_env; GCLR="$AMPLIHACK
 cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
 ROOT="$(pwd -P)"
 EVIDENCE="${AUTODRIVE_QA_EVIDENCE:-}"
+# Pin change-scope reads and the record to the commit observed before any suite runs.
+HEAD_SHA="$(git rev-parse --verify HEAD 2>/dev/null)" || HEAD_SHA=""
+export AUTODRIVE_QA_HEAD="$HEAD_SHA"
 # One shell asks every scope question (autodrive_qa_report), so the diff and the tree walk run once
 # (#1763). autodrive_trust.sh loads the scope and sources files; without them the evidence is BLOCKED.
 SCAN="$(. "$H/autodrive_trust.sh" || exit 1
@@ -125,23 +129,6 @@ case "$QBSRC" in operator|recipe|pr-base|clone-default) [ -n "$QBASE" ] || QBSRC
 # No base means no change set was measured: the scope helper's `(none)` would read as a pull request that changed nothing.
 [ -n "$QBASE" ] || PATHS="(unknown)"
 cause() { CAUSES="${CAUSES}${CAUSES:+; }$1"; }
-# The evidence binds to the tree it was measured on: the merge gate refuses evidence
-# whose head_sha is not the SHA being merged, so an earlier round's PASS cannot stand in.
-HEAD_SHA=""
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || printf '')"
-  # git rev-parse prints its own argument when it cannot resolve it, so a
-  # checkout with no commit in it would record the word HEAD here. The
-  # value is an object name or nothing at all: hexadecimal, at least seven
-  # digits long, and anything else becomes empty before it is printed.
-  case "$HEAD_SHA" in
-    [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]*) ;;
-    *) HEAD_SHA="" ;;
-  esac
-  case "$HEAD_SHA" in *[!0-9a-fA-F]*) HEAD_SHA="" ;; esac
-else
-  echo "[skip] not a git repo; the qa evidence records no head sha, so the merge gate refuses it rather than merging unbound evidence" >&2
-fi
 # --- suite commands --------------------------------------------------
 # The first source present wins, even when it gives no usable command: env,
 # repo-file (an invalid qa.toml is BLOCKED, qa-config-invalid), ci (when it
@@ -193,7 +180,11 @@ else
     fi
   fi
 fi
-LOG="$(mktemp -t autodrive-qa-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
+# Suite processes run repository code. Keep publishing credentials and agent
+# sockets out of their environment. The host must isolate untrusted checkouts.
+SUITE_ENV=(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN
+  -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u CODEX_HOME -u CLAUDE_CONFIG_DIR
+  -u SSH_AUTH_SOCK -u GH_CONFIG_DIR -u AMPLIHACK_HOME -u BASH_ENV -u ENV --)
 CMDTEXT=""; RAN=0; FIRST_NZ=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
 if [ "${#TEXTS[@]}" -eq 0 ] && [ -z "${QUNRES}${CFGBAD}" ]; then
   S_MISSING="true"; [ -n "$NOSCOPE" ] || cause "no repository test command for repository type ${TYPE}"
@@ -205,7 +196,7 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
   if [ "$kind" = "entry" ]; then
     # Its own process from the repository root: a `cd` in one entry
     # never reaches the next, and entries are never joined or sourced.
-    ( cd -- "$ROOT" && bash -c "$text" ) >>"$LOG" 2>&1 </dev/null
+    ( cd -- "$ROOT" && "${SUITE_ENV[@]}" bash -c "$text" ) >/dev/null 2>&1 </dev/null
     rc=$?
   else
     dir="$QA_DIR"
@@ -229,18 +220,15 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       continue
     fi
     # shellcheck disable=SC2086
-    ( set -f; cd -- "$dir" && $text ) >>"$LOG" 2>&1 </dev/null
+    ( set -f; cd -- "$dir" && "${SUITE_ENV[@]}" $text ) >/dev/null 2>&1 </dev/null
     rc=$?
   fi
   RAN=$((RAN + 1))
-  echo "INFO: qa-team (${TYPE}) suite command exited ${rc}: $(printf '%s' "$text" | san | cut -c1-200)" >&2
+  echo "INFO: QA suite command ${i} (${SRC}) exited ${rc}" >&2
   if [ "$rc" -ne 0 ]; then S_FAILED="true"; [ -n "$FIRST_NZ" ] || FIRST_NZ="$rc"; fi
 done
 [ "$S_FAILED" = "true" ] && cause "repository test failure"
 RC=""; [ "$RAN" -gt 0 ] && RC="${FIRST_NZ:-0}"
-TAIL="$(tail -n 5 "$LOG" | san | ascii | cut -c1-300)"
-tail -n 60 "$LOG" >&2 || true
-rm -f "$LOG"
 # --- the scenario directory ------------------------------------------
 # Consulted only where gadugi is required. AUTODRIVE_QA_SCENARIO_DIR comes
 # from the environment only. Without it the directory is the first of
@@ -348,11 +336,6 @@ pick() { [ -n "$REASON" ] || REASON="$1"; }
 # required, so no directory was consulted; or scenarios were found and listed.
 # NOT_INSTALLED and NO_SCENARIOS have already named their own reason above.
 #
-# This is where withdrawing the scenario run could have fail-closed into a
-# hold of the kind #2569 removes: the earlier text accepted only
-# gadugi_status PASS, which this file can no longer produce, so every Node
-# repository with scenarios would have recorded BLOCKED/qa-command-missing
-# every round, which no round can clear. FOUND is complete.
 G_DONE="false"
 { [ "$G_STATUS" = "NOT_REQUIRED" ] || [ "$G_STATUS" = "FOUND" ]; } && G_DONE="true"
 if [ -z "$REASON" ] && { [ "$RAN" -eq 0 ] || [ "$G_DONE" != "true" ]; }; then
@@ -370,7 +353,7 @@ case "$REASON" in
   *) echo "ERROR: unknown qa_reason '${REASON}'; recording an incomplete measurement rather than inventing a verdict." >&2
      STATUS="BLOCKED"; REASON="qa-command-missing" ;;
 esac
-SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san)"
+SUMMARY="$(printf '%s' "$CAUSES" | san | ascii)"
 # The evidence format: every field a string, so a reader never has to guess a type.
 F='{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_dir":"%s","qa_command":"%s",'
 F="${F}"'"qa_command_source":"%s","qa_criterion1_declaration":"%s","qa_command_paths":"%s","qa_candidates":"%s","qa_ci_skip":"%s",'
@@ -385,7 +368,7 @@ F="${F}"'"qa_round":"%s","head_sha":"%s","docs_only":"%s","gadugi_required":"%s"
 F="${F}"'"gadugi_validate_exit_code":"","gadugi_run_exit_code":"","gadugi_scenario_count":"%s",'
 F="${F}"'"gadugi_scenario_dir":"%s","gadugi_scenario_dir_state":"%s","gadugi_scenarios_validated":"0",'
 F="${F}"'"gadugi_scenarios_run":"0","gadugi_scenarios_passed":"0","gadugi_scenarios_failed":"0",'
-F="${F}"'"gadugi_failed_scenarios":"","gadugi_scenario_results":"","qa_base":"%s","qa_base_source":"%s","git_env_cleared":"%s","run_env_cleared":"%s"}\n'
+F="${F}"'"gadugi_failed_scenarios":"","gadugi_scenario_results":"","qa_base":"%s","qa_base_source":"%s","git_env_cleared":"%s","run_env_cleared":"%s","qa_guidance":"%s"}'
 # shellcheck disable=SC2059 # F is the fixed format above, never input
 OUT="$(printf "$F" \
   "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$QD" | san | ascii | cut -c1-200)" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" \
@@ -394,7 +377,21 @@ OUT="$(printf "$F" \
   "$(printf '%s' "$SCEN" | san | ascii | cut -c1-2000)" "$RC" "$SUMMARY" \
   "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
   "$DOCSONLY" "$GREQ" "$G_STATUS" "$COUNT" "$(printf '%s' "$SREL" | san | ascii | cut -c1-200)" "$SSTATE" \
-  "$QBASE" "$QBSRC" "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)")"
-# Private to this user (#1517 D5), and never written through a planted symlink.
-[ -z "$EVIDENCE" ] || ( umask 077; rm -f -- "$EVIDENCE"; printf '%s' "$OUT" > "$EVIDENCE" )
+  "$QBASE" "$QBSRC" "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)" \
+  "$(printf '%s' "${AUTODRIVE_QA_GUIDANCE:-}" | san)")"
+
+# Write the complete record beside its destination under a private mode, then
+# replace that directory entry. A symlink at the destination is never followed.
+if [ -n "$EVIDENCE" ]; then
+  (
+    umask 077
+    tmp="$(mktemp -- "${EVIDENCE}.XXXXXX")" || exit 1
+    trap 'rm -f -- "$tmp"' EXIT
+    printf '%s\n' "$OUT" > "$tmp" || exit 1
+    case "$(uname -s)" in
+      Darwin|*BSD) mv -fh -- "$tmp" "$EVIDENCE" ;;
+      *) mv -fT -- "$tmp" "$EVIDENCE" ;;
+    esac
+  ) || { echo "ERROR: could not publish private QA evidence" >&2; exit 1; }
+fi
 printf '%s\n' "$OUT"

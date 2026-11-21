@@ -33,7 +33,7 @@ demonstrate live agent recovery or cross-platform execution.
 The trusted [merge-ready skill](../../amplifier-bundle/skills/merge-ready/SKILL.md)
 and its [description template](../../amplifier-bundle/skills/merge-ready/pr-description-template.md)
 define the criteria. This reference preserves those definitions with
-auto-drive's repository-type and crusty interpretations. The runner selects a private launch bundle for recipes, skills, templates, evaluator and helpers. The retired shell gate and the retired parsed readiness record are replaced by an agentic assessment and GitHub's own merge conditions.
+auto-drive's QA and crusty interpretations. The runner selects a private launch bundle for recipes, skills, templates, evaluator and helpers. The retired shell gate and the retired parsed readiness record are replaced by an agentic assessment and GitHub's own merge conditions.
 
 
 For **auto-drive criterion 3**, accepted crusty convergence substitutes for
@@ -62,14 +62,12 @@ accepted completion dispatch, and required follow-ups; do not claim unperformed 
 
 Non-applicability requires an explanation permitted by the authoritative
 criterion. It cannot excuse missing tooling, access, approvals, policy, or
-evidence. Criterion 1 is a recorded judgement, not an exemption: a
-documentation-only PR is recorded as Verified with a `not_user_facing`
-judgement that cites its files, and that judgement is accepted only where
-the measured `docs_only` is `true`, or, where it is `unknown` or absent
-from the record altogether, where the notes name what the change set was
-judged from. An absent QA tool, a missing scenario or a scenario directory
-that does not exist is a named recoverable input to that judgement, never a
-criterion-1 outcome. See [Auto-drive QA](auto-drive-qa.md).
+evidence. For criterion 1, a file-backed `not_user_facing` judgement
+verifies changes that leave behavior unchanged, including documentation
+and behavior-neutral configuration. A `user_facing` judgement verifies
+passing outside-in coverage of the PR's change. The read-only assessment
+reviews the judgement alongside the current measurement, diff, and
+head-specific checks. See [Auto-drive QA](auto-drive-qa.md).
 
 ## The write-up
 
@@ -210,6 +208,13 @@ For criterion 1, a QA tool only a person can install is the recoverable
 blocker `qa-tool-not-installed:<tool>`: the judgement meets criterion 1 by
 other evidence or hands off to the named owner, and installs nothing
 automatically.
+
+A complete criterion-1 hand-off records the step, failure,
+recovery choice, reason, owner and requested action. The round records
+`HANDOFF`, preserves the owner and requested action in the saved write-up
+for operator reporting, and leaves finalization unselected. A recoverable
+QA gap returns to repair and reassessment. See the
+[QA outcome contract](auto-drive-qa.md#how-the-merge-round-reads-the-judgement).
 
 Record what failed, the cause, the alternative, and what it proved. If no
 usable alternative exists, retain the named blocker and incomplete outcome.
