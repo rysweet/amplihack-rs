@@ -109,7 +109,7 @@ branch on how a result was obtained.
 | Function | Purpose | Returns |
 | -------- | ------- | ------- |
 | `classify_gh_error <stderr_file>` | Classify captured stderr. | echoes `auth`\|`rate_limit`\|`transient`\|`other` |
-| `_gh_retry_core <label> <gh-arg>...` | The retry driver. Runs `gh <args>` with a 60s per-attempt `timeout`, classifying failures and acting per class. | stdout = command (or REST fallback) output; stderr = retry `WARNING`s followed by the terminal diagnostic as the **last line**, on every failing path including a cancellation, which is what single-line callers report; return = `0` on success else last `gh` exit status. Sets `GH_RETRY_LAST_CLASS`. |
+| `_gh_retry_core <label> <gh-arg>...` | The retry driver. Runs `gh <args>` with a 60s per-attempt `timeout`, classifying failures and acting per class. | stdout = command (or REST fallback) output; stderr = retry `WARNING`s followed by the terminal diagnostic as the **last line**, on every failing path including a cancellation, which is what single-line callers report (a capture that cannot be removed adds a cleanup `WARNING` after it); return = `0` on success else last `gh` exit status. Sets `GH_RETRY_LAST_CLASS`. |
 | `gh_rate_limit_reset_epoch <resource>` | Authoritative reset epoch via `gh api rate_limit` (does **not** consume the core/graphql budget). | echoes epoch seconds, or returns `1` |
 | `gh_rate_limit_remaining <resource>` | Remaining request count for a resource. | echoes integer, or returns `1` |
 | `gh_reset_epoch_from_stderr <stderr_file>` | Fallback reset lookup that honors a `Retry-After: <seconds>` or `X-RateLimit-Reset: <epoch>` header when `gh api rate_limit` is unavailable. | echoes epoch seconds, or returns `1` |
