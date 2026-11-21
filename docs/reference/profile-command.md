@@ -5445,7 +5445,13 @@ the state to `ok`. The API-key profile counts only while its
 [login check](#api-key-login-check) passes: `reachable`, the rotator's check,
 in the rotator's writes and in any write while a rotator runs, and otherwise
 auto-switch's check of the profile's own files. A live API-key profile that
-fails the check does not set the state to `ok`. The
+fails the check does not set the state to `ok`. An overflow profile that
+holds no login of its own, as [auto-switch checks it](#when-a-capacity-wait-starts),
+is not counted either, unless the rotator has made it live. On macOS, when
+that is because its Keychain could not be read, the writer
+[says so](#keychain-unreadable-reports): the `usage` and `statusline`
+writers print one line on stderr, and the `rotate` writer writes the same
+line to the rotate log, for each such profile that is not excluded. The
 rotator's own `ALERT` line still follows its own thresholds. All three
 write while holding the global state lock, so writes never interleave and
 the last one wins. A writer that cannot get the lock records nothing and
@@ -9341,6 +9347,7 @@ run and prints their `reread:` lines; see
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
 | `ALERT: home_key (<detail>): <effect>` | A key is in `~/.claude.json` or `~/.claude/settings.json` while a plan login is live, so sessions bill per token. Written once, and again if the setting changes; see [API-key login check](#api-key-login-check). The cycle carries on. |
+| `auto-switch: profile <name> was passed over: it has no login file and the macOS Keychain could not be read (<cause>)` | macOS only. This cycle's [capacity file](#capacity-writers) write left overflow profile `<name>` out because its [Keychain could not be read](#keychain-unreadable). Written once while that lasts, and again when the Keychain is unreadable again after a cycle in which it answered, or after the rotator restarts. An excluded profile gets no line. The cycle goes on. |
 | `overflow: on <name>; no measured plan login below 100%, next plan reset <time\|unknown>` | Written after an `overflow-in` swap. |
 | `overflow: staying on <name>; no measured plan login below 100%, next plan reset <time\|unknown>` | A cycle stayed on overflow profile `<name>` and the previous recorded cycle did not: its `last_cycle.overflow` was absent or `out`, or the ledger's `live` named another profile. So it is written once when the rotator finds itself on credits without having moved there, for example after a login was put in `~/.claude` by hand, and not again while it stays. After `overflow-in` the `overflow: on` line is written instead. |
 | `overflow: off <name>; back on plan profile <name>` | Written after an `overflow-out` swap. |
@@ -13057,6 +13064,22 @@ even when the profile names `ANTHROPIC_API_KEY`, `apiKeyHelper` or
 [`KeychainUnreadable`](#keychain-unreadable-refusal), which is a different
 message from `SubscriptionNoLogin`, because the remedy is different.
 
+<a id="keychain-unreadable-reports"></a>The same holds wherever the answer
+decides an outcome. A profile whose Keychain could not be read may well hold
+a login, so no command reports it as a profile with no login:
+
+| Where | What is said |
+|-------|--------------|
+| The launch guard | The [`KeychainUnreadable`](#keychain-unreadable-refusal) refusal. |
+| `profile auto-switch status` | `keychain unreadable` in the [`login` column](#auto-switch-commands). |
+| A selection that may move a launch | One line on stderr for each profile passed over: `auto-switch: profile <name> was passed over: it has no login file and the macOS Keychain could not be read (<cause>)`. |
+| `profile overflow add <name>` | `warning: <name> has no login file and the macOS Keychain could not be read (<cause>), so it cannot be used as overflow until the Keychain can be read: auto-switch passes it over, and the capacity file does not count it. Unlock the login Keychain; 'amplihack profile auto-switch status' then shows where its login is`. The warning for a profile with no login, `<name> has no login file, so it cannot be used as overflow until it has one`, is not printed for it. The mark is stored either way, and the command exits 0. |
+| The [capacity file writers](#capacity-writers) | The selection's line, for each overflow profile left out of the count for this reason and not in the `exclude` list. `profile usage` and the status-line wrapper print it on stderr. The rotator writes it to the [rotate log](#rotate-log). |
+
+`<cause>` is one of the texts listed under
+[Keychain unreadable refusal](#keychain-unreadable-refusal). None of these
+lines holds an account value or the service name.
+
 Limits:
 
 - An item that exists is accepted without a validity check, as an expired
@@ -13092,7 +13115,14 @@ Limits:
   versions. Where the name no longer matches, profiles with no API-key
   setting are refused at launch, and profiles with an identifiable account
   and an API-key setting resolve as API-key profiles, as they did before
-  this rule existed.
+  this rule existed. Nothing in that refusal says the rule changed. If every
+  Keychain profile is refused with `SubscriptionNoLogin` after a Claude Code
+  upgrade, check the service name first:
+  `printf '%s' "<profile directory>" | shasum -a 256 | cut -c1-8` prints
+  `<h>`, and `security find-generic-password -s "Claude Code-credentials-<h>" >/dev/null 2>&1; echo $?`
+  prints 0 when the item exists and 44 when it does not. Searching the login
+  Keychain for `Claude Code-credentials` in Keychain Access shows the names
+  Claude Code now uses.
 - Only macOS runs the lookup. On Linux and other Unix systems `security` is
   never started and detection is unchanged.
 
@@ -13694,7 +13724,10 @@ goes back to its own profile. Nothing is copied, an interrupted swap is
 recovered from the journal, and `~/.claude` always holds a login file. A
 profile with no login file cannot be swapped in; no empty file is created
 for it. Auto-switch passes over such a profile too, so the capacity file does
-not count it as usable overflow, and `profile overflow add` warns about it. A
+not count it as usable overflow, and `profile overflow add` warns about it. On
+macOS a profile with no login file may hold its login in the Keychain; when
+the Keychain could not be read, the warning and the capacity file writers
+[say that instead](#keychain-unreadable-reports). A
 profile the rotator has already made live has its login file in `~/.claude`
 and still counts.
 

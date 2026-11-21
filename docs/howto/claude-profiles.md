@@ -2104,6 +2104,20 @@ intended. If the profile has no `oauthAccount` in `.claude.json`, run
 [Keychain logins](../reference/profile-command.md#keychain-logins) for the
 exact rules and their limits.
 
+While the Keychain cannot be read, auto-switch passes the profile over and
+the capacity file does not count it as overflow. Each place that does so
+names the Keychain, never a missing login: `profile auto-switch status`
+shows `keychain unreadable`, `profile overflow add` warns that the Keychain
+could not be read, and `profile usage` and the rotate log carry a line that
+starts `auto-switch: profile <name> was passed over`. See
+[where an unreadable Keychain is reported](../reference/profile-command.md#keychain-unreadable-reports).
+
+If every Keychain profile is refused as having no login of its own after a
+Claude Code upgrade, check the service name first: Claude Code chooses it
+and may have changed it. The
+[limits](../reference/profile-command.md#keychain-logins) give the two
+commands that test it.
+
 ### Logging an API-key profile in to a subscription
 
 `amplihack profile login api-key` works as for any profile and first prints:

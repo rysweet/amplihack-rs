@@ -25,6 +25,10 @@
 //!   could not be read, never the "no login of its own" text.
 //! - `profile auto-switch status` shows `keychain` or `keychain unreadable`
 //!   in its `login` column.
+//! - `profile overflow add` warns that the Keychain could not be read when
+//!   that is why nothing can move onto the profile, and keeps its "has no
+//!   login file" warning for a profile with no login (crusty round 1 of
+//!   PR #2891).
 //! - No account value and no service name reaches output, even with debug
 //!   logging on; `security` is never given `-w`, `-g` or `-a`.
 //! - Off macOS, `security` is never started and detection is unchanged.
@@ -41,6 +45,9 @@ use std::process::{Command, Output, Stdio};
 const ACCOUNT: &str = r#"{"oauthAccount":{"accountUuid":"uuid-SENTINEL-KEYCHAIN","emailAddress":"user-SENTINEL-KEYCHAIN@example.com"}}"#;
 const SENTINEL: &str = "user-SENTINEL-KEYCHAIN";
 
+/// What `profile overflow add` says about a profile with no login.
+const NO_LOGIN_WARNING: &str =
+    "warning: work has no login file, so it cannot be used as overflow until it has one";
 const REFUSED: &str = "profile work is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. Run 'amplihack profile login work', or run 'amplihack profile kind set work api-key' if per-token billing is intended.";
 
 /// Records the config directory it was started with and exits 0.
@@ -426,6 +433,44 @@ mod macos {
         }
     }
 
+    /// The warning must send the user to the right remedy: unlock the
+    /// Keychain, not log the profile in.
+    #[test]
+    fn overflow_add_names_an_unreadable_keychain_and_not_a_missing_login() {
+        let f = Fixture::new();
+        f.security_exits(51);
+        let out = f.ok(&["profile", "overflow", "add", "work"]);
+        let err = text(&out.stderr);
+        assert!(
+            err.contains(
+                "warning: work has no login file and the macOS Keychain could not be read (`security` exit status 51), so it cannot be used as overflow until the Keychain can be read"
+            ),
+            "{err}"
+        );
+        assert!(err.contains("Unlock the login Keychain"), "{err}");
+        assert!(!err.contains(NO_LOGIN_WARNING), "{err}");
+        assert!(!all_output(&out).contains(SENTINEL), "{}", all_output(&out));
+    }
+
+    #[test]
+    fn overflow_add_keeps_the_no_login_warning_for_an_absent_item_only() {
+        let f = Fixture::new();
+        f.security_exits(44);
+        let out = f.ok(&["profile", "overflow", "add", "work"]);
+        let err = text(&out.stderr);
+        assert!(err.contains(NO_LOGIN_WARNING), "{err}");
+        assert!(!err.contains("Keychain"), "{err}");
+
+        f.ok(&["profile", "overflow", "remove", "work"]);
+        f.security_exits(0);
+        let out = f.ok(&["profile", "overflow", "add", "work"]);
+        let err = text(&out.stderr);
+        assert!(
+            !err.contains("has no login file"),
+            "a Keychain login: {err}"
+        );
+    }
+
     /// Debug logging shows what the program does; it never shows an account
     /// value or the service name (which carries a hash of a private path).
     #[test]
@@ -468,5 +513,10 @@ fn off_macos_security_is_never_started_and_the_refusal_is_unchanged() {
     let row = status_row(&f, "work");
     assert!(!row.contains("keychain"), "{row}");
     assert!(row.contains("none"), "{row}");
+    // `overflow add` keeps its warning, and never names a Keychain.
+    let added = f.ok(&["profile", "overflow", "add", "work"]);
+    let err = text(&added.stderr);
+    assert!(err.contains(NO_LOGIN_WARNING), "{err}");
+    assert!(!err.contains("Keychain"), "{err}");
     assert!(f.security_lines().is_empty(), "security was never started");
 }

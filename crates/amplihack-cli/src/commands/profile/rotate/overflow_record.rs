@@ -222,6 +222,12 @@ pub fn stay_note(
 /// reads this file: it resumes only on the ledger's `last_cycle.measured_at`,
 /// which a `stayed` cycle records at the time the live reading was taken
 /// ([`super::capacity::recorded_at`], issue #1907).
+///
+/// Issue #2885: returns one line for each overflow profile the file leaves
+/// out because its macOS Keychain could not be read. The cycle logs them
+/// with [`note_keychain`], so the log does not leave such a profile looking
+/// like one with no login.
+#[must_use]
 pub fn refresh_capacity(
     ctx: &Ctx,
     live: Option<&ProfileName>,
@@ -230,7 +236,7 @@ pub fn refresh_capacity(
     t: i64,
     tag: Option<Tag>,
     platform: Option<&ProfileName>,
-) {
+) -> Vec<String> {
     let key_usable = platform.is_none() || key_check::reachable(&ctx.home).is_ok();
     let readings: Vec<(ProfileName, Rotated)> = rotated(live, reading, others)
         .into_iter()
@@ -238,7 +244,19 @@ pub fn refresh_capacity(
         .collect();
     let on_overflow = Tag::on_overflow(tag) && (key_usable || live != platform);
     let root = ctx.store.root();
-    capacity_from_rotation(root, &readings, t, on_overflow, key_usable, Some(&ctx.home));
+    capacity_from_rotation(root, &readings, t, on_overflow, key_usable, Some(&ctx.home))
+}
+
+/// Logs each of this cycle's unreadable-Keychain lines ([`refresh_capacity`])
+/// that the previous cycle did not give, and keeps this cycle's for the
+/// next. A Keychain that stays locked is therefore logged once, not once a
+/// cycle, and logged again when it is locked again after a cycle in which it
+/// could be read.
+pub fn note_keychain(ctx: &mut Ctx, out: &mut Sink, t: i64, notes: Vec<String>) {
+    for line in notes.iter().filter(|n| !ctx.keychain_notes.contains(n)) {
+        out.emit(t, line);
+    }
+    ctx.keychain_notes = notes;
 }
 
 /// Records the cycle as ended at `t` with `outcome`, after measuring from

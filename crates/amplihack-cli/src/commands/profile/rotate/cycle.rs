@@ -16,8 +16,8 @@ use super::log::{msg, shown, shown_of};
 use super::observe::{Measurement, Snap, live_name, measure_and_decide, platform_block_reason};
 use super::overflow::Tag;
 use super::overflow_record::{
-    self, alert_line, block_spend_limited, note_home_key, note_live, note_move, note_per_token,
-    refresh_capacity, refuse_key, stay_note, target_check,
+    self, alert_line, block_spend_limited, note_home_key, note_keychain, note_live, note_move,
+    note_per_token, refresh_capacity, refuse_key, stay_note, target_check,
 };
 use super::pin::{self, Gate as PinGate}; // the switch-hold gate
 use super::plan_room::no_room;
@@ -342,7 +342,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // Issue #2218: nothing measured is recorded under an excluded live
     // login's name; it was never probed.
     let recorded_live = live_name(&first.live).filter(|_| !first.live_excluded);
-    refresh_capacity(
+    let unreadable = refresh_capacity(
         ctx,
         recorded_live,
         &live,
@@ -351,6 +351,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         tag,
         first.shown_platform(),
     );
+    note_keychain(ctx, &mut out, t, unreadable);
     no_room::record(
         &mut l,
         ctx,

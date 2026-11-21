@@ -300,15 +300,19 @@ fn capacity_counts_no_overflow_profile_without_a_login_file() {
     let now = 2_000_000_000;
     let blocked = |f: &Fx| {
         let mut inputs = f.inputs(&c, Some(GATE), now);
-        inputs.refuse_no_login(&f.root);
+        // No Keychain is asked in this test, so none is unreadable.
+        assert!(inputs.refuse_no_login(&f.root).is_empty());
         inputs.blocked.contains(&"console".to_string())
     };
     assert!(!blocked(&f), "its login file is there");
-    assert!(super::can_take_login(&f.root, &console));
+    assert_eq!(super::login_gap(&f.root, &console), None);
 
     fs::remove_file(f.root.join("console").join(CREDS)).unwrap();
     assert!(blocked(&f), "selection would pass it over");
-    assert!(!super::can_take_login(&f.root, &console));
+    assert_eq!(
+        super::login_gap(&f.root, &console),
+        Some(super::overflow_inputs::LoginGap::NoLogin)
+    );
 
     let rs = RotateState::new(&f.root);
     rs.ensure().unwrap();

@@ -57,6 +57,9 @@ pub struct Ctx {
     pub(in crate::commands::profile::rotate) read_only: bool,
     /// The seed note this process last logged; a repeat is not logged.
     pub(in crate::commands::profile::rotate) last_seed_note: Option<String>,
+    /// Issue #2885: the unreadable-Keychain lines the last cycle's capacity
+    /// write gave; a line it already gave is not logged again.
+    pub(in crate::commands::profile::rotate) keychain_notes: Vec<String>,
     /// Issue #2211: the live login's recent readings, kept across cycles.
     pub(in crate::commands::profile::rotate) live_series: live::Series,
     /// Issue #2211: this cycle's projected or substituted live figures.
@@ -91,6 +94,7 @@ impl Ctx {
             identity_budget: super::super::login_identity::Budget::new(),
             read_only: false,
             last_seed_note: None,
+            keychain_notes: Vec::new(),
             live_series: live::Series::default(),
             live_outlook: None,
             now: crate::commands::profile::auto_switch::kit::now,

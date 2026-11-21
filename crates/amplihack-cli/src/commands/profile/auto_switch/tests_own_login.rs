@@ -33,18 +33,27 @@
 //! - `rerun::login_ready(&State, &OverflowInputs, &OwnLogins, &ProfileName)`
 //!   is true for `File`, `Keychain` and `KeyProfile` (plus the existing
 //!   `check_note`), false for `KeychainUnreadable` and `None`.
-//! - `overflow_inputs::can_take_login(root, name)`, `refuse_no_login(root)`
-//!   and `takeover::could_take_over_at(store, own, home)` keep their
-//!   signatures and use the same rule. `could_take_over_at` hands its `home`
-//!   to the lookup; the others use the process home.
+//! - `overflow_inputs::login_gap(root, name) -> Option<LoginGap>`,
+//!   `refuse_no_login(root)` and `takeover::could_take_over_at(store, own,
+//!   home)` use the same rule. `could_take_over_at` hands its `home` to the
+//!   lookup; the others use the process home.
+//! - The reason is never dropped on the way (crusty round 1 of PR #2891).
+//!   `LoginGap::{NoLogin, KeychainUnreadable(Cause)}` keeps a Keychain that
+//!   could not be read apart from no login. `LoginGap::overflow_warning`
+//!   is what `profile overflow add` prints, with one text for each.
+//!   `refuse_no_login` returns `Vec<(ProfileName, Cause)>`: the profiles it
+//!   blocked because of the Keychain. `capacity::refresh` and
+//!   `capacity::refresh_from_rotation` return one `unreadable_note` line for
+//!   each of those that is not excluded, for their callers to print or log.
 //! - `no_login_of` asks the platform from `Ctx::macos()` and asks no
 //!   Keychain question: on macOS it lists nothing from the rotator's login
 //!   tests, as before, so no Keychain answer can release the hold on a key.
 
+use super::capacity::{self, Rotated};
 use super::cli::login_place;
 use super::config::Config;
 use super::fsx;
-use super::overflow_inputs::{OverflowInputs, can_take_login};
+use super::overflow_inputs::{LoginGap, OverflowInputs, login_gap};
 use super::own_login::{OwnLogin, OwnLogins, unreadable_note};
 use super::rerun::{login_ready, nested_candidate};
 use super::state::{CREDS, HostEntry, Ledger, State};
@@ -451,7 +460,7 @@ fn login_ready_follows_the_same_rule() {
 }
 
 #[test]
-fn can_take_login_and_refuse_no_login_follow_the_same_rule() {
+fn login_gap_and_refuse_no_login_follow_the_same_rule() {
     let _l = lock();
     let f = fx(&[
         ("filed", P::File),
@@ -463,17 +472,21 @@ fn can_take_login_and_refuse_no_login_follow_the_same_rule() {
     ]);
     let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
     let _seam = test_seam(&f.bin);
-    for (name, takes) in [
-        ("filed", true),
-        ("present", true),
-        ("locked", false),
-        ("absent", false),
-        ("bare", false),
-        ("keyed", true),
+    // A Keychain that could not be read is its own reason, never "no login".
+    for (name, gap) in [
+        ("filed", None),
+        ("present", None),
+        (
+            "locked",
+            Some(LoginGap::KeychainUnreadable(Cause::Exit(51))),
+        ),
+        ("absent", Some(LoginGap::NoLogin)),
+        ("bare", Some(LoginGap::NoLogin)),
+        ("keyed", None),
     ] {
-        assert_eq!(can_take_login(&f.root, &n(name)), takes, "{name}");
+        assert_eq!(login_gap(&f.root, &n(name)), gap, "{name}");
     }
-    // `refuse_no_login` takes exactly the profiles `can_take_login` rejects.
+    // `refuse_no_login` takes exactly the profiles `login_gap` names.
     let mut inputs = OverflowInputs {
         order: f.profiles.clone(),
         blocked: Vec::new(),
@@ -483,10 +496,13 @@ fn can_take_login_and_refuse_no_login_follow_the_same_rule() {
         no_login: Vec::new(),
         kinds_unknown: false,
     };
-    inputs.refuse_no_login(&f.root);
+    let unreadable = inputs.refuse_no_login(&f.root);
     let mut blocked = inputs.blocked.clone();
     blocked.sort();
     assert_eq!(blocked, ["absent", "bare", "locked"]);
+    // The cause comes back with the one profile the Keychain decided, so
+    // the capacity writers can say it.
+    assert_eq!(unreadable, vec![(n("locked"), Cause::Exit(51))]);
     // Every recorded command is the documented one: the arguments only, as
     // `HOME` here is the process home.
     for line in f.lines() {
@@ -501,21 +517,151 @@ fn can_take_login_and_refuse_no_login_follow_the_same_rule() {
 #[test]
 fn the_rotators_live_profile_still_holds_its_login_in_home() {
     let _l = lock();
-    let f = fx(&[("absent", P::Acct(44))]);
+    let f = fx(&[("absent", P::Acct(44)), ("locked", P::Acct(51))]);
     let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
     let _seam = test_seam(&f.bin);
-    assert!(!can_take_login(&f.root, &n("absent")));
+    assert_eq!(login_gap(&f.root, &n("absent")), Some(LoginGap::NoLogin));
     let rs = RotateState::new(&f.root);
     rs.ensure().unwrap();
-    rs.save_ledger(&RotateLedger {
-        live: Some("absent".into()),
-        ..RotateLedger::default()
-    })
-    .unwrap();
-    assert!(
-        can_take_login(&f.root, &n("absent")),
+    let live = |name: &str| {
+        rs.save_ledger(&RotateLedger {
+            live: Some(name.into()),
+            ..RotateLedger::default()
+        })
+        .unwrap();
+    };
+    live("absent");
+    assert_eq!(
+        login_gap(&f.root, &n("absent")),
+        None,
         "its file is in ~/.claude"
     );
+    // The same holds whatever the Keychain says: the login is in
+    // `~/.claude`, so an unreadable Keychain is no reason to name here.
+    live("locked");
+    assert_eq!(login_gap(&f.root, &n("locked")), None);
+    let mut inputs = OverflowInputs {
+        order: vec![n("locked")],
+        blocked: Vec::new(),
+        gate: Some(GATE),
+        platform: None,
+        not_plan: Vec::new(),
+        no_login: Vec::new(),
+        kinds_unknown: false,
+    };
+    assert!(inputs.refuse_no_login(&f.root).is_empty());
+    assert!(inputs.blocked.is_empty());
+}
+
+// --- the Keychain cause reaches the user (crusty round 1) -----------------------------------
+
+#[test]
+fn overflow_add_has_one_warning_for_no_login_and_another_for_the_keychain() {
+    assert_eq!(
+        LoginGap::NoLogin.overflow_warning(&n("work")),
+        "work has no login file, so it cannot be used as overflow until it has one: neither the rotator nor auto-switch can move onto it, and the capacity file does not count it"
+    );
+    for cause in [
+        Cause::NoHome,
+        Cause::NotStarted,
+        Cause::Exit(51),
+        Cause::Signal,
+        Cause::Timeout,
+    ] {
+        let text = LoginGap::KeychainUnreadable(cause).overflow_warning(&n("work"));
+        assert!(
+            text.starts_with(&format!(
+                "work has no login file and the macOS Keychain could not be read ({cause}), "
+            )),
+            "{text}"
+        );
+        assert!(text.contains("Unlock the login Keychain"), "{text}");
+        // Not the other remedy: nothing here says the profile needs a login.
+        assert!(!text.contains("has no login file, so"), "{text}");
+        assert!(!text.contains("until it has one"), "{text}");
+        assert!(!text.contains('\n'), "{text}");
+        assert!(!text.contains("SENTINEL"), "{text}");
+    }
+}
+
+/// `work` is a plan login; every other profile in `spec` is marked as
+/// overflow, and `exclude` is the exclusion list as the file writes it.
+fn capacity_fx(spec: &[(&str, P)], exclude: &str) -> Fx {
+    let f = fx(spec);
+    let marked: Vec<&str> = spec
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| *name != "work")
+        .collect();
+    private(
+        &f.root.join(".auto-switch"),
+        &format!(
+            "enabled=on\nexclude={exclude}\noverflow={}\n",
+            marked.join(",")
+        ),
+    );
+    f
+}
+
+/// What each capacity writer hands back for `f`: the rotator's, then the
+/// status line's and `profile usage`'s.
+fn capacity_notes(f: &Fx) -> [Vec<String>; 2] {
+    let now = fsx::now();
+    let readings = [(n("work"), Rotated::Exhausted)];
+    let state = f.state();
+    let (usage, ledger) = (state.load_usage(), state.load_ledger().unwrap());
+    [
+        capacity::refresh_from_rotation(&f.root, &readings, now, false, true, Some(&f.home)),
+        capacity::refresh(&state, &usage, &ledger, "usage"),
+    ]
+}
+
+#[test]
+fn both_capacity_writers_name_an_overflow_profile_whose_keychain_is_unreadable() {
+    let _l = lock();
+    let f = capacity_fx(
+        &[
+            ("work", P::File),
+            ("locked", P::Acct(51)),
+            ("absent", P::Acct(44)),
+            ("shut", P::Acct(51)),
+        ],
+        "shut",
+    );
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _seam = test_seam(&f.bin);
+    // One line, for the profile the Keychain decided. `absent` has no login
+    // and is left out without a word, as before; `shut` is excluded, so it
+    // never counted and its Keychain is nobody's concern.
+    let want = vec![unreadable_note(&n("locked"), Cause::Exit(51))];
+    for (writer, notes) in ["rotate", "usage"].into_iter().zip(capacity_notes(&f)) {
+        assert_eq!(notes, want, "{writer}");
+    }
+}
+
+#[test]
+fn the_capacity_writers_say_nothing_when_the_keychain_answers_or_auto_switch_is_off() {
+    let _l = lock();
+    let answered = capacity_fx(
+        &[
+            ("work", P::File),
+            ("present", P::Acct(0)),
+            ("absent", P::Acct(44)),
+        ],
+        "",
+    );
+    let off = capacity_fx(&[("work", P::File), ("locked", P::Acct(51))], "");
+    private(
+        &off.root.join(".auto-switch"),
+        "enabled=off\noverflow=locked\n",
+    );
+    for (case, f) in [("answered", &answered), ("off", &off)] {
+        let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+        let _seam = test_seam(&f.bin);
+        for notes in capacity_notes(f) {
+            assert!(notes.is_empty(), "{case}: {notes:?}");
+        }
+    }
 }
 
 #[test]
