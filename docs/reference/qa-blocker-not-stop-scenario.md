@@ -304,10 +304,14 @@ the recipe's observed target, then a lookup of the PR's base, then nothing.
 
 The fixture is a Node repository: a root `package.json` and one commit, as in
 case A. The tool consults a scenario directory only where `gadugi-test` is
-required. Where it is not, as for a documentation-only change or a
-criterion-1 declaration, the state reads `not-consulted` whatever the operator
-named, so the case would pass or fail for the wrong reason. A Node repository
-with no base requires it, and the scenario checks that this holds.
+required, so the case asserts `gadugi_required` is `true` before it reads the
+state, and would otherwise pass or fail for the wrong reason. Two independent
+things make it `true` here, and the assertion holds whichever one a later
+change leaves standing: the repository is a Node project, and
+`AUTODRIVE_QA_SCENARIO_DIR` is set, which
+[requires `gadugi-test` in any repository type](auto-drive-qa.md#operator-environment)
+and so overrides the repository type, a documentation-only change and a
+criterion-1 declaration alike.
 
 `AUTODRIVE_QA_SCENARIO_DIR` is added to this command's environment only. It
 names a directory that does not exist, and the name holds a double quote, a
