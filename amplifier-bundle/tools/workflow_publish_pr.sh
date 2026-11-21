@@ -127,13 +127,10 @@ apply_pr_labels_best_effort() {
   # CSV is passed straight through in a single call — no bespoke parsing needed.
   # `timeout 60` mirrors every other gh call in this script: a hung `gh pr edit`
   # must never block finish_publish from emitting its JSON.
-  # REPO_IDENTITY is read bare on purpose. The `HOST_TYPE = github` test above
-  # is reached only after the main path has derived it from `origin` and failed
-  # the run when it came back empty, so an unset read here would mean a new
-  # success path skipped that derivation and must fail loudly. A `:-` default
-  # would instead address `github.com/`, a different repository. The lib-only
-  # sourcing seam returns before the derivation, so a caller that sources this
-  # file and calls this function owns the same obligation.
+  # REPO_IDENTITY is read bare on purpose. A GitHub run reaches a numeric PR
+  # number only after it has been parsed from origin, and a `:-` default would
+  # address `github.com/` instead of failing. A caller that sources this file
+  # with the lib-only seam owns that assignment.
   if ! timeout 60 gh pr edit "$PR_NUMBER_RESULT" --repo "github.com/$REPO_IDENTITY" --add-label "$WORKFLOW_PR_LABELS" >/dev/null 2>&1; then
     echo "WARNING: workflow_publish_pr.sh: best-effort labels '${WORKFLOW_PR_LABELS}' not applied to PR #${PR_NUMBER_RESULT} (a label may not exist in this repo, GitHub API unavailable, or timed out)" >&2
   fi
