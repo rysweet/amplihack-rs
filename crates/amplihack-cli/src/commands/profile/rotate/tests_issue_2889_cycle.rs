@@ -572,18 +572,40 @@ fn a_held_reading_is_not_offered_after_the_week_reset() {
     assert_eq!(s.held(&n("work"), T + 7200), None);
 }
 
+/// A reset time a reading did not give bounds nothing, so the five hours of
+/// `SESSION_WINDOW_SECS` bound the held reading alone. Each window is tested
+/// on its own and then both together: the week reset is the one the
+/// documented rule singles out ("a reading with no week reset time is
+/// bounded by the five hours alone"), and a reading that gave neither must
+/// not fall back to being offered for ever.
 #[test]
 fn a_held_reading_with_no_reset_time_lasts_one_session_window() {
-    let mut h = held(T);
-    h.resets = None;
-    let mut s = Series::default();
-    s.hold(&n("work"), h);
-    assert_eq!(
-        s.held(&n("work"), T + SESSION_WINDOW_SECS - 1),
-        Some(h),
-        "inside the window"
-    );
-    assert_eq!(s.held(&n("work"), T + SESSION_WINDOW_SECS), None);
+    // A session reset far enough ahead to bind nothing, so only the missing
+    // week reset and the five hours are under test, and the same the other
+    // way about.
+    let far = Some(T + 10 * 86_400);
+    let cases = [
+        ("no session reset", None, Some(T + WEEK_AHEAD)),
+        ("no week reset", far, None),
+        ("neither reset", None, None),
+    ];
+    for (what, resets, week_resets) in cases {
+        let mut h = held(T);
+        h.resets = resets;
+        h.week_resets = week_resets;
+        let mut s = Series::default();
+        s.hold(&n("work"), h);
+        assert_eq!(
+            s.held(&n("work"), T + SESSION_WINDOW_SECS - 1),
+            Some(h),
+            "{what}: inside the window"
+        );
+        assert_eq!(
+            s.held(&n("work"), T + SESSION_WINDOW_SECS),
+            None,
+            "{what}: the five hours are the whole bound"
+        );
+    }
 }
 
 #[test]
