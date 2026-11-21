@@ -407,7 +407,7 @@ When a turn ends on a usage limit and auto-switch is on, it waits up to 7
 days for the rotator to swap `~/.claude` to a login with room. It does not
 poll: it watches `<root>/.auto-switch.d/rotate/swap.json`, which the rotator
 writes only after a successful swap. A wake requires a
-[qualifying swap record](../../../docs/howto/claude-profile-rotation.md#the-swap-record)
+[qualifying swap record](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#the-swap-record)
 with a reading below 100% on both windows. Stays, ALERTs and `profile switch`
 leave the hook waiting. The recipe-step wait uses `last_cycle.live_room`.
 
@@ -427,7 +427,7 @@ The hook attempts to continue the session in one of two ways:
 Automatic recovery in the same conversation after a swap remains unverified
 on Claude Code 2.1.329. If the menu or timed wait remains, or the hook logs
 `resume-keys-failed`, direct the owner to the
-[manual recovery steps](../../../docs/howto/claude-profile-rotation.md#continue-a-session-yourself).
+[manual recovery steps](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#continue-a-session-yourself).
 Only the owner should enter recovery input, including with `tmux send-keys`.
 
 It never presses a digit or types `/usage-credits` or `/rate-limit-options`.
@@ -459,7 +459,7 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 |---------|-----------------------|
 | `resumed-keys` | tmux accepted all four inputs to the session's pane. Check for a reply in the original conversation. |
 | `resumed` | The session had no verified pane, so the hook exited `2` with a continue message. |
-| `resume-keys-failed` | A key failed or the session exited part way (`keys_sent=` says how many went). If the session is still open, its owner should follow [Continue a session yourself](../../../docs/howto/claude-profile-rotation.md#continue-a-session-yourself). |
+| `resume-keys-failed` | A key failed or the session exited part way (`keys_sent=` says how many went). If the session is still open, its owner should follow [Continue a session yourself](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#continue-a-session-yourself). |
 | `swap-no-room` / `swap-stale` | A swap record was at 100% or swapped before the stop; the hook kept waiting. |
 | `watch-lost` | The hook could not watch for swaps (not Linux, old kernel, unsafe or deleted directory; see `detail=`). It never resumes. |
 | `no-capacity-timeout` | No swap to a login with room within 7 days. |
@@ -467,13 +467,14 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 | `session-gone` | The session exited while the hook waited; nothing was done. |
 | `moved-on` | The user sent a prompt in that session during the wait (for example `continue`), so the hook did not wake it. |
 | `disabled` | Auto-switch was off when a swap would have resumed the session. |
-| `duplicate` | That limit event (same session, text and live login) was already resumed, or another hook woke the session first. |
-| `cap` | The session resumed 3 times in 24 hours; it will not resume again until older resumes age out. |
+| `duplicate` | A wake attempt was already recorded for that limit event (same session, text and login), or another hook recorded an attempt for the session during the wait. |
+| `cap` | The session reached its limit of 3 recorded wake attempts in 24 hours. Another attempt can be made once an older one ages out. |
 | `stop-hook-active` | Claude Code reported a stop hook already running; nothing was done. |
 | `guard-failed` | The resume state under `<root>/.auto-switch.d/resume/` could not be used safely. Check its owner and mode (`0700`). |
 
-The hook requires a qualifying swap record and attempts a wake at most once
-per limit event, once per wait and 3 times per session in 24 hours. Each
+The hook requires a qualifying swap record and records a wake attempt before
+delivering it, so a partial send counts toward the limit. It records at most
+one attempt per limit event, one per wait and 3 per session in 24 hours. Each
 `resume.log` line also has `cycle=`, the rotator's last cycle outcome, and,
 when they apply, `swap_seq=`, `swap_live=`, `pane=` (a hash, not the pane
 id), `keys_sent=` and `detail=`.
@@ -484,7 +485,7 @@ documented default is `true`. Managed settings take precedence over
 settings supplied when launching Claude Code, which take precedence over
 user settings. When none of these sets the key, a project or local setting
 for this key disables the automatic wait. See
-[Check automatic continuation at reset](../../../docs/howto/claude-profile-rotation.md#check-automatic-continuation-at-reset).
+[Check automatic continuation at reset](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#check-automatic-continuation-at-reset).
 
 Inspection of the Claude Code 2.1.325 binary suggested that billing type
 and a server-side flag affect whether it starts a reset wait. The

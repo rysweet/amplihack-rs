@@ -1424,7 +1424,7 @@ A swap record qualifies for a hook wake when all of these hold.
 - `swapped_at` is at or after the stop. The hook uses the last transcript
   entry's time for the stop, or one second before the hook started if that
   is earlier or the transcript time is unavailable.
-- `swapped_at` is later than the session's last recorded hook wake, if any.
+- `swapped_at` is later than the session's last recorded wake attempt, if any.
 - The record differs from the one the hook first saw, or it qualifies by
   time and `swapped_at` is no later than the hook's start. This allows a swap
   that finished between the stop and the hook's start to wake the session.
@@ -1508,21 +1508,23 @@ of the pane id, not the id. The other outcomes are listed in the
 
 - **One record per swap.** Only a swap writes `swap.json`. Stays, ALERTs
   and the passing of time leave it alone.
-- **Newer than the last hook wake.** The hook compares `swapped_at` with the
-  session's last recorded wake before it acts on the record again.
+- **Newer than the last wake attempt.** The hook compares `swapped_at` with
+  the session's last recorded wake attempt before acting on the swap record.
 - **Room by a fresh reading.** A swap onto a login at 100% on either window
   logs `swap-no-room` and resumes nothing.
-- **Recorded before acting.** The resume is on disk under the lock before
-  the first key or the exit `2`, so a resume cut short is never repeated.
-- **One resume per limit event.** A second hook run for the same session,
-  the same error text and the same login logs `duplicate`. The login is the
-  one the session stopped on: when the rotator swapped away from it just
-  before the hook started, that is the swap record's `from_login`, not the
-  new live login. A limit after the rotator swapped to another login is a
-  new event.
-- **One wake per wait.** When two hooks wait for the same session, only the
-  first to act resumes it; the other logs `duplicate` or `moved-on`.
-- **At most 3 resumes per session in 24 hours.** After that it logs `cap`.
+- **Recorded before delivery.** The hook records the wake attempt under the
+  lock before sending the first key or exiting with `2`. A partial send
+  counts toward the attempt limit.
+- **One wake attempt per limit event.** If an attempt is already recorded
+  for the same session, error text and login, the hook logs `duplicate`.
+  The login is the one the session stopped on. If the rotator swapped away
+  from it just before the hook started, use the swap record's `from_login`.
+  A limit after a swap to another login is a new event.
+- **One wake attempt per wait.** If another hook records an attempt for the
+  same session during the wait, the waiting hook logs `duplicate`. If it
+  sees a prompt was sent during the wait, it logs `moved-on`.
+- **At most 3 recorded wake attempts per session in 24 hours.** The hook
+  logs `cap` when the session reaches that limit.
 
 If anything it needs cannot be read, watched or written safely, it does not
 resume.
@@ -1536,12 +1538,12 @@ The hook acts only when Claude Code runs it, on a `StopFailure` event with
 
 - **A limit while a hook for the same session is waiting.** Claude Code
   starts a second hook. Its event differs in the error text or the live
-  login, so it waits as well. The first to act resumes the session; the
+  login, so it waits as well. The first to act records a wake attempt. The
   other logs `duplicate` or `moved-on`.
-- **A limit just after a resume.** The same text on the same live login is
-  the same event: the hook logs `duplicate` and does not resume the session
-  again. A limit after the rotator swapped to another login is a new event,
-  and the hook waits for the next swap.
+- **A limit just after a wake attempt.** The same text on the same live
+  login is the same event, so the hook logs `duplicate`. A limit after the
+  rotator swapped to another login is a new event, and the hook waits for
+  the next swap.
 - **A stop on one login, then a swap to another.** The swap's record wakes
   the session once, and the log line reads `swap_live=<second login>`. This
   holds when the swap finishes between the stop and the hook's start. If the
@@ -1558,12 +1560,16 @@ menu open. Claude Code hides the setting in `/config` when managed
 settings or `--settings` supply a value. See the
 [Claude Code settings reference](https://code.claude.com/docs/en/settings-reference#autocontinueatusagelimit).
 
-Check the user settings file with `jq`. If the session uses a custom
-`CLAUDE_CONFIG_DIR`, use that directory in the command.
+Check the user settings file with `jq`. It must contain exactly one JSON
+object. If the session uses a custom `CLAUDE_CONFIG_DIR`, use that directory
+in the command.
 
 ```bash
-jq -e '
-  if type != "object" then error("settings must be a JSON object")
+jq -es '
+  if length != 1 then error("settings must contain exactly one JSON object")
+  else .[0]
+  end
+  | if type != "object" then error("settings must be a JSON object")
   elif has("autoContinueAtUsageLimit") and (.autoContinueAtUsageLimit | type != "boolean")
   then error("autoContinueAtUsageLimit must be a boolean")
   else {present: has("autoContinueAtUsageLimit"), value: .autoContinueAtUsageLimit}
