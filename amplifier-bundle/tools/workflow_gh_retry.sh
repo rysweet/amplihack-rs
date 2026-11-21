@@ -294,16 +294,14 @@ gh_pr_number_from_url() {
 }
 
 # --- retry driver ----------------------------------------------------------
-# _gh_retry_core [--terminal-stdout] <label> <gh-arg>...
+# _gh_retry_core [--create-diagnostics <directory>] <label> <gh-arg>...
 #
 #   stdout : command output on success (or REST fallback output).
 #   return : 0 on success; otherwise the original failure status.
 #
-# --terminal-stdout is for the PR publisher's private result capture. On
-# failure, stdout holds an origin line (provider or local) followed by a safe
-# diagnostic, emitted after cleanup. Retry warnings still go to stderr. The
-# publisher interprets stdout using the child's wait status and owns its
-# capture. Cancellation can leave the result empty.
+# The PR publisher can supply a private directory for terminal diagnostics.
+# The helper writes the terminal failure to either provider or local in that
+# directory. Retry warnings still go to stderr.
 #
 # Behaviour is tuned via environment variables (all optional):
 #   GH_RETRY_RESOURCE       graphql|core       (default: graphql) — resource to
@@ -324,11 +322,11 @@ gh_pr_number_from_url() {
 # `success`/`rate_limit_rest`) for callers that need to branch on it.
 _gh_retry_core() {
   local stderr_file="" stdout_file="" GH_OWNED_PID="" retry_status=0 retry_interrupted_status=0
-  local terminal_stdout=false terminal_origin="" terminal_diagnostic=""
   local retry_int retry_term retry_hup retry_shell_pid
-  if [ "${1:-}" = --terminal-stdout ]; then
-    terminal_stdout=true
-    shift
+  local create_diagnostics_dir=""
+  if [ "${1:-}" = --create-diagnostics ]; then
+    create_diagnostics_dir="$2"
+    shift 2
   fi
   retry_int=$(trap -p INT); retry_term=$(trap -p TERM); retry_hup=$(trap -p HUP)
   # $$ names the original shell even inside command substitution on Bash 3.2.
@@ -345,28 +343,24 @@ _gh_retry_core() {
   _gh_retry_cleanup
   _gh_retry_restore_traps
   [ "$retry_interrupted_status" -eq 0 ] || retry_status=$retry_interrupted_status
-  if $terminal_stdout && [ "$retry_status" -ne 0 ] && [ -n "$terminal_diagnostic" ]; then
-    printf '%s\n%s\n' "$terminal_origin" "$terminal_diagnostic" ||
-      printf 'WARNING: gh %s: terminal diagnostic write failed\n' "${1:-gh}" >&2
-  fi
   return "$retry_status"
 }
 
-# Private-state contract: call these helpers only within _gh_retry_core.
-# It owns local stderr_file/stdout_file, GH_OWNED_PID, retry_status,
+# _gh_retry_core owns local stderr_file/stdout_file, GH_OWNED_PID, retry_status,
 # retry_interrupted_status, retry_int/term/hup and retry_shell_pid. Attempts
 # replace captures and child PID; cleanup cancels/reaps the child, unlinks
 # captures and clears those variables. Interrupt sets retry_interrupted_status;
 # restore uses saved traps/PID to preserve the caller's signal disposition.
-# Attempts mark a provider origin only when returning that attempt's status.
-# Local failures record their operation and status. The core cleans up and
-# restores traps before emitting the diagnostic. GH_RETRY_LAST_CLASS is visible
-# to callers.
+# Attempts record a provider diagnostic only when returning that attempt's
+# status. The core and publisher's create wrapper both set create_diagnostics_dir
+# for local failure reporting. The publisher owns the captures and reads them
+# after reaping the subprocess. GH_RETRY_LAST_CLASS is visible to callers.
 _gh_retry_local_failure() {
   GH_RETRY_LAST_CLASS=other
-  terminal_origin=local
-  terminal_diagnostic="$2 failed (exit $3)"
-  $terminal_stdout || printf 'ERROR: gh %s: %s\n' "$1" "$terminal_diagnostic" >&2
+  if [ -n "$create_diagnostics_dir" ]; then
+    printf '%s failed (exit %s)\n' "$2" "$3" >"$create_diagnostics_dir/local" && return 0
+  fi
+  printf 'ERROR: gh %s: %s failed (exit %s)\n' "$1" "$2" "$3" >&2
 }
 
 _gh_retry_cleanup() {
@@ -510,14 +504,14 @@ _gh_retry_attempts() {
         fi
         ;;
     esac
-    terminal_origin=provider
-    terminal_diagnostic="$diagnostic"
-    if ! $terminal_stdout; then
-      if [ "$class" = auth ]; then
-        printf 'ERROR: gh %s failed with an authentication error (exit %s); not retrying: %s\n' "$label" "$status" "$diagnostic" >&2
-      else
-        printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
-      fi
+    if [ -n "$create_diagnostics_dir" ] &&
+      printf '%s\n' "$diagnostic" >"$create_diagnostics_dir/provider"; then
+      return "$status"
+    fi
+    if [ "$class" = auth ]; then
+      printf 'ERROR: gh %s failed with an authentication error (exit %s); not retrying: %s\n' "$label" "$status" "$diagnostic" >&2
+    else
+      printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
     fi
     return "$status"
   done

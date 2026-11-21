@@ -348,32 +348,31 @@ fn mandatory_body_file_creation_and_write_failures_remain_terminal_with_diagnost
 }
 
 #[test]
-fn create_failure_without_origin_keeps_identity_empty_and_skips_collision_lookup() {
+fn create_failure_without_a_diagnostic_discards_stdout_and_skips_collision_lookup() {
     let f = PublishFixture::new();
     f.offer_collision_pr(BRANCH);
-    let helper = f.tmp.path().join("legacy-retry-helper.sh");
-    let retry =
-        fs::read_to_string(root().join("amplifier-bundle/tools/workflow_gh_retry.sh")).unwrap();
-    let entry = "_gh_retry_core() {";
-    assert!(retry.contains(entry));
-    fs::write(
-        &helper,
-        retry.replace(
-            entry,
-            &format!(
-                r#"{entry}
-  if [ "${{1:-}}" = --terminal-stdout ]; then
+    f.write(
+        "interrupted-retry-helper.sh",
+        r#"
+real_retry_helper="$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_gh_retry.sh"
+. "$real_retry_helper"
+_gh_retry_core() (
+  if [ "$1" = --create-diagnostics ]; then
     : > "$CASE_ROOT/collision-ready"
-    printf '%s\n' 'unframed private result'
-    return 79
-  fi"#
-            ),
-        ),
-    )
-    .unwrap();
+    printf '%s\n' 'private partial create output'
+    exit 79
+  fi
+  . "$real_retry_helper"
+  _gh_retry_core "$@"
+)
+"#,
+    );
     let output = f
         .publish_command()
-        .env("WORKFLOW_GH_RETRY_HELPER", helper)
+        .env(
+            "WORKFLOW_GH_RETRY_HELPER",
+            f.tmp.path().join("interrupted-retry-helper.sh"),
+        )
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(79), "{}", describe(&output));
@@ -387,7 +386,7 @@ fn create_failure_without_origin_keeps_identity_empty_and_skips_collision_lookup
             .unwrap()
             .contains("terminal diagnostic unavailable")
     );
-    assert!(!describe(&output).contains("unframed private result"));
+    assert!(!describe(&output).contains("private partial create output"));
     assert!(f.tmp.path().join("collision-ready").is_file());
     f.assert_create_attempts_and_scoped_lookups(0, 1);
     f.assert_private_cleanup();

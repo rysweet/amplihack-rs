@@ -6,12 +6,18 @@ PUBLISH_OPERATION="publishing prerequisites"
 PUBLISH_DIAGNOSED=false
 CREATE_STDERR_FILE=""
 CREATE_STDOUT_FILE=""
+CREATE_DIAGNOSTICS_DIR=""
 PUBLISH_CHILD=""
 publish_exit_diagnostic() {
   local status=$?
   if [ -n "$PUBLISH_CHILD" ]; then gh_cancel_owned "$PUBLISH_CHILD"; fi
   [ -z "$CREATE_STDERR_FILE" ] || gh_remove_capture "$CREATE_STDERR_FILE"
   [ -z "$CREATE_STDOUT_FILE" ] || gh_remove_capture "$CREATE_STDOUT_FILE"
+  if [ -n "$CREATE_DIAGNOSTICS_DIR" ]; then
+    gh_remove_capture "$CREATE_DIAGNOSTICS_DIR/provider"
+    gh_remove_capture "$CREATE_DIAGNOSTICS_DIR/local"
+    rmdir -- "$CREATE_DIAGNOSTICS_DIR" || printf 'WARNING: gh pr create diagnostic cleanup failed\n' >&2
+  fi
   if [ "$status" -ne 0 ] && [ "$PUBLISH_DIAGNOSED" != true ]; then
     printf 'ERROR: workflow_publish_pr.sh: %s failed (exit %s)\n' "$PUBLISH_OPERATION" "$status" >&2
   fi
@@ -229,17 +235,17 @@ gh_pr_view_with_retry() {
 }
 
 # The publisher captures stdout privately and reaps this subprocess before
-# unlinking the captures. Stdout carries the URL on success or a fixed origin
-# line followed by a safe diagnostic on failure. Warnings stay on stderr.
+# unlinking the captures. Pass the diagnostics directory to the retry helper.
 gh_pr_create_with_retry() (
   local status=0 body_file="" GH_OWNED_PID=""
+  local create_diagnostics_dir="$CREATE_DIAGNOSTICS_DIR"
   trap 'gh_cancel_owned "$GH_OWNED_PID"; [ -z "$body_file" ] || gh_remove_capture "$body_file"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'exit 129' HUP
   if body_file="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-body.XXXXXX" 2>/dev/null)"; then :; else
     status=$?
-    printf 'local\nbody temp creation failed (exit %s)\n' "$status"
+    _gh_retry_local_failure 'pr create' 'body temp creation' "$status"
     return "$status"
   fi
   if gh_start_owned write_body_file "$body_file" "the workflow publish step log" < <(printf '%s' "$PR_BODY") >/dev/null &&
@@ -249,11 +255,11 @@ gh_pr_create_with_retry() (
     status=$?
     gh_remove_capture "$body_file"
     body_file=""
-    printf 'local\nbody-file write failed (exit %s)\n' "$status"
+    _gh_retry_local_failure 'pr create' 'body-file write' "$status"
     return "$status"
   fi
   # WRITE path: no REST fallback (never blind-create); rate limits wait for reset.
-  gh_start_owned _gh_retry_core --terminal-stdout "pr create" pr create --draft \
+  gh_start_owned _gh_retry_core --create-diagnostics "$create_diagnostics_dir" "pr create" pr create --draft \
     --repo "github.com/$REPO_IDENTITY" ${RECIPE_VAR_base_branch:+--base="$BASE_BRANCH"} \
     ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file"
   wait "$GH_OWNED_PID" || status=$?
@@ -1131,8 +1137,14 @@ if CREATE_STDOUT_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-result.X
   capture_status=$?
   finish_publish "FAILED_PR_CREATE" "create-pr-failed" failure "gh pr create stdout temp creation failed (exit $capture_status)" "$capture_status"
 fi
+PUBLISH_OPERATION="gh pr create diagnostic temp creation"
+if CREATE_DIAGNOSTICS_DIR="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/workflow-pr-diagnostics.XXXXXX" 2>/dev/null)"; then :; else
+  capture_status=$?
+  finish_publish "FAILED_PR_CREATE" "create-pr-failed" failure "gh pr create diagnostic temp creation failed (exit $capture_status)" "$capture_status"
+fi
 PUBLISH_OPERATION="gh pr create"
-if gh_start_owned gh_pr_create_with_retry >"$CREATE_STDOUT_FILE" 2>"$CREATE_STDERR_FILE"; then :; else
+if (umask 077; : >"$CREATE_DIAGNOSTICS_DIR/provider" && : >"$CREATE_DIAGNOSTICS_DIR/local") &&
+  gh_start_owned gh_pr_create_with_retry >"$CREATE_STDOUT_FILE" 2>"$CREATE_STDERR_FILE"; then :; else
   capture_status=$?
   finish_publish "FAILED_PR_CREATE" "create-pr-failed" failure "gh pr create capture setup failed (exit $capture_status)" "$capture_status"
 fi
@@ -1140,18 +1152,12 @@ PUBLISH_CHILD=$GH_OWNED_PID
 CREATE_STATUS=0
 wait "$PUBLISH_CHILD" || CREATE_STATUS=$?
 PUBLISH_CHILD=""
-CREATE_RESULT=$(<"$CREATE_STDOUT_FILE") || CREATE_RESULT=""
 if [ "$CREATE_STATUS" -ne 0 ]; then
-  CREATE_ORIGIN=""
-  CREATE_DIAGNOSTIC="terminal diagnostic unavailable"
-  case "$CREATE_RESULT" in
-    provider$'\n'?*|local$'\n'?*)
-      CREATE_ORIGIN="${CREATE_RESULT%%$'\n'*}"
-      CREATE_DIAGNOSTIC="${CREATE_RESULT#*$'\n'}" ;;
-  esac
-  CREATE_MESSAGE="gh pr create failed (exit ${CREATE_STATUS}): ${CREATE_DIAGNOSTIC}"
+  PROVIDER_DIAGNOSTIC=$(<"$CREATE_DIAGNOSTICS_DIR/provider") || PROVIDER_DIAGNOSTIC=""
+  LOCAL_DIAGNOSTIC=$(<"$CREATE_DIAGNOSTICS_DIR/local") || LOCAL_DIAGNOSTIC=""
+  CREATE_MESSAGE="gh pr create failed (exit ${CREATE_STATUS}): ${PROVIDER_DIAGNOSTIC:-${LOCAL_DIAGNOSTIC:-terminal diagnostic unavailable}}"
   # Only a terminal provider attempt can have created a PR to adopt.
-  if [ "$CREATE_ORIGIN" = provider ]; then
+  if [ -n "$PROVIDER_DIAGNOSTIC" ]; then
     if RECOVERY_JSON="$(scoped_pr_lookup)"; then
       load_pr_fields "$RECOVERY_JSON"
       if [ -n "$PR_URL_RESULT" ] && [ "$PR_STATE" = "OPEN" ]; then
@@ -1173,6 +1179,7 @@ if [ "$CREATE_STATUS" -ne 0 ]; then
   finish_publish "FAILED_PR_CREATE" "create-pr-failed" "failure" "$CREATE_MESSAGE" "$CREATE_STATUS"
 fi
 PUBLISH_OPERATION="gh pr create result parsing (PR identity)"
+CREATE_RESULT=$(<"$CREATE_STDOUT_FILE") || CREATE_RESULT=""
 # Split at the final /pull/ so repositories named pull work. Only the
 # repository comparison ignores ASCII case. Keep the result private until
 # both the repository and the positive decimal number have been validated.

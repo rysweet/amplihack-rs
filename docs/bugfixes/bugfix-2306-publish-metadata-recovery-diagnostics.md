@@ -138,13 +138,12 @@ wait failure reports its own operation and status. A failed wait stops Step 16
 before the next create attempt. A failed collision lookup can add context while
 the original creation evidence remains available.
 
-The publisher interprets the create subprocess's private stdout capture using
-its wait status. The capture holds the candidate URL on success. On failure
-it holds a fixed origin line and a safe diagnostic. The retry helper emits
-both after cleaning its attempt captures and marks a failure as provider-origin
-only when returning the final attempt's status. Missing origin or diagnostic
-data yields a fixed explanation with the observed exit status. Retry warnings
-use stderr.
+The publisher reads the candidate URL from private stdout after a successful
+create. On failure, the publisher reads the terminal diagnostic from private
+captures for GitHub rejections and local failures. Only a terminal GitHub
+rejection triggers the existing collision lookup. If both captures are empty,
+the publisher reports that the diagnostic is unavailable and includes the
+observed exit status. Retry warnings use stderr.
 
 The publisher owns the outer captures. On exit and catchable cancellation it
 reaps its child before unlinking those captures. The retry helper owns its
