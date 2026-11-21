@@ -711,12 +711,17 @@ lane!(lsf);
 ///
 /// `spare` sits at 68%, under `--session-at`, so it is a login with capacity:
 /// a login at or above the threshold is never a threshold target. Decided on
-/// the last known 95%, it has 27 points more headroom than the live login,
-/// above `--margin` 5: a swap, relabelled `reason=projected` because the 66%
-/// as read needs none (`map_reason`). Decided on the threshold 70% it has 2
-/// more, below `--margin`, so there is no swap and no capacity to name. The
-/// outcome is what tells the two apart. The log does not: `msg::swap` shows
-/// the reading as read, never the figure the decision ran on.
+/// the last known 95% it has 27 points more headroom than the live login,
+/// above `--margin` 5, so there is a swap. Decided on the threshold 70% it
+/// has 2 more, below `--margin`, so there is no swap and no capacity to name.
+///
+/// Issue #2889 changed what the log says here, not the outcome. The 95% is
+/// the last reading the step accepted, and use never falls within a session
+/// window, so cycle 2 decides on it rather than on the lower cached 66%, and
+/// the line reports the figures it decided on with their age. The swap is a
+/// `threshold` one on a reading of 95%, not a `projected` one on a reading
+/// of 66% raised by an outlook: the figure is now a measurement of the
+/// login, so it is labelled as one.
 ///
 /// That the rotator makes no plan-room swap onto a login at `--session-at` is
 /// pinned by `choose_treats_a_login_exactly_at_session_at_as_at_its_threshold`
@@ -738,9 +743,10 @@ fn e2b_a_stale_reading_after_95_percent_is_decided_on_95_not_the_threshold() {
         "nothing has room in cycle 1"
     );
     let cycle1 = log_of(&e).len();
-    // Cycle 2 sees a stale 66%, below `--session-at`, and its re-read fails.
-    // `spare` is at 68%: 32 points of headroom, 27 more than the live login
-    // has at 95%, and 2 more than it has at 70%.
+    // Cycle 2 sees a stale 66%, below `--session-at`, and its re-read fails,
+    // so it decides on the held 95% (issue #2889). `spare` is at 68%: 32
+    // points of headroom, 27 more than the live login has at 95%, and 2 more
+    // than it has at 70%.
     lsf::CLOCK.store(at1 + 2 * INTERVAL, std::sync::atomic::Ordering::SeqCst);
     set(&lsf::LIVE, &[Live::Passive(66.0, 41.0, 2 * INTERVAL)]);
     set(&lsf::OTHERS, &spare_at_68());
@@ -751,7 +757,9 @@ fn e2b_a_stale_reading_after_95_percent_is_decided_on_95_not_the_threshold() {
     assert_eq!(lsf::live_calls(), 1, "{log}");
     assert_eq!(got, CycleOutcome::Swapped, "decided on 95, not 70: {log}");
     assert!(
-        cycle2.contains("swap work->spare live s=66% w=41% target s=68% w=40% reason=projected"),
+        cycle2.contains(
+            "swap work->spare live s=95% w=41% cached=240s target s=68% w=40% reason=threshold"
+        ),
         "{log}"
     );
     assert!(!cycle2.contains("ALERT: no profile has capacity"), "{log}");
