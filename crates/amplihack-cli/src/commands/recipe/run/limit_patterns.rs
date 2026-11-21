@@ -46,6 +46,9 @@ struct Patterns {
     /// A line starting with this (either apostrophe) that also contains
     /// `limit` and `·` is the harness's own limit message.
     message_prefix: &'static str,
+    /// Lowercase prefixes of the harness's own rate-limit (429) envelope,
+    /// matched at the start of a line only. See [`rate_limit`].
+    rate_limit: &'static [&'static str],
 }
 
 /// The organisation spend-limit phrase. `profile usage` also reads it, from
@@ -96,7 +99,28 @@ const CLAUDE: Patterns = Patterns {
     epoch_marker: "Claude AI usage limit reached",
     anchor: "resets ",
     message_prefix: "You've hit your ",
+    rate_limit: CLAUDE_RATE_LIMIT,
 };
+
+/// The 429 envelopes Claude Code prints: the one definition of the phrases
+/// (issue #2857).
+///
+/// Two readers share it and read it differently. [`rate_limit`] matches these
+/// at the start of one line only, for the one decision #2857 names: whether
+/// the retry a limit wait earned was rejected at once. The recipe runner's
+/// `failure_markers::TRANSIENT_MARKERS` is composed from this list, so a 429
+/// anywhere in a failure's evidence is still a transient transport fault
+/// there, and in auto-drive's terminal decisions.
+///
+/// They are never added to [`CLAUDE`]`.markers`: the classifier reads the
+/// markers, and a 429 added there would turn every transient rate limit into
+/// a usage limit that waits for hours.
+pub(super) const CLAUDE_RATE_LIMIT: &[&str] = &[
+    "api error: 429",
+    "429 too many requests",
+    "rate_limit_error",
+    "rate limit exceeded",
+];
 
 /// Every harness's markers, for the classifier.
 pub(crate) fn all_markers() -> Vec<&'static str> {
@@ -159,16 +183,7 @@ pub(crate) fn limit_message(stderr: &[u8], stdout: &[u8], now: i64) -> Option<Li
     let out = String::from_utf8_lossy(stdout);
     Harness::ALL.iter().find_map(|&h| {
         let p = h.patterns();
-        let line = err
-            .lines()
-            .map(str::trim)
-            .rfind(|l| shaped(p, l))
-            .or_else(|| {
-                out.lines()
-                    .map(str::trim)
-                    .rfind(|l| !l.is_empty())
-                    .filter(|l| shaped(p, l))
-            })?;
+        let line = positioned(&err, &out, |l| shaped(p, l))?;
         let reset = match line.strip_prefix(p.epoch_marker) {
             Some(rest) => epoch_digits(rest.as_bytes()),
             None => line
@@ -181,6 +196,24 @@ pub(crate) fn limit_message(stderr: &[u8], stdout: &[u8], now: i64) -> Option<Li
             spend: line.to_ascii_lowercase().contains(SPEND_LIMIT),
             reset,
         })
+    })
+}
+
+/// The one line an attempt's output may be judged by: the last stderr line
+/// that `is_it` accepts, else the last non-empty line of the stdout tail when
+/// that line is accepted. Lines are trimmed first.
+///
+/// The position is the whole rule. In `-p` mode stdout is the model's answer,
+/// so a phrase inside a sentence, or in a line the model wrote before its
+/// closing one, is the model talking about a limit and not the harness
+/// reporting one. Shared by [`limit_message`] and [`rate_limit`] so the two
+/// readings cannot drift apart.
+fn positioned<'a>(err: &'a str, out: &'a str, is_it: impl Fn(&str) -> bool) -> Option<&'a str> {
+    err.lines().map(str::trim).rfind(|l| is_it(l)).or_else(|| {
+        out.lines()
+            .map(str::trim)
+            .rfind(|l| !l.is_empty())
+            .filter(|l| is_it(l))
     })
 }
 
@@ -209,4 +242,37 @@ pub(crate) fn reset_hint(text: &str) -> Option<String> {
         .collect();
     let hint = hint.trim();
     (!hint.is_empty()).then(|| hint.to_string())
+}
+
+/// Whether an attempt's output carries a harness 429 envelope, read at the
+/// one position [`limit_message`] reads a usage-limit message at (issue
+/// #2857): a whole line of stderr, or the last non-empty line of the stdout
+/// tail.
+///
+/// This answers one question, asked at one place: the retry a limit wait
+/// earned came back rejected at once, so the signal that ended that wait was
+/// wrong. Nothing else in the runner reads it. A 429 stays what the
+/// classifier calls it, a transient transport fault that clears in seconds,
+/// and the wait's own reader of limit messages still ignores it.
+///
+/// The envelope must start the line, in any case: `429 Too Many Requests`
+/// counts, `got a 429 Too Many Requests from the proxy` does not. A prefix
+/// ending in a digit must not be followed by another, so `API Error: 4290`
+/// is not `API Error: 429`.
+pub(crate) fn rate_limit(stderr: &[u8], stdout: &[u8]) -> bool {
+    let err = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    let out = String::from_utf8_lossy(stdout).to_ascii_lowercase();
+    Harness::ALL.iter().any(|h| {
+        let p = h.patterns();
+        positioned(&err, &out, |l| p.rate_limit.iter().any(|m| envelope(l, m))).is_some()
+    })
+}
+
+/// Whether the lowercased `line` opens with the lowercase envelope `marker`.
+fn envelope(line: &str, marker: &str) -> bool {
+    let Some(rest) = line.strip_prefix(marker) else {
+        return false;
+    };
+    !(marker.ends_with(|c: char| c.is_ascii_digit())
+        && rest.starts_with(|c: char| c.is_ascii_digit()))
 }

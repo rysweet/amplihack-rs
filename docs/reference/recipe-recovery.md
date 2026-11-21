@@ -2,7 +2,7 @@
 title: Recipe recovery reference
 description: Durable recovery identity, persistence policies, resource declarations, and runner contracts.
 doc_type: reference
-last_updated: 2026-11-11
+last_updated: 2026-11-15
 ---
 
 # Recipe recovery reference
@@ -19,6 +19,11 @@ admission and trusted failure classification. Recovery requires
 - [Identity and admission](#identity-and-admission)
 - [Recipe persistence policy](#recipe-persistence-policy)
 - [Step replay policy and resources](#step-replay-policy-and-resources)
+  - [Caller-set keys in routing and workflow recipes](#caller-set-keys-in-routing-and-workflow-recipes)
+    - [Delivery controls across a relaunch](#delivery-controls-across-a-relaunch)
+    - [What the tests observe](#what-the-tests-observe)
+    - [What the lists do not cover](#what-the-lists-do-not-cover)
+  - [Changing a persist list](#changing-a-persist-list)
 - [Completion contract](#completion-contract)
 - [Compatibility and invalidation](#compatibility-and-invalidation)
 - [Private storage and publication](#private-storage-and-publication)
@@ -64,6 +69,13 @@ An issue URL must use an approved issue host, name the selected repository,
 and contain a positive issue number. Conflicting or unverifiable work
 identifiers do not enter a shared recovery namespace. The run logs the
 reason and executes fresh. Task prose is not parsed as recovery authority.
+
+Once the issue is known, amplihack writes it back to the recipe context in
+both forms: `issue_number` as the number and, when `origin` is a GitHub
+remote, `issue_url` as `https://github.com/<owner>/<repo>/issues/<n>`. The
+runner treats every context key a shell step can see as an input of that
+step, so a launch given the number and a relaunch given the URL must present
+the same keys and values for completed shell steps to be replayed.
 
 An identity lock serializes predecessor selection, monotonic sequence
 allocation, new-attempt registration, and latest-marker publication.
@@ -158,6 +170,16 @@ Artifacts outside the run may instead remain external validated file
 dependencies. Resources that cannot be copied or verified make dependent
 results non-replayable.
 
+With the pinned runner, a step that reads an artifact-bound key executes again
+after a relaunch even when the artifact is unchanged: the rebound path counts
+as a changed input (`input_changed`). This is the open upstream bug
+[amplihack-recipe-runner#218](https://github.com/rysweet/amplihack-recipe-runner/issues/218),
+not intended behaviour. In `smart-execute-routing.yaml`,
+`create-workstreams-config` rebinds `workstreams_file`, so
+`launch-parallel-round-1` relaunches every workstream on each relaunch until
+the pin moves to a runner with the fix. This is tracked in
+[#2696](https://github.com/rysweet/amplihack-rs/issues/2696).
+
 Shipped classification, preparation and design recipes opt into semantic
 persistence. Container recipes re-enter their children; session setup and
 authorization steps execute again. Declare any additional opaque file
@@ -165,6 +187,328 @@ dependencies before enabling reuse in custom recipes.
 Session setup and authorization resources use current live admission;
 saved session outputs alone are never sufficient. A user-supplied shell
 command cannot act as a trusted live-resource rebinder.
+
+### Caller-set keys in routing and workflow recipes
+
+The pinned runner treats every context key as an input of every bash and
+recipe step. A key that is set but missing from `persist.context` cannot be
+saved, so every `replay: reuse` bash or recipe step in that recipe executes
+again after a relaunch. A recipe that declares reuse must therefore list each
+key that its caller sets with `-c` or that a parent passes in, not only the
+keys its own steps read.
+
+Six keys carry the caller's delivery choices: `base_branch`,
+`closing_reference`, `forbidden_base_branches`, `pr_repository`, `repository`
+and `strict_delivery`. The shipped routing and workflow recipes list them as
+follows.
+
+| Recipe | Caller-set keys in `persist.context` |
+| --- | --- |
+| `smart-orchestrator.yaml` | the six |
+| `smart-classify-route.yaml` | the six |
+| `smart-execute-routing.yaml` | the six |
+| `default-workflow.yaml` | the six, and `step_recovery_dir` |
+| `workflow-prep.yaml` | the six, and `step_recovery_dir` |
+| `workflow-design.yaml` | the six, and `step_recovery_dir` |
+
+The rule each row follows is that a recipe persists every key it declares or
+can receive, not that every recipe carries an identical list. The three
+routing recipes never receive `step_recovery_dir`: `auto-drive-to-merge.yaml`
+creates the directory and `autodrive-build.yaml` hands the path straight to
+`default-workflow`, so the key reaches the phase tree without passing through
+classification or routing. None of the three declares it.
+
+Each child lists every key its parent passes down. The set difference
+`smart-orchestrator` minus `smart-classify-route` is empty, and so is
+`default-workflow` minus either of `workflow-prep` and `workflow-design`.
+Keeping those differences empty is what stops a child's `replay: reuse` steps
+from becoming the restart point of every relaunch: the parent re-enters the
+child on each attempt, and a child that cannot save a key it received
+re-executes work it had already finished.
+
+A key counts as an input whether the recipe declares it or a parent supplies
+it. `base_branch` is declared with an empty-string default in five of the six
+recipes, so it is always set, possibly to an empty value; `workflow-design`
+does not declare it and receives it from `default-workflow`, which passes its
+whole context into each phase sub-recipe. The same holds for
+`closing_reference`, `forbidden_base_branches` and `pr_repository` there.
+`strict_delivery` reaches the orchestrator from classification and then
+reaches execute-routing. The delivery inputs `closing_reference`,
+`forbidden_base_branches`, `pr_repository` and `repository` can be set with
+`-c` or arrive from a development child; see
+[delivery inputs](workflow-delivery-inputs.md).
+
+`step_recovery_dir` is not a delivery input. `auto-drive-to-merge.yaml` creates
+the directory through `amplihack orch helper step-recovery init` and binds the
+path to the key, `autodrive-build.yaml` hands it to `default-workflow`, and
+`default-workflow.yaml` declares it as an empty-string context default. No
+phase step names the key in a `context:` block of its own; the key reaches each
+phase recipe through `_execute_sub_recipe()`, which merges the whole context
+into the child. (Two phase steps do carry a `context:` block, `workflow-publish`
+clearing `commit_result` and `workflow-pr-review` clearing
+`feedback_push_result`, and neither mentions `step_recovery_dir`.)
+
+An empty value usually means step recovery is off for the run, and the steps
+that consult it execute their body directly. `workflow-finalize.yaml` is the
+exception: its first step runs `step-recovery init --created-by
+workflow-finalize`, passing `--dir` only when the inherited value is non-empty,
+and binds the result back to `step_recovery_dir` as its own output. An empty
+inherited value there means the phase creates a directory of its own rather
+than that recovery is off.
+
+Two phase recipes use the value. `workflow-worktree` writes `build-branch.txt`
+under it so a retried build can recover its branch, and `workflow-finalize`
+reads it in four later steps, guarding `step-20b-push-cleanup`,
+`step-21-pr-ready` and `validate-agentic-finalization`, then reporting with
+`--remove-if-created-by workflow-finalize`. The
+`--dir "$RECIPE_VAR_step_recovery_dir"` form appears in `workflow-finalize` and
+in every autodrive recipe that wraps a step: `auto-drive-to-merge`,
+`autodrive-build`, `autodrive-crusty-loop`, `autodrive-crusty-round`,
+`autodrive-merge-loop` and `autodrive-merge-round`. The quoting is required,
+because the value is a path chosen by the enclosing run.
+
+`validate-agentic-finalization` is recovered with `--essential
+--stop-on-handoff --no-repair`. It is not a `--guard` -- a guard is also denied
+the declared alternatives, and reports a check rather than a result -- but it
+does withhold `retry_after_repair`, and since #2819 that is deliberate rather
+than an oversight. The step reports a decision made before it ran. Its inputs
+are all recorded values (`finalization_assessment`,
+`finalization_evidence`), and the recovery agent is forbidden both actions
+that would change what they say: it may make no GitHub write, so it cannot
+push the branch or open the pull request a `FAILED_IMPLEMENTATION` is missing,
+and it may start no recipe, so it cannot produce an assessment where there is
+none (see `amplifier-bundle/recipes/step-failure-recovery.yaml`). A retry
+would re-read the same values and fail identically, so the step offers the
+agent the move it can actually make: hand off with the reason. Repairing the
+run's outcome belongs one step earlier, to `assess-finalization`, which is
+allowed exactly those two actions -- push the run branch, open the pull
+request -- and then decides the terminal state on what it did. A finished run no longer
+reaches recovery in error: the step reports the terminal state
+`assess-finalization` decided on the pushed head, the open pull request and its
+checks, which is a success with the request handed on when CI is still pending.
+`assess-finalization` runs with `continue_on_error: true` and takes no recovery
+guard of its own; when it decides nothing, the validator reports that it has no
+terminal state and leaves its own step failing, which is where recovery picks
+the run up. See
+[The Run's Real Outcome](./default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
+
+No step in `workflow-prep` or `workflow-design` reads the key, and both persist
+it regardless. That is the point of the entry rather than an oversight: the
+pinned runner counts a context key as an input of every bash and recipe step
+that can see it, whether or not the step mentions it. The key is set in every
+`default-workflow` run, so a phase recipe that omitted it could replay none of
+its `replay: reuse` bash or recipe steps.
+
+Runner #208 widened input coverage for bash and recipe steps only, not agent
+steps. In these two recipes the entry therefore rescues the bash reuse steps,
+`step-02d-detect-host-type`, `step-03-create-issue` and
+`step-03b-extract-issue-number` in `workflow-prep` and
+`step-06b-checkpoint-doc-review` and `step-06d-goal-already-met-probe` in
+`workflow-design`. The eight agent steps of `workflow-design` and the three of
+`workflow-prep` replay on their own terms and do not depend on it. See
+[step failure recovery](step-failure-recovery.md).
+
+The other phase recipes are absent from the table for a different reason.
+`default-workflow`, `workflow-prep` and `workflow-design` are the only three
+with a top-level `recovery` block; `workflow-worktree`, `workflow-tdd`,
+`workflow-publish`, `workflow-finalize` and the rest have none. None of their
+steps is replayable, so they have nothing to persist and re-execute wholesale
+on every relaunch, whichever keys they declare. `workflow-worktree.yaml`, for
+one, declares `base_branch`, `forbidden_base_branches`, `strict_delivery` and
+`step_recovery_dir` and takes their values from `default-workflow`, and a
+persist list would make no difference to it.
+
+#### Delivery controls across a relaunch
+
+All six carry a delivery choice, and each defaults permissively.
+`forbidden_base_branches` defaults to an empty deny list, `strict_delivery` to
+`"false"`, and `base_branch` to the empty string, which leaves the base to the
+remote default branch. `repository`, `pr_repository` and `closing_reference`
+default to the empty string and are read only when strict delivery is on.
+
+Recovery never restores a caller-supplied context value. A relaunch rebuilds
+its initial context from the command line and the recipe defaults exactly as
+the first attempt did; only the recorded context deltas of restored steps are
+re-applied on top of that. Whatever drives the relaunch therefore supplies the
+same `-c` values. A relaunch that drops `-c forbidden_base_branches=...` runs
+with the empty deny list from its first step, whichever keys the persist lists
+name. Re-supplying the delivery inputs is the caller's part of the contract,
+not something a persist list can do for it.
+
+Listing a delivery key therefore closes no fail-open hole, and omitting one
+opens none. The permissive default is reached the same way before and after:
+by a relaunch that omits the input. What a persist list governs is where a
+relaunch restarts, with a second effect on which completions may be replayed.
+
+That second effect is comparison. Persisted inputs are compared, never
+restored: the runner records each referenced key's value, compares the saved
+value against the live one, and reports `input_changed` when they differ, so
+the dependent steps execute again under the live value. A step completed under
+a strict value is therefore never replayed into a relaunch running under a
+weaker one. Only a restored step's recorded output delta is re-applied, and
+that comes from `persist.outputs`. A stale completion record cannot hand a
+weaker delivery control to the steps that follow it.
+
+One residual follows from that same mechanism. The strict-delivery checks live
+inside `step-03-create-issue`, which calls `delivery_strict_mode` and, under
+strict delivery, `select_strict_delivery_issue`. When a relaunch restores that
+step, neither helper runs again: the issue identity is re-applied from the
+record's output delta, so the checks are not re-evaluated against the relaunch's
+own inputs. A changed delivery input is still caught, because the comparison
+reports `input_changed` and the step executes again; an unchanged one is
+accepted on the strength of the first attempt's check. Moving the checks out of
+the restored step, so that they run on every attempt, is an open follow-up on
+[#2711](https://github.com/rysweet/amplihack-rs/issues/2711).
+
+The storage of the two kinds of input is asymmetric, which matters when
+extending a persist list. Environment variables a step references are stored as
+digests; context values named in `persist.context` are stored verbatim, with no
+redaction pass. The lists above run to 93 or 94 keys each, agent outputs
+included, so a recovery record holds a substantial picture of the run.
+None of the keys above carries a credential, and a key whose value may contain
+one does not belong in `persist.context`.
+
+`repository`, `pr_repository` and `closing_reference` are written to private
+recovery storage. Give them as `owner/name`, or as a plain issue reference,
+never as a URL with credentials in it.
+
+#### What the tests observe
+
+The test
+[`issue_2658_routing_replay.rs`](../../crates/amplihack-cli/tests/issue_2658_routing_replay.rs)
+covers both levels on the pinned runner. Each case runs inside the fixture's
+own temporary root, with a `HOME` and a `PATH` that hold no host agent and no
+host runner, so only the fixture's fakes can answer an agent step, and with
+`create_issue` and `strict_delivery` left at their defaults, so no step reaches
+a remote.
+
+The routing case runs the shipped `smart-classify-route.yaml`, unchanged, with
+`base_branch=main` and `forbidden_base_branches=release/*`. A fake agent stops
+the first attempt at `classify-and-decompose` with a recognised usage limit.
+The relaunch restarts at `classify-and-decompose`, with `preflight-validation`
+restored, and calls the fake agent exactly once more. Setting
+`forbidden_base_branches`, rather than only the key the recipe declares, is
+what makes the added entries observable: a key that is never set behaves
+identically whether or not a persist list names it. `main` matches no pattern
+in that deny list, so no shipped step changes what it does.
+
+The phase case runs the shipped `workflow-prep.yaml` and `workflow-design.yaml`
+as `replay: never` children of a parent recipe written into the fixture. That
+parent stands in for `default-workflow` and supplies `worktree_setup` the way
+the worktree phase would, which is what lets the design recipe's repository
+resources resolve. The run's one added context input is `step_recovery_dir`,
+which is not a delivery input, bound to a `0700` directory inside the fixture
+root. Both children finish; the fake agent then stops the parent's trailing step
+at a usage limit, so the children's bash steps are already complete when the
+relaunch starts.
+
+The relaunch restores the bash `replay: reuse` steps of both children:
+`step-02d-detect-host-type`, `step-03-create-issue` and
+`step-03b-extract-issue-number` from `workflow-prep`, and
+`step-06b-checkpoint-doc-review` and `step-06d-goal-already-met-probe` from
+`workflow-design`. All five appear in the relaunch's `restored_steps` and none
+of them is the restart point; the only step the relaunch executes is the
+parent's trailing one, and the fake agent's call count is unchanged, so no
+agent step of either child ran a second time either. `resume_checkpoint` is left
+unset so the probe's condition holds and the step runs on the first attempt.
+Remove `step_recovery_dir` from either child's persist list and that child's
+earliest bash reuse step becomes the restart point instead:
+`step-02d-detect-host-type` for `workflow-prep`,
+`step-06b-checkpoint-doc-review` for `workflow-design`.
+
+Stopping at the parent's trailing step, rather than inside `workflow-design`,
+is what puts `step-06d-goal-already-met-probe` under observation at all. It is
+the last step of its recipe and sits after all eight of that recipe's agent
+steps, so a usage-limit stop at one of those agent steps would leave it
+unfinished, and no relaunch could restore it.
+
+No test compares persist key lists. What a test observes is which steps a
+relaunch restores, which is the behaviour those lists exist to produce.
+
+#### What the lists do not cover
+
+These lists cover the keys that callers set. They do not cover the keys that a
+development child adds when `execute_sub_recipe` merges its whole final context
+back into the routing recipe, defaults included. After a development child
+finishes, the routing bash and recipe steps that follow it execute again on
+relaunch. The same limit applied before the runner moved to 0.7.0 (revision
+`2833a0b`). This is tracked in
+[#2697](https://github.com/rysweet/amplihack-rs/issues/2697).
+
+The merge-back also writes the child's values for `forbidden_base_branches` and
+`strict_delivery` over the values the caller set, defaults included. A routing
+step that runs after a development child therefore reads the child's values,
+not the caller's. #2697 also covers stopping a child from weakening a delivery
+control that the caller set.
+
+### Changing a persist list
+
+A persist list is part of the recipe file, so editing one changes the file's
+digest. Recompute that recipe's entry in
+[`_recipe_manifest.json`](../../amplifier-bundle/recipes/_recipe_manifest.json)
+as the first sixteen characters of the file's SHA-256, which is what
+`sha256sum <file> | cut -c1-16` prints. Recompute only the files you edited.
+Entries for untouched recipes are left alone, including entries that already
+disagree with their file.
+
+This check reports whether a recipe file and its manifest entry agree:
+
+```bash
+python3 -I - <<'CHECK'
+import hashlib, json, pathlib
+
+root = pathlib.Path("amplifier-bundle/recipes")
+manifest = json.loads((root / "_recipe_manifest.json").read_text())
+names = ["smart-classify-route", "default-workflow", "workflow-prep", "workflow-design"]
+for name in names:
+    digest = hashlib.sha256((root / f"{name}.yaml").read_bytes()).hexdigest()[:16]
+    print(name, "ok" if digest == manifest[name] else f"drifted ({digest})")
+CHECK
+# Output, with every entry in step:
+# smart-classify-route ok
+# default-workflow ok
+# workflow-prep ok
+# workflow-design ok
+```
+
+A `drifted` line for a recipe you did not edit is pre-existing and is left
+alone; fixing it would change a bundle digest for no reason and hide the drift
+you were looking for. Narrow `names` to the files you touched.
+
+That truncated prefix detects drift between a bundle and its manifest. It is
+not tamper protection: it is 64 bits wide, and installation checks only that
+each entry is present and non-empty.
+
+A removed key is checked by hand rather than by a committed test. Take a copy
+of the recipe, drop one key from its `persist.context`, and run the matching
+case against the copy. The relaunch then no longer restores that recipe's
+`replay: reuse` bash and recipe steps, and the restart point moves back to the
+earliest of them. Record the restart point the run reports; do not predict it
+from the step list and write that down instead, because the earliest affected
+step is not always the one a reader expects.
+
+Two things make the prediction unreliable. Agent steps are not affected at all,
+so the earliest `replay: reuse` step in the file is often the wrong answer; and
+a step's `condition` can keep it from running in the case you are using. In
+`smart-classify-route.yaml` the earliest reuse bash step is
+`preflight-validation`; in `workflow-prep.yaml` it is
+`step-02d-detect-host-type`, which precedes `step-03-create-issue`; in
+`workflow-design.yaml` it is `step-06b-checkpoint-doc-review`, which precedes
+the goal probe. Those are the steps to expect; take the restart point from the
+run's own report.
+
+The check is only meaningful for a key the run under test actually sets.
+Dropping a key that the run never sets changes nothing, and the check then
+reports a pass over a copy that is in fact broken. `smart-classify-route.yaml`
+declares only `base_branch` and `strict_delivery` of the six; the other four
+reach it through the orchestrator's context merge or an explicit `-c`.
+`workflow-prep.yaml` and `workflow-design.yaml` declare no `step_recovery_dir`
+at all: it reaches them from `default-workflow`, which is why the phase case
+passes it on the command line. Confirm the key is set in the run you are using
+before reading a result either way.
+
+Automating the check would mean committing a recipe that is wrong on purpose,
+or a test that reads persist lists instead of watching behaviour.
 
 ## Completion contract
 

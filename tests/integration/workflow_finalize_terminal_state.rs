@@ -54,13 +54,16 @@ fn step_condition<'a>(recipe: &'a Value, id: &str) -> &'a str {
         .unwrap_or_else(|| panic!("workflow-finalize step `{id}` must declare a condition"))
 }
 
+/// The shell a step runs, following an `amplifier-bundle/tools/` call-out
+/// left by the brick-budget extraction of issue #1619.
 fn step_command(recipe: &Value, id: &str) -> String {
-    steps(recipe)
-        .iter()
-        .find(|step| step.get("id").and_then(Value::as_str) == Some(id))
-        .and_then(|step| step.get("command").and_then(Value::as_str))
-        .unwrap_or_else(|| panic!("workflow-finalize step `{id}` must be a bash command step"))
-        .to_owned()
+    crate::recipe_step_body::resolved(
+        steps(recipe)
+            .iter()
+            .find(|step| step.get("id").and_then(Value::as_str) == Some(id))
+            .and_then(|step| step.get("command").and_then(Value::as_str))
+            .unwrap_or_else(|| panic!("workflow-finalize step `{id}` must be a bash command step")),
+    )
 }
 
 fn step_by_id<'a>(recipe: &'a Value, id: &str) -> &'a Value {
@@ -288,12 +291,31 @@ fn agentic_finalizer_prompt_requests_human_narrative_not_machine_json() {
     }
 }
 
+/// The validation step reports the terminal state `assess-finalization`
+/// decided (#2343, #2809). It runs after that step, consumes no agent prose,
+/// and does not mask a failure as a completion. That the typed completion
+/// booleans decide nothing, and that every published state is reported as the
+/// assessment named it, is run in workflow_finalize_resilience.rs.
 #[test]
-fn validation_step_classifies_from_typed_evidence_not_agent_prose() {
+fn validation_step_reports_the_assessment_and_reads_no_agent_prose() {
     let recipe = load_finalize_recipe();
     let command = step_command(&recipe, "validate-agentic-finalization");
+    let validator = crate::issue_1641_finalization_open_pr::fixture::tool_text(
+        "workflow_finalization_validate.sh",
+    );
 
-    // The classifier must never touch agent narrative or the retired brittle state.
+    assert!(
+        step_index(&recipe, "assess-finalization")
+            < step_index(&recipe, "validate-agentic-finalization"),
+        "the decision must be made before the step that reports it"
+    );
+    assert!(
+        command.contains("workflow_agentic_finalization.sh") && command.contains("validate"),
+        "the step must run the finalization helper in validate mode"
+    );
+
+    // Neither the step nor the validator may touch agent narrative or the
+    // retired brittle state.
     for forbidden in [
         "AGENTIC_FINALIZER_OUTPUT",
         "agentic_finalizer_output",
@@ -301,36 +323,23 @@ fn validation_step_classifies_from_typed_evidence_not_agent_prose() {
         "single JSON object",
     ] {
         assert!(
-            !command.contains(forbidden),
-            "validation step must not consume agent prose via `{forbidden}`"
+            !command.contains(forbidden) && !validator.contains(forbidden),
+            "validation must not consume agent prose via `{forbidden}`"
         );
     }
 
-    // It must classify from typed deterministic evidence and typed markers.
+    // The state comes from the assessment's structured terminal_state. The
+    // validator itself ends a run only on a blocker in the local checkout or
+    // on there being no decision to report.
     for required in [
-        "finalization_evidence",
-        "finalizer_step_status",
-        "FAILED_INVALID_EVIDENCE",
-        "FAILED_REPORTING",
-        "FAILED_IMPLEMENTATION",
-        "exit 1",
-    ] {
-        assert!(
-            command.contains(required),
-            "validation step must classify from typed evidence; missing `{required}`"
-        );
-    }
-
-    // Preserved fail-closed invariants.
-    for invariant in [
+        "finalization_assessment terminal_state",
+        "FAILED_MISSING_TERMINAL_EVIDENCE",
         "FAILED_DIRTY_WORKTREE",
-        "FAILED_PR_METADATA_UNAVAILABLE",
-        "BLOCKED_CI",
-        "FAILED_MEANINGFUL_DIFF",
+        "FAILED_MISSING_TOOLING",
     ] {
         assert!(
-            command.contains(invariant),
-            "validation step must enforce terminal invariant `{invariant}`"
+            validator.contains(required),
+            "the validator must report the assessment's state; missing `{required}`"
         );
     }
 

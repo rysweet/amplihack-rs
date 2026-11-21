@@ -1279,7 +1279,7 @@ wrote anyway goes to `.rejected-logins/` like a refused one.
 
 ```
 <root>/.rejected-logins/                         0700
-├── .pending-<name>-<time>/                       the previous login while Claude runs
+├── .pending-<name>-<time>/                       the previous login and oauthAccount.json while Claude runs
 ├── <name>-<time>/                                a refused login
 │   ├── .credentials.json                         0600, moved, not copied
 │   └── oauthAccount.json                         its oauthAccount block, 0600
@@ -1292,14 +1292,18 @@ or one of these directories. To use a kept login again, move it back with
 `mv -n` into a profile that has no `.credentials.json`, never `cp`.
 
 If amplihack itself is killed while Claude runs, the previous login stays in
-the `.pending-…` directory printed at the start. Ctrl-C is handled, but
+the `.pending-…` directory, which is printed at the start whenever there was
+a login file or an `oauthAccount` block to hold. Ctrl-C is handled, but
 closing the terminal (SIGHUP) or `kill` (SIGTERM) ends amplihack before it
 can restore anything. The previous login is then at
 `<root>/.rejected-logins/.pending-<name>-<time>/.credentials.json`, and its
 `oauthAccount` block is next to it in `oauthAccount.json`. If Claude wrote a
 new login, move that one aside first (or delete it if you do not want it),
 then move the previous one back into the profile directory with one `mv`.
-This example uses the default root; if you chose another root (`amplihack
+amplihack also removed the `oauthAccount` key from the profile's
+`.claude.json` before Claude started. If Claude did not write a new one, set
+that key back to the contents of `oauthAccount.json`, or the profile names
+no account until its next login. This example uses the default root; if you chose another root (`amplihack
 profile root` prints it), use that path instead:
 
 ```bash
@@ -1310,21 +1314,39 @@ mv -n ~/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-202610
 #### When the check cannot move the login
 
 - **macOS.** Claude keeps the login in the Keychain, not in
-  `.credentials.json`. A duplicate is still reported and `login` exits 1,
-  but there is no file to move aside. The profile's `oauthAccount` block is
-  left as Claude wrote it, so `.claude.json` still matches the login in the
-  Keychain. Sign out in the browser and log in again.
-- **No login file after a previous one.** If the profile had a
-  `.credentials.json` and Claude exits 0 without writing a new one, the
-  login did not finish: the previous login and its `oauthAccount` block are
-  both put back, and `login` exits 1.
+  `.credentials.json`, and writes only the `oauthAccount` block in
+  `.claude.json`. amplihack removes that block before Claude starts, so a
+  block that names an account afterwards is the new login. An empty or
+  malformed block does not count. The new login is checked like a file
+  login:
+  - not a duplicate: the login is accepted, a previous `.credentials.json`
+    moves to `<name>-<time>-replaced/`, and the account is recorded;
+  - a duplicate, with a previous `.credentials.json`: the previous login and
+    its `oauthAccount` block are put back and `login` exits 1:
+
+    ```
+    error: profile 'work' is signed in to the same account and organization as profile 'personal'; Claude wrote no login file. The previous login file and oauthAccount of 'work' were put back, but the macOS Keychain may still hold the refused account, and Claude may use it until 'work' is logged in again
+    ```
+
+  - a duplicate, with no previous login file: the refusal is printed and
+    `login` exits 1, but the block is left as Claude wrote it, so
+    `.claude.json` still matches the login in the Keychain.
+
+  A refused login stays in the Keychain. Sign out in the browser and log
+  in again.
+- **No login after a previous one.** If the profile had a
+  `.credentials.json` and Claude exits 0 without writing a new one or a new
+  `oauthAccount` block, the login did not finish: the previous login and
+  its `oauthAccount` block are both put back, and `login` exits 1.
 - **The profiles cannot be read.** If the profile root cannot be listed or
   the auto-switch state cannot be opened, the new login cannot be compared,
   so it is treated like a refused one: moved to `.rejected-logins/`, the
   previous login put back, exit 1.
 - **The rotator swapped the profile in during the login.** `profile rotate`
   takes no lease. If it made this profile the live one while Claude ran,
-  amplihack stops without moving anything and prints where each login is.
+  amplihack stops without moving anything and prints where each login is,
+  and the `.pending-…` directory that holds the profile's earlier
+  `oauthAccount` block, even when the profile had no login file.
 - **A login file that is not private.** If the new `.credentials.json` is
   not a private regular file (for example mode `0644`, or a symlink),
   amplihack does not move it or change its mode. It exits 1, reports the
@@ -1333,7 +1355,8 @@ mv -n ~/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-202610
 - **A session started using the profile during the login.** If auto-switch
   lent the profile's login to a session or the profile now hosts another
   account, amplihack stops without moving anything and prints where each
-  login is.
+  login is, and the `.pending-…` directory that holds the earlier
+  `oauthAccount` block.
 
 #### `/login` inside a running session
 
@@ -1670,9 +1693,21 @@ While a step is supervised this way, its error output streams as usual but
 its standard output is held back and printed when the last attempt finishes.
 The recipe runner's heartbeat therefore reports such a step as idle until
 it ends; that is expected, and nothing is stopped because of it.
-Piped standard input is copied once, before the first attempt, to a private
-file, and every attempt reads that copy, so a rerun gets the same prompt as
-the first attempt. Input from a terminal is passed through and not copied.
+A prompt that arrives on standard input is copied to a private file as it
+arrives, and every attempt reads that copy, so a rerun gets the same prompt
+as the first attempt. The first attempt is not delayed by the copy: it reads
+each block as the copier passes it on. Input from a terminal, and standard
+input of any kind on a launch whose prompt is already in its arguments, is
+passed through and not copied.
+The copy starts when the first attempt does, so a supervisor that cannot
+start at all leaves standard input untouched for the plain launch that
+follows. If standard input cannot be read to its end, the attempt has been
+handed less than the prompt that was sent, which it cannot tell from a whole
+one. amplihack says so on standard error and the step fails, rather than
+report that attempt's result as the step's. If the caller never closes the
+pipe, there is no whole copy to replay: amplihack refuses the rerun with a
+named reason and the step ends with the attempt's own result, rather than
+waiting on a pipe nobody closes.
 If the step is stopped (SIGINT, SIGTERM or SIGHUP), it is not rerun: the
 attempt's output is passed back and amplihack exits with `128` plus the
 signal number.
@@ -1967,7 +2002,9 @@ If you upgraded from a release that used API-key profiles without a mark,
 run `amplihack profile overflow add <api-key-profile>` to keep that
 behaviour. Nothing is marked for you. If an unmarked API-key profile is
 live in `~/.claude` at the upgrade, it stays live, billed per token, until a
-plan login has room or a credit profile can take over; `rotate status` shows
+plan login has capacity or is a plan-room target (room below 100% on both
+windows, session below `--session-at`), or a credit profile can take over;
+`rotate status` shows
 it as `platform_not_marked` meanwhile. To avoid that, mark it or move
 off it by hand with `amplihack profile switch <plan-profile>`.
 
@@ -1976,10 +2013,10 @@ off it by hand with `amplihack profile switch <plan-profile>`.
 When accounts run out of quota, work moves in this order:
 
 1. another plan (subscription) login with capacity;
-2. another plan login that is past its threshold but still below 100% on
-   both windows, ranked by the
+2. another plan login that is past a threshold but still below 100% on
+   both windows, with its session below `--session-at`, ranked by the
    [plan-room swap](../reference/profile-command.md#rotate-plan-room-swap):
-   session below the threshold first, then the most weekly room;
+   the most weekly room first;
 3. only when no measured plan login is below 100% on both windows: a marked credit
    overflow profile, by tier, once the earliest plan reset is further away
    than the overflow wait;
@@ -1995,8 +2032,9 @@ its threshold.
 [Auto-switch](#switch-accounts-automatically) and the
 [rotator](claude-profile-rotation.md#use-an-api-key-as-the-last-resort)
 follow the same order. The rotator moves `~/.claude` off the API key on the
-first cycle after a plan login has capacity or room again, without waiting for a
-hold to end. Auto-switch uses the API-key profile only for a new nested
+first cycle after a plan login has capacity, or is a plan-room target again
+(room below 100% on both windows, with its session below `--session-at`),
+without waiting for a hold to end. Auto-switch uses the API-key profile only for a new nested
 launch or a usage-limit rerun and never swaps it into a running session; a
 session started on the API-key profile keeps it, and its next nested launch
 or rerun goes back to a plan profile.
@@ -2074,18 +2112,192 @@ to turn it on there). A failure that is not a usage limit is passed back at once
    as `You've hit your session limit · resets 1pm (America/Los_Angeles)`,
    and waits until the earliest of:
    - the reset plus two minutes;
-   - a different account becoming live for the step's login directory;
+   - a different account becoming live for the step's login directory; on
+     `~/.claude`, one the [rotator](claude-profile-rotation.md) records as
+     having room (see [A swap onto a full login](#a-swap-onto-a-full-login));
    - for a step that uses `~/.claude`, the
      [login rotator](claude-profile-rotation.md) recording a fresh cycle
-     with capacity;
+     with capacity that left a login with room live;
+   - for a step under an inherited profile with auto-switch on, a usage
+     reading taken during the wait showing that another stored profile has
+     capacity; the step then runs on that profile rather than waiting out
+     the exhausted profile's reset. Only a status line or the
+     [login rotator](claude-profile-rotation.md) records such readings, so
+     in an unattended run with neither, the wait usually still goes to the
+     reset;
    - the configured maximum;
    - one minute before the step's timeout.
-3. The step runs once more with the same arguments, environment and input.
-   If it hits the limit again, there is no second wait. The supervisor
-   writes `skipped reason=already_waited` and then the
+3. The step runs once more with the same arguments and input, and the same
+   environment except for `CLAUDE_CONFIG_DIR`, which names the other
+   profile when the wait ended on its capacity.
+   If it hits the limit again on the **same** login, there is no second
+   wait. The supervisor writes `skipped reason=already_waited` and then the
    [closing line](../reference/profile-command.md#closing-line),
-   `failed reason=already_waited: usage limit not lifted`, and the step
-   ends as a usage limit.
+   `failed reason=already_waited: usage limit not lifted`, and the step ends
+   as a usage limit. If the login in `~/.claude` has changed in the
+   meantime, the step waits again on the new login instead; see
+   [One shared login on the host](#one-shared-login-on-the-host).
+   There is one exception: when the wait ended because something said to try
+   again (the reset arrived, a login had room, or the login changed) and the
+   very first attempt after it hits a limit, the step waits again and logs one
+   `reentered` line. A usage-limit message whose reset has already passed starts
+   a capacity wait bounded by the step's budget, and the step retries once when
+   that budget runs out. A `429` starts that wait only where a capacity wait
+   could start; see [A limit right after a wait](#a-limit-right-after-a-wait).
+
+Both the auto-switch rerun in step 1 and the usage-reading exit in step 2
+(logged as `end reason=login capacity`) can move a step onto another
+account, so a step pinned to a profile may finish on a different login from
+the one it started on. That matters if you rely on that profile for billing
+or data separation. To hold a step on its own login, either turn
+auto-switch off (`amplihack profile auto-switch off`),
+or put the other profiles in the auto-switch exclude list
+(`amplihack profile auto-switch exclude <name>…`, which replaces the list,
+so name every profile you want excluded in one call).
+
+### One shared login on the host
+
+Many hosts run every step on one `~/.claude` login and let the
+[rotator](claude-profile-rotation.md) swap accounts in and out of it at a
+usage threshold. On such a host a step's limit and the rotator's swap are
+caused by the same exhausted reading, so the swap often lands while the
+attempt is still failing.
+
+Three things follow, and all of them apply only to a step that runs on
+`~/.claude`:
+
+- **A swap onto a login with room that has already happened ends the wait
+  before it starts.** The supervisor reads which login is live immediately
+  before each attempt and again after the limit. If they differ, and the
+  rotator's ledger says the new login has room, it writes `start` and
+  `end reason=login changed` together, then `resume`, and runs the step again
+  at once on the account now live. Nothing sleeps. If the new login has no
+  room, the step waits as it otherwise would; see
+  [A swap onto a full login](#a-swap-onto-a-full-login).
+
+  ```
+  amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-11-16 13:00:00 +00:00 until=2026-11-16 13:02:00 +00:00 bound=reset+margin
+  amplihack.recipe.usage_limit_wait end reason=login changed
+  amplihack.recipe.usage_limit_wait resume attempt=2
+  ```
+
+- **A new login that is also at its limit gets its own wait.** The step waits
+  once for each login it runs on, keyed to the account name the rotator
+  records. The short-circuit above spends that account's turn too: it is
+  marked against the account the failed attempt ran on, not the one that has
+  just arrived, so the arriving account can still have a wait of its own. A
+  rotator that swaps back to an account the step has already waited on starts
+  no further wait, so the chain always ends, however often the rotator swaps.
+
+- **The waits share one budget.** `recipe.usage_limit_max_wait_secs` (six
+  hours by default) is the total for the step, not for each wait. Waiting
+  across three logins therefore takes no longer than the one wait the same
+  step would have made before. Raise the maximum if you want the chain to
+  have more room.
+
+Before this, such a step slept until its **own** account's reset, however
+many accounts with room the rotator moved through `~/.claude` in the
+meantime.
+
+An organisation spend limit with no reset also waits on this kind of host,
+**provided a rotator is running**. Nothing lifts that limit for the account
+that hit it, but the next account the rotator brings in may belong to another
+organisation, so the step waits for the login to change and nothing else.
+With no rotator running, or one paused because auto-switch is off, nothing
+could ever bring that account in, so the step ends at once as it did before
+rather than sleeping out the maximum. On any other step a spend limit with no
+reset still ends the run at once, whatever room other logins have.
+
+"And nothing else" is literal. A spend limit is on the organisation's
+credit, and no reading of session capacity reports credit, so neither the
+rotator's cycle nor another stored profile's usage reading ends this wait.
+A rotator cycle that measures the live login and **stays** on it therefore
+leaves the step waiting, where on a session or weekly limit the same cycle
+would end the wait and retry. A cycle that swaps ends it, because the login
+in `~/.claude` has changed, which is the one thing that could put the step
+on an organisation with credit left. The change is noticed two ways: by
+watching `~/.claude` itself, which takes two checks a half-minute apart to
+agree, and by the login name in the rotator's own records, which is
+compared against the name read before the attempt started and so needs no
+agreement. Expect up to half a minute between the swap and the retry. If the arriving organisation is also spent,
+the step waits again, keyed to the new login.
+
+### A swap onto a full login
+
+A swap is not a reason to run the step again if the login that arrived is
+nearly spent. A step waiting on a limit ends early when the login in `~/.claude`
+changes **and** the rotator says the new login has room: its session below the
+rotator's `--session-at` and its week below 100%. The rotator records that in
+its ledger when it records the cycle, and the wait reads the one answer, so
+there is no threshold to set on the step.
+
+On a host where every login is nearly spent, this is what keeps a step asleep.
+A swap onto a login at 98% of its session does not end a wait, and neither
+does stopping the rotator with `amplihack profile rotate stop`, which
+records no cycle. A wait ends when the reset arrives, or when a cycle that has
+capacity records that the login in `~/.claude` has room.
+
+Switching the login by hand still wakes a waiting step. `amplihack profile
+switch` records the outcome `switched` with no `live_room`, which counts as
+room unless the record states `"live_room": false`. Use it to unstick a step
+that you can see is waiting.
+
+Some waits and hosts are not held to this rule, such as a wait for a spend
+limit and a step that does not use `~/.claude`. The reference lists each one
+with its reason, under
+[What is not gated](../reference/profile-command.md#what-is-not-gated). To read
+what the rotator last recorded, and to restart a rotator that predates the
+field, see
+[Steps that wait on a usage limit](claude-profile-rotation.md#steps-that-wait-on-a-usage-limit).
+
+### A limit right after a wait
+
+A wait can end on a signal that turns out to be wrong. The rotator said a login
+had room, or the reset time passed, and the first attempt after the wait meets
+a usage limit or a `429` anyway. Before, that attempt ended the step as an
+indeterminate failure. Now the step waits again and says so once:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=2026-11-19 14:20:00 -08:00 bound=max_wait
+amplihack.recipe.usage_limit_wait end reason=rotator capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack.recipe.usage_limit_wait reentered met=rate_limit
+amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=2026-11-19 14:20:09 -08:00 bound=max_wait
+```
+
+The second wait's deadline comes from what is left of the step's
+`max_wait_secs` budget, so it is later than the first by the time the retry
+took.
+
+`met=usage_limit` means the attempt printed a usage-limit message, and
+`met=rate_limit` means it ended on a `429` report. A usage-limit message is
+planned as the first wait was, with the same checks, with one exception: a
+message whose stated reset has already passed is waited out as a capacity wait
+instead of being refused. A retry at 08:32 that meets "resets 8:30am" again
+is the usual case. The wait ends early if a login has room, otherwise at the
+step's remaining `max_wait_secs` budget, and the step then retries once. It
+does not apply to a spend limit. See
+[A reset that has already passed](../reference/profile-command.md#a-reset-that-has-already-passed).
+A `429` states no reset,
+so the second wait is a capacity wait, and it starts only when a capacity wait
+could start for the step: a rotator running with auto-switch on, and another
+login that could take over. Without those the `429` goes back to the recipe
+runner as before and no `reentered` line is written.
+
+This applies only when the wait that just ended said *try now*: its reset
+arrived, a login had room, or the login changed. A wait that ran out its own
+maximum, hit the step timeout, was stopped, or lost its session has nothing
+behind it, so a limit after it still ends the step with
+`skipped reason=already_waited`. The step's `max_wait_secs` budget still
+applies to a second wait, which is refused once earlier waits have spent it,
+and there is no retry count.
+
+A `429` counts only when it is the harness's own error line, on standard error
+or as the last line of the output. The same words inside the model's answer do
+not start a wait, and everywhere else a `429` is a short-lived fault that the
+[recipe runner](../reference/transient-failure-retry.md) retries as before. The
+[reference](../reference/profile-command.md#a-limit-after-a-wait) has the exact
+phrases and the plan for each kind of limit.
 
 ### Weekly limits: waiting for another login
 
@@ -2096,13 +2308,18 @@ hours by default:
 
 - for a step that uses `~/.claude`, until the
   [login rotator](claude-profile-rotation.md) records a fresh cycle with
-  capacity, or a different account becomes live in `~/.claude`. This needs
-  a rotator running; without one the run ends at once, as before;
+  capacity that left a login with room live, or a different account with room
+  becoming live in `~/.claude` (see
+  [A swap onto a full login](#a-swap-onto-a-full-login)). This needs a rotator
+  running; without one the run ends at once, as before;
 - for a step under an inherited profile with auto-switch on, until a usage
   reading taken during the wait shows that another profile has capacity;
   the step then runs on that profile, not on the exhausted one. This also
   needs a rotator running; without one nothing may record a reading during
   an unattended run, so the run ends at once, as before.
+
+The caveat under [What happens](#what-happens) applies here too: a step
+pinned to a profile may finish on another account unless you hold it.
 
 "Another login could take over" means the profile store holds another
 login that auto-switch could choose once its readings allow: not excluded
@@ -2125,7 +2342,7 @@ amplihack.recipe.usage_limit_wait failed reason=capacity_expired: usage limit no
 ```
 
 and the recipe runner records the failure as `usage_limit`.
-[Auto-drive](../reference/auto-drive-to-merge.md#usage-limits-are-not-stuck)
+[Auto-drive](../reference/auto-drive-to-merge.md#usage-limits-are-not-stuck-or-hand-off)
 stops such a loop as `USAGE_LIMIT`, not `STUCK`.
 
 The same applies to the
@@ -2137,16 +2354,23 @@ out and the step retried, so the loop gets an ordinary verdict.
 
 The run ends as before, with no wait, when:
 
-- the limit is an organisation spend limit, with no reset or with a weekly
-  reset (a spend limit that also says when your session limit resets is
-  waited out);
+- the limit is an organisation spend limit with a weekly reset, or one with
+  no reset on a step that does not run on `~/.claude`, or one with no reset
+  on a `~/.claude` step with no rotator running (a spend limit that also says
+  when your session limit resets is waited out, and one with no reset on a
+  `~/.claude` step with a rotator running waits for the login to change
+  instead);
 - the limit is weekly, or states no readable reset, and no other login
   could take over, or no rotator is running;
 - the step uses an explicit `CLAUDE_CONFIG_DIR`, an inherited profile with
   auto-switch off, or a `.default` profile that is not the rotator's live
   one, and the limit is weekly or states no readable reset;
-- the prompt came on a pipe (auto-switch then does not rerun it under
-  another profile either).
+- the prompt came on a pipe and could not be copied aside, so no attempt
+  after the first could read it (auto-switch then does not rerun the step
+  under another profile either). A piped prompt that was copied is replayed
+  and does not stop the wait;
+- standard input is an `--input-format` channel rather than a prompt, which
+  is read for as long as the session and cannot be replayed to a retry.
 
 Model output that merely mentions a usage limit never starts a wait.
 
@@ -2157,6 +2381,53 @@ step's timeout is about to run out.
 The rerun starts the step from the beginning, so anything the failed
 attempt already did, such as a push or a comment, may happen again. Keep
 agent steps safe to run twice.
+
+### A wait that ran to its reset while another login had room
+
+A step under a stored profile ends its wait as soon as a usage reading
+shows another profile with room, so `end reason=reset reached` on a step
+that sat beside an idle login means the check found no candidate it could
+take. Work through these:
+
+- **Nothing recorded a reading while the wait ran.** The check reads
+  stored readings and makes no usage probe of its own, and only a reading
+  taken after the wait began counts. Status lines and the
+  [login rotator](claude-profile-rotation.md) are what write them, so an
+  unattended run with neither has nothing to see and goes to its reset.
+  `amplihack profile rotate status` says whether the rotator is running.
+- **Another session holds that login.** A login lent to another directory,
+  or a directory hosting another account, is never a candidate. Both states
+  come from an
+  [in-session swap](../reference/profile-command.md#in-session-swap), the
+  only move that writes a ledger entry; a waiting step takes no lease, so
+  other waiting steps are not what put a login into either state.
+  `amplihack profile auto-switch status` marks the rows `leased→<dir>`
+  and `hosts:<account>`.
+- **Auto-switch is off.** `amplihack profile auto-switch status` shows it.
+  With it off the step keeps its own login and has no `login capacity`
+  exit.
+- **The other profiles are in the exclude list.** The same command lists
+  them. An excluded profile is never read and never counts.
+- **The step chose its own login.** A step launched with an explicit
+  `CLAUDE_CONFIG_DIR` is left where it was put. A step on `~/.claude` ends
+  on `rotator capacity` or `login changed` instead.
+- **The other login is not one auto-switch would choose.** A spend block,
+  a weekly-limit record, a reading over the auto-switch threshold, a login
+  for another platform, a leased or hosting directory, and an API-key
+  profile that `overflow=` does not mark all keep a profile out. The rules
+  are in
+  [Capacity for a profile step](../reference/profile-command.md#capacity-for-a-profile-step).
+- **The limit was an organisation spend limit with no reset.** Room on
+  another login never lifts one. On a step that does not run on
+  `~/.claude`, no wait starts at all (`skipped reason=spend_limit`); on a
+  `~/.claude` step with a rotator running, the wait is for the login to
+  change and capacity readings do not end it. See
+  [When it does not wait](#when-it-does-not-wait).
+
+The `observed` column of
+[`amplihack profile auto-switch status`](#3-check-what-it-sees) is the
+quickest check for the first of these: a profile whose last reading is
+older than the wait showed the wait nothing.
 
 ### What the log shows
 
@@ -2170,7 +2441,49 @@ amplihack.recipe.usage_limit_wait end reason=rotator capacity
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
-A wait for another login has `wait=capacity` on its `start` line, and
+A wait for a reset that ended instead on a reading showing another stored
+profile has room looks the same up to its `end` line. The `start` line
+carries no `wait=capacity`, because the wait was timed by the reset, so
+`end reason=login capacity` is what tells you the wait ended early. The
+line after the resume names the profile the retry runs under:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait progress remaining=3540s
+amplihack.recipe.usage_limit_wait end reason=login capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack: a login has capacity again; rerunning this step under profile "personal" (auto-switch)
+```
+
+The login is picked twice, once to end the wait and once to build the retry.
+If it was taken in between, the retry runs on the exhausted login the step
+started with and fails again. What takes it is either an in-session swap on
+this host, the one move that leases the login it goes to, or a newer reading
+that disqualifies the login, by putting it back over the threshold or by
+recording a spend block. That case says so in place of the line above:
+
+```
+amplihack.recipe.usage_limit_wait end reason=login capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack: no login has room now; this step retries under the limited profile (auto-switch)
+```
+
+Seeing it means the step gave up a wait on the strength of a reading and got
+nothing for it — on a reset wait, a wait that would have run to its reset and
+succeeded. It appears only after `end reason=login capacity`, the one exit
+where room was actually seen and then lost; a wait that ended any other way
+never had room to lose and says nothing.
+
+A waiting step takes no lease on the login it retries under. When several
+steps on one machine hit their limits together, they all read the same spare
+login at the same poll and all move onto it; none of them excludes the
+others, so the line above is not what contention between waiting steps looks
+like. What it looks like instead is several steps sharing one login that may
+not have room for all of them, and a step that meets a second limit there has
+already spent its one wait for that login. That consequence is tracked in
+[Issue #2733](https://github.com/rysweet/amplihack-rs/issues/2733).
+
+A wait for another login has `wait=capacity` on its `start` line, and reads
 `reset=none` when Claude's message gave no readable reset:
 
 ```
@@ -2179,10 +2492,86 @@ amplihack.recipe.usage_limit_wait end reason=rotator capacity
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
+A wait for the `~/.claude` login to change has `wait=login_change`, and
+`reason=spend_limit`, because an organisation spend limit is the only limit
+that starts one:
+
+```
+amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change harness=claude reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait
+amplihack.recipe.usage_limit_wait progress remaining=21540s
+amplihack.recipe.usage_limit_wait end reason=login changed
+amplihack.recipe.usage_limit_wait resume attempt=2
+```
+
+Every other limit reads `reason=usage_limit`, including a spend limit that
+states a session reset: there the session limit is what stopped work, and
+the step takes an ordinary reset wait.
+
+#### In the run's recipe log
+
+A run started with `amplihack recipe run --detach` writes its own log, and
+each wait adds two lines to it:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit account=work reset=2026-11-16 13:00:00 +00:00 until=2026-11-16 13:02:00 +00:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait end reason=login changed
+```
+
+That is the whole of it: a start line saying why the step is waiting, which
+account it is waiting on and until when, and an end line saying how the wait
+ended. When the first attempt after a wait meets a limit and the step waits
+again, one more line, `reentered met=usage_limit` or `reentered met=rate_limit`,
+comes between the two waits; see
+[A limit right after a wait](#a-limit-right-after-a-wait). The `progress`
+lines stay on the step's standard error. Before this,
+the recipe log showed only the runner's `working (Ns elapsed)` heartbeat, so
+a step that slept for hours looked hung and runs were stopped on that
+reading. To watch for it, use the path `recipe run --detach` printed as
+`log:` when it started the run:
+
+```bash
+amplihack recipe run smart-orchestrator --detach -w ~/src/myapp
+# session: amp-smart-orchestrator-myapp-20261116-101500
+# log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261116-101500.log
+
+grep amplihack.recipe.usage_limit_wait \
+  /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261116-101500.log
+```
+
+Do not reconstruct the path from the session name. The directory is
+[`recipe.log_dir`](../reference/user-config.md#recipelog_dir), which you may
+have moved, and a session whose name was already taken becomes `-2`, `-3`
+and so on, so only the printed `log:` line is reliable.
+
+A login-change wait names itself on the same line, as it does on standard
+error, and carries the same `reason=spend_limit`:
+
+```
+amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change account=research reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait
+amplihack.recipe.usage_limit_wait end reason=login changed
+```
+
+The account is the profile name the rotator records, never an e-mail address
+or an organisation ID, and `unknown` when no name can be read, which is what
+you see on a host with no profile store. A top-level foreground
+`amplihack recipe run` has no log file of its own, so it writes no such
+lines; its standard error is already on your terminal. A foreground run or
+sub-recipe started inside a detached run appends to that run's log, where its
+output is going anyway.
+
+Both lines arrive whole, so `grep` finds them however the runner's own
+output happened to be flushed. The detached run copies the runner's output
+into the same file a line at a time, holding back any unterminated tail
+until its line is complete, so a wait line is never spliced into the middle
+of a `working (Ns elapsed)` heartbeat. What reaches your terminal is
+unchanged: only the copy that goes to the log is held to whole lines.
+
 The [reference](../reference/profile-command.md#usage-limit-wait) lists every
-event and reason, and the
+event and reason, the
 [capacity wait](../reference/profile-command.md#capacity-wait) section
-describes the weekly-limit case in full.
+describes the weekly-limit case in full, and
+[the wait in the recipe log](../reference/profile-command.md#the-wait-in-the-recipe-log)
+covers the two lines above.
 
 ### Turn it off or change the maximum
 
@@ -2202,8 +2591,11 @@ export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600
 
 The maximum defaults to `21600` seconds (six hours). It shortens a wait for
 a reset, which never lasts beyond the reset plus two minutes, and sets how
-long a wait for another login lasts. `0` means no wait: for a reset, one
-more attempt; for a weekly limit, the step ends at once as a usage limit.
+long a wait for another login or for a login change lasts. It is a budget for
+the whole step: a step that waits on two or three logins in turn still waits
+no longer in total than one wait of the maximum. `0` means no wait, and what
+follows depends on the limit: for a reset, one more attempt; for a weekly or
+spend limit, the step ends at once as a usage limit, with no retry.
 
 To wait longer than six hours for another login, raise it in your user
 file or the variable:
@@ -2222,10 +2614,13 @@ and the variables in
 - **Standard output is held back.** While the wait is on, a recipe step's
   standard output is printed when the step ends, even for steps that never
   hit a limit. Error output still streams.
-- **Piped input is not replayed.** The rerun reads a file given as stdin
-  again from the start, but gets nothing from a pipe, whose contents went
-  to the first attempt. Recipe steps pass their prompt as an argument, so
-  this only matters for hand-built pipelines.
+- **Piped input is replayed from a copy, when one can be made.** A recipe
+  agent step is given its prompt on stdin, so the supervisor copies that
+  prompt to a private file as it arrives and gives every attempt the same
+  bytes. The rerun reads a file given as stdin again from the start. Where
+  the copy cannot be made, or the caller never closes the pipe so there is
+  no whole copy of the prompt to replay, the rerun is refused with a named
+  reason and the step ends with the limited attempt's own result.
 - **`~/.amplihack` must be private.** Held-back output goes under
   `~/.amplihack/rerun/` (or `<root>/.auto-switch.d/rerun/` with
   auto-switch on). If `~/.amplihack` is not owned by you or others can

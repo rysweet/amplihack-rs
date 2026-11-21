@@ -1,0 +1,103 @@
+name: issue-2857-wait-wakes-on-room
+description: >
+  Outside-in QA for issue #2857. On a shared-login host the rotator swaps
+  logins into ~/.claude and each swap woke every waiting run, including onto a
+  login at 98-100% session; the retry's first call returned a 429 and the run
+  ended indeterminate. The scenario (via
+  tests/gadugi/run-issue-2857-wait-wakes-on-room-scenario.sh) drives the real
+  binary's supervised launch against a stub agent and a stub rotate ledger.
+  Case A: a limit on the retry that a wait ended `reset reached` earned is
+  waited for again, once reported with one `reentered met=usage_limit` line
+  before the second wait's `start`, and the third attempt succeeds instead of
+  the step ending `already_waited`. Case B: a wait on a $HOME/.claude step
+  ends `login changed` on a swap only when the rotator's last cycle records
+  `live_room: true`; a swap onto a login with no room, a ledger from a rotator
+  that records no room bit, and the record a stopping rotator leaves all let
+  the wait run to its own end. A person's own `profile switch` records no room
+  bit and still wakes the wait unless it says `live_room: false`. The limit
+  states a reset five minutes in the past, so the first wait ends at once; the
+  re-entry on the retry is a capacity wait cut short by a lowered
+  `usage_limit_max_wait_secs`, so the scenario takes seconds and needs no
+  debug-only clock seam. Everything runs under `env -i` with a scratch HOME,
+  so the real ~/.claude and ~/.amplihack are never read or written, and no
+  agent, account, rotator or network call is made. CI's Install Smoke Test job
+  runs the driver script directly against the binary it installs; CI does not
+  run gadugi-test, so this file is for running the same cases through
+  gadugi-test by hand. It is not run on a developer host as part of the change
+  that adds it.
+version: "1.0"
+config:
+  timeout: 300000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, usage-limit, rotator, regression]
+  priority: high
+  issues: ["2857"]
+steps:
+  - name: run-issue-2857-wait-wakes-on-room-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2857-wait-wakes-on-room-scenario.sh
+    timeout: 280000
+  - name: all-wait-wakes-on-room-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: limit-after-a-wait-does-not-end-the-step
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: limit_after_a_wait_does_not_end_the_step - "
+  - name: second-wait-started-not-refused
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: second_wait_started_not_refused - "
+  - name: reentry-reported-once-before-the-second-start
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: reentry_reported_once_before_the_second_start - "
+  - name: swap-onto-a-login-with-room-wakes-the-wait
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: swap_onto_a_login_with_room_wakes_the_wait - "
+  - name: swap-onto-a-full-login-does-not-wake-the-wait
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: swap_onto_a_full_login_does_not_wake_the_wait - "
+  - name: swap-recorded-by-an-older-rotator-does-not-wake-the-wait
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: swap_recorded_by_an_older_rotator_does_not_wake_the_wait - "
+  - name: a-stopping-rotators-record-does-not-wake-the-wait
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: a_stopping_rotators_record_does_not_wake_the_wait - "
+  - name: a-manual-switch-without-a-room-reading-wakes-the-wait
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: a_manual_switch_without_a_room_reading_wakes_the_wait - "
+  - name: a-manual-switch-that-recorded-no-room-does-not-wake-the-wait
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: a_manual_switch_that_recorded_no_room_does_not_wake_the_wait - "

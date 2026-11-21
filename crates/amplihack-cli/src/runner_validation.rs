@@ -6,7 +6,6 @@ use serde::{
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fmt, path::Path};
-
 fn error(code: &str) -> anyhow::Error {
     anyhow!("{code}")
 }

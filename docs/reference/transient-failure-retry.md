@@ -101,6 +101,16 @@ its table there.
   or the wait was turned off. See the
   [usage-limit wait](./profile-command.md#usage-limit-wait).
 
+- **A 429 straight after a wait is waited out too, and is still `transient_transport` here.**
+  When a wait ends because something said to try again and the first attempt
+  after it ends on a 429 report, the wait supervisor waits again instead of
+  passing the failure up as `indeterminate`, provided a capacity wait could
+  start for the step. Without that the 429 is classified and retried by the
+  [rules below](#classification) as before, as is a 429 anywhere else, and a
+  429 is never filed as `usage_limit`. The position and line rules for the
+  wait's reading are in
+  [A limit after a wait](./profile-command.md#a-limit-after-a-wait).
+
 - **`5-hour limit` is the session window's newer name (#2230).** Claude Code
   now reports the session window this way:
 
@@ -217,11 +227,13 @@ grep amplihack.recipe.failure_class run.log | jq -r '.class + " " + .action'
 `structural_refusal` is a JSON boolean, never a string. It is `true` only when
 an unsuccessful step's terminating error header records the reserved exit code
 `79`. The runner decodes the pinned runner's error envelope
-(recipe-runner-rs `90286bc`), anchored at the start of `error`, before
+(recipe-runner-rs `2833a0b8`), anchored at the start of `error`, before
 diagnostics. It does not search captured stdout, stderr or diagnostic text
 for refusal phrases or embedded exit-code references. The class is then
 `work`, and the failure is never mechanically retried. The decoder is
-`termination.rs`.
+`termination.rs`. A sub-recipe whose `recipe:` value is a template
+expression is not decoded: the pinned runner leaves the name out of that
+header.
 
 ```text
 Command failed (exit 79): <any diagnostics>                  -> true, work

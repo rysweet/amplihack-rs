@@ -30,8 +30,11 @@ mod tests_issue_1947;
 mod tests_issue_2136;
 #[path = "tests_issue_2211.rs"]
 mod tests_issue_2211;
+#[macro_use]
 #[path = "tests_issue_2211_cycle.rs"]
 mod tests_issue_2211_cycle;
+#[path = "tests_issue_2889_cycle.rs"]
+mod tests_issue_2889_cycle;
 #[path = "tests_ledger.rs"]
 mod tests_ledger;
 #[path = "tests_live_readers.rs"]
@@ -52,5 +55,7 @@ mod tests_platform_block;
 mod tests_platform_identify;
 #[path = "tests_settings.rs"]
 mod tests_settings;
+#[path = "tests_step_block.rs"]
+mod tests_step_block;
 #[path = "tests_swap_record.rs"]
 mod tests_swap_record;

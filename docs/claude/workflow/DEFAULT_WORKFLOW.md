@@ -122,7 +122,7 @@ The loud blocking states include:
 | `FAILED_PR_METADATA_UNAVAILABLE` | GitHub metadata is required for a GitHub PR proof or meaningful-diff safety decision but cannot be loaded. This is not used merely because an Azure or unknown remote lacks GitHub metadata. |
 | `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. |
 | `FAILED_REPORTING` | Implementation succeeded but a reporting/finalization step failed. Durable evidence (`pr_url`, `pr_number`, implementation/verification markers) is preserved and reported. |
-| `HOLLOW_SUCCESS` | The run appeared successful but lacked implementation, verification, publish, or valid no-op evidence. |
+| `HOLLOW_SUCCESS` | The run appeared successful but its agent output was empty or inaccessible, so it may have produced nothing at all. Unchanged by #2343. |
 | `BLOCKED_CI` | Required checks are failing or a CI policy blocks publish or merge. |
 
 `workflow-terminal-state` never invokes `gh pr list`, `gh pr view`, or related

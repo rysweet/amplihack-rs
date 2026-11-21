@@ -85,6 +85,25 @@ collect_evidence() {
     missing_tooling="${missing_tooling}${missing_tooling:+,}gh"
   fi
 
+  # #2819 R4: what the run was asked to do, and what the implementation step
+  # returned. Two success states are defined by the task -- ALLOW_NO_OP ("the
+  # task asked for no change") and NO_DIFF_SUCCESS ("did what was asked") --
+  # and HOLLOW_SUCCESS is about a run that produced nothing. Without these the
+  # assessment is asked for a judgement it has no input for, so it must either
+  # fail every no-change task or approve them blind. Both are collected as
+  # facts: this file does not decide what an empty output or an empty task
+  # means.
+  task_description="$(workflow_finalization_metadata task_description || :)"
+  implementation_output="unread"
+  if implementation_text="$(workflow_context_read implementation 2>/dev/null)"; then
+    if [ -n "$(printf '%s' "$implementation_text" | tr -d '[:space:]')" ]; then
+      implementation_output="present"
+    else
+      implementation_output="empty"
+    fi
+  fi
+  unset implementation_text
+
   implementation_completed="$(resolve_implementation_completed)"
   verification_completed="$(resolve_verification_completed)"
   publish_state_reached="$(resolve_publish_state_reached)"
@@ -121,6 +140,26 @@ collect_evidence() {
     gh_required="true"
   fi
 
+  # #2343: the facts of what the run produced. The reader always exits 0 and
+  # always writes one JSON object, so this never aborts collection; when it
+  # cannot run at all the evidence carries an empty outcome and the validator
+  # reads the facts live instead. The object is spliced in from a private 0600
+  # file, so none of its fields pass through argv.
+  outcome_tmp=""
+  outcome_tmp="$(mktemp "${TMPDIR:-/tmp}/workflow-finalization-outcome.XXXXXX" 2>/dev/null)" || outcome_tmp=""
+  if [ -n "$outcome_tmp" ]; then
+    chmod 600 "$outcome_tmp" 2>/dev/null || :
+    if declare -F finalization_outcome_facts >/dev/null 2>&1; then
+      finalization_outcome_facts "$target_dir" "$branch_name" "${pr_url:-$pr_number}" \
+        "$(workflow_finalization_metadata remote_host_type || :)" \
+        > "$outcome_tmp" 2>/dev/null || :
+    fi
+    [ -s "$outcome_tmp" ] || { rm -f -- "$outcome_tmp"; outcome_tmp=""; }
+  fi
+  outcome_flag="--slurpfile"
+  outcome_value="$outcome_tmp"
+  if [ -z "$outcome_tmp" ]; then outcome_flag="--argjson"; outcome_value="[]"; fi
+
   # --rawfile preserves UTF-8 across jq raw-parser chunk boundaries.
   # Serialize scalar observations on stdin too: a file-spilled value must
   # not re-enter argv and hit its per-argument limit. Keys are a fixed list.
@@ -128,16 +167,17 @@ collect_evidence() {
   repo_path="$(workflow_finalization_metadata repo_path || :)"
   worktree_path="$target_dir"
   observed_phases="workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-refactor-review,workflow-precommit-test,workflow-publish,workflow-pr-review,workflow-finalize"
+  evidence_json="$(
   {
     printf '{'
     separator=''
-    for field in schema_version repo_path worktree_path repo_valid branch_name head_sha base_ref dirty_worktree meaningful_diff commits_ahead missing_tooling remote_host_type github_remote gh_required pr_url pr_number publish_status implementation_completed verification_completed publish_state_reached terminal_no_op allow_no_op prior_terminal_state prior_terminal_success prior_terminal_reason branch_diff_status observed_phases; do
+    for field in schema_version repo_path worktree_path repo_valid branch_name head_sha base_ref dirty_worktree meaningful_diff commits_ahead missing_tooling remote_host_type github_remote gh_required pr_url pr_number publish_status implementation_completed verification_completed publish_state_reached terminal_no_op allow_no_op prior_terminal_state prior_terminal_success prior_terminal_reason branch_diff_status observed_phases task_description implementation_output; do
       printf '%s"%s":' "$separator" "$field"
       printf '%s' "${!field}" | jq -n --rawfile value /dev/stdin '$value'
       separator=','
     done
     printf '}'
-  } | jq '
+  } | jq "$outcome_flag" outcome "$outcome_value" '
     .schema_version as $schema_version |
     .repo_path as $repo_path |
     .worktree_path as $worktree_path |
@@ -165,6 +205,8 @@ collect_evidence() {
     .prior_terminal_reason as $prior_terminal_reason |
     .branch_diff_status as $branch_diff_status |
     .observed_phases as $observed_phases |
+    .task_description as $task_description |
+    .implementation_output as $implementation_output |
     {
       schema_version: ($schema_version | tonumber),
       git: {
@@ -212,8 +254,30 @@ collect_evidence() {
         terminal_reason: $prior_terminal_reason
       },
       observed_phases: ($observed_phases | split(",")),
+      task: {
+        # The run'"'"'s own task text, as data. Capped so the assessment prompt
+        # stays bounded, and any fence of three or more backticks is defanged
+        # so task text cannot close the evidence fence it is quoted inside.
+        description: ($task_description
+          | if length > 4000 then .[0:4000] + " [...truncated]" else . end
+          | gsub("`{3,}"; "'"'''"'")),
+        description_read: (if $task_description == "" then "false" else "true" end)
+      },
       agent_outputs: {
+        implementation_output: $implementation_output,
+        # A typed flag another producer may set. Nothing in this pipeline sets
+        # it, so it reads "unknown": not collected, which is not "false".
         hollow_success_signals: "unknown"
-      }
+      },
+      outcome: (
+        if ($outcome | length) == 1 and ($outcome[0] | type) == "object"
+           and ($outcome[0].local_head | type) == "string"
+        then $outcome[0]
+        else {}
+        end
+      )
     }'
+  )" || { rm -f -- "$outcome_tmp"; echo "ERROR: collect-finalization-evidence could not assemble its JSON evidence" >&2; exit 2; }
+  rm -f -- "$outcome_tmp"
+  printf '%s\n' "$evidence_json"
 }

@@ -1,19 +1,34 @@
 //! Success paths: a resumed run whose branch already has an open, same-repo PR
-//! with a passing verification signal is `EXISTING_OPEN_PR`, not
-//! `FAILED_IMPLEMENTATION`, even though this run's implementation/verification
-//! steps left no outputs (PRs #1635 and #1639).
+//! is `EXISTING_OPEN_PR`, not `FAILED_IMPLEMENTATION`, even though this run's
+//! implementation/verification steps left no outputs (PRs #1635 and #1639).
+//!
+//! Since #2343 the work is split in two. Reading the pull request is
+//! `finalization_outcome_facts`, which reports what `gh` printed and judges
+//! none of it; the cases about HOW the pull request is read are therefore
+//! asserted against the facts. Turning those facts into `EXISTING_OPEN_PR` is
+//! `assess-finalization`'s decision, which the validator reports; the cases
+//! about the terminal state supply that decision and assert the end state.
 
 use serde_json::json;
 
 use super::fixture::*;
 
-const EVIDENCE_GREEN: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=7,all_checks=green";
-const EVIDENCE_PRECOMMIT_PREFIX: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=7,precommit_passed=true,all_checks=";
+/// The `--json` fields the facts reader asks `gh pr view` for.
+pub(super) const VIEW_FIELDS: [&str; 8] = [
+    "number",
+    "url",
+    "state",
+    "isDraft",
+    "headRefName",
+    "headRefOid",
+    "isCrossRepository",
+    "statusCheckRollup",
+];
 
-fn assert_existing_open_pr(outcome: &Outcome, evidence: &str) {
+pub(super) fn assert_existing_open_pr(outcome: &Outcome, checks: &str) {
     assert!(
         outcome.success(),
-        "resumed run with an open PR and a passing verification signal must succeed\n{}",
+        "a decided EXISTING_OPEN_PR must succeed\n{}",
         outcome.describe()
     );
     assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
@@ -25,16 +40,20 @@ fn assert_existing_open_pr(outcome: &Outcome, evidence: &str) {
     assert_eq!(outcome.field("publish_state_reached"), "true");
     assert_eq!(outcome.field("pr_number"), "7");
     assert_eq!(outcome.field("pr_url"), PR_URL);
-    assert_eq!(outcome.field("evidence_used"), evidence);
-    // Only all-green CI is done; pre-commit-only success must hand CI on.
-    let next_action = outcome.field("required_next_action");
-    if evidence.contains("precommit_passed=true") {
+    // The facts the state was reported against travel with it, so a reader can
+    // see the pull request and its check class behind the decision.
+    let evidence = outcome.field("evidence_used");
+    for fact in [
+        "outcome.pr=7",
+        "outcome.pr_state=OPEN",
+        &format!("outcome.checks={checks}"),
+        "assessment_state=EXISTING_OPEN_PR",
+    ] {
         assert!(
-            next_action.starts_with("Watch CI on PR #7:") && next_action.contains("BLOCKED_CI"),
-            "pre-commit-only success must tell the next step to watch CI: {next_action}"
+            evidence.contains(fact),
+            "evidence_used must carry `{fact}`: {evidence}\n{}",
+            outcome.describe()
         );
-    } else {
-        assert_eq!(next_action, "No action required.");
     }
     assert!(
         !outcome.stderr.contains("failed closed"),
@@ -49,31 +68,12 @@ fn assert_existing_open_pr(outcome: &Outcome, evidence: &str) {
 fn resumed_run_with_open_pr_and_green_checks_is_not_failed_implementation() {
     let fx = Fixture::new();
     fx.gh_view(&open_pr(green_rollup()));
-    let mut envs = resumed_env(&fx.repo_path());
+    let mut envs = assessed_env(&fx.repo_path(), "EXISTING_OPEN_PR", "7");
     envs.push(("PR_URL", PR_URL.to_owned()));
 
     let outcome = fx.validate(&as_refs(&envs));
 
-    assert_existing_open_pr(&outcome, EVIDENCE_GREEN);
-    let calls = fx.gh_calls();
-    assert!(
-        calls.iter().any(|c| c.starts_with("pr view 7 ")
-            && c.contains(&format!("--repo {REPO}"))
-            && c.contains("--json")
-            && [
-                "number",
-                "url",
-                "state",
-                "headRefName",
-                "headRefOid",
-                "isCrossRepository",
-                "statusCheckRollup"
-            ]
-            .iter()
-            .all(|f| c.contains(f))),
-        "validator must inspect the PR read-only with --repo and the documented fields: {calls:?}"
-    );
-    fx.assert_gh_reads_only();
+    assert_existing_open_pr(&outcome, "green");
     assert_no_leak(&outcome);
 }
 
@@ -81,58 +81,19 @@ fn resumed_run_with_open_pr_and_green_checks_is_not_failed_implementation() {
 fn resumed_run_with_only_a_pr_number_succeeds() {
     let fx = Fixture::new();
     fx.gh_view(&open_pr(green_rollup()));
-    let mut envs = resumed_env(&fx.repo_path());
+    let mut envs = assessed_env(&fx.repo_path(), "EXISTING_OPEN_PR", "7");
     envs.push(("PR_NUMBER", "7".to_owned()));
 
-    assert_existing_open_pr(&fx.validate(&as_refs(&envs)), EVIDENCE_GREEN);
+    assert_existing_open_pr(&fx.validate(&as_refs(&envs)), "green");
     fx.assert_gh_reads_only();
 }
 
-// The GitHub publish path records lowercase `existing-open-pr` and no URL, so
-// the validator must find the PR with a read-only `pr list --head <branch>`.
+// CI has not reported yet (pending or no checks). #2784, #2343: a published PR
+// at the run's head whose checks have not reported is finished work waiting on
+// CI, and this run's own verification boolean is not consulted at all -- not by
+// the facts reader, which never sees it, and not by the validator.
 #[test]
-fn lowercase_existing_open_pr_status_without_url_uses_pr_list_fallback() {
-    for (alias, status) in [
-        ("TERMINAL_STATE_PUBLISH_STATUS", "existing-open-pr"),
-        ("PR_PUBLISH_RESULT_STATE", "existing-open-pr"),
-        ("TERMINAL_STATE_PUBLISH_STATUS", "EXISTING_OPEN_PR"),
-        ("TERMINAL_STATE_PUBLISH_STATUS", "FOLLOWUP_CREATED"),
-        ("TERMINAL_STATE_TERMINAL_STATE", "existing-open-pr"),
-    ] {
-        let fx = Fixture::new();
-        fx.gh_list(&json!([{"number": 7, "url": PR_URL, "isCrossRepository": false}]));
-        fx.gh_view(&open_pr(green_rollup()));
-        let mut envs = resumed_env(&fx.repo_path());
-        envs.push((alias, status.to_owned()));
-
-        let outcome = fx.validate(&as_refs(&envs));
-
-        assert!(
-            outcome.success(),
-            "{alias}={status}\n{}",
-            outcome.describe()
-        );
-        assert_existing_open_pr(&outcome, EVIDENCE_GREEN);
-        let calls = fx.gh_calls();
-        assert!(
-            calls.iter().any(|c| c.starts_with("pr list ")
-                && c.contains(&format!("--head {BRANCH}"))
-                && c.contains("--state open")),
-            "{alias}={status}: publish status alone must search open PRs for the run branch: {calls:?}"
-        );
-        assert!(
-            calls.iter().any(|c| c.starts_with("pr view 7 ")),
-            "{alias}={status}: the single match must be re-checked with pr view: {calls:?}"
-        );
-        fx.assert_gh_reads_only();
-    }
-}
-
-// CI has not reported yet (pending or no checks), but this run's typed
-// precommit verification passed. A failing check is never in this set: it is
-// BLOCKED_CI whatever verification_completed says (see blocked_ci.rs).
-#[test]
-fn pending_or_absent_checks_with_typed_verification_evidence_succeed_as_precommit_passed() {
+fn pending_or_absent_checks_are_read_as_such_and_hand_the_pr_on() {
     for (rollup, checks) in [
         (json!([check_run("IN_PROGRESS", json!(null))]), "pending"),
         (
@@ -146,49 +107,51 @@ fn pending_or_absent_checks_with_typed_verification_evidence_succeed_as_precommi
     ] {
         let fx = Fixture::new();
         fx.gh_view(&open_pr(rollup.clone()));
-        let mut envs = resumed_env(&fx.repo_path());
-        envs.push(("PR_URL", PR_URL.to_owned()));
-        envs.push(("VERIFICATION_COMPLETED", "true".to_owned()));
+        assert_eq!(
+            fx.fact(BRANCH, Some(PR_URL), "checks"),
+            checks,
+            "rollup {rollup} must read as {checks}"
+        );
 
-        let outcome = fx.validate(&as_refs(&envs));
-        assert!(outcome.success(), "rollup {rollup}\n{}", outcome.describe());
-        assert_existing_open_pr(&outcome, &format!("{EVIDENCE_PRECOMMIT_PREFIX}{checks}"));
+        for verification in ["", "true", "false"] {
+            let fx = Fixture::new();
+            fx.gh_view(&open_pr(rollup.clone()));
+            let mut envs = assessed_env(&fx.repo_path(), "EXISTING_OPEN_PR", "7");
+            envs.push(("PR_URL", PR_URL.to_owned()));
+            if !verification.is_empty() {
+                envs.push(("VERIFICATION_COMPLETED", verification.to_owned()));
+            }
+
+            let outcome = fx.validate(&as_refs(&envs));
+            assert!(outcome.success(), "rollup {rollup}\n{}", outcome.describe());
+            assert_existing_open_pr(&outcome, checks);
+        }
     }
-}
-
-#[test]
-fn neutral_skipped_and_success_status_contexts_count_as_green() {
-    let fx = Fixture::new();
-    fx.gh_view(&open_pr(json!([
-        check_run("COMPLETED", json!("SUCCESS")),
-        check_run("COMPLETED", json!("NEUTRAL")),
-        check_run("COMPLETED", json!("SKIPPED")),
-        status_context("SUCCESS"),
-    ])));
-    let mut envs = resumed_env(&fx.repo_path());
-    envs.push(("PR_URL", PR_URL.to_owned()));
-
-    assert_existing_open_pr(&fx.validate(&as_refs(&envs)), EVIDENCE_GREEN);
 }
 
 // Production runs carry context as RECIPE_VAR_* (canonical tier), the shape the
 // #1635/#1639 runs had: publish status in the terminal_state object, no URL.
 #[test]
-fn canonical_recipe_var_transport_reaches_the_open_pr_path() {
+fn canonical_recipe_var_transport_reaches_the_facts_and_the_decision() {
     let fx = Fixture::new();
     fx.gh_list(&json!([{"number": 7, "url": PR_URL, "isCrossRepository": false}]));
     fx.gh_view(&open_pr(green_rollup()));
     let terminal_state = json!({"publish_status": "existing-open-pr"}).to_string();
     let repo_path = fx.repo_path();
+    let (_, assessment_json) = assessment("EXISTING_OPEN_PR", "none", "7");
 
     let outcome = fx.validate(&[
         ("RECIPE_VAR_repo_path", repo_path.as_str()),
         ("RECIPE_VAR_branch_name", BRANCH),
         ("RECIPE_VAR_terminal_state", terminal_state.as_str()),
         ("RECIPE_VAR_finalizer_step_status", r#"{"status":"ok"}"#),
+        (
+            "RECIPE_VAR_finalization_assessment",
+            assessment_json.as_str(),
+        ),
     ]);
 
-    assert_existing_open_pr(&outcome, EVIDENCE_GREEN);
+    assert_existing_open_pr(&outcome, "green");
 }
 
 // The canonical result schema is unchanged: 19 keys, every value a String.
@@ -196,7 +159,7 @@ fn canonical_recipe_var_transport_reaches_the_open_pr_path() {
 fn existing_open_pr_result_keeps_the_nineteen_string_key_schema() {
     let fx = Fixture::new();
     fx.gh_view(&open_pr(green_rollup()));
-    let mut envs = resumed_env(&fx.repo_path());
+    let mut envs = assessed_env(&fx.repo_path(), "EXISTING_OPEN_PR", "7");
     envs.push(("PR_URL", PR_URL.to_owned()));
 
     let outcome = fx.validate(&as_refs(&envs));
@@ -208,35 +171,6 @@ fn existing_open_pr_result_keeps_the_nineteen_string_key_schema() {
         object.values().all(serde_json::Value::is_string),
         "every result value must be a String: {result}"
     );
-}
-
-// Successful runs must not leave retry scratch files in the worktree, which
-// would dirty it for the next run.
-#[test]
-fn open_pr_lookup_leaves_the_worktree_clean() {
-    let fx = Fixture::new();
-    fx.gh_view(&open_pr(green_rollup()));
-    let mut envs = resumed_env(&fx.repo_path());
-    envs.push(("PR_URL", PR_URL.to_owned()));
-
-    assert!(fx.validate(&as_refs(&envs)).success());
-    assert_eq!(
-        fx.git(&["status", "--porcelain"]),
-        "",
-        "worktree must stay clean"
-    );
-    assert!(
-        !path_has_retry_scratch(&fx.repo),
-        "no retry scratch in the worktree"
-    );
-    assert!(
-        fs_is_empty(&fx.tmp.path().join("scratch")),
-        "the private mktemp dir must be removed"
-    );
-}
-
-fn fs_is_empty(dir: &std::path::Path) -> bool {
-    std::fs::read_dir(dir).map_or(true, |mut entries| entries.next().is_none())
 }
 
 // workflow-complete must list the new success state.

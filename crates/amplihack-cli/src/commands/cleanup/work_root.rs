@@ -68,7 +68,10 @@ pub(crate) fn resolve_from_env() -> Result<WorkRoot> {
     )
 }
 
-/// Refuses a work root that cleanup could not safely manage.
+/// Refuses a work root in a location cleanup could not safely manage, then
+/// checks its ownership and permissions. One function, used by creation,
+/// cleanup and discovery alike: a caller that wanted the location half on
+/// its own would be accepting a work root another user can write to.
 pub(crate) fn validate(path: &Path, home: &Path) -> Result<()> {
     if !path.is_absolute() {
         bail!("work root {} must be an absolute path", path.display());

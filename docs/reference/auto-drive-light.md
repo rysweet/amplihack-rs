@@ -1,13 +1,19 @@
 ---
 title: Auto-Drive-Light Recipe
 description: small-change eligibility, authorization, escalation, and shared readiness outcomes.
-last_updated: 2026-11-12
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
 ---
 
 # Auto-Drive-Light Recipe
+
+Judging agents run directly in the actual linked PR worktree at the intended
+reviewed commit, as in
+[`auto-drive-to-merge`](auto-drive-to-merge.md#review-in-the-pr-worktree).
+The same pre-review evidence and agentic assessment preserve existing work;
+reviewer differences alone do not fail the run.
 
 Light mode shares the runner-captured authorization, evidence snapshots and agentic finalization of full auto-drive. Its default is `no_merge=true`, preserved through escalation. Controlled tests verify propagation; actual OS/runtime execution remains unverified.
 
@@ -44,9 +50,9 @@ recipe name when the change is eligible.
 | --- | --- | --- |
 | `task_description` | empty | Change to build; required unless an existing PR or branch is selected. |
 | `repo_path` | `.` | Repository. |
-| `merge_method` | empty | `merge`, `squash` or `rebase`. Empty: `merge_method` in the repository's `.amplihack/auto-drive.toml` at the base branch tip, else the first method the repository settings and the base branch's rulesets both allow, in squash, merge, rebase order. Passed unchanged to the merge loop and through escalation, and used only by the finalisation step. See [Choosing the merge method](auto-drive-to-merge.md#choosing-the-merge-method-1888). |
 | `pr_number` | empty | Existing PR; explicit selection takes precedence. |
 | `existing_branch` | empty | Existing source branch with an open PR; must match explicit PR input. |
+| `base_branch` | empty | Passed to `auto-drive-to-merge` on escalation. A new change clears it in `light-worktree`, because the `quick/` branch starts from `origin/HEAD`, so escalation then sees an empty base. Only the existing-PR path (`pr_number` or `existing_branch` set) keeps the caller's value. See [Where the inputs apply](workflow-delivery-inputs.md#where-the-inputs-apply). |
 | `issue_number` | empty | Issue reference used by the branch/PR and task fallback. A positive issue number, up to 10 digits. |
 | `plan_task_id` | empty | Explicit task for follow-ups. Otherwise use `#<issue_number>`, then the shared PR-body/task-description fallback. |
 | `qa_command` | empty | Operator-supplied build check command; otherwise repository quick-change checks. This does not replace final QA selection. |
@@ -123,6 +129,10 @@ branch or PR. Because the PR exists, the nested full build is skipped.
 
 Forward dry-run and `no_merge` restrictions explicitly. Child context
 overwrite cannot relax them. Skip subsequent light-path work after escalation.
+`light-escalate` passes `base_branch` as well: the caller's value on the
+existing-PR path, empty after `light-worktree` cleared it. With an empty base,
+finalize takes the base from the PR itself
+([How finalize finds the base](workflow-delivery-inputs.md#how-finalize-finds-the-base)).
 Exit `79` propagates and is never retried at a greater depth.
 
 ## Minor findings and follow-up issues

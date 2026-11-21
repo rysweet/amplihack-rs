@@ -65,12 +65,12 @@ use std::process::Command;
 fn create_script_stub(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
     fs::create_dir_all(dir).unwrap();
     let path = dir.join(name);
-    fs::write(&path, body).unwrap();
+    // `write_executable` never holds a write descriptor in this process, so
+    // a sibling test's fork cannot make the exec fail with ETXTBSY (#2019).
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    crate::test_support::write_executable(&path, body);
+    #[cfg(not(unix))]
+    fs::write(&path, body).unwrap();
     path
 }
 

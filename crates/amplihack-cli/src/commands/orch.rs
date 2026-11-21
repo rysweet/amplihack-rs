@@ -25,6 +25,8 @@ pub(crate) mod autodrive;
 mod autodrive_completion;
 mod named_branch;
 mod select_workflow;
+mod step_recovery;
+pub(crate) use step_recovery::STEP_RECOVERY_HANDOFF_EXIT;
 mod workflow_log_inventory;
 
 // TDD contracts for #2329. The implementation supplies `mod autodrive`;
@@ -32,6 +34,15 @@ mod workflow_log_inventory;
 #[cfg(test)]
 #[path = "orch/autodrive/tests.rs"]
 mod autodrive_contract_tests;
+// #2546: repair of the drive's own state written under a loose umask.
+#[cfg(test)]
+#[path = "orch/autodrive/tests_2546_state.rs"]
+mod autodrive_issue_2546_state_tests;
+
+// TDD contracts for #2575: the tolerant schema-version-2 run report.
+#[cfg(test)]
+#[path = "orch/autodrive/report_v2_tests.rs"]
+mod autodrive_report_v2_tests;
 
 #[derive(Subcommand, Debug)]
 pub enum OrchCommands {
@@ -55,39 +66,10 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
-    /// Portable auto-drive record, state, and local Git operations.
+    /// Portable auto-drive state, authorization and local Git operations.
     Autodrive {
         #[command(subcommand)]
         operation: autodrive::helper::Operations,
-    },
-    /// Select an allowed merge method for the finalisation step (#1888).
-    /// Prints one JSON object: the selection, or `{"error": reason}` with a
-    /// non-zero exit (79 when gh refuses by policy), so the step can record
-    /// the reason as a blocker.
-    SelectMergeMethod {
-        /// The pull request URL `gh pr view` reported; it names the repository.
-        #[arg(long)]
-        pr_url: String,
-        /// The checkout whose object store holds the base and the head.
-        #[arg(long)]
-        repo_root: PathBuf,
-        /// The pull request's base branch name (`baseRefName`); the rulesets
-        /// on it are read whatever the method's source. A `-`-led value is
-        /// taken too, so that it is refused with a reason.
-        #[arg(long, default_value = "", allow_hyphen_values = true)]
-        base_ref: String,
-        /// The fetched base branch tip, where `.amplihack/auto-drive.toml`
-        /// is read.
-        #[arg(long, default_value = "")]
-        base: String,
-        /// The pull request head commit.
-        #[arg(long, default_value = "")]
-        head: String,
-        /// The recipe's merge_method context; empty when not given. Any
-        /// value is taken, `--admin` included, so that a bad one is refused
-        /// with a reason rather than a usage error.
-        #[arg(long, default_value = "", allow_hyphen_values = true)]
-        merge_method: String,
     },
     /// Prepare driver-owned identity and completion dispatch context.
     AutodriveCompletionPrepare(autodrive_completion::Prepare),
@@ -100,6 +82,12 @@ pub enum OrchHelperCommands {
     AutodriveCompletionWrite(autodrive_completion::Write),
     /// Validate the decision and complete or launch the convergence evaluator.
     AutodriveCompletionDispatch(autodrive_completion::Dispatch),
+    /// Step failure recovery for recipe steps (issue #2539). Internal: called
+    /// by bundle recipes; see docs/reference/step-failure-recovery.md.
+    StepRecovery {
+        #[command(subcommand)]
+        command: step_recovery::StepRecoveryCommands,
+    },
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -551,36 +539,6 @@ fn read_bounded_stdin() -> String {
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
         OrchHelperCommands::Autodrive { operation } => autodrive::helper::run(operation),
-        OrchHelperCommands::SelectMergeMethod {
-            pr_url,
-            repo_root,
-            base_ref,
-            base,
-            head,
-            merge_method,
-        } => {
-            let request = super::merge_method::SelectionRequest {
-                pr_url: &pr_url,
-                repo_root: &repo_root,
-                base_ref: &base_ref,
-                base: &base,
-                head: &head,
-                explicit: &merge_method,
-            };
-            match super::merge_method::select(&request) {
-                Ok(selection) => {
-                    println!("{}", serde_json::to_string(&selection)?);
-                    Ok(())
-                }
-                Err(error) => {
-                    let reason = format!("{error:#}");
-                    println!("{}", serde_json::json!({ "error": reason }));
-                    eprintln!("ERROR: select-merge-method: {reason}");
-                    let refused = error.is::<super::merge_method::PolicyRefusal>();
-                    std::process::exit(if refused { 79 } else { 1 });
-                }
-            }
-        }
         OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
         OrchHelperCommands::AutodriveCompletionSeal { private_state } => {
             autodrive_completion::seal(private_state)
@@ -589,6 +547,7 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         OrchHelperCommands::AutodriveCompletionDispatch(args) => {
             autodrive_completion::dispatch(args)
         }
+        OrchHelperCommands::StepRecovery { command } => step_recovery::run(command),
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
             let found = match require_field.as_deref() {

@@ -18,12 +18,15 @@
 //!
 //! The test asserts that the step saw the outer run's own pid and start time,
 //! and that the nested run stopped with exit 75 and the orphan line naming
-//! that pid. No sleeps and no wall-clock windows: the waits are the readiness
+//! that pid. The guarantee is carried by the parent watch
+//! (`commands/recipe/run/parent_watch.rs`), which reads
+//! `AMPLIHACK_PARENT_RECIPE_PID` and `_STARTTIME` and never depended on
+//! ptrace. No sleeps and no wall-clock windows: the waits are the readiness
 //! file, the exit-code file and child exits.
 //!
-//! The real runner is `RECIPE_RUNNER_QA_BINARY`, else `recipe-runner-rs` on
-//! `PATH`. Without one the test says so and returns, unless
-//! `AMPLIHACK_1976_REQUIRE_RECIPE_RUNNER` is set, when it fails. Linux only.
+//! The real runner is the receipt-checked pinned build from
+//! `tests/support/pinned_runner.rs` (#2658), never a `PATH` lookup. The test
+//! never skips: without a runner at the pin it fails. Linux only.
 
 #![cfg(target_os = "linux")]
 
@@ -33,25 +36,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const REQUIRE_ENV: &str = "AMPLIHACK_1976_REQUIRE_RECIPE_RUNNER";
-
-/// The real runner, or `None` when none is installed.
-fn real_runner() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("RECIPE_RUNNER_QA_BINARY") {
-        return Some(PathBuf::from(explicit));
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("recipe-runner-rs"))
-        .find(|candidate| {
-            candidate.is_file()
-                && Command::new(candidate)
-                    .arg("--version")
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .is_ok_and(|status| status.success())
-        })
+/// The pinned runner (#2658): a receipt-checked override or a build cached in
+/// the test target directory, never the host's installed runner.
+fn real_runner() -> PathBuf {
+    crate::pinned_runner::pinned_runner(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
 fn starttime_in(stat: &str) -> u64 {
@@ -106,14 +94,7 @@ impl Drop for Cleanup {
 
 #[test]
 fn a_step_under_the_real_runner_gets_the_parent_variables_and_its_nested_run_stops_with_75() {
-    let Some(runner) = real_runner() else {
-        assert!(
-            std::env::var_os(REQUIRE_ENV).is_none(),
-            "{REQUIRE_ENV} is set but no recipe-runner-rs was found"
-        );
-        eprintln!("recipe-runner-rs unavailable; skipping the real-runner orphan check");
-        return;
-    };
+    let runner = real_runner();
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     let (home, records) = (root.join("home"), root.join("records"));

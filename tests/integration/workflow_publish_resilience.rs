@@ -83,12 +83,16 @@ fn step<'a>(recipe: &'a Value, id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("missing recipe step {id}"))
 }
 
+/// The shell a step runs. Issue #1619: a body extracted into
+/// `amplifier-bundle/tools/` for the brick budget is followed, so these
+/// assertions read the step's real requirements and not its six-line lookup.
 fn step_command(recipe: &Value, id: &str) -> String {
-    step(recipe, id)
-        .get("command")
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("step {id} must be a bash command step"))
-        .to_owned()
+    crate::recipe_step_body::resolved(
+        step(recipe, id)
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("step {id} must be a bash command step")),
+    )
 }
 
 #[test]
@@ -299,15 +303,31 @@ exit 77
     );
     make_executable(&gh);
 
+    // The fixture's branch is `main` and so is its base. An inherited
+    // `RECIPE_VAR_base_branch` (every recipe step exports one, and this test
+    // also runs from the pre-push hook of a workflow run) would make
+    // `resolve_pr_base_ref` reject the base as the branch being delivered and
+    // abort before the dirty-worktree check, with nothing on stdout. Clear the
+    // environment and name what the helper needs, as the other helper
+    // invocation in this file does.
     let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = Command::new("bash")
-        .arg(workspace_helper_path("workflow_publish_pr.sh"))
+    let mut cmd = Command::new("bash");
+    cmd.arg(workspace_helper_path("workflow_publish_pr.sh"))
         .current_dir(&repo)
+        .env_clear()
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+        .env("HOME", tmp.path())
+        .env("TMPDIR", tmp.path())
         .env("REMOTE_HOST_TYPE", "github")
         .env("ISSUE_NUMBER", "7")
-        .output()
-        .expect("run workflow_publish_pr.sh");
+        .env(
+            "WORKFLOW_RUNTIME_ARTIFACT_HELPER",
+            workspace_helper_path("workflow_runtime_artifacts.sh"),
+        );
+    // The script runs `git remote set-head origin -a` against a github.com
+    // origin; env_clear() dropped the [env] prompt suppressors (#1764).
+    crate::isolated_amplihack::no_git_prompt(&mut cmd);
+    let output = cmd.output().expect("run workflow_publish_pr.sh");
 
     assert!(
         !output.status.success(),

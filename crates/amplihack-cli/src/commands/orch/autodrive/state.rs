@@ -1,23 +1,67 @@
-//! Private, bounded evidence snapshots. Historical completion markers grant no authority.
-use super::{authorization::InvocationAuthorization, records::*, validation::*};
+//! Private, bounded state files. Historical completion markers grant no authority.
+use super::identity::MAX_RECORD_BYTES;
+use super::private_mode::{Kind, Repair, make_private, repairable_root};
 use anyhow::{Context, Result, ensure};
 use std::{
     fs::{self, File},
-    io::{Read, Write},
+    io::Read,
     path::{Component, Path, PathBuf},
 };
 
 pub struct EvidenceStore {
     root: PathBuf,
     directory: File,
+    /// Whether entries in this store may be repaired (#2546), decided once
+    /// by `repairable_root`: the root was created by this call's own mkdir,
+    /// or its canonical path lies directly under the auto-drive state root.
+    /// The folder's name never matters. This decides the root folder; a
+    /// record read from the store is also repaired when the root is merely
+    /// private (`read_private`, `Repair::PrivateFolder`).
+    repair: Repair,
 }
-pub struct AcceptedSnapshot {
-    path: PathBuf,
-    pub record: AcceptedRecord,
-}
-impl AcceptedSnapshot {
-    pub fn path(&self) -> &Path {
-        &self.path
+
+/// Makes the store folder `root` at 0700 if it is missing, and returns
+/// whether this call's own `mkdir` created it, with its lstat. The parents are
+/// made recursively, but only the final, non-recursive `mkdir` can report
+/// `created_now`: a folder that already exists, or that appears between the
+/// lstat and the `mkdir` (EEXIST), is reported as existing (#2546).
+pub(crate) fn open_or_create_root(root: &Path) -> Result<(bool, fs::Metadata)> {
+    let existing = |m: fs::Metadata| {
+        ensure!(
+            !m.file_type().is_symlink() && m.is_dir(),
+            "state root is a symlink or non-directory"
+        );
+        Ok((false, m))
+    };
+    let builder = |recursive: bool| {
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(recursive);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+    };
+    match fs::symlink_metadata(root) {
+        Ok(m) => existing(m),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = root.parent() {
+                builder(true)
+                    .create(parent)
+                    .with_context(|| format!("create private state {}", parent.display()))?;
+            }
+            match builder(false).create(root) {
+                Ok(()) => Ok((true, fs::symlink_metadata(root)?)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    existing(fs::symlink_metadata(root)?)
+                }
+                Err(e) => {
+                    Err(e).with_context(|| format!("create private state {}", root.display()))
+                }
+            }
+        }
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -34,82 +78,47 @@ impl EvidenceStore {
         );
         // Resolve parent aliases uniformly (for example system temporary directories).
         // The designated state entry itself is never allowed to be a symlink.
-        match fs::symlink_metadata(&root) {
-            Ok(m) => ensure!(
-                !m.file_type().is_symlink() && m.is_dir(),
-                "state root is a symlink or non-directory"
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut builder = fs::DirBuilder::new();
-                builder.recursive(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::DirBuilderExt;
-                    builder.mode(0o700);
-                }
-                builder
-                    .create(&root)
-                    .with_context(|| format!("create private state {}", root.display()))?;
-            }
-            Err(e) => return Err(e.into()),
-        }
+        let (created_now, before) = open_or_create_root(&root)?;
         let root = root.canonicalize()?;
         let directory = open_directory(&root)?;
-        private(&directory.metadata()?, true)?;
-        Ok(Self { root, directory })
-    }
-    pub fn accept_candidate(
-        &self,
-        name: &str,
-        auth: &InvocationAuthorization,
-        expected: &Binding,
-    ) -> Result<AcceptedSnapshot> {
-        let bytes = self.read_private(name)?;
-        let record: CandidateRecord =
-            serde_json::from_slice(&bytes).context("invalid candidate evidence JSON")?;
-        let record = validate_candidate(auth, expected, &record)?;
-        self.snapshot_references(record.record())?;
-        let path = self.snapshot(&bytes)?;
-        Ok(AcceptedSnapshot { path, record })
-    }
-    /// Snapshot every referenced artifact from the same opened bytes that were hashed.
-    pub fn snapshot_references(&self, record: &CandidateRecord) -> Result<Vec<PathBuf>> {
-        use sha2::{Digest, Sha256};
-        let mut paths = Vec::new();
-        let mut seen = std::collections::BTreeMap::new();
-        let mut total = 0usize;
-        for e in record.criteria.iter().flat_map(|c| &c.evidence) {
-            if let Some(reference) = &e.reference {
-                if let Some(digest) = seen.insert(&reference.file, &reference.sha256) {
-                    ensure!(
-                        digest == &reference.sha256,
-                        "contradictory artifact digests"
-                    );
-                    continue;
-                }
-                let bytes = self
-                    .read_private(&reference.file)
-                    .with_context(|| format!("unreadable evidence artifact {}", reference.file))?;
-                ensure!(
-                    format!("{:x}", Sha256::digest(&bytes)) == reference.sha256,
-                    "missing, stale, or altered evidence artifact {}",
-                    reference.file
-                );
-                total = total
-                    .checked_add(bytes.len())
-                    .context("artifact size overflow")?;
-                ensure!(
-                    total <= MAX_RECORD_BYTES * 16,
-                    "artifact evidence exceeds aggregate collection limit"
-                );
-                paths.push(self.snapshot(&bytes)?);
-            }
+        // The folder opened must be the folder checked above: a root swapped
+        // for a symlink in between is refused before any repair.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let opened = directory.metadata()?;
+            ensure!(
+                (opened.dev(), opened.ino()) == (before.dev(), before.ino()),
+                "state root changed during open: {}",
+                root.display()
+            );
         }
-        Ok(paths)
+        #[cfg(not(unix))]
+        let _ = before;
+        let repair = if repairable_root(&root, created_now) {
+            Repair::Allowed
+        } else {
+            Repair::Refuse
+        };
+        make_private(&directory, &root, Kind::Dir, repair)?;
+        Ok(Self {
+            root,
+            directory,
+            repair,
+        })
     }
     pub fn read_private(&self, name: &str) -> Result<Vec<u8>> {
         let file = self.open(name, false)?;
-        private(&file.metadata()?, false)?;
+        // `create` has proved `self.directory` private with make_private
+        // (Kind::Dir), and `open` validates `name` as one Normal component and
+        // opens it with openat(O_NOFOLLOW) on that descriptor. No other user
+        // can change entries in a private folder, so this user's record with
+        // extra bits may be repaired even outside a repairable root (#2546).
+        let repair = match self.repair {
+            Repair::Refuse => Repair::PrivateFolder,
+            other => other,
+        };
+        make_private(&file, &self.root.join(name), Kind::SingleLinkFile, repair)?;
         ensure!(
             file.metadata()?.len() <= MAX_RECORD_BYTES as u64,
             "evidence exceeds size limit"
@@ -123,26 +132,13 @@ impl EvidenceStore {
         );
         Ok(bytes)
     }
+    #[cfg(test)]
     pub fn write_new(&self, name: &str, bytes: &[u8]) -> Result<()> {
         ensure!(bytes.len() <= MAX_RECORD_BYTES, "record exceeds size limit");
         let mut file = self.open(name, true)?;
-        file.write_all(bytes)?;
+        std::io::Write::write_all(&mut file, bytes)?;
         file.sync_all()?;
         Ok(())
-    }
-    pub fn snapshot(&self, bytes: &[u8]) -> Result<PathBuf> {
-        ensure!(
-            bytes.len() <= MAX_RECORD_BYTES,
-            "snapshot exceeds size limit"
-        );
-        let id = uuid::Uuid::new_v4();
-        let staging = format!(".pending-{id}");
-        let name = format!("accepted-{id}.json");
-        let mut file = self.open(&staging, true)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        self.publish(&staging, &name)?;
-        Ok(self.root.join(name))
     }
     fn open(&self, name: &str, create: bool) -> Result<File> {
         ensure!(
@@ -182,29 +178,6 @@ impl EvidenceStore {
             anyhow::bail!("private auto-drive evidence requires Unix file ownership support")
         }
     }
-    fn publish(&self, staging: &str, name: &str) -> Result<()> {
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            let from = std::ffi::CString::new(staging)?;
-            let to = std::ffi::CString::new(name)?;
-            let fd = self.directory.as_raw_fd();
-            // linkat publishes complete bytes atomically and never replaces an existing snapshot.
-            if unsafe { libc::linkat(fd, from.as_ptr(), fd, to.as_ptr(), 0) } != 0 {
-                return Err(std::io::Error::last_os_error()).context("publish evidence snapshot");
-            }
-            if unsafe { libc::unlinkat(fd, from.as_ptr(), 0) } != 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("remove snapshot staging entry");
-            }
-            Ok(())
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = (staging, name);
-            anyhow::bail!("private auto-drive evidence requires Unix file ownership support")
-        }
-    }
 }
 fn open_directory(path: &Path) -> Result<File> {
     let mut options = fs::OpenOptions::new();
@@ -215,20 +188,4 @@ fn open_directory(path: &Path) -> Result<File> {
         options.custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC);
     }
     Ok(options.open(path)?)
-}
-fn private(m: &fs::Metadata, dir: bool) -> Result<()> {
-    ensure!(
-        if dir { m.is_dir() } else { m.is_file() },
-        "evidence is not a regular file or state directory"
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        ensure!(
-            m.uid() == unsafe { libc::geteuid() } && m.permissions().mode() & 0o077 == 0,
-            "untrusted evidence ownership or permissions"
-        );
-        ensure!(dir || m.nlink() == 1, "evidence has unexpected hard links");
-    }
-    Ok(())
 }

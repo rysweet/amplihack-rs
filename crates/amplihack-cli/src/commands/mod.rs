@@ -20,7 +20,6 @@ pub mod litellm;
 pub mod lock;
 pub mod mcp_eval;
 pub mod memory;
-mod merge_method;
 pub mod mode;
 pub mod multitask;
 pub mod new_agent;
@@ -785,6 +784,12 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 fresh,
             )
         }
+        RecipeCommands::Guide {
+            target,
+            text,
+            file,
+            from_step,
+        } => recipe::guide::run_guide(&target, &text, file.as_deref(), from_step),
         RecipeCommands::Stop { target } => recipe::stop::run_stop(&target),
         RecipeCommands::DetachedChild { log, spec } => {
             let code = recipe::detach::run_detached_child(&spec, &log)?;

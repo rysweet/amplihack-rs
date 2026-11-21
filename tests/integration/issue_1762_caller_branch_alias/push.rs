@@ -234,7 +234,7 @@ fn step16b_prompt_does_not_template_branch_name() {
     assert!(
         block
             .lines()
-            .any(|l| l.contains("git pull --rebase") && push.is_match(l)),
+            .any(|l| l.contains("workflow_pull_rebase") && push.is_match(l)),
         "the fix loop pushes HEAD to the resolved remote branch:\n{block}"
     );
 }

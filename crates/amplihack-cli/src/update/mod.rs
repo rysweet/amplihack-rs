@@ -4,7 +4,7 @@ mod checksum;
 mod install;
 mod network;
 mod path_verify;
-mod post_install;
+pub(crate) mod post_install;
 
 pub use check::{
     StartupUpdateOutcome, maybe_print_update_notice_from_args, run_update,

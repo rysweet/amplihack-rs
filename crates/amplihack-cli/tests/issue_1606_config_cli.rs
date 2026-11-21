@@ -143,6 +143,8 @@ impl Fx {
             .current_dir(cwd)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
@@ -196,10 +198,10 @@ impl Fx {
     }
 }
 
-/// What git, and the config loader, accept as a repository root.
+/// A real repository with one commit: what git, the config loader and the
+/// recipe run's fail-closed checkout discovery (#2096) accept as a root.
 fn mark_repository(dir: &Path) {
-    fs::create_dir_all(dir.join(".git")).unwrap();
-    fs::write(dir.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    crate::support::git_fixture::init_with_commit(dir);
 }
 
 fn write_secure(path: &Path, body: &str) {
@@ -327,7 +329,16 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "recipe.log_dir = (unset)",
             "recipe.usage_limit_wait = true",
             "recipe.usage_limit_max_wait_secs = 21600",
+            // Issue #2589: unset by default; the shipped dangerous-command
+            // entries live in code, not in this file.
+            "policy.deny_commands = (unset)",
             "orchestrator.max_depth = 3",
+            // Issue #1619: per-step model tiers and the small-diff combined
+            // review.
+            "model.force = (unset)",
+            "model.tier_map = (unset)",
+            "review.combined_small_diff = false",
+            "review.combined_diff_threshold = 200",
             "governor.enabled = false",
             "governor.max_concurrency = 4",
             "governor.reserve_points = 10",

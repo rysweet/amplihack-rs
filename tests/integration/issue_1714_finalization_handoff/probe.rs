@@ -27,7 +27,6 @@ use super::ancestor::{
     FLAG, drop_pushed_branch, has_object, merge_main_on_pushed, origin_remote, pending, prune,
 };
 use super::fixture::*;
-use crate::issue_1641_finalization_open_pr::fixture::assert_failed_implementation;
 
 /// One `gh pr view`/`pr list` answer that satisfies both the probe's scope
 /// helper and the open-PR check.
@@ -120,16 +119,22 @@ pub(super) fn probe_json(outcome: &Outcome) -> Value {
     serde_json::from_str(line).expect("probe JSON")
 }
 
-/// The validator after the probe, with the probe's result as `terminal_state`.
-pub(super) fn validate_after(fx: &Fixture, probe: &Value, handoff: bool) -> Outcome {
+/// The validator after the probe, with the probe's result as `terminal_state`
+/// and the state `assess-finalization` decided on the published outcome. A
+/// probe state the validator answers from its own record (BLOCKED_CI and the
+/// other deterministic blockers) is reached before any assessment is read, so
+/// `decided` is ignored there; pass the state the assessment would return.
+pub(super) fn validate_after(fx: &Fixture, probe: &Value, handoff: bool, decided: &str) -> Outcome {
     let repo = fx.repo_path();
     let probe = probe.to_string();
+    let assessed = assessment(decided, "none", "7").1;
     let mut envs = vec![
         ("RECIPE_VAR_repo_path", repo.as_str()),
         ("RECIPE_VAR_branch_name", BRANCH),
         ("RECIPE_VAR_pr_url", PR_URL),
         ("RECIPE_VAR_terminal_state", probe.as_str()),
         ("RECIPE_VAR_finalizer_step_status", r#"{"status":"ok"}"#),
+        ("RECIPE_VAR_finalization_assessment", assessed.as_str()),
     ];
     if handoff {
         envs.push(FLAG);
@@ -183,7 +188,7 @@ fn a_merge_already_on_the_pr_before_finalize_ends_existing_open_pr() {
             local,
             "the probe's fetch writes no remote-tracking ref"
         );
-        let outcome = validate_after(&fx, &json, false);
+        let outcome = validate_after(&fx, &json, false, "EXISTING_OPEN_PR");
         assert!(outcome.success(), "named={named}\n{}", outcome.describe());
         assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
         assert_eq!(outcome.field("pr_number"), "7");
@@ -191,23 +196,28 @@ fn a_merge_already_on_the_pr_before_finalize_ends_existing_open_pr() {
     }
 }
 
-// CI not reported and no verification evidence of this run's own:
-// FAILED_IMPLEMENTATION, handed to the loops only inside auto-drive.
+// CI not reported and no verification evidence of this run's own. Since #2343
+// and #2784 that is finished work waiting on CI, not an implementation
+// failure: the probe still continues, and the validator hands the open pull
+// request on, inside auto-drive and standalone alike.
 #[test]
-fn pending_checks_end_failed_implementation_handed_off_only_in_auto_drive() {
+fn pending_checks_hand_the_open_pr_on_with_or_without_auto_drive() {
     let (fx, _, pr_head) = merged_on_remote_before_finalize();
     answer(&fx, &pr_head, pending());
     let json = assert_probe_continues(&probe(&fx, true, true), "pending");
 
-    let outcome = validate_after(&fx, &json, true);
-    assert!(outcome.success(), "{}", outcome.describe());
-    assert_eq!(outcome.field("terminal_state"), "FAILED_IMPLEMENTATION");
-    assert_eq!(outcome.field("handoff"), "merge_ready_loop");
-    assert_eq!(outcome.field("pr_number"), "7");
-
-    let outcome = validate_after(&fx, &json, false);
-    assert_failed_implementation(&outcome, "standalone");
-    assert_no_handoff_key(&outcome, "standalone");
+    for auto_drive in [true, false] {
+        let outcome = validate_after(&fx, &json, auto_drive, "EXISTING_OPEN_PR");
+        assert!(
+            outcome.success(),
+            "auto_drive={auto_drive}\n{}",
+            outcome.describe()
+        );
+        assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
+        assert_eq!(outcome.field("terminal_success"), "true");
+        assert_eq!(outcome.field("pr_number"), "7");
+        assert_no_handoff_key(&outcome, "a success needs no hand-off");
+    }
 }
 
 // A red check on a head that holds the run's work is BLOCKED_CI from the
@@ -222,8 +232,11 @@ fn a_failing_check_is_blocked_ci_from_the_probe_and_handed_off() {
     );
     let json = probe_json(&probe(&fx, true, true));
     assert_eq!(json["terminal_state"], "BLOCKED_CI");
-    let outcome = validate_after(&fx, &json, true);
+    // The probe's own BLOCKED_CI is answered from its record, before any
+    // assessment is read: an assessment claiming success cannot override it.
+    let outcome = validate_after(&fx, &json, true, "EXISTING_OPEN_PR");
     assert!(outcome.success(), "{}", outcome.describe());
     assert_eq!(outcome.field("terminal_state"), "BLOCKED_CI");
+    assert_eq!(outcome.field("terminal_success"), "false");
     assert_eq!(outcome.field("handoff"), "merge_ready_loop");
 }

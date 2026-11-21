@@ -444,7 +444,7 @@ printf 'WT=%s\nTGT=%s\n' "$wt" "$tgt" >> "$RECORD_DIR/env"
         names.contains("run.json") && names.contains("cleanup-record.json"),
         "{names:?}"
     );
-    let allowed: BTreeSet<String> = ["run.json", "cleanup-record.json", "recovery"]
+    let allowed: BTreeSet<String> = ["run.json", "cleanup-record.json", "recovery", "diagnostics"]
         .into_iter()
         .map(String::from)
         .collect();

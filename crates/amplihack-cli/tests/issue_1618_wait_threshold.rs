@@ -5,7 +5,7 @@
 //! stays free for the inherited profile's own limit. The candidate's limit
 //! belongs to another account: it neither times the wait nor, when too far
 //! away, cancels the retry. With a piped prompt that move back is refused,
-//! and the refusal is still logged as `skipped reason=piped_prompt`.
+//! and, since issue #2815, the prompt is captured, so the move back to X happens.
 //!
 //! See `issue_1618_fixture`.
 
@@ -109,11 +109,10 @@ fn a_limit_on_the_retry_under_the_inherited_profile_still_gets_the_wait() {
     );
 }
 
-/// With the prompt on a pipe, the move back to X is refused (a rerun would
-/// get no prompt). No wait was built, since X has no window at 100%, but
-/// the wait is refused for the same reason and the log says so.
+/// With the prompt on a pipe (#2815: captured), the move back to X happens
+/// and X gets the same prompt Y did. No wait is built or logged.
 #[test]
-fn a_piped_prompt_with_the_inherited_profile_only_over_the_threshold_logs_the_skip() {
+fn a_piped_prompt_with_the_inherited_profile_only_over_the_threshold_moves_back_to_x() {
     let f = with_profiles();
     switch_on(&f);
     x_over_threshold(&f);
@@ -123,7 +122,7 @@ fn a_piped_prompt_with_the_inherited_profile_only_over_the_threshold_logs_the_sk
         .env("CLAUDE_CONFIG_DIR", f.profiles.join("X"))
         .env("AMPLIHACK_CLAUDE_AUTO_SWITCH", "1")
         .env("LIMIT_PROFILE", "")
-        .env("LIMIT_CALLS", "5")
+        .env("LIMIT_CALLS", "1")
         .env("LIMIT_MESSAGE_Y", Y_NOON)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -135,13 +134,17 @@ fn a_piped_prompt_with_the_inherited_profile_only_over_the_threshold_logs_the_sk
         stdin.write_all(b"the piped prompt\n").unwrap();
     }
     let out = child.wait_with_output().unwrap();
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(f.count("0"), 1, "{}", describe(&out));
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "{}", describe(&out));
     assert_eq!(f.call("0", 1)["PROFILE"], "Y", "{}", describe(&out));
-    let stderr = text(&out.stderr);
+    assert_eq!(f.call("0", 2)["PROFILE"], "X", "{}", describe(&out));
+    let want = crate::issue_1618_fixture::sha256_hex(b"the piped prompt\n");
+    assert_eq!(f.call("0", 1)["STDIN"], want);
+    assert_eq!(f.call("0", 2)["STDIN"], want, "X got the same prompt");
+    assert_eq!(wait_lines(&out), Vec::<String>::new());
     assert!(
-        stderr.contains("auto-switch: no rerun under profile \"X\""),
-        "{stderr}"
+        !text(&out.stderr).contains("piped_prompt"),
+        "{}",
+        describe(&out)
     );
-    assert_eq!(wait_lines(&out), vec!["skipped reason=piped_prompt"]);
 }

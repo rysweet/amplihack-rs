@@ -46,6 +46,11 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd -P)"
+TEST_ENV="${SCRIPT_DIR}/recipe-test-env.sh"
+[[ -f "${TEST_ENV}" ]] || { echo "HARNESS-ERROR: missing ${TEST_ENV}" >&2; exit 2; }
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=recipe-test-env.sh
+. "${TEST_ENV}"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 TOOL="${REPO_ROOT}/amplifier-bundle/tools/autodrive_pr_head.sh"
 
@@ -197,9 +202,9 @@ STUB
 # recipe_context_value.sh, found on the same tool ladder as the loop helper.
 cp "$REPO_ROOT/amplifier-bundle/tools/recipe_context_value.sh" "$FAKE_HOME/amplifier-bundle/tools/" \
   || harness_error "recipe_context_value.sh missing from the bundle"
-# #1528: step-02 of both loops takes the review dir from the guard and the
-# rounds' worktree from the PR-worktree resolver, both beside the loop helper.
-# They are the real tools: they decide where the loop runs.
+# #1528: step-02 of both loops takes the rounds' worktree from the PR-worktree
+# resolver beside the loop helper, and the loop re-checks its recipes with the
+# guard. They are the real tools: they decide where the loop runs.
 for t in autodrive_worktree_guard.sh autodrive_pr_worktree.sh workflow_worktree_root.sh; do
   cp "$REPO_ROOT/amplifier-bundle/tools/$t" "$FAKE_HOME/amplifier-bundle/tools/" \
     || harness_error "$t missing from the bundle"

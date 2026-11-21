@@ -22,6 +22,8 @@
 //! real `~/.claude`, `~/.amplihack` or profile root.
 #[path = "issue_1714_finalization_handoff/ancestor.rs"]
 mod ancestor;
+#[path = "issue_1714_finalization_handoff/ancestor_fetch.rs"]
+mod ancestor_fetch;
 #[path = "issue_1714_finalization_handoff/ancestor_fetch_ssh.rs"]
 mod ancestor_fetch_ssh;
 #[path = "issue_1714_finalization_handoff/ancestor_handoff.rs"]
@@ -48,5 +50,7 @@ mod step20b;
 mod step20b_remote;
 #[path = "issue_1714_finalization_handoff/validator.rs"]
 mod validator;
+#[path = "issue_1714_finalization_handoff/validator_published.rs"]
+mod validator_published;
 #[path = "issue_1714_finalization_handoff/validator_routing.rs"]
 mod validator_routing;

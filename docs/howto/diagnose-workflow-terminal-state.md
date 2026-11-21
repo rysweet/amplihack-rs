@@ -1,7 +1,7 @@
 # How to Diagnose Workflow Terminal-State Failures
 
 Use this guide when `default-workflow` or `smart-orchestrator` exits nonzero
-with `FAILED_MISSING_TERMINAL_EVIDENCE`, `FAILED_INVALID_EVIDENCE`, or another
+with `FAILED_MISSING_TERMINAL_EVIDENCE`, `FAILED_INVALID_EVIDENCE` (recorded by earlier runs), or another
 terminal-state error.
 
 ## Before you start
@@ -43,7 +43,7 @@ Look for these fields:
 | `terminal_reason` | Human-readable explanation and next action. |
 | `required_next_action` | The action the finalizer expects before the workflow can close. |
 | `hollow_success_detected` | Whether the run appeared successful but lacked real completion evidence. |
-| `evidence_used` | Typed evidence keys used by the deterministic classifier. |
+| `evidence_used` | Typed evidence keys the reported decision was made on; since #2343 `assess-finalization` makes it, not a deterministic classifier. |
 | `reporting_failure` | Whether a reporting step failed after successful implementation (produces `FAILED_REPORTING`, durable evidence preserved). |
 | `observed_phases` | Last workflow phases that produced evidence. |
 | `missing_evidence` | Required proof that was absent. |
@@ -113,7 +113,14 @@ for the full rules.
 
 ## Fix `FAILED_INVALID_EVIDENCE`
 
-This means the workflow produced terminal markers, but they were not trustworthy.
+Finalization no longer emits this state (#2343); it is still recognised so older
+run records and other producers read correctly. Finalization now classifies on
+the pushed head and the open PR, see
+[The Run's Real Outcome](../reference/default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
+The checks below apply to a record that carries the state from an earlier run
+or another producer.
+
+The workflow produced terminal markers, but they were not trustworthy.
 
 Check for:
 
@@ -194,6 +201,11 @@ prove closure.
 ---
 
 ## Fix `HOLLOW_SUCCESS`
+
+`HOLLOW_SUCCESS` is unchanged by #2343: empty or inaccessible agent output means
+the run may have produced nothing at all, so it stays a blocker ahead of any
+success classification. See
+[The Run's Real Outcome](../reference/default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 
 `HOLLOW_SUCCESS` means a workflow path looked complete at the process level but
 did not produce meaningful terminal evidence. This often follows setup-only,

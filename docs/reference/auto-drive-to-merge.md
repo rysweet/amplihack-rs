@@ -1,7 +1,7 @@
 ---
 title: Auto Drive To Merge Reference
 description: responsibilities, authorization, recovery, completion outcomes, and target compatibility for auto-drive-to-merge.
-last_updated: 2026-11-12
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -9,12 +9,13 @@ doc_type: reference
 
 # Auto Drive To Merge Reference
 
-The recipes use agent responsibilities, runner-captured authorization and portable Rust evidence records. The controlled validation covers record handling and runner boundaries; live agent recovery and the six OS/runtime cells need separate execution evidence.
+The recipes use agent responsibilities, runner-captured authorization and GitHub's own merge conditions. Merge readiness is an agentic assessment written up in the PR (#2575); nothing parses it. The controlled validation covers the merge tool, the loop endings and runner boundaries; live agent recovery and the six OS/runtime cells need separate execution evidence.
 
 `auto-drive-to-merge` builds a pull request, reviews and repairs it with
 `crusty-old-engineer`, verifies all merge-ready criteria, and merges when
-authorized. With `no_merge=true`, it leaves the PR open and reports readiness
-only when every required criterion has valid evidence.
+authorized. With `no_merge=true`, it leaves the PR open. A drive that cannot
+finish hands the PR back to people as a draft with a comment naming the
+blocker; it never ends with a bare `STUCK`.
 
 The target is the same recipe on Linux and macOS with Claude, Codex, and Copilot;
 this is not yet verified compatibility. See the [target matrix](#target-compatibility-matrix).
@@ -29,10 +30,12 @@ alternatives within the existing loop-health and budget rules.
 - [Configuration](#configuration)
 - [Authorization](#authorization)
 - [PR head and worktree resolution](#pr-head-and-worktree-resolution)
+  - [Review in the PR worktree](#review-in-the-pr-worktree)
+  - [Entry preflights](#entry-preflights)
 - [Crusty review](#crusty-review)
 - [Crusty completion decision contract](autodrive-crusty-completion.md)
 - [Readiness and finalization](#readiness-and-finalization)
-- [Choosing the merge method (#1888)](#choosing-the-merge-method-1888)
+- [Merge-ready round, merge and hand-off](autodrive-merge-ready-round.md)
 - [Loop health and budgets](#loop-health-and-budgets)
 - [Resumability](#resumability)
 - [Trusted execution and portability](#trusted-execution-and-portability)
@@ -40,11 +43,11 @@ alternatives within the existing loop-health and budget rules.
 
 ## Current behavior and authority
 
-The executable [composer](../../amplifier-bundle/recipes/auto-drive-to-merge.yaml) defaults outer `no_merge` to `false`. Its build always passes `no_merge=true` to default-workflow. The runner captures the intended action before children execute, pins a private launch copy, and propagates literal restrictions through shared loops and light escalation. Passing `no_merge=true` prevents an authorized merge throughout that invocation; dry-run additionally suppresses follow-up issue creation.
+The executable [composer](../../amplifier-bundle/recipes/auto-drive-to-merge.yaml) defaults outer `no_merge` to `false`. Its build always passes `no_merge=true` to default-workflow. The runner captures the intended action before children execute, pins trusted workflow assets in a private launch bundle independently of execution cwd, and propagates literal restrictions through shared loops and light escalation. Passing `no_merge=true` prevents an authorized merge throughout that invocation; dry-run additionally suppresses follow-up issue creation.
 
 <a id="merges-outside-the-gate-are-refused-1551"></a>
 
-The shell gate, process-identity shim and hook restriction are retired. The bundled [auto-drive skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md) describes the new workflow; the trusted [merge-ready skill](../../amplifier-bundle/skills/merge-ready/SKILL.md) remains authoritative for all 13 criteria and established interpretations. Criteria and helpers never fall back to PR-authored copies. Prompts and private records are workflow safeguards, not an OS security boundary.
+The shell gate, process-identity shim and hook restriction are retired. The bundled [auto-drive skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md) describes the new workflow; the trusted [merge-ready skill](../../amplifier-bundle/skills/merge-ready/SKILL.md) remains authoritative for all 13 criteria and established interpretations. Criteria and helpers never fall back to PR-authored copies. Prompts and private state are workflow safeguards, not an OS security boundary.
 
 ### How the merge round applies merge-ready
 
@@ -52,10 +55,16 @@ Inside auto-drive, criterion 3 substitutes accepted crusty convergence
 (an evidence-valid `CLEAN` or permitted `MINOR_ONLY` accepted by the
 completion dispatcher, with required follow-ups filed or verified)
 for the separate quality audit. There is **no minimum round count**.
+The merge-ready agent judges criterion 3 from the PR itself: the newest
+`Crusty verdict: <CLEAN|MINOR_ONLY|BLOCKING> at <full SHA>` comment from the
+drive's own login or an `OWNER`, `MEMBER` or `COLLABORATOR`, which the Crusty
+round posts after each review. With no verdict at the head, the loop runs a
+Crusty round; a missing state file never blocks. See
+[Crusty verdict at the head](autodrive-merge-ready-round.md#crusty-verdict-at-the-head).
 Standalone `/merge-ready` still requires at least three SEEK → VALIDATE → FIX
 cycles, continuing until clean. The description template's three cycle rows
-apply to that standalone audit; auto-drive records its actual accepted crusty
-rounds, reviewed head, verdict, and follow-up evidence instead of inventing
+apply to that standalone audit; auto-drive's write-up cites its actual accepted
+crusty rounds, reviewed head, verdict, and follow-ups instead of inventing
 cycles. See [all criterion interpretations](auto-drive-evidence.md#authority-and-criteria).
 
 ## Responsibilities
@@ -64,9 +73,10 @@ cycles. See [all criterion interpretations](auto-drive-evidence.md#authority-and
 | --- | --- |
 | Prepare or build | Establish PR identity, platform state, head, base, and linked worktree. Run `default-workflow` with `no_merge=true` when a build is needed. End with an open PR. |
 | Crusty review and repair | Repair concerns, commit and push, and re-review until an evidence-valid `CLEAN` or `MINOR_ONLY` round completes the review objective; the Rust dispatcher accepts completion without a loop-health evaluator call. Unresolved concerns go to loop-health evaluation. Bind review to the reviewed head. |
-| Collect and assess evidence | Apply the trusted merge-ready skill and description template. Collect concrete evidence for all 13 criteria; repair blockers and repeat until readiness and loop-health `DONE` agree. |
-| Authorized finalization | Refresh mutable facts, validate evidence, and carry out only the captured action. With merging disabled, observe and report the open PR. For a merge, protect the expected head and observe platform confirmation. |
-| Report | Reduce accepted records into readiness, requested action, observed platform state, blockers, failures and recovery, and stop reason. |
+| Assess readiness | Apply the trusted merge-ready skill and description template at the PR head. Post the write-up as a PR comment and state one outcome: ready, not ready with named blockers, or hand-off. Repair named blockers and repeat until the outcome is ready and loop-health answers `DONE`. |
+| Authorized finalization | Merge only with captured authorization, at the assessed head, with green checks (or none reported) and GitHub's acceptance of `--match-head-commit`. A pending check ends the run `not merged: waiting for <check>` with the PR still ready for review. An out-of-date or conflicting branch gets one base sync (a merge of the base, never a rebase or force-push), one more round and a second finalisation. With merging disabled, leave the PR open. State the outcome in prose. |
+| Hand off | When the drive cannot finish, draft the PR and post one comment naming the blocker and head SHA. |
+| Report | Report the requested action, loop result, merge result, stop reason and the finalization statement. This top-level run is ✓ Success only when the PR merged (`stop_reason` `completed`); its nested `autodrive-*` sub-recipes succeed on their own steps. See [Success means merged](autodrive-merge-ready-round.md#success-means-merged) and [Which invocations the rule judges](autodrive-merge-ready-round.md#which-invocations-the-rule-judges). |
 
 An open PR for the selected branch skips the build. A PR confirmed merged at
 entry skips work and is reported as already merged. An unexpected merge during
@@ -99,11 +109,11 @@ commands and expected outcomes.
 | `pr_url` | empty | PR URL, validated against the platform, repository, and number. |
 | `existing_branch` | empty | Source branch; must match the selected PR when supplied. |
 | `branch_prefix` | `feat` | Branch prefix for a new build. |
+| `base_branch` | empty | Branch a new build starts from and its PR targets. Passed to `autodrive-build` and from there to `default-workflow`; see [`base_branch`](workflow-delivery-inputs.md#base_branch). Empty keeps the remote default branch, and finalize takes the base from the PR the build opened ([How finalize finds the base](workflow-delivery-inputs.md#how-finalize-finds-the-base)). |
 | `plan_task_id` | empty | Follow-up task: issue `N` or `#N`, or 1–64 characters from `A-Za-z0-9._:/-`. Otherwise resolve `Closes #N`, `Fixes #N`, or `Resolves #N` from the PR body, then task description. |
 | `no_merge` | `false` in the full composer | Prevent merging throughout the invocation when `true`. Build always receives `true`, independently of this outer value. |
-| `merge_method` | empty | `merge`, `squash` or `rebase`: how an authorized merge lands. Empty: `merge_method` in `.amplihack/auto-drive.toml` at the base branch tip, else the first method the repository settings and the base branch's rulesets allow, in squash, merge, rebase order. A method that is not allowed blocks the merge. See [Choosing the merge method](#choosing-the-merge-method-1888). |
 | `autodrive_dry_run` | `false` | Prevent merging and follow-up issue creation. Still assesses readiness and reports missing obligations. |
-| `autodrive_state_dir` | runner-assigned | Private state for this run's records, budgets and receipts. Omitted: the runner assigns a directory inside the run's durable folder. Supplied: must be non-empty, absolute and free of `..` components. See [state directory](#state-directory). |
+| `autodrive_state_dir` | runner-assigned | Private state for this run's round files and budgets. Omitted: the runner assigns a directory inside the run's durable folder. Supplied: must be non-empty, absolute and free of `..` components. See [state directory](#state-directory). |
 
 The runner's CLI `--dry-run` previews recipe execution; it is distinct from
 `autodrive_dry_run`, which executes verification with action restrictions.
@@ -116,18 +126,18 @@ not agent-selected recipe context. Budget keys are listed below.
 The runner strictly parses `no_merge` and `autodrive_dry_run` before child
 execution. Accepted values are `true` and `false`; malformed values fail
 before work starts. It captures the intended action in fresh runner-owned
-invocation state outside child-mutable context and agent candidate records.
+invocation state outside child-mutable context and agent output.
 
 | Invocation | Merge permission |
 | --- | --- |
-| Full composer with omitted `no_merge` | Permitted after valid readiness evidence and final refresh; outer default is `false`. |
+| Full composer with omitted `no_merge` | Permitted after a ready round, evaluator `DONE`, an unchanged head and green checks; outer default is `false`. |
 | Any invocation with `no_merge=true` | No merge request, including during finalization or escalation. |
 | Any invocation with `autodrive_dry_run=true` | No merge request or follow-up issue creation, even with `no_merge=false`. |
 | Direct merge-loop or finalization invocation | Disabled without explicit fresh invocation authorization. |
 | Resume, `recipe run --fresh`, or durable recovery | Fresh authorization from this invocation's explicit inputs; stored or recovered context cannot grant permission. |
 
-Child context overwrite, candidate output, inherited environment, PR comments,
-and old records cannot grant merge permission. Build-phase `no_merge=true`
+Child context overwrite, agent output, inherited environment, PR comments,
+and old state cannot grant merge permission. Build-phase `no_merge=true`
 cannot overwrite a captured outer action either. Light-to-full escalation,
 shared loops, and re-review preserve caller restrictions.
 
@@ -161,7 +171,7 @@ and the fingerprint is not itself an authority check.
 Supply context with `-c`. Bash consumers read step values through
 `RECIPE_VAR_<key>` and parse fields from that key's structured output.
 Inherited bare PR identifiers, state paths, or prior results cannot replace
-explicit invocation inputs or accepted records.
+explicit invocation inputs.
 
 ### `NO_MERGE` override
 
@@ -178,9 +188,50 @@ access produces a named incomplete outcome.
 
 ### Where phases 2 and 3 run
 
-Edits, commits, pushes, and QA run in the PR's linked worktree. Review agents
-start in the repository's main checkout, a trusted review directory outside the PR worktree. Instructions and helpers come from the
-launch bundle; PR-authored instructions cannot become workflow authority.
+Review-context agents, reviewers, assessors, relevant evaluators, fixes,
+commits, pushes, and QA run in the actual linked PR worktree. Trusted skills,
+recipes, and tools still come from the launch installation, independently of
+execution cwd. Reviewers receive the intended commit and instructions to
+leave files, index, branch, `HEAD`, and workflow state unchanged.
+
+### Review in the PR worktree
+
+Immediately before each reviewer invocation, recipe tool steps save ordinary
+pre-review evidence in restricted artifact storage: repository identity,
+branch, `HEAD`, NUL-delimited status and index entries, the index and any
+split-index dependencies, binary staged/unstaged diffs, and original dirty
+and untracked contents, modes, and symlink targets. Recovery preserves that
+invocation's original baseline.
+
+A following agent inspects `git status --porcelain`, the index, working
+content, untracked files, and `HEAD` against the baseline. It handles clearly
+attributable reviewer edits conservatively or reports them and chooses a
+continuation. Edits to previously dirty files and staged or untracked content
+require the same assessment. A difference alone never fails the run. Existing
+and uncertain work is preserved; blanket restoration, cleanup, or replacement
+of the whole index is forbidden.
+
+There are no private review generations, launch folders, review-folder
+manifests, publication-binding operations, or deterministic mutation gates.
+Codex reviews use normal Git discovery without an automatically inserted
+Git-check bypass. See the
+[execution and review reference](recipe-checkout-isolation.md#review-in-the-pr-worktree).
+
+### Entry preflights
+
+The build, Crusty-loop, and merge-loop preflights run on their declared `fast`
+tier. Each resolves the named repository and its legitimate linked worktrees;
+none needs a host strong-tier override or a private execution repository.
+`amplihack orch helper autodrive worktree` retains its registration, branch,
+and intended-PR-head verification. The base checkout's `HEAD` is not the PR
+head. For operator migration, see
+[remove deployed entry-gate overrides](../howto/set-model-tiers.md#remove-deployed-auto-drive-entry-gate-overrides).
+
+### Which `amplihack` the helpers run
+
+`autodrive_loop.sh`, `autodrive_worktree_guard.sh`, and
+`autodrive_crusty_record.sh` run `"${AMPLIHACK_BIN:-amplihack}"`. With it unset,
+they use `amplihack` from `PATH`. The value is quoted and never evaluated.
 
 The worktree must belong to the selected repository and branch and match the
 observed PR head. Missing, ambiguous, stale, ahead, or diverged worktrees need
@@ -231,13 +282,16 @@ follow-ups, leaves the phase incomplete.
 
 #### Cell sanitising
 
-Finding identifiers are exact stable tokens. The shared finding rules remove control characters from display cells and escape HTML or table delimiters. Summaries are data; they cannot create new records or change a finding's identifier or severity. Follow-up mappings retain the finding ID, observed issue number, plan task and PR identity. The final structured report includes those mappings separately from readiness evidence.
+Finding identifiers are exact stable tokens. The shared finding rules remove control characters from display cells and escape HTML or table delimiters. Summaries are data; they cannot create new records or change a finding's identifier or severity. Follow-up mappings retain the finding ID, observed issue number, plan task and PR identity. Those mappings stay with the crusty round evidence, separate from the merge-ready write-up.
 
 ## Readiness and finalization
 
 All [13 authoritative criteria and established interpretations](auto-drive-evidence.md)
-apply. Evidence accepted for the correct PR and head establishes readiness.
-A criterion-name checklist or a model's assertion cannot do so.
+apply. The merge-ready agent assesses them at the PR head, posts its write-up
+as a PR comment, and states one outcome. A reader agent turns that outcome
+into one word; nothing parses the write-up itself. The steps, the outcome
+word, the merge conditions and the hand-off are described in
+[merge-ready round, merge and hand-off](autodrive-merge-ready-round.md).
 
 ### Expected checks at the head
 
@@ -249,6 +303,9 @@ read-only `/bin/bash -p "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_expect
 from the launch bundle, never from the pull request's worktree. `MISSING`,
 `PENDING`, `RED` and `UNREADABLE` all block; a job that was never created is
 not a pass. See [Expected checks at the head](autodrive-expected-checks.md).
+When the base branch's `.amplihack/qa.toml` declares a scenarios CI job, the
+step passes its name as a third argument; see
+[Declaring how criterion 1 is met](auto-drive-qa.md#declaring-how-criterion-1-is-met).
 
 ### Limits of the expected set
 
@@ -260,17 +317,23 @@ checks on the base branch covers each gap. Details:
 
 ### No silent merge
 
-Finalization refreshes the head, base, checks, approvals, policy, conflicts,
-conversations, and other mutable facts. Read back description updates.
+The only machine conditions on a merge are the captured authorization and
+GitHub's own: the head the ready round assessed is still the PR worktree's
+head, the required checks (or, when none are required, all checks) passed
+or no checks are reported at all, and GitHub accepts
+`gh pr merge --match-head-commit <assessed sha>`, which also enforces required
+reviews and branch protection. A moved head or failing checks refuse the
+merge and hand the PR off. A pending check ends the run `checks-pending`
+and hands the PR off as a draft naming the checks, so no PR is left ready
+with no drive. A base that moved
+(`base-behind`) leads to one [base sync](autodrive-merge-ready-round.md#base-sync); a second is handed off. The merge tool reads the PR state
+back after the request; a merge is reported only when GitHub says `MERGED`.
+With merging disabled, the PR stays open. See
+[merge conditions](autodrive-merge-ready-round.md#merge-conditions).
+
 Substantive post-review changes return to crusty; unreadable ranges block.
 Only clean base merges and the established description/template/evidence
 allowlist avoid substantive re-review.
-
-An authorized merge must protect the expected head. Observe platform state
-after requests, and before retrying ambiguous responses: a timeout may follow
-a successful server action. Command success and queue admission do not prove
-a merge. With merging disabled, readiness can be complete while the PR stays
-open. See the [result contract](auto-drive-evidence.md#result-contract).
 
 ### The squash commit message (#2056)
 
@@ -281,14 +344,14 @@ each commit's trailers, a `Fixes #N` written for a stacked branch, and the
 pushed commit cannot be corrected without a force-push, which this workflow
 never does. So an authorized merge supplies its own message.
 
-The `finalize-observed-action` step sources the trusted launch-bundle helper
+The finalization `merge` step, through `autodrive_merge.sh`, sources the trusted launch-bundle helper
 by its absolute path, `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh`.
 The runner sets `AMPLIHACK_HOME` to the pinned, digest-bound copy of the
 launch bundle, and `LaunchBundle::prepare` refuses a bundle without the
 helper. The step's working directory is the PR worktree, so a repo-relative
-path would resolve to the PR's own copy; the prompt refuses a non-absolute
-`AMPLIHACK_HOME`, a missing helper and a symlinked helper before it reads
-anything. It composes the message from one `gh pr view --json title,body`
+path would resolve to the PR's own copy; the tool refuses a non-absolute
+`AMPLIHACK_HOME`, a missing helper and a symlinked helper (exit `2`) before
+it reads anything. It composes the message from one `gh pr view --json title,body`
 read:
 
 | Part | Source | Refused when |
@@ -297,71 +360,19 @@ read:
 | Body | `autodrive_merge_body`: the description up to the first line starting `<!-- merge-ready-report` or `## Merge readiness`, so the report never lands on `main`; `MERGE_REPORT_CUT` says whether one was cut | the `body` key is absent, not a string or null, or over 65,536 bytes |
 
 The body goes to `gh` on standard input from the shell's memory, never as a
-path a same-user process could rewrite between a check and the read. The
-arguments come from `autodrive_merge_argv` in the trusted
-`autodrive_merge_method.sh`, for the method the selector chose ([Choosing the
-merge method](#choosing-the-merge-method-1888)), so the prompt gives one merge
-line for all three methods:
+path a same-user process could rewrite between a check and the read:
 
 ```bash
-printf '%s' "$MERGE_BODY" | gh pr merge "${MERGE_ARGV[@]}"
+printf '%s' "$MERGE_BODY" | gh pr merge <N> --squash --match-head-commit <sha> --subject "$subject" --body-file -
 ```
 
-| Method | `MERGE_ARGV` |
-| --- | --- |
-| squash | `<N> --squash --match-head-commit <sha> --subject <subject> --body-file -` |
-| merge | `<N> --merge --match-head-commit <sha> --body-file -` |
-| rebase | `<N> --rebase --match-head-commit <sha>` |
-
-A refusal from either message function is a blocker whatever the method; the
-step reports it and does not fall back to the platform's default message. The
-step records the subject and whether a report was cut.
+A refusal from either function gives `message-unavailable` and a hand-off;
+the step does not fall back to the platform's default message.
 
 Two limitations stay open. An empty description gives `gh` an empty body;
 whether GitHub then falls back to its default message is unverified (#2263).
 GitHub is believed, from landed commits rather than a controlled probe, to
 add no `Co-authored-by` lines to a supplied body (#2263).
-
-#### The merge commit message (#1888)
-
-A merge commit is not one of the branch's commits. GitHub creates it at merge
-time and writes its message itself. `gh pr merge --merge` with no message flags
-leaves both parts to two repository settings ([REST "Update a
-repository"](https://docs.github.com/en/rest/repos/repos#update-a-repository)):
-
-| Setting | Values | What GitHub writes |
-| --- | --- | --- |
-| `merge_commit_title` | `PR_TITLE`, `MERGE_MESSAGE` | The headline: the pull request title, or `Merge pull request #N from owner/branch` |
-| `merge_commit_message` | `PR_BODY`, `PR_TITLE`, `BLANK` | The body: the whole pull request body (the settings page calls it "Pull request title and description"), the title, or nothing |
-
-Under `PR_BODY` the whole body is committed, merge-ready report included, and
-that report is the text #2056 keeps out of history: it says the pull request
-is open and can say `NOT_MERGE_READY`, nothing refreshes it, and once
-committed it cannot be corrected. An owner who requires merge commits, the
-case #1888 was opened for, is the one most likely to have chosen that
-setting.
-
-So a merge commit gets `--body-file -` with the same body a squash gets, cut
-at the report, and no `--subject`. `gh` sends the body as the GraphQL
-`commitBody` ("Commit body to use for the merge commit; if omitted, a default
-message will be used", [`MergePullRequestInput`](https://docs.github.com/en/graphql/reference/input-objects#mergepullrequestinput);
-[`gh pr merge`](https://cli.github.com/manual/gh_pr_merge): `--body-file` and
-`--subject` set "the merge commit" text, not only a squash's). With no
-`commitHeadline`, GitHub writes the headline from `merge_commit_title`, by
-default `Merge pull request #N from owner/branch`, which is what an owner who
-requires merge commits expects.
-
-The step does not read `merge_commit_message`, and the body it passes
-replaces whatever that setting names. An owner who chose `PR_TITLE` gets the
-description in the merge commit's body instead of the title; one who chose
-`BLANK` gets the description instead of an empty body. The rule is simpler
-than reading the setting: the report is never committed, whatever the
-setting says. A body that is nothing but the report is cut to nothing, which
-is the empty-body limitation above (#2263): if GitHub treats an empty
-`commitBody` as omitted, it falls back to `merge_commit_message`, and under
-`PR_BODY` that is the uncut body.
-
-A rebase writes no commit of its own and takes no message.
 
 ### Hosting calls and rate limits
 
@@ -392,310 +403,13 @@ Never skip commit hooks or bypass branch protection. Fix failures and satisfy
 checks, reviews, and policies through their normal paths, whichever interface
 the agent chooses.
 
-## Choosing the merge method (#1888)
-
-An authorized merge does not always squash. The `finalize-observed-action`
-step sources the trusted
-`$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_method.sh` by its
-absolute path, in the same shell call and with the same checks as
-`autodrive_merge_message.sh`, and `LaunchBundle::prepare` refuses a launch
-bundle without it. Its `autodrive_merge_method` runs
-`amplihack orch helper select-merge-method` with the pull request URL, the
-base branch, the base SHA and the head from the accepted readiness record,
-the linked worktree as the repository root, and the `merge_method` context
-unchanged. The selector picks one method from the first source below that is
-present. A later source is not read once an earlier one is present.
-
-| Order | `source` | Source | Present when |
-| --- | --- | --- | --- |
-| 1 | `explicit` | The recipe context `-c merge_method=merge`, `squash` or `rebase` | The value is not empty. `.amplihack/auto-drive.toml` is then not read, as `AUTODRIVE_QA_COMMAND` stops `.amplihack/qa.toml` from being read. Any other value, including `MERGE` or ` merge`, blocks the merge. |
-| 2 | `repository` | `merge_method` in [`.amplihack/auto-drive.toml`](#the-repository-file-amplihackauto-drivetoml), committed at the base branch tip the accepted readiness record binds | The base tip's tree has the file, or `.amplihack` there is not a directory, or the pull request changes the file. |
-| 3 | `default` | The first of squash, merge and rebase that is [allowed](#which-methods-are-allowed) | Always tried last. |
-
-The method chosen must then be allowed. A method that is not allowed blocks
-the merge, and nothing falls back to another method. `autodrive_merge_argv`
-turns the method into the arguments listed in [The squash commit
-message](#the-squash-commit-message-2056), with one flag per method:
-
-| Method | Repository setting | Ruleset `allowed_merge_methods` value | Ruleset `merge_queue` `merge_method` | Under a `required_linear_history` rule | Flag |
-| --- | --- | --- | --- | --- | --- |
-| `merge` | `allow_merge_commit` | `merge` | `MERGE` | Not allowed | `--merge` |
-| `squash` | `allow_squash_merge` | `squash` | `SQUASH` | Allowed | `--squash` |
-| `rebase` | `allow_rebase_merge` | `rebase` | `REBASE` | Allowed | `--rebase` |
-
-`auto-drive-to-merge`, [`auto-drive-light`](auto-drive-light.md),
-`autodrive-merge-loop` and `autodrive-finalize` each declare
-`merge_method: ""`, and each passes it unchanged to the recipe it calls, down
-to `autodrive-finalize`. No recipe inserts a default. To merge an existing
-pull request with a merge commit:
-
-```bash
-amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c repo_path=. -c merge_method=merge
-```
-
-### What the finalisation step can promise
-
-The retired shell merge gate built the merge argv itself and checked it
-element by element before `gh` ran. Since #2329 the merge is requested by an
-agent step, and an agent's command line cannot be fixed by position. What
-the recipe still guarantees:
-
-- The selector is the only place the method is decided. The prompt hands the
-  context to `autodrive_merge_method`, takes the arguments from
-  `autodrive_merge_argv`, and tells the agent never to choose, substitute or
-  fall back to a method and never to write a method flag itself. Any other
-  interface the agent uses must send the same method and message.
-- `autodrive-finalize.yaml` names no `--merge`, `--squash` or `--rebase`
-  anywhere, comments included. The Rust test
-  `finalize_takes_the_method_from_the_selector_and_names_no_method_itself`
-  and the shell case `MM-finalize-no-method-flag` enforce it.
-- `test-issue-1888-merge-method.sh` runs the prompt's own preamble and merge
-  line with the real helpers, a stub selector and a stub `gh`. It checks the
-  argv and the standard input `gh` receives for each method, and that every
-  kind of selector failure stops before `gh` runs.
-
-An agent that disregards its prompt can still run a different command. No
-test of the recipe can exclude that.
-
-### How a selection is recorded
-
-On success `autodrive_merge_method` sets `MERGE_METHOD`, `MERGE_FLAG` and
-`MERGE_METHOD_SELECTION`, the selector's JSON object:
-
-| Field | Contract |
-| --- | --- |
-| `method` | `merge`, `squash` or `rebase` |
-| `source` | `explicit`, `repository` or `default` |
-| `repository` | `OWNER/REPO` from the pull request URL |
-| `config_commit` | The base tip SHA `.amplihack/auto-drive.toml` was looked for at, or `null` when the source is `explicit` and the file was not read |
-| `rationale` | A sentence built from validated values only: the source, where the file was read, and what the settings and the branch rulesets allowed |
-
-The step records the selection as an attempt with operation
-`select-merge-method` and outcome `succeeded`.
-
-On failure the selector prints `{"error": "<reason>"}` and exits 1, or 79 for
-a policy refusal from `gh api`. The helper refuses every other answer too: no
-output, text around the object, two objects, an unknown method or source, a
-`config_commit` that is not a SHA or does not match the source, an invalid
-repository, a missing rationale, or no `jq` to check them with. It leaves
-`MERGE_FLAG` and `MERGE_ARGV` empty and sets `MERGE_METHOD_ERROR` to one
-printable line, for example:
-
-```text
-merge-method selection failed (exit 1): selected merge method squash is disallowed by the rulesets on branch main (pull_request allowed_merge_methods allow merge); no other method is tried
-```
-
-The step then requests no merge. It sets the finalisation record's
-`failure_cause` to that line and records a `select-merge-method` attempt with
-outcome `refused` for exit 79 and `failed` otherwise. The reducer reports
-`action: not_requested` and `stop_reason: blockers`, with the reason in
-`failure_cause`. Exit 79 is terminal and is never retried.
-
-### The repository file `.amplihack/auto-drive.toml`
-
-A repository that needs a method other than the default declares it once, so
-every operator's drive uses it:
-
-```toml
-# .amplihack/auto-drive.toml
-merge_method = "merge"
-```
-
-- **Where it is read.** In the tree of the base branch tip that the accepted
-  readiness record binds (`base_sha`), never in the working tree. The
-  finalisation step merges only while that tip is still current; a base that
-  moved since acceptance sends the run back to a fresh assessment. The merge
-  method is the base branch's policy for accepting history, so it applies at
-  merge time to every open pull request, including one that branched before
-  the file was committed and was never brought up to date. A base that does
-  not require up-to-date branches never reports `BEHIND`, so nothing else
-  would bring such a pull request up to date. The base tip is recorded as
-  `config_commit`. A pull request cannot write that commit, so it cannot
-  choose the method it is merged with. The settings and rulesets come from the
-  repository in the pull request URL; binding every read to the pull
-  request's repository is
-  [#2440](https://github.com/rysweet/amplihack-rs/issues/2440). An
-  untracked, modified or ignored copy in the working tree is never read, so
-  the launch checkout's branch, age and local edits do not change the method.
-- **A pull request never chooses its own method.** The changed paths are the
-  diff from the merge base of the base tip and the head to the head: what the
-  pull request itself changes. A pull request that adds, edits or deletes
-  `.amplihack/auto-drive.toml`, or replaces `.amplihack`, is refused with
-  `changed-in-pr`. Rewriting the file with the same bytes is not a change, and
-  neither is merging in a base that changed it. To merge the pull request that
-  adds the file, give the method explicitly: `-c merge_method=merge`.
-- **Format.** At most 4096 bytes of printable ASCII, tabs and newlines. Each
-  line is blank, a `#` comment, or `key = "value"`. The only key is
-  `merge_method`, and its value is exactly `merge`, `squash` or `rebase`. A
-  file with no `merge_method` line gives no preference.
-- **Refusals.** Each is a blocker naming one token, and the base tip for the
-  tree and grammar tokens: `symlink` (`.amplihack` or the file is a symlink),
-  `not-regular`, `too-large`, `syntax`, `unknown-key`, `duplicate-key`,
-  `invalid-merge-method`, `changed-in-pr`, and `paths-empty` (the file is
-  present but the pull request's diff is empty, so nothing shows that it
-  leaves the file alone). No file content is copied into the record.
-- **Unknown base.** If the base SHA is not in the linked worktree's object
-  store, the head is not there, there is no merge base, or the changed paths
-  cannot be read, the selection fails and nothing merges. The step fetches
-  the base branch first when the base SHA is missing. An explicit method needs
-  none of these.
-
-### How the two repository files relate
-
-The merge method is not a key in `.amplihack/qa.toml`. That file has a closed
-key set (`command`, `dir`) and requires `command`, so a repository that wants
-only a merge method would have to declare a QA suite. The two files live in
-the same directory and follow the same grammar and trust rules. The test
-`the_two_amplihack_toml_readers_agree_on_their_shared_rules` in
-`crates/amplihack-cli/tests/issue_1888_merge_method_selection.rs` enforces
-this. It runs the shell `autodrive_qa_config` and the Rust reader over one
-fixture set and requires the same token from each. Folding the two readers
-into one is tracked in
-[#2455](https://github.com/rysweet/amplihack-rs/issues/2455).
-
-| Rule | `.amplihack/qa.toml` | `.amplihack/auto-drive.toml` |
-| --- | --- | --- |
-| Present | `.amplihack` is not a directory, or the file has an entry | Same |
-| Tree entries | `symlink`, `not-regular` | Same |
-| Size | `too-large` above 4096 bytes | Same |
-| Grammar | `syntax`, `unknown-key`, `duplicate-key` | Same |
-| Changed paths | Merge base to head; `changed-in-pr`, `paths-empty` | Same |
-| Commit read | The merge base. The file says how to test the pull request's code, so it comes from the commit that code branched from. | The base branch tip. The file is the base's policy for accepting history, so it comes from the base as it stands at merge time. |
-| Keys and values | `command` (required), `dir`; `missing-command`, `unsafe-command`, `unsafe-dir`, `dir-not-found` | `merge_method` (optional); `invalid-merge-method` |
-| Changed paths unreadable | `paths-unknown` when the file is present; otherwise the next source | Always refused |
-
-### Which methods are allowed
-
-A method is allowed when both of these allow it:
-
-1. **The repository settings.** The three `allow_*` fields of
-   `gh api --hostname HOST repos/OWNER/REPO`.
-2. **The rulesets on the base branch.** The active rules in
-   `gh api --hostname HOST --paginate repos/OWNER/REPO/rules/branches/<base>`.
-   Three rule types limit the method:
-   - **`pull_request` with `allowed_merge_methods`.** A method must be in
-     every such list. Since December 2024 a ruleset can limit the merge
-     methods this way without changing the `allow_*` fields
-     ([changelog](https://github.blog/changelog/2024-12-04-pull-request-merge-method-rule-public-preview)).
-   - **`merge_queue`.** The rule's required `merge_method` (`MERGE`, `SQUASH`
-     or `REBASE`) is the "Method to use when merging changes from queued pull
-     requests" ([repository rules API](https://docs.github.com/en/rest/repos/rules)).
-     On such a branch `gh pr merge` adds the pull request to the queue, and
-     "no merge strategy is required"
-     ([`gh pr merge`](https://cli.github.com/manual/gh_pr_merge)): the queue
-     merges with its own method, whatever flag the request carries. So a
-     `merge_queue` rule allows only its `merge_method`. Without this, an
-     explicit `merge` on a `SQUASH` queue would be squashed, and the recorded
-     selection would name a method that did not land. The rationale names the
-     rule: `1 ruleset merge_queue rule(s) on branch <base> allow squash`.
-   - **`required_linear_history`.** "Any pull requests merged into the branch
-     or tag must use a squash merge or a rebase merge"
-     ([Require linear history](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets#require-linear-history)),
-     so `merge` is not allowed. The rationale and any refusal name the rule:
-     `a required_linear_history rule on branch <base> forbids merge`.
-
-   The selector reads no other rule type
-   ([available rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)).
-   None of the others names a merge method. One can still refuse one: under
-   `required_signatures`, "unsigned commits on the head branch can block a
-   squash merge". That depends on the head's commits, not on a setting the
-   selector can read, so GitHub refuses the merge request and the step
-   reports the refusal without trying another method.
-   The endpoint returns only active rules, at the repository, organisation and
-   enterprise level, and not rules in `evaluate` or `disabled` rulesets. Every
-   page is read, so a rule on the second page counts. `<base>` is the pull
-   request's base branch. It must be a valid branch name: no leading `-`, no
-   empty, `.`-led or `.lock` component, and only `A-Z a-z 0-9 . _ / -`.
-
-The rules are read for every source, the explicit one included, because
-GitHub rejects a disallowed method whoever chose it. The default is the first
-of squash, merge and rebase that both allow, so on a linear-history branch
-whose settings allow merge and rebase but not squash it is `rebase`. An
-explicit or repository method that a ruleset does not allow is refused with
-the rule as the reason; the selector does not pick another.
-
-The response is read strictly. Each page must be a JSON array of objects with
-a string `type`, and a `pull_request` rule must have a `parameters` object.
-A `merge_queue` rule must have a `parameters` object whose `merge_method` is
-exactly `MERGE`, `SQUASH` or `REBASE`; any other value, a lower-case one
-included, is an unreadable rule.
-An `allowed_merge_methods` value must be an array of strings. If it is absent
-or `null`, the rule does not limit the method, as for a ruleset created
-before GitHub added the parameter. An empty list allows nothing. A string
-other than `merge`, `squash` or `rebase` is ignored: it can only name a method
-auto-drive never uses, so ignoring it never allows a method the rule does not
-list. Anything else is an unreadable answer and blocks the merge. An
-unreadable rule is not treated as an absent rule.
-
-`autodrive_expected_checks.sh` reads `rules/branches/<base>` as well, for the
-required checks, through `gh`'s default `{owner}/{repo}`; the selector's read
-goes through the pull request URL. The two reads have separate parsers and
-can resolve the repository differently. Binding every read to the pull
-request's own repository is tracked in #2440.
-
-### Which repository's permissions are read
-
-The repository is the one the pull request URL names, as the accepted
-readiness record binds it. The selector accepts only
-`https://HOST/OWNER/REPO/pull/NUMBER`, with GitHub's owner and repository name
-rules, and both reads above use that host, owner and name. No recipe context
-names the repository, and `GH_REPO` does not change which permissions are
-read.
-
-All three `allow_*` fields must be booleans. A token without admin rights on
-the repository still gets them when it can push, which merging needs anyway. A
-read-only token does not get the `allow_*` fields at all: GitHub leaves them
-out of the response rather than setting them to `null`, so a missing field is
-the case to test (the settings-schema cases in
-`crates/amplihack-cli/tests/issue_1888_merge_method_selection.rs` include a
-read-only response), and the selection fails closed. The branch rules
-need only read access. Any of these blocks the merge: a `gh api` failure from
-either read, malformed JSON, a missing or non-boolean `allow_*` field, a
-malformed rule, or no allowed method. On GitHub Enterprise Server without the
-rulesets endpoint, the rules read fails and the merge blocks; there is no
-fallback to the settings alone. Classic branch protection is not read: its
-"Require linear history" setting (`required_linear_history` in
-`branches/<base>/protection`) is returned only to a token with admin rights on
-the repository, which auto-drive does not require. On a base branch with
-classic linear-history protection, an explicit or repository `merge`, or a
-default of `merge` when squash is not allowed, passes the selection, GitHub
-refuses the merge request, and the step reports that refusal without trying
-another method. A ruleset `required_linear_history` rule is read and has no
-such gap. Exit 79 from either `gh api` read is a terminal policy refusal.
-
-| Inputs | Result |
-| --- | --- |
-| No file; every method allowed; no ruleset limit | `squash`, source `default` |
-| No file; merge and rebase allowed | `merge`, source `default` |
-| No file; only merge allowed | `merge`, source `default` |
-| No file; every setting allowed; a ruleset allows only merge | `merge`, source `default` |
-| No file; settings allow only squash; a ruleset allows only merge | Blocked: no merge method is allowed by both |
-| No file; settings allow merge and rebase; a `required_linear_history` ruleset rule | `rebase`, source `default` |
-| No file; settings allow only merge; a `required_linear_history` ruleset rule | Blocked: no merge method is allowed by both |
-| Explicit `merge`, or file says `merge`; a `required_linear_history` ruleset rule | Blocked; no merge is requested |
-| No file; every method allowed; a `merge_queue` rule with `merge_method` `REBASE` | `rebase`, source `default` |
-| Explicit `merge`, or file says `merge`; a `merge_queue` rule with `merge_method` `SQUASH` | Blocked; no merge is requested |
-| No file; settings allow merge and rebase; a `merge_queue` rule with `merge_method` `SQUASH` | Blocked: no merge method is allowed by both |
-| Any source; a `merge_queue` rule with no readable `merge_method` | Blocked: the rule is unreadable |
-| File says `merge`; merge allowed | `merge`, source `repository` |
-| File says `merge` at the base tip, committed after the pull request branched | `merge`, source `repository` |
-| File says `merge`; only squash allowed | Blocked; no merge is requested |
-| File says `rebase`; explicit `merge`; only merge allowed | `merge`, source `explicit` |
-| Explicit `rebase`; only merge allowed | Blocked; no merge is requested |
-| Explicit `squash`; a ruleset allows only merge | Blocked; no merge is requested |
-| The pull request edits the file; no explicit method | Blocked: `changed-in-pr` |
-| Invalid file; explicit `squash`, allowed | `squash`, source `explicit`; the file is not read |
-
-Selection does not change repository settings, rulesets or branch protection.
-If GitHub rejects the merge, the step reports it and does not retry with
-another method.
-
 ## Loop health and budgets
 
 The existing convergence engine remains in place for unresolved work.
 Completed crusty objectives exit before evaluation. Unresolved crusty
-reviews and every merge-ready round end with `loop-health-evaluator`:
-`CONTINUE`, `DONE`, or `STUCK`.
+reviews and every ready or not-ready merge-ready round end with
+`loop-health-evaluator`: `CONTINUE`, `DONE`, or `STUCK`. A hand-off round
+stops the loop before the evaluator runs.
 
 ### Advancing needs two independent signals
 
@@ -705,9 +419,12 @@ review evidence. It preserves the actual verdict (`MINOR_ONLY` is not
 rewritten to `CLEAN`) and round accounting. An evaluator `DONE` cannot
 complete an unresolved crusty review.
 
-Merge-ready completion needs both a machine-checked `MERGE_READY` round
-and evaluator `DONE`. Inconsistent `DONE` triggers recovery within
-budget. Measured failures override a permissive assessment.
+Merge-ready completion needs both a round whose outcome word is `ready` and
+evaluator `DONE`. Every other ending of the merge-ready loop (evaluator
+`STUCK`, no progress, budget exhausted, a hand-off round or an unreadable
+loop result) hands the PR off instead of ending with a bare `STUCK`; see
+[how the loop ends](autodrive-merge-ready-round.md#how-the-loop-ends).
+A usage limit, an orphaned round and exit `79` keep their own exits.
 
 ### Reading the loop-health line
 
@@ -722,8 +439,13 @@ Missing or unreadable evaluator output is never success. See
 
 ### No-progress stop and usage budget
 
-For a non-clean round, unchanged head, sorted open-item set, and CI signal,
-with CI no longer pending, produces `STUCK`. Budget exhaustion is separate,
+For a non-clean crusty round, unchanged head, sorted open-item set, and CI
+signal, with CI no longer pending, produces `STUCK`. For the merge-ready
+loop, a round whose only open item is a required check still running at the
+head ends the loop `WAITING` and goes to finalisation; it is never counted as
+no progress. A pending CI signal at an unchanged head is `CONTINUE`, never
+`STUCK`, for the evaluator. Other not-ready rounds that change nothing are
+judged `STUCK` and the PR is handed off. Budget exhaustion is separate,
 checked before starting more work. Budgets limit cost, not convergence.
 A completed crusty objective is exempt; it does not reach these checks.
 
@@ -754,7 +476,7 @@ amplihack recipe run auto-drive-to-merge \
 Without the same explicit `autodrive_state_dir`, the new run gets its own
 state directory and starts its budget count from zero.
 
-### Usage limits are not STUCK
+### Usage limits are not STUCK or hand-off
 
 A model-service usage limit surviving runtime wait/retry stops as
 `USAGE_LIMIT`. It is neither a readiness judgment nor lack of progress.
@@ -794,11 +516,10 @@ Usage budgets remain separate from tool timeouts.
 Reuse completed work only after validation. A fresh host repeats work whose provenance it cannot
 establish. PR comments never restore workflow authority.
 
-Staging, accepted evidence, and loop completion are distinct. Rust filesystem
-handling creates private state and immutable snapshots. Unsafe historical
-entries are rejected or quarantined. Hashes do not make historical or
-same-user edits trustworthy. Every resume captures authorization afresh and
-refreshes mutable facts before finalization.
+Rust filesystem handling creates private state; the round tools write files
+`0600` through a temporary file and never through an existing path. Unsafe
+historical entries are rejected. Every resume captures authorization afresh,
+and a merge always re-checks the assessed head and the checks.
 
 State is kept in a per-run directory by default, so a later drive reuses round
 history and budget usage only when every drive passes the same explicit
@@ -827,27 +548,34 @@ folder must be owned by the current user and not writable by group or others.
 
 The runner binds the absolute path it passes to the evidence store, before any
 canonicalisation, and gives the child the same string. When the run ends, the
-report opens the store only from that bound path. It compares the child's
-`autodrive_state_dir` and the reducer's `state_dir` with the bound path
-lexically: nothing is joined onto the working directory, canonicalised or
-resolved through links. An empty string counts as absent. Any other value,
-including a relative path, a sibling directory, a different absolute path or a
-non-string JSON value, gives readiness `incomplete`, action `not_requested`
-and a fixed `failure_cause` naming the state directory mismatch.
+merge step's `authorization` helper and the already-merged report open state
+only from that bound path. They compare the child's `autodrive_state_dir` with
+the bound path lexically: nothing is joined onto the working directory,
+canonicalised or resolved through links. Any mismatch makes the authorization
+helper exit `2`, so the merge step reports `authorization-unreadable` and
+hands the PR off, and the run report carries a `note` naming the state directory mismatch.
+
+The state directory also holds the merge-ready loop driver's output
+(`merge-ready-driver.err`) and its result file (`merge-ready-result.json`), so
+a hand-off that reports an unreadable loop can name them. In the default
+durable run folder they stay after the run ends; a dry run's default state
+directory is in the launch bundle and goes with it. See
+[Kept driver output](autodrive-merge-ready-round.md#kept-driver-output).
 
 Because the default directory is per run, round history and budget usage are
 shared across drives only when each drive passes the same explicit absolute
-`autodrive_state_dir`. Records stay bound to the `run_id` that produced them,
-so a shared directory cannot replay an earlier run's finalisation
-observations or completion receipt into a merge-ready result.
+`autodrive_state_dir`. Merge permission is read from this run's captured
+invocation, never from files in the shared directory, so an earlier run's
+round files cannot authorise a merge.
 
 ## Trusted execution and portability
 
 The launch bundle pins recipes, criteria, templates, evaluator, and helpers
 independently of merge enforcement. Selection never falls back to PR-authored
-instructions. Rust helpers validate and snapshot records, manage state, check
-local Git relationships, and reduce outcomes. They do not contact hosting
-services, judge semantic readiness, or merge.
+instructions. Rust helpers capture authorization, manage private state and
+build the run report. They do not contact hosting services, judge readiness,
+or merge. The merge is requested by the bundled `autodrive_merge.sh`, under
+the conditions in [merge conditions](autodrive-merge-ready-round.md#merge-conditions).
 
 Before any `git` or `gh` call, the merge-round and
 merge-evidence steps clear the `GIT_*` repository selectors and the
@@ -867,7 +595,7 @@ launcher, hooks, installation, and shared consumers follow this contract.
 Cleanup removes only exact recognized retired entries and preserves unrelated
 shell settings. Unrelated `MergeGate` ownership coordination is preserved.
 
-Prompts, authorization records, and snapshots are workflow safeguards, not an
+Prompts, authorization records, and private state are workflow safeguards, not an
 OS security boundary against an agent holding credentials. Repository
 protections and minimum necessary credentials remain the service boundary.
 
@@ -892,6 +620,7 @@ runtime compatibility.
 
 - [Verify a PR without merging](../howto/verify-pr-with-auto-drive.md)
 - [Evidence and outcomes](auto-drive-evidence.md)
+- [Merge-ready round, merge and hand-off](autodrive-merge-ready-round.md)
 - [QA selection and configuration](auto-drive-qa.md)
 - [Auto-drive-light](auto-drive-light.md)
 - [Merge-ready authority](../../amplifier-bundle/skills/merge-ready/SKILL.md)

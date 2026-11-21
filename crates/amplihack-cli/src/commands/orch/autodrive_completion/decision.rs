@@ -41,7 +41,11 @@ pub fn write(args: Write) -> Result<()> {
     let snapshot = private_state::snapshot(&args.private_state)?;
     let hash = evidence::blob_hash(
         &state.state_dir,
-        &secure_fs::read(&state.record, evidence::LIMIT)?,
+        &secure_fs::read(
+            secure_fs::Scope::of(&state.state_dir),
+            &state.record,
+            evidence::LIMIT,
+        )?,
     )?;
     ensure!(
         hash == snapshot.record_hash,
@@ -56,7 +60,11 @@ pub fn write(args: Write) -> Result<()> {
         reason: args.reason,
     };
     decision.validate()?;
-    secure_fs::create(&state.decision_file, &serde_json::to_vec(&decision)?)?;
+    secure_fs::create(
+        secure_fs::Scope::of(&state.state_dir),
+        &state.decision_file,
+        &serde_json::to_vec(&decision)?,
+    )?;
     println!("{}", state.decision_file.display());
     Ok(())
 }

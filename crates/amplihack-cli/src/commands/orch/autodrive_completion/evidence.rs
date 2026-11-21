@@ -39,23 +39,17 @@ pub fn blob_hash(dir: &Path, bytes: &[u8]) -> Result<String> {
     Ok(hash)
 }
 
-pub fn review_stamp(tools: &Path, dir: &Path) -> Result<String> {
-    let o = Command::new("bash")
-        .arg(tools.join("autodrive_worktree_guard.sh"))
-        .args(["index-stamp"])
-        .arg(dir)
-        .output()?;
-    ensure!(o.status.success(), "cannot stamp trusted review directory");
-    Ok(String::from_utf8(o.stdout)?)
-}
-
 pub fn capture(state: &State) -> Result<Snapshot> {
-    let bytes = secure_fs::read(&state.record, LIMIT)?;
+    let bytes = secure_fs::read(secure_fs::Scope::of(&state.state_dir), &state.record, LIMIT)?;
     let mut sidecars = BTreeMap::new();
     for ext in ["findings", "minor", "severity"] {
         let path = state.record.with_extension(format!("json.{ext}"));
         let value = match std::fs::symlink_metadata(&path) {
-            Ok(_) => Some(secure_fs::read(&path, LIMIT)?),
+            Ok(_) => Some(secure_fs::read(
+                secure_fs::Scope::of(&state.state_dir),
+                &path,
+                LIMIT,
+            )?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(e.into()),
         };
@@ -68,26 +62,33 @@ pub fn capture(state: &State) -> Result<Snapshot> {
     })
 }
 
-pub fn validate(state: &State, expected: &Snapshot) -> Result<serde_json::Value> {
+pub fn validate(state: &State, expected: &Snapshot, completing: bool) -> Result<serde_json::Value> {
     let actual = capture(state)?;
     ensure!(
         actual.record_hash == expected.record_hash && actual.sidecars == expected.sidecars,
         "round record or sidecar evidence changed"
     );
-    let bytes = secure_fs::read(&state.record, LIMIT)?;
+    let bytes = secure_fs::read(secure_fs::Scope::of(&state.state_dir), &state.record, LIMIT)?;
     ensure!(
-        bytes == secure_fs::read(&state.state_dir.join("crusty-latest.json"), LIMIT)?,
+        bytes
+            == secure_fs::read(
+                secure_fs::Scope::of(&state.state_dir),
+                &state.state_dir.join("crusty-latest.json"),
+                LIMIT
+            )?,
         "latest round copy differs"
     );
     ensure!(
         actual.sidecars["findings"].as_ref()
             == Some(&secure_fs::read(
+                secure_fs::Scope::of(&state.state_dir),
                 &state.state_dir.join("crusty-latest.json.findings"),
                 LIMIT
             )?),
         "latest findings copy differs"
     );
     let manifest = String::from_utf8(secure_fs::read(
+        secure_fs::Scope::of(&state.state_dir),
         &state.state_dir.join("crusty-records.tsv"),
         LIMIT,
     )?)?;
@@ -105,10 +106,6 @@ pub fn validate(state: &State, expected: &Snapshot) -> Result<serde_json::Value>
         manifest.lines().rfind(|l| !l.trim().is_empty()) == Some(expected_row.as_str()),
         "manifest does not bind this round"
     );
-    ensure!(
-        review_stamp(&state.launch_tools, &state.review_dir)? == state.review_stamp,
-        "trusted review directory changed"
-    );
     let record: serde_json::Value = serde_json::from_slice(&bytes)?;
     ensure!(
         record["round_label"].as_str() == Some(&state.round_label),
@@ -123,10 +120,7 @@ pub fn validate(state: &State, expected: &Snapshot) -> Result<serde_json::Value>
         record["head_sha"].as_str() == Some(head.trim()),
         "record does not describe current head"
     );
-    if matches!(
-        record["crusty_verdict"].as_str(),
-        Some("CLEAN" | "MINOR_ONLY")
-    ) {
+    if completing {
         let remote = Command::new("gh")
             .current_dir(&state.repo)
             .env_remove("GH_REPO")

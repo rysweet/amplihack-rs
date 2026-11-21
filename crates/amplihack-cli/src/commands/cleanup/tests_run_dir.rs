@@ -67,13 +67,13 @@ fn runtime_guard_removes_folder_on_drop_and_on_panic() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("runtime");
     std::fs::create_dir_all(dir.join("tmp/nested")).unwrap();
-    drop(RuntimeGuard::new(dir.clone()));
+    drop(RuntimeGuard::new(dir.clone()).unwrap());
     assert!(!dir.exists());
 
     std::fs::create_dir_all(dir.join("tmp")).unwrap();
     let d = dir.clone();
     let result = std::panic::catch_unwind(move || {
-        let _guard = RuntimeGuard::new(d);
+        let _guard = RuntimeGuard::new(d).unwrap();
         panic!("step blew up");
     });
     assert!(result.is_err());
@@ -268,4 +268,955 @@ fn five_field_lines_count_toward_the_10000_line_cap() {
     let parsed = parse_owned_paths(&text);
     assert_eq!(parsed.len(), 10_000);
     assert!(parsed.iter().all(|o| o.target.is_some()));
+}
+
+/// Issue #2096: a dry run's workspace keeps no record. Recording an attempt
+/// is a no-op that succeeds, it has no run folder, and finishing removes
+/// its temporary folder.
+#[test]
+fn a_dry_runtime_records_attempts_as_a_no_op_and_removes_its_folder() {
+    let mut workspace = RunWorkspace::dry_runtime().expect("dry runtime");
+    let runtime = workspace.runtime_dir().to_path_buf();
+    assert!(runtime.is_dir());
+    assert!(workspace.run_dir().is_none(), "a dry run has no run folder");
+    workspace
+        .record_attempt_checked("dry-attempt")
+        .expect("a dry run records nothing and must not fail");
+    workspace
+        .finish_checked(Outcome::Success, Vec::new(), None, false)
+        .expect("finish dry runtime");
+    assert!(!runtime.exists(), "{} was left behind", runtime.display());
+}
+
+// ----- issue #2486: a runtime folder in use is kept; tmp/ is re-created --------
+//
+// Contract:
+// - `pub(crate) enum RuntimeRemoval { Removed, KeptInUse }` (`Debug`,
+//   `PartialEq`; issue #2785 adds `KeptUnsavedWork`, see the section at the
+//   end of this file); `RuntimeGuard::remove(self) -> Result<RuntimeRemoval>`;
+//   a failed removal or a replaced folder (issue #2096) is an `Err`.
+//   A missing folder counts as `Removed`.
+// - The guard takes one fresh `ProcScan` from `procfs::proc_root()` and keeps
+//   the folder when the scan is available and a process has its working
+//   folder, an open file or TMPDIR/TMP/TEMP under it. `Drop` does the same.
+// - `RunWorkspace::prepare_attempt(&self) -> anyhow::Result<()>` re-creates a
+//   missing `<runtime>/tmp` and `<runtime>/artifacts` (mode 0700), accepts a
+//   real folder as it is, and refuses a symlink or a file there with an error
+//   naming the path and "refusing to launch the step".
+//
+// Lib tests never read the host `/proc`: each test installs its own fake
+// table and links in only the children it started (issue #2196). Children
+// are reaped with `wait()`; nothing sleeps or polls.
+
+use crate::test_support::proc::fake_proc_scope;
+use std::io::BufRead;
+use std::os::unix::fs::PermissionsExt;
+use std::process::{Child, Command, Stdio};
+
+/// A child the test started; killed and reaped if the test fails first.
+struct Holder(Child);
+
+impl Holder {
+    /// Closes the child's stdin and waits for it to exit.
+    fn finish(mut self) {
+        drop(self.0.stdin.take());
+        let status = self.0.wait().expect("wait for holder");
+        assert!(status.success(), "holder exited with {status}");
+    }
+}
+
+impl Drop for Holder {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn runtime_with_tmp() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let rt = tmp.path().join("runtime");
+    std::fs::create_dir_all(rt.join("tmp")).unwrap();
+    std::fs::create_dir_all(rt.join("artifacts")).unwrap();
+    std::fs::write(rt.join("tmp/scratch"), "x").unwrap();
+    (tmp, rt)
+}
+
+/// A shell with piped stdin: it runs until the test closes stdin. `spawn`
+/// can return before the kernel has filled in the new program's
+/// environment (`/proc/<pid>/environ` reads empty for a moment after a vfork
+/// spawn), so the child prints `ready` once it runs and the test waits for
+/// that line. It then reads stdin to EOF without another `exec`, so its
+/// environment stays readable.
+fn cat_holder(cwd: &Path, tmpdir: &Path) -> Holder {
+    let mut child = Command::new("sh")
+        .env("PATH", crate::test_support::host_path())
+        .arg("-c")
+        .arg("echo ready; while read -r _; do :; done")
+        .current_dir(cwd)
+        .env("TMPDIR", tmpdir)
+        .env("TMP", tmpdir)
+        .env("TEMP", tmpdir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sh");
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line.trim(), "ready");
+    Holder(child)
+}
+
+#[test]
+fn runtime_guard_keeps_folder_held_by_child_then_removes_after_exit() {
+    let procs = fake_proc_scope();
+    let (_tmp, rt) = runtime_with_tmp();
+    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptInUse
+    );
+    assert!(
+        rt.join("tmp/scratch").is_file(),
+        "a folder in use is left in place, contents and all"
+    );
+
+    holder.finish();
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists(), "removed once the holder has exited");
+}
+
+#[test]
+fn runtime_guard_drop_also_keeps_a_folder_in_use() {
+    let procs = fake_proc_scope();
+    let (_tmp, rt) = runtime_with_tmp();
+    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
+    procs.fake.link_own(holder.0.id());
+
+    drop(RuntimeGuard::new(rt.clone()).unwrap());
+    assert!(rt.join("tmp").is_dir(), "Drop must check too");
+    holder.finish();
+}
+
+/// A child whose only link to the folder is TMPDIR in its environment (cwd
+/// elsewhere, nothing open) still keeps it: a killed run's child may have
+/// nothing open between writes.
+#[test]
+fn runtime_guard_keeps_folder_named_only_by_a_tmpdir_variable() {
+    let procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let holder = cat_holder(tmp.path(), &rt.join("tmp"));
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptInUse
+    );
+    assert!(rt.is_dir());
+    holder.finish();
+}
+
+/// An open file under the folder keeps it. The child says `ready` after it
+/// opened the file, so the test waits on that line, not on time.
+#[test]
+fn runtime_guard_keeps_folder_with_a_file_open_in_it() {
+    let procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let mut child = Command::new("sh")
+        .env("PATH", crate::test_support::host_path())
+        .arg("-c")
+        .arg("exec 3<\"$1\"; echo ready; exec cat")
+        .arg("sh")
+        .arg(rt.join("tmp/scratch"))
+        .current_dir(tmp.path())
+        .env_remove("TMPDIR")
+        .env_remove("TMP")
+        .env_remove("TEMP")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sh");
+    let mut line = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert_eq!(line.trim(), "ready");
+    let holder = Holder(child);
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptInUse
+    );
+    assert!(rt.join("tmp/scratch").is_file());
+    holder.finish();
+}
+
+/// A process in a sibling whose name only starts with the folder's name
+/// (`runtime-sib`) does not keep `runtime`.
+#[test]
+fn runtime_guard_ignores_a_sibling_with_a_longer_name() {
+    let procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let sibling = tmp.path().join("runtime-sib");
+    std::fs::create_dir_all(&sibling).unwrap();
+    let holder = cat_holder(&sibling, &sibling);
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+    assert!(sibling.is_dir(), "the sibling is never touched");
+    holder.finish();
+}
+
+#[test]
+fn runtime_guard_with_no_users_removes_and_missing_counts_as_removed() {
+    let _procs = fake_proc_scope();
+    let (_tmp, rt) = runtime_with_tmp();
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+    // Issue #2096: a guard is only made for an existing folder, so the folder
+    // goes away after the guard was made.
+    std::fs::create_dir(&rt).unwrap();
+    let guard = RuntimeGuard::new(rt.clone()).unwrap();
+    std::fs::remove_dir(&rt).unwrap();
+    assert_eq!(
+        guard.remove().unwrap(),
+        RuntimeRemoval::Removed,
+        "a folder that is already gone is not a failure"
+    );
+}
+
+/// Without a readable process table (as on macOS) the guard cannot prove a
+/// folder is in use, so it removes it as before. `in_use` alone would say
+/// "in use" here and keep every runtime folder for good.
+#[test]
+fn runtime_guard_without_a_process_table_removes_as_before() {
+    let procs = fake_proc_scope();
+    std::fs::remove_dir_all(procs.path()).unwrap();
+    let (_tmp, rt) = runtime_with_tmp();
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+}
+
+fn scoped_workspace(base: &Path) -> RunWorkspace {
+    let work = WorkRoot {
+        path: base.join("work"),
+        explicit: true,
+    };
+    let (scope, guard) = RunScope::begin(work, "issue-2486", base).unwrap();
+    RunWorkspace::Scoped {
+        scope: Box::new(scope),
+        guard,
+    }
+}
+
+fn mode(path: &Path) -> u32 {
+    std::fs::symlink_metadata(path)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o7777
+}
+
+#[test]
+fn prepare_attempt_recreates_missing_tmp_and_artifacts() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let mut ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::remove_dir_all(rt.join("tmp")).unwrap();
+    std::fs::remove_dir_all(rt.join("artifacts")).unwrap();
+
+    ws.prepare_attempt().expect("prepare_attempt");
+    for name in ["tmp", "artifacts"] {
+        assert!(rt.join(name).is_dir(), "{name} re-created");
+        assert_eq!(mode(&rt.join(name)), 0o700, "{name} mode");
+    }
+    // Same path every attempt: the env still names it.
+    let env = ws.env();
+    let tmpdir = env.iter().find(|(k, _)| *k == "TMPDIR").unwrap();
+    assert_eq!(PathBuf::from(&tmpdir.1), rt.join("tmp"));
+}
+
+/// The whole runtime folder gone (another sweep or a stray `rm -rf`): the
+/// next attempt still gets an existing TMPDIR at the same path.
+#[test]
+fn prepare_attempt_recreates_a_runtime_folder_removed_entirely() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let mut ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::remove_dir_all(&rt).unwrap();
+
+    ws.prepare_attempt().expect("prepare_attempt");
+    assert!(rt.join("tmp").is_dir());
+    assert!(rt.join("artifacts").is_dir());
+    assert_eq!(mode(&rt), 0o700, "re-created runtime folder mode");
+
+    // The guard adopted the folder it re-created (issue #2096 identity), so
+    // finishing the run still removes it and does not fail the run.
+    ws.finish_checked(Outcome::Success, Vec::new(), None, false)
+        .expect("finish after re-creating the runtime folder");
+    assert!(!rt.exists(), "{} was left behind", rt.display());
+}
+
+/// Issue #2096 with #2486: a runtime folder replaced by another folder is
+/// not this run's any more. The next attempt refuses to launch the step,
+/// and the replacement is neither adopted nor removed.
+#[test]
+fn prepare_attempt_refuses_a_replaced_runtime_folder() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let mut ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::remove_dir_all(&rt).unwrap();
+    std::fs::create_dir_all(rt.join("tmp")).unwrap();
+    std::fs::write(rt.join("tmp/keep"), "x").unwrap();
+
+    let err = format!("{:#}", ws.prepare_attempt().expect_err("must refuse"));
+    assert!(err.contains("refusing to launch the step"), "{err}");
+    assert!(
+        ws.finish_checked(Outcome::Success, Vec::new(), None, false)
+            .is_err(),
+        "a replaced runtime folder fails the run"
+    );
+    assert!(rt.join("tmp/keep").is_file(), "replacement was removed");
+}
+
+#[test]
+fn prepare_attempt_keeps_an_existing_tmp_and_its_contents() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let mut ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::write(rt.join("tmp/from-attempt-1"), "kept").unwrap();
+
+    ws.prepare_attempt().expect("prepare_attempt");
+    assert_eq!(
+        std::fs::read_to_string(rt.join("tmp/from-attempt-1")).unwrap(),
+        "kept",
+        "a retry reuses its scratch space"
+    );
+}
+
+#[test]
+fn prepare_attempt_refuses_symlinked_tmp_and_leaves_the_target_alone() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let mut ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    let elsewhere = base.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("sentinel"), "s").unwrap();
+    std::fs::remove_dir_all(rt.join("tmp")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, rt.join("tmp")).unwrap();
+
+    let err = format!("{:#}", ws.prepare_attempt().expect_err("must refuse"));
+    assert!(
+        err.contains(&format!("{:?}", rt.join("tmp"))),
+        "names the path: {err}"
+    );
+    assert!(err.contains("refusing to launch the step"), "{err}");
+    assert!(
+        std::fs::symlink_metadata(rt.join("tmp"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(elsewhere.join("sentinel").is_file(), "target untouched");
+}
+
+#[test]
+fn prepare_attempt_refuses_artifacts_that_is_a_file() {
+    let _procs = fake_proc_scope();
+    let base = tempfile::tempdir().unwrap();
+    let mut ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::remove_dir_all(rt.join("artifacts")).unwrap();
+    std::fs::write(rt.join("artifacts"), "not a folder").unwrap();
+
+    let err = format!("{:#}", ws.prepare_attempt().expect_err("must refuse"));
+    assert!(
+        err.contains(&format!("{:?}", rt.join("artifacts"))),
+        "{err}"
+    );
+    assert!(err.contains("refusing to launch the step"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(rt.join("artifacts")).unwrap(),
+        "not a folder"
+    );
+}
+
+#[test]
+fn prepare_attempt_recreates_tmp_in_a_dry_run_workspace() {
+    let mut ws = RunWorkspace::dry_runtime().expect("dry runtime");
+    let rt = ws.runtime_dir().to_path_buf();
+    std::fs::remove_dir_all(rt.join("tmp")).unwrap();
+    ws.prepare_attempt().expect("prepare_attempt");
+    assert!(rt.join("tmp").is_dir());
+}
+
+// ----- issue #2486 (13 Nov): locked folders inside the runtime folder ----------
+//
+// Contract:
+// - Before `remove_dir_all`, and only after the process scan found no user,
+//   `RuntimeGuard` adds the owner's `rwx` bits to every folder the run owns
+//   (lstat uid == euid, same `dev()` as the root). No other bit is added or
+//   removed. Files are never chmodded. Symlinks are neither followed nor
+//   chmodded.
+// - Entries the run does not own are left unchanged, reported in a warning,
+//   and do not fail the run: no new `RuntimeRemoval` variant for that case.
+//   (Issue #2785 adds `KeptUnsavedWork` for a different one: a folder that
+//   holds unsaved Git work. This bullet is about the not-owned entry only.)
+// - `fn restore_owner_access(root: &Path, uid: u32) -> Vec<PathBuf>` (private,
+//   in `run_dir.rs`) does the walk and returns the paths it skipped because
+//   they are not owned by `uid` or are on another filesystem.
+//
+// Nothing here needs root: the not-owned case passes a uid other than the
+// test's own. Under root the bug cannot be reproduced (root ignores modes),
+// so the removal tests print a note and still assert.
+
+fn note_if_root(test: &str) {
+    if euid() == 0 {
+        eprintln!(
+            "{test}: running as root, which ignores folder modes; this run does not exercise #2486"
+        );
+    }
+}
+
+fn set_mode(path: &Path, bits: u32) {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(bits)).unwrap();
+}
+
+/// Puts every real folder under the given roots back to 0700 when dropped,
+/// so a failed test leaves nothing `TempDir` cannot delete. lstat only;
+/// symlinks are skipped; the chmod comes before `read_dir`; errors ignored.
+struct RestoreModes(Vec<PathBuf>);
+
+impl Drop for RestoreModes {
+    fn drop(&mut self) {
+        let mut stack = self.0.clone();
+        while let Some(dir) = stack.pop() {
+            let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+                continue;
+            };
+            if !meta.file_type().is_dir() {
+                continue;
+            }
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                stack.extend(entries.flatten().map(|e| e.path()));
+            }
+        }
+    }
+}
+
+/// `tmp/locked000/inner/file` with both folders at 000, and `tmp/ro0500/file`
+/// with `ro0500` at 0500, as fixtures from #2574 leave them.
+fn lock_fixtures(rt: &Path) {
+    let locked = rt.join("tmp/locked000");
+    std::fs::create_dir_all(locked.join("inner")).unwrap();
+    std::fs::write(locked.join("inner/file"), "x").unwrap();
+    let ro = rt.join("tmp/ro0500");
+    std::fs::create_dir_all(&ro).unwrap();
+    std::fs::write(ro.join("file"), "x").unwrap();
+    set_mode(&locked.join("inner"), 0o000);
+    set_mode(&locked, 0o000);
+    set_mode(&ro, 0o500);
+}
+/// The 13 Nov case: e1044c618 fails here with "Permission denied
+/// The 13 Nov case: e1044c618 returns `Failed` here with "Permission denied
+/// (os error 13)" and leaves the runtime folder behind.
+#[test]
+fn removes_runtime_with_mode_000_and_0500_folders() {
+    note_if_root("removes_runtime_with_mode_000_and_0500_folders");
+    let _procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    lock_fixtures(&rt);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(
+        !rt.exists(),
+        "the runtime folder and the locked folders are gone"
+    );
+}
+
+/// `Drop` takes the same path as `remove()`.
+#[test]
+fn runtime_guard_drop_removes_locked_folders_too() {
+    note_if_root("runtime_guard_drop_removes_locked_folders_too");
+    let _procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    lock_fixtures(&rt);
+
+    drop(RuntimeGuard::new(rt.clone()).unwrap());
+    assert!(!rt.exists());
+}
+
+/// A runtime folder itself left at 0500 is restored and removed as well (D2).
+#[test]
+fn removes_runtime_whose_root_is_0500() {
+    note_if_root("removes_runtime_whose_root_is_0500");
+    let _procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    set_mode(&rt, 0o500);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+}
+
+/// A folder still in use is not touched at all: the modes are restored only
+/// after the scan finds no user (D8).
+#[test]
+fn a_folder_in_use_keeps_its_locked_modes() {
+    let procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    let ro = rt.join("tmp/ro0500");
+    std::fs::create_dir_all(&ro).unwrap();
+    set_mode(&ro, 0o500);
+    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptInUse
+    );
+    assert_eq!(mode(&ro), 0o500, "an in-use folder is never changed");
+    holder.finish();
+}
+
+/// A symlink inside the runtime folder that points at a 0500 folder outside
+/// it: the link is removed, the target is neither entered nor chmodded.
+#[test]
+fn restore_does_not_follow_symlinks() {
+    let _procs = fake_proc_scope();
+    let (tmp, rt) = runtime_with_tmp();
+    let target = tmp.path().join("outside/target");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::write(target.join("sentinel"), "s").unwrap();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    set_mode(&target, 0o500);
+    std::os::unix::fs::symlink(&target, rt.join("tmp/link")).unwrap();
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+    assert_eq!(mode(&target), 0o500, "the link's target keeps its mode");
+    assert!(
+        target.join("sentinel").is_file(),
+        "the target is not emptied"
+    );
+}
+
+/// Entries the run does not own are reported and left unchanged. Passing a
+/// uid other than the test's own makes the root itself "not owned", so the
+/// walk reports it and changes nothing below it (D2, D3).
+#[test]
+fn restore_skips_entries_not_owned() {
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    let ro = rt.join("tmp/ro0500");
+    std::fs::create_dir_all(&ro).unwrap();
+    set_mode(&ro, 0o500);
+    let root_mode = mode(&rt);
+
+    let skipped = restore_owner_access(&rt, euid().wrapping_add(1));
+
+    assert_eq!(skipped, vec![rt.clone()], "only the root is reported");
+    assert_eq!(mode(&ro), 0o500, "nothing below a not-owned root changes");
+    assert_eq!(mode(&rt), root_mode, "the not-owned root keeps its mode");
+}
+
+/// Only the owner's bits are added; group and other bits stay as they were;
+/// files keep their mode; folders that already have u+rwx are left as they
+/// are; the walk reaches folders below a 000 folder (chmod before read_dir).
+#[test]
+fn restore_adds_only_owner_bits() {
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    let ro = rt.join("tmp/ro0500");
+    std::fs::create_dir_all(&ro).unwrap();
+    std::fs::write(ro.join("file"), "x").unwrap();
+    set_mode(&ro.join("file"), 0o400);
+    set_mode(&ro, 0o500);
+    let grp = rt.join("tmp/g0050");
+    std::fs::create_dir_all(&grp).unwrap();
+    set_mode(&grp, 0o050);
+    let deep = rt.join("tmp/a000/b000");
+    std::fs::create_dir_all(&deep).unwrap();
+    set_mode(&deep, 0o000);
+    set_mode(&rt.join("tmp/a000"), 0o000);
+    let open = rt.join("tmp/open0755");
+    std::fs::create_dir_all(&open).unwrap();
+    set_mode(&open, 0o755);
+
+    let skipped = restore_owner_access(&rt, euid());
+
+    assert!(skipped.is_empty(), "everything is owned: {skipped:?}");
+    assert_eq!(mode(&ro), 0o700);
+    assert_eq!(mode(&ro.join("file")), 0o400, "files are never chmodded");
+    assert_eq!(mode(&grp), 0o750, "group bits kept, owner bits added");
+    assert_eq!(mode(&rt.join("tmp/a000")), 0o700);
+    assert_eq!(mode(&deep), 0o700, "reached below a 000 folder");
+    assert_eq!(mode(&open), 0o755, "no bit is removed");
+}
+
+/// The walk never follows a symlink, even one pointing at a folder the run
+/// owns, and never reports one as not owned.
+#[test]
+fn restore_neither_enters_nor_reports_symlinks() {
+    let (tmp, rt) = runtime_with_tmp();
+    let target = tmp.path().join("outside/target");
+    std::fs::create_dir_all(target.join("sub")).unwrap();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    set_mode(&target.join("sub"), 0o500);
+    set_mode(&target, 0o500);
+    std::os::unix::fs::symlink(&target, rt.join("tmp/link")).unwrap();
+
+    let skipped = restore_owner_access(&rt, euid());
+
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert_eq!(mode(&target), 0o500);
+    assert_eq!(mode(&target.join("sub")), 0o500, "not entered");
+}
+
+/// A missing root is not an error and reports nothing.
+#[test]
+fn restore_on_a_missing_root_reports_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(restore_owner_access(&tmp.path().join("gone"), euid()).is_empty());
+}
+
+// -------------------------------------------------------------------------
+// Issue #2738: the Git-command tracer is gone. Two things it touched here
+// still have to hold afterwards: an older release's `run.json` must still
+// read, and the end of a run must no longer depend on a recording file.
+// -------------------------------------------------------------------------
+
+/// Releases 1.2.163 to 1.2.167 wrote a `git_recording` object into
+/// `run.json`. Those run folders survive the upgrade, and the sweep reads
+/// every one of them to find the worktrees and targets each run owns: a
+/// report it cannot parse leaves that run's paths behind (`collect_runs`
+/// skips them with "run.json cannot be read"). `RunReport` must therefore
+/// ignore an unknown field rather than reject the file.
+#[test]
+fn a_run_json_written_before_the_tracer_was_removed_still_reads() {
+    let tmp = tempfile::tempdir().unwrap();
+    let id = "0123abcd-0000-0000-0000-00000000002a";
+    let dir = tmp.path().join("runs").join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    // The shape 1.2.167 wrote, field for field.
+    let before = serde_json::json!({
+        "schema_version": RUN_SCHEMA_VERSION,
+        "run_id": id,
+        "recipe": "default-workflow",
+        "pid": 4242,
+        "pid_start_ticks": 99_887_766_u64,
+        "cwd": "/d0/src/project",
+        "started_at": "2026-11-15T09:00:00Z",
+        "ended_at": "2026-11-15T09:31:00Z",
+        "outcome": "success",
+        "attempts": [],
+        "steps": [],
+        "log_path": "/d0/src/project/.amplihack/logs/run.log",
+        "git_recording": {
+            "mode": "required",
+            "status": "established",
+            "commands": 17,
+        },
+    });
+    std::fs::write(dir.join(RUN_JSON), before.to_string()).unwrap();
+
+    let report = RunReport::read(&dir).expect("a pre-change run.json still reads");
+
+    assert_eq!(report.run_id, id);
+    assert_eq!(report.outcome, "success");
+    assert_eq!(report.pid, 4242);
+    assert_eq!(report.ended_at.as_deref(), Some("2026-11-15T09:31:00Z"));
+    // Reading one does not carry the field forward: a folder rewritten by
+    // this release holds no recording of its own.
+    let after = serde_json::to_string(&report).unwrap();
+    assert!(
+        !after.contains("git_recording"),
+        "the report still carries a recording field: {after}"
+    );
+}
+
+/// The end of a run used to read `<run dir>/git-recording.json` and fail the
+/// whole run when that file could not be parsed. An interrupted 1.2.167 run
+/// can leave a half-written one behind, and the recording files sit beside
+/// `run.json` rather than under `runtime/`, so they outlive the run folder's
+/// own cleanup. Finishing must now ignore all of them and record the outcome
+/// it was given.
+#[test]
+fn a_run_finishes_with_an_older_releases_recording_files_beside_its_report() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = WorkRoot {
+        path: tmp.path().join("work"),
+        explicit: false,
+    };
+    let (scope, guard) = RunScope::begin(work, "issue-2738", Path::new("/d0/src/project")).unwrap();
+    let run_dir = scope.run_dir.clone();
+    // What the removed code wrote, in the state an interrupted run leaves:
+    // a truncated recording, the journal and its trace folder.
+    std::fs::write(run_dir.join("git-recording.json"), b"{\"mode\":\"req").unwrap();
+    std::fs::create_dir_all(run_dir.join("git-trace2")).unwrap();
+    std::fs::write(run_dir.join("git-commands.jsonl"), b"{\"argv\":[]}\n").unwrap();
+
+    let workspace = RunWorkspace::Scoped {
+        scope: Box::new(scope),
+        guard,
+    };
+    workspace
+        .finish_checked(Outcome::Success, Vec::new(), None, false)
+        .expect("the end of a run no longer reads a recording file");
+
+    let report = RunReport::read(&run_dir).unwrap();
+    assert_eq!(
+        report.outcome, "success",
+        "the run's own outcome must reach the report"
+    );
+    assert!(report.ended_at.is_some(), "the run was not marked ended");
+    let text = std::fs::read_to_string(run_dir.join(RUN_JSON)).unwrap();
+    assert!(
+        !text.contains("git_recording"),
+        "the report carries a recording field: {text}"
+    );
+    assert!(
+        !run_dir.join("runtime").exists(),
+        "the runtime folder outlived the run"
+    );
+}
+
+// ----- issue #2785: a runtime folder that holds unsaved Git work is kept -------
+//
+// The runner removes its own `runtime/` folder when the run ends. A step may
+// have left a repository copy in its TMPDIR with a commit it never pushed or a
+// file it never committed; deleting that destroys work that exists nowhere
+// else.
+//
+// Contract:
+// - `RuntimeRemoval::KeptUnsavedWork` (`Debug`, `PartialEq`, beside
+//   `KeptInUse`): `RuntimeGuard::remove` found a Git work tree in the runtime
+//   folder with uncommitted changes or commits that are not on its upstream,
+//   or could not tell, and left the folder in place. It is `Ok`, so it never
+//   fails a run and never changes its outcome or exit status.
+// - Order inside `release`: the process scan (`KeptInUse` wins), then
+//   `restore_owner_access`, then the judgement
+//   (`sweep::keep_and_report_unsaved_work`), then the removal. Judging after
+//   the restore is what keeps a locked folder from hiding a work tree, and
+//   from being kept for ever when it holds none. A folder kept for unsaved
+//   work keeps the owner access the restore gave it; no bit is taken away.
+// - `Drop` takes the same path. One release prints one message, because
+//   `release` takes the path out of the guard before it judges.
+
+use crate::test_support::origin_clones::{Scratch, make_dirty, make_unpushed};
+
+#[test]
+fn runtime_guard_keeps_a_folder_with_a_dirty_clone_in_it() {
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (_tmp, rt) = runtime_with_tmp();
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_dirty(&clone);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptUnsavedWork
+    );
+
+    assert!(clone.join("unsaved.txt").is_file(), "the work survives");
+    assert!(clone.join(".git").is_dir());
+    assert!(rt.join("tmp/scratch").is_file(), "the folder is left whole");
+}
+
+#[test]
+fn runtime_guard_keeps_a_folder_with_a_commit_that_is_on_no_remote() {
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (_tmp, rt) = runtime_with_tmp();
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_unpushed(&clone);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptUnsavedWork
+    );
+    assert!(clone.join(".git").is_dir() && rt.is_dir());
+}
+
+/// Not vacuous: a clean clone that is pushed does not keep the folder.
+#[test]
+fn runtime_guard_removes_a_folder_whose_clone_has_nothing_unsaved() {
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (_tmp, rt) = runtime_with_tmp();
+    s.origin.clone_to(&rt.join("tmp/amplihack-rs"));
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+}
+
+/// A `.git` that cannot be checked is kept, and it is a keep, not an error:
+/// `remove()` is `Ok`, so the run does not fail over it.
+#[test]
+fn runtime_guard_keeps_a_folder_it_cannot_check_without_failing() {
+    let _procs = fake_proc_scope();
+    let (_tmp, rt) = runtime_with_tmp();
+    let broken = rt.join("tmp/broken");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::write(broken.join(".git"), "gitdir: /nonexistent\n").unwrap();
+
+    let result = RuntimeGuard::new(rt.clone()).unwrap().remove();
+
+    assert_eq!(
+        result.expect("keeping a folder is never an error"),
+        RuntimeRemoval::KeptUnsavedWork
+    );
+    assert!(broken.join(".git").is_file());
+}
+
+#[test]
+fn runtime_guard_drop_also_keeps_a_folder_with_unsaved_work() {
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (_tmp, rt) = runtime_with_tmp();
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_dirty(&clone);
+
+    drop(RuntimeGuard::new(rt.clone()).unwrap());
+
+    assert!(clone.join("unsaved.txt").is_file(), "Drop must judge too");
+}
+
+/// A process that uses the folder is the first reason, and the answer: the
+/// folder is `KeptInUse`, as before, and nothing is said about unsaved work.
+#[test]
+fn a_folder_in_use_is_kept_in_use_even_when_it_also_holds_unsaved_work() {
+    let procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (_tmp, rt) = runtime_with_tmp();
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_dirty(&clone);
+    let holder = cat_holder(&rt.join("tmp"), &rt.join("tmp"));
+    procs.fake.link_own(holder.0.id());
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptInUse
+    );
+    holder.finish();
+}
+
+/// The folder that holds the work tree is locked (as a step can leave it). The
+/// owner access is restored first, so the judgement can look inside, finds the
+/// uncommitted file, and keeps the folder. It keeps the access it was given.
+#[test]
+fn a_locked_folder_cannot_hide_a_work_tree_from_the_judgement() {
+    note_if_root("a_locked_folder_cannot_hide_a_work_tree_from_the_judgement");
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_dirty(&clone);
+    set_mode(&clone, 0o000);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::KeptUnsavedWork
+    );
+
+    assert_eq!(
+        mode(&clone) & 0o700,
+        0o700,
+        "the restored owner access is not taken away again"
+    );
+    assert!(clone.join("unsaved.txt").is_file());
+}
+
+/// The other half, and the reason the judgement follows the restore: a locked
+/// folder whose work tree is clean and pushed is not kept for the lock. Judged
+/// before the restore, its `.git` could not be probed and the folder would be
+/// kept for ever, which the #2486 case (locked folders are removed) forbids.
+#[test]
+fn a_locked_folder_with_nothing_unsaved_is_still_removed() {
+    note_if_root("a_locked_folder_with_nothing_unsaved_is_still_removed");
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let (tmp, rt) = runtime_with_tmp();
+    let _restore = RestoreModes(vec![tmp.path().to_path_buf()]);
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    set_mode(&clone, 0o000);
+
+    assert_eq!(
+        RuntimeGuard::new(rt.clone()).unwrap().remove().unwrap(),
+        RuntimeRemoval::Removed
+    );
+    assert!(!rt.exists());
+}
+
+/// At the end of a run the outcome the run was given is the outcome recorded,
+/// and the end of the run does not fail, when the runtime folder is kept.
+#[test]
+fn finishing_a_run_whose_runtime_holds_unsaved_work_does_not_fail_or_change_the_outcome() {
+    let _procs = fake_proc_scope();
+    let s = Scratch::new();
+    let base = tempfile::tempdir().unwrap();
+    let ws = scoped_workspace(base.path());
+    let rt = ws.runtime_dir().to_path_buf();
+    let run_dir = ws
+        .run_dir()
+        .expect("a scoped run has a run folder")
+        .to_path_buf();
+    let clone = rt.join("tmp/amplihack-rs");
+    s.origin.clone_to(&clone);
+    make_dirty(&clone);
+
+    ws.finish_checked(Outcome::Success, Vec::new(), None, false)
+        .expect("keeping unsaved work never fails the end of a run");
+
+    assert!(clone.join("unsaved.txt").is_file(), "the work survives");
+    let report = RunReport::read(&run_dir).unwrap();
+    assert_eq!(report.outcome, "success");
+    assert!(report.ended_at.is_some(), "the run is recorded as ended");
 }
