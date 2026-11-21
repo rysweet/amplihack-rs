@@ -62,16 +62,18 @@ Sourcing the library has **no side effects** — it only defines functions.
 
 ## Error classification
 
-`classify_gh_error <stderr_file>` reads a command's captured stderr and echoes
-exactly one of four classes. Order matters: permanent auth errors are checked
-first (never retried), then rate-limit signals, then generic transient signals.
+`classify_gh_error <stderr_file> [create]` classifies a command's captured
+stderr. It checks authentication and explicit validation failures such as
+`HTTP 422` before rate-limit and transient signals. The retry driver selects
+`create` mode for `gh pr create`, where short backoff requires an HTTP 5xx
+response or a recognizable transport error such as `i/o timeout`.
 
 | Class        | Example signals                                                                 | Handling |
 | ------------ | ------------------------------------------------------------------------------- | -------- |
 | `auth`       | `Bad credentials`, `HTTP 401`, `requires authentication`, `not logged in`, expired/invalid token | **Never retried.** Fail fast with a redacted message. |
 | `rate_limit` | `API rate limit exceeded`, `secondary rate limit`, `abuse detection`, `Retry-After`, `X-RateLimit-Reset`, `HTTP 429`, and a bare `HTTP 403` that is *not* a permission error | Wait for the **authoritative reset** and/or serve via a REST fallback. |
 | `transient`  | `HTTP 5xx`, `timed out`, `connection reset/refused`, `TLS handshake`, `network`, `EOF` | Short exponential backoff, bounded attempts (default 3). |
-| `other`      | Anything else, including a `403` that clearly reads as a permission error (`resource not accessible`, `must have admin`, `insufficient`, `permission`) | Not retried; returns the original exit status. |
+| `other`      | Validation errors such as `HTTP 422`, permission errors such as `resource not accessible`, and unclassified errors | Returns the original exit status immediately. |
 
 > A bare `403` is treated as a (secondary) rate-limit signal **unless** the
 > message clearly indicates a permission problem, in which case it is `other`
@@ -108,12 +110,12 @@ branch on how a result was obtained.
 
 | Function | Purpose | Returns |
 | -------- | ------- | ------- |
-| `classify_gh_error <stderr_file>` | Classify captured stderr. | echoes `auth`\|`rate_limit`\|`transient`\|`other` |
-| `_gh_retry_core <label> <gh-arg>...` | The retry driver. Runs `gh <args>` with a 60s per-attempt `timeout`, classifying failures and acting per class. | stdout = command (or REST fallback) output; return = `0` on success else last `gh` exit status. Sets `GH_RETRY_LAST_CLASS`. |
+| `classify_gh_error <stderr_file> [create]` | Classify captured stderr. | echoes `auth`\|`rate_limit`\|`transient`\|`other` |
+| `_gh_retry_core <label> <gh-arg>...` | Runs `gh <args>` with a 60s per-attempt `timeout` and classifies failures. | Outputs the command or REST fallback result on success. Returns the original status of a terminal command, local setup, or retry wait failure. Sets `GH_RETRY_LAST_CLASS`. |
 | `gh_rate_limit_reset_epoch <resource>` | Authoritative reset epoch via `gh api rate_limit` (does **not** consume the core/graphql budget). | echoes epoch seconds, or returns `1` |
 | `gh_rate_limit_remaining <resource>` | Remaining request count for a resource. | echoes integer, or returns `1` |
 | `gh_reset_epoch_from_stderr <stderr_file>` | Fallback reset lookup that honors a `Retry-After: <seconds>` or `X-RateLimit-Reset: <epoch>` header when `gh api rate_limit` is unavailable. | echoes epoch seconds, or returns `1` |
-| `gh_wait_for_rate_limit <resource> <stderr_file>` | Adaptive sleep until just after the authoritative reset (floor `5s`, buffer `3s`, **no fixed cap**). | sleeps; always returns after waking |
+| `gh_wait_for_rate_limit <resource> <stderr_file>` | Adaptive sleep until just after the authoritative reset (floor `5s`, buffer `3s`, **no fixed cap**). | Returns the sleep status. |
 | `gh_pr_exists_rest <OWNER/REPO> <branch>` | REST `/pulls` existence check, emitting a JSON **array** shaped like `gh pr list --json ...`. | echoes JSON array, or returns `1` |
 | `gh_pr_view_rest <OWNER/REPO> <pr_number>` | REST `/pulls/:n` read, emitting a single JSON **object** shaped like `gh pr view --json ...`. | echoes JSON object, or returns `1` |
 | `gh_pr_number_from_url <url>` | Extract the trailing PR number from a PR URL. | echoes integer, or returns `1` |

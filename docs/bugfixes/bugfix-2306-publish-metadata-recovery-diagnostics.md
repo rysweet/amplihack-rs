@@ -96,11 +96,16 @@ See the [recipe runner revision](../../claude-plugin/recipe-runner.rev).
 | Outcome | Observable result |
 | --- | --- |
 | A draft is created and its identity is valid | Exit zero, with `FOLLOWUP_CREATED` and `terminal_status=success` for a follow-up draft. |
-| Creation fails and the scoped lookup finds an eligible open PR | Exit zero with `existing-open-pr` and the adopted identity. |
+| The final provider attempt fails and the scoped lookup finds an eligible open PR | Exit zero with `existing-open-pr` and the adopted identity. |
 | Creation succeeds but returns an invalid identity | Nonzero exit with `FAILED_PR_IDENTITY`, empty `pr_url` and `pr_number`, and a fixed result-parsing diagnostic. |
-| Creation fails and the scoped lookup finds no eligible open PR | The original nonzero status, `FAILED_PR_CREATE`, legacy state `create-pr-failed`, and `terminal_status=failure`. |
+| The final provider attempt fails and the scoped lookup finds no eligible open PR | The original nonzero status, `FAILED_PR_CREATE`, legacy state `create-pr-failed`, and `terminal_status=failure`. |
+| A local setup or wait fails, or the failure metadata is missing | The original nonzero status, `FAILED_PR_CREATE`, and empty `pr_url` and `pr_number`. The publisher skips the collision lookup. |
 
 ## Created PR identity
+
+The publisher passes `--repo github.com/<owner>/<repo>` to draft creation and
+best-effort label edits. Both writes use the repository validated from the
+checkout's `origin`. The linked issue may belong to another repository.
 
 A successful `gh pr create` must return a single
 `https://github.com/<owner>/<repo>/pull/<number>` URL for the expected
@@ -128,16 +133,18 @@ diagnostic has its own size limit, independent of the retry warnings.
 
 Provider stderr is redacted before its 500-byte limit is applied. Empty stderr
 gets an explicit explanation. A failed sanitizer yields fixed safe text and
-discards all partial output. A body-file or private-capture setup failure
-reports its own operation and status. A failed collision lookup can add context
-while the original creation evidence remains available.
+discards all partial output. A body-file setup, private capture setup, or retry
+wait failure reports its own operation and status. A failed wait stops Step 16
+before the next create attempt. A failed collision lookup can add context while
+the original creation evidence remains available.
 
 The publisher interprets the create subprocess's private stdout capture using
-its wait status. The capture holds the candidate URL on success or one safe
-diagnostic on failure. The retry helper emits that diagnostic after cleaning
-its attempt captures. The publisher reports the operation and observed exit
-status when the failure capture is empty. Retry warnings use stderr, and the
-shared helper retains its regular output contract for other callers.
+its wait status. The capture holds the candidate URL on success. On failure
+it holds a fixed origin line and a safe diagnostic. The retry helper emits
+both after cleaning its attempt captures and marks a failure as provider-origin
+only when returning the final attempt's status. Missing origin or diagnostic
+data yields a fixed explanation with the observed exit status. Retry warnings
+use stderr.
 
 The publisher owns the outer captures. On exit and catchable cancellation it
 reaps its child before unlinking those captures. The retry helper owns its

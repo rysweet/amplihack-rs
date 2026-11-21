@@ -122,6 +122,7 @@ fn followup_terminal_rejection_survives_long_retry_history_and_is_redacted() {
 #[test]
 fn followup_failure_before_a_later_attempt_runs_gh_is_not_reported_as_the_earlier_rejection() {
     let f = PublishFixture::new();
+    f.offer_collision_pr(super::fixture::BRANCH);
     // Attempt 1 is rejected with HTTP 503 and retried. Attempt 2 fails to
     // create its private stderr capture, so gh never runs again.
     f.long_transient_create_failure();
@@ -143,15 +144,11 @@ exec "$REAL_TOOL" "$@"
     assert_eq!(output.status.code(), Some(9), "{}", describe(&output));
     assert!(f.tmp.path().join("first-create").exists());
     assert!(f.tmp.path().join("capture-failed").exists());
-    assert_eq!(
-        f.read("gh.log")
-            .lines()
-            .filter(|line| line.starts_with("pr create "))
-            .count(),
-        1
-    );
+    f.assert_create_attempts_and_scoped_lookups(1, 1);
     let result = json(&output);
     assert_eq!(result["state"], "FAILED_PR_CREATE");
+    assert_eq!(result["pr_url"], "");
+    assert_eq!(result["pr_number"], "");
     let message = result["message"].as_str().unwrap();
     assert!(
         message.contains("gh pr create")
@@ -161,12 +158,7 @@ exec "$REAL_TOOL" "$@"
     assert!(!message.contains("HTTP 503"), "{message}");
     assert!(!message.contains("collision lookup failed"), "{message}");
     assert!(!describe(&output).contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX"));
-    assert_eq!(
-        std::fs::read_dir(f.tmp.path().join("private"))
-            .unwrap()
-            .count(),
-        0
-    );
+    f.assert_private_cleanup();
 }
 
 #[test]

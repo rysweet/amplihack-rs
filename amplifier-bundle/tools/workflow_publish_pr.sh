@@ -121,7 +121,7 @@ apply_pr_labels_best_effort() {
   # CSV is passed straight through in a single call — no bespoke parsing needed.
   # `timeout 60` mirrors every other gh call in this script: a hung `gh pr edit`
   # must never block finish_publish from emitting its JSON.
-  if ! timeout 60 gh pr edit "$PR_NUMBER_RESULT" --add-label "$WORKFLOW_PR_LABELS" >/dev/null 2>&1; then
+  if ! timeout 60 gh pr edit "$PR_NUMBER_RESULT" --repo "github.com/$REPO_IDENTITY" --add-label "$WORKFLOW_PR_LABELS" >/dev/null 2>&1; then
     echo "WARNING: workflow_publish_pr.sh: best-effort labels '${WORKFLOW_PR_LABELS}' not applied to PR #${PR_NUMBER_RESULT} (a label may not exist in this repo, GitHub API unavailable, or timed out)" >&2
   fi
   return 0
@@ -229,8 +229,8 @@ gh_pr_view_with_retry() {
 }
 
 # The publisher captures stdout privately and reaps this subprocess before
-# unlinking the captures. Stdout carries the URL on success or one safe
-# diagnostic on failure. Retry warnings and incidental errors stay on stderr.
+# unlinking the captures. Stdout carries the URL on success or a fixed origin
+# line followed by a safe diagnostic on failure. Warnings stay on stderr.
 gh_pr_create_with_retry() (
   local status=0 body_file="" GH_OWNED_PID=""
   trap 'gh_cancel_owned "$GH_OWNED_PID"; [ -z "$body_file" ] || gh_remove_capture "$body_file"' EXIT
@@ -239,19 +239,23 @@ gh_pr_create_with_retry() (
   trap 'exit 129' HUP
   if body_file="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-body.XXXXXX" 2>/dev/null)"; then :; else
     status=$?
-    printf 'body temp creation failed (exit %s)\n' "$status"
+    printf 'local\nbody temp creation failed (exit %s)\n' "$status"
     return "$status"
   fi
-  gh_start_owned write_body_file "$body_file" "the workflow publish step log" < <(printf '%s' "$PR_BODY") >/dev/null
-  if wait "$GH_OWNED_PID"; then GH_OWNED_PID=""; else
+  if gh_start_owned write_body_file "$body_file" "the workflow publish step log" < <(printf '%s' "$PR_BODY") >/dev/null &&
+    wait "$GH_OWNED_PID"; then
+    GH_OWNED_PID=""
+  else
     status=$?
     gh_remove_capture "$body_file"
     body_file=""
-    printf 'body-file write failed (exit %s)\n' "$status"
+    printf 'local\nbody-file write failed (exit %s)\n' "$status"
     return "$status"
   fi
   # WRITE path: no REST fallback (never blind-create); rate limits wait for reset.
-  gh_start_owned _gh_retry_core --terminal-stdout "pr create" pr create --draft ${RECIPE_VAR_base_branch:+--base="$BASE_BRANCH"} ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file"
+  gh_start_owned _gh_retry_core --terminal-stdout "pr create" pr create --draft \
+    --repo "github.com/$REPO_IDENTITY" ${RECIPE_VAR_base_branch:+--base="$BASE_BRANCH"} \
+    ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file"
   wait "$GH_OWNED_PID" || status=$?
   GH_OWNED_PID=""
   gh_remove_capture "$body_file"
@@ -1114,6 +1118,9 @@ PR_BODY=$(printf '## Summary\n%s\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## D
 
 PUBLISH_STATE="FOLLOWUP_CREATED"
 LEGACY_PUBLISH_STATE="create-new-pr"
+# The initial lookup may have left an incomplete identity.
+PR_URL_RESULT=""
+PR_NUMBER_RESULT=""
 PUBLISH_OPERATION="gh pr create capture temp creation"
 if CREATE_STDERR_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-create.XXXXXX" 2>/dev/null)"; then :; else
   capture_status=$?
@@ -1125,26 +1132,40 @@ if CREATE_STDOUT_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-result.X
   finish_publish "FAILED_PR_CREATE" "create-pr-failed" failure "gh pr create stdout temp creation failed (exit $capture_status)" "$capture_status"
 fi
 PUBLISH_OPERATION="gh pr create"
-gh_start_owned gh_pr_create_with_retry >"$CREATE_STDOUT_FILE" 2>"$CREATE_STDERR_FILE"
+if gh_start_owned gh_pr_create_with_retry >"$CREATE_STDOUT_FILE" 2>"$CREATE_STDERR_FILE"; then :; else
+  capture_status=$?
+  finish_publish "FAILED_PR_CREATE" "create-pr-failed" failure "gh pr create capture setup failed (exit $capture_status)" "$capture_status"
+fi
 PUBLISH_CHILD=$GH_OWNED_PID
 CREATE_STATUS=0
 wait "$PUBLISH_CHILD" || CREATE_STATUS=$?
 PUBLISH_CHILD=""
-CREATE_RESULT=$(<"$CREATE_STDOUT_FILE")
+CREATE_RESULT=$(<"$CREATE_STDOUT_FILE") || CREATE_RESULT=""
 if [ "$CREATE_STATUS" -ne 0 ]; then
-  CREATE_MESSAGE="gh pr create failed (exit ${CREATE_STATUS}): ${CREATE_RESULT:-terminal diagnostic unavailable}"
-  # Keep the original create evidence across the independently scoped lookup.
-  if RECOVERY_JSON="$(scoped_pr_lookup)"; then
-    load_pr_fields "$RECOVERY_JSON"
-    if [ -n "$PR_URL_RESULT" ] && [ "$PR_STATE" = "OPEN" ]; then
-      BASE_BRANCH_RESULT="${PR_BASE_REF:-$BASE_BRANCH}"
-      COLLISION_MESSAGE="adopted existing open PR after create collision"
-      [ "$BASE_BRANCH_RESULT" = "$BASE_BRANCH" ] || COLLISION_MESSAGE="${COLLISION_MESSAGE}; $(kept_base_clause)"
-      finish_publish "existing-open-pr" "existing-open-pr" "success" "$COLLISION_MESSAGE"
+  CREATE_ORIGIN=""
+  CREATE_DIAGNOSTIC="terminal diagnostic unavailable"
+  case "$CREATE_RESULT" in
+    provider$'\n'?*|local$'\n'?*)
+      CREATE_ORIGIN="${CREATE_RESULT%%$'\n'*}"
+      CREATE_DIAGNOSTIC="${CREATE_RESULT#*$'\n'}" ;;
+  esac
+  CREATE_MESSAGE="gh pr create failed (exit ${CREATE_STATUS}): ${CREATE_DIAGNOSTIC}"
+  # Only a terminal provider attempt can have created a PR to adopt.
+  if [ "$CREATE_ORIGIN" = provider ]; then
+    if RECOVERY_JSON="$(scoped_pr_lookup)"; then
+      load_pr_fields "$RECOVERY_JSON"
+      if [ -n "$PR_URL_RESULT" ] && [ "$PR_STATE" = "OPEN" ]; then
+        BASE_BRANCH_RESULT="${PR_BASE_REF:-$BASE_BRANCH}"
+        COLLISION_MESSAGE="adopted existing open PR after create collision"
+        [ "$BASE_BRANCH_RESULT" = "$BASE_BRANCH" ] || COLLISION_MESSAGE="${COLLISION_MESSAGE}; $(kept_base_clause)"
+        finish_publish "existing-open-pr" "existing-open-pr" "success" "$COLLISION_MESSAGE"
+      fi
+    else
+      RECOVERY_STATUS=$?
+      CREATE_MESSAGE="${CREATE_MESSAGE}; scoped collision lookup failed (exit ${RECOVERY_STATUS})"
     fi
-  else
-    RECOVERY_STATUS=$?
-    CREATE_MESSAGE="${CREATE_MESSAGE}; scoped collision lookup failed (exit ${RECOVERY_STATUS})"
+    PR_URL_RESULT=""
+    PR_NUMBER_RESULT=""
   fi
   if [ -s "$CREATE_STDERR_FILE" ]; then
     printf 'gh pr create details: %s\n' "$(gh_safe_stderr "$CREATE_STDERR_FILE")" >&2
@@ -1163,9 +1184,6 @@ case "$created_number" in
 esac
 if [ "$created_path" = "$CREATE_RESULT" ] || [ -z "${created_number//0/}" ] ||
   ! (LC_ALL=C; shopt -s nocasematch; [[ "$created_repo" == "$REPO_IDENTITY" ]]); then
-  # The earlier scoped lookup may have returned an incomplete identity.
-  PR_URL_RESULT=""
-  PR_NUMBER_RESULT=""
   finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1
 fi
 PR_URL_RESULT="$CREATE_RESULT"
