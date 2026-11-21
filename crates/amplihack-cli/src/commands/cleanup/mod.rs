@@ -22,7 +22,7 @@ use sweep::{Entry, Settings};
 
 /// The only code that may delete a pre-commit target, reached from the
 /// end-of-run build output removal too (issue #2886).
-pub(crate) use sweep::target_remove;
+use sweep::target_remove;
 
 pub(crate) const DEFAULT_KEEP_HOURS: u64 = 24;
 const MAX_KEEP_HOURS: u64 = 87_600;

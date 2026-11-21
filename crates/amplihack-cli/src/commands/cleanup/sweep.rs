@@ -188,7 +188,7 @@ impl Item {
 #[path = "execute.rs"]
 mod execute;
 #[path = "target_remove.rs"]
-pub(crate) mod target_remove;
+pub(in crate::commands::cleanup) mod target_remove;
 
 use super::procs::ProcScan;
 use execute::{Refusal, execute, other_live_owner};

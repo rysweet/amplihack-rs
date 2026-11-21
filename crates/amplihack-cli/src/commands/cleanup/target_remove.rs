@@ -34,7 +34,7 @@ pub(super) enum Shape {
 
 /// Why a link was not followed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LinkReason {
+pub(in crate::commands::cleanup) enum LinkReason {
     NotCargoTarget,
     OutsideAllowedRoots,
     LinkChain,
@@ -54,7 +54,7 @@ impl LinkReason {
 
 /// Why a target is left alone. One `Display` holds every report text.
 #[derive(Debug)]
-pub(crate) enum Refusal {
+pub(in crate::commands::cleanup) enum Refusal {
     /// A build holds a `.cargo-lock`.
     InUse,
     /// A `.cargo-lock` could not be checked. The text names the reason and
@@ -454,7 +454,7 @@ fn lock_check_refusal(path: &Path, error: &std::io::Error) -> Refusal {
 /// only this copy would leave the lock held by the child's copy. `LOCK_UN`
 /// releases the lock on the open file description, so every copy loses it.
 #[derive(Debug)]
-pub(crate) struct HeldLock(fs::File);
+pub(in crate::commands::cleanup) struct HeldLock(fs::File);
 
 impl Drop for HeldLock {
     fn drop(&mut self) {
@@ -515,7 +515,7 @@ pub(super) fn lock_cargo_tree_with(dir: &Path, mode: LockMode) -> Result<Vec<Hel
 }
 
 /// [`lock_cargo_tree_with`] in [`LockMode::Exclusive`], for removal.
-pub(crate) fn lock_cargo_tree(dir: &Path) -> Result<Vec<HeldLock>, Refusal> {
+pub(in crate::commands::cleanup) fn lock_cargo_tree(dir: &Path) -> Result<Vec<HeldLock>, Refusal> {
     lock_cargo_tree_with(dir, LockMode::Exclusive)
 }
 

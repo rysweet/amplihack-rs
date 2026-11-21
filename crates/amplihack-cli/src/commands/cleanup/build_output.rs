@@ -17,6 +17,7 @@ use super::run_dir::{OwnedKind, read_owned_paths};
 use super::target_remove::{self, Refusal};
 use super::targets::is_cargo_target;
 use super::{human_size, sweep};
+use crate::user_config::safe::display_safe;
 use amplihack_types::is_git_checkout;
 use std::collections::BTreeSet;
 use std::fs;
@@ -412,27 +413,14 @@ fn total_line(count: usize, known_bytes: u64, any_unknown: bool) -> String {
 
 /// One folder that was kept, and why.
 ///
-/// The path is rendered with `{:?}` and the reason is escaped, because both
-/// carry names this run did not choose: a newline would forge a second line
-/// and an escape sequence would reach a terminal.
+/// The path is rendered with `{:?}` and the reason through [`display_safe`],
+/// because both carry names this run did not choose: a newline would forge a
+/// second line and an escape sequence would reach a terminal.
 fn warning_line(path: &Path, reason: &str) -> String {
     format!(
         "amplihack: warning: end-of-run cleanup could not remove {path:?}: {}\n",
-        escape(reason)
+        display_safe(reason)
     )
-}
-
-/// `text` with every control character written as an escape.
-fn escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if c.is_control() {
-            out.extend(c.escape_debug());
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 #[cfg(test)]
