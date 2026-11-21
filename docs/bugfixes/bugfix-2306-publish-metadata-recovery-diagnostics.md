@@ -186,7 +186,9 @@ interrupts the helper alone, its last stderr line is
 reports any other terminal rejection. A signal delivered to the publisher itself
 is different: it exits through its own backstop, which cancels the child and
 removes the capture without reading it, then names the failed operation and
-status. An empty creation stderr reports `empty stderr (no error message)`.
+status. An empty creation stderr reports `empty stderr (no error message)`;
+a capture the step cannot read reports `stderr capture unavailable` instead,
+since that is a different claim.
 On `FAILED_PR_CREATE`, creation evidence appears in stderr and the structured
 `message`, and survives into the runner's serialized step error. Pre-helper
 failures also identify the operation and status or condition. A final-exit

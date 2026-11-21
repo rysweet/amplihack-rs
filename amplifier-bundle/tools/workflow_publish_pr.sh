@@ -1132,8 +1132,11 @@ else
   PUBLISH_CHILD=""
   # Retry warnings precede the terminal rejection and can fill the bounded
   # diagnostic, so keep only the last line (the helper's terminal rejection).
-  CREATE_LAST_LINE="$(tail -n 1 -- "$CREATE_STDERR_FILE" 2>/dev/null)" || CREATE_LAST_LINE=""
-  if [ -z "$CREATE_LAST_LINE" ]; then
+  # A capture that cannot be read is not a capture gh left empty; keep the two
+  # apart so the step never claims gh said nothing when it was never asked.
+  if ! CREATE_LAST_LINE="$(tail -n 1 -- "$CREATE_STDERR_FILE" 2>/dev/null)"; then
+    CREATE_DIAGNOSTIC="stderr capture unavailable"
+  elif [ -z "$CREATE_LAST_LINE" ]; then
     CREATE_DIAGNOSTIC="empty stderr (no error message)"
   elif printf '%s\n' "$CREATE_LAST_LINE" >"$CREATE_STDERR_FILE"; then
     CREATE_DIAGNOSTIC="$(gh_safe_stderr "$CREATE_STDERR_FILE")"

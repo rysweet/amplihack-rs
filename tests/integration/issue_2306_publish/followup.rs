@@ -289,3 +289,46 @@ fn followup_non_github_host_finishes_without_a_provider_call() {
     assert!(!f.tmp.path().join("create.argv").exists());
     assert_private_empty(&f);
 }
+
+/// The publisher reads its own private creation capture with `tail`. A read
+/// that fails is not a capture `gh` left empty, so reporting it as one would
+/// name the wrong cause. The step must say the capture was unavailable, keep
+/// the original creation status, and still remove the capture.
+#[test]
+fn followup_unreadable_creation_capture_is_not_reported_as_empty_stderr() {
+    let f = PublishFixture::new();
+    f.write("create.stderr", "distinctive publish rejection");
+    f.shim(
+        "tail",
+        r#"
+case "$*" in
+  *workflow-pr-create.*) printf 'injected capture read failure\n' >&2; exit 71 ;;
+esac
+exec "$REAL_TOOL" "$@"
+"#,
+    );
+    let output = f
+        .publish_command()
+        .env("CREATE_STATUS", "23")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(23), "{}", describe(&output));
+    let result = json(&output);
+    assert_eq!(result["state"], "FAILED_PR_CREATE", "{result}");
+    assert_eq!(result["terminal_status"], "failure", "{result}");
+    let message = result["message"].as_str().unwrap();
+    assert!(
+        message.contains("gh pr create") && message.contains("exit 23"),
+        "{message}"
+    );
+    assert!(message.contains("stderr capture unavailable"), "{message}");
+    assert!(
+        !message.contains("empty stderr"),
+        "an unread capture is not an empty one: {message}"
+    );
+    assert!(
+        !message.contains("distinctive publish rejection"),
+        "an unread capture cannot supply a diagnostic: {message}"
+    );
+    assert_private_empty(&f);
+}
