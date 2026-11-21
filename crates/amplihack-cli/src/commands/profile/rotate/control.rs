@@ -70,10 +70,13 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     let ledger = rs.load_ledger();
     // One read, so the `overflow:`, `on credits:` and `default:` lines agree.
     let names = overflow_names(store.root());
-    let overflow = overflow_line(&names, ledger.as_ref().map(Option::as_ref), now());
+    // One clock too: both fields expire the same blocks, so reading it
+    // twice would let one list a block the other had just dropped.
+    let at = now();
+    let overflow = overflow_line(&names, ledger.as_ref().map(Option::as_ref), at);
     // Issue #2890: blocks on logins the `overflow:` field does not list,
     // from the same ledger read.
-    let blocked_logins = blocked_logins_line(&names, ledger.as_ref().map(Option::as_ref), now());
+    let blocked_logins = blocked_logins_line(&names, ledger.as_ref().map(Option::as_ref), at);
     let last_tag = ledger
         .as_ref()
         .ok()

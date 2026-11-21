@@ -177,26 +177,17 @@ pub fn decide_restricted(
 
     // Issue #2890: a plan login with an active spend block contributes a
     // reading with no room, whatever its probe said. One substitution on
-    // the inputs, applied to the live login and to the plan candidates;
-    // every rule below reads the substituted values and is itself
-    // unchanged. Overflow profiles keep the block rules they already have
-    // (`blocked` below), which is why the substitution asks `!is_overflow`.
-    let blocked_plan = |n: &ProfileName| !is_overflow(n) && active(i.blocks, n, i.now);
+    // the inputs, made in the two places a plan login is read from: the
+    // live login here and the plan candidates in `plan` below. Every rule
+    // under those reads the substituted values and is itself unchanged.
+    // Overflow profiles keep the block rules they already have (`blocked`
+    // below), which is why the substitution asks `!is_overflow`.
     let mut live = i.live.clone();
-    if i.live_name.is_some_and(&blocked_plan) {
+    if i.live_name
+        .is_some_and(|n| !is_overflow(n) && active(i.blocks, n, i.now))
+    {
         (live.reading, live.windows) = no_room();
     }
-    let candidates: Vec<Measured> = i
-        .candidates
-        .iter()
-        .map(|c| {
-            let mut c = c.clone();
-            if blocked_plan(&c.name) {
-                (c.reading, c.windows) = no_room();
-            }
-            c
-        })
-        .collect();
 
     // Spend-limit evidence on any overflow profile, live or candidate,
     // blocks it once.
@@ -212,7 +203,7 @@ pub fn decide_restricted(
         if Some(o) == i.live_name || active(i.blocks, o, i.now) {
             continue;
         }
-        if candidates.iter().any(|c| &c.name == o && c.spend_limit) {
+        if i.candidates.iter().any(|c| &c.name == o && c.spend_limit) {
             new_blocks.push(o.clone());
         }
     }
@@ -232,16 +223,28 @@ pub fn decide_restricted(
             .filter(|o| Some(*o) != i.live_name && !blocked(o))
             .filter(|o| allowed(o))
             .find_map(|o| {
-                candidates
+                i.candidates
                     .iter()
                     .find(|c| &c.name == o && c.reading != Reading::Failed && !c.spend_limit)
             })
             .map(|c| c.name.clone())
     };
-    let plan: Vec<Measured> = candidates
+    // The plan candidates, carrying the issue #2890 substitution: the
+    // filter has already established that none of these is an overflow
+    // profile, so an active block on one is a block on a plan login. The
+    // two lookups above read `i.candidates` because both search by an
+    // overflow name, which this never rewrites.
+    let plan: Vec<Measured> = i
+        .candidates
         .iter()
         .filter(|c| !is_overflow(&c.name))
-        .cloned()
+        .map(|c| {
+            let mut c = c.clone();
+            if active(i.blocks, &c.name, i.now) {
+                (c.reading, c.windows) = no_room();
+            }
+            c
+        })
         .collect();
     let targets: Vec<Measured> = plan.iter().filter(|c| allowed(&c.name)).cloned().collect();
     let same_targets: Vec<Measured> = plan.iter().filter(|c| same(&c.name)).cloned().collect();

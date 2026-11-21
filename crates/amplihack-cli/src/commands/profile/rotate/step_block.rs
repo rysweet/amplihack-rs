@@ -24,14 +24,15 @@
 //! 3. **The lock**, waited for a bounded time and then given up. A step is
 //!    never stalled by a busy rotator.
 //! 4. **Load**; a ledger that disappeared between 1 and 3 is left alone.
-//! 5. **An active block is kept as it is**: never extended, never alerted
-//!    about twice. An expired one is pruned and replaced.
+//! 5. **Expired blocks are pruned**, so that a block left for this login is
+//!    an active one. **It is then kept as it is**: never extended, never
+//!    alerted about twice.
 //! 6. **The cardinality cap**, before the insert.
 //! 7. **Save**; the lock is released as `store` returns.
 //! 8. **Log**, outside the lock.
 
 use super::control::CLEAR_LOCK_WAIT;
-use super::ledger::{MAX_BLOCKS, OverflowBlock, RotateState, active_blocks, prune_blocks};
+use super::ledger::{MAX_BLOCKS, OverflowBlock, RotateState, prune_blocks};
 use super::log::msg;
 use super::spend_blocks::valid_span;
 use crate::commands::profile::auto_switch::kit::{State, exists};
@@ -110,12 +111,14 @@ fn store(
             return Err(UNREADABLE);
         }
     };
-    // 5. An active block stands as it is: no extension and no second ALERT,
-    //    so a run of failing steps writes one line, not one per step.
-    if active_blocks(&l, at).contains_key(login.as_str()) {
+    // 5. Pruning first leaves only blocks in force at `at`, so the
+    //    membership test below is the active-block test. An active block
+    //    stands as it is: no extension and no second ALERT, so a run of
+    //    failing steps writes one line, not one per step.
+    prune_blocks(&mut l, at);
+    if l.overflow_blocked.contains_key(login.as_str()) {
         return Ok(None);
     }
-    prune_blocks(&mut l, at);
     // 6. The cap the loader enforces, checked before the insert.
     if l.overflow_blocked.len() >= MAX_BLOCKS {
         return Err(TOO_MANY);
