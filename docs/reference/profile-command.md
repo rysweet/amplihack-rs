@@ -10475,9 +10475,9 @@ The message does not claim the limit is gone: the rotator's reading can be
 wrong, so the model is told to stop again if it is not.
 
 The hook relies on Claude Code behaviours that a live check against Claude
-Code 2.1.306 confirmed (not re-read at 2.1.329). It used a stub `StopFailure` hook with
-`asyncRewake: true`, triggered by an invalid API key (matcher
-`authentication_failed`):
+Code 2.1.306 confirmed (not re-read at 2.1.329). It used a stub
+`StopFailure` hook with `asyncRewake: true`, triggered by an invalid API key
+(matcher `authentication_failed`):
 
 - a turn that ends on an API error runs `StopFailure`, not `Stop`;
 - the payload has `session_id`, `transcript_path`, `cwd`, `hook_event_name`,
@@ -10797,10 +10797,10 @@ from this closed list:
 | `not-foreground` | The process holding the terminal is not its foreground process group. |
 
 A failure at step 4 gives `pane-not-reading`. Every one of these exits `2`
-with the resume message. None of them tries another pane: the hook never runs `list-panes` or
-`list-clients`. A pane inherited from a shell that started Claude Code
-outside that pane, or a pane another session owns, is not the terminal of any
-process in this hook's ancestry, so it fails at step 2.
+with the resume message. None of them tries another pane: the hook never
+runs `list-panes` or `list-clients`. A pane inherited from a shell that
+started Claude Code outside that pane, or a pane another session owns, is not
+the terminal of any process in this hook's ancestry, so it fails at step 2.
 
 The keys are four separate `tmux` runs, each with a fixed argument list, no
 shell, null standard input and output, and each waited on for its exit

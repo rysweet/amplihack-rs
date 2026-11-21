@@ -1122,6 +1122,18 @@ A pane that fails its check is never replaced by another one. The hook does
 not list panes or clients, and sends nothing to any pane but the one its own
 environment named.
 
+**What the pane check does not cover.** The proof establishes that the pane
+is the terminal of this hook's own Claude Code. It does not establish what
+that terminal is showing: the hook reads no screen contents, and
+`#{pane_tty}` reports the pane's terminal device, not its text. What narrows
+the keys is the situation instead. They are sent only after Claude Code ran
+this hook on a `rate_limit` stop, only after the rotator recorded a swap onto
+a login with room, and only once per limit event within the per-session cap.
+A session that had already recovered by itself therefore receives one extra
+`continue` turn. Telling the menu apart from an ordinary prompt would need a
+parser of the screen's text, which this hook does not have; see
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695).
+
 It never sends a digit, `/usage-credits`, `/rate-limit-options` or any text
 other than `continue`, and never sends keys to a pane it did not note at the
 stop. `tmux` is found through `PATH` and uses the server named by `$TMUX`;
@@ -1139,13 +1151,14 @@ It resumes at most once per limit event, once per session per wait, and 3
 times per session in 24 hours, never reads a credentials or token file, and
 reads nothing from the transcript but the last entry's `timestamp`. The
 608400-second timeout covers the 7-day wait plus a 300-second margin; Claude
-Code 2.1.307 accepts it (read at that version; not re-read at 2.1.329). Requires Claude Code 2.1.306 or later:
-`amplihack install` runs `claude --version` and leaves this entry out (removing an
-earlier one) for an older version, because Claude Code before 2.1.78 ignores
-a settings file that names `StopFailure`. An entry an earlier release wrote
-is also removed by the next launch when that `claude` is too old, and an
-automatic re-stage after an upgrade, which never edits `settings.json`,
-prints a warning naming `amplihack install`.
+Code 2.1.307 accepts it (read at that version; not re-read at 2.1.329).
+Requires Claude Code 2.1.306 or later: `amplihack install` runs
+`claude --version` and leaves this entry out (removing an earlier one) for
+an older version, because Claude Code before 2.1.78 ignores a settings file
+that names `StopFailure`. An entry an earlier release wrote is also removed
+by the next launch when that `claude` is too old, and an automatic re-stage
+after an upgrade, which never edits `settings.json`, prints a warning naming
+`amplihack install`.
 
 ## Capacity notice in hooks
 
