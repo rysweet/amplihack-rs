@@ -32,6 +32,9 @@ mod support;
 #[path = "issue_2808_named_checkout.rs"]
 mod issue_2808_named_checkout;
 
+#[path = "issue_2884_task_conditions.rs"]
+mod issue_2884_task_conditions;
+
 #[path = "issue_2329_autodrive_outcomes.rs"]
 mod issue_2329_autodrive_outcomes;
 #[path = "issue_2556_autodrive_evidence.rs"]
@@ -413,6 +416,8 @@ mod issue_2857_limit_after_a_wait;
 mod issue_2857_wakes_only_on_room;
 #[path = "issue_2882_spend_limit_capacity_wait.rs"]
 mod issue_2882_spend_limit_capacity_wait;
+#[path = "issue_2889_freshest_live_reading.rs"]
+mod issue_2889_freshest_live_reading;
 #[path = "issue_2890_spend_blocked_login.rs"]
 mod issue_2890_spend_blocked_login;
 #[path = "issue_439_no_per_step_timeout.rs"]
@@ -555,6 +560,11 @@ mod issue_2738_support;
 // configuration again, while #2096's repository-routing protection stays.
 #[path = "issue_2756_user_git_config.rs"]
 mod issue_2756_user_git_config;
+
+// Issue #2886: a run removes its own build output when it ends. No platform
+// gate: the behaviour needs no `/proc`.
+#[path = "issue_2886_build_output_cleanup.rs"]
+mod issue_2886_build_output_cleanup;
 
 // Issue #2769: the #2663 outcome rule is the top-level drive's, not every
 // `autodrive-*` sub-recipe's.

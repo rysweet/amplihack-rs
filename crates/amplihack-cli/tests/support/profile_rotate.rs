@@ -701,6 +701,11 @@ pub fn assert_text_has_no_secrets(s: &str) {
 /// when a reading goes stale, as on a loaded host (#2042). `affinity:` lines
 /// (#2136) follow a swap that is not within one organisation; a profile with
 /// no organisation record makes every swap to or from it `unresolved`.
+///
+/// Issue #2889: the live login's figures on a `cycle` or `swap` line end
+/// `cached=<n>s` when the cycle decided on a reading taken before it began
+/// measuring. The suffix is admitted on the live entry alone; no candidate
+/// ever carries it.
 pub fn assert_log_grammar(line: &str, timed: bool) {
     let msg = if timed {
         let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z (.+)$").unwrap();
@@ -712,7 +717,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|projected|upgrade)|stale live reading; re-read|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|reread: \S+ (reading stale .+; fresh .+|(failed|limit reached|time limit reached); treated as unknown)|affinity: (crossing|unresolved) \S+->\S+: .+|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)(,cached=\d+s)?|failed|per-token|unknown, still running))?( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)( cached=\d+s)?|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|projected|upgrade)|stale live reading; re-read|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|reread: \S+ (reading stale .+; fresh .+|(failed|limit reached|time limit reached); treated as unknown)|affinity: (crossing|unresolved) \S+->\S+: .+|would .+)$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");

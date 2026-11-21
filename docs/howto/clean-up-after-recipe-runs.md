@@ -2,7 +2,7 @@
 title: Clean up after recipe runs
 description: Locate, retain, remove, or archive run-owned files and recovery state, and see which folders cleanup keeps because they hold unsaved Git work.
 doc_type: howto
-last_updated: 2026-11-19
+last_updated: 2026-11-21
 ---
 
 # Clean Up After Recipe Runs
@@ -41,6 +41,7 @@ limits: it does not see a stash, other branches or ignored files. See
 - [Where a run writes](#where-a-run-writes)
 - [Preserve or retire recovery state](#preserve-or-retire-recovery-state)
 - [What happens when a run ends](#what-happens-when-a-run-ends)
+- [Remove a run's own build output](#remove-a-runs-own-build-output)
 - [When a run is eligible for cleanup](#when-a-run-is-eligible-for-cleanup)
 - [Folders with unsaved work are kept](#folders-with-unsaved-work-are-kept)
 - [When a target is removed](#when-a-target-is-removed)
@@ -106,6 +107,7 @@ for these settings.
 | `AMPLIHACK_LOG_ARCHIVE_DAYS` | `--log-days N` | `30` | Recipe logs and session logs whose modification time is older than this are archived. Maximum `36500`. |
 | `AMPLIHACK_LOG_ARCHIVE_DIR` | none | `<work root>/archive` | Where log archives and `MANIFEST.jsonl` are written. |
 | `AMPLIHACK_CLEANUP_ON_EXIT` | none | `1` | Set to `0` to skip the end-of-run sweep. The run's `runtime/` folder is still removed. |
+| `AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR` | none | unset | Set to exactly `1` by the launcher to state that the folder named by `CARGO_TARGET_DIR` is private to this run, so the run removes it when it ends. Any other value, including an empty one, means the folder is not private. The setting carries no path. See [Remove a run's own build output](#remove-a-runs-own-build-output). |
 | `AMPLIHACK_TARGET_LINK_ROOTS` | none | unset | Extra colon-separated absolute folders where linked targets may point. Not needed for links made by the host cargo wrapper. See [Linked targets](#linked-targets). |
 
 Recipe logs stay in `recipe.log_dir` (default `~/.amplihack/recipe-logs`).
@@ -422,7 +424,12 @@ earlier one failed, and the final error names every failure.
       A folder that was replaced by another one is kept and the run fails;
       see [A replaced runtime folder is refused](#a-replaced-runtime-folder-is-refused).
    2. Finalises `run.json` with the end time, outcome and step summary.
-   3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root
+   3. Removes the run's own build output: the private `CARGO_TARGET_DIR` and
+      `target/` in each linked worktree the run owns or was started in. This
+      happens after the report is written, after a success or a failure, and
+      does not depend on `AMPLIHACK_CLEANUP_ON_EXIT`. See
+      [Remove a run's own build output](#remove-a-runs-own-build-output).
+   4. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root
       for run-owned items that are now eligible (the categories `run-tmp`,
       `run-worktree` and `run-target`), and removes them. This includes items
       from earlier runs, and from the current run if it is already eligible.
@@ -434,8 +441,8 @@ There is no execution-copy release step. The selected checkout and retained
 task or PR worktree remain available for recovery; legacy execution and review
 directories are not swept by this finalization.
 
-`AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 2.3. Everything
-before it always runs.
+`AMPLIHACK_CLEANUP_ON_EXIT=0` skips only the sweep in step 2.4. Everything
+before it always runs, including the removal of build output.
 
 A run that fails before its first step, for example on an unborn `HEAD`,
 still finishes its recovery admission as `Failure`, so the next launch does
@@ -647,6 +654,150 @@ The open folder does not count as "in use" when the run ends, because the runner
 skips its own process. Step processes do not inherit it, because it is opened
 close-on-exec. Another amplihack process's sweep sees the open folder and
 keeps it, which is correct while the run lives.
+
+## Remove a run's own build output
+
+Build output holds no unsaved work, so a run removes the build output it made
+for itself when it ends, whether it succeeded or failed. This
+step runs after `run.json` is written and before the sweep, and does not depend
+on `AMPLIHACK_CLEANUP_ON_EXIT`.
+It removes:
+
+- the folder named by `CARGO_TARGET_DIR`, when the launcher states that the
+  folder is private to the run;
+- `target/` at the root of each worktree listed in the run's `owned-paths`;
+- `target/` at the root of the folder the run was started in, when that
+  folder is a linked worktree and the run is not nested inside another run.
+
+A main checkout is never touched, and only the `target` folder at a worktree
+root is considered, not those of nested crates.
+
+**A linked worktree's `target/` is removed at the end of every run, and there
+is no setting that turns this off.** If you run recipes from a linked
+worktree, the next build there starts from scratch. Removing a large target
+delays the end of the run until it is done. The removal has no deadline and
+no retry. A partial removal is harmless, because build output can be rebuilt.
+
+### Say that a target folder is private
+
+The launcher states privacy; amplihack never decides it from a path. Set
+`AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR=1` next to `CARGO_TARGET_DIR` for the
+run:
+
+```bash
+CARGO_TARGET_DIR="$AMPLIHACK_WORK_ROOT/targets/issue-2886" \
+AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR=1 \
+  amplihack recipe run default-workflow -c task_description="Fix the parser"
+```
+
+Only the value `1` (spaces around it are ignored) counts. The setting claims
+that the whole folder belongs to this run alone. It is an assertion made by
+the launcher and is not checked, so do not set it for a folder that several
+runs or checkouts share. The runner clears the setting in the environment it
+gives to steps, in a normal run and in a `--dry-run`, so a recipe started from
+a step never inherits the claim. With `--detach` the launcher's setting is
+passed to the detached pane, because the claim has to survive into it.
+
+### What a run prints
+
+Each removal is one line on stderr naming the folder and the space freed.
+When two or more folders were removed, a last line gives the total. Standard
+output is unchanged, so `--format json` stays parseable.
+
+```text
+amplihack: removed this run's build output "<work root>/targets/issue-2886" (12.4 GiB)
+amplihack: removed this run's build output "<work root>/worktrees/<repository>-<hash>/<branch>/target" (6.1 GiB)
+amplihack: end-of-run cleanup removed 2 build output folders, freeing 18.5 GiB in total
+```
+
+When the size of a folder cannot be measured, its line says `size unknown` in
+place of the size and the folder is still removed. The total line then counts
+only the known sizes and reads `at least`, for example `amplihack: end-of-run
+cleanup removed 2 build output folders, freeing at least 12.4 GiB in total
+(size unknown for one or more of them)`.
+
+A folder named twice, for example as the private `CARGO_TARGET_DIR` and as a
+worktree's `target/`, is removed and reported once. Paths in these lines are
+quoted, and a reason that contains a control character is printed with the
+character escaped, so one problem is always one line.
+
+A worktree that holds unsaved work is kept. The build-output step prints one
+`amplihack: leaving` line for it. The sweep that follows prints no second line
+for the same worktree only while the run that just ended is still inside the
+keep period. With `AMPLIHACK_CLEANUP_KEEP_HOURS=0` the sweep may print a
+second line. See
+[Folders with unsaved work are kept](#folders-with-unsaved-work-are-kept). Its
+`target/` is still removed. The worktree itself is never removed by this step.
+
+### A folder that is skipped or cannot be removed
+
+A removal that is refused or fails prints one warning and never changes the
+run's result or exit status:
+
+```text
+amplihack: warning: end-of-run cleanup could not remove "<work root>/targets/issue-2886": in use: .cargo-lock is held
+```
+
+The reason after the colon is the wording of whichever check applied, so it
+varies. `in use: .cargo-lock is held`, `not a cargo target` and `owned by
+another user` are the same words the sweep uses for the same findings.
+
+Every folder passes the same checks, whichever setting or file named it. It is
+removed only when all of these hold. Otherwise it is skipped with a reason:
+
+- the path is absolute and resolves to a real folder, and the folder itself is
+  not a symbolic link;
+- you own it, and its parent is not writable by other users unless the parent
+  has the sticky bit;
+- it has a parent folder, so `/` is refused, and it is neither the folder
+  `HOME` names nor an ancestor of it, and neither the run's folder, its work
+  root nor its launch folder nor an ancestor of any of them. The home folder
+  is read from `HOME` alone; when `HOME` is unset or empty there is no home
+  folder to protect and the other checks still apply;
+- it is on the same device as its parent, and so are its immediate
+  subfolders, so a mount point at the folder or directly inside it is refused;
+- it has no `.git` at its root;
+- it is empty (no entries at all) or carries the Cargo marker
+  (`CACHEDIR.TAG` or `.rustc_info.json`), so a folder holding only unrelated
+  files is refused;
+- no build holds the `.cargo-lock` of the folder or of a folder directly
+  inside it. Each lock is tried once, with no waiting and no retry;
+- it is still the same folder (same device and inode) immediately before the
+  removal, and links inside it are never followed.
+
+These checks have limits. A volume mounted more than one level inside the
+folder is not detected. A folder that carries a Cargo marker next to unrelated
+files, and has no `.git`, is still removed. An active build is protected only
+by the single `.cargo-lock` attempt, and only where Cargo has written one.
+This is why the claim must be accurate.
+
+A `CARGO_TARGET_DIR` that is unset or does not exist is skipped silently.
+
+### Entries in owned-paths are checked
+
+The `owned-paths` file lives in the run's folder, which steps can write, so
+its entries are not trusted. An entry is used only when it is an absolute path
+to a linked worktree: a folder whose `.git` is a regular file starting with
+`gitdir:`. A main checkout, a path that does not resolve and an entry that
+fails the checks above are skipped, with a warning where the entry looked like
+a worktree. Only the `target/` at the worktree root is ever removed.
+
+### Nested runs
+
+A recipe started from a step of another run is a nested run. A run is nested
+when `AMPLIHACK_RUN_ID` is set and not empty in its environment. It removes
+`target/` only from worktrees in its own `owned-paths`, and leaves the
+inherited `CARGO_TARGET_DIR` and the launch folder's `target/` alone.
+
+This protection has a limit. A worktree that a nested run reuses is recorded
+in that run's `owned-paths` as well, so when a sub-recipe reuses its parent's
+worktree, the sub-recipe removes that worktree's `target/` when it ends, while
+the parent may still be building there. The parent's next build starts from
+scratch. A run
+started with `amplihack recipe run --detach` is treated as its own outermost
+run, because the detached pane starts without `AMPLIHACK_RUN_ID`. The
+launcher's `AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR` setting is kept for the pane,
+and the pane's own runner then clears it for its steps.
 
 ## When a run is eligible for cleanup
 
@@ -1337,8 +1488,10 @@ scratch. Inside a run, the script records the target in `owned-paths` as
 reclaim recognises both the current names and the older
 `-run-<run id>` names, and considers only folders you own.
 
-The runner does not set `CARGO_TARGET_DIR`. A worktree's own `target/` stays
-inside the worktree, Cargo tags it, and it is removed with the worktree.
+The runner does not set `CARGO_TARGET_DIR`. A worktree's own `target/` is
+removed when the run ends (see
+[Remove a run's own build output](#remove-a-runs-own-build-output)), and any
+that remains is removed with the worktree.
 
 To list the targets a run recorded, with their origin and checkout:
 
@@ -1485,6 +1638,9 @@ expects:
   `amplihack-precommit-target-*` folders in the hook cache base;
 - for a [linked target](#linked-targets), the destination folder directly
   inside an allowed root, and then the link;
+- the private `CARGO_TARGET_DIR` a run was told to remove, and `target/` at
+  the root of a linked worktree it owns or started in, as described in
+  [Remove a run's own build output](#remove-a-runs-own-build-output);
 - the `tmp-leftover` folders described above;
 - log originals, after their archive is verified.
 

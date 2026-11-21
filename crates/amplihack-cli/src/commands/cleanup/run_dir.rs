@@ -655,6 +655,10 @@ pub(crate) struct RunScope {
     pub work_root: WorkRoot,
     pub run_id: String,
     pub run_dir: PathBuf,
+    /// The folder the run was launched in. Kept so the end-of-run build
+    /// output removal knows which worktree the run was started in (issue
+    /// #2886); it is only ever compared and inspected.
+    pub cwd: PathBuf,
     report: RunReport,
 }
 
@@ -698,6 +702,7 @@ impl RunScope {
             work_root,
             run_id,
             run_dir,
+            cwd: cwd.to_path_buf(),
             report,
         };
         scope.write_report()?;
@@ -766,6 +771,18 @@ impl RunWorkspace {
                 scope.report.steps = steps;
                 scope.report.log_path = log_path;
                 let report = scope.write_report();
+                // Issue #2886: a run removes the build output it made for
+                // itself, whatever its outcome and whether or not the sweep
+                // below runs. It reports what it did and never fails the run,
+                // so it is not part of the result below.
+                super::build_output::end_of_run(
+                    &super::build_output::RunEnd {
+                        run_dir: scope.run_dir.clone(),
+                        cwd: scope.cwd.clone(),
+                        work_root: scope.work_root.path.clone(),
+                    },
+                    &super::build_output::Launch::from_env(),
+                );
                 match (runtime, report) {
                     (Err(runtime), Err(report)) => {
                         return Err(runtime).context(format!("run report also failed: {report:#}"));
@@ -927,6 +944,10 @@ impl RunWorkspace {
             ("TMPDIR", tmp.clone()),
             ("TMP", tmp.clone()),
             ("TEMP", tmp),
+            // Issue #2886: only a launcher claims a target folder as a run's
+            // own. Cleared, not left to be inherited, so no step can claim
+            // one; empty means unset to every reader.
+            (super::PRIVATE_TARGET_DIR_ENV, std::ffi::OsString::new()),
         ];
         if let Self::Scoped { scope, .. } = self {
             vars.push((
