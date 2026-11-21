@@ -11,11 +11,12 @@
 # What is stood in for, and nothing else:
 #   gh      answers auth status, repo view, issue view, issue list, issue
 #           create, issue comment, label create, pr list, pr create, pr view,
-#           pr checks, pr merge, pr ready/edit/comment, and the two read-only
-#           account calls `api user` and `api rate_limit`. It reads the body from
-#           standard input exactly where real gh does (`--body-file -`),
-#           records every call in $WORK/gh-calls, and exits 96 on anything
-#           else, GraphQL included (recorded in
+#           pr checks, pr merge, pr ready/edit/comment, the two read-only
+#           account calls `api user` and `api rate_limit`, and the read of the
+#           repository's allowed merge methods, `api repos/{owner}/{repo}`
+#           (#1888). It reads the body from standard input exactly where real
+#           gh does (`--body-file -`), records every call in $WORK/gh-calls,
+#           and exits 96 on anything else, GraphQL included (recorded in
 #           $WORK/gh-unexpected). The pull request's checks are PENDING for the
 #           build and SUCCESS for the drive; the state lives in
 #           $WORK/gh-state/checks and is written below, in this file, once
@@ -400,6 +401,17 @@ case "${1-} ${2-}" in
     exit 0 ;;
   "api rate_limit"|"api /rate_limit")
     emit '{"resources":{"core":{"limit":5000,"used":0,"remaining":5000,"reset":4102444800},"graphql":{"limit":5000,"used":0,"remaining":5000,"reset":4102444800}},"rate":{"limit":5000,"used":0,"remaining":5000,"reset":4102444800}}' "$@"
+    exit 0 ;;
+  # The repository's own allowed merge methods, read once by autodrive_merge
+  # immediately before the merge request (#1888). Real gh expands
+  # {owner}/{repo} from the folder it was called in; this stand-in is gh, so
+  # the path arrives as the tool wrote it, and the expanded form is answered
+  # too for a caller that resolves the repository itself. All three methods
+  # are allowed, as they are in a repository created on GitHub today, so the
+  # drive settles on squash and records the merge this scenario has always
+  # recorded.
+  "api repos/{owner}/{repo}"|"api /repos/{owner}/{repo}"|"api repos/qa-owner/qa-repo"|"api /repos/qa-owner/qa-repo")
+    emit '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}' "$@"
     exit 0 ;;
   "pr list")
     if [ -e "$state/pr-created" ]; then emit "[$(pr_json)]" "$@"; else emit '[]' "$@"; fi
