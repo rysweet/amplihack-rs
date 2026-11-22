@@ -25,26 +25,25 @@ use crate::commands::recipe::run::limit_patterns::{self, Harness};
 
 /// 2026-10-18 08:00:00 -07:00.
 const NOW: i64 = 1_792_335_600;
-const LEAD: u64 = 60;
 
 const SPEND: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage";
 
-fn p(max: Option<u64>, step: Option<(i64, u64)>) -> super::plan::Plan {
-    plan_login_change(NOW, max, step)
+fn p(max: Option<u64>) -> super::plan::Plan {
+    plan_login_change(NOW, max)
 }
 
 // --- the deadline ---------------------------------------------------------
 
 #[test]
 fn the_default_length_is_the_capacity_waits_six_hours() {
-    let plan = p(None, None);
+    let plan = p(None);
     assert_eq!(plan.until, NOW + CAPACITY_DEFAULT_MAX as i64);
     assert_eq!(plan.bound, Bound::MaxWait);
 }
 
 #[test]
 fn the_maximum_sets_the_length() {
-    let plan = p(Some(600), None);
+    let plan = p(Some(600));
     assert_eq!(plan.until, NOW + 600);
     assert_eq!(plan.bound, Bound::MaxWait);
 }
@@ -54,7 +53,7 @@ fn issue_2911_the_shortest_length_is_one_floor_and_never_zero() {
     // A zero can no longer reach here: `settings` floors a configured value
     // at `MIN_WAIT_SECS` where it reads it, so the shortest wait this plan
     // can be asked for still ends strictly after `now`.
-    let plan = p(Some(MIN_WAIT_SECS), None);
+    let plan = p(Some(MIN_WAIT_SECS));
     assert_eq!(plan.until, NOW + i64::try_from(MIN_WAIT_SECS).unwrap());
     assert!(
         plan.until > NOW,
@@ -62,42 +61,25 @@ fn issue_2911_the_shortest_length_is_one_floor_and_never_zero() {
     );
 }
 
+/// Issue #3037, review of PR #2992: nothing but the wait's own length sets
+/// this deadline. The step timeout once had a row here, which ended the
+/// wait early and failed the step while its spend limit still stood.
 #[test]
-fn an_earlier_step_timeout_wins() {
-    let plan = p(Some(600), Some((NOW, 300)));
-    assert_eq!(plan.until, NOW + 300 - LEAD as i64);
-    assert_eq!(plan.bound, Bound::StepTimeout);
-}
-
-#[test]
-fn a_tie_is_named_max_wait() {
-    let plan = p(Some(240), Some((NOW, 240 + LEAD)));
-    assert_eq!(plan.until, NOW + 240);
-    assert_eq!(
-        plan.bound,
-        Bound::MaxWait,
-        "the earlier row of the deadline table names a tie"
-    );
-}
-
-#[test]
-fn a_step_timeout_of_zero_does_not_apply() {
-    assert_eq!(p(Some(600), Some((NOW, 0))).bound, Bound::MaxWait);
-}
-
-#[test]
-fn the_deadline_is_never_before_now() {
-    // A step timeout already passed: the wait ends at once rather than
-    // being planned into the past. The step's own bound is the one thing
-    // that may still end a wait at once (issue #2911).
-    let plan = p(Some(600), Some((NOW - 10_000, 30)));
-    assert_eq!(plan.until, NOW);
-    assert_eq!(plan.bound, Bound::StepTimeout);
+fn issue_3037_only_the_wait_length_sets_the_deadline() {
+    for max in [Some(MIN_WAIT_SECS), Some(240), Some(600), None] {
+        let plan = p(max);
+        let len = i64::try_from(max.unwrap_or(CAPACITY_DEFAULT_MAX)).unwrap();
+        assert_eq!(
+            (plan.until, plan.bound),
+            (NOW + len, Bound::MaxWait),
+            "{max:?}"
+        );
+    }
 }
 
 #[test]
 fn a_very_large_maximum_saturates_rather_than_overflowing() {
-    let plan = p(Some(u64::MAX), None);
+    let plan = p(Some(u64::MAX));
     assert!(plan.until > NOW);
     assert_eq!(plan.bound, Bound::MaxWait);
 }
@@ -107,7 +89,7 @@ fn a_very_large_maximum_saturates_rather_than_overflowing() {
 #[test]
 fn there_is_no_reset_to_show() {
     assert_eq!(
-        p(Some(600), None).reset,
+        p(Some(600)).reset,
         None,
         "the limit stated none, so the start line says reset=none"
     );
@@ -119,13 +101,13 @@ fn the_deadline_means_what_a_reset_waits_deadline_means() {
     // `wait::End::at_deadline` maps `Reset` to `MaxReached`, which
     // `after_limit` turns into a retry (issue #2911). Which readings the
     // wait consults is `Plan::capacity_may_end`'s answer, asserted below.
-    assert_eq!(p(Some(600), None).kind, PlanKind::Reset);
+    assert_eq!(p(Some(600)).kind, PlanKind::Reset);
 }
 
 #[test]
 fn there_is_no_five_hour_ceiling() {
     let eight_hours = 8 * 3600;
-    assert_eq!(p(Some(eight_hours as u64), None).until, NOW + eight_hours);
+    assert_eq!(p(Some(eight_hours as u64)).until, NOW + eight_hours);
 }
 
 // --- how a spend limit reaches this wait ----------------------------------
@@ -170,7 +152,7 @@ fn issue_2911_nothing_gates_the_start_of_a_login_change_wait() {
 
 #[test]
 fn a_reset_plan_may_be_ended_by_a_capacity_reading() {
-    let plan = super::plan::plan(NOW, NOW + 1800, None, None);
+    let plan = super::plan::plan(NOW, NOW + 1800, None);
     assert!(
         plan.capacity_may_end(),
         "#2717: another login with room ends a reset wait"
@@ -179,14 +161,14 @@ fn a_reset_plan_may_be_ended_by_a_capacity_reading() {
 
 #[test]
 fn a_capacity_plan_may_be_ended_by_a_capacity_reading() {
-    let plan = super::plan::plan_capacity(NOW, None, None, None);
+    let plan = super::plan::plan_capacity(NOW, None, None);
     assert!(plan.capacity_may_end(), "#1801: that is what it waits for");
 }
 
 #[test]
 fn a_login_change_plan_may_not_be_ended_by_any_capacity_reading() {
     assert!(
-        !p(Some(600), None).capacity_may_end(),
+        !p(Some(600)).capacity_may_end(),
         "no reading says whether the next login's organisation has credit"
     );
 }
@@ -195,8 +177,8 @@ fn a_login_change_plan_may_not_be_ended_by_any_capacity_reading() {
 fn the_flag_rides_with_the_plan_and_not_with_its_kind() {
     // Both plans are `PlanKind::Reset`, because that is what their deadline
     // means; only the login-change one suppresses the capacity sources.
-    let reset = super::plan::plan(NOW, NOW + 1800, None, None);
-    let login_change = p(Some(600), None);
+    let reset = super::plan::plan(NOW, NOW + 1800, None);
+    let login_change = p(Some(600));
     assert_eq!(reset.kind, login_change.kind, "the same kind");
     assert_ne!(
         reset.capacity_may_end(),

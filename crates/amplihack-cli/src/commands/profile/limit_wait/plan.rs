@@ -1,44 +1,38 @@
 //! What a usage limit allows, and the wait's deadline (issues #1618, #2911).
 //!
-//! No limit this module reads is refused a wait, and no count or budget here
-//! ends a step that keeps meeting limits. That is not the same as "a limit
-//! never ends a step": two bounds that are not limits can still end a step
-//! that has met one, and the deadline table below carries one of them. A
-//! reset the step can use within five hours is waited for directly. Every
-//! other limit becomes a wait for *capacity* (a login with room, the
-//! rotator's next cycle, or the login in `$HOME/.claude` changing) and says
-//! why it has no reset to end on ([`Waiting`]). Only two readings are left
-//! that no wait can help, and neither is a limit: output with no limit
-//! message in it at all, and a prompt that arrived on a pipe and cannot be
-//! replayed ([`NoWait`]).
+//! No limit this module reads is refused a wait, and no count, budget or
+//! clock here ends a step that keeps meeting limits. A reset the step can
+//! use within five hours is waited for directly. Every other limit becomes
+//! a wait for *capacity* (a login with room, the rotator's next cycle, or
+//! the login in `$HOME/.claude` changing) and says why it has no reset to
+//! end on ([`Waiting`]). Two readings are left that no wait can help, and
+//! neither is a limit: output with no limit message in it at all, and a
+//! prompt that could not be read to its end ([`NoWait`]).
 //!
-//! The deadline is the earliest row of the deadline table that applies, a
-//! tie named by the earlier row. All arithmetic saturates. A reset wait's
-//! deadline lies in `now + 120 s ..= now + 5 h + 120 s`; a capacity or
-//! login-change wait has no five-hour ceiling and ends at `max` from now, or
-//! at the failed login's own reset plus the margin when that is sooner.
+//! The deadline is the earlier of two rows, a tie named by the reset row.
+//! All arithmetic saturates. A reset wait's deadline lies in
+//! `now + 120 s ..= now + 5 h + 120 s`; a capacity or login-change wait has
+//! no five-hour ceiling and ends at `max` from now, or at the failed
+//! login's own reset plus the margin when that is sooner. Reaching either
+//! row retries the step; neither ends it.
 //!
-//! **Every plan a limit produces ends strictly after `now`**, unless the
-//! step's own timeout forces otherwise - and that exception is the reason
-//! the claim is written with it rather than as "a limit never ends a step".
-//! The rest is the whole of the pacing rule, and it replaces the per-step
-//! budget #2731 used: a chain of limits is paced by each wait costing time,
-//! not by a counter that eventually refuses one. The invariant holds
-//! because a reset row is only built from a reset in the future, and
-//! because [`MIN_WAIT_SECS`] floors the configured wait length where it is
-//! read (`settings`), so no `max` row can land on `now` either.
+//! **Every plan a limit produces ends strictly after `now`.** That is the
+//! whole of the pacing rule, and it replaces the per-step budget #2731
+//! used: a chain of limits is paced by each wait costing time, not by a
+//! counter that eventually refuses one. It holds because a reset row is
+//! only built from a reset in the future, and because [`MIN_WAIT_SECS`]
+//! floors the configured wait length where it is read (`settings`), so no
+//! `max` row can land on `now` either.
 //!
-//! The step timeout is the one exception and the only row that can end a
-//! step while a limit still stands. It is not a budget this module keeps:
-//! the recipe runner kills the step at that time whatever this code does,
-//! and [`STEP_TIMEOUT_LEAD`] exists so the step reports instead of being
-//! killed mid-sleep. It is still, in effect, a wall-clock bound that ends a
-//! step on a limit, which is why the step says so in words and hands the
-//! run the reset it was waiting for ([`WaitFor::reset`],
-//! `ending::resumes_at`) rather than only the bound's name. Whether an
-//! unattended run should carry such a bound at all is issue #3037;
-//! `docs/reference/usage-limit-waits.md` states the interaction for
-//! operators.
+//! There is no step-timeout row (issue #3037, review of PR #2992). One used
+//! to pull the deadline back to `$AMPLIHACK_STEP_TIMEOUT` less a minute and
+//! then end the step, on the reading that the recipe runner kills a step at
+//! that time. It does not: recipe-runner-rs enforces only a step's own YAML
+//! `timeout:` field and reads the variable for nothing else, and nothing in
+//! amplihack enforces it either (`--step-timeout` says as much). So that
+//! row was the only code anywhere that turned the variable into an ending,
+//! and the only steps it ended were steps waiting on a limit: a wall-clock
+//! budget for limits, which #2911 removes.
 
 use crate::commands::recipe::run::limit_patterns::{Harness, LimitKind, LimitMessage};
 
@@ -46,15 +40,6 @@ use crate::commands::recipe::run::limit_patterns::{Harness, LimitKind, LimitMess
 pub(crate) const MARGIN: i64 = 120;
 /// A reset further away than this is not waited for directly.
 pub(crate) const FIVE_HOURS: i64 = 5 * 3600;
-/// The wait ends this long before the step timeout.
-///
-/// The recipe runner kills the step at `AMPLIHACK_STEP_TIMEOUT`. A wait that
-/// ran up to it would be killed while sleeping: no line would say why, and
-/// the failed attempt's own result would never be passed up. Ending a minute
-/// early is what buys the step its `end reason=step timeout`, its
-/// `failed reason=step_timeout` and the attempt's output. So this row is the
-/// step's own bound reaching the wait, not a bound on limits (issue #3037).
-pub(crate) const STEP_TIMEOUT_LEAD: i64 = 60;
 /// A capacity wait's length when nothing sets one: the schema's default.
 pub(crate) const CAPACITY_DEFAULT_MAX: u64 = 21_600;
 /// The shortest wait a configured length may ask for: two poll intervals of
@@ -77,20 +62,21 @@ pub(crate) const MIN_WAIT_SECS: u64 = 60;
 pub(crate) enum NoWait {
     /// The output has no line in any harness's own limit-message shape.
     NoLimitMessage,
-    /// The prompt came on a pipe and no copy of it could be kept, so a
-    /// rerun cannot read it again (issue #2815). A piped prompt that was
-    /// copied is replayed and never reaches this reason; the name is kept
-    /// because it is the logged value callers already match on.
+    /// The prompt came on a pipe and no whole copy of it can ever be given
+    /// to a rerun (issue #2815). A piped prompt that was copied is replayed
+    /// and never reaches this reason; the name is kept because it is the
+    /// logged value callers already match on.
     ///
-    /// Three shapes reach it: stdin is an `--input-format` stream channel,
-    /// which its caller holds open and which has no end to copy; the prompt
-    /// came on a pipe and no copy could be made; or a copy was made and was
-    /// lost, or the prompt was still arriving when the wait ended. In all
-    /// three a retry has no bytes to read, so there is no retry for a wait
-    /// to earn, which is why this is a reading of the step and not a limit
-    /// refused. The supervisor names which shape it is in words beside the
-    /// event (`ending::no_retry_note`), because the reason alone does
-    /// not say. Whether such a step should wait first anyway is issue #3036.
+    /// Since issue #3036 one case reaches it: the prompt could not be read to
+    /// its end (the source failed, or the thread copying it could not start
+    /// or failed), or the descriptors the copy needs could not be made. The
+    /// attempt in hand was given part of its task, so the step fails whether
+    /// or not it met a limit, and no retry can be given more. An
+    /// `--input-format` stream channel, a copy the disk refused and a prompt
+    /// still arriving no longer reach it: the first two are copied and
+    /// replayed, and the third is waited for. The supervisor says which case
+    /// it is in words beside the event (`ending::no_retry_note`), because
+    /// the reason alone does not.
     PipedPrompt,
 }
 
@@ -170,11 +156,11 @@ impl WaitFor {
     /// The reset the limit stated, as read, whatever the wait does with it;
     /// `None` when it stated none and for a skip (review of PR #2992).
     ///
-    /// Read by the two endings that can end a step while the limit still
-    /// stands, so each can say when the limit lifts rather than only that
-    /// it has not. A `Capacity` wait keeps its limit's reset even when it
-    /// is too far away to sleep to, and that is still the honest answer to
-    /// *when does this clear*.
+    /// Read by the one ending a step that has met a limit can still reach,
+    /// a prompt that could not be read to its end, so it can say when the
+    /// limit lifts rather than only that it has not. A `Capacity` wait keeps
+    /// its limit's reset even when it is too far away to sleep to, and that
+    /// is still the right answer to *when does this clear*.
     pub(crate) fn reset(self) -> Option<i64> {
         match self {
             WaitFor::Reset { reset, .. } => Some(reset),
@@ -275,7 +261,6 @@ pub(crate) fn rate_limit_capacity(
 pub(crate) enum Bound {
     ResetMargin,
     MaxWait,
-    StepTimeout,
 }
 
 impl Bound {
@@ -283,7 +268,6 @@ impl Bound {
         match self {
             Bound::ResetMargin => "reset+margin",
             Bound::MaxWait => "max_wait",
-            Bound::StepTimeout => "step_timeout",
         }
     }
 }
@@ -351,30 +335,23 @@ impl Plan {
 
 /// The deadline for a wait starting at `now` for `reset`, which
 /// [`wait_for_message`] has kept within five hours and strictly ahead of the
-/// clock. `step` is the step's start and its `AMPLIHACK_STEP_TIMEOUT` in
-/// seconds; a timeout of 0 does not apply.
+/// clock: the reset plus the margin, or `max` from now when that is sooner.
 ///
 /// The reset row is floored at `now + MARGIN`, so the deadline is after
-/// `now` even for a reset no caller should have passed in; only the step
-/// timeout may bring it back to `now`.
-pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
+/// `now` even for a reset no caller should have passed in.
+pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>) -> Plan {
     let ceiling = now.saturating_add(FIVE_HOURS);
     let mut until = reset
         .min(ceiling)
         .saturating_add(MARGIN)
         .max(now.saturating_add(MARGIN));
     let mut bound = Bound::ResetMargin;
-    let mut consider = |candidate: i64, b: Bound| {
-        if candidate < until {
-            until = candidate;
-            bound = b;
-        }
-    };
     if let Some(max) = max {
-        consider(now.saturating_add(secs(max)), Bound::MaxWait);
-    }
-    if let Some(end) = step_deadline(now, step) {
-        consider(end, Bound::StepTimeout);
+        let end = now.saturating_add(secs(max));
+        if end < until {
+            until = end;
+            bound = Bound::MaxWait;
+        }
     }
     Plan {
         until,
@@ -385,34 +362,16 @@ pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>, step: Option<(i64, u6
     }
 }
 
-/// When `step` requires the wait to end, never before `now`; a timeout of 0
-/// does not apply.
-fn step_deadline(now: i64, step: Option<(i64, u64)>) -> Option<i64> {
-    let (start, timeout) = step.filter(|(_, t)| *t > 0)?;
-    Some(
-        start
-            .saturating_add(secs(timeout))
-            .saturating_sub(STEP_TIMEOUT_LEAD)
-            .max(now),
-    )
-}
-
-/// The deadline for a capacity wait starting at `now`: the earliest of the
-/// failed login's own `reset` plus the margin (when still in the future), `max`
-/// from now and the step timeout less its lead, never before `now`. A tie
-/// between the reset and the maximum is named `ResetMargin`, and one between
-/// the maximum and the step timeout `MaxWait`. There is no five-hour ceiling.
-/// Reaching the reset retries the step, because that login has recovered.
+/// The deadline for a capacity wait starting at `now`: the earlier of the
+/// failed login's own `reset` plus the margin (when still in the future)
+/// and `max` from now. A tie is named `ResetMargin`. There is no five-hour
+/// ceiling. Reaching the reset retries the step, because that login has
+/// recovered; reaching `max` retries it too (issue #2911).
 ///
 /// `max` has already been floored at [`MIN_WAIT_SECS`] where it was read, and
 /// the reset row is only applied for a reset still ahead of `now`, so the
-/// deadline is after `now` unless the step timeout brings it back.
-pub(crate) fn plan_capacity(
-    now: i64,
-    reset: Option<i64>,
-    max: Option<u64>,
-    step: Option<(i64, u64)>,
-) -> Plan {
+/// deadline is always after `now`.
+pub(crate) fn plan_capacity(now: i64, reset: Option<i64>, max: Option<u64>) -> Plan {
     let mut until = now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX)));
     let mut bound = Bound::MaxWait;
     if let Some(r) = reset.filter(|r| *r > now) {
@@ -421,12 +380,6 @@ pub(crate) fn plan_capacity(
             until = end;
             bound = Bound::ResetMargin;
         }
-    }
-    if let Some(end) = step_deadline(now, step)
-        && end < until
-    {
-        until = end;
-        bound = Bound::StepTimeout;
     }
     Plan {
         until,
@@ -437,10 +390,9 @@ pub(crate) fn plan_capacity(
     }
 }
 
-/// The deadline for a login-change wait starting at `now`: `max` from now,
-/// or the step timeout less its lead when that is earlier, never before
-/// `now`. A tie is named `MaxWait`. There is no reset row, because the limit
-/// stated none, and no five-hour ceiling.
+/// The deadline for a login-change wait starting at `now`: `max` from now.
+/// There is no reset row, because the limit stated none, and no five-hour
+/// ceiling.
 ///
 /// The plan's kind is [`PlanKind::Reset`] on purpose: the kind says what
 /// the deadline means, and reaching this one retries the step, as reaching a
@@ -448,18 +400,11 @@ pub(crate) fn plan_capacity(
 /// carried by [`Plan::capacity_may_end`] instead: no reading says whether
 /// the next login's organisation has credit, and the rotator picks what goes
 /// into `~/.claude` in any case.
-pub(crate) fn plan_login_change(now: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
-    let mut until = now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX)));
-    let mut bound = Bound::MaxWait;
-    if let Some(end) = step_deadline(now, step)
-        && end < until
-    {
-        until = end;
-        bound = Bound::StepTimeout;
-    }
+pub(crate) fn plan_login_change(now: i64, max: Option<u64>) -> Plan {
+    let until = now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX)));
     Plan {
         until: until.max(now),
-        bound,
+        bound: Bound::MaxWait,
         kind: PlanKind::Reset,
         reset: None,
         login_change: true,

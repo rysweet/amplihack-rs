@@ -29,26 +29,32 @@
 //! The second is that the copier is joined only when it is certain to end:
 //! it has reached the end of the source, it has already failed, or the last
 //! writer of the source has gone and what is left to read is bounded by
-//! what the kernel is holding. When the prompt is still arriving the rerun
-//! is refused instead, with a line naming the reason
-//! ([`RerunStdin::rerun_refused`]). Nothing here is timed: the question
+//! what the kernel is holding. When the prompt is still arriving, a rerun
+//! is told so ([`Replay::Arriving`]) and asks again later, rather than
+//! joining a copier that may never end. Nothing here is timed: the question
 //! asked is the state of the descriptor, not the clock.
 //!
 //! The two sinks fail differently because only one of those failures can be
-//! told to the attempt. A capture file that cannot be written costs the
-//! rerun alone, and its error is named on stderr the moment it happens. A
-//! source that cannot be read costs the prompt itself, and the copier's
-//! pipe has no way to say so: closing it is the only signal a pipe gives
-//! its reader, and a reader takes it for the end of the prompt. So a failed
-//! read of the source is published as a prompt cut short (issue #2816) —
-//! named on stderr the moment it happens, and read by the supervisor before
-//! it passes an attempt's success up as the step's.
+//! told to the attempt. A capture file that cannot be created or written
+//! costs nothing a rerun needs (issue #3036): the copy goes on in memory
+//! from the first byte the disk refused, and a rerun is given the part the
+//! disk holds followed by the part memory holds. Memory is used only after
+//! the disk has refused the copy, and is not capped, because a cap would be
+//! a budget that ends a step on a limit. A source that cannot be read costs
+//! the prompt itself, and the copier's pipe has no way to say so: closing it
+//! is the only signal a pipe gives its reader, and a reader takes it for the
+//! end of the prompt. So a failed read of the source is published as a
+//! prompt cut short (issue #2816), named on stderr the moment it happens,
+//! and read by the supervisor before it passes an attempt's success up as
+//! the step's. That is the one input no rerun can be given, and a step whose
+//! prompt was cut short fails whether or not it meets a limit.
 //!
 //! The first attempt therefore inherits stdin unchanged, except for a
 //! captured prompt, which it reads from the copier's pipe. A rerun gets a
 //! regular file again from where the step started reading it (on Linux
 //! through its own open of `/proc/self/fd/0`, so no read offset is shared
-//! with other processes), the capture file from offset 0 when there is one,
+//! with other processes), the capture from offset 0 when there is one (the
+//! capture file, or a pipe fed from memory when the disk refused the copy),
 //! a terminal unchanged, and anything else (a pipe with no capture, a
 //! socket, a closed descriptor) `/dev/null`: what the first attempt read
 //! from it is gone.
@@ -60,9 +66,43 @@ use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+
+/// What a rerun can be given of this step's input, asked at the moment one
+/// is due (issues #2816, #3036).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Replay {
+    /// The whole input is stored, or the input needs no storing: a rerun
+    /// can read it.
+    Ready,
+    /// The input is still arriving on a pipe its caller has not closed, so
+    /// there is no whole copy yet. Not recorded: asked again later, once
+    /// the caller has finished writing, the answer is [`Replay::Ready`].
+    Arriving,
+    /// No rerun can ever be given this input, for the reason given. Only a
+    /// prompt that could not be read to its end reaches this today; the
+    /// reason is static text or an I/O error, never prompt bytes.
+    Never(String),
+}
+
+impl Replay {
+    /// Why a rerun cannot be given the input now, in words for a log line;
+    /// `None` for [`Replay::Ready`].
+    pub(crate) fn refusal(self) -> Option<String> {
+        match self {
+            Replay::Ready => None,
+            Replay::Arriving => Some(ARRIVING.to_string()),
+            Replay::Never(why) => Some(why),
+        }
+    }
+}
+
+/// Why [`Replay::Arriving`] is not a whole copy, for an attempt that is
+/// handed the capture regardless.
+const ARRIVING: &str = "this step's prompt is still arriving on a pipe its caller has not \
+                        closed, so there is no whole copy of it to give a rerun";
 
 /// `$HOME/.amplihack/rerun`, checked or created: `$HOME/.amplihack` must be
 /// a real directory owned by the current user that group and others cannot
@@ -180,28 +220,29 @@ impl RerunStdin {
     /// Whether the stored prompt is already known to be unusable, asked
     /// without waiting on the copier (issue #2816).
     ///
-    /// The copier learns within moments that the capture file cannot be
-    /// written, but [`Capture::for_attempt`] only asks when a rerun is
-    /// already due, which is after the wait. This is the question a
-    /// decision can afford: `false` for every other kind of stdin, and for
-    /// a capture still going well or already complete.
+    /// The copier learns at once that the source failed, but
+    /// [`Capture::for_attempt`] only asks when a rerun is already due, which
+    /// is after the wait. This is the question a decision can afford:
+    /// `false` for every other kind of stdin, and for a capture still going
+    /// well, already complete, or carried on in memory after the disk
+    /// refused it (issue #3036), none of which costs a rerun anything.
     pub(crate) fn capture_lost(&self) -> bool {
         matches!(self, RerunStdin::Captured(c) if c.lost())
     }
 
-    /// Why a rerun cannot be given this step's prompt, asked at the moment
-    /// one is about to run (issue #2816); `None` when it can.
+    /// What a rerun can be given of this step's prompt, asked at the moment
+    /// one is about to run (issues #2816, #3036).
     ///
-    /// For a capture this settles the copier, which is where the refusal
-    /// comes from: see [`Capture::settle`]. A refusal for a prompt that is
-    /// still arriving is not recorded, so a later call — after a wait, say
-    /// — can find the copier settled and allow the rerun then. Every other
-    /// kind of stdin always answers `None`: `for_attempt` can give each of
-    /// them a rerun's stdin without waiting on anything.
-    pub(crate) fn rerun_refused(&mut self) -> Option<String> {
+    /// For a capture this settles the copier: see [`Capture::settle`]. A
+    /// prompt that is still arriving answers [`Replay::Arriving`] and that
+    /// answer is not recorded, so a later call, after a wait say, can find
+    /// the copier settled and answer [`Replay::Ready`]. Every other kind of
+    /// stdin always answers `Ready`: `for_attempt` can give each of them a
+    /// rerun's stdin without waiting on anything.
+    pub(crate) fn replay(&mut self) -> Replay {
         match self {
             RerunStdin::Captured(c) => c.settle(),
-            _ => None,
+            _ => Replay::Ready,
         }
     }
 
@@ -214,9 +255,8 @@ impl RerunStdin {
     /// dropped, the attempt reaches end of file only once that pipe is
     /// dropped, and the supervisor asks this only after the attempt has
     /// exited. `false` for every other kind of stdin, and for a capture
-    /// whose source is still being read or has ended properly — including
-    /// one whose capture file was lost, which costs the rerun and not the
-    /// prompt.
+    /// whose source is still being read or has ended properly, including
+    /// one the disk refused, which the copier carries on in memory.
     pub(crate) fn prompt_cut_short(&self) -> bool {
         matches!(self, RerunStdin::Captured(c) if c.cut_short())
     }
@@ -272,13 +312,20 @@ const COPY_BUF: usize = 64 * 1024;
 /// wait of unknown length and the wrong one to take before a decision.
 #[derive(Debug, Default)]
 pub(super) struct CopyState {
-    /// Set only after end of file and a complete write of both sinks.
+    /// Set only after end of file, with every byte stored on disk or in
+    /// memory.
     complete: AtomicBool,
-    /// Set the moment the capture is known to be lost, which is well
-    /// before the copier itself ends: a write to the capture file failed,
-    /// or the source did. A rerun is refused on this while the limit
-    /// result can still be passed up.
+    /// Set the moment the capture is known to be lost, which is before the
+    /// copier itself ends: the source failed, or (unreachably for a regular
+    /// file) the capture file could not be flushed. A rerun is refused on
+    /// this while the limit result can still be passed up. A refused write
+    /// to the capture file does not set it (issue #3036): the copy goes on
+    /// in [`CopyState::spill`].
     lost: AtomicBool,
+    /// The part of the prompt kept in memory, once the disk refused the
+    /// copy or could not hold it at all (issue #3036). `None` while the
+    /// disk holds every byte.
+    spill: Mutex<Option<Spill>>,
     /// Set the moment a read of the source fails, which means the attempt
     /// in hand is being given less than the prompt that was sent. Always
     /// set together with `lost`, and always before the attempt's pipe is
@@ -301,27 +348,74 @@ impl CopyState {
         self.complete.load(Ordering::SeqCst)
     }
 
-    /// The capture file is gone, so a rerun would have nothing to read.
-    /// The attempt in hand still gets every byte.
+    /// The capture file could not be flushed after every write to it had
+    /// succeeded, so what it holds is not known to be whole. `flush` on a
+    /// regular file does nothing and cannot fail, so this is unreachable in
+    /// practice; it is kept so that a failure there could never be read as
+    /// a whole copy. The attempt in hand still gets every byte.
     ///
     /// The error is named on stderr here, as a prompt cut short names its
-    /// own (issue #2816). It is the only place it is ever said: the
-    /// supervisor reads this loss as a flag, before the wait and without
-    /// joining the copier, and ends the step with `skipped
-    /// reason=piped_prompt`; without this line that reason would be all an
-    /// operator ever saw of a full disk or a failing device. It names the
-    /// error and no part of the prompt.
+    /// own (issue #2816): the supervisor reads the loss as a flag and never
+    /// the thread's result. It names the error and no part of the prompt.
     fn lose(&self, e: &io::Error) {
         self.lost.store(true, Ordering::SeqCst);
         eprintln!(
-            "amplihack: this step's prompt could not be stored for a rerun ({e}), so a usage \
-             limit will end this step rather than wait it out; the attempt running now still \
-             receives all of it"
+            "amplihack: this step's prompt could not be stored for a rerun ({e}), so a \
+             usage limit will end this step; the attempt running now still receives all of it"
         );
     }
 
     pub(super) fn is_lost(&self) -> bool {
         self.lost.load(Ordering::SeqCst)
+    }
+
+    /// The disk refused the copy after `stored` bytes were safely in the
+    /// capture file, or (`stored` 0, `why` `None`) never held it at all:
+    /// every byte from here on is kept in memory (issue #3036).
+    ///
+    /// A refused write names its error on stderr here, the one place it is
+    /// said, and says that nothing is lost by it. The chunk whose write
+    /// failed is kept whole in memory, so whatever part of it the disk took
+    /// is ignored and the copy has no gap. It names the error and no part
+    /// of the prompt.
+    fn begin_spill(&self, stored: u64, why: Option<&io::Error>) {
+        if let Some(e) = why {
+            eprintln!(
+                "amplihack: this step's prompt could not be stored on disk for a rerun ({e}), \
+                 so the rest of it is kept in memory instead; a rerun still reads all of it"
+            );
+        }
+        let mut spill = self.spill.lock().unwrap_or_else(|p| p.into_inner());
+        spill.get_or_insert(Spill {
+            stored,
+            bytes: Vec::new(),
+        });
+    }
+
+    /// Appends `chunk` to the part of the prompt kept in memory.
+    fn keep(&self, chunk: &[u8]) {
+        let mut spill = self.spill.lock().unwrap_or_else(|p| p.into_inner());
+        spill
+            .get_or_insert(Spill {
+                stored: 0,
+                bytes: Vec::new(),
+            })
+            .bytes
+            .extend_from_slice(chunk);
+    }
+
+    /// Whether any of the prompt is kept in memory (issue #3036).
+    pub(super) fn is_spilled(&self) -> bool {
+        self.spill
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+    }
+
+    /// Takes the part of the prompt kept in memory, once the copier has
+    /// finished with it.
+    fn take_spill(&self) -> Option<Spill> {
+        self.spill.lock().unwrap_or_else(|p| p.into_inner()).take()
     }
 
     /// The source failed, so the prompt stops here: the capture is lost,
@@ -379,12 +473,40 @@ impl CopyState {
     }
 }
 
+/// The part of the prompt kept in memory (issue #3036): the capture file
+/// holds the first `stored` bytes, and `bytes` holds every byte after them.
+struct Spill {
+    stored: u64,
+    bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for Spill {
+    /// Lengths only: no part of the prompt is ever printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Spill")
+            .field("stored", &self.stored)
+            .field("in_memory", &self.bytes.len())
+            .finish()
+    }
+}
+
+/// The capture file, when the disk would take one.
+struct Disk {
+    /// `<rerun dir>/<pid>-0.in`, this supervisor's own name.
+    path: PathBuf,
+    /// The capture file, opened for writing.
+    writer: fs::File,
+    /// A read-only description of `path`: see [`Capture::reader`].
+    reader: fs::File,
+}
+
 /// What the copier needs, held until the first attempt is running.
 struct Pending {
     /// A duplicate of the step's stdin, where the prompt arrives.
     source: fs::File,
-    /// The capture file, opened for writing.
-    writer: fs::File,
+    /// The capture file, opened for writing; `None` when the disk would
+    /// not take one, and the copy is then held in memory (issue #3036).
+    writer: Option<fs::File>,
     /// The write end of the first attempt's stdin pipe.
     child: std::io::PipeWriter,
 }
@@ -399,15 +521,27 @@ struct Pending {
 /// the first attempt is not delayed and every later attempt gets the same
 /// bytes from offset 0.
 ///
+/// When the disk will not take the copy, at the start or part way through,
+/// the copier keeps the rest of it in memory (issue #3036), and a rerun is
+/// given the disk's part and then memory's through a pipe. A storage
+/// failure therefore never costs a rerun, and so never ends a step on a
+/// limit.
+///
 /// The file is removed when the step returns, on success and on error.
 /// `sweep_rerun` removes one left behind by a supervisor that was killed.
 pub(crate) struct Capture {
-    /// `<rerun dir>/<pid>-0.in`, this supervisor's own name.
-    path: PathBuf,
+    /// `<rerun dir>/<pid>-0.in`, this supervisor's own name; `None` for a
+    /// capture held in memory from the start.
+    path: Option<PathBuf>,
     /// A read-only description of `path`, opened before any byte was
     /// written and checked against the writer's inode, so a rerun never
-    /// re-opens the path and never races a same-user replacement.
-    reader: fs::File,
+    /// re-opens the path and never races a same-user replacement. `None`
+    /// with `path`.
+    reader: Option<fs::File>,
+    /// The whole prompt, once the copier has finished and part of it had to
+    /// be kept in memory (issue #3036): the disk's part read back through
+    /// `reader`, then memory's. `None` while the disk alone holds it.
+    memory: Option<Arc<Vec<u8>>>,
     /// What the copier will be given, until the first attempt is running
     /// (issue #2816). `None` once it has been.
     pending: Option<Pending>,
@@ -437,13 +571,19 @@ impl std::fmt::Debug for Capture {
             .field("failed", &self.lost())
             .field("cut_short", &self.cut_short())
             .field("reader_gone", &self.state.reader_is_gone())
+            .field(
+                "in_memory",
+                &(self.memory.is_some() || self.state.is_spilled()),
+            )
             .finish()
     }
 }
 
 impl Drop for Capture {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if let Some(path) = &self.path {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -494,31 +634,41 @@ impl Capture {
         {
             return Ok(Stdio::from(first));
         }
-        match self.whole() {
-            Ok(f) => Ok(Stdio::from(f)),
-            Err(e) => Err(io::Error::other(format!(
-                "{e}, so it cannot be given to attempt {n}"
-            ))),
-        }
+        self.whole()
+            .map_err(|e| io::Error::other(format!("{e}, so it cannot be given to attempt {n}")))
     }
 
-    /// The whole stored prompt, read-only and at offset 0, once the copier
-    /// has finished with it.
+    /// The whole stored prompt from offset 0, once the copier has finished
+    /// with it: the capture file read-only, or a pipe fed from memory when
+    /// any of the prompt had to be kept there (issue #3036).
     ///
     /// Settles the copier (see [`Capture::settle`]) and refuses a capture
     /// that is short, failed or still arriving: a partial prompt is a
     /// shortened task, and no caller may be given one.
-    fn whole(&mut self) -> io::Result<fs::File> {
-        if let Some(why) = self.settle() {
-            return Err(io::Error::other(why));
+    fn whole(&mut self) -> io::Result<Stdio> {
+        match self.settle() {
+            Replay::Ready => {}
+            Replay::Arriving => return Err(io::Error::other(ARRIVING)),
+            Replay::Never(why) => return Err(io::Error::other(why)),
         }
-        let mut f = self.reader.try_clone()?;
+        if let Some(bytes) = &self.memory {
+            return fed_from_memory(Arc::clone(bytes));
+        }
+        let Some(reader) = &self.reader else {
+            // Unreachable: a capture with no file spills from its first
+            // byte, so a whole one always has `memory`.
+            return Err(io::Error::other(
+                "this step's prompt was kept neither on disk nor in memory",
+            ));
+        };
+        let mut f = reader.try_clone()?;
         f.seek(SeekFrom::Start(0))?;
-        Ok(f)
+        Ok(Stdio::from(f))
     }
 
     /// Whether the capture is already known to be unusable, without
-    /// joining the copier (issue #2816).
+    /// joining the copier (issue #2816). A copy the disk refused and memory
+    /// carried on is not (issue #3036).
     fn lost(&self) -> bool {
         self.failure.is_some() || self.state.is_lost()
     }
@@ -529,74 +679,102 @@ impl Capture {
         self.state.was_cut_short()
     }
 
-    /// Settles the copier when a rerun needs the whole prompt, and gives
-    /// the reason there is none to give when that is the answer; `None`
-    /// means the capture is whole and ready to replay.
+    /// Settles the copier when a rerun needs the whole prompt, and says
+    /// whether there is one to give (issues #2816, #3036).
     ///
     /// The copier ends at the end of its source, and that source is a pipe
     /// belonging to whoever launched this step: nothing promises it will
     /// ever be closed. Joining it unconditionally would therefore trade
-    /// issue #1618's rule — a supervised step never waits on a pipe nobody
-    /// closes — for a wait with no end, deaf to the stop signals the
+    /// issue #1618's rule (a supervised step never waits on a pipe nobody
+    /// closes) for a wait with no end, deaf to the stop signals the
     /// supervisor catches. So the join is made only when the copier is
-    /// certain to reach it ([`Capture::can_end`]), and otherwise the rerun
-    /// is refused and the limit result passed up, which is what a piped
-    /// prompt did before it could be copied at all.
+    /// certain to reach it ([`Capture::can_end`]), and otherwise the answer
+    /// is [`Replay::Arriving`]: the caller decides how to wait for the rest,
+    /// and asks again.
     ///
-    /// Nothing here is timed, and a refusal for a prompt that is still
-    /// arriving is not recorded: the next call — after a wait, say, by
-    /// which point the caller has long since finished writing — settles the
-    /// copier and allows the rerun.
+    /// Nothing here is timed, and an `Arriving` answer is not recorded: the
+    /// next call, after a wait say, by which point the caller has normally
+    /// long since finished writing, settles the copier and answers
+    /// [`Replay::Ready`].
+    ///
+    /// [`Replay::Never`] is left for a prompt that no rerun can ever be
+    /// given: the source could not be read to its end, the copier could not
+    /// start or failed, or the part of the prompt the disk held before it
+    /// refused the rest cannot be read back. A capture file that could not
+    /// be created or written is none of these (issue #3036).
     ///
     /// The first attempt's pipe is dropped first: a child that exited
     /// without reading its prompt would otherwise leave the copier blocked
     /// on a full pipe nobody drains. With the read end gone those writes
     /// fail with `EPIPE`, which the copier absorbs, and it runs on to end
     /// of file.
-    fn settle(&mut self) -> Option<String> {
+    fn settle(&mut self) -> Replay {
         self.first = None;
         if let Some(why) = &self.failure {
-            return Some(why.clone());
+            return Replay::Never(why.clone());
         }
         if self.pending.is_some() {
             // The copier is started by the first attempt, and none has
-            // run, so not one byte has been copied yet.
-            return Some(
+            // run, so not one byte has been copied yet. Unreachable: a
+            // rerun is only ever asked for after an attempt ran.
+            return Replay::Never(
                 "no attempt has run, so none of this step's prompt has been copied".into(),
             );
         }
         if self.state.was_cut_short() {
             // The source failed, which the copier named on stderr with its
             // error as it happened, and it has already returned.
-            return Some("this step's prompt could not be read to its end".into());
+            return Replay::Never("this step's prompt could not be read to its end".into());
         }
         if self.state.is_lost() {
-            // The capture file is gone and its error was named on stderr as
-            // it happened. The copier may still be draining the source for
-            // the attempt in hand, so it is not joined: there is nothing to
-            // replay either way.
-            return Some("the copy of this step's prompt could not be written".into());
+            // The capture file could not be flushed, which the copier named
+            // on stderr as it happened. Unreachable for a regular file.
+            return Replay::Never("the copy of this step's prompt could not be stored".into());
         }
         let Some(copier) = self.copier.take() else {
-            return None; // already joined, and whole
+            return Replay::Ready; // already joined, and whole
         };
         if !self.can_end() {
             self.copier = Some(copier); // ask again when a rerun is next due
-            return Some(
-                "this step's prompt is still arriving on a pipe its caller has not closed, \
-                 so there is no whole copy of it to give a rerun"
-                    .into(),
-            );
+            return Replay::Arriving;
         }
         self.failure = match copier.join() {
-            Ok(Ok(())) if self.state.is_complete() => None,
+            Ok(Ok(())) if self.state.is_complete() => self.gather().err(),
             Ok(Ok(())) => {
                 Some("the copy of this step's prompt ended before the end of the input".into())
             }
             Ok(Err(e)) => Some(format!("copying this step's prompt failed: {e}")),
             Err(_) => Some("the thread copying this step's prompt panicked".into()),
         };
-        self.failure.clone()
+        match &self.failure {
+            Some(why) => Replay::Never(why.clone()),
+            None => Replay::Ready,
+        }
+    }
+
+    /// Joins the two parts of a prompt the disk refused part of into one
+    /// copy in memory, once the copier has finished (issue #3036): the
+    /// first `stored` bytes of the capture file, read back through
+    /// `reader`, then the bytes the copier kept in memory. Done once, so
+    /// every rerun reads the same bytes. Nothing to do when the disk holds
+    /// the whole prompt.
+    ///
+    /// A prefix that cannot be read back whole is the one way a refused
+    /// disk can still cost the rerun, and it is answered as
+    /// [`Replay::Never`] rather than handing a rerun part of a task. The
+    /// reason names the error and no part of the prompt.
+    fn gather(&mut self) -> Result<(), String> {
+        let Some(Spill { stored, bytes }) = self.state.take_spill() else {
+            return Ok(());
+        };
+        let whole = join_parts(self.reader.as_ref(), stored, bytes).map_err(|e| {
+            format!(
+                "the part of this step's prompt stored on disk before the disk refused the \
+                 rest could not be read back: {e}"
+            )
+        })?;
+        self.memory = Some(Arc::new(whole));
+        Ok(())
     }
 
     /// Whether the copier is certain to end, so joining it is bounded.
@@ -604,12 +782,60 @@ impl Capture {
     /// Either it has already reached the end of the source and published
     /// that, or no writer of the source is left — after which what it still
     /// has to read is only what the kernel is already holding, and its
-    /// writes go to a regular file and to a pipe whose reader has gone. A
-    /// copier that failed has already returned and [`Capture::settle`]
-    /// answers before it asks this.
+    /// writes go to a regular file or to memory, and to a pipe whose reader
+    /// has gone. A copier that failed has already returned and
+    /// [`Capture::settle`] answers before it asks this.
     fn can_end(&self) -> bool {
         self.state.is_complete() || no_writer_left(&self.watch)
     }
+}
+
+/// The whole prompt from its two parts (issue #3036): the first `stored`
+/// bytes of the capture file `reader` describes, then `rest`.
+///
+/// Refuses a file that holds fewer than `stored` bytes, and a non-zero
+/// `stored` with no file, rather than return a prompt with a gap in it.
+pub(super) fn join_parts(
+    reader: Option<&fs::File>,
+    stored: u64,
+    rest: Vec<u8>,
+) -> io::Result<Vec<u8>> {
+    if stored == 0 {
+        return Ok(rest);
+    }
+    let reader = reader.ok_or_else(|| io::Error::other("there is no capture file to read"))?;
+    let mut f = reader.try_clone()?;
+    f.seek(SeekFrom::Start(0))?;
+    let mut whole = Vec::new();
+    f.take(stored).read_to_end(&mut whole)?;
+    if u64::try_from(whole.len()).ok() != Some(stored) {
+        return Err(io::Error::other(
+            "the capture file holds less than was written to it",
+        ));
+    }
+    whole.extend_from_slice(&rest);
+    Ok(whole)
+}
+
+/// A rerun's stdin for a prompt held in memory (issue #3036): the read end
+/// of a pipe, and a thread that writes `bytes` into the other end and
+/// closes it.
+///
+/// The thread ends when every byte is written or the attempt closes its end
+/// (the write then fails with `EPIPE`, which is the attempt's own choice and
+/// costs nothing stored), so it never outlives the attempt that reads it.
+/// The pipe is `O_CLOEXEC` on both ends, so only the descriptor `Command`
+/// puts on fd 0 reaches the child, as for the first attempt's pipe.
+fn fed_from_memory(bytes: Arc<Vec<u8>>) -> io::Result<Stdio> {
+    let (read, mut write) = std::io::pipe()?;
+    std::thread::Builder::new()
+        .name("amplihack-prompt-replay".to_string())
+        .spawn(move || {
+            let _ = write.write_all(&bytes);
+        })?;
+    Ok(Stdio::from(fs::File::from(std::os::fd::OwnedFd::from(
+        read,
+    ))))
 }
 
 /// Whether `watch`, a second description of the step's stdin, has no writer
@@ -659,15 +885,35 @@ pub(crate) fn capture_own_prompt(dir: &Path) -> Option<RerunStdin> {
 /// stdin. No byte of `source` is read until
 /// [`RerunStdin::attempt_started`].
 ///
-/// Returns [`RerunStdin::Pipe`] — today's conduct, no rerun and no wait —
-/// when the capture cannot be set up. Nothing here refuses a prompt for its
-/// size or its contents.
+/// A capture file that cannot be made in `dir` does not cost the rerun
+/// (issue #3036): the capture is then held in memory from its first byte,
+/// and the reason is named on stderr. Only when the descriptors the copy
+/// itself needs cannot be made (the first attempt's pipe, a second
+/// description of the source) does this return [`RerunStdin::Pipe`], the
+/// conduct of a piped prompt before #2815: no copy and no rerun. Nothing
+/// here refuses a prompt for its size or its contents.
 pub(crate) fn capture_prompt(dir: &Path, source: fs::File) -> RerunStdin {
-    match start_capture(dir, source) {
-        Ok(c) => RerunStdin::Captured(c),
+    let disk = match open_disk(dir) {
+        Ok(disk) => Some(disk),
         Err(e) => {
             eprintln!(
-                "amplihack: this step's prompt could not be stored for a rerun, so a usage \
+                "amplihack: this step's prompt could not be stored on disk for a rerun ({e}), \
+                 so it is kept in memory instead; a rerun still reads all of it"
+            );
+            None
+        }
+    };
+    let path = disk.as_ref().map(|d| d.path.clone());
+    match prepare_copier(disk, source) {
+        Ok(c) => RerunStdin::Captured(c),
+        Err(e) => {
+            // Anything that fails from here on takes the file away again,
+            // so a half-made capture is never left for the sweep to find.
+            if let Some(path) = path {
+                let _ = fs::remove_file(path);
+            }
+            eprintln!(
+                "amplihack: this step's prompt could not be copied for a rerun, so a usage \
                  limit will end it: {e}"
             );
             RerunStdin::Pipe
@@ -675,7 +921,9 @@ pub(crate) fn capture_prompt(dir: &Path, source: fs::File) -> RerunStdin {
     }
 }
 
-fn start_capture(dir: &Path, source: fs::File) -> io::Result<Capture> {
+/// The capture file in `dir`, created private and matched to a read-only
+/// description of itself; removed again if that cannot be done.
+fn open_disk(dir: &Path) -> io::Result<Disk> {
     let path = dir.join(format!("{}-0.in", std::process::id()));
     // As `profile::attempt` creates a step's output buffer: private at
     // creation under the umask, never a symlink, never inherited by a
@@ -686,29 +934,45 @@ fn start_capture(dir: &Path, source: fs::File) -> io::Result<Capture> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&path)?;
-    // Anything that fails from here on takes the file away again, so a
-    // half-made capture is never left for the sweep to find.
-    prepare_copier(&path, writer, source).inspect_err(|_| {
-        let _ = fs::remove_file(&path);
-    })
-}
-
-/// The rest of [`start_capture`], once the file at `path` exists: open the
-/// reader, duplicate the source for the writer check, and make the first
-/// attempt's pipe. The copier itself waits for [`Capture::arm`].
-fn prepare_copier(path: &Path, writer: fs::File, source: fs::File) -> io::Result<Capture> {
     // Opened before a byte is written and matched to the writer's inode,
     // so later attempts never re-open the path: a same-user replacement of
     // it cannot change what they read.
-    let reader = read_back(path, &writer)?;
-    let writer = refuse_writes(path, writer);
+    match read_back(&path, &writer) {
+        Ok(reader) => {
+            let writer = refuse_writes(&path, writer);
+            Ok(Disk {
+                path,
+                writer,
+                reader,
+            })
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&path);
+            Err(e)
+        }
+    }
+}
+
+/// The rest of [`capture_prompt`], with or without a capture file:
+/// duplicate the source for the writer check, and make the first attempt's
+/// pipe. The copier itself waits for [`Capture::arm`].
+fn prepare_copier(disk: Option<Disk>, source: fs::File) -> io::Result<Capture> {
     let watch = source.try_clone()?;
     // `std::io::pipe` is `O_CLOEXEC` on both ends, so only the descriptor
     // `Command` puts on fd 0 reaches the child.
     let (child_read, child_write) = std::io::pipe()?;
+    let (path, writer, reader) = match disk {
+        Some(Disk {
+            path,
+            writer,
+            reader,
+        }) => (Some(path), Some(writer), Some(reader)),
+        None => (None, None, None),
+    };
     Ok(Capture {
-        path: path.to_path_buf(),
+        path,
         reader,
+        memory: None,
         pending: Some(Pending {
             source,
             writer,
@@ -726,10 +990,11 @@ fn prepare_copier(path: &Path, writer: fs::File, source: fs::File) -> io::Result
 /// hands the copier a read-only description of the capture file, so every
 /// write to it fails as a full disk, a quota or a failing device would.
 ///
-/// That failure costs the rerun and not the prompt, and the only thing an
-/// operator ever sees of it is the line the copier prints, so there has to
-/// be a way to make it happen on demand: the real causes cannot be arranged
-/// from outside a test. Compiled out of release builds, as the usage-limit
+/// Since issue #3036 that failure costs neither the prompt nor the rerun:
+/// the copy goes on in memory. The line the copier prints and the rerun
+/// that still reads every byte are what an operator sees of it, so there
+/// has to be a way to make it happen on demand: the real causes cannot be
+/// arranged from outside a test. Compiled out of release builds, as the usage-limit
 /// wait's test clock and `AMPLIHACK_TEST_FAIL_ATTEMPT` are, so no installed
 /// binary reads this variable.
 #[cfg(debug_assertions)]
@@ -766,20 +1031,23 @@ fn read_back(path: &Path, writer: &fs::File) -> io::Result<fs::File> {
 /// Pumps `source` into `file` and into `child`, the first attempt's stdin,
 /// until end of file. `state` is marked complete only then.
 ///
-/// The prompt is opaque bytes throughout: never decoded, never held whole
-/// in memory and never printed. A first attempt that exits without reading
-/// closes its end, and the `EPIPE` that follows only stops the copy to the
-/// child; the file still receives all of it, and
-/// [`CopyState::reader_gone`] reports the early close. Any error on the
-/// file is the copy failing, and a rerun is refused rather than given part
-/// of a prompt.
+/// The prompt is opaque bytes throughout: never decoded and never printed,
+/// and held in memory only once the disk has refused it (issue #3036). A
+/// first attempt that exits without reading closes its end, and the
+/// `EPIPE` that follows only stops the copy to the child; the capture still
+/// receives all of it, and [`CopyState::reader_gone`] reports the early
+/// close.
 ///
-/// The capture is secondary to the attempt in hand. An error on the file
-/// stops the copy to the file and nothing else: the source is still drained
-/// to end of file and the child still gets every byte, because a prompt cut
-/// short is a shortened task the attempt would act on, whereas a lost
-/// capture only costs a rerun. The error is returned once the source is
-/// spent, and the state is left incomplete, so a rerun is refused.
+/// The capture is secondary to the attempt in hand, and the disk is
+/// secondary to the capture. `file` is `None` when the disk would not take
+/// a capture file at all, and every byte is then kept in memory. A write to
+/// the file that fails stops the copy to the file and nothing else
+/// (issue #3036): the bytes fully stored before that chunk stay where they
+/// are, the failing chunk and every later one are kept in memory
+/// ([`CopyState::begin_spill`] names the error on stderr), and the source
+/// is still drained to end of file for the child and the capture alike. So
+/// a full disk, a quota or a failing device costs neither the attempt in
+/// hand nor a rerun, and is never a reason for a limit to end the step.
 ///
 /// A failed read of the source is the other case, and the one the attempt
 /// cannot be told about: there are no further bytes to forward, so the copy
@@ -787,33 +1055,39 @@ fn read_back(path: &Path, writer: &fs::File) -> io::Result<fs::File> {
 /// only signal a pipe gives, and a reader takes it for the end of the
 /// prompt. [`CopyState::cut_short`] therefore publishes the loss, says so
 /// on stderr the moment it happens, and the supervisor refuses to report
-/// the attempt's success as the step's (issue #2816). `EAGAIN` is not such
-/// a failure: an inherited descriptor may carry `O_NONBLOCK` on a
-/// description shared with the writer, and this waits for the next byte as
-/// a blocking read would have.
+/// the attempt's success as the step's (issue #2816). That is the one loss
+/// no rerun can make good. `EAGAIN` is not such a failure: an inherited
+/// descriptor may carry `O_NONBLOCK` on a description shared with the
+/// writer, and this waits for the next byte as a blocking read would have.
 ///
-/// Either loss is published and named on stderr the moment it is known — a
-/// write to the file failed, or the source did — which for a file error is
-/// well before the drain that still has to finish (issue #2816). An attempt
-/// that stopped reading is not a loss and never publishes one. The
-/// supervisor reads these flags when it decides whether a rerun is possible
-/// at all, so a capture already known to be lost refuses the rerun then and
-/// there, rather than after a wait of hours.
+/// An attempt that stopped reading is not a loss and never publishes one.
+/// The supervisor reads these flags when it decides whether a rerun is
+/// possible at all, so a prompt already known to be cut short refuses the
+/// rerun then and there, rather than after a wait of hours.
 ///
 /// `source` is the step's own stdin, an `fs::File`. It is taken by bound
 /// rather than by type only so that a test can see the reads as they
 /// happen: whether the `EAGAIN` arm below is reached at all otherwise
 /// depends on when the copier and the writer are scheduled, and a test of
 /// it would be a test of that. `wait_readable` still polls the descriptor
-/// `AsRawFd` yields, which is the source's own.
-pub(super) fn copy_prompt<S: Read + AsRawFd>(
+/// `AsRawFd` yields, which is the source's own. `file` is taken by bound
+/// for the same reason: a test can give it a sink that refuses a write part
+/// way through a chunk, which no real file can be made to do on demand.
+pub(super) fn copy_prompt<S: Read + AsRawFd, W: Write>(
     source: &mut S,
-    mut file: fs::File,
+    mut file: Option<W>,
     child: std::io::PipeWriter,
     state: &CopyState,
 ) -> io::Result<()> {
     let mut child = Some(child);
-    let mut file_err: Option<io::Error> = None;
+    // Bytes of the prompt fully written to `file`; meaningful only until
+    // the first refused write, after which memory holds the rest.
+    let mut stored: u64 = 0;
+    if file.is_none() {
+        // The disk never took a capture file, and the reason was named
+        // where that was found out (`capture_prompt`).
+        state.begin_spill(0, None);
+    }
     let mut buf = vec![0u8; COPY_BUF];
     loop {
         let k = match source.read(&mut buf) {
@@ -842,18 +1116,24 @@ pub(super) fn copy_prompt<S: Read + AsRawFd>(
                 return Err(e);
             }
         };
-        if file_err.is_none()
-            && let Err(e) = file.write_all(&buf[..k])
-        {
-            // The capture is lost, so a rerun is refused, and the error is
-            // named now because nothing later will name it: the supervisor
-            // reads the flag and never the thread's result. The attempt in
-            // hand still gets its whole prompt.
-            state.lose(&e);
-            file_err = Some(e);
+        let chunk = &buf[..k];
+        match &mut file {
+            Some(f) => match f.write_all(chunk) {
+                Ok(()) => stored = stored.saturating_add(k as u64),
+                Err(e) => {
+                    // The disk refused this chunk, perhaps part way through
+                    // it. What it held before the chunk stays; the chunk
+                    // itself is kept whole in memory, so the copy has no
+                    // gap, and so is everything after it (issue #3036).
+                    state.begin_spill(stored, Some(&e));
+                    state.keep(chunk);
+                    file = None;
+                }
+            },
+            None => state.keep(chunk),
         }
         if let Some(w) = &mut child
-            && w.write_all(&buf[..k]).is_err()
+            && w.write_all(chunk).is_err()
         {
             // The attempt is gone, or stopped reading, with prompt still
             // to come. Its prompt is still stored; closing our end lets it
@@ -864,15 +1144,26 @@ pub(super) fn copy_prompt<S: Read + AsRawFd>(
             state.reader_gone();
         }
     }
-    if let Some(e) = file_err {
-        return Err(e);
-    }
-    if let Err(e) = file.flush() {
+    if let Some(f) = &mut file
+        && let Err(e) = f.flush()
+    {
         state.lose(&e);
         return Err(e);
     }
     state.done();
     Ok(())
+}
+
+/// The part of the prompt `state` keeps in memory, for the tests that pin
+/// where a refused write leaves each byte (issue #3036).
+#[cfg(test)]
+pub(super) fn spilled(state: &CopyState) -> Option<(u64, Vec<u8>)> {
+    state
+        .spill
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .map(|s| (s.stored, s.bytes.clone()))
 }
 
 /// Waits until `source` has something to read, after a read of it returned

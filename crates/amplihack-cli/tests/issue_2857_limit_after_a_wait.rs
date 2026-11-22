@@ -43,8 +43,8 @@
 //! - a chain of limits is paced by its waits rather than counted: each wait's
 //!   deadline lies strictly in the future, no `failed` and no `skipped` line is
 //!   written, and `max_wait_secs` is spent again by every wait;
-//! - the step's own timeout is the one bound that is left, and it still ends
-//!   the step with `failed reason=step_timeout`.
+//! - no bound is left: since issue #3037 the step's own timeout does not end
+//!   a wait either, and no line says `failed reason=step_timeout`.
 //!
 //! Every wait with no usable future reset writes a `waiting_for_capacity
 //! reason=<why>` line immediately before its `start` (#2911), which is why the
@@ -595,10 +595,10 @@ fn a_retry_on_a_login_the_step_has_never_waited_on_still_waits_for_a_passed_rese
 /// ended the step inside the first minute.
 ///
 /// What ends this chain is the stub running out of limits, which is why
-/// `LIMIT_CALLS` bounds it. The step's own timeout is the one thing that still
-/// ends a chain of waits, and
-/// `the_step_timeout_still_ends_a_wait_for_a_passed_reset` is the guard for
-/// that.
+/// `LIMIT_CALLS` bounds it. Nothing else ends a chain of waits: since issue
+/// #3037 not even the step's own timeout does, and
+/// `issue_3037_a_step_timeout_does_not_end_a_wait_for_a_passed_reset` is the
+/// guard for that.
 #[test]
 fn a_chain_of_limits_is_paced_by_each_wait_costing_time_and_nothing_counts_them() {
     let f = with_profiles();
@@ -642,50 +642,46 @@ fn a_chain_of_limits_is_paced_by_each_wait_costing_time_and_nothing_counts_them(
     );
 }
 
-/// The step's own timeout is the one bound left on a chain of waits, and it
-/// is still terminal: it writes `failed reason=step_timeout` (issue #2911).
-///
-/// Kept as it was, with only the `waiting_for_capacity` line the two capacity
-/// waits now write. Everything else that used to stop a chain has gone, so
-/// this is the guard that the one remaining bound really still binds.
+/// Issue #3037, review of PR #2992: the step timeout no longer ends a chain
+/// of waits. This test used to be the guard that it still did: with a
+/// 3900-second timeout the third wait ended at 09:04:00, a minute before it,
+/// with `failed reason=step_timeout` while the limit still stood. Nothing
+/// enforces that variable on a step - recipe-runner-rs enforces only a
+/// step's YAML `timeout:` - so the third wait now runs its own length and
+/// the step retries.
 #[test]
-fn the_step_timeout_still_ends_a_wait_for_a_passed_reset() {
-    // The step may run for 3900 s, so a wait must end 60 s before that: at
-    // 09:04:00, which is earlier than one wait's own length (unset: 21600 s)
-    // would allow.
+fn issue_3037_a_step_timeout_does_not_end_a_wait_for_a_passed_reset() {
     let f = with_profiles();
     let _rotator = rotator_running(&f);
     let mut c = passed_reset_step(&f, 3);
     c.env("AMPLIHACK_STEP_TIMEOUT", "3900")
         .env("ROOM_ON_CALL", room_on(1, 5, true));
     let out = f.run(&mut c);
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
         f.count("0"),
-        3,
-        "no attempt after the timeout: {}",
+        4,
+        "the attempt after the third wait ran: {}",
         describe(&out)
     );
     let ev = events(&out);
     assert_eq!(ev[8], REENTERED_USAGE, "{ev:?}");
-    assert_eq!(
+    assert!(
+        ev[9].starts_with("waiting_for_capacity reason=passed_reset harness=claude until="),
+        "{ev:?}"
+    );
+    assert_ne!(
         ev[9],
         waiting_for("passed_reset", "2026-10-18 09:04:00 -07:00"),
-        "{ev:?}"
+        "the deadline is no longer pulled back to the step timeout: {ev:?}"
     );
-    assert_eq!(
-        ev[10],
-        passed_reset_capacity_start("2026-10-18 09:04:00 -07:00", "step_timeout"),
-        "{ev:?}"
+    assert!(
+        ev[10].ends_with(" bound=max_wait"),
+        "the wait's own length bounds it: {ev:?}"
     );
-    assert_eq!(
-        ev[ev.len() - 2..],
-        [
-            "end reason=step timeout",
-            "failed reason=step_timeout: usage limit not lifted"
-        ],
-        "{ev:?}"
-    );
+    assert!(ev.iter().any(|e| e == "resume attempt=4"), "{ev:?}");
+    assert_eq!(count(&ev, "failed "), 0, "nothing ended the step: {ev:?}");
+    assert!(ev.iter().all(|e| !e.contains("step timeout")), "{ev:?}");
 }
 
 // --- a wait that ran out earns no `reentered` line --------------------------

@@ -23,7 +23,8 @@
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_retry_move;`.
 
 use super::fingerprint::Watch;
-use super::plan::WaitFor;
+use super::plan::{MIN_WAIT_SECS, WaitFor};
+use super::scratch::Replay;
 use super::settings::WaitSettings;
 use super::{AfterLimit, Resumed, Waiter};
 use crate::commands::profile::attempt::Signals;
@@ -34,33 +35,23 @@ use crate::test_support::{EnvGuard, env_lock};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-/// A step timeout of one second puts every plan's deadline at `now`, so each
-/// wait here ends the instant it begins and nothing sleeps. What is under
+/// Virtual seconds per real second, the most the clock's seam accepts. With
+/// the clock pinned and each wait one [`MIN_WAIT_SECS`] long, a wait that
+/// runs to its deadline does so in two polls and microseconds. What is under
 /// test is the order of the writes to `retry_move`, not the waiting.
 ///
-/// It also means the step is already out of its own time, and the
-/// retry-before-wait return finishes on the step timeout rather than
-/// retrying. A test that needs that return to be *taken* therefore uses
-/// `ROOMY_STEP_TIMEOUT` and ends its waits some other way.
-const IMMEDIATE_STEP_TIMEOUT: &str = "1";
-
-/// A step timeout the step is nowhere near, for the tests that need the
-/// retry-before-wait return: it is taken only while the step still has
-/// time to run the retry it starts.
-const ROOMY_STEP_TIMEOUT: &str = "3600";
-
-/// Virtual seconds per real second, so a wait that has to reach its first
-/// 30-second poll does so in milliseconds. Only the tests that let a wait
-/// run use it; the rest keep the real clock.
-const FAST: &str = "1000";
+/// These tests used to end every wait at once with a one-second
+/// `AMPLIHACK_STEP_TIMEOUT`. That variable no longer ends a limit wait
+/// (issue #3037), so a wait here now runs its own length and the step
+/// retries, which is what each test below asserts.
+const FASTEST: &str = "1000000";
 
 /// The variables that would send a wait's own records outside the test's
-/// temporary tree, or put it on a virtual clock. Cleared for the test.
-const SILENCED: [&str; 4] = [
+/// temporary tree, or bound it by a step timeout. Cleared for the test.
+const SILENCED: [&str; 3] = [
     "AMPLIHACK_USAGE_WAIT_LEDGER",
     "AMPLIHACK_RECIPE_LOG",
-    "AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW",
-    "AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE",
+    "AMPLIHACK_STEP_TIMEOUT",
 ];
 
 struct Env {
@@ -114,8 +105,9 @@ impl Env {
         Waiter::new(
             Some(WaitSettings {
                 enabled: true,
-                // No budget cap, so a second wait is never refused for one.
-                max_wait_secs: None,
+                // The shortest wait a configured length may ask for: the
+                // length of one wait, never a budget for the step.
+                max_wait_secs: Some(MIN_WAIT_SECS),
                 off_in_ci: false,
             }),
             watch,
@@ -123,7 +115,6 @@ impl Env {
             super::claude_args::ClaudeArgs {
                 print: true,
                 prompt: true,
-                stream_stdin: false,
             },
             Box::new(|| false),
         )
@@ -144,25 +135,24 @@ fn login_change() -> WaitFor {
     }
 }
 
-/// Holds the environment lock, the step timeout and, where a wait is meant
-/// to run rather than end at its deadline, the clock scale.
-fn guarded_with<T>(timeout: &str, scale: Option<&str>, f: impl FnOnce() -> T) -> T {
+/// Holds the environment lock, and pins the wait's clock at this moment
+/// and runs it as fast as the seam allows, so every wait below either ends
+/// on a reading the test gives or runs its one-minute length in
+/// microseconds. The base is this moment, so the rotate ledgers the waits
+/// read, whose stamps are real-clock ones, stay as fresh as they were.
+fn guarded<T>(f: impl FnOnce() -> T) -> T {
     let _lock = env_lock()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut guard = EnvGuard::set([("AMPLIHACK_STEP_TIMEOUT", timeout)]);
+    let mut guard = EnvGuard::set([("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", FASTEST)]);
     for name in SILENCED {
         guard.clear(name);
     }
-    if let Some(scale) = scale {
-        guard.assign("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", scale);
-    }
+    guard.assign(
+        "AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW",
+        crate::commands::profile::fsx::now().to_string(),
+    );
     f()
-}
-
-/// The common case: every wait ends at once on the step timeout.
-fn guarded<T>(f: impl FnOnce() -> T) -> T {
-    guarded_with(IMMEDIATE_STEP_TIMEOUT, None, f)
 }
 
 fn signals() -> Signals {
@@ -185,10 +175,13 @@ fn a_capacity_wait_still_leaves_a_retry_move() {
             1,
             &signals(),
             &|_, _| false,
-            &mut || None,
+            &mut || Replay::Ready,
             Resumed::Ordinarily,
         );
-        assert!(matches!(after, AfterLimit::Finish(_)));
+        assert!(
+            matches!(after, AfterLimit::Retry),
+            "a capacity wait that reaches its deadline retries (#2911)"
+        );
         assert!(
             w.retry_move().is_some(),
             "a capacity wait's retry may move: #1801"
@@ -201,21 +194,19 @@ fn a_capacity_wait_still_leaves_a_retry_move() {
 ///
 /// `after_limit` asks `replay` the moment before it logs `resume`. A step
 /// whose prompt came on a pipe is replayed from the copy the supervisor
-/// kept (#2815), and when there is no whole copy — lost, or still arriving
-/// on a pipe the caller has not closed — the retry cannot run. Announcing
-/// it anyway would put `resume attempt=2` in the run log for an attempt
-/// that never happens, which is the false diagnostic this wait already
-/// refuses to write elsewhere. The wait ends with `Finish` and the
-/// `skipped` event instead, and the caller passes the limited attempt's own
-/// result up.
+/// kept (#2815). When no whole copy can ever exist - the prompt could not
+/// be read to its end - the retry cannot run, and announcing it anyway
+/// would put `resume attempt=2` in the run log for an attempt that never
+/// happens. The wait ends with `Finish` and the `skipped` event instead,
+/// and the caller passes the limited attempt's own result up.
 ///
 /// Both announcing paths are covered: the retry-before-wait return, taken
 /// when the login changed while the attempt was failing, and the end of a
 /// wait that ran.
 #[test]
-fn a_retry_is_not_announced_when_the_step_has_no_prompt_to_give_it() {
-    // The retry-before-wait return: a roomy step timeout, so it is taken.
-    guarded_with(ROOMY_STEP_TIMEOUT, None, || {
+fn a_retry_is_not_announced_when_the_step_can_never_be_given_its_prompt() {
+    // The retry-before-wait return.
+    guarded(|| {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();
@@ -229,7 +220,7 @@ fn a_retry_is_not_announced_when_the_step_has_no_prompt_to_give_it() {
             &|_, _| false,
             &mut || {
                 asked += 1;
-                Some("this step's prompt is still arriving".to_string())
+                Replay::Never("this step's prompt could not be read to its end".to_string())
             },
             Resumed::Ordinarily,
         );
@@ -239,7 +230,9 @@ fn a_retry_is_not_announced_when_the_step_has_no_prompt_to_give_it() {
             "no retry is announced for an attempt that cannot run"
         );
     });
-    // A wait that ran to its own deadline and would otherwise retry.
+    // A wait that ran to its own deadline and would otherwise retry. Before
+    // issue #3037 this wait ended on the step timeout before `replay` was
+    // asked; it now runs to its deadline, so the question is reached.
     guarded(|| {
         let e = env();
         e.rotator("a");
@@ -250,12 +243,80 @@ fn a_retry_is_not_announced_when_the_step_has_no_prompt_to_give_it() {
             1,
             &signals(),
             &|_, _| false,
-            &mut || Some("the copy of this step's prompt could not be written".to_string()),
+            &mut || Replay::Never("this step's prompt could not be read to its end".to_string()),
             Resumed::Ordinarily,
         );
         assert!(
             matches!(after, AfterLimit::Finish(None)),
             "no retry is announced after a wait with no prompt to replay"
+        );
+    });
+}
+
+/// Issue #3036, review of PR #2992: a prompt still arriving when the retry
+/// is due is waited for, not refused. This used to end the step with
+/// `skipped reason=piped_prompt` while its limit still stood; the retry now
+/// waits for the caller to finish writing and then runs, on both of the
+/// paths that announce one.
+#[test]
+fn issue_3036_a_retry_waits_for_a_prompt_that_is_still_arriving() {
+    // The retry-before-wait return.
+    guarded(|| {
+        let e = env();
+        e.rotator("a");
+        let mut w = e.waiter();
+        w.note_attempt_login();
+        e.rotator("b"); // the login changed while the attempt was failing
+        let mut asked = 0;
+        let after = w.after_limit(
+            login_change(),
+            2,
+            &signals(),
+            &|_, _| false,
+            &mut || {
+                asked += 1;
+                if asked < 3 {
+                    Replay::Arriving
+                } else {
+                    Replay::Ready
+                }
+            },
+            Resumed::Ordinarily,
+        );
+        assert_eq!(asked, 3, "asked until the prompt was whole, then no more");
+        assert!(
+            matches!(after, AfterLimit::Retry),
+            "the retry runs once its prompt has arrived"
+        );
+    });
+    // The end of a wait that ran to its deadline.
+    guarded(|| {
+        let e = env();
+        e.rotator("a");
+        let mut w = e.waiter();
+        w.note_attempt_login();
+        let before = w.now();
+        let mut asked = 0;
+        let after = w.after_limit(
+            capacity(),
+            1,
+            &signals(),
+            &|_, _| false,
+            &mut || {
+                asked += 1;
+                if asked < 2 {
+                    Replay::Arriving
+                } else {
+                    Replay::Ready
+                }
+            },
+            Resumed::Ordinarily,
+        );
+        assert_eq!(asked, 2);
+        assert!(matches!(after, AfterLimit::Retry));
+        assert!(
+            w.now() > before + i64::try_from(MIN_WAIT_SECS).unwrap(),
+            "the step waited its limit wait, then for its prompt"
         );
     });
 }
@@ -266,10 +327,8 @@ fn a_retry_is_not_announced_when_the_step_has_no_prompt_to_give_it() {
 /// runs on.
 #[test]
 fn the_retry_before_a_wait_carries_no_earlier_waits_retry_move() {
-    // The step keeps time in hand throughout, so the return under test is
-    // reached on its own merits rather than being pre-empted by the step
-    // timeout, and the first wait ends on a reading instead of a deadline.
-    guarded_with(ROOMY_STEP_TIMEOUT, Some(FAST), || {
+    // The first wait ends on a reading instead of a deadline.
+    guarded(|| {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();
@@ -282,7 +341,7 @@ fn the_retry_before_a_wait_carries_no_earlier_waits_retry_move() {
             1,
             &signals(),
             &|_, _| true,
-            &mut || None,
+            &mut || Replay::Ready,
             Resumed::Ordinarily,
         );
         assert!(w.retry_move().is_some(), "the state this test starts from");
@@ -298,7 +357,7 @@ fn the_retry_before_a_wait_carries_no_earlier_waits_retry_move() {
             2,
             &signals(),
             &|_, _| false,
-            &mut || None,
+            &mut || Replay::Ready,
             Resumed::Ordinarily,
         );
         assert!(
@@ -327,7 +386,7 @@ fn a_later_wait_that_earns_no_move_clears_the_earlier_ones() {
             1,
             &signals(),
             &|_, _| false,
-            &mut || None,
+            &mut || Replay::Ready,
             Resumed::Ordinarily,
         );
         assert!(w.retry_move().is_some(), "the state this test starts from");
@@ -341,7 +400,7 @@ fn a_later_wait_that_earns_no_move_clears_the_earlier_ones() {
             2,
             &signals(),
             &|_, _| false,
-            &mut || None,
+            &mut || Replay::Ready,
             Resumed::Ordinarily,
         );
         assert!(
@@ -366,9 +425,8 @@ fn a_later_wait_that_earns_no_move_clears_the_earlier_ones() {
 /// has waited on this login before.
 #[test]
 fn the_wait_that_returns_early_still_records_its_mark() {
-    // No wait runs here at all: both calls take the early return, so the
-    // step needs time left for it to be taken.
-    guarded_with(ROOMY_STEP_TIMEOUT, None, || {
+    // No wait runs here at all: both calls take the early return.
+    guarded(|| {
         let e = env();
         e.rotator("a");
         let mut w = e.waiter();
@@ -380,7 +438,7 @@ fn the_wait_that_returns_early_still_records_its_mark() {
                 1,
                 &signals(),
                 &|_, _| false,
-                &mut || None,
+                &mut || Replay::Ready,
                 Resumed::Ordinarily
             ),
             AfterLimit::Retry
@@ -408,7 +466,7 @@ fn the_wait_that_returns_early_still_records_its_mark() {
                     2,
                     &signals(),
                     &|_, _| false,
-                    &mut || None,
+                    &mut || Replay::Ready,
                     Resumed::Ordinarily
                 ),
                 AfterLimit::Retry
@@ -455,13 +513,18 @@ fn a_fallback_reading_does_not_start_the_retry_before_the_wait() {
             1,
             &signals(),
             &|_, _| false,
-            &mut || None,
+            &mut || Replay::Ready,
             Resumed::Ordinarily,
         );
         assert!(
-            matches!(after, AfterLimit::Finish(_)),
+            matches!(after, AfterLimit::Retry),
             "the readings are not comparable, so the step waits as it would \
-             have: this wait reaches its deadline and ends the step"
+             have: this wait reaches its deadline and the step retries (#2911)"
+        );
+        assert!(
+            !w.resumed_on_a_signal(),
+            "the wait ran to its deadline, which claims nothing; the early \
+             return on a login change would have claimed the retry works"
         );
     });
 }

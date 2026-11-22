@@ -190,11 +190,11 @@ fn g1_a_limited_evaluator_step_is_retried_and_returns_its_verdict() {
 ///
 /// This used to assert the opposite: a wait that reached its deadline wrote
 /// `failed reason=capacity_expired`, step-02 ran once, produced no verdict,
-/// and the runner classed the run `usage_limit`. That reason is gone and
-/// `FailReason` has only `StepTimeout` left, because a limit that is still in
-/// force when a wait ends means *wait again*, not *stop the run*. The
-/// evaluator keeps a terminal usage-limit outcome, but only for the step's
-/// own timeout and for output with no limit message in it; see
+/// and the runner classed the run `usage_limit`. That reason is gone, and
+/// since issue #3037 so is the last one, `step_timeout`: a limit that is
+/// still in force when a wait ends means *wait again*, not *stop the run*.
+/// The evaluator keeps a terminal usage-limit outcome only for a step whose
+/// wait is turned off and for output with no limit message in it; see
 /// docs/reference/loop-health-evaluator.md, "When the wait does not lift the
 /// limit".
 ///

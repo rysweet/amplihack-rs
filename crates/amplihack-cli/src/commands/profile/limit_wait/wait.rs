@@ -91,7 +91,6 @@ pub(crate) trait WaitDeps {
 pub(crate) enum End {
     ResetReached,
     MaxReached,
-    StepTimeout,
     LoginChanged,
     RotatorCapacity,
     /// A capacity wait's `max_wait` deadline passed; nothing lifted the limit.
@@ -107,7 +106,6 @@ impl End {
         match self {
             End::ResetReached => "reset reached",
             End::MaxReached => "max reached",
-            End::StepTimeout => "step timeout",
             End::LoginChanged => "login changed",
             End::RotatorCapacity => "rotator capacity",
             End::CapacityExpired => "capacity expired",
@@ -122,9 +120,9 @@ impl End {
     ///
     /// A reset that arrived, the rotator's capacity, a login change and
     /// another login's room each say *try now*. The rest (a maximum, a
-    /// capacity wait's deadline, the step's timeout, the session's end and a
-    /// stop signal) are the wait running out, and claim nothing, so a limit
-    /// after one of them is no contradiction and the ordinary refusals hold.
+    /// capacity wait's deadline, the session's end and a stop signal) are
+    /// the wait running out, and claim nothing, so a limit after one of
+    /// them is no contradiction.
     pub(crate) fn said_try_now(self) -> bool {
         matches!(
             self,
@@ -134,7 +132,6 @@ impl End {
 
     fn at_deadline(bound: Bound, kind: PlanKind) -> Self {
         match (bound, kind) {
-            (Bound::StepTimeout, _) => End::StepTimeout,
             // On a capacity wait the reset is the failed login's own: it has
             // recovered, so the step is retried.
             (Bound::ResetMargin, _) => End::ResetReached,

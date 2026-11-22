@@ -257,7 +257,6 @@ fn an_end_that_merely_ran_out_said_nothing() {
     for end in [
         End::MaxReached,
         End::CapacityExpired,
-        End::StepTimeout,
         End::SessionEnded,
         End::Signal(libc::SIGTERM),
     ] {

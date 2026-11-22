@@ -32,9 +32,10 @@
 //! the floor (review of PR #2992). Because the value is the length of one
 //! wait and a step still limited when a wait ends runs its agent again,
 //! the value *is* the interval at which a waiting step re-asks the harness,
-//! and each ask is a fresh agent launch. Nothing bounds that chain but the
-//! step's own timeout, so a short length is a poll of the harness and is
-//! named as one; see [`SHORT_WAIT_SECS`].
+//! and each ask is a fresh agent launch. Nothing counts or ends that chain
+//! (issue #2911): it ends when the limit lifts, on a stop signal or with the
+//! step's session, so a short length is a poll of the harness and is named
+//! as one; see [`SHORT_WAIT_SECS`].
 //!
 //! [`plan::MIN_WAIT_SECS`]: super::plan::MIN_WAIT_SECS
 

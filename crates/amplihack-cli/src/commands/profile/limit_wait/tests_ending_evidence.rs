@@ -1,25 +1,28 @@
-//! What the recipe runner makes of the two endings that can end a step
-//! while its limit still stands (review of PR #2992, issues #3036, #3037).
+//! What the recipe runner makes of the one ending a step that has met a
+//! limit can still reach: a prompt that could not be read to its end
+//! (review of PR #2992, issue #3036).
 //!
-//! Neither ending is a limit being refused, and this PR's case for leaving
-//! both in place is that a step which ends this way is handed up as a
-//! *temporary* fault with the time it clears, so a supervising loop resumes
-//! the run instead of recording work that failed. That case rests entirely
-//! on the words these two endings write: the classifier reads the step's
-//! evidence, and `skipped reason=piped_prompt` and `end reason=step timeout`
-//! carry no limit marker of their own.
+//! That ending is not the limit's - the step fails whether or not it meets
+//! one, because its attempt was given less than its task - but it does end
+//! a step whose limit still stands, so it is handed up as a *temporary*
+//! fault with the time the limit clears, and a supervising loop resumes the
+//! run instead of recording work that failed. That rests entirely on the
+//! words the ending writes: the classifier reads the step's evidence, and
+//! `skipped reason=piped_prompt` carries no limit marker of its own.
 //!
-//! So the property is pinned here rather than described. Each ending is
-//! reduced to the lines the supervisor itself writes - which is all that is
-//! left when a long wait's progress lines have pushed the harness's own
-//! message out of the 40-line evidence tail - and classified exactly as the
-//! runner would classify it.
+//! The step-timeout ending this file also pinned is gone (issue #3037): a
+//! step timeout no longer ends a limit wait, so there is no such ending to
+//! classify.
+//!
+//! So the property is pinned here rather than described. The ending is
+//! reduced to the lines the supervisor itself writes and classified exactly
+//! as the runner would classify it.
 //!
 //! The lines themselves are built in `ending.rs`. Wired from
 //! `limit_wait/mod.rs` with `#[cfg(test)] mod tests_ending_evidence;`.
 
-use super::ending::{no_retry_note, step_timeout_note};
-use super::events::{Event, FailReason, Skip, fmt_time, line};
+use super::ending::no_retry_note;
+use super::events::{Event, Skip, fmt_time, line};
 use super::plan::NoWait;
 use crate::commands::recipe::run::failure_evidence::usage_limit_reset_hint;
 use crate::commands::recipe::run::limit_patterns;
@@ -30,21 +33,10 @@ const RESET: i64 = 1_792_337_400;
 /// Half an hour before it, as `TEST_NOW` is.
 const NOW: i64 = RESET - 1800;
 
-/// A cause of the shape `rerun::why_no_copy` gives: static, and chosen from
-/// the step's own arguments.
-const CAUSE: &str = "its prompt arrives on an --input-format stream channel, which its caller \
-                     holds open for the session, so there is no end of it to copy and no \
-                     prompt to replay";
-
-/// Everything a step-timeout ending writes, in the order it writes it.
-fn step_timeout_ending(reset: Option<i64>, now: i64) -> String {
-    format!(
-        "{}\n{}\n{}",
-        line(&Event::End(super::wait::End::StepTimeout), &chrono::Local),
-        step_timeout_note(reset, now),
-        line(&Event::Failed(FailReason::StepTimeout), &chrono::Local),
-    )
-}
+/// A cause of the shape `rerun::PROMPT_CUT_SHORT` gives: static, and never
+/// built from what arrived on the pipe.
+const CAUSE: &str = "its piped prompt could not be read to its end, so neither this attempt \
+                     nor a later one can be given the whole of it";
 
 /// Everything a piped-prompt ending writes, in the order it writes it.
 fn piped_prompt_ending(reset: Option<i64>, now: i64) -> String {
@@ -58,18 +50,14 @@ fn piped_prompt_ending(reset: Option<i64>, now: i64) -> String {
     )
 }
 
-fn endings(reset: Option<i64>, now: i64) -> [(&'static str, String); 2] {
-    [
-        ("step timeout", step_timeout_ending(reset, now)),
-        ("piped prompt", piped_prompt_ending(reset, now)),
-    ]
+fn endings(reset: Option<i64>, now: i64) -> [(&'static str, String); 1] {
+    [("piped prompt", piped_prompt_ending(reset, now))]
 }
 
-/// The whole of the PR's case for deferring #3036 and #3037: a step that
-/// ends either way is a temporary fault the run resumes from, not work that
-/// failed.
+/// A step that ends this way is a temporary fault the run resumes from, not
+/// work that failed.
 #[test]
-fn both_endings_hand_the_runner_a_usage_limit() {
+fn the_ending_hands_the_runner_a_usage_limit() {
     for reset in [Some(RESET), Some(NOW - 1), None] {
         for (what, text) in endings(reset, NOW) {
             assert_eq!(
@@ -81,13 +69,13 @@ fn both_endings_hand_the_runner_a_usage_limit() {
     }
 }
 
-/// Why the sentence beside each event may not be reworded into one that
+/// Why the sentence beside the event may not be reworded into one that
 /// drops the words *usage limit*: the event line alone carries no marker,
 /// so the sentence is the only thing keeping the ending out of
 /// `indeterminate` - "we do not know" - which a supervising loop reads as
 /// terminal.
 #[test]
-fn the_event_lines_alone_would_not_be_classified_as_a_usage_limit() {
+fn the_event_line_alone_would_not_be_classified_as_a_usage_limit() {
     let skipped = line(
         &Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)),
         &chrono::Local,
@@ -97,18 +85,12 @@ fn the_event_lines_alone_would_not_be_classified_as_a_usage_limit() {
         FailureClass::Indeterminate,
         "{skipped}"
     );
-    let ended = line(&Event::End(super::wait::End::StepTimeout), &chrono::Local);
-    assert_eq!(
-        classify_failure_text(&ended).0,
-        FailureClass::Indeterminate,
-        "{ended}"
-    );
 }
 
-/// Issue #3036 and #3037 both end with the same question for the layer
-/// above: when is it worth starting this step again? Each ending answers it
-/// in the one form the runner's own reader takes a reset from, so the
-/// verdict a supervising loop reads names the time.
+/// The ending leaves the layer above one question: when is it worth
+/// starting this step again? It answers in the one form the runner's own
+/// reader takes a reset from, so the verdict a supervising loop reads names
+/// the time.
 #[test]
 fn each_ending_states_the_reset_where_the_runner_reads_one() {
     let want = fmt_time(RESET, &chrono::Local);
@@ -191,10 +173,10 @@ fn no_ending_of_ours_reads_back_as_a_harness_limit_message() {
     }
 }
 
-/// Every line of either ending is one printable ASCII line, as every other
+/// Every line of the ending is one printable ASCII line, as every other
 /// line the wait writes is: the reset is formatted from an integer and the
 /// cause is static text chosen from the step's arguments, so nothing the
-/// harness printed reaches either sentence.
+/// harness printed reaches the sentence.
 #[test]
 fn every_line_of_an_ending_is_one_printable_ascii_line() {
     for reset in [Some(RESET), Some(i64::MIN), Some(i64::MAX), None] {

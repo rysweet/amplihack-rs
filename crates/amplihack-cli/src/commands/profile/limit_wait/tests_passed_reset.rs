@@ -24,6 +24,7 @@
 
 use super::events::Met;
 use super::plan::{WaitFor, Waiting, wait_for_message};
+use super::scratch::Replay;
 use super::tests_fingerprint::{Env, env};
 use super::tests_room_gate::{guarded, signals, waiter};
 use super::{AfterLimit, Resumed, Waiter};
@@ -52,7 +53,7 @@ fn after_a_signal(w: &mut Waiter, wait: WaitFor, probe: &dyn Fn(i64, i64) -> boo
         2,
         &signals(),
         probe,
-        &mut || None,
+        &mut || Replay::Ready,
         Resumed::AfterASignal(Met::UsageLimit),
     )
 }

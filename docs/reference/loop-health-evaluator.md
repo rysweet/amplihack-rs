@@ -847,7 +847,8 @@ unchanged. The caller sees one completed evaluator run with an ordinary
 `amplihack.recipe.usage_limit_wait` `start`, `end` and `resume` lines.
 Step-02 waits for every limit it meets and then runs again; nothing counts
 its waits or caps their total. `max_wait_secs` is the length of one wait, and
-the step timeout is the only bound on the chain; see
+nothing bounds the chain but the limit lifting, a stop signal or the end of
+the session; the step timeout does not cut a wait (issue #3037). See
 [Usage-limit waits](usage-limit-waits.md).
 
 ### The wait is visible in the recipe log
@@ -880,8 +881,8 @@ The time a wait spends is appended to the ledger
 `AMPLIHACK_USAGE_WAIT_LEDGER` names and so is left out of auto-drive's wall
 budget. A step-02 that waits across several logins can therefore hold the
 drive for several `max_wait_secs` of wall time without the budget moving. That
-is the same bargain every kind of wait makes, and the step timeout is what
-bounds it; see
+is the same bargain every kind of wait makes. A stop signal ends it; the step
+timeout does not. See
 [Usage-limit waits](usage-limit-waits.md).
 
 These lines are informational and nothing in this recipe reads them. The
@@ -895,8 +896,9 @@ runner's `amplihack.recipe.failure_class` marker.
 
 A usage limit does not fail step-02: it waits (a
 `waiting_for_capacity` line says why when no reset is known) and runs again.
-When the step times out (`step timeout`) or the output carries no limit
-message, step-02 fails and the recipe runner writes its
+When the wait is turned off (`recipe.usage_limit_wait = false`), or the
+step's prompt could not be read to its end, step-02 fails and the recipe
+runner writes its
 `amplihack.recipe.failure_class` marker with `"class":"usage_limit"`.
 Step-02 does not set `continue_on_error`, so the runner stops the recipe
 there: step-03 and step-04 do not run and no verdict is produced. The

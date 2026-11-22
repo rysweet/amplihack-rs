@@ -52,6 +52,7 @@ use super::change_may_end;
 use super::events::Met;
 use super::fingerprint::Watch;
 use super::plan::{Bound, NoWait, WaitFor, Waiting};
+use super::scratch::Replay;
 use super::settings::WaitSettings;
 use super::tests_fingerprint::{Env, env, private, rotate_ledger};
 use super::tests_wait::{capacity_plan_in, login_change_plan_in, plan_in};
@@ -408,18 +409,21 @@ fn a_ledger_that_is_not_a_regular_file_closes_the_gate() {
 
 // --- the path that never sleeps ----------------------------------------------------
 
-/// A step timeout the step is nowhere near, and a clock fast enough that a
-/// wait reaches its first 30-second poll in milliseconds. Neither is a timer
-/// of the change under test: the waits here end on a reading the test gives.
-const ROOMY_STEP_TIMEOUT: &str = "3600";
+/// A clock fast enough that a wait reaches its first 30-second poll in
+/// milliseconds. It is not a timer of the change under test: the waits here
+/// end on a reading the test gives, or run their own length and retry.
 const FAST: &str = "1000";
-const SILENCED: [&str; 2] = ["AMPLIHACK_USAGE_WAIT_LEDGER", "AMPLIHACK_RECIPE_LOG"];
+const SILENCED: [&str; 3] = [
+    "AMPLIHACK_USAGE_WAIT_LEDGER",
+    "AMPLIHACK_RECIPE_LOG",
+    "AMPLIHACK_STEP_TIMEOUT",
+];
 
 pub(super) fn guarded<T>(f: impl FnOnce() -> T) -> T {
     let _lock = env_lock()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut guard = EnvGuard::set([("AMPLIHACK_STEP_TIMEOUT", ROOMY_STEP_TIMEOUT)]);
+    let mut guard = EnvGuard::set([("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", FAST)]);
     for name in SILENCED {
         guard.clear(name);
     }
@@ -434,7 +438,6 @@ pub(super) fn guarded<T>(f: impl FnOnce() -> T) -> T {
         "AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW",
         crate::commands::profile::fsx::now().to_string(),
     );
-    guard.assign("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", FAST);
     f()
 }
 
@@ -452,7 +455,6 @@ pub(super) fn waiter(e: &Env, max_wait_secs: Option<u64>) -> Waiter {
         super::claude_args::ClaudeArgs {
             print: true,
             prompt: true,
-            stream_stdin: false,
         },
         Box::new(|| false),
     )
@@ -484,7 +486,7 @@ fn after(w: &mut Waiter, wait: WaitFor, n: u32, probe: &dyn Fn(i64, i64) -> bool
         n,
         &signals(),
         probe,
-        &mut || None,
+        &mut || Replay::Ready,
         Resumed::Ordinarily,
     )
 }
@@ -728,7 +730,7 @@ fn after_a_signal(w: &mut Waiter, n: u32, wait: WaitFor) -> AfterLimit {
         n,
         &signals(),
         &|_, _| false,
-        &mut || None,
+        &mut || Replay::Ready,
         Resumed::AfterASignal(Met::UsageLimit),
     )
 }
@@ -850,28 +852,28 @@ fn issue_2911_a_capacity_wait_that_runs_out_retries() {
     });
 }
 
-/// The step's own timeout is not a limit budget and still ends the step. It
-/// is the recipe runner's bound on the step, and a wait may not outlive it.
+/// Issue #3037, review of PR #2992: the step timeout does not end a limit
+/// wait. One already behind the clock used to end this wait at once and
+/// fail the step while the limit still stood. Nothing enforces that
+/// variable on a step - recipe-runner-rs enforces only a step's YAML
+/// `timeout:` - so the wait now runs its own length and the step retries.
 #[test]
-fn issue_2911_the_step_timeout_still_ends_the_step() {
-    let _lock = env_lock()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut guard = EnvGuard::set([("AMPLIHACK_STEP_TIMEOUT", "1")]);
-    for name in SILENCED {
-        guard.clear(name);
-    }
-    guard.assign(
-        "AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW",
-        crate::commands::profile::fsx::now().to_string(),
-    );
-    guard.assign("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", FAST);
-    let e = env();
-    let mut w = waiter(&e, None);
-    w.note_attempt_login();
-    let got = after(&mut w, capacity(), 1, &|_, _| false);
-    assert!(
-        matches!(got, AfterLimit::Finish(None)),
-        "the step's own deadline is already behind the clock"
-    );
+fn issue_3037_a_step_timeout_does_not_end_a_limit_wait() {
+    guarded(|| {
+        let _timeout = EnvGuard::set([("AMPLIHACK_STEP_TIMEOUT", "1")]);
+        let e = env();
+        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        w.note_attempt_login();
+        let before = w.now();
+        let got = after(&mut w, capacity(), 1, &|_, _| false);
+        assert!(
+            matches!(got, AfterLimit::Retry),
+            "a step timeout long behind the clock no longer ends the wait"
+        );
+        let waited = u64::try_from(w.now() - before).unwrap();
+        assert!(
+            waited >= super::plan::MIN_WAIT_SECS,
+            "the wait ran its full length, {waited}s"
+        );
+    });
 }

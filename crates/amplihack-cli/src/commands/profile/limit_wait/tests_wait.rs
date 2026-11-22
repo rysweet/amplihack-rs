@@ -184,7 +184,7 @@ pub(super) fn capacity_plan_in(secs: i64, bound: Bound) -> Plan {
 /// set it itself would stop proving that the constructor does.
 pub(super) fn login_change_plan_in(secs: i64) -> Plan {
     let max = u64::try_from(secs).expect("a login-change wait's length is not negative");
-    super::plan::plan_login_change(T0, Some(max), None)
+    super::plan::plan_login_change(T0, Some(max))
 }
 
 #[test]
@@ -203,7 +203,6 @@ fn each_bound_maps_to_its_end_reason() {
     for (bound, want) in [
         (Bound::ResetMargin, End::ResetReached),
         (Bound::MaxWait, End::MaxReached),
-        (Bound::StepTimeout, End::StepTimeout),
     ] {
         let mut f = Fake::new();
         assert_eq!(wait(&plan_in(75, bound), &mut f), want, "{bound:?}");

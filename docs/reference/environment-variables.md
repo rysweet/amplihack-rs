@@ -450,16 +450,16 @@ and [Recipe Runner Logging](./recipe-runner-logging.md) for full details.
 **Set by:** `amplihack recipe run --step-timeout <SECONDS>`, or from [`recipe.step_timeout`](./user-config.md#recipestep_timeout) in the config files
 **Config key:** `recipe.step_timeout`
 
-Overrides the `timeout_seconds` value defined in individual recipe steps. When set, every step in the recipe uses this value instead of its YAML-defined timeout. A value of `"0"` disables step timeouts entirely, allowing steps to run indefinitely.
+A per-step timeout hint exported to the recipe runner and every step it starts. A value of `"0"` asks for no step timeout. `recipe-runner-rs` does not yet enforce it: the runner enforces only each step's own YAML `timeout:` field, and reads this variable for nothing else (the `--step-timeout` help says the same). A subprocess may honour it; a usage-limit wait does not (below).
 
 This variable is present in the child environment when the user passes `--step-timeout`, when it is already set in the caller's environment (passed on unchanged), or when `recipe.step_timeout` is configured, in that order of precedence. When none applies, YAML-defined `timeout_seconds` values apply as-is (though the default-workflow agent steps no longer define `timeout_seconds`).
 
 ```sh
-# Override all step timeouts to 10 minutes
+# Ask for a 10-minute step timeout
 amplihack recipe run recipe.yaml --step-timeout 600
 # Child process sees: AMPLIHACK_STEP_TIMEOUT=600
 
-# Disable all step timeouts
+# Ask for no step timeout
 amplihack recipe run recipe.yaml --step-timeout 0
 # Child process sees: AMPLIHACK_STEP_TIMEOUT=0
 
@@ -472,7 +472,7 @@ amplihack recipe run recipe.yaml
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
 
-**Usage-limit wait:** a Claude agent step that waits on a usage limit, for a reset, for another login with capacity, or for the login in `~/.claude` to change, ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. The deadline is taken from the step's start, not the wait's, so a step that waits several times over, once per login the rotator brings in, is still bounded by it. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner, as `failed reason=step_timeout`, with one line on standard error saying that the step's own timeout and not the limit ended it. So setting this variable bounds how long a limit may hold a step, and leaving it unset lets a limit wait run as long as the limit does: see [The step timeout cuts a wait](./usage-limit-waits.md#the-step-timeout-cuts-a-wait) and [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
+**Usage-limit wait:** a usage-limit wait does not read this variable. A Claude agent step that waits on a usage limit, for a reset, for another login with capacity, or for the login in `~/.claude` to change, waits on its own terms and then runs the step again, however long the step has already run ([#3037](https://github.com/rysweet/amplihack-rs/issues/3037)). It used to end its wait 60 seconds before this timeout and fail the step with `failed reason=step_timeout`, on the reading that the recipe runner kills a step at this timeout. `recipe-runner-rs` enforces only a step's own YAML `timeout:` field, so that was the only place the variable ended anything. To stop a step waiting, send it a stop signal; to keep steps from waiting at all, set [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait) to `0`. See [The step timeout does not cut a wait](./usage-limit-waits.md#the-step-timeout-does-not-cut-a-wait).
 
 ---
 

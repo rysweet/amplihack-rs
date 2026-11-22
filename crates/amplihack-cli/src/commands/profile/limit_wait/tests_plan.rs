@@ -8,12 +8,13 @@
 //!   readable reset and Codex's credits each become a capacity wait naming
 //!   its [`Waiting`]; a spend limit stating no reset becomes a login-change
 //!   wait. The only two readings left that end a step are not limits: output
-//!   with no limit message in it, and a prompt that cannot be replayed.
-//! - **the deadline.** The earliest applicable row of the table wins, a tie
-//!   is named by the earlier row, and no reset row can push a reset wait
-//!   past now + 5 h + 120 s. Every plan a limit produces ends strictly after
-//!   `now` unless the step timeout brings it back: that is the pacing rule
-//!   that replaced #2731's per-step budget.
+//!   with no limit message in it, and a prompt that could not be read to
+//!   its end.
+//! - **the deadline.** The earlier of the reset row and the wait's length
+//!   wins, a tie is named by the reset row, and no reset row can push a
+//!   reset wait past now + 5 h + 120 s. Every plan a limit produces ends
+//!   strictly after `now`: that is the pacing rule that replaced #2731's
+//!   per-step budget. There is no step-timeout row (issue #3037).
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_plan;`.
 
@@ -42,8 +43,8 @@ fn wait_for(stderr: &[u8], stdout: &[u8], now: i64) -> WaitFor {
     wait_for_message(limit_patterns::limit_message(stderr, stdout, now), now)
 }
 
-fn p(reset: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
-    plan(NOW, reset, max, step)
+fn p(reset: i64, max: Option<u64>) -> Plan {
+    plan(NOW, reset, max)
 }
 
 fn reset_wait(reset: i64) -> WaitFor {
@@ -281,7 +282,7 @@ fn the_takeover_check_is_asked_once_and_only_here() {
 
 #[test]
 fn a_future_reset_waits_until_reset_plus_margin() {
-    let got = p(NOW + 1800, None, None);
+    let got = p(NOW + 1800, None);
     assert_eq!(
         (got.until, got.bound, got.reset),
         (NOW + 1800 + MARGIN, Bound::ResetMargin, Some(NOW + 1800))
@@ -290,44 +291,58 @@ fn a_future_reset_waits_until_reset_plus_margin() {
 
 #[test]
 fn a_maximum_only_shortens_the_wait() {
-    let got = p(NOW + 1800, Some(600), None);
+    let got = p(NOW + 1800, Some(600));
     assert_eq!((got.until, got.bound), (NOW + 600, Bound::MaxWait));
-    let got = p(NOW + 1800, Some(7200), None);
+    let got = p(NOW + 1800, Some(7200));
     assert_eq!((got.until, got.bound), (NOW + 1920, Bound::ResetMargin));
 }
 
 #[test]
 fn a_tie_is_named_by_the_earlier_row() {
-    let got = p(NOW + 480, Some(600), None);
+    let got = p(NOW + 480, Some(600));
     assert_eq!((got.until, got.bound), (NOW + 600, Bound::ResetMargin));
-    let got = p(NOW + 1800, Some(600), Some((NOW, 660)));
+    let got = p(NOW + 1800, Some(600));
     assert_eq!((got.until, got.bound), (NOW + 600, Bound::MaxWait));
 }
 
+/// Issue #3037, review of PR #2992: a deadline is set by the limit's reset
+/// or by the wait's own length, and by nothing else. The match is
+/// exhaustive on purpose: a row added back for the step timeout, or for any
+/// other clock, does not compile here until this test says what it is.
 #[test]
-fn a_step_timeout_ends_the_wait_sixty_seconds_before_it() {
-    let got = p(NOW + 1800, None, Some((NOW - 100, 1000)));
-    assert_eq!((got.until, got.bound), (NOW + 840, Bound::StepTimeout));
-    for t in [1u64, 30, 60] {
-        let got = p(NOW + 1800, None, Some((NOW, t)));
-        assert_eq!((got.until, got.bound), (NOW, Bound::StepTimeout), "{t}");
+fn issue_3037_a_deadline_is_the_reset_or_the_wait_length_and_nothing_else() {
+    fn row(b: Bound) -> &'static str {
+        match b {
+            Bound::ResetMargin => "reset+margin",
+            Bound::MaxWait => "max_wait",
+        }
     }
-    let got = p(NOW + 1800, None, Some((NOW - 5000, 1000)));
-    assert_eq!((got.until, got.bound), (NOW, Bound::StepTimeout), "used up");
-    let got = p(NOW + 1800, None, Some((NOW, 0)));
-    assert_eq!((got.until, got.bound), (NOW + 1920, Bound::ResetMargin));
+    for b in [Bound::ResetMargin, Bound::MaxWait] {
+        assert_eq!(b.as_str(), row(b));
+    }
+    // Each planner's deadline is exactly its own rows, however long the
+    // step has already run: none of them is told when the step started.
+    let got = p(NOW + 1800, None);
+    assert_eq!(
+        (got.until, got.bound),
+        (NOW + 1800 + MARGIN, Bound::ResetMargin)
+    );
+    let got = plan_capacity(NOW, None, Some(21_600));
+    assert_eq!((got.until, got.bound), (NOW + 21_600, Bound::MaxWait));
+    let got = plan_login_change(NOW, Some(21_600));
+    assert_eq!((got.until, got.bound), (NOW + 21_600, Bound::MaxWait));
 }
 
 #[test]
 fn extreme_inputs_saturate_without_panicking() {
-    let got = p(i64::MAX, Some(u64::MAX), Some((i64::MAX, u64::MAX)));
+    let got = p(i64::MAX, Some(u64::MAX));
     assert_eq!(got.until, NOW + CEILING);
-    let got = p(i64::MIN, None, Some((i64::MIN, u64::MAX)));
-    assert_eq!(got.until, NOW);
-    let got = plan(i64::MAX - 10, i64::MAX, Some(u64::MAX), None);
+    let got = p(i64::MIN, None);
+    assert_eq!(got.until, NOW + MARGIN);
+    let got = plan(i64::MAX - 10, i64::MAX, Some(u64::MAX));
     assert!(got.until >= i64::MAX - 10);
-    let got = plan(i64::MIN, i64::MIN, None, Some((i64::MIN, 1)));
-    assert_eq!(got.until, i64::MIN, "never earlier than now");
+    let got = plan(i64::MIN, i64::MIN, None);
+    assert!(got.until > i64::MIN, "strictly after now");
 }
 
 #[test]
@@ -342,22 +357,13 @@ fn until_is_always_between_now_and_the_ceiling() {
         i64::MAX,
     ];
     let maxes = [None, Some(0), Some(1800), Some(18_120), Some(u64::MAX)];
-    let steps = [
-        None,
-        Some((NOW, 0)),
-        Some((NOW, 61)),
-        Some((i64::MIN, u64::MAX)),
-        Some((i64::MAX, u64::MAX)),
-    ];
     for r in resets {
         for m in maxes {
-            for s in steps {
-                let got = p(r, m, s);
-                assert!(
-                    got.until >= NOW && got.until - NOW <= CEILING,
-                    "reset {r} max {m:?} step {s:?}"
-                );
-            }
+            let got = p(r, m);
+            assert!(
+                got.until >= NOW && got.until - NOW <= CEILING,
+                "reset {r} max {m:?}"
+            );
         }
     }
 }
@@ -367,8 +373,8 @@ fn until_is_always_between_now_and_the_ceiling() {
 // #2731 bounded a chain of limits with a per-step budget, which ended runs.
 // What bounds it now is that every wait costs time: each plan a limit can
 // produce ends strictly after `now`, so a chain is paced by waiting rather
-// than by counting. Only the step's own timeout may bring a deadline back
-// to `now`, and that is the recipe runner's bound and not a limit budget.
+// than by counting. Nothing brings a deadline back to `now`: the step
+// timeout no longer has a row (issue #3037).
 
 /// The floor the configured length is read through, which is what keeps the
 /// rule true for every configured value and not only for an unset one. Two
@@ -386,38 +392,18 @@ fn issue_2911_every_plan_a_limit_produces_ends_strictly_after_now() {
     let maxes = [None, Some(MIN_WAIT_SECS), Some(600), Some(21_600)];
     for max in maxes {
         for ahead in [1i64, 60, 1800, FIVE_HOURS] {
-            let got = plan(NOW, NOW + ahead, max, None);
+            let got = plan(NOW, NOW + ahead, max);
             assert!(
                 got.until > NOW,
                 "reset {ahead}s ahead, max {max:?}: {got:?}"
             );
         }
         for reset in [None, Some(NOW - 86_400), Some(NOW + 7 * 86_400)] {
-            let got = plan_capacity(NOW, reset, max, None);
+            let got = plan_capacity(NOW, reset, max);
             assert!(got.until > NOW, "capacity, reset {reset:?}, max {max:?}");
         }
-        let got = plan_login_change(NOW, max, None);
+        let got = plan_login_change(NOW, max);
         assert!(got.until > NOW, "login change, max {max:?}");
-    }
-}
-
-#[test]
-fn issue_2911_only_the_step_timeout_may_end_a_wait_at_once() {
-    let step = Some((NOW - 5000, 1000));
-    assert_eq!(
-        (
-            plan(NOW, NOW + 1800, None, step).bound,
-            plan_capacity(NOW, None, None, step).bound,
-            plan_login_change(NOW, None, step).bound,
-        ),
-        (Bound::StepTimeout, Bound::StepTimeout, Bound::StepTimeout)
-    );
-    for got in [
-        plan(NOW, NOW + 1800, None, step),
-        plan_capacity(NOW, None, None, step),
-        plan_login_change(NOW, None, step),
-    ] {
-        assert_eq!(got.until, NOW, "{got:?}");
     }
 }
 
@@ -427,7 +413,7 @@ fn issue_2911_only_the_step_timeout_may_end_a_wait_at_once() {
 #[test]
 fn a_reset_at_or_before_now_is_still_floored_at_the_margin() {
     for reset in [NOW, NOW - 300, i64::MIN] {
-        let got = p(reset, None, None);
+        let got = p(reset, None);
         assert_eq!(
             (got.until, got.bound, got.reset),
             (NOW + MARGIN, Bound::ResetMargin, Some(reset))
@@ -439,12 +425,12 @@ fn a_reset_at_or_before_now_is_still_floored_at_the_margin() {
 
 #[test]
 fn a_reset_plan_is_of_the_reset_kind() {
-    assert_eq!(p(NOW + 1800, None, None).kind, PlanKind::Reset);
+    assert_eq!(p(NOW + 1800, None).kind, PlanKind::Reset);
 }
 
 #[test]
 fn a_capacity_wait_lasts_the_maximum_with_no_five_hour_ceiling() {
-    let got = plan_capacity(NOW, Some(NOW + 86_400), Some(21_600), None);
+    let got = plan_capacity(NOW, Some(NOW + 86_400), Some(21_600));
     assert_eq!(
         (got.until, got.bound, got.kind, got.reset),
         (
@@ -454,49 +440,18 @@ fn a_capacity_wait_lasts_the_maximum_with_no_five_hour_ceiling() {
             Some(NOW + 86_400)
         )
     );
-    let got = plan_capacity(NOW, None, Some(86_400), None);
+    let got = plan_capacity(NOW, None, Some(86_400));
     assert_eq!((got.until, got.reset), (NOW + 86_400, None));
 }
 
 #[test]
-fn a_step_timeout_ends_a_capacity_wait_sixty_seconds_before_it() {
-    let got = plan_capacity(NOW, None, Some(21_600), Some((NOW - 100, 1000)));
-    assert_eq!((got.until, got.bound), (NOW + 840, Bound::StepTimeout));
-    let got = plan_capacity(NOW, None, Some(21_600), Some((NOW, 0)));
-    assert_eq!(
-        (got.until, got.bound),
-        (NOW + 21_600, Bound::MaxWait),
-        "a timeout of 0 does not apply"
-    );
-    let got = plan_capacity(NOW, None, Some(21_600), Some((NOW - 5000, 1000)));
-    assert_eq!(
-        (got.until, got.bound),
-        (NOW, Bound::StepTimeout),
-        "used up: never earlier than now"
-    );
-}
-
-#[test]
-fn a_tie_on_a_capacity_wait_is_named_max_wait() {
-    let got = plan_capacity(NOW, None, Some(600), Some((NOW, 660)));
-    assert_eq!((got.until, got.bound), (NOW + 600, Bound::MaxWait));
-}
-
-#[test]
 fn extreme_capacity_inputs_saturate_without_panicking() {
-    let got = plan_capacity(NOW, None, Some(u64::MAX), None);
+    let got = plan_capacity(NOW, None, Some(u64::MAX));
     assert_eq!(got.until, i64::MAX, "no overflow, no ceiling");
-    let got = plan_capacity(NOW, None, Some(u64::MAX), Some((NOW, 1000)));
-    assert_eq!((got.until, got.bound), (NOW + 940, Bound::StepTimeout));
-    let got = plan_capacity(
-        i64::MAX - 10,
-        Some(i64::MAX),
-        Some(u64::MAX),
-        Some((i64::MAX, u64::MAX)),
-    );
+    let got = plan_capacity(i64::MAX - 10, Some(i64::MAX), Some(u64::MAX));
     assert!(got.until >= i64::MAX - 10);
-    let got = plan_capacity(i64::MIN, None, Some(MIN_WAIT_SECS), Some((i64::MIN, 1)));
-    assert_eq!(got.until, i64::MIN, "never earlier than now");
+    let got = plan_capacity(i64::MIN, None, Some(MIN_WAIT_SECS));
+    assert!(got.until > i64::MIN, "strictly after now");
 }
 
 #[test]
@@ -508,30 +463,25 @@ fn the_capacity_default_is_the_schema_default() {
     assert_eq!(key.default, Some(CAPACITY_DEFAULT_MAX.to_string().as_str()));
 }
 
-// AC5: with the setting unset, a capacity wait lasts the six-hour default,
-// and a step timeout that ends sooner ends it sooner.
+// AC5: with the setting unset, a capacity wait lasts the six-hour default.
+// A reset further away does not lengthen it: the wait ends at the default
+// and the step retries.
 #[test]
 fn ac5_an_unset_maximum_gives_a_capacity_wait_of_six_hours() {
-    let got = plan_capacity(NOW, None, None, None);
+    let got = plan_capacity(NOW, None, None);
     assert_eq!(
         (got.until, got.bound, got.kind),
         (NOW + 21_600, Bound::MaxWait, PlanKind::Capacity)
     );
-    let got = plan_capacity(NOW, Some(NOW + 3 * 86_400), None, Some((NOW, 3600)));
-    assert_eq!((got.until, got.bound), (NOW + 3540, Bound::StepTimeout));
-    let got = plan_capacity(NOW, None, None, Some((NOW, 30_000)));
-    assert_eq!(
-        (got.until, got.bound),
-        (NOW + 21_600, Bound::MaxWait),
-        "a later step timeout does not lengthen the wait"
-    );
+    let got = plan_capacity(NOW, Some(NOW + 3 * 86_400), None);
+    assert_eq!((got.until, got.bound), (NOW + 21_600, Bound::MaxWait));
 }
 
 // The six-hour capacity default never reaches a reset wait: with no maximum
 // a reset wait still ends at its reset plus margin, inside five hours.
 #[test]
 fn the_capacity_default_does_not_bound_a_reset_wait() {
-    let got = p(NOW + 4 * 3600, None, None);
+    let got = p(NOW + 4 * 3600, None);
     assert_eq!(
         (got.until, got.bound, got.kind),
         (NOW + 4 * 3600 + MARGIN, Bound::ResetMargin, PlanKind::Reset)
@@ -544,12 +494,12 @@ fn the_capacity_default_does_not_bound_a_reset_wait() {
 #[test]
 fn capacity_maximum_boundaries() {
     assert_eq!(
-        plan_capacity(NOW, None, Some(MIN_WAIT_SECS), None).until,
+        plan_capacity(NOW, None, Some(MIN_WAIT_SECS)).until,
         NOW + i64::try_from(MIN_WAIT_SECS).unwrap()
     );
     let big = u64::try_from(i64::MAX).unwrap();
     for max in [big - 1, big, big + 1] {
-        let got = plan_capacity(NOW, None, Some(max), None);
+        let got = plan_capacity(NOW, None, Some(max));
         assert!(got.until >= NOW, "max {max}: {got:?}");
         assert_eq!(got.bound, Bound::MaxWait);
     }
@@ -561,7 +511,7 @@ fn capacity_maximum_boundaries() {
 #[test]
 fn a_capacity_wait_ends_at_the_failed_logins_reset_before_the_maximum() {
     let reset = NOW + 5 * 3600 + 1800;
-    let got = plan_capacity(NOW, Some(reset), None, None);
+    let got = plan_capacity(NOW, Some(reset), None);
     assert_eq!(
         (got.until, got.bound, got.kind, got.reset),
         (
@@ -571,19 +521,13 @@ fn a_capacity_wait_ends_at_the_failed_logins_reset_before_the_maximum() {
             Some(reset)
         )
     );
-    let got = plan_capacity(NOW, Some(NOW + 21_600 - MARGIN), Some(21_600), None);
+    let got = plan_capacity(NOW, Some(NOW + 21_600 - MARGIN), Some(21_600));
     assert_eq!(
         (got.until, got.bound),
         (NOW + 21_600, Bound::ResetMargin),
         "a tie with the maximum is named by the reset, which retries"
     );
-    let got = plan_capacity(NOW, Some(reset), None, Some((NOW, 3600)));
-    assert_eq!(
-        (got.until, got.bound),
-        (NOW + 3540, Bound::StepTimeout),
-        "a step timeout that ends sooner still ends it"
-    );
-    let got = plan_capacity(NOW, Some(NOW - 10), Some(600), None);
+    let got = plan_capacity(NOW, Some(NOW - 10), Some(600));
     assert_eq!(
         (got.until, got.bound),
         (NOW + 600, Bound::MaxWait),
@@ -602,10 +546,10 @@ fn issue_2911_the_wait_for_a_passed_reset_has_real_length() {
     };
     assert_eq!(why, Waiting::PassedReset);
     for max in [Some(MIN_WAIT_SECS), Some(600), Some(21_600), None] {
-        let got = plan_capacity(NOW, reset, max, None);
+        let got = plan_capacity(NOW, reset, max);
         assert!(got.until > NOW, "max {max:?}: {got:?}");
     }
     // And the plan a reset wait would have given, had the planner built one:
     // the margin is what keeps even that above `now`.
-    assert_eq!(plan(NOW, past, None, None).until, NOW + MARGIN);
+    assert_eq!(plan(NOW, past, None).until, NOW + MARGIN);
 }

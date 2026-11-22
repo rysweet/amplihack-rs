@@ -11390,9 +11390,8 @@ What an attempt receives depends on what stdin is:
 
 | Stdin | First attempt | A rerun |
 |-------|---------------|---------|
-| A pipe or a socket, prompt not in the arguments | A pipe fed by the copier (below) | A read-only regular file holding everything the copier stored, opened at offset 0. It is not a pipe |
+| A pipe or a socket, prompt not in the arguments, an `--input-format` channel included | A pipe fed by the copier (below) | A read-only regular file holding everything the copier stored, opened at offset 0; or, when the disk refused part of the copy, a pipe fed with the stored bytes from memory |
 | A pipe or a socket, prompt in the arguments | Inherited unchanged | `/dev/null` |
-| A pipe or a socket carrying an `--input-format` channel | Inherited unchanged | `/dev/null` |
 | A regular file | Inherited unchanged | The file again, from the offset the step started at (on Linux through its own open of `/proc/self/fd/0`, so no read offset is shared with other processes) |
 | A terminal | Inherited unchanged | Inherited unchanged |
 | A closed descriptor | Inherited unchanged | `/dev/null` |
@@ -11411,14 +11410,15 @@ to. That is what lets the supervisor stand down and leave fd 0 whole (below),
 and it is why a write that fails on the attempt's end of the pipe always
 means a step that stopped reading rather than an attempt that never ran.
 
-`--input-format` with a value other than `text` is the one piped stdin that
-is not a prompt. `stream-json` makes stdin a control channel that is read for
-as long as the session — amplihack's own usage request is one — whose caller
-holds it open on purpose and writes to it as the session goes on. There is no
-end of it to copy, and replaying a session's history to a retry would not be
-replaying a prompt, so nothing is copied and such a step keeps the conduct
-every piped prompt had before this feature: no wait and no rerun
-(`skipped reason=piped_prompt`).
+`--input-format stream-json` makes stdin a channel of messages rather than one
+prompt, and it is copied and replayed like any other piped prompt (issue
+#3036). Every supervised attempt's stdout is held back until the step finishes,
+and the output of an attempt that is run again is discarded, so the caller has
+seen nothing of an attempt that met a limit; a retry given the same input from
+its first byte is the same step from the caller's side. A channel its caller
+still holds open when a retry is due is waited for, as below. amplihack's own
+usage request also uses `stream-json`, but it runs `claude` directly and is
+never supervised.
 
 The capture file is `<pid>-0.in` in the supervisor's rerun directory (see
 above). It is created at `0600` with `O_EXCL`, `O_NOFOLLOW` and
@@ -11440,11 +11440,11 @@ nothing promises it will ever be closed. So the supervisor joins the copier
 only when it is certain to finish — it has already reached the end of stdin,
 it has already failed, or the last writer of stdin has gone, after which what
 is left to read is only what the kernel is already holding. Otherwise the
-prompt is still arriving, the rerun is refused, and the step ends with the
-limited attempt's own result. Nothing is timed: the question asked is the
-state of the descriptor, not the clock. A refusal is not recorded either, so
-the question is asked again at the next rerun — after a wait of hours, by
-which point a caller that was still writing has long since finished.
+prompt is still arriving, and the rerun waits for it (the fifth case below).
+Nothing is timed: the question asked is the state of the descriptor, not the
+clock. It is normally answered at once, because the rerun comes after a wait
+of hours, by which point a caller that was still writing has long since
+finished.
 
 A write to an attempt that has already exited (`EPIPE`) is ignored: it stops
 neither the copy nor the step, the capture still receives the whole prompt,
@@ -11456,33 +11456,29 @@ copier always drains the runner's write, so the runner's own warning cannot
 fire for such a step and this line takes its place. Like the runner's it is
 diagnostic: it names no part of the prompt and changes no exit code.
 
-Four failures differ in what they do. The first three cost the rerun; the
-fourth costs the prompt itself, and is the only one the attempt in hand can
-be harmed by.
+Four failures differ in what they do. Since issue #3036 the first two cost
+nothing a rerun needs; the third is the copier's own failure; the fourth costs
+the prompt itself, and is the only one the attempt in hand can be harmed by.
 
 - **The capture file cannot be created**, for instance because the rerun
-  directory is missing. No byte of stdin has been consumed, so attempt one
-  inherits stdin untouched. The step is then neither rerun by auto-switch
-  (`auto-switch: no rerun under profile …`) nor waited for
-  (`skipped reason=piped_prompt`). `piped_prompt` therefore means that the
-  prompt could not be stored, not that it was on a pipe.
+  directory is missing. The copy is then held in memory from its first byte,
+  and standard error says so once
+  (`amplihack: this step's prompt could not be stored on disk for a rerun (…),
+  so it is kept in memory instead`). A rerun is fed the stored bytes through a
+  pipe, and the step waits out its limit as it would otherwise.
 - **The capture file cannot be written** while the copy runs, through
   `ENOSPC` or `EIO`. Attempt one is not affected and still receives every
   byte that arrives, because the capture is secondary to the attempt in
-  hand. The copier writes one line naming the error as it happens
-  (`amplihack: this step's prompt could not be stored for a rerun (…)`),
-  which is the only record of the cause: the supervisor reads the loss as a
-  flag and never the copier's result, so without that line a full disk and a
-  prompt nothing meant to copy would look alike. It reads that flag when it
-  classifies the limit, before it plans anything: the step takes the same two
-  refusals as a capture that was never created, and the attempt's own result,
-  its held-back stdout included, is passed up. No wait is announced and none
-  is served.
-- **The loss lands too late to be read that way**: a copier that failed on
-  its final flush, one that panicked, or one that had not yet reached the
-  failing write when the limit was classified. The rerun then returns an
-  error instead of starting. The prompt is never replayed from a partial
-  file, and this case does not write `skipped reason=piped_prompt`.
+  hand. The copier writes one line naming the error as it happens and keeps
+  the rest of the prompt in memory, starting with the whole block whose write
+  failed. A rerun is given the bytes the file held before the failure,
+  followed by the bytes in memory. Memory is used only once the disk has
+  refused the copy, and is not capped, because a cap would be a budget that
+  ends a step on a limit.
+- **The copier itself fails**: it panicked, its final flush failed, or the
+  part of the prompt the file held before the disk refused the rest cannot
+  be read back. The rerun is refused with `skipped reason=piped_prompt` and
+  a line naming the reason. The prompt is never replayed from a partial copy.
 - **Stdin cannot be read to its end.** There are no further bytes to
   forward, so the copy ends for both sinks and attempt one's stdin closes.
   Closing it is the only signal a pipe gives its reader, and a reader takes
@@ -11516,16 +11512,17 @@ be harmed by.
   the next byte with `poll(2)` and reads again, exactly as a blocking read
   would have.
 
-A fifth case is not a failure of the copy at all: **the caller never closes
+A fifth case is not a failure of the copy at all: **the caller has not closed
 the pipe.** A step that meets no usage limit never settles the copier and
 finishes as it always did. A step that does meet one waits for its reset,
 and the retry it earns is announced only once the prompt it would read is
-known to be there. It is not, so no retry is announced: the step ends with
-the limited attempt's own result, its held-back stdout included, the run log
-says `skipped reason=piped_prompt`, and standard error names the cause in
-full (`amplihack: no retry after the wait: this step's prompt is still
-arriving on a pipe its caller has not closed …`). This is the rule that a
-supervised step never waits on a pipe nobody closes, applied to the capture.
+known to be there. When it is not, the retry waits for it (issue #3036): the
+step writes `amplihack.recipe.usage_limit_wait waiting_for_prompt` once, to
+standard error and to the recipe log, looks again every second, and announces
+the retry as soon as the caller closes the pipe. A stop signal or the end of
+the step's session ends that wait as it ends a limit wait, so a supervised
+step is never blocked deaf on a pipe nobody closes. Before issue #3036 this
+case ended the step with `skipped reason=piped_prompt`.
 
 **Standing down.** The supervisor stands down, and the caller runs the step
 once in this process, when it cannot start at all: no scratch directory, no
@@ -11548,9 +11545,9 @@ list. An option in no table, such as one a newer Claude added, is read as
 taking the next non-option word as its value. That errs toward "no prompt in
 the arguments", which means that the supervisor also copies stdin, a pipe
 that the step never reads included. What that costs is a capture file and, if
-the step meets a usage limit and its caller holds the pipe open, the refused
-rerun described above — never a step held up, and never a byte of the prompt
-in argv, which Claude reads as it always did.
+the step meets a usage limit and its caller holds the pipe open, a rerun that
+waits for the caller to close it, as described above. It never costs a byte
+of the prompt in argv, which Claude reads as it always did.
 
 ### Order of attempts
 
@@ -11566,30 +11563,29 @@ After an attempt hits a usage limit, in this order:
    step: no `start` or `end` is written and the wait stays unused, so a
    limit on that rerun still goes through steps 4 to 6. A piped prompt is
    replayed from its stored copy, so this rerun is made. It is refused only
-   when there is no whole copy to replay (see
-   [Stdin](#stdin-handling)) — none was stored, or the prompt is still
-   arriving — and the reason is named
+   when there is no whole copy to replay yet (see
+   [Stdin](#stdin-handling)) — the prompt could not be read to its end, or
+   it is still arriving — and the reason is named
    (`auto-switch: no rerun under profile …`). The step then goes on to
    step 4: the log gets `skipped reason=disabled` (or `ci`) from step 4
    when the wait is off, else `skipped reason=piped_prompt` from step 5 if
-   nothing was stored. A prompt that is merely still arriving does not block
-   the wait, which is asked again when it ends;
+   the prompt could not be read to its end. A prompt that is merely still
+   arriving does not block the wait, whose retry waits for it;
 4. the wait disabled: `skipped reason=disabled` (or `ci`), and the result
    is passed up;
 5. the output carries no limit message in a harness's shape
-   (`skipped reason=no_limit_message`), or the prompt is piped and no whole
-   copy of it was stored (`skipped reason=piped_prompt`): the result is
-   passed up. A prompt that is merely still arriving is not stored yet, and
-   the question is asked again at the next rerun;
+   (`skipped reason=no_limit_message`), or the prompt is piped and could not
+   be read to its end, so the step fails whether or not it met a limit
+   (`skipped reason=piped_prompt`): the result is passed up. A prompt that is
+   merely still arriving is not stored yet, and the retry waits for it;
 6. otherwise the limit selects a wait (see
    [Capacity wait](#capacity-wait) for the table): a reset wait, a capacity
    wait or a [login-change wait](#login-change-wait). A capacity or
    login-change wait writes a `waiting_for_capacity` line, then `start`, the
    wait, and `end`. After `end reason=signal` the step exits with `128` plus
    the signal; after `session ended` the failed attempt's result is passed up;
-   after `step timeout` the [closing line](#closing-line) is written and the
-   failed attempt's result is passed up; after any other reason `resume` is
-   written and the step runs once more.
+   after any other reason `resume` is written and the step runs once more,
+   once its prompt is there to read (`waiting_for_prompt` while it is not).
 
 No limit message ends a step except through step 5. A limit with no readable
 reset, a reset more than five hours away, a reset behind the clock and a spend
@@ -11649,12 +11645,15 @@ waits, no mark per login and no budget, and a wait on a login it has already
 waited on is not refused. `max_wait_secs` is the length of one wait, not a
 total for the step (see
 [What max_wait_secs means](./usage-limit-waits.md#what-max_wait_secs-means)),
-and each wait is planned with the full value. The step timeout, the end of the
-step's session, a stop signal and the five-hour ceiling on a reset wait apply
-to each wait unchanged.
+and each wait is planned with the full value. The end of the step's session,
+a stop signal and the five-hour ceiling on a reset wait apply to each wait
+unchanged. `AMPLIHACK_STEP_TIMEOUT` does not: a step timeout does not cut a
+wait or stop the retry after it (issue #3037; see
+[The step timeout does not cut a wait](./usage-limit-waits.md#the-step-timeout-does-not-cut-a-wait)).
 
-Only these end a step: the step timeout, a stop signal, the end of the
-session, `skipped reason=no_limit_message` and `skipped reason=piped_prompt`.
+Only these end a step: a stop signal, the end of the session, the wait turned
+off, `skipped reason=no_limit_message` and `skipped reason=piped_prompt` (a
+piped prompt that could not be read to its end).
 Every retry runs the step **from the start** with the same prompt, so anything
 a failed attempt already did (a commit, a push, a comment) may happen again.
 Write agent steps so that running one twice is harmless.
@@ -11709,8 +11708,8 @@ as the transient transport fault it is, and writes no wait line at all. Every
 | A 429 report, and another login could take over | A capacity wait with `reset=none` |
 | A 429 report, and no login could take over | No wait; the 429 is passed up as a transient fault |
 
-The checks that apply to every wait apply here too: a disabled wait, a stop
-signal and `AMPLIHACK_STEP_TIMEOUT`. Each re-entry that starts a wait writes
+The checks that apply to every wait apply here too: a disabled wait and a stop
+signal. Each re-entry that starts a wait writes
 one `reentered` line, once, before the second wait's `start`, as shown under
 [Log lines](#log-lines).
 
@@ -11730,9 +11729,8 @@ capacity instead of from the clock, on the first attempt as on a retry:
 - It is a [capacity wait](#capacity-wait), announced with
   `waiting_for_capacity ... reason=passed_reset`, and its `start` line carries
   the stated reset in `reset=`.
-- The reset adds no deadline, because it is behind the clock. The wait ends at
-  the earlier of one `max_wait_secs` and the step timeout, so `bound=` reads
-  `max_wait` or `step_timeout`; see
+- The reset adds no deadline, because it is behind the clock. The wait ends
+  after one `max_wait_secs`, so `bound=` reads `max_wait`; see
   [Capacity wait deadline](#capacity-wait-deadline).
 - It ends on the signals any capacity wait ends on (see
   [Reasons a wait ends](#reasons-a-wait-ends)), and on a `$HOME/.claude` step
@@ -11805,7 +11803,6 @@ candidate that applies (a tie is named by the earlier row):
 |-----------|--------------|----------|
 | reset + 120 s, or now when the reset has passed | always | `reset+margin` |
 | now + `max_wait_secs` | always | `max_wait` |
-| step start + `AMPLIHACK_STEP_TIMEOUT` − 60 s, never before now | the step timeout is set and above 0 | `step_timeout` |
 
 No input can make a reset wait longer than five hours and 120 seconds.
 `max_wait_secs` is the length of one wait, with a floor of 60 seconds. A reset
@@ -11900,7 +11897,6 @@ come first, then the deadline, then the 30 s probes in the order listed.
 | `reset reached` | reset, capacity | the `reset+margin` deadline passed; on a capacity wait this is the failed login's own reset | yes |
 | `max reached` | reset, login change | the `max_wait` deadline passed with no signal | yes, on the same login. A limit on the retry starts another wait |
 | `capacity expired` | capacity | the `max_wait` deadline passed with no signal and no login showed room | yes; the [retry login](#retry-login) rules choose where. A limit on the retry starts another wait |
-| `step timeout` | all | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no; [closing line](#closing-line) |
 | `login changed` | all | the login changed before the wait was planned, or two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline. On a reset or capacity wait for a `$HOME/.claude` step, the change counts only when the login that arrived [has room](#waking-only-on-room) | yes |
 | `rotator capacity` | reset, capacity | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle that meets the [rotator room rule](#rotator-room-rule): a cycle with capacity (`swapped`, `stayed` or `switched`, no alert; `stayed-unread` is not capacity) that says room (`live_room: true`, or a `switched` record that does not state `false`), whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
 | `login capacity` | reset, capacity | the step runs under an inherited profile with auto-switch on, and a [reading](#readings) taken after the wait began shows that another stored profile has capacity (see [Capacity for a profile step](#capacity-for-a-profile-step)) | yes, under that profile |
@@ -12177,33 +12173,29 @@ A capacity wait ends at the earliest of:
 |-----------|--------------|----------|
 | the failed login's reset + 120 s | the limit message states a reset that is still in the future | `reset+margin` |
 | now + `max_wait_secs` (default `21600`, 6 hours) | always | `max_wait` |
-| step start + `AMPLIHACK_STEP_TIMEOUT` − 60 s, never before now | the step timeout is set and above 0 | `step_timeout` |
 
 A reset the clock has already passed adds no candidate, so the wait for a
 [reset behind the clock](#a-reset-that-has-already-passed) ends at the
-maximum or the step timeout and is named `max_wait` or `step_timeout`. Its
+maximum and is named `max_wait`. Its
 `start` line still prints the stated reset in `reset=`.
 
 
-A tie between the reset and the maximum is named `reset+margin`; a tie
-between the maximum and the step timeout is named `max_wait`. A reset
+A tie between the reset and the maximum is named `reset+margin`. A reset
 5 h 30 m away with a six-hour maximum therefore ends the wait at 5 h 32 m
 with `end reason=reset reached` and a retry, because the failed login has
 recovered by then. There is no five-hour ceiling: a user file or
 `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a longer maximum, and a
 capacity wait honours it. A project file can only lower it (see
 [Usage-limit wait settings](#usage-limit-wait-settings)). The arithmetic
-saturates, so a maximum near `u64::MAX` waits until the step timeout, or
-indefinitely without one, rather than overflowing.
+saturates, so a maximum near `u64::MAX` waits indefinitely rather than
+overflowing.
 
 `max_wait_secs` is the length of one wait, with a floor of 60 seconds: `0`
 reads as 60 (see
 [What max_wait_secs means](./usage-limit-waits.md#what-max_wait_secs-means)).
 A capacity wait that reaches its `max_wait` deadline with no signal ends with
 `end reason=capacity expired` and the step retries. A limit on that retry starts
-another wait. When the step timeout comes first, the wait ends with
-`end reason=step timeout`, the [closing line](#closing-line) is written and
-the failed attempt's result is passed up.
+another wait. The step timeout plays no part (issue #3037).
 
 
 #### Capacity for a profile step
@@ -12412,31 +12404,20 @@ amplihack: a login has capacity again; rerunning this step under profile "person
 
 #### Closing line
 
-When a wait reaches the step timeout, the supervisor writes one more line
-after the last progress line:
+No closing line is written any more. Until issue #3037 a wait that reached
+the step timeout wrote one more line after its last progress line,
+`failed reason=step_timeout: usage limit not lifted`, and the step failed
+while its limit still stood. A step timeout no longer cuts a wait (see
+[The step timeout does not cut a wait](./usage-limit-waits.md#the-step-timeout-does-not-cut-a-wait)),
+and a wait that reaches its `max_wait` deadline is not a failure either: the
+step retries (see [Removed endings](./usage-limit-waits.md#removed-endings)).
+No line the wait writes begins `failed`.
 
-```
-amplihack.recipe.usage_limit_wait failed reason=step_timeout: usage limit not lifted
-```
-
-| `reason=` | Written when |
-|-----------|--------------|
-| `step_timeout` | a wait of any kind reached its `step_timeout` deadline |
-
-No other reason is written. A wait that reaches its `max_wait` deadline is
-not a failure: the step retries (see
-[Removed endings](./usage-limit-waits.md#removed-endings)).
-
-The recipe runner reads the last 40 lines of a failed step as evidence. A
-long wait writes a progress line every 60 s, which can push Claude's own
-limit message out of that window. The closing line contains `usage limit`,
-so the runner's classifier still records the failure as `usage_limit` in its
-`amplihack.recipe.failure_class` marker. The usual ranking (a work marker,
-then an environmental marker, then a usage limit) is unchanged. The line is
-not in the shape of a limit message, so it never starts another wait. The
-child's exit code is passed up unchanged, so a policy refusal still exits
-`79`.
-
+A step that does end on a limit, because the wait is turned off or its piped
+prompt could not be read to its end, is still classed `usage_limit` by the
+recipe runner from the harness's own message and, for the second case, from
+the sentence the step writes beside `skipped reason=piped_prompt` (see
+[A prompt that could not be read to its end](./usage-limit-waits.md#a-prompt-that-could-not-be-read-to-its-end)).
 [Auto-drive](./auto-drive-to-merge.md#usage-limits-are-not-stuck-or-hand-off) reads
 that marker and stops a loop as `USAGE_LIMIT`, not `STUCK`.
 
@@ -12510,7 +12491,6 @@ could ever arrive.
 | Candidate | Applies when | `bound=` |
 |-----------|--------------|----------|
 | now + `max_wait_secs` (default `21600`, 6 hours; floor 60 s) | always | `max_wait` |
-| step start + `AMPLIHACK_STEP_TIMEOUT` − 60 s, never before now | the step timeout is set and above 0 | `step_timeout` |
 
 A tie is named `max_wait`. There is no reset row, because the limit stated
 no reset, so the `start` line carries `reset=none`. There is no five-hour
@@ -12519,18 +12499,15 @@ occur. The `start` line also reads `reason=spend_limit` rather than
 `reason=usage_limit`, because a spend limit is the only limit that starts
 this wait; see [Log lines](#log-lines).
 
-Two bounds hold a chain of these waits on a host that swaps often. Each wait
-is planned with one full `max_wait_secs`, so no wait is cut short by the
-ones before it. `AMPLIHACK_STEP_TIMEOUT` is the bound on the whole step, and
-the tighter one on a long step: it is folded into every wait's deadline,
-counted from the step's start rather than the wait's, so repeated waits cannot
-push it back.
+Each wait in a chain of these is planned with one full `max_wait_secs`, so no
+wait is cut short by the ones before it. Nothing bounds the chain as a whole:
+`AMPLIHACK_STEP_TIMEOUT` is not folded into any wait's deadline (issue #3037),
+and a stop signal is what ends a step that must stop waiting.
 
 | `end reason=` | Retry |
 |---------------|-------|
 | `login changed` | yes, on the login now live in `~/.claude` |
 | `max reached` | yes, on the same login; a limit on that retry starts another wait |
-| `step timeout` | no; [closing line](#closing-line) |
 | `signal` | no; exits `128` + signal |
 | `session ended` | no |
 
@@ -12555,20 +12532,21 @@ The `start` and `end` lines of each wait also go to the run's
 [recipe log](#the-wait-in-the-recipe-log) when there is one, and so does a
 `reentered` line, which is identical in both sinks. The `end` line is
 identical; the `start` line is this one with `harness=` dropped and
-`account=<login>` put where it was. No other event reaches that sink.
+`account=<login>` put where it was. A `waiting_for_capacity` line and a
+`waiting_for_prompt` line reach it too. No other event reaches that sink.
 
 | Event | Fields |
 |-------|--------|
 | `start` (reset wait) | `reason=usage_limit harness=claude reset=<time> until=<time> bound=<bound>` |
-| `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time> bound=max_wait\|step_timeout` |
-| `start` (login-change wait) | `reason=spend_limit wait=login_change harness=claude reset=none until=<time> bound=max_wait\|step_timeout` |
+| `start` (capacity wait) | `reason=usage_limit wait=capacity harness=claude reset=<time>\|none until=<time> bound=reset+margin\|max_wait` |
+| `start` (login-change wait) | `reason=spend_limit wait=login_change harness=claude reset=none until=<time> bound=max_wait` |
 | `reentered` | `met=usage_limit\|rate_limit`; once per [re-entry](#a-limit-after-a-wait), before that wait's `start`. `met=usage_limit` is also written for a [passed reset](#a-reset-that-has-already-passed), whose `start` is a capacity wait |
 | `progress` | `remaining=<secs>s`, every 60 s |
 | `end` | `reason=<end reason>` from the table above |
 | `resume` | `attempt=<n>`, counting every attempt in the step |
 | `skipped` | `reason=disabled\|ci\|not_supervised\|no_limit_message\|piped_prompt` |
 | `waiting_for_capacity` | `reason=reset_too_far\|no_reset\|spend_limit\|credits\|passed_reset harness=<name> until=<time>`, before the wait's `start`; the recipe log has `account=<login>` in place of `harness=` |
-| `failed` | `reason=step_timeout`, followed by `: usage limit not lifted` |
+| `waiting_for_prompt` | no fields; once, when the retry a wait earned is waiting for the rest of a piped prompt its caller has not closed (see [Stdin handling](#stdin-handling)). Identical in the recipe log |
 
 `reason=` on a `start` line says **what stopped the step**, not which kind
 of wait followed. An organisation spend limit that states no reset, which is
@@ -12717,8 +12695,8 @@ amplihack.recipe.usage_limit_wait waiting_for_capacity reason=passed_reset harne
 amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=2026-11-19 08:30:00 -08:00 until=2026-11-19 20:00:09 -08:00 bound=max_wait
 ```
 
-The chain has no end of its own. It ends when a retry succeeds or when the
-step timeout, a stop signal or the end of the session applies.
+The chain has no end of its own. It ends when a retry succeeds, a stop signal
+arrives or the session ends; the step timeout does not end it.
 
 A stated reset of `0` or `1` is written like any other time (at `-08:00`,
 `1969-12-31 16:00:00 -08:00`), and an instant the zone cannot represent is
@@ -12778,9 +12756,9 @@ The fields, in order:
 Every token means the same thing in both sinks. The line is the stderr
 `start` line with `harness=` dropped and `account=` put in its place, so one
 `grep amplihack.recipe.usage_limit_wait` over the recipe log and the step's
-stderr together reads as one stream. The
-[closing line](#closing-line)'s own `failed reason=…` is a different event
-and never reaches the recipe log, so a `reason=` here is always a `start`
+stderr together reads as one stream. No
+`failed reason=…` line is written any more (see [Closing line](#closing-line)),
+so a `reason=` here is always a `start`
 line's.
 
 A login-change wait therefore appears as:
@@ -12907,10 +12885,10 @@ so a configured `0` reads as 60. To disable waiting, set
 `21600` is a default, not a ceiling: a user `config.toml` or the variable may set a higher value, which
 a capacity wait honours. A project `config.toml` may only lower the
 maximum, so a repository cannot make your runs wait longer.
-A capacity or login-change wait does not use the reset time, so the maximum
-and `AMPLIHACK_STEP_TIMEOUT` are its only bounds. With a very large maximum
-and no step timeout, the step waits until a login has capacity again, the
-login changes, a signal arrives or the session ends.
+A capacity or login-change wait does not use the reset time, so the maximum is
+its only bound; `AMPLIHACK_STEP_TIMEOUT` is not one (issue #3037). With a very
+large maximum the step waits until a login has capacity again, the login
+changes, a signal arrives or the session ends.
 An invalid maximum is not an error that stops a run: `config set` rejects
 it with exit code `2`, and a file or variable value is reported by the
 config loader and ignored, so the next layer down applies. See

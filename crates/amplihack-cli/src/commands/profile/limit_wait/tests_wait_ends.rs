@@ -103,15 +103,6 @@ fn a_zero_length_capacity_wait_expires_without_sleeping() {
 }
 
 #[test]
-fn a_step_timeout_is_still_a_step_timeout_on_a_capacity_wait() {
-    let mut f = Fake::new();
-    assert_eq!(
-        wait(&capacity_plan_in(90, Bound::StepTimeout), &mut f),
-        End::StepTimeout
-    );
-}
-
-#[test]
 fn another_login_with_capacity_ends_the_wait_at_the_next_poll() {
     let mut f = Fake::new();
     f.other_from = Some(40);
@@ -289,16 +280,6 @@ fn the_end_of_the_steps_session_outranks_other_capacity_on_a_reset_wait() {
         wait(&plan_in(13_500, Bound::ResetMargin), &mut f),
         End::SessionEnded,
         "nobody is left to use the retry's result"
-    );
-}
-
-#[test]
-fn a_step_timeout_outranks_other_capacity_on_a_reset_wait() {
-    let mut f = Fake::new();
-    f.other_from = Some(0);
-    assert_eq!(
-        wait(&plan_in(30, Bound::StepTimeout), &mut f),
-        End::StepTimeout
     );
 }
 

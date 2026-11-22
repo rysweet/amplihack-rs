@@ -2247,8 +2247,7 @@ rotator brings in may belong to another organisation, so the step waits for the
 login to change and nothing else. The wait needs no running rotator: with none
 running it runs one `max_wait_secs` and the step retries. A step pinned to
 `~/.claude` with a spend limit that no login change lifts therefore waits in
-cycles of six hours until the limit lifts, the step timeout applies or the run
-is stopped.
+cycles of six hours until the limit lifts or the run is stopped.
 
 
 "And nothing else" is literal. A spend limit is on the organisation's
@@ -2329,8 +2328,8 @@ back to the recipe runner as the transient fault it is.
 A wait that ran out its own maximum is followed by an ordinary retry like any
 other, and a limit on that retry starts another wait. There is no refusal, no
 retry count and no budget; the chain is paced by the deadline of each wait.
-The step timeout, a stop signal and the end of the session are different: each
-of those ends the step, and they are the only endings that still do. See
+A stop signal and the end of the session are different: each of those ends the
+step. The step timeout does not cut a wait (issue #3037). See
 [What ends a step and what does not](../reference/usage-limit-waits.md#what-ends-a-step-and-what-does-not).
 
 
@@ -2382,8 +2381,9 @@ To see which runs are waiting, search the recipe log:
 grep 'usage_limit_wait waiting_for_capacity' "$AMPLIHACK_RECIPE_LOG"
 ```
 
-A step the wait cannot lift stays in this loop until the step timeout, a stop
-signal or the end of the session. If you would rather a run end at a limit,
+A step the wait cannot lift stays in this loop until the limit lifts, a stop
+signal arrives or the session ends; the step timeout does not end it. If you
+would rather a run end at a limit,
 set `recipe.usage_limit_wait = false`; `recipe.usage_limit_max_wait_secs = 0`
 does not do that, because it reads as the 60-second minimum. See
 [Usage-limit waits](../reference/usage-limit-waits.md#what-max_wait_secs-means).
@@ -2411,18 +2411,21 @@ A usage limit always starts a wait. The run ends with no wait only when:
   CI with no setting;
 - the output carries no limit message in the harness's own shape, so it is
   not a limit;
-- the prompt came on a pipe and could not be copied aside, so no attempt
-  after the first could read it (auto-switch then does not rerun the step
-  under another profile either). A piped prompt that was copied is replayed
-  and does not stop the wait;
-- standard input is an `--input-format` channel rather than a prompt, which
-  is read for as long as the session and cannot be replayed to a retry.
+- the prompt came on a pipe and could not be read to its end, so the attempt
+  was given only part of its task and the step fails whether or not it met a
+  limit (auto-switch then does not rerun the step under another profile
+  either).
+
+A piped prompt is copied aside and replayed to every retry, an
+`--input-format` channel included. A copy the disk refuses carries on in
+memory, and a prompt still arriving when the retry is due is waited for,
+with a `waiting_for_prompt` line (issue #3036).
 
 Model output that merely mentions a usage limit never starts a wait.
 
 The wait stops without a rerun when the run is stopped (Ctrl-C, `SIGTERM`
-or `SIGHUP`), when the process that started the step exits, or when the
-step's timeout is about to run out.
+or `SIGHUP`) or when the process that started the step exits. The step's
+timeout does not stop it.
 
 The rerun starts the step from the beginning, so anything the failed
 attempt already did, such as a push or a comment, may happen again. Keep

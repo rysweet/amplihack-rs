@@ -96,7 +96,7 @@ fn a_configured_zero_wait_length_is_raised_to_the_floor_and_still_waits() {
     let starts: Vec<&String> = ev.iter().filter(|l| l.starts_with("start ")).collect();
     assert_eq!(starts.len(), 2, "{ev:?}");
     // Every wait is bounded by the configured length, so by the floor: not
-    // by `reset+margin`, and not by the step timeout.
+    // by `reset+margin`. No step timeout bounds a wait (issue #3037).
     for l in &starts {
         assert!(
             l.ends_with(" bound=max_wait"),

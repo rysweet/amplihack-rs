@@ -334,6 +334,10 @@ Unset everywhere, the runner's own default applies (agent steps have no
 timeout). The config value must be at least 1; to disable timeouts for one
 run, pass `--step-timeout 0`.
 
+A usage-limit wait does not read this value: a step timeout does not cut a
+wait or stop the retry after it (see
+[The step timeout does not cut a wait](./usage-limit-waits.md#the-step-timeout-does-not-cut-a-wait)).
+
 A project file can only lower this value below the user file's. When the user
 file does not set it, the project value applies.
 

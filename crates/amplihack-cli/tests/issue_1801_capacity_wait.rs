@@ -712,80 +712,56 @@ fn a_user_maximum_above_six_hours_is_honoured() {
     );
 }
 
-/// The step's own timeout is the one ending issue #2911 left in place for a
-/// capacity wait: it is the recipe runner's bound on the step, not a limit
-/// budget, so the wait closes with `failed reason=step_timeout` and no
-/// retry is announced.
+/// Issue #3037, review of PR #2992: a step timeout does not end a capacity
+/// wait. This step used to stop at `failed reason=step_timeout` with no
+/// retry while its limit still stood. Nothing enforces that variable on a
+/// step - recipe-runner-rs enforces only a step's YAML `timeout:` - so the
+/// wait now ends on its own terms and the step retries.
 #[test]
-fn a_step_timeout_on_a_capacity_wait_writes_the_closing_line() {
+fn issue_3037_a_step_timeout_does_not_end_a_capacity_wait() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     c.env("AMPLIHACK_STEP_TIMEOUT", "30");
     let out = f.run(&mut c);
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(f.count("0"), 1, "no retry");
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "the step retried after its wait");
     let ev = events(&out);
     assert_waits_for_capacity(&ev, 0, "reset_too_far");
-    assert!(ev[1].ends_with(" bound=step_timeout"), "{ev:?}");
-    assert_eq!(
-        ev[2..],
-        [
-            "end reason=step timeout",
-            "failed reason=step_timeout: usage limit not lifted",
-        ]
+    assert!(!ev[1].contains("step_timeout"), "{ev:?}");
+    assert!(
+        ev.iter().any(|e| e == "resume attempt=2"),
+        "the wait earned a retry: {ev:?}"
     );
-}
-
-// Progress lines can push the limit message out of the runner's 40-line
-// evidence tail, so a reset wait ended by the step timeout also closes with
-// the failed line, and the step is still classed usage_limit.
-#[test]
-fn a_reset_wait_at_a_step_timeout_writes_the_closing_line() {
-    let f = Fixture::new();
-    let mut c = f.step();
-    c.env("AMPLIHACK_STEP_TIMEOUT", "30");
-    let out = f.run(&mut c);
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    let ev = events(&out);
-    assert!(ev[0].ends_with(" bound=step_timeout"), "{ev:?}");
-    assert_eq!(
-        ev[1..],
-        [
-            "end reason=step timeout",
-            "failed reason=step_timeout: usage limit not lifted",
-        ]
-    );
-    assert_eq!(
-        wait_lines(&out).last().map(String::as_str),
-        Some("failed reason=step_timeout: usage limit not lifted"),
-        "the closing line is the wait's last line"
+    assert!(
+        ev.iter()
+            .all(|e| !e.contains("step timeout") && !e.contains("failed")),
+        "{ev:?}"
     );
 }
 
 /// The limited attempt's own exit code is what the step exits with, wherever
 /// the step ends on a limit at all.
 ///
-/// Issue #2911 took away the ending this test used to reach, a maximum of
-/// `0`: a limit never ends a step now, so a zero-length wait would simply
-/// retry and the retry succeeds. The ending used here is the one that is
-/// left, the step's own timeout, which brings the wait's deadline back to
-/// `now`; the attempt's code still passes through untouched.
+/// Issues #2911 and #3037 took away the endings this test used to reach, a
+/// maximum of `0` and then the step's own timeout: a limit never ends a
+/// step now. What is left is an operator turning the wait off, which passes
+/// the limited attempt's result straight up, and its code untouched.
 #[test]
 fn the_exit_code_passes_through_unchanged() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
-    c.env("AMPLIHACK_STEP_TIMEOUT", "30").env("LIMIT_EXIT", "7");
+    c.env("AMPLIHACK_USAGE_LIMIT_WAIT", "0")
+        .env("LIMIT_EXIT", "7");
     let out = f.run(&mut c);
     assert_eq!(out.status.code(), Some(7), "{}", describe(&out));
-    assert_eq!(f.count("0"), 1, "no retry past the step's own deadline");
-    assert_eq!(
-        events(&out).last().map(String::as_str),
-        Some("failed reason=step_timeout: usage limit not lifted"),
-        "{}",
+    assert_eq!(f.count("0"), 1, "no retry with the wait turned off");
+    assert!(
+        events(&out).iter().all(|e| !e.starts_with("start ")),
+        "no wait was started: {}",
         describe(&out)
     );
 }

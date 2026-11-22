@@ -72,10 +72,6 @@ pub(super) enum Event {
         attempt: u32,
     },
     Skipped(Skip),
-    /// The last line of a step that ends on a limit no wait lifted. Its text
-    /// keeps the failure class in the recipe runner's 40-line evidence tail
-    /// when progress lines have pushed the harness's own message out.
-    Failed(FailReason),
     /// The retry a wait earned met a limit of its own, so the signal that
     /// ended that wait was wrong and the step waits again (issue #2857).
     /// Written once per re-entry, immediately before the new wait's
@@ -98,6 +94,12 @@ pub(super) enum Event {
         why: Waiting,
         until: i64,
     },
+    /// The retry a wait earned is waiting for the rest of the step's
+    /// prompt, which is still arriving on a pipe its caller has not closed
+    /// (issue #3036). Written once, to the step's stderr and to the run's
+    /// recipe log, so an operator can see that the step is waiting for its
+    /// input rather than hung. It used to end the step instead.
+    WaitingForPrompt,
 }
 
 /// Which limit met the retry a wait earned (issue #2857). A closed set, so
@@ -110,32 +112,6 @@ pub(crate) enum Met {
     RateLimit,
 }
 
-/// Why the step ended on a usage limit a wait could not lift.
-///
-/// One reason is left (issue #2911). `capacity_expired`, `spend_limit` and
-/// `already_waited` each ended a run that a limit should only have delayed,
-/// so the paths that wrote them are gone: a capacity wait that reaches its
-/// deadline retries, as does a login-change wait, and no refusal counts a
-/// step's waits. The step timeout is not a limit budget but the recipe
-/// runner's own bound on the step, so it stays: the runner kills the step at
-/// that time regardless, and the wait ends just before it so that this line
-/// is written at all. It does mean a step with a timeout set can fail while
-/// a limit still stands; the step says so in words beside this event
-/// (`ending::step_timeout_note`), and issue #3037 carries the
-/// question of whether an unattended run should carry such a bound.
-#[derive(Clone, Copy)]
-pub(super) enum FailReason {
-    StepTimeout,
-}
-
-impl FailReason {
-    fn as_str(self) -> &'static str {
-        match self {
-            FailReason::StepTimeout => "step_timeout",
-        }
-    }
-}
-
 /// Why no wait was made at all.
 #[derive(Clone, Copy)]
 pub(super) enum Skip {
@@ -143,7 +119,8 @@ pub(super) enum Skip {
     NotSupervised,
     /// Off because this is CI and nothing turned it on.
     Ci,
-    /// The output carries no limit message, or the prompt cannot be replayed.
+    /// The output carries no limit message, or the prompt could not be read
+    /// to its end, so no retry can be given the whole of it.
     Cannot(NoWait),
 }
 
@@ -219,7 +196,7 @@ where
             "{PREFIX} {}",
             capacity_body(*why, &account_field(account), *until, tz)
         )),
-        Event::End(_) | Event::Reentered { .. } => Some(line(e, tz)),
+        Event::End(_) | Event::Reentered { .. } | Event::WaitingForPrompt => Some(line(e, tz)),
         _ => None,
     }
 }
@@ -285,7 +262,7 @@ where
                 Skip::Cannot(why) => why.as_str(),
             }
         ),
-        Event::Failed(why) => format!("failed reason={}: usage limit not lifted", why.as_str()),
+        Event::WaitingForPrompt => "waiting_for_prompt".to_string(),
         Event::Reentered { met } => format!(
             "reentered met={}",
             match met {

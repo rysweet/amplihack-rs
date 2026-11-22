@@ -18,7 +18,7 @@
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_log_recipe;`.
 
 use super::Met;
-use super::events::{Event, FailReason, Shape, Skip, line, recipe_line};
+use super::events::{Event, Shape, Skip, line, recipe_line};
 use super::plan::{Bound, NoWait, Waiting};
 use super::wait::End;
 use crate::commands::recipe::run::limit_patterns::Harness;
@@ -98,7 +98,8 @@ fn the_reason_and_the_wait_token_are_not_the_same_field() {
 }
 
 /// Issue #2911: a spend limit no longer closes a step, so there is no
-/// closing line for one. The token a reader greps for is written by the
+/// closing line for one, and since issue #3037 there is no closing line for
+/// any limit. The token a reader greps for is written by the
 /// wait itself instead: on the `start` line's `reason=`, above, and on the
 /// `waiting_for_capacity` line below.
 #[test]
@@ -111,11 +112,6 @@ fn issue_2911_a_spend_limit_writes_its_token_on_the_wait_and_not_on_an_ending() 
     assert!(
         l.contains("waiting_for_capacity reason=spend_limit "),
         "{l}"
-    );
-    assert_eq!(
-        stderr(&Event::Failed(FailReason::StepTimeout)),
-        "amplihack.recipe.usage_limit_wait failed reason=step_timeout: usage limit not lifted",
-        "the one closing reason left is the step's own bound"
     );
 }
 
@@ -147,13 +143,13 @@ fn the_recipe_log_keeps_the_wait_token_where_stderr_has_it() {
     );
     assert_eq!(
         recipe(
-            &start(Shape::Capacity, Some(T30), T32, Bound::StepTimeout),
+            &start(Shape::Capacity, Some(T30), T32, Bound::ResetMargin),
             Some("c")
         )
         .unwrap(),
         "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity \
          account=c reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 \
-         bound=step_timeout"
+         bound=reset+margin"
     );
 }
 
@@ -266,7 +262,6 @@ fn the_end_line_is_identical_in_both_sinks() {
         End::MaxReached,
         End::RotatorCapacity,
         End::CapacityExpired,
-        End::StepTimeout,
         End::SessionEnded,
         End::OtherCapacity,
         End::Signal(libc::SIGTERM),
@@ -287,13 +282,12 @@ fn the_end_line_is_identical_in_both_sinks() {
 /// `waiting_for_capacity` (#2911) lines and nothing else; the last two are
 /// tested in their own sections below.
 #[test]
-fn progress_resume_skipped_and_failed_lines_never_reach_the_recipe_log() {
+fn progress_resume_and_skipped_lines_never_reach_the_recipe_log() {
     for e in [
         Event::Progress { remaining: 1740 },
         Event::Resume { attempt: 2 },
         Event::Skipped(Skip::Cannot(NoWait::NoLimitMessage)),
         Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)),
-        Event::Failed(FailReason::StepTimeout),
     ] {
         assert_eq!(
             recipe(&e, Some("work")),
@@ -332,14 +326,13 @@ fn issue_2857_the_re_entry_line_never_carries_the_login() {
 }
 
 /// The recipe log still carries nothing but a wait's `start`, its `end` and
-/// this line: no `progress`, `resume`, `skipped` or `failed`.
+/// this line: no `progress`, `resume` or `skipped`.
 #[test]
 fn issue_2857_the_re_entry_line_is_the_only_addition_to_what_the_recipe_log_carries() {
     for e in [
         Event::Progress { remaining: 5 },
         Event::Resume { attempt: 2 },
         Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)),
-        Event::Failed(FailReason::StepTimeout),
     ] {
         assert_eq!(recipe(&e, Some("work")), None);
     }

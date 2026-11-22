@@ -12,23 +12,26 @@
 //! step may wait as many times as it meets one, and the chain is paced by
 //! the waits costing time rather than by a count or a budget. A wait with no
 //! reset it can end on says so plainly, as `waiting_for_capacity`, naming
-//! the login and why. What still ends a step is its own timeout, a stop
-//! signal, the end of its session, output with no limit message in it, and a
-//! piped prompt that cannot be replayed.
+//! the login and why. What still ends a step is a stop signal, the end of
+//! its session, output with no limit message in it, and a prompt that could
+//! not be read to its end.
 //!
-//! Two of those can end a step that *has* met a limit, so "a limit never
-//! ends a step" is not what this says and is not what the documentation
-//! claims. The step timeout is the recipe runner's bound on the step, which
-//! the runner enforces by killing it; the wait ends a minute early so the
-//! step can report instead (issue #3037). A prompt that cannot be replayed
-//! leaves no retry for a wait to earn (issue #3036). Neither is a limit
-//! being refused, and neither is work that failed, so each hands the run
-//! what it needs to resume: a sentence naming which bound ended the step,
-//! the words that class the failure `usage_limit`, and when the limit lifts.
-//! The event lines alone carry none of that. `ending` builds those
-//! sentences and says why each part of them is there;
-//! `tests_ending_evidence` pins it by classifying each ending exactly as
-//! the recipe runner would.
+//! No clock ends a limit wait. `$AMPLIHACK_STEP_TIMEOUT` used to: the wait
+//! ended a minute before it and the step failed, on the reading that the
+//! recipe runner kills a step at that time. It does not - recipe-runner-rs
+//! enforces only a step's own YAML `timeout:` field - so this module was the
+//! only code that turned the variable into an ending, and only for steps
+//! waiting on a limit (issue #3037, review of PR #2992). It no longer reads
+//! it.
+//!
+//! A prompt that could not be read to its end fails its step whether or not
+//! a limit is met, because the attempt was given less than its task; it is
+//! the one input no retry can be given (issue #3036). Such a step hands the
+//! run what it needs to resume: a sentence naming why no retry can run, the
+//! words that class the failure `usage_limit`, and when the limit lifts.
+//! The event line alone carries none of that. `ending` builds the sentence
+//! and says why each part of it is there; `tests_ending_evidence` pins it
+//! by classifying the ending exactly as the recipe runner would.
 //!
 //! Each wait's `start`, `waiting_for_capacity` and `end` also reach the run's
 //! recipe log, so a waiting step is visible there and not just in its own
@@ -102,19 +105,17 @@ use super::store::ProfileStore;
 use amplihack_utils::rotator_status::Ledger;
 use anyhow::Result;
 use clock::Clock;
-use ending::{no_retry_is_possible, the_step_timeout_cut_the_wait};
+use ending::no_retry_is_possible;
 pub(crate) use events::Met;
-use events::{Event, FailReason, Shape, Skip, log, recipe_line};
+use events::{Event, Shape, Skip, log, recipe_line};
 use fingerprint::{Fingerprint, Source, Watch};
 use marks::Marks;
-use plan::{Bound, NoWait, PlanKind, WaitFor, plan, plan_capacity, plan_login_change};
+use plan::{NoWait, PlanKind, WaitFor, plan, plan_capacity, plan_login_change};
 pub(crate) use recipe_log::RECIPE_LOG_ENV;
 pub(crate) use settings::WaitSettings;
 use std::path::PathBuf;
 use std::time::Duration;
 use wait::{End, WaitDeps};
-
-const STEP_TIMEOUT_ENV: &str = "AMPLIHACK_STEP_TIMEOUT";
 
 /// How the attempt whose limit is being judged came to run (issue #2857).
 ///
@@ -259,8 +260,6 @@ pub(crate) struct Waiter {
     /// file (`changed`).
     attempt_login: Option<(Source, String)>,
     clock: Clock,
-    step_start: i64,
-    step_timeout: Option<u64>,
     watch: Watch,
     /// The process that started this step, read before any attempt runs.
     parent: libc::pid_t,
@@ -294,22 +293,11 @@ impl Waiter {
         args: claude_args::ClaudeArgs,
         home_takeover: Box<dyn Fn() -> bool>,
     ) -> Self {
-        let clock = Clock::new();
-        let step_start = clock.now();
-        // Trimmed, as the config loader reads it: a stray space must not
-        // drop the bound and let the wait outlive the step.
-        let step_timeout = std::env::var(STEP_TIMEOUT_ENV)
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
-            .and_then(|v| v.parse().ok());
         Self {
             settings,
             marks: Marks::new(),
             attempt_login: None,
-            clock,
-            step_start,
-            step_timeout,
+            clock: Clock::new(),
             watch,
             // SAFETY: getppid(2) has no preconditions.
             parent: unsafe { libc::getppid() },
@@ -402,19 +390,6 @@ impl Waiter {
         self.args.prompt
     }
 
-    /// Whether stdin is a control channel rather than a prompt that ends:
-    /// `--input-format` with anything but `text` (issue #2816).
-    ///
-    /// Such a channel is read for as long as the session and its caller
-    /// holds it open on purpose, so there is no end of it to copy and no
-    /// replaying it to a retry. A step reading one keeps the conduct it had
-    /// before #2815: nothing is copied, and a usage limit ends it with
-    /// `skipped reason=piped_prompt` rather than waiting for a reset it
-    /// could not use.
-    pub(crate) fn stdin_is_a_channel(&self) -> bool {
-        self.args.stream_stdin
-    }
-
     /// Whether another login could take over this `$HOME/.claude` step.
     /// Called when a limit is seen, so steps that never hit one make no
     /// reads.
@@ -462,16 +437,16 @@ impl Waiter {
     /// step on `$HOME/.claude` or under an explicit login stays put.
     ///
     /// `replay()` is asked, at the moment a retry is about to be announced,
-    /// why the step's prompt cannot be given to one; `None` means it can
-    /// (issue #2816). It is asked here, and not before the wait, because a
-    /// prompt still arriving on a pipe when the limit is seen has normally
-    /// arrived by the time a wait of hours ends: a refusal before the wait
-    /// would throw away the rerun that waiting earns. A refusal here ends
-    /// the step with the limit result and `skipped reason=piped_prompt`,
-    /// rather than announcing a retry that cannot run. That is a reading of
-    /// the step and not of the limit: there are no bytes for a retry to
-    /// read, so a wait would earn nothing (see [`ending::no_retry_note`] and
-    /// issue #3036).
+    /// what the step's input can give one (issues #2816, #3036). It is asked
+    /// here, and not before the wait, because a prompt still arriving on a
+    /// pipe when the limit is seen has normally arrived by the time a wait
+    /// of hours ends. One that has not ([`scratch::Replay::Arriving`]) is
+    /// waited for: the retry starts once its caller closes the pipe, and
+    /// until then the step says `waiting_for_prompt` and answers stop
+    /// signals and the end of its session as a wait does. Only an input no
+    /// retry can ever be given ([`scratch::Replay::Never`], a prompt that
+    /// could not be read to its end) ends the step, with the limit result
+    /// and `skipped reason=piped_prompt` (see [`ending::no_retry_note`]).
     ///
     /// `resumed` says how the attempt that hit this limit came to run
     /// (issue #2857). [`Resumed::AfterASignal`] means a wait had just ended
@@ -482,18 +457,19 @@ impl Waiter {
     ///
     /// Issue #2911: nothing here refuses a wait for a limit. A second and a
     /// third limit in one step each wait, and the chain is paced by the
-    /// waits costing time rather than by a count or a budget: every plan a
-    /// limit produces ends strictly after `now` unless the step timeout
-    /// brings it back (see `plan`). What still ends a step is the step's own
-    /// timeout, a stop signal, the end of its session, output with no limit
-    /// message in it, and a piped prompt that cannot be replayed.
+    /// waits costing time rather than by a count, a budget or a clock: every
+    /// plan a limit produces ends strictly after `now` (see `plan`), and
+    /// reaching its deadline retries the step. `$AMPLIHACK_STEP_TIMEOUT`
+    /// plays no part (issue #3037). What still ends a step is a stop signal,
+    /// the end of its session, output with no limit message in it, and a
+    /// prompt that could not be read to its end.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
         n: u32,
         signals: &Signals,
         probe: &dyn Fn(i64, i64) -> bool,
-        replay: &mut dyn FnMut() -> Option<String>,
+        replay: &mut dyn FnMut() -> scratch::Replay,
         resumed: Resumed,
     ) -> AfterLimit {
         // Cleared here, so only a `Retry` below can leave it set and no
@@ -533,24 +509,17 @@ impl Waiter {
             Resumed::AfterASignal(_) | Resumed::Ordinarily => None,
         };
         let now = self.clock.now();
-        let step = self.step_timeout.map(|t| (self.step_start, t));
         let waiting = self
             .blocked
             .map_or(inherited, |(why, _)| WaitFor::Skip(why));
         let (harness, p, shape) = match waiting {
-            WaitFor::Reset { harness, reset } => {
-                (harness, plan(now, reset, max, step), Shape::Reset)
+            WaitFor::Reset { harness, reset } => (harness, plan(now, reset, max), Shape::Reset),
+            WaitFor::Capacity { harness, reset, .. } => {
+                (harness, plan_capacity(now, reset, max), Shape::Capacity)
             }
-            WaitFor::Capacity { harness, reset, .. } => (
-                harness,
-                plan_capacity(now, reset, max, step),
-                Shape::Capacity,
-            ),
-            WaitFor::LoginChange { harness } => (
-                harness,
-                plan_login_change(now, max, step),
-                Shape::LoginChange,
-            ),
+            WaitFor::LoginChange { harness } => {
+                (harness, plan_login_change(now, max), Shape::LoginChange)
+            }
             WaitFor::Skip(why) => {
                 // Review of PR #2992: the step is about to end carrying the
                 // limit's own result, and `skipped reason=piped_prompt`
@@ -619,21 +588,9 @@ impl Waiter {
         // the same room gate the wait's own exits use holds it back, and the
         // step then waits as it would have had nothing moved.
         if changed(&self.attempt_login, self.watch.login()) && change_may_end(&p, &self.watch) {
-            // The step's own deadline still binds. A wait may not outlive
-            // the step, and neither may a retry started in its place: with
-            // the deadline already behind us `wait` would return
-            // `StepTimeout` at once, so this zero-sleep path must finish
-            // the same way rather than launch a fresh attempt the runner
-            // is about to kill (issue #2731).
-            if p.bound == Bound::StepTimeout && self.clock.now() >= p.until {
-                emit(&Event::End(End::StepTimeout), account);
-                the_step_timeout_cut_the_wait(p.reset, self.clock.now());
-                log(&Event::Failed(FailReason::StepTimeout));
-                return AfterLimit::Finish(None);
-            }
             emit(&Event::End(End::LoginChanged), account);
-            if no_prompt_for_a_retry(replay, p.reset, self.clock.now()) {
-                return AfterLimit::Finish(None);
+            if let Some(finish) = self.prompt_for_the_retry(replay, p.reset, signals, account) {
+                return finish;
             }
             log(&Event::Resume {
                 attempt: n.saturating_add(1),
@@ -671,13 +628,6 @@ impl Waiter {
         match end {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),
             End::SessionEnded => AfterLimit::Finish(None),
-            End::StepTimeout => {
-                the_step_timeout_cut_the_wait(p.reset, self.clock.now());
-                // Progress lines may have pushed the limit message out of the
-                // runner's evidence tail, so this line keeps it classed.
-                log(&Event::Failed(FailReason::StepTimeout));
-                AfterLimit::Finish(None)
-            }
             // Issue #2911: a capacity wait that reached its deadline, and a
             // login-change wait that reached its, each retry rather than end
             // the step. Nothing has lifted the limit, and the retry may well
@@ -691,8 +641,8 @@ impl Waiter {
             | End::LoginChanged
             | End::RotatorCapacity
             | End::OtherCapacity => {
-                if no_prompt_for_a_retry(replay, p.reset, self.clock.now()) {
-                    return AfterLimit::Finish(None);
+                if let Some(finish) = self.prompt_for_the_retry(replay, p.reset, signals, account) {
+                    return finish;
                 }
                 log(&Event::Resume {
                     attempt: n.saturating_add(1),
@@ -705,41 +655,74 @@ impl Waiter {
             }
         }
     }
+
+    /// The input for the retry this wait earned, asked of `replay` the
+    /// moment before the retry would be announced: `None` when the retry
+    /// can run, or how the step ends instead (issues #2816, #3036).
+    ///
+    /// A step whose prompt arrives on a pipe is replayed from the copy the
+    /// supervisor kept (issue #2815). A copy whose caller has not finished
+    /// writing is not refused: the retry waits for the rest, saying so once
+    /// on a `waiting_for_prompt` line, and starts as soon as the caller
+    /// closes the pipe. That wait ends early only as a limit wait does, on a
+    /// stop signal or with the step's session, so it is not a way for a
+    /// limit to end a step. It used to be one (issue #3036).
+    ///
+    /// The one input that ends the step is one no retry can ever be given:
+    /// a prompt that could not be read to its end. Its attempt was given
+    /// less than its task, so the step fails whether or not it met a limit,
+    /// and the reason is printed because `piped_prompt` alone does not say
+    /// it. `reset` is the limit's own reset, so the layer that has to send
+    /// the step again is told when doing so is worth anything, or that
+    /// nothing here can say (`ending::resumes_at`).
+    fn prompt_for_the_retry(
+        &mut self,
+        replay: &mut dyn FnMut() -> scratch::Replay,
+        reset: Option<i64>,
+        signals: &Signals,
+        account: Option<&str>,
+    ) -> Option<AfterLimit> {
+        let mut said = false;
+        loop {
+            match replay() {
+                scratch::Replay::Ready => return None,
+                scratch::Replay::Never(why) => {
+                    eprintln!("amplihack: no retry after the wait: {why}");
+                    no_retry_is_possible(NO_WHOLE_PROMPT, reset, self.clock.now());
+                    log(&Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)));
+                    return Some(AfterLimit::Finish(None));
+                }
+                scratch::Replay::Arriving => {
+                    if !said {
+                        emit(&Event::WaitingForPrompt, account);
+                        said = true;
+                    }
+                    if let Some(sig) = signals.received() {
+                        return Some(AfterLimit::Finish(Some(128 + sig)));
+                    }
+                    // SAFETY: getppid(2) has no preconditions. A parent that
+                    // exits re-parents this process, so the id changes.
+                    if unsafe { libc::getppid() } != self.parent {
+                        return Some(AfterLimit::Finish(None));
+                    }
+                    self.clock.sleep(PROMPT_POLL);
+                }
+            }
+        }
+    }
 }
 
-/// Whether the retry this wait earned has no prompt to read, asked of
-/// `replay` the moment before the retry would be announced (issue #2816).
-///
-/// A step whose prompt arrives on a pipe is replayed from the copy the
-/// supervisor kept (issue #2815), and there are two ways that copy can be
-/// missing when the wait ends: it was lost, or the caller never finished
-/// writing the prompt and so there is no whole copy of it to give. Either
-/// way the retry cannot run, and the wait's own vocabulary already has the
-/// word for it. The reason is printed because `piped_prompt` alone does not
-/// say which of the two it was.
-///
-/// `reset` is the limit's own reset and `now` the wait's clock, so the
-/// caller that has to send the prompt again is told when doing so is worth
-/// anything, or that nothing here can say (`ending::resumes_at`). A wait
-/// that ran to its own reset ends past it, so this call is the usual way
-/// the "already passed" form is reached.
-fn no_prompt_for_a_retry(
-    replay: &mut dyn FnMut() -> Option<String>,
-    reset: Option<i64>,
-    now: i64,
-) -> bool {
-    let Some(why) = replay() else {
-        return false;
-    };
-    eprintln!("amplihack: no retry after the wait: this step's prompt {why}");
-    no_retry_is_possible(
-        "the wait ended and its prompt was still not there to read",
-        reset,
-        now,
-    );
-    log(&Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)));
-    true
-}
+/// How often the retry a wait earned looks again for a prompt that is still
+/// arriving (issue #3036). The question is a zero-timeout `poll(2)` and two
+/// flags, so asking it often costs nothing, and a caller that has finished
+/// writing is seen within this long. It is not a deadline: nothing here
+/// counts the looks or ends the step for their number.
+const PROMPT_POLL: Duration = Duration::from_secs(1);
+
+/// The cause [`ending::no_retry_note`] gives when a retry's input can never
+/// be whole. The specific reason is printed on the line before it.
+const NO_WHOLE_PROMPT: &str = "no whole copy of its piped prompt can be given to a retry, for the \
+                               reason on the line above";
 
 /// Whether a *login change* may end this wait: the login now live has room
 /// (issue #2857).

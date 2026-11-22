@@ -11,7 +11,7 @@
 
 #![cfg(unix)]
 
-use crate::issue_1618_fixture::{Fixture, WAIT_PREFIX, claude_stdout, describe, events};
+use crate::issue_1618_fixture::{Fixture, WAIT_PREFIX, describe, events};
 use std::fs;
 
 /// Issue #2911: a configured maximum of zero is raised to the floor of 60
@@ -74,60 +74,35 @@ fn ac4_a_larger_maximum_changes_nothing() {
     );
 }
 
+/// Issue #3037, review of PR #2992: a step timeout does not end a limit
+/// wait. This step used to stop a minute before a 30-second timeout, with
+/// `failed reason=step_timeout` while its limit still stood, on the reading
+/// that the recipe runner kills a step at that time. It does not:
+/// recipe-runner-rs enforces only a step's own YAML `timeout:` field, and
+/// the wait was the only code anywhere that turned the variable into an
+/// ending. The wait now runs to its reset and the step retries.
 #[test]
-fn ac4_a_step_timeout_of_sixty_seconds_or_less_ends_the_step_without_a_retry() {
+fn issue_3037_a_step_timeout_does_not_end_the_wait_or_stop_the_retry() {
     let f = Fixture::new();
     let mut c = f.step();
     c.env("AMPLIHACK_STEP_TIMEOUT", "30");
     let out = f.run(&mut c);
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(f.count("0"), 1, "no retry after a step timeout");
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "the step retried after its wait");
     let ev = events(&out);
-    assert_eq!(ev.len(), 3, "{ev:?}");
     assert!(
-        ev[0].starts_with(
-            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until="
-        ),
-        "{ev:?}"
+        ev[0].ends_with("until=2026-10-18 08:32:00 -07:00 bound=reset+margin"),
+        "the deadline is the reset's, not the step timeout's: {ev:?}"
     );
-    assert!(ev[0].ends_with(" bound=step_timeout"), "{ev:?}");
-    assert_eq!(ev[1], "end reason=step timeout");
-    // The closing line keeps the step classed usage_limit (#1801).
-    assert_eq!(ev[2], "failed reason=step_timeout: usage limit not lifted");
-    assert_eq!(
-        claude_stdout(&out),
-        "attempt 1 output\n",
-        "the failed attempt's held-back stdout is printed"
+    assert!(
+        ev.iter()
+            .all(|e| !e.contains("step timeout") && !e.contains("failed")),
+        "no line says a timeout ended the wait or that the step failed: {ev:?}"
     );
-    // Review of PR #2992: this is the one ending left that can stop a step
-    // while its limit still stands, and `failed reason=step_timeout` alone
-    // does not say whose bound it was or what to do about it. The step says
-    // both in words beside the event. The timeout is the recipe runner's
-    // own bound - it kills the step at that time whatever this code does,
-    // which is why the wait ends a minute early - and raising or unsetting
-    // it is the operator's remedy.
     let err = crate::issue_1618_fixture::text(&out.stderr);
-    for words in [
-        "$AMPLIHACK_STEP_TIMEOUT",
-        "ended a usage-limit wait before the limit lifted",
-        "not a budget for limits",
-    ] {
-        assert!(err.contains(words), "{words:?} missing from\n{err}");
-    }
-    // Review of PR #2992, round 2: raising the timeout is the operator's
-    // remedy and the weaker one. The step's own is to hand the run the time
-    // the limit lifts, on a line of its own and in the form the recipe
-    // runner's reset reader takes a time from, so the layer that still
-    // holds the work can start this step again rather than guess a bigger
-    // number. Pinned end to end here; the classification those lines earn
-    // is pinned in `limit_wait::tests_ending_evidence`.
     assert!(
-        err.contains("\namplihack: the limit resets 2026-10-18 08:30:00 -07:00\n"),
-        "the reset is stated on a line of its own\n{err}"
-    );
-    assert!(
-        err.contains("start this step again once the limit has lifted"),
-        "and the remedy that uses it\n{err}"
+        !err.contains("AMPLIHACK_STEP_TIMEOUT"),
+        "nothing on stderr names the step timeout as an ending\n{err}"
     );
 }
 

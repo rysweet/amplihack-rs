@@ -1,19 +1,21 @@
-//! What a step says on its way out when a bound that is not the limit ends
-//! it while the limit still stands (review of PR #2992).
+//! What a step says on its way out when it has met a usage limit and its
+//! input cannot be given to a retry (review of PR #2992, issue #3036).
 //!
-//! Two endings reach here, and #2911 removed neither: the step's own
-//! timeout cutting a limit wait (issue #3037), and a prompt no retry can be
-//! given (issue #3036). Neither is a limit being refused and neither is work
-//! that failed, so what the step writes has one job - hand the run what it
-//! needs to carry on without this step's agent.
+//! One ending reaches here, and it is not the limit's: a prompt that could
+//! not be read to its end. The attempt in hand was given less than the
+//! task that was sent, so the step fails whether or not it meets a limit
+//! (`auto_switch::rerun::finish` refuses to report such an attempt's
+//! success), and no retry can be given more than it was. The step timeout
+//! no longer ends a limit wait at all (issue #3037): see `plan`.
 //!
-//! Three things, in the order a reader of the evidence needs them:
+//! What the step writes has one job - hand the run what it needs to carry
+//! on without this step's agent. Three things, in the order a reader of the
+//! evidence needs them:
 //!
-//! 1. *which bound ended the step, and that it is not the limit*, because
-//!    `failed reason=step_timeout` and `skipped reason=piped_prompt` do not
-//!    say.
-//! 2. *that this is a usage limit*, which the words of each sentence carry.
-//!    The event lines hold no limit marker of their own, so without the
+//! 1. *why no retry can run, and that it is not the limit*, because
+//!    `skipped reason=piped_prompt` does not say.
+//! 2. *that this is a usage limit*, which the words of the sentence carry.
+//!    The event line holds no limit marker of its own, so without the
 //!    sentence the recipe runner's classifier answers `indeterminate` -
 //!    "nothing in the evidence identifies the failure" - and a supervising
 //!    loop reads that as terminal.
@@ -26,14 +28,13 @@
 //! output reaches any of them. The builders are pure so that
 //! `tests_ending_evidence` can classify exactly what a step would write.
 
-use super::STEP_TIMEOUT_ENV;
 use super::events;
 
 /// When the limit lifts, on its own line, for the layer that will have to
 /// run this step again (review of PR #2992).
 ///
-/// Both endings below hand their step back to the recipe runner, which
-/// classes it `usage_limit` from the words those endings use and then looks
+/// The ending below hands its step back to the recipe runner, which
+/// classes it `usage_limit` from the words that ending uses and then looks
 /// for a reset in the same evidence with
 /// [`limit_patterns::reset_hint`](crate::commands::recipe::run::limit_patterns::reset_hint).
 /// That reader takes everything after the first `resets ` on a line, so the
@@ -78,41 +79,6 @@ fn resumes_at(reset: Option<i64>, now: i64) -> String {
     }
 }
 
-/// Says that the step's own timeout, and not the limit, ended the step
-/// here, and when the limit lifts (review of PR #2992).
-///
-/// The wait's deadline is pulled back to `AMPLIHACK_STEP_TIMEOUT` less
-/// [`super::plan::STEP_TIMEOUT_LEAD`] because the recipe runner kills the step at
-/// that timeout: a wait that ran past it would be killed mid-sleep, with no
-/// line saying why and no attempt result passed up. Ending just before it
-/// is what lets the step report. So this is the step's own bound, applied
-/// by the layer that owns it, and not a budget this module keeps for
-/// limits - but it does mean a limit wait is cut short by it, which the
-/// `failed reason=step_timeout` event alone does not say.
-///
-/// Two remedies, not one. The operator's is to raise the step timeout or
-/// leave it unset. The run's is to start the step again once the limit has
-/// lifted, and [`resumes_at`] is what tells it when; raising a number is
-/// the only remedy a step that could not say that leaves anyone
-/// (`docs/reference/usage-limit-waits.md`, issue #3037).
-///
-/// Pure, so the lines it produces can be read by the test that pins what
-/// the recipe runner makes of them (`tests_ending_evidence`).
-pub(super) fn step_timeout_note(reset: Option<i64>, now: i64) -> String {
-    format!(
-        "amplihack: this step's own timeout (${STEP_TIMEOUT_ENV}) ended a usage-limit \
-         wait before the limit lifted, so the step ends here with the limit's result. \
-         The timeout is the step's bound and not a budget for limits: raise it, or \
-         leave it unset, to let a limit wait run longer, or start this step again once \
-         the limit has lifted. See docs/reference/usage-limit-waits.md{}",
-        resumes_at(reset, now)
-    )
-}
-
-pub(super) fn the_step_timeout_cut_the_wait(reset: Option<i64>, now: i64) {
-    eprintln!("{}", step_timeout_note(reset, now));
-}
-
 /// Says that a limit has ended this step because no retry could be given
 /// its prompt, what has to happen instead, and when it is worth doing
 /// (review of PR #2992).
@@ -126,7 +92,8 @@ pub(super) fn the_step_timeout_cut_the_wait(reset: Option<i64>, now: i64) {
 /// told to send the prompt again has no basis for choosing a moment, and
 /// sending it at once walks back into the same limit (issue #3036).
 ///
-/// Pure, for the same reason [`step_timeout_note`] is.
+/// Pure, so the lines it produces can be read by the test that pins what
+/// the recipe runner makes of them (`tests_ending_evidence`).
 pub(super) fn no_retry_note(cause: &'static str, reset: Option<i64>, now: i64) -> String {
     format!(
         "amplihack: this step met a usage limit and cannot be run again: {cause}. The \

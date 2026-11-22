@@ -32,9 +32,9 @@
 //! move) or when the wait ran out (`failed reason=spend_limit`). Neither
 //! line exists now. Every spend limit with no readable reset starts a
 //! login-change wait, whatever is or is not running, and a wait that
-//! reaches its own deadline retries the step. The only closing line left in
-//! this file is `failed reason=step_timeout`, which is the recipe runner's
-//! bound on the step and not a limit budget. `max_wait_secs` is the length
+//! reaches its own deadline retries the step. No closing line is left in
+//! this file: the last, `failed reason=step_timeout`, went with issue #3037,
+//! because a step timeout no longer ends a limit wait. `max_wait_secs` is the length
 //! of one wait rather than a budget for the whole step, and a configured
 //! `0` reads as the 60-second floor, so the tests here that pin a short
 //! wait get 60 seconds of the virtual clock.
@@ -273,48 +273,40 @@ fn ac1_a_swap_during_the_failing_attempt_ends_the_wait_before_it_begins() {
     f.assert_isolated("0");
 }
 
-/// The step's own deadline bounds the retry above, not just the wait it
-/// replaces. `Waiter::new` keeps the step timeout so a wait cannot outlive
-/// the step; a retry started in the wait's place is a whole fresh attempt
-/// and would outlive it by more. Nothing downstream re-checks the deadline,
-/// so if this return did not, the step would run on past its timeout.
-///
-/// Same swap as the test above, and the only difference is that the step is
-/// already out of time: the closing line is the step timeout and no second
-/// attempt is launched.
+/// Issue #3037, review of PR #2992: the same swap with a step timeout
+/// already behind the clock. This step used to stop at `failed
+/// reason=step_timeout` instead of taking the retry the swap earned, on the
+/// reading that the recipe runner kills a step at that time. It does not -
+/// recipe-runner-rs enforces only a step's YAML `timeout:` - so the retry
+/// runs, as it does with no timeout set.
 #[test]
-fn a_swap_does_not_start_a_retry_once_the_step_is_out_of_time() {
+fn issue_3037_a_swap_starts_its_retry_whatever_the_step_timeout() {
     let f = with_profiles();
     x_is_live(&f);
     let mut c = home_step(&f);
     c.env("SWAP_ON_CALL", "1:Y")
         .env("LIMIT_CALLS", "1")
-        // Less than the 60-second lead, so the deadline is already behind
-        // the wait before it is planned.
         .env("AMPLIHACK_STEP_TIMEOUT", "1");
     let out = f.run(&mut c);
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
         live_login(&f).as_deref(),
         Some("Y"),
         "the swap really happened: without it this test proves nothing"
     );
-    assert_eq!(
-        f.count("0"),
-        1,
-        "the step was out of time, so no retry ran: {}",
-        describe(&out)
-    );
+    assert_eq!(f.count("0"), 2, "the retry ran: {}", describe(&out));
     let ev = events(&out);
-    assert!(ev[0].ends_with(" bound=step_timeout"), "{ev:?}");
-    assert_eq!(
-        ev[1..],
-        [
-            "end reason=step timeout",
-            "failed reason=step_timeout: usage limit not lifted",
-        ],
-        "the closing line keeps the failure class in the evidence tail: {ev:?}"
+    assert!(!ev[0].contains("step_timeout"), "{ev:?}");
+    assert!(
+        ev.iter().any(|e| e == "end reason=login changed"),
+        "the swap ended the wait before it began: {ev:?}"
     );
+    assert!(
+        ev.iter()
+            .all(|e| !e.contains("step timeout") && !e.contains("failed")),
+        "{ev:?}"
+    );
+    assert_eq!(claude_stdout(&out), "attempt 2 output\n");
 }
 
 #[test]
@@ -455,7 +447,7 @@ fn ac2_a_spend_limit_on_a_home_step_waits_for_the_login_to_change() {
 /// `a_spend_limit_that_nothing_lifts_ends_the_step_naming_it`, and it
 /// asserted `failed reason=spend_limit: usage limit not lifted` and no
 /// retry: a wait that reached its deadline ended the run. That line is
-/// gone, and with it the whole of `FailReason` bar the step timeout. The
+/// gone, and with it the whole of `FailReason`. The
 /// wait now runs its length and the step tries again, which is the point of
 /// the issue: nothing a limit says may end a run.
 ///
@@ -496,11 +488,12 @@ fn a_spend_limit_that_nothing_lifts_waits_its_length_and_retries() {
     );
 }
 
-/// The step's own timeout is the one thing that still ends a login-change
-/// wait with a closing line (issue #2911): it is the recipe runner's bound
-/// on the step, not a budget for the limit.
+/// Issue #3037, review of PR #2992: a step timeout does not end a
+/// login-change wait. It used to be the one thing that still closed such a
+/// wait with `failed reason=step_timeout`; the wait now runs its own length
+/// and the step retries.
 #[test]
-fn a_step_timeout_ends_a_login_change_wait_with_the_closing_line() {
+fn issue_3037_a_step_timeout_does_not_end_a_login_change_wait() {
     let f = with_profiles();
     x_is_live(&f);
     let _rotator = rotator_running(&f);
@@ -508,22 +501,20 @@ fn a_step_timeout_ends_a_login_change_wait_with_the_closing_line() {
     c.env("LIMIT_MESSAGE", SPEND_TEXT)
         .env("AMPLIHACK_STEP_TIMEOUT", "30");
     let out = f.run(&mut c);
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "the step retried after its wait");
     let ev = events(&out);
-    assert_eq!(
-        ev[0],
-        "waiting_for_capacity reason=spend_limit harness=claude \
-         until=2026-10-18 08:00:00 -07:00",
+    assert!(
+        ev[0].starts_with("waiting_for_capacity reason=spend_limit harness=claude until="),
         "{ev:?}"
     );
     assert!(ev[1].contains(" wait=login_change "), "{ev:?}");
-    assert!(ev[1].ends_with(" bound=step_timeout"), "{ev:?}");
-    assert_eq!(
-        ev[2..],
-        [
-            "end reason=step timeout",
-            "failed reason=step_timeout: usage limit not lifted",
-        ]
+    assert!(ev[1].ends_with(" bound=max_wait"), "{ev:?}");
+    assert!(ev.iter().any(|e| e == "resume attempt=2"), "{ev:?}");
+    assert!(
+        ev.iter()
+            .all(|e| !e.contains("step timeout") && !e.contains("failed")),
+        "{ev:?}"
     );
 }
 

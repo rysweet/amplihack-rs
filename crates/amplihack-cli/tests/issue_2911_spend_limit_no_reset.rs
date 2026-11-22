@@ -4,11 +4,13 @@
 
 #![cfg(unix)]
 
-use crate::issue_1618_fixture::{Fixture, SPEND_TEXT, describe, events};
+use crate::issue_1618_fixture::{Fixture, SPEND_TEXT, describe, events, sha256_hex};
 use crate::issue_1618_wait_profiles::with_profiles;
 use crate::issue_1801_capacity_wait::x_is_live;
 use std::fs;
+use std::io::Write;
 use std::process::Stdio;
+use std::time::Duration;
 
 #[test]
 fn a_spend_limit_with_no_reset_waits_and_retries_with_no_rotator() {
@@ -36,18 +38,20 @@ fn a_spend_limit_with_no_reset_waits_and_retries_with_no_rotator() {
     assert!(!ev.iter().any(|l| l.starts_with("failed")), "{ev:?}");
 }
 
-/// `piped_prompt` stays a terminal skip, and a spend limit does not change
-/// that (issue #2911 keeps both remaining skips).
+/// Issue #3036, review of PR #2992: a spend limit on a step whose input is an
+/// `--input-format` channel waits and retries like any other.
 ///
-/// A prompt genuinely piped on stdin is copied and replayed (#2815), so it
-/// waits like any other. The unreplayable case is a `--input-format`
-/// control channel: its caller holds it open for the length of the session,
-/// so there is no end of it to copy and nothing a retry could be given.
-/// Such a step ends with the limit result and `skipped reason=piped_prompt`
-/// rather than announcing a retry that cannot run, however the limit that
-/// met it reads.
+/// This test used to pin the opposite: the channel was never copied, so the
+/// step ended with the limit result and `skipped reason=piped_prompt`. It is
+/// copied now as any piped prompt is. A supervised attempt's stdout is held
+/// back until the step finishes, and an attempt that is run again has its
+/// output discarded, so the caller has seen nothing of the attempt that met
+/// the limit, and a retry given the same input is the same step from its
+/// side. The caller writes its message and closes the channel; one that
+/// holds it open is covered in `issue_2815_piped_prompt_wait`, where the
+/// retry waits for it.
 #[test]
-fn a_spend_limit_on_an_unreplayable_prompt_is_still_never_retried() {
+fn issue_3036_a_spend_limit_on_a_stream_channel_waits_and_retries_with_the_same_input() {
     let f = Fixture::new();
     let mut c = f.cmd(&[
         "claude",
@@ -59,22 +63,42 @@ fn a_spend_limit_on_an_unreplayable_prompt_is_still_never_retried() {
     ]);
     c.env("LIMIT_MESSAGE", SPEND_TEXT)
         .env("LIMIT_CALLS", "1")
-        // There is no prompt on the channel for the stub to read.
-        .env("SKIP_STDIN", "1")
+        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "120")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = c.spawn().expect("start amplihack");
-    // Held open by its caller, as a real control channel is.
-    let held = child.stdin.take();
-    let out = child.wait_with_output().expect("the step finished");
-    drop(held);
+    let message = b"{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"go\"}}\n";
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    stdin.write_all(message).expect("write the message");
+    drop(stdin);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(child.wait_with_output()));
+    let out = rx
+        .recv_timeout(Duration::from_secs(120))
+        .expect("the step hung on a stream-json channel")
+        .expect("the step finished");
 
-    assert_eq!(f.count("0"), 1, "no rerun\n{}", describe(&out));
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "the step ran again\n{}", describe(&out));
+    let want = sha256_hex(message);
+    assert_eq!(f.call("0", 1)["STDIN"], want, "{}", describe(&out));
     assert_eq!(
-        events(&out),
-        vec!["skipped reason=piped_prompt".to_string()],
-        "no wait was ever started\n{}",
+        f.call("0", 2)["STDIN"],
+        want,
+        "the retry read the same input\n{}",
         describe(&out)
+    );
+    let ev = events(&out);
+    assert!(
+        ev.iter()
+            .any(|l| l.starts_with("waiting_for_capacity reason=spend_limit")),
+        "{ev:?}"
+    );
+    assert!(ev.iter().any(|l| l == "resume attempt=2"), "{ev:?}");
+    assert!(
+        !ev.iter()
+            .any(|l| l.starts_with("skipped") || l.starts_with("failed")),
+        "{ev:?}"
     );
 }

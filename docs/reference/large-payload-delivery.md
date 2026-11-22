@@ -891,15 +891,19 @@ reading the copier's pipe and closing a pipe is the only signal it carries.
 amplihack names that too, and fails the step rather than report the
 attempt's result as the step's.
 
-A caller that never closes the pipe costs the rerun and nothing else. The
-copier finishes at the end of stdin, so the supervisor joins it only when it
-is certain to finish and otherwise refuses the rerun with a named reason: a
-supervised step never waits on a pipe nobody closes. An `--input-format`
-channel, which is a pipe its caller holds open on purpose, is not copied at
-all.
+A caller that has not closed the pipe when a rerun is due holds the rerun
+back and nothing else. The copier finishes at the end of stdin, so the
+supervisor joins it only when it is certain to finish; until then the rerun
+waits for the rest of the prompt, says `waiting_for_prompt` once, and keeps
+answering stop signals and the end of its session, so it is never blocked
+deaf on a pipe nobody closes (issue #3036). An `--input-format` channel is
+copied and replayed like any other piped prompt. A capture file the disk
+refuses is carried on in memory from the first refused byte, so a full disk
+costs no rerun.
 
-Where no copy is made, a piped prompt went to the first attempt and a rerun
-gets `/dev/null`: the prompt is lost, not exposed.
+Where no copy can be made at all (the process is out of descriptors), a piped
+prompt went to the first attempt and a rerun gets `/dev/null`: the prompt is
+lost, not exposed.
 
 amplihack's own large-payload sites take other paths:
 
