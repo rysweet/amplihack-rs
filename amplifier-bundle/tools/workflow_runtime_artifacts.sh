@@ -55,12 +55,15 @@ _amplihack_exclude_worktrees_dir() {
 # amplihack's own runtime paths (#2335). The code-graph indexer, step state
 # and hook runtime write these into a run's worktree; untracked, they made
 # step 16 fail with FAILED_DIRTY_WORKTREE and invited `git add -A` to stage
-# them. This is the canonical list: workflow_worktree_sweep.sh carries a copy
-# in exclude_worktrees_dir, and a parity test keeps the two equal. Set by plain
-# assignment so nothing in the environment can extend it; any addition is a
+# them. This is the only copy of the list: workflow_worktree_sweep.sh sources
+# this file and calls _amplihack_exclude_runtime_paths. `/index.scip` is the
+# indexer's root-level output (amplihack-blarify writes `--output index.scip`).
+# Every pattern is anchored to the repository root. Set by plain assignment so
+# nothing in the environment can extend it; any addition is a
 # security-relevant change, because each pattern hides untracked files from
 # `git status` and Artifact Guard. Tracked files are never hidden by git.
 AMPLIHACK_RUNTIME_EXCLUDE_PATTERNS=(
+  '/index.scip'
   '/.amplihack/graph_db'
   '/.amplihack/indexing*'
   '/.amplihack/indexes/'

@@ -195,7 +195,42 @@ fn untracked_and_modified_product_files_are_named() {
     for banned in ["git clean", "reset --hard", "checkout ."] {
         assert!(!msg.contains(banned), "advice must not name `{banned}`");
     }
-    assert!(msg.contains("rerun step 16"));
+    assert!(
+        msg.contains("add its path to .git/info/exclude"),
+        "guidance names the exclude route for tool output: {msg}"
+    );
+    assert!(
+        msg.contains("continue from step 16"),
+        "guidance says how to continue: {msg}"
+    );
+    assert!(msg.contains("Commit each file that belongs to the change"));
+}
+
+#[test]
+fn step16_excludes_every_runtime_path_through_info_exclude() {
+    // Case (c): git itself attributes each runtime path to info/exclude.
+    let f = fixture();
+    make_runtime_files(&f.wt);
+    let _ = run_step16(&f);
+    for p in [
+        ".amplihack/graph_db",
+        ".amplihack/indexing.pid",
+        ".amplihack/index.scip",
+        ".amplihack/step-x",
+        ".claude/runtime/x",
+        "index.scip",
+    ] {
+        let out = amplihack_git::command_in(&f.wt)
+            .args(["check-ignore", "-v", "--", p])
+            .output()
+            .expect("git check-ignore");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(out.status.success(), "{p} must be ignored: {text}");
+        assert!(
+            text.contains("info/exclude"),
+            "{p} ignored via info/exclude: {text}"
+        );
+    }
 }
 
 #[test]

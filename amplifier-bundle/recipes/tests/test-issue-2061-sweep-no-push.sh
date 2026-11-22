@@ -198,15 +198,17 @@ mkdir -p "$(dirname "$other_exclude")"
 printf '# other\n' >"$other_exclude"
 other_before="$(cat "$other_exclude")"
 want_other="$(cd "$OTHER/.git" && pwd -P)"
-# The exports are deliberately confined to the subshell.
-# shellcheck source=/dev/null disable=SC2030
-cgd_env="$( . "$SWEEP" 2>/dev/null; export GIT_DIR="$OTHER/.git" GIT_WORK_TREE="$OTHER" GIT_COMMON_DIR="$OTHER/.git"
-    common_git_dir "$R" 2>/dev/null || true)"
+# The variables are set for the one call only; bash exports a function's
+# prefix assignments to the commands it runs.
+# shellcheck source=/dev/null
+cgd_env="$( . "$SWEEP" 2>/dev/null
+    GIT_DIR="$OTHER/.git" GIT_WORK_TREE="$OTHER" GIT_COMMON_DIR="$OTHER/.git" \
+        common_git_dir "$R" 2>/dev/null || true)"
 check U2-d "common_git_dir ignores GIT_DIR, GIT_WORK_TREE and GIT_COMMON_DIR" eq "$cgd_env" "$want"
 check U2-e "common_git_dir does not resolve to the other repository" not eq "$cgd_env" "$want_other"
 r5_rc=0
-# shellcheck source=/dev/null disable=SC2031
-( . "$SWEEP"; export GIT_DIR="$OTHER/.git" GIT_WORK_TREE="$OTHER"
+# shellcheck source=/dev/null
+( . "$SWEEP"; GIT_DIR="$OTHER/.git" GIT_WORK_TREE="$OTHER" \
     exclude_worktrees_dir "$R" ) 2>"$SCRATCH/unit-r5.err" 9>&- || r5_rc=$?
 check U2-f "exclude_worktrees_dir returns 0 with GIT_DIR exported" eq "$r5_rc" 0
 check U2-g "the other repository's info/exclude is unchanged" eq "$(cat "$other_exclude")" "$other_before"

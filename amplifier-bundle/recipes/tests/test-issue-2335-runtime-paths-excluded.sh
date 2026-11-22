@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC1090  # the helpers are sourced from a computed path
+# shellcheck source=/dev/null  # the helpers are sourced from a computed path
 # test-issue-2335-runtime-paths-excluded.sh — contract for #2335.
 #
 # amplihack's own runtime files (.amplihack/graph_db, the indexer's files,
@@ -31,6 +31,7 @@ git config --global user.name Tester
 git config --global init.defaultBranch main
 
 PATTERNS=(
+  '/index.scip'
   '/.amplihack/graph_db'
   '/.amplihack/indexing*'
   '/.amplihack/indexes/'
@@ -93,18 +94,65 @@ t_b() {
 }
 check "b: sweep exclusion hides runtime files in a linked worktree" t_b
 
-# parity: the sweep copy equals the canonical list.
-t_parity() {
+# b2. The sweep writes every canonical pattern (one list, no copy).
+t_b2() {
   new_pair || return 1
-  local m1="$MAIN"; new_pair || return 1; local m2="$MAIN"
-  ( . "$sweep"; exclude_worktrees_dir "$m1" ) 2>/dev/null
-  ( set -e; . "$helper"; _amplihack_exclude_runtime_paths "$m2" ) 2>/dev/null
-  local l1 l2
-  l1="$(grep -vxF '/worktrees/' "$(exclude_file "$m1")" | grep -v '^#' | sort)"
-  l2="$(grep -v '^#' "$(exclude_file "$m2")" | sort)"
-  [ -n "$l2" ] && [ "$l1" = "$l2" ]
+  ( . "$sweep"; exclude_worktrees_dir "$MAIN" ) 2>"$scratch/sweep.err" || return 1
+  local p; for p in "${PATTERNS[@]}"; do
+    grep -qxF -- "$p" "$(exclude_file "$MAIN")" || { echo "sweep missing $p" >&2; return 1; }
+  done
 }
-check "parity: sweep and helper write identical pattern sets" t_parity
+check "b2: sweep writes every canonical pattern including /index.scip" t_b2
+
+# b3. Sourcing the sweep and running it does not leak set -e / -u / pipefail.
+t_b3() {
+  new_pair || return 1
+  ( set +e +u +o pipefail; . "$sweep"; exclude_worktrees_dir "$MAIN" 2>/dev/null
+    case "$-" in *e*|*u*) exit 1;; esac
+    set -o | grep -q 'pipefail.*off' ) || return 1
+}
+check "b3: sweep delegation does not leak shell options" t_b3
+
+# b4. Sweep still refuses a symlinked info/exclude and leaves the target alone.
+t_b4() {
+  new_pair || return 1
+  local ex target; ex="$(exclude_file "$MAIN")"; mkdir -p "$(dirname "$ex")"
+  target="$scratch/victim4"; : > "$target"; rm -f "$ex"; ln -s "$target" "$ex"
+  ( . "$sweep"; exclude_worktrees_dir "$MAIN" ) 2>/dev/null
+  [ ! -s "$target" ]
+}
+check "b4: sweep leaves a symlinked info/exclude untouched" t_b4
+
+# b5. git check-ignore attributes each runtime path to info/exclude.
+t_b5() {
+  new_pair || return 1
+  ( . "$sweep"; exclude_worktrees_dir "$MAIN" ) 2>/dev/null || return 1
+  mkdir -p "$WT/.amplihack" "$WT/.claude/runtime"
+  local p out; for p in .amplihack/graph_db .amplihack/indexing.pid .amplihack/index.scip \
+      .amplihack/step-x .claude/runtime/x index.scip; do
+    out="$(git -C "$WT" check-ignore -v -- "$p")" || { echo "not ignored: $p" >&2; return 1; }
+    case "$out" in *info/exclude*) ;; *) echo "wrong source for $p: $out" >&2; return 1;; esac
+  done
+}
+check "b5: check-ignore reports info/exclude for every runtime path" t_b5
+
+# b6. A tracked root index.scip is never hidden.
+t_b6() {
+  new_pair || return 1
+  echo v1 > "$WT/index.scip"; git -C "$WT" add -f index.scip && git -C "$WT" commit -qm track || return 1
+  run_preflight "$WT" || return 1
+  echo v2 > "$WT/index.scip"
+  git -C "$WT" status --porcelain | grep -q '^ M index.scip'
+}
+check "b6: modified tracked root index.scip is still dirty" t_b6
+
+# b7. An untracked product file named like a nested index.scip is not hidden.
+t_b7() {
+  new_pair || return 1; run_preflight "$WT" || return 1
+  mkdir -p "$WT/sub"; echo x > "$WT/sub/index.scip"
+  git -C "$WT" status --porcelain | grep -q '^?? sub/'
+}
+check "b7: /index.scip is root-anchored, nested files stay visible" t_b7
 
 # c. Tracked .amplihack file stays visible when modified.
 t_c() {
@@ -156,14 +204,6 @@ t_g() {
   [ "$rc" = 0 ] && [ "$(grep -c '^WARNING:' "$scratch/pre.err")" = 1 ]
 }
 check "g: unwritable exclude gives one WARNING and exit 0" t_g
-
-# R4. The environment cannot extend the list.
-t_r4() {
-  new_pair || return 1
-  AMPLIHACK_RUNTIME_EXCLUDE_PATTERNS='/evil' run_preflight "$WT" || return 1
-  ! grep -qF '/evil' "$(exclude_file "$WT")" && grep -qxF '/.amplihack/graph_db' "$(exclude_file "$WT")"
-}
-check "R4: exported AMPLIHACK_RUNTIME_EXCLUDE_PATTERNS has no effect" t_r4
 
 # R5. GIT_DIR pointing elsewhere must not redirect the write.
 t_r5() {

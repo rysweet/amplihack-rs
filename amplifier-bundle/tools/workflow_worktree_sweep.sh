@@ -338,42 +338,40 @@ common_git_dir() {
 # `git add -A` sees its files. Idempotent; best-effort; never writes through a
 # symlinked info/ or info/exclude.
 #
-# The runtime list is a copy of AMPLIHACK_RUNTIME_EXCLUDE_PATTERNS in
-# workflow_runtime_artifacts.sh, which is canonical; this file does not source
-# that helper. test-issue-2335-runtime-paths-excluded.sh checks the two match.
+# The runtime list lives only in workflow_runtime_artifacts.sh beside this
+# file. It is sourced in a subshell, so its `set -euo pipefail` cannot leak
+# into a shell that sources this sweep.
 exclude_worktrees_dir() {
-    local repo="$1" common exclude info missing="" p
-    local -a lines=(
-        '/worktrees/'
-        '/.amplihack/graph_db'
-        '/.amplihack/indexing*'
-        '/.amplihack/indexes/'
-        '/.amplihack/index.scip*'
-        '/.amplihack/blarify.json'
-        '/.amplihack/step*'
-        '/.claude/runtime/'
-    )
+    local repo="$1" common exclude_file info helper
     common="$(common_git_dir "$repo")" || return 0
     info="${common}/info"
-    exclude="${info}/exclude"
-    if [ -L "$info" ] || [ -L "$exclude" ]; then
-        log_warn "Not writing exclusions through a symlink: ${exclude}."
+    exclude_file="${info}/exclude"
+    if [ -L "$info" ] || [ -L "$exclude_file" ]; then
+        log_warn "Not writing exclusions through a symlink: ${exclude_file}."
         return 0
     fi
-    for p in "${lines[@]}"; do
-        if [ -f "$exclude" ] && grep -qxF -- "$p" "$exclude" 2>/dev/null; then
-            continue
+    if ! { [ -f "$exclude_file" ] && grep -qxF '/worktrees/' "$exclude_file" 2>/dev/null; }; then
+        if mkdir -p "$info" 2>/dev/null; then
+            # End an unterminated last line first, or the user's last rule and ours merge.
+            local entry='/worktrees/'$'\n'
+            if [ -s "$exclude_file" ] && [ -n "$(tail -c1 "$exclude_file" 2>/dev/null)" ]; then
+                entry=$'\n'"$entry"
+            fi
+            { printf '%s' "$entry" >> "$exclude_file"; } 2>/dev/null \
+                || log_warn "Could not add /worktrees/ to ${exclude_file}."
+        else
+            log_warn "Could not create ${info}."
         fi
-        missing="${missing}${p}"$'\n'
-    done
-    [ -n "$missing" ] || return 0
-    mkdir -p "$info" 2>/dev/null || { log_warn "Could not create ${info}."; return 0; }
-    # End an unterminated last line first, or the user's last rule and ours merge.
-    if [ -s "$exclude" ] && [ -n "$(tail -c1 "$exclude" 2>/dev/null)" ]; then
-        missing=$'\n'"$missing"
     fi
-    { printf '%s' "$missing" >> "$exclude"; } 2>/dev/null \
-        || log_warn "Could not add exclusions to ${exclude}."
+    helper="$(dirname -- "${BASH_SOURCE[0]}")/workflow_runtime_artifacts.sh"
+    if [ ! -f "$helper" ]; then
+        log_warn "Missing ${helper}: amplihack runtime paths were not added to ${exclude_file}; the step-15 and step-16 preflights add them later (#2335)."
+        return 0
+    fi
+    # shellcheck source=workflow_runtime_artifacts.sh
+    if ! ( . "$helper" && _amplihack_exclude_runtime_paths "$repo" ); then
+        log_warn "Could not load ${helper}: amplihack runtime paths were not added to ${exclude_file} (#2335)."
+    fi
     return 0
 }
 
