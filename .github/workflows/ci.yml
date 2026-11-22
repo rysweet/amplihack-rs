@@ -783,6 +783,12 @@ jobs:
       - name: "Outside-in - Limit wait wakes only on room (issue #2857)"
         shell: bash
         run: AMPLIHACK_2857_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2857-wait-wakes-on-room-scenario.sh
+      # Issue #2957: `amplihack update` looks releases up and downloads them
+      # through a logged-in gh, keeps the checksum check, and reports a 403
+      # with GitHub's message and the reset time. Stand-in gh; no network.
+      - name: "Outside-in - Update uses gh's login (issue #2957)"
+        shell: bash
+        run: AMPLIHACK_2957_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2957-update-with-gh-login-scenario.sh
       # Issue #2343: finalization reports the run's real outcome. A pull request
       # open at the pushed head with checks still pending is a success that
       # hands the pull request on, not an implementation failure; one at an
