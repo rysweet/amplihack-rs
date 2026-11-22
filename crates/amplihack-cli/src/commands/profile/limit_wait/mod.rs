@@ -13,8 +13,8 @@
 //! the waits costing time rather than by a count or a budget. A wait with no
 //! reset it can end on says so plainly, as `waiting_for_capacity`, naming
 //! the login and why. What still ends a step is a stop signal, the end of
-//! its session, output with no limit message in it, and a prompt that could
-//! not be read to its end.
+//! its session, the wait turned off, output with no limit message in it,
+//! and a piped prompt of which no whole copy is left for a retry.
 //!
 //! No clock ends a limit wait. `$AMPLIHACK_STEP_TIMEOUT` used to: the wait
 //! ended a minute before it and the step failed, on the reading that the
@@ -26,7 +26,13 @@
 //!
 //! A prompt that could not be read to its end fails its step whether or not
 //! a limit is met, because the attempt was given less than its task; it is
-//! the one input no retry can be given (issue #3036). Such a step hands the
+//! one of the inputs no retry can be given (issue #3036). The others are a
+//! copy that failed (the copier panicked, its final flush failed, or the
+//! part the disk held cannot be read back) and a copy that could not be set
+//! up because the process was out of file descriptors: in both the attempt
+//! was given the whole task, but no whole copy survives, so a limit on it
+//! ends the step. None is a refusal to wait: there is no prompt for a retry
+//! to read, so there is no retry for a wait to earn. Such a step hands the
 //! run what it needs to resume: a sentence naming why no retry can run, the
 //! words that class the failure `usage_limit`, and when the limit lifts.
 //! The event line alone carries none of that. `ending` builds the sentence
@@ -461,8 +467,9 @@ impl Waiter {
     /// plan a limit produces ends strictly after `now` (see `plan`), and
     /// reaching its deadline retries the step. `$AMPLIHACK_STEP_TIMEOUT`
     /// plays no part (issue #3037). What still ends a step is a stop signal,
-    /// the end of its session, output with no limit message in it, and a
-    /// prompt that could not be read to its end.
+    /// the end of its session, the wait turned off, output with no limit
+    /// message in it, and a piped prompt of which no whole copy is left for
+    /// a retry.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
@@ -589,7 +596,7 @@ impl Waiter {
         // step then waits as it would have had nothing moved.
         if changed(&self.attempt_login, self.watch.login()) && change_may_end(&p, &self.watch) {
             emit(&Event::End(End::LoginChanged), account);
-            if let Some(finish) = self.prompt_for_the_retry(replay, p.reset, signals, account) {
+            if let Some(finish) = self.prompt_for_the_retry(replay, p.reset, signals) {
                 return finish;
             }
             log(&Event::Resume {
@@ -641,7 +648,7 @@ impl Waiter {
             | End::LoginChanged
             | End::RotatorCapacity
             | End::OtherCapacity => {
-                if let Some(finish) = self.prompt_for_the_retry(replay, p.reset, signals, account) {
+                if let Some(finish) = self.prompt_for_the_retry(replay, p.reset, signals) {
                     return finish;
                 }
                 log(&Event::Resume {
@@ -680,36 +687,76 @@ impl Waiter {
         replay: &mut dyn FnMut() -> scratch::Replay,
         reset: Option<i64>,
         signals: &Signals,
-        account: Option<&str>,
     ) -> Option<AfterLimit> {
+        match self.wait_for_prompt(replay, signals) {
+            PromptWait::Ready => None,
+            PromptWait::Never(why) => {
+                eprintln!("amplihack: no retry after the wait: {why}");
+                no_retry_is_possible(NO_WHOLE_PROMPT, reset, self.clock.now());
+                log(&Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)));
+                Some(AfterLimit::Finish(None))
+            }
+            PromptWait::Signal(sig) => Some(AfterLimit::Finish(Some(128 + sig))),
+            PromptWait::SessionEnded => Some(AfterLimit::Finish(None)),
+        }
+    }
+
+    /// Waits while `replay` says the step's prompt is still arriving, and
+    /// says how that ended (issue #3036).
+    ///
+    /// Shared by the retry a wait earned ([`Waiter::after_limit`]) and the
+    /// auto-switch rerun that runs at once under another profile
+    /// (`auto_switch::rerun`), so neither can end a step for a prompt that
+    /// is merely late. Writes `waiting_for_prompt` once, the first time it
+    /// has to wait, to stderr and to the run's recipe log; a prompt already
+    /// whole returns at once and writes nothing. A stop signal and the end
+    /// of the step's session end it as they end a limit wait, so a caller
+    /// that never closes its pipe cannot hold the step deaf to them. Both
+    /// are looked for before the line is written, so a step already told
+    /// to stop does not announce a wait it will not make, and a second call
+    /// after a stop (the auto-switch rerun asks once per candidate) writes
+    /// nothing.
+    pub(crate) fn wait_for_prompt(
+        &mut self,
+        replay: &mut dyn FnMut() -> scratch::Replay,
+        signals: &Signals,
+    ) -> PromptWait {
+        let account = self.mark();
         let mut said = false;
         loop {
             match replay() {
-                scratch::Replay::Ready => return None,
-                scratch::Replay::Never(why) => {
-                    eprintln!("amplihack: no retry after the wait: {why}");
-                    no_retry_is_possible(NO_WHOLE_PROMPT, reset, self.clock.now());
-                    log(&Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)));
-                    return Some(AfterLimit::Finish(None));
-                }
-                scratch::Replay::Arriving => {
-                    if !said {
-                        emit(&Event::WaitingForPrompt, account);
-                        said = true;
-                    }
-                    if let Some(sig) = signals.received() {
-                        return Some(AfterLimit::Finish(Some(128 + sig)));
-                    }
-                    // SAFETY: getppid(2) has no preconditions. A parent that
-                    // exits re-parents this process, so the id changes.
-                    if unsafe { libc::getppid() } != self.parent {
-                        return Some(AfterLimit::Finish(None));
-                    }
-                    self.clock.sleep(PROMPT_POLL);
-                }
+                scratch::Replay::Ready => return PromptWait::Ready,
+                scratch::Replay::Never(why) => return PromptWait::Never(why),
+                scratch::Replay::Arriving => {}
             }
+            if let Some(sig) = signals.received() {
+                return PromptWait::Signal(sig);
+            }
+            // SAFETY: getppid(2) has no preconditions. A parent that exits
+            // re-parents this process, so the id changes.
+            if unsafe { libc::getppid() } != self.parent {
+                return PromptWait::SessionEnded;
+            }
+            if !said {
+                emit(&Event::WaitingForPrompt, account.as_deref());
+                said = true;
+            }
+            self.clock.sleep(PROMPT_POLL);
         }
     }
+}
+
+/// How [`Waiter::wait_for_prompt`] ended (issue #3036).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PromptWait {
+    /// The whole prompt is stored, or needed no storing: a rerun can read it.
+    Ready,
+    /// No rerun can ever be given the prompt, for the reason given.
+    Never(String),
+    /// A stop signal arrived while the prompt was still arriving.
+    Signal(i32),
+    /// The step's session ended while the prompt was still arriving.
+    SessionEnded,
 }
 
 /// How often the retry a wait earned looks again for a prompt that is still

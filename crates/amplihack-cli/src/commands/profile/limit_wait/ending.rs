@@ -1,12 +1,16 @@
 //! What a step says on its way out when it has met a usage limit and its
 //! input cannot be given to a retry (review of PR #2992, issue #3036).
 //!
-//! One ending reaches here, and it is not the limit's: a prompt that could
-//! not be read to its end. The attempt in hand was given less than the
-//! task that was sent, so the step fails whether or not it meets a limit
-//! (`auto_switch::rerun::finish` refuses to report such an attempt's
-//! success), and no retry can be given more than it was. The step timeout
-//! no longer ends a limit wait at all (issue #3037): see `plan`.
+//! One ending reaches here: the step holds no whole copy of its prompt, so
+//! a retry would have nothing to read and no wait could give it any. Two
+//! kinds of failure lead to it. A prompt that could not be read to its end
+//! left the attempt in hand with less than the task that was sent, so the
+//! step fails whether or not it meets a limit (`auto_switch::rerun::finish`
+//! refuses to report such an attempt's success), and no retry can be given
+//! more than it was. A copy that failed, or that a process out of file
+//! descriptors could not set up at all, left the attempt with the whole
+//! task but kept no whole copy of it, so the limit ends the step. The step
+//! timeout no longer ends a limit wait at all (issue #3037): see `plan`.
 //!
 //! What the step writes has one job - hand the run what it needs to carry
 //! on without this step's agent. Three things, in the order a reader of the

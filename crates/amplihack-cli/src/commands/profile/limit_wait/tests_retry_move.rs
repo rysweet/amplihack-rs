@@ -26,7 +26,7 @@ use super::fingerprint::Watch;
 use super::plan::{MIN_WAIT_SECS, WaitFor};
 use super::scratch::Replay;
 use super::settings::WaitSettings;
-use super::{AfterLimit, Resumed, Waiter};
+use super::{AfterLimit, PromptWait, Resumed, Waiter};
 use crate::commands::profile::attempt::Signals;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -317,6 +317,127 @@ fn issue_3036_a_retry_waits_for_a_prompt_that_is_still_arriving() {
         assert!(
             w.now() > before + i64::try_from(MIN_WAIT_SECS).unwrap(),
             "the step waited its limit wait, then for its prompt"
+        );
+    });
+}
+
+/// Issue #3036: the wait the auto-switch rerun and the limit wait's retry
+/// share. A prompt already whole returns at once; one still arriving is
+/// waited for until it is whole, however many looks that takes; one that
+/// can never be whole says why. None of them is refused for being late.
+#[test]
+fn issue_3036_wait_for_prompt_waits_out_a_late_prompt_and_nothing_else() {
+    guarded(|| {
+        let e = env();
+        e.rotator("a");
+        let mut w = e.waiter();
+        w.note_attempt_login();
+        let before = w.now();
+        let mut asked = 0;
+        assert_eq!(
+            w.wait_for_prompt(
+                &mut || {
+                    asked += 1;
+                    Replay::Ready
+                },
+                &signals()
+            ),
+            PromptWait::Ready
+        );
+        assert_eq!(
+            (asked, w.now()),
+            (1, before),
+            "a whole prompt costs no wait"
+        );
+
+        let mut asked = 0;
+        assert_eq!(
+            w.wait_for_prompt(
+                &mut || {
+                    asked += 1;
+                    if asked < 5 {
+                        Replay::Arriving
+                    } else {
+                        Replay::Ready
+                    }
+                },
+                &signals()
+            ),
+            PromptWait::Ready
+        );
+        assert_eq!(asked, 5, "asked until the prompt was whole");
+
+        let why = "this step's prompt could not be read to its end".to_string();
+        let mut answers = vec![Replay::Never(why.clone()), Replay::Arriving];
+        assert_eq!(
+            w.wait_for_prompt(&mut || answers.pop().unwrap(), &signals()),
+            PromptWait::Never(why)
+        );
+    });
+}
+
+/// Issue #3036: a late prompt never holds a step deaf to a stop. A step
+/// already told to stop while its prompt is still arriving ends the wait
+/// for it on the first look, costs no time, and writes no
+/// `waiting_for_prompt` line, because it is not going to wait. The
+/// auto-switch rerun asks once per candidate, so a second ask after the
+/// stop must write nothing either.
+#[test]
+fn issue_3036_a_stop_ends_the_wait_for_a_late_prompt_without_announcing_one() {
+    guarded(|| {
+        let e = env();
+        let log = e._tmp.path().join("recipe.log");
+        let _log = EnvGuard::set([("AMPLIHACK_RECIPE_LOG", log.to_str().unwrap())]);
+        e.rotator("a");
+        let mut w = e.waiter();
+        w.note_attempt_login();
+        let stop = signals();
+        stop.note_received(libc::SIGTERM);
+        let before = w.now();
+        for _ in 0..2 {
+            let mut asked = 0;
+            assert_eq!(
+                w.wait_for_prompt(
+                    &mut || {
+                        asked += 1;
+                        Replay::Arriving
+                    },
+                    &stop
+                ),
+                PromptWait::Signal(libc::SIGTERM)
+            );
+            assert_eq!(asked, 1, "one look, then the stop ends it");
+        }
+        assert_eq!(w.now(), before, "a stopped step does not wait");
+        let written = fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            !written.contains("waiting_for_prompt"),
+            "no wait was made, so none is announced: {written:?}"
+        );
+
+        // The same step not told to stop does announce its wait, once,
+        // which is what the assertion above would miss if the line were
+        // never written at all.
+        let mut asked = 0;
+        assert_eq!(
+            w.wait_for_prompt(
+                &mut || {
+                    asked += 1;
+                    if asked < 3 {
+                        Replay::Arriving
+                    } else {
+                        Replay::Ready
+                    }
+                },
+                &signals()
+            ),
+            PromptWait::Ready
+        );
+        let written = fs::read_to_string(&log).unwrap();
+        assert_eq!(
+            written.matches("waiting_for_prompt").count(),
+            1,
+            "{written:?}"
         );
     });
 }

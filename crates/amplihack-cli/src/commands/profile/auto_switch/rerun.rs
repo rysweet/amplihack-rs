@@ -25,7 +25,7 @@ use crate::commands::profile::attempt::{
 };
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
-use crate::commands::profile::limit_wait::{AfterLimit, Met, Resumed, Waiter};
+use crate::commands::profile::limit_wait::{AfterLimit, Met, PromptWait, Resumed, Waiter};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate;
 use crate::commands::profile::store::ProfileStore;
@@ -741,13 +741,13 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                         &waiter,
                     )
                 {
-                    // The limit is recorded; a rerun that has no whole prompt to
-                    // read is refused rather than given part of one. When the
-                    // capture was never made the wait below refuses too, with
-                    // `piped_prompt`; when the prompt is merely still arriving
-                    // the wait is still worth making, and is asked again when
-                    // it ends (issues #2816, #3036).
-                    if let Some(why) = rerun_refusal(no_capture, &mut stdin) {
+                    // The limit is recorded; a rerun that can never have a
+                    // whole prompt to read is refused rather than given part of
+                    // one, and the wait below refuses too, with `piped_prompt`.
+                    // A prompt merely still arriving is waited for first, and
+                    // the rerun then runs (issues #2816, #3036).
+                    if let Some(why) = rerun_refusal(no_capture, &mut stdin, &mut waiter, &signals)
+                    {
                         eprintln!(
                             "auto-switch: no rerun under profile {:?}: {why}",
                             next.profile.as_str()
@@ -776,7 +776,8 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 if inherited_has_capacity && profile.is_some() {
                     // As for a candidate above: a rerun needs the whole prompt.
                     // The `skipped` event is written below.
-                    if let Some(why) = rerun_refusal(no_capture, &mut stdin) {
+                    if let Some(why) = rerun_refusal(no_capture, &mut stdin, &mut waiter, &signals)
+                    {
                         inherited_has_capacity = false;
                         if refused.as_ref() != Some(&sw.inherited) {
                             eprintln!(
@@ -806,12 +807,19 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // Set by now unless the inherited profile never ran and has no
         // known reset: a candidate's limit is another account's and never
         // times the wait. That happens when the move back to the inherited
-        // profile was refused (a prompt that could not be copied, cut short,
-        // or still arriving); for the first two the wait is refused for the
-        // same reason, so `after_limit` still writes the `skipped` event
-        // (`piped_prompt`, or `disabled`/`ci`) and never starts a wait.
+        // profile was refused: the prompt could not be copied or was cut
+        // short, and the wait is refused for the same reason, so
+        // `after_limit` still writes the `skipped` event (`piped_prompt`, or
+        // `disabled`/`ci`) and never starts a wait; or the step was told to
+        // stop, or its session ended, while it waited for a late prompt.
+        // A stop signal is honoured here as `after_limit` would honour it.
         // With nothing blocking the wait there is no reset to wait for, and
         // the result is passed up.
+        if inherited_wait.is_none()
+            && let Some(sig) = signals.received()
+        {
+            return finish(attempt, Some(128 + sig), &stdin);
+        }
         let Some(wait) = inherited_wait.or_else(|| waiter.blocked_skip()) else {
             return finish(attempt, None, &stdin);
         };
@@ -841,17 +849,35 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     }
 }
 
-/// Why an auto-switch rerun cannot be given this step's prompt now; `None`
-/// when it can (issues #2816, #3036).
+/// Why an auto-switch rerun cannot be given this step's prompt; `None` when
+/// it can (issues #2816, #3036).
 ///
-/// A prompt still arriving refuses the immediate rerun as one that can
-/// never be replayed does, and neither ends the step here: the step falls
-/// through to the wait, whose retry asks [`RerunStdin::replay`] again.
-fn rerun_refusal(no_capture: bool, stdin: &mut RerunStdin) -> Option<String> {
+/// A prompt still arriving is waited for, as the retry a limit wait earns
+/// waits for it ([`Waiter::wait_for_prompt`]), and the rerun then runs. It
+/// used to be refused, and on a step whose inherited profile never ran and
+/// so had no wait to fall back on, that refusal ended the step on a limit.
+/// A stop signal or the end of the session while it waits refuses the
+/// rerun, and the step goes on to `after_limit`, which ends it for that
+/// signal or that session as it would anywhere else.
+fn rerun_refusal(
+    no_capture: bool,
+    stdin: &mut RerunStdin,
+    waiter: &mut Waiter,
+    signals: &Signals,
+) -> Option<String> {
     if no_capture {
         return Some(NO_STORED_PROMPT.to_string());
     }
-    stdin.replay().refusal()
+    match waiter.wait_for_prompt(&mut || stdin.replay(), signals) {
+        PromptWait::Ready => None,
+        PromptWait::Never(why) => Some(why),
+        PromptWait::Signal(_) => {
+            Some("this step was told to stop while its prompt was still arriving".to_string())
+        }
+        PromptWait::SessionEnded => {
+            Some("this step's session ended while its prompt was still arriving".to_string())
+        }
+    }
 }
 
 /// Ends the step with this attempt's result, unless the prompt that reached

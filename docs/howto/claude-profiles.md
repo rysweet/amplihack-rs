@@ -2414,7 +2414,10 @@ A usage limit always starts a wait. The run ends with no wait only when:
 - the prompt came on a pipe and could not be read to its end, so the attempt
   was given only part of its task and the step fails whether or not it met a
   limit (auto-switch then does not rerun the step under another profile
-  either).
+  either);
+- the prompt came on a pipe and no whole copy of it survives for a retry:
+  the copy failed, or could not be set up because the process was out of
+  file descriptors. Nothing is left for a retry to read.
 
 A piped prompt is copied aside and replayed to every retry, an
 `--input-format` channel included. A copy the disk refuses carries on in

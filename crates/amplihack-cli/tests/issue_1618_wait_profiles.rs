@@ -13,8 +13,11 @@
 //!   with one `skipped reason=disabled` line.
 //! - With no inherited profile but a `.default` pointer, the wait watches
 //!   the pointed-to profile's login, the one the launch uses.
-//! - A prompt piped on stdin is neither rerun by auto-switch nor waited for:
-//!   the rerun would get no prompt.
+//! - A prompt piped on stdin is copied as it arrives, so auto-switch reruns
+//!   it under another profile with the same bytes (issue #2815). One still
+//!   arriving when the rerun is due is waited for, and the rerun then runs
+//!   (issue #3036); it used to be refused, and a step that had no wait to
+//!   fall back on then ended on its limit.
 //!
 //! See `issue_1618_fixture`.
 
@@ -279,4 +282,69 @@ fn a_piped_prompt_is_rerun_by_auto_switch_with_the_same_prompt() {
         describe(&out)
     );
     assert!(wait_lines(&out).iter().all(|l| !l.starts_with("skipped")));
+}
+
+/// Issue #3036, review of PR #2992: an auto-switch rerun whose prompt is
+/// still arriving waits for it and then runs, under the candidate, with no
+/// limit wait in between.
+///
+/// The caller holds the pipe open and writes nothing until the step says
+/// `waiting_for_prompt`. The rerun used to be refused at that point
+/// (`auto-switch: no rerun under profile "Y": ... still arriving`), which
+/// sent the step into a wait for X's reset instead, and a step whose
+/// inherited profile had never run had no wait to fall back on and ended
+/// on its limit. Now the rerun waits for the prompt as the retry a wait
+/// earns does, and runs on Y the moment the caller closes the pipe.
+#[test]
+fn issue_3036_an_auto_switch_rerun_waits_for_a_late_prompt_and_then_runs() {
+    let f = with_profiles();
+    switch_on(&f);
+    let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
+    // The agent is told not to read its stdin: the caller writes nothing.
+    let (read, write) = std::io::pipe().expect("a pipe");
+    c.env("AMPLIHACK_CLAUDE_PROFILE", "X")
+        .env("CLAUDE_CONFIG_DIR", f.profiles.join("X"))
+        .env(TOGGLE_ENV, "1")
+        .env("LIMIT_PROFILE", "X")
+        .env("LIMIT_CALLS", "1")
+        .env("SKIP_STDIN", "1")
+        .stdin(std::process::Stdio::from(std::os::fd::OwnedFd::from(read)));
+    // Held open until the step says it is waiting for its prompt.
+    let mut held = Some(write);
+    let waiting = "amplihack.recipe.usage_limit_wait waiting_for_prompt";
+    let out = f.run_watching(&mut c, |line| {
+        if line == waiting {
+            held = None;
+        }
+    });
+    assert!(
+        held.is_none(),
+        "the step never said it was waiting for its prompt\n{}",
+        describe(&out)
+    );
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(
+        f.count("0"),
+        2,
+        "X, then the rerun under Y\n{}",
+        describe(&out)
+    );
+    assert_eq!(f.call("0", 1)["PROFILE"], "X");
+    assert_eq!(
+        f.call("0", 2)["PROFILE"],
+        "Y",
+        "the rerun ran under the candidate"
+    );
+    let err = text(&out.stderr);
+    assert!(
+        !err.contains("no rerun under profile") && !err.contains("piped_prompt"),
+        "a late prompt refuses nothing\n{}",
+        describe(&out)
+    );
+    assert_eq!(
+        events(&out),
+        vec!["waiting_for_prompt"],
+        "no limit wait: the rerun ran once the prompt had arrived\n{}",
+        describe(&out)
+    );
 }

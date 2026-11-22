@@ -11555,29 +11555,34 @@ After an attempt hits a usage limit, in this order:
 
 1. a stop signal already received ends the step with `128` plus the signal;
 2. auto-switch on, the wait unused, and an eligible profile left: rerun
-   under that profile at once;
+   under that profile at once. A piped prompt still arriving is waited for
+   first, as in step 3, and the rerun then runs;
 3. auto-switch moved the step off the inherited profile before the first
    attempt only because that profile is over the threshold (no window at
    100%), and no eligible profile is left: rerun under the inherited
    profile at once. This is an auto-switch rerun, made at most once per
    step: no `start` or `end` is written and the wait stays unused, so a
    limit on that rerun still goes through steps 4 to 6. A piped prompt is
-   replayed from its stored copy, so this rerun is made. It is refused only
-   when there is no whole copy to replay yet (see
-   [Stdin](#stdin-handling)) — the prompt could not be read to its end, or
-   it is still arriving — and the reason is named
+   replayed from its stored copy, so this rerun is made. A prompt still
+   arriving is waited for first, with a `waiting_for_prompt` line (see
+   [Stdin](#stdin-handling)), and the rerun then runs. It is refused only
+   when no whole copy can ever exist, because the prompt could not be read
+   to its end, or when a stop signal or the end of the session interrupts
+   that wait; the reason is named
    (`auto-switch: no rerun under profile …`). The step then goes on to
    step 4: the log gets `skipped reason=disabled` (or `ci`) from step 4
    when the wait is off, else `skipped reason=piped_prompt` from step 5 if
-   the prompt could not be read to its end. A prompt that is merely still
-   arriving does not block the wait, whose retry waits for it;
+   the prompt could not be read to its end;
 4. the wait disabled: `skipped reason=disabled` (or `ci`), and the result
    is passed up;
 5. the output carries no limit message in a harness's shape
-   (`skipped reason=no_limit_message`), or the prompt is piped and could not
-   be read to its end, so the step fails whether or not it met a limit
-   (`skipped reason=piped_prompt`): the result is passed up. A prompt that is
-   merely still arriving is not stored yet, and the retry waits for it;
+   (`skipped reason=no_limit_message`), or the prompt is piped and no whole
+   copy of it can be given to a retry (`skipped reason=piped_prompt`): it
+   could not be read to its end, so the step fails whether or not it met a
+   limit, or the copy failed or could not be set up for want of file
+   descriptors (see [Stdin](#stdin-handling)). The result is passed up. A
+   prompt that is merely still arriving is not stored yet, and the retry
+   waits for it;
 6. otherwise the limit selects a wait (see
    [Capacity wait](#capacity-wait) for the table): a reset wait, a capacity
    wait or a [login-change wait](#login-change-wait). A capacity or

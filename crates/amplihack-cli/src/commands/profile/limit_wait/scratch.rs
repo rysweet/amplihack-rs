@@ -87,18 +87,6 @@ pub(crate) enum Replay {
     Never(String),
 }
 
-impl Replay {
-    /// Why a rerun cannot be given the input now, in words for a log line;
-    /// `None` for [`Replay::Ready`].
-    pub(crate) fn refusal(self) -> Option<String> {
-        match self {
-            Replay::Ready => None,
-            Replay::Arriving => Some(ARRIVING.to_string()),
-            Replay::Never(why) => Some(why),
-        }
-    }
-}
-
 /// Why [`Replay::Arriving`] is not a whole copy, for an attempt that is
 /// handed the capture regardless.
 const ARRIVING: &str = "this step's prompt is still arriving on a pipe its caller has not \

@@ -932,12 +932,6 @@ fn a_prompt_still_arriving_answers_arriving_rather_than_waiting_on_it() {
     // yet. The answer says so, and this returns rather than waiting for a
     // writer that may never write again.
     assert_eq!(policy.replay(), Replay::Arriving);
-    assert!(
-        Replay::Arriving
-            .refusal()
-            .is_some_and(|why| why.contains("still arriving")),
-        "the words a log line gives it"
-    );
     let e = policy.for_attempt(2).unwrap_err().to_string();
     assert!(e.contains("still arriving"), "{e}");
     assert!(
