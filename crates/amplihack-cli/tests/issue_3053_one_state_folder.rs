@@ -33,17 +33,37 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-fn copy_bundle(from: &Path, to: &Path) {
+/// The skills a drive's launch check requires (`REQUIRED_ASSETS` in
+/// `orch/autodrive/trusted.rs`). No other skill is read once the agent steps
+/// are stubbed.
+const SKILLS: [&str; 3] = ["auto-drive-to-merge", "crusty-old-engineer", "merge-ready"];
+
+/// Copies the checkout's bundle into `to` without the skills a drive does not
+/// read. Those skills are most of the bundle's files, and each drive copies and
+/// hashes its whole bundle when it starts, so leaving them out halves the time
+/// of the drive tests.
+fn stage_bundle(to: &Path) {
+    let from = root().join("amplifier-bundle");
+    let skills = from.join("skills");
+    copy_bundle(&from, to, &|path: &Path| {
+        path.parent() != Some(skills.as_path()) || SKILLS.iter().any(|s| path.ends_with(s))
+    });
+}
+
+fn copy_bundle(from: &Path, to: &Path, keep: &dyn Fn(&Path) -> bool) {
     fs::create_dir_all(to).unwrap();
     fs::set_permissions(to, fs::Permissions::from_mode(0o755)).unwrap();
     for entry in fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
+        if !keep(&entry.path()) {
+            continue;
+        }
         let kind = entry.file_type().unwrap();
         let dest = to.join(entry.file_name());
         if kind.is_symlink() {
             std::os::unix::fs::symlink(fs::read_link(entry.path()).unwrap(), &dest).unwrap();
         } else if kind.is_dir() {
-            copy_bundle(&entry.path(), &dest);
+            copy_bundle(&entry.path(), &dest, keep);
         } else {
             fs::copy(entry.path(), &dest).unwrap();
             let mode = fs::metadata(&dest).unwrap().permissions().mode() & 0o755;
@@ -64,6 +84,11 @@ fn write_yaml(path: &Path, doc: &Yaml) {
 fn private_dir(path: &Path) {
     fs::create_dir_all(path).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+fn write_private(path: &Path, body: &str) {
+    fs::write(path, body).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
 /// The `command` of step `id` in a recipe of the checkout's bundle.
@@ -195,10 +220,7 @@ impl Fixture {
         }
         private_dir(&reported);
         private_dir(&bound);
-        copy_bundle(
-            &root().join("amplifier-bundle"),
-            &trusted.join("amplifier-bundle"),
-        );
+        stage_bundle(&trusted.join("amplifier-bundle"));
 
         let git = |dir: &Path, args: &[&str]| -> String {
             let o = amplihack_git::command_in(dir)
@@ -243,7 +265,12 @@ impl Fixture {
             0o755,
         );
         std::os::unix::fs::symlink(amplihack_bin(), bin.join("amplihack")).unwrap();
-        let f = Fixture {
+        write_executable(
+            &trusted.join("amplifier-bundle/tools/autodrive_loop.sh"),
+            FAKE_DRIVER,
+            0o755,
+        );
+        Fixture {
             _tmp: tmp,
             base,
             home,
@@ -254,12 +281,7 @@ impl Fixture {
             reported,
             bound,
             head,
-        };
-        let tools = f.bundle().join("tools");
-        let driver = tools.join("autodrive_loop.sh");
-        fs::write(&driver, FAKE_DRIVER).unwrap();
-        fs::set_permissions(&driver, fs::Permissions::from_mode(0o755)).unwrap();
-        f
+        }
     }
 
     /// The preflight reply of the loop recipes: folder A, the PR worktree.
@@ -310,6 +332,8 @@ impl Fixture {
             "auto-drive-light",
             "autodrive-crusty-loop",
             "autodrive-merge-loop",
+            // The finalisation and hand-off agents only narrate; their bash
+            // steps stay real.
             "autodrive-finalize",
             "autodrive-handoff",
         ] {
@@ -317,7 +341,6 @@ impl Fixture {
             stub_agents(&path, &reply);
             assert_no_agent_step(&path);
         }
-        // The finalisation and hand-off agents only narrate; keep their bash.
         let standin = format!(
             r#"name: autodrive-build
 description: stand-in build that reports folder A
@@ -399,6 +422,45 @@ steps:
             .expect("amplihack recipe run")
     }
 
+    /// A plain command with the real `amplihack` on PATH and no inherited
+    /// recipe variables or tokens.
+    fn command_plain(&self, program: &str) -> Command {
+        let mut c = Command::new(program);
+        c.env_clear()
+            .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
+            .env("HOME", &self.home)
+            .env("AMPLIHACK_HOME", &self.trusted)
+            .env("FAKE_LOG", &self.log)
+            .env("REPO_PATH", &self.repo)
+            .current_dir(&self.repo);
+        c
+    }
+
+    /// Step `id`'s own command under `bash -c`, with the stand-in `amplihack`
+    /// on PATH, folder B bound and a step-recovery folder. The caller adds the
+    /// preflight the step reads.
+    fn standin_step(&self, recipe: &str, id: &str) -> Command {
+        let standin = self.base.join("standin-bin");
+        fs::create_dir_all(&standin).unwrap();
+        write_executable(&standin.join("amplihack"), STANDIN_AMPLIHACK, 0o755);
+        let recovery = self.base.join("recovery");
+        private_dir(&recovery);
+        let mut c = Command::new("bash");
+        c.arg("-c")
+            .arg(step_command(recipe, id))
+            .env_clear()
+            .env("PATH", format!("{}:/usr/bin:/bin", standin.display()))
+            .env("HOME", &self.home)
+            .env("AMPLIHACK_HOME", &self.trusted)
+            .env("FAKE_LOG", &self.log)
+            .env("FAKE_REPORTED", &self.reported)
+            .env("FAKE_REPO", &self.repo)
+            .env("FAKE_PR", PR)
+            .env("RECIPE_VAR_autodrive_state_dir", &self.bound)
+            .env("RECIPE_VAR_step_recovery_dir", &recovery);
+        c
+    }
+
     fn files(dir: &Path) -> Vec<String> {
         fs::read_dir(dir)
             .map(|d| {
@@ -414,6 +476,13 @@ steps:
             .lines()
             .map(str::to_owned)
             .collect()
+    }
+
+    /// `finalize-merge.json` in folder B.
+    fn merge_record(&self) -> Value {
+        let raw = fs::read_to_string(self.bound.join("finalize-merge.json"))
+            .unwrap_or_else(|e| panic!("no merge record in the bound folder: {e}"));
+        serde_json::from_str(raw.trim()).unwrap()
     }
 
     fn assert_reported_folder_untouched(&self, out: &Output) {
@@ -497,14 +566,10 @@ fn a_drive_whose_build_reports_another_folder_still_merges_from_the_bound_one() 
         flag_value(&argv, "--match-head-commit"),
         Some(f.head.as_str())
     );
-    let record: Value = serde_json::from_str(
-        fs::read_to_string(f.bound.join("finalize-merge.json"))
-            .unwrap()
-            .trim(),
-    )
-    .unwrap();
-    assert_eq!(record["result"], json!("merged"), "{record}");
+    let record = f.merge_record();
     let o = outcome(&out);
+    assert_eq!(record["result"], json!("merged"), "{record}");
+    assert_eq!(record["run_id"], o["run_id"], "{record}\n{o}");
     assert_eq!(o["requested_action"], json!("merge"), "{o}");
     assert_eq!(o["stop_reason"], json!("completed"), "{o}");
 }
@@ -529,11 +594,8 @@ fn a_light_drive_allowed_to_merge_finds_the_review_records_in_the_bound_folder()
         "no merge: {}",
         show(&out)
     );
-    assert!(
-        f.bound.join("finalize-merge.json").exists(),
-        "{}",
-        show(&out)
-    );
+    let record = f.merge_record();
+    assert_eq!(record["result"], json!("merged"), "{record}");
 }
 
 // T2b (#2997): light's default is verify-only. The run ends completed with
@@ -546,9 +608,15 @@ fn a_light_drive_left_verify_only_completes_from_the_bound_folder() {
     let out = f.drive("auto-drive-light", &[]);
     f.assert_reported_folder_untouched(&out);
     assert!(!f.log.join("merge-argv").exists(), "{}", show(&out));
+    let record = f.merge_record();
+    assert_eq!(record["result"], json!("not-authorised"), "{record}");
+    assert_eq!(
+        record["reason"],
+        json!("this run is verify-only"),
+        "{record}"
+    );
     let o = outcome(&out);
     assert_eq!(o["stop_reason"], json!("completed"), "{o}\n{}", show(&out));
-    assert_ne!(o["stop_reason"], json!("unreadable"), "{o}");
 }
 
 // T2e (#2997): light's escalation hand-off to auto-drive-to-merge. The copy's
@@ -568,12 +636,7 @@ fn a_light_escalation_hands_the_bound_folder_to_the_full_drive() {
     .unwrap();
     write_yaml(&drive, &doc);
     // An escalation marker in B makes light's eligibility decide "escalate".
-    fs::write(f.bound.join("escalation.json"), "{}\n").unwrap();
-    fs::set_permissions(
-        f.bound.join("escalation.json"),
-        fs::Permissions::from_mode(0o600),
-    )
-    .unwrap();
+    write_private(&f.bound.join("escalation.json"), "{}\n");
     let out = f.drive("auto-drive-light", &[]);
     f.assert_reported_folder_untouched(&out);
     let seen = fs::read_to_string(f.log.join("escalated-state-dir"))
@@ -611,27 +674,9 @@ esac
 #[test]
 fn the_finalize_recovery_rerun_gets_the_bound_folder() {
     let f = Fixture::new();
-    let standin = f.base.join("standin-bin");
-    fs::create_dir_all(&standin).unwrap();
-    write_executable(&standin.join("amplihack"), STANDIN_AMPLIHACK, 0o755);
-    let recovery = f.base.join("recovery");
-    private_dir(&recovery);
-    let out = Command::new("bash")
-        .arg("-c")
-        .arg(step_command(
-            "autodrive-merge-loop.yaml",
-            "step-03r-finalize-recovery",
-        ))
-        .env_clear()
-        .env("PATH", format!("{}:/usr/bin:/bin", standin.display()))
-        .env("HOME", &f.home)
-        .env("FAKE_LOG", &f.log)
-        .env("FAKE_REPORTED", &f.reported)
-        .env("FAKE_REPO", &f.repo)
-        .env("FAKE_PR", PR)
+    let out = f
+        .standin_step("autodrive-merge-loop.yaml", "step-03r-finalize-recovery")
         .env("RECIPE_VAR_merge_loop_preflight", f.preflight())
-        .env("RECIPE_VAR_autodrive_state_dir", &f.bound)
-        .env("RECIPE_VAR_step_recovery_dir", &recovery)
         .output()
         .unwrap();
     let args = fs::read_to_string(f.log.join("finalize-args"))
@@ -668,11 +713,7 @@ fn the_merge_loop_tool_hands_the_driver_the_bound_folder() {
             .any(|a| a == &format!("autodrive_state_dir={}", f.bound.display())),
         "{args:?}"
     );
-    assert!(
-        Fixture::files(&f.reported).is_empty(),
-        "{:?}",
-        Fixture::files(&f.reported)
-    );
+    f.assert_reported_folder_untouched(&out);
 }
 
 // T4b: crusty step-02.
@@ -698,11 +739,7 @@ fn the_crusty_loop_step_hands_the_driver_the_bound_folder() {
         f.bound.to_str(),
         "{args:?}"
     );
-    assert!(
-        Fixture::files(&f.reported).is_empty(),
-        "{:?}",
-        Fixture::files(&f.reported)
-    );
+    f.assert_reported_folder_untouched(&out);
 }
 
 // T4c: crusty step-03r checks the phase in the bound folder, in both
@@ -716,33 +753,14 @@ fn the_crusty_phase_check_reads_the_bound_folder_only() {
         } else {
             &f.reported
         };
-        fs::write(recorded.join("phases.tsv"), "crusty-loop\tdone\n").unwrap();
-        fs::set_permissions(
-            recorded.join("phases.tsv"),
-            fs::Permissions::from_mode(0o600),
+        write_private(&recorded.join("phases.tsv"), "crusty-loop\tdone\n");
+        f.standin_step(
+            "autodrive-crusty-loop.yaml",
+            "step-03r-record-crusty-phase-recovery",
         )
-        .unwrap();
-        let recovery = f.base.join("recovery");
-        private_dir(&recovery);
-        let standin = f.base.join("standin-bin");
-        fs::create_dir_all(&standin).unwrap();
-        write_executable(&standin.join("amplihack"), STANDIN_AMPLIHACK, 0o755);
-        Command::new("bash")
-            .arg("-c")
-            .arg(step_command(
-                "autodrive-crusty-loop.yaml",
-                "step-03r-record-crusty-phase-recovery",
-            ))
-            .env_clear()
-            .env("PATH", format!("{}:/usr/bin:/bin", standin.display()))
-            .env("AMPLIHACK_HOME", &f.trusted)
-            .env("FAKE_REPORTED", &f.reported)
-            .env("FAKE_LOG", &f.log)
-            .env("RECIPE_VAR_crusty_loop_preflight", f.preflight())
-            .env("RECIPE_VAR_autodrive_state_dir", &f.bound)
-            .env("RECIPE_VAR_step_recovery_dir", &recovery)
-            .output()
-            .unwrap()
+        .env("RECIPE_VAR_crusty_loop_preflight", f.preflight())
+        .output()
+        .unwrap()
     };
     let in_bound = run(true);
     assert_eq!(in_bound.status.code(), Some(0), "{}", show(&in_bound));
@@ -773,20 +791,4 @@ fn a_direct_run_with_no_bound_folder_uses_the_reported_one() {
         f.reported.to_str(),
         "{args:?}"
     );
-}
-
-impl Fixture {
-    /// A plain command with the real `amplihack` on PATH and no inherited
-    /// recipe variables or tokens.
-    fn command_plain(&self, program: &str) -> Command {
-        let mut c = Command::new(program);
-        c.env_clear()
-            .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
-            .env("HOME", &self.home)
-            .env("AMPLIHACK_HOME", &self.trusted)
-            .env("FAKE_LOG", &self.log)
-            .env("REPO_PATH", &self.repo)
-            .current_dir(&self.repo);
-        c
-    }
 }
