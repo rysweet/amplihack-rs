@@ -506,6 +506,46 @@ fn a_recorded_worktree_that_cannot_be_read_is_not_a_clean_worktree() {
     );
 }
 
+// SEC-01 (#2966), a work tree git refuses to read. A `safe.directory` refusal
+// is not the same fault as a directory that holds no repository, so the reason
+// carries the first line of git's own error after "not a git worktree", and
+// stays one line. `GIT_TEST_ASSUME_DIFFERENT_OWNER` is git's switch for
+// reproducing the refusal without a second user; the fixture's git config is
+// empty, so no `safe.directory` entry can lift it.
+#[test]
+fn a_recorded_worktree_git_refuses_to_read_names_git_s_reason() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(recorded_evidence(&fx, "green", ""));
+    envs.push(assessment("EXISTING_OPEN_PR", "none", "7"));
+    envs.push(("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1".to_owned()));
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert_eq!(
+        outcome.field("terminal_state"),
+        "FAILED_DIRTY_WORKTREE",
+        "{}",
+        outcome.describe()
+    );
+    let reason = outcome.field("terminal_reason");
+    assert!(
+        reason.starts_with("the recorded worktree could not be read (not a git worktree: "),
+        "the reason keeps the probe's own words and adds git's: {reason}"
+    );
+    assert!(
+        reason.contains("dubious ownership"),
+        "the reason names git's refusal: {reason}"
+    );
+    assert!(
+        !reason.contains('\n'),
+        "only the first line of git's error is kept: {reason:?}"
+    );
+}
+
 // SEC-12 (#2966). `action_taken` is the assessment's word for what it did, and
 // the validator quotes it in `evidence_used`, a comma-separated record of facts
 // that people and the next loop read. Free text there could forge a fact: an

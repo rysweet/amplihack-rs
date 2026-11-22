@@ -17,7 +17,7 @@
 # workflow_finalization_result.sh, so both are required before it runs.
 
 probe_recorded_worktree() {
-  local probe_where="" probe_status=0 probe_output="" probe_unreadable=""
+  local probe_where="" probe_status=0 probe_output="" probe_unreadable="" probe_error=""
   target_dir="$(workflow_finalization_metadata worktree_path || :)"
   [ -n "$target_dir" ] || target_dir="$(workflow_finalization_metadata repo_path || :)"
   target_dir_explicit="true"
@@ -39,7 +39,10 @@ probe_recorded_worktree() {
   # and is never failed for being unreadable: it is whatever directory the
   # process started in, not the run's worktree.
   # `rev-parse --is-inside-work-tree` exits 0 inside a `.git` directory and
-  # prints "false" there, so its answer is read, not only its exit code.
+  # prints "false" there, so its answer is read, not only its exit code. When
+  # it refuses, the first line of its error is kept in the reason: a
+  # `safe.directory` refusal is a work tree git will not read, and reporting
+  # it only as "not a git worktree" hides the cause.
   if [ "$evidence_dirty_worktree" != "false" ] || [ "$target_dir_explicit" = "true" ]; then
     probe_unreadable=""
     if ! command -v git >/dev/null 2>&1; then
@@ -48,6 +51,9 @@ probe_recorded_worktree() {
       probe_unreadable="no such directory"
     elif [ "$(git -C "$target_dir" rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]; then
       probe_unreadable="not a git worktree"
+      probe_error="$(git -C "$target_dir" rev-parse --is-inside-work-tree 2>&1 >/dev/null || :)"
+      probe_error="${probe_error%%$'\n'*}"
+      [ -z "$probe_error" ] || probe_unreadable="$probe_unreadable: $probe_error"
     fi
     if [ -z "$probe_unreadable" ]; then
       probe_where="the recorded worktree"

@@ -543,8 +543,12 @@ answer is no decision whatever the flag says.
 
 The rule is `_finalization_decision_unowned` and `_finalization_unowned_or_handoff`
 in `workflow_finalization_result.sh`; neither re-judges a fact or reads a check.
-Neither checks `pr_number`: a `BLOCKED_CI` that carries both sentences and no
-pull request is still published, and fails closed with no hand-off, as below.
+`_finalization_decision_unowned` does not read `pr_number`.
+`_finalization_unowned_or_handoff` needs one only to hand the pull request on:
+`finalization_try_handoff_open_pr` refuses the hand-off without it, which gives
+the no-decision outcome in the paragraph above. A `BLOCKED_CI` that carries
+both sentences and no pull request is still published, and fails closed with
+no hand-off, as below.
 
 `pr_number` is required with it. Without a pull request number the state
 cannot be handed on, and finalization fails closed with no hand-off.
@@ -868,7 +872,7 @@ Tests assert on those SHAs and identifiers, never on wording.
 | PR open at the run's head, every check green or none reported | `EXISTING_OPEN_PR` (a success) | `outcome.pr`, `outcome.pr_state=OPEN` and `outcome.checks=green` or `none`. |
 | The repair was left unfinished, with no cause named that the run cannot fix | `FAILED_IMPLEMENTATION` | `outcome.pr`, and a `reason` naming the head commit and the per-class check counts. |
 | `EXISTING_OPEN_PR` decided with no pull request named | `FAILED_MISSING_TERMINAL_EVIDENCE` (no decision) | The facts, and a reason quoting the `pr_number` that came back. |
-| `BLOCKED_CI` decided with no cause or no owner's step | `FAILED_MISSING_TERMINAL_EVIDENCE` (no decision) | The facts, and a reason naming which of the two sentences was missing. |
+| `BLOCKED_CI` decided with no cause or no owner's step | `FAILED_MISSING_TERMINAL_EVIDENCE` (no decision); inside auto-drive, with a pull request number, the pull request is handed to the merge-ready loop instead | The facts, and a reason naming which of the two sentences was missing. |
 
 A real failure ends the run as before and exits `1`. The change removes the
 failures that were not real.

@@ -4,11 +4,11 @@
 //! `BLOCKED_CI` is the one terminal state whose published definition is a
 //! person's next move: a check that fails, or cannot run, for a cause the run
 //! cannot fix, with the cause in `reason` and the step its owner must take in
-//! `next_action`. Reported without either, it ends the run naming nobody. The
-//! validator's placeholder sentences would hide that, so it asks the same
-//! question it asks of a pull-request state that names no pull request --
-//! whether the decision named what it asserts. It re-judges no fact and reads
-//! no check.
+//! `next_action`. Reported without one of them, it ends the run with no cause
+//! or no step for the owner. The validator's placeholder sentences would hide
+//! that, so it asks the same question it asks of a pull-request state that
+//! names no pull request -- whether the decision named what it asserts. It
+//! re-judges no fact and reads no check.
 //!
 //! Inside auto-drive the state does not end the run: the pull request goes to
 //! the merge-ready loop, which repairs it, and nobody is waiting on the two
@@ -73,6 +73,19 @@ fn a_blocked_ci_without_a_cause_or_an_owners_step_is_no_decision() {
         let why = format!("reason={reason:?} next_action={next:?}");
         assert_no_decision(&outcome, &why);
         assert_no_handoff_key(&outcome, &why);
+        assert_eq!(
+            outcome.output.status.code(),
+            Some(1),
+            "{why}: no decision fails the step\n{}",
+            outcome.describe()
+        );
+        assert!(
+            outcome
+                .stderr
+                .contains("failed closed: FAILED_MISSING_TERMINAL_EVIDENCE: "),
+            "{why}: the one-line failure names the state\n{}",
+            outcome.describe()
+        );
         let terminal_reason = outcome.field("terminal_reason");
         assert!(
             terminal_reason.contains("BLOCKED_CI") && terminal_reason.contains(missing),
