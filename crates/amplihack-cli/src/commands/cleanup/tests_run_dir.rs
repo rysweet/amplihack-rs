@@ -1220,3 +1220,147 @@ fn finishing_a_run_whose_runtime_holds_unsaved_work_does_not_fail_or_change_the_
     assert_eq!(report.outcome, "success");
     assert!(report.ended_at.is_some(), "the run is recorded as ended");
 }
+
+// ---- issue #2886: build output is removed when a run ends ------------------
+
+mod build_output_at_run_end {
+    use super::*;
+    use crate::test_support::{EnvGuard, env_lock};
+
+    const FLAG: &str = "AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR";
+
+    fn cargo_target(at: &Path) -> PathBuf {
+        std::fs::create_dir_all(at.join("debug/.fingerprint")).unwrap();
+        std::fs::write(
+            at.join("CACHEDIR.TAG"),
+            "Signature: 8a477f597d28d172789f06886806bc55\n",
+        )
+        .unwrap();
+        std::fs::write(at.join("debug/blob"), vec![1u8; 512]).unwrap();
+        at.to_path_buf()
+    }
+
+    /// A run whose launch claims `claimed` as private, and one linked
+    /// worktree in its `owned-paths` holding a `target/`.
+    struct Run {
+        _base: tempfile::TempDir,
+        ws: RunWorkspace,
+        claimed: PathBuf,
+        worktree_target: PathBuf,
+        _scratch: Scratch,
+    }
+
+    fn run() -> Run {
+        let base = tempfile::tempdir().unwrap();
+        let ws = scoped_workspace(base.path());
+        let scratch = Scratch::new();
+        let main = scratch.root.join("main");
+        scratch.origin.clone_to(&main);
+        let wt = base.path().join("work/worktrees/feat");
+        std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+        crate::test_support::origin_clones::git(
+            &main,
+            &["worktree", "add", "-q", "-b", "feat", wt.to_str().unwrap()],
+        );
+        let worktree_target = cargo_target(&wt.join("target"));
+        let run_dir = ws.run_dir().unwrap().to_path_buf();
+        std::fs::write(
+            run_dir.join("owned-paths"),
+            format!("worktree\t{}\tfeat\n", wt.display()),
+        )
+        .unwrap();
+        let claimed = cargo_target(&base.path().join("private-target"));
+        Run {
+            _base: base,
+            ws,
+            claimed,
+            worktree_target,
+            _scratch: scratch,
+        }
+    }
+
+    fn finish_each_outcome(outcome: Outcome) {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let r = run();
+        let _env = EnvGuard::set([
+            ("CARGO_TARGET_DIR", r.claimed.to_str().unwrap()),
+            (FLAG, "1"),
+        ]);
+        let _id = EnvGuard::unset(["AMPLIHACK_RUN_ID"]);
+        r.ws.finish_checked(outcome, Vec::new(), None, true)
+            .expect("removing build output never fails the run");
+        assert!(!r.claimed.exists());
+        assert!(!r.worktree_target.exists());
+    }
+
+    #[test]
+    fn success_removes_both() {
+        finish_each_outcome(Outcome::Success);
+    }
+
+    #[test]
+    fn failure_removes_both() {
+        finish_each_outcome(Outcome::Failure);
+    }
+
+    #[test]
+    fn interrupted_removes_both() {
+        finish_each_outcome(Outcome::Interrupted);
+    }
+
+    #[test]
+    fn the_sweep_off_switch_does_not_keep_build_output() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let r = run();
+        let _env = EnvGuard::set([
+            ("CARGO_TARGET_DIR", r.claimed.to_str().unwrap()),
+            (FLAG, "1"),
+            ("AMPLIHACK_CLEANUP_ON_EXIT", "0"),
+        ]);
+        let _id = EnvGuard::unset(["AMPLIHACK_RUN_ID"]);
+        r.ws.finish_checked(Outcome::Success, Vec::new(), None, false)
+            .unwrap();
+        assert!(!r.claimed.exists());
+        assert!(!r.worktree_target.exists());
+    }
+
+    #[test]
+    fn without_the_flag_the_target_dir_stays_but_the_worktree_target_goes() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let r = run();
+        let _env = EnvGuard::set([("CARGO_TARGET_DIR", r.claimed.to_str().unwrap())]);
+        let _flag = EnvGuard::unset([FLAG, "AMPLIHACK_RUN_ID"]);
+        r.ws.finish_checked(Outcome::Success, Vec::new(), None, true)
+            .unwrap();
+        assert!(r.claimed.join("debug/blob").is_file());
+        assert!(!r.worktree_target.exists());
+    }
+
+    #[test]
+    fn a_dry_run_removes_nothing() {
+        let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+        let base = tempfile::tempdir().unwrap();
+        let claimed = cargo_target(&base.path().join("t"));
+        let _env = EnvGuard::set([("CARGO_TARGET_DIR", claimed.to_str().unwrap()), (FLAG, "1")]);
+        let ws = RunWorkspace::dry_runtime().unwrap();
+        ws.finish_checked(Outcome::Success, Vec::new(), None, true)
+            .unwrap();
+        assert!(claimed.join("debug/blob").is_file());
+    }
+
+    #[test]
+    fn steps_never_see_the_flag_in_either_mode() {
+        let base = tempfile::tempdir().unwrap();
+        let scoped = scoped_workspace(base.path());
+        let dry = RunWorkspace::dry_runtime().unwrap();
+        for ws in [&scoped, &dry] {
+            let value = ws
+                .env()
+                .into_iter()
+                .rev()
+                .find(|(k, _)| *k == FLAG)
+                .map(|(_, v)| v);
+            assert_eq!(value, Some(std::ffi::OsString::new()), "cleared, not unset");
+        }
+    }
+}

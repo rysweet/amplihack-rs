@@ -561,6 +561,11 @@ mod issue_2738_support;
 #[path = "issue_2756_user_git_config.rs"]
 mod issue_2756_user_git_config;
 
+// Issue #2886: a run removes its own build output when it ends. No platform
+// gate: the behaviour needs no `/proc`.
+#[path = "issue_2886_build_output_cleanup.rs"]
+mod issue_2886_build_output_cleanup;
+
 // Issue #2769: the #2663 outcome rule is the top-level drive's, not every
 // `autodrive-*` sub-recipe's.
 #[path = "issue_2769_autodrive_outcome_scope.rs"]

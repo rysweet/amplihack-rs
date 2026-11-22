@@ -274,9 +274,10 @@ does withhold `retry_after_repair`, and since #2819 that is deliberate rather
 than an oversight. The step reports a decision made before it ran. Its inputs
 are all recorded values (`finalization_assessment`,
 `finalization_evidence`), and the recovery agent is forbidden both actions
-that would change what they say: it may make no GitHub write, so it cannot
-push the branch or open the pull request a `FAILED_IMPLEMENTATION` is missing,
-and it may start no recipe, so it cannot produce an assessment where there is
+that would change what they say: it may open no pull request and make no
+GitHub write other than a plain push of commits the run itself made (#2923),
+and this step has no commit of its own to push, so it cannot open the pull
+request a `FAILED_IMPLEMENTATION` is missing, and it may start no recipe, so it cannot produce an assessment where there is
 none (see `amplifier-bundle/recipes/step-failure-recovery.yaml`). A retry
 would re-read the same values and fail identically, so the step offers the
 agent the move it can actually make: hand off with the reason. Repairing the

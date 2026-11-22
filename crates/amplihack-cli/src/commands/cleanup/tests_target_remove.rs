@@ -21,7 +21,8 @@
 //!   - `fn allowed(&self) -> &[PathBuf]`: the canonical managed roots
 //!     (`targets`, then `hook_base` when set) followed by the accepted entries.
 //!   - Every ownership check in `inspect` and `remove` compares with `uid`.
-//! - `pub(super) enum LinkReason` and `pub(super) enum Refusal` whose single
+//! - `enum LinkReason` and `enum Refusal`, visible throughout the `cleanup`
+//!   module since #2886's end-of-run removal reuses them, whose single
 //!   `Display` gives every report text:
 //!   `in use: .cargo-lock is held`, `changed since plan`, and
 //!   `link not followed: <not a cargo target|outside allowed roots|link chain|foreign owner>`.
