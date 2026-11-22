@@ -34,6 +34,8 @@ mod mv;
 #[cfg(unix)]
 mod overflow_inputs;
 #[cfg(unix)]
+mod own_login;
+#[cfg(unix)]
 mod per_token;
 #[cfg(unix)]
 pub(super) mod rerun;
@@ -70,6 +72,8 @@ mod tests_liveness;
 #[cfg(all(test, unix))]
 mod tests_mv;
 #[cfg(all(test, unix))]
+mod tests_own_login;
+#[cfg(all(test, unix))]
 mod tests_platform_candidate;
 #[cfg(all(test, unix))]
 mod tests_record;
@@ -105,7 +109,7 @@ pub(super) use liveness::scan;
 #[cfg(all(test, unix))]
 pub(super) use overflow_inputs::OverflowInputs;
 #[cfg(unix)]
-pub(super) use overflow_inputs::can_take_login;
+pub(super) use overflow_inputs::login_gap;
 #[cfg(unix)]
 pub(super) use state::CREDS;
 #[cfg(unix)]
@@ -710,7 +714,11 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
         }
         if let Some(file) = file {
             state.save_usage(&file)?;
-            capacity::refresh(&state, &file, &ledger, "usage");
+            // Issue #2885: `profile usage` is where the capacity warning
+            // sends the user, so the Keychain cause is said here, on stderr.
+            for note in capacity::refresh(&state, &file, &ledger, "usage") {
+                eprintln!("{note}");
+            }
         }
         Ok(RecordOutcome::Recorded { written, moved })
     }
