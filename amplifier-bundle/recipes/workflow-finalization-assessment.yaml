@@ -55,6 +55,7 @@ context:
   worktree_setup: ""
   step_recovery_dir: ""
   pr_number: ""
+  forbidden_base_branches: ""  # read by the dispatcher continue-ci-repair runs, in collect mode only
 
 steps:
   - id: "assess-finalization"
