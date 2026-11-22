@@ -478,7 +478,7 @@ session.
 
 | Point | Step | What it does |
 | --- | --- | --- |
-| Main repair | `step-22-ensure-mergeable` (the `ci-diagnostic-workflow` agent) | Runs when checks fail, because the probe no longer ends the run on them. Its goal is every check green on the PR head, with each cause fixed in the run's worktree and pushed without force. It waits with `gh pr checks --watch`. It ends on green, or on a named cause the run cannot fix, with its owner and the human step. It does not merge when `no_merge` is set, and approval must be on the current head before any merge. |
+| Main repair | `step-22-ensure-mergeable` (the `ci-diagnostic-workflow` agent) | Runs when checks fail, because the probe no longer ends the run on them. Its goal is every check green on the PR head, with each cause fixed in the run's worktree and pushed without force. It waits with `gh pr checks --watch`. It ends on green, or on a named cause the run cannot fix, with its owner and the human step. It merges only when `no_merge` is `"false"` and an approval covers the current head; otherwise it stops at merge-ready and the calling workflow decides. |
 | Check again and continue | `assess-finalization` | Waits for pending checks, continues the repair if a check still fails for a fixable cause, and decides on what it reads after that. It is the one point that can base the terminal state on current facts after a repair. |
 
 Detailed guidance for the loop is in the
@@ -627,7 +627,7 @@ leave a trace.
 | Dependencies | Change a dependency, add a git or alternative-registry source, or add a build script only when the failing check shows that exact need, and run the repository's own audit or deny check first. |
 | Secrets | Secrets are named, never pasted. Log text is not copied into `reason`, `next_action`, commit messages or comments. Only changed files are committed, never `git add -A`. |
 | A repeated failure | Before another attempt at a check that failed again, the agent states why the attempt differs. If it cannot, it names the cause as one the run cannot fix. |
-| Approval | A merge needs an approving review whose commit equals the current head. After a push that follows an approval, the agent stops at merge-ready and asks for a new approval. The assessment has no merge action. |
+| Approval | `step-22` merges only when `no_merge` is `"false"`; otherwise it stops at merge-ready and the calling workflow decides. A merge needs a review whose `state` is `APPROVED` and whose `commit.oid` equals `headRefOid`, read with `gh pr view <n> -R <owner/repo> --json reviews,headRefOid`. After a push that follows an approval, the agent stops at merge-ready and asks for a new approval. The assessment has no merge action. |
 
 Two checks stay in the validator, and neither reads CI:
 

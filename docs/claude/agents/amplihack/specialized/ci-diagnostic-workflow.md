@@ -440,10 +440,22 @@ Pushing the same change again is not a round.
 
 ## Merge
 
-This agent stops at mergeable and the calling workflow decides the merge. If
-the calling workflow merges, it needs an approving review whose commit equals
-the current head. After a push that follows an approval, the approval no longer
-covers the head: stop at merge-ready and ask for a new approval.
+This agent stops at mergeable. It merges only when the calling workflow passes
+`no_merge` as `"false"`. With any other value, including an empty one, it stops
+at merge-ready and the calling workflow decides the merge.
+
+A merge needs an approval on the current head: a review whose `state` is
+`APPROVED` and whose `commit.oid` equals the pull request's `headRefOid`. Read
+both in one call:
+
+```bash
+gh pr view <pr-number> -R <owner>/<repo> --json reviews,headRefOid \
+  --jq '.headRefOid as $head | [.reviews[] | select(.state == "APPROVED" and .commit.oid == $head)] | length'
+```
+
+A count of `0` means no approval covers the head. After a push that follows an
+approval, the approval no longer covers the head: stop at merge-ready and ask
+for a new approval.
 
 ## Output Reporting
 
