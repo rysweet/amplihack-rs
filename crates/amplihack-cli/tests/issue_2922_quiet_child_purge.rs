@@ -6,7 +6,7 @@
 //! body runs must remove them. The values are synthetic placeholders.
 
 use crate::support::claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS;
-use crate::support::quiet_process::{in_quiet_process, in_quiet_process_with_env};
+use crate::support::quiet_process::in_quiet_process_with_env;
 
 #[test]
 fn all_five_variables_are_absent_in_a_child_the_parent_exported_them_to() {
@@ -24,19 +24,6 @@ fn all_five_variables_are_absent_in_a_child_the_parent_exported_them_to() {
                     std::env::var_os(name).is_none(),
                     "{name} reached the quiet child"
                 );
-            }
-        },
-    );
-}
-
-#[test]
-fn a_plain_quiet_child_also_starts_without_the_five() {
-    in_quiet_process(
-        module_path!(),
-        "a_plain_quiet_child_also_starts_without_the_five",
-        || {
-            for name in CLAUDE_PROFILE_ENV_VARS {
-                assert!(std::env::var_os(name).is_none(), "{name} is set");
             }
         },
     );

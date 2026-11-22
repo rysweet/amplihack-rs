@@ -180,16 +180,15 @@ mod scratch_base_tests {
 ///
 /// Tests must acquire `env_lock()` before constructing this guard.
 ///
-/// A guard whose keys include `HOME` also carries a
-/// [`claude_profile_isolation::ClaudeProfileIsolation`], so pointing `HOME` at
-/// a temporary folder through this type cannot leave an inherited
-/// `CLAUDE_CONFIG_DIR` pointing at a developer's live profile (issue #2922).
+/// A guard that moves `HOME` also clears the five
+/// [`claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS`] and restores them
+/// with everything else it touched, so pointing `HOME` at a temporary folder
+/// through this type cannot leave an inherited `CLAUDE_CONFIG_DIR` pointing at
+/// a developer's live profile (issue #2922). Each variable is saved once, the
+/// first time the guard touches it, so the restore does not depend on the
+/// order in which the variables were touched.
 pub(crate) struct EnvGuard {
     previous: Vec<(OsString, Option<OsString>)>,
-    // Field order is drop order, and `Drop::drop` below runs before either
-    // field: the variables this guard set are restored first, then the five
-    // profile variables, so a nested guard never inverts the restore order.
-    _profile: Option<claude_profile_isolation::ClaudeProfileIsolation>,
 }
 
 impl EnvGuard {
@@ -201,23 +200,16 @@ impl EnvGuard {
                 .iter()
                 .map(|key| (OsString::from(key), std::env::var_os(key)))
                 .collect(),
-            _profile: None,
         }
     }
 
     pub(crate) fn set<const N: usize>(values: [(&str, &str); N]) -> Self {
-        let profile = isolate_profile_if_home(values.iter().map(|(name, _)| *name));
-        let previous = values
-            .iter()
-            .map(|(name, _)| (OsString::from(name), std::env::var_os(name)))
-            .collect();
+        let mut guard = Self::capture(&[]);
+        guard.clear_profile_if_home(values.iter().map(|(name, _)| *name));
         for (name, value) in values {
-            unsafe { std::env::set_var(name, value) };
+            guard.put(name, value);
         }
-        Self {
-            previous,
-            _profile: profile,
-        }
+        guard
     }
 
     /// Remove `names` from the environment until the guard is dropped.
@@ -229,25 +221,23 @@ impl EnvGuard {
         for name in names {
             unsafe { std::env::remove_var(name) };
         }
-        Self {
-            previous,
-            _profile: None,
-        }
+        Self { previous }
     }
 
     /// Set `key` to `value` until the guard is dropped. The value `key` had
     /// before the guard first touched it is restored on drop, panics included.
     ///
-    /// Assigning `HOME` takes the profile isolation too, if this guard is not
-    /// carrying one already (issue #2922), so a guard built with
-    /// [`EnvGuard::capture`] and then pointed at a temporary home is isolated
-    /// in the same way as one built with [`EnvGuard::set`].
+    /// Assigning `HOME` also clears the five profile variables (issue #2922),
+    /// so a guard built with [`EnvGuard::capture`] and then pointed at a
+    /// temporary home is isolated in the same way as one built with
+    /// [`EnvGuard::set`]. A profile variable must therefore be assigned after
+    /// `HOME`, not before.
     pub(crate) fn assign(&mut self, key: &str, value: impl AsRef<OsStr>) {
-        if key == "HOME" && self._profile.is_none() {
-            // Taken before `HOME` moves, and dropped after `previous` is
-            // restored, so the restore order stays newest first.
-            self._profile = Some(claude_profile_isolation::ClaudeProfileIsolation::new());
-        }
+        self.clear_profile_if_home([key]);
+        self.put(key, value);
+    }
+
+    fn put(&mut self, key: &str, value: impl AsRef<OsStr>) {
         self.remember(key);
         unsafe { std::env::set_var(key, value) };
     }
@@ -262,6 +252,21 @@ impl EnvGuard {
         if !self.previous.iter().any(|(name, _)| name == key) {
             self.previous
                 .push((OsString::from(key), std::env::var_os(key)));
+        }
+    }
+
+    /// Clear the five [`claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS`]
+    /// until the guard drops, if `keys` contains `HOME` (issue #2922).
+    ///
+    /// A guard that moves `HOME` may make installer code write a settings
+    /// file, and these are the variables that would redirect that write out of
+    /// the temporary home. A guard that leaves `HOME` alone leaves them alone
+    /// too, so a test that deliberately exercises them still observes them.
+    fn clear_profile_if_home<'a>(&mut self, keys: impl IntoIterator<Item = &'a str>) {
+        if keys.into_iter().any(|key| key == "HOME") {
+            for name in claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS {
+                self.clear(name);
+            }
         }
     }
 }
@@ -295,34 +300,15 @@ pub(crate) fn clear_outer_run_env() -> EnvGuard {
 /// profile root at a temp directory, which [`EnvGuard::set`] cannot take
 /// because its values are `&str`.
 pub(crate) fn env_paths(vars: &[(&str, Option<&Path>)]) -> EnvGuard {
-    let profile = isolate_profile_if_home(vars.iter().map(|(key, _)| *key));
     let mut guard = EnvGuard::capture(&[]);
-    guard._profile = profile;
+    guard.clear_profile_if_home(vars.iter().map(|(key, _)| *key));
     for (key, value) in vars {
         match value {
-            Some(path) => guard.assign(key, path),
+            Some(path) => guard.put(key, path),
             None => guard.clear(key),
         }
     }
     guard
-}
-
-/// A [`claude_profile_isolation::ClaudeProfileIsolation`] when `keys` contains
-/// `HOME`, and `None` otherwise (issue #2922).
-///
-/// A guard that moves `HOME` is a guard that may make installer code write a
-/// settings file, so it clears the five variables that would redirect that
-/// write out of the temporary home. A guard that touches other variables is
-/// left alone: clearing the five under it would change what a test that
-/// deliberately exercises them observes.
-///
-/// The caller must hold `env_lock()`, as for any [`EnvGuard`].
-fn isolate_profile_if_home<'a>(
-    keys: impl IntoIterator<Item = &'a str>,
-) -> Option<claude_profile_isolation::ClaudeProfileIsolation> {
-    keys.into_iter()
-        .any(|key| key == "HOME")
-        .then(claude_profile_isolation::ClaudeProfileIsolation::new)
 }
 
 /// Runs `f` under the shared env lock with each variable set (or removed when
@@ -330,10 +316,8 @@ fn isolate_profile_if_home<'a>(
 pub(crate) fn with_env<T>(vars: &[(&str, Option<&OsStr>)], f: impl FnOnce() -> T) -> T {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let keys: Vec<&str> = vars.iter().map(|(k, _)| *k).collect();
-    // Declared before `_restore` so it drops after it: the named variables are
-    // put back first, then the five profile variables (issue #2922).
-    let _profile = isolate_profile_if_home(keys.iter().copied());
-    let _restore = EnvGuard::capture(&keys);
+    let mut restore = EnvGuard::capture(&keys);
+    restore.clear_profile_if_home(keys.iter().copied());
     for (key, value) in vars {
         unsafe {
             match value {

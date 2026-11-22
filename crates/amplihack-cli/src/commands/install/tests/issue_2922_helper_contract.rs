@@ -133,7 +133,11 @@ fn home_guard_isolates_the_five_while_held_and_restores_them_after() {
         }
     }
     for name in CLAUDE_PROFILE_ENV_VARS {
-        assert!(get(name).is_some(), "{name} must be restored");
+        assert_eq!(
+            get(name).as_deref(),
+            Some(scratch.path().as_os_str()),
+            "{name} must be restored to its prior value"
+        );
     }
 }
 
@@ -149,8 +153,55 @@ fn env_guard_isolates_the_five_when_it_sets_home() {
         }
     }
     for name in CLAUDE_PROFILE_ENV_VARS {
-        assert!(get(name).is_some(), "{name} must be restored");
+        assert_eq!(
+            get(name).as_deref(),
+            Some(scratch.path().as_os_str()),
+            "{name} must be restored to its prior value"
+        );
     }
+}
+
+/// A guard that set a profile variable and then moved `HOME` must not leave
+/// the value it set behind when it drops.
+#[test]
+fn env_guard_restores_a_profile_variable_it_set_before_moving_home() {
+    let _lock = lock();
+    let scratch = tempdir_outside_framework_roots();
+    let _outer = EnvGuard::unset(CLAUDE_PROFILE_ENV_VARS);
+    {
+        let mut env = EnvGuard::capture(&[]);
+        env.assign("AMPLIHACK_HOME", scratch.path());
+        env.assign("HOME", scratch.path());
+        assert_eq!(get("AMPLIHACK_HOME"), None, "moving HOME must clear it");
+    }
+    assert_eq!(
+        get("AMPLIHACK_HOME"),
+        None,
+        "the guard leaked its own value"
+    );
+}
+
+/// A profile variable named in the same `EnvGuard::set` call as `HOME` keeps
+/// the value given, wherever it sits in the array, and is restored on drop.
+#[test]
+fn env_guard_set_keeps_a_profile_variable_named_with_home() {
+    let _lock = lock();
+    let scratch = tempdir_outside_framework_roots();
+    let value = scratch.path().to_str().unwrap();
+    let _outer = EnvGuard::unset(CLAUDE_PROFILE_ENV_VARS);
+    {
+        let _env = EnvGuard::set([("AMPLIHACK_HOME", value), ("HOME", value)]);
+        assert_eq!(
+            get("AMPLIHACK_HOME").as_deref(),
+            Some(scratch.path().as_os_str()),
+            "a profile variable named with HOME must keep its value"
+        );
+    }
+    assert_eq!(
+        get("AMPLIHACK_HOME"),
+        None,
+        "the guard leaked its own value"
+    );
 }
 
 #[test]

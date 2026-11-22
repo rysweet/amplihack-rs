@@ -69,8 +69,8 @@ helper.
 | `env_lock()` | Creating the lock fires `purge_inherited()` once per process, which removes the five variables. Nothing restores them. |
 | `HomeGuard::set` | Takes a `ClaudeProfileIsolation` with the new `HOME` and carries it as a field. `HOME` is restored first on drop, then the five. |
 | `set_home` | Fires `purge_inherited()`. It returns only the old `HOME`, so it cannot restore the five; use `HomeGuard` when restore on drop matters. |
-| `EnvGuard::set`, `env_paths`, `with_env` | Take a `ClaudeProfileIsolation` when the key set contains `HOME`. The `EnvGuard` carries it; `with_env` holds it for the call. A key set with no `HOME` in it leaves the five alone. |
-| `EnvGuard::assign` | Takes one when the key is `HOME` and the guard has none already, so a guard built with `EnvGuard::capture` and then pointed at a temporary home is isolated in the same way. |
+| `EnvGuard::set`, `env_paths`, `with_env` | Clear the five before setting anything when the key set contains `HOME`, and restore them with the other variables on drop. A profile variable named in the same call keeps the value given. A key set with no `HOME` in it leaves the five alone. |
+| `EnvGuard::assign` | Clears the five whenever the key is `HOME`, so a guard built with `EnvGuard::capture` and then pointed at a temporary home is isolated in the same way. Assign a profile variable after `HOME`, not before. |
 | `IsolatedHome::new` | Carries a `ClaudeProfileIsolation` field, which is the sole owner of the five in that guard. The names are no longer in its own clear list. |
 
 Coverage differs by crate:

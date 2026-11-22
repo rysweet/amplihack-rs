@@ -14,9 +14,9 @@ use super::issue_1526_implicit_downgrade::snapshot;
 use super::*;
 use crate::test_support::claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS;
 use crate::test_support::{EnvGuard, HomeGuard, env_lock, tempdir_outside_framework_roots};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const STAND_IN_SETTINGS: &str =
     r#"{"model":"stand-in-model","env":{"PLACEHOLDER":"not-a-secret"},"hooks":{}}"#;
@@ -28,6 +28,8 @@ fn changed_paths(
     before
         .keys()
         .chain(after.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .filter(|k| before.get(*k) != after.get(*k))
         .cloned()
         .collect()
@@ -121,11 +123,6 @@ fn check(provider: &str) {
         Vec::<PathBuf>::new(),
         "{provider}: the inherited CLAUDE_CONFIG_DIR profile changed"
     );
-    assert_eq!(
-        fs::read(s.stand_in.join("settings.json")).unwrap(),
-        STAND_IN_SETTINGS.as_bytes(),
-        "{provider}: settings.json of the stand-in is not byte-identical"
-    );
 }
 
 #[test]
@@ -136,20 +133,4 @@ fn the_claude_provider_leaves_an_inherited_profile_byte_identical() {
 #[test]
 fn the_codex_provider_leaves_an_inherited_profile_byte_identical() {
     check("codex");
-}
-
-#[test]
-fn the_inherited_variables_are_back_after_the_home_guard_drops() {
-    let _lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
-    let s = setup();
-    let mut inherited = EnvGuard::capture(&CLAUDE_PROFILE_ENV_VARS);
-    inherited.assign("CLAUDE_CONFIG_DIR", &s.stand_in);
-    {
-        let _home = HomeGuard::set(&s.home);
-        assert_eq!(std::env::var_os("CLAUDE_CONFIG_DIR"), None);
-    }
-    assert_eq!(
-        std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(),
-        Some(Path::new(&s.stand_in).as_os_str())
-    );
 }

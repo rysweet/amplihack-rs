@@ -27,8 +27,9 @@
 //!   without taking any of the guards below.
 //! - [`ClaudeProfileIsolation`] clears all five for as long as it is held and
 //!   restores the prior values on drop, panics included. The `HOME` primitives
-//!   of each crate's `test_support` hold one, so isolation follows from
-//!   setting `HOME` at all rather than from remembering to ask for it.
+//!   of each crate's `test_support` hold one, or clear the same five under
+//!   their own restore, so isolation follows from setting `HOME` at all rather
+//!   than from remembering to ask for it.
 //! - [`with_config_dir`] is the only way a test may keep `CLAUDE_CONFIG_DIR`
 //!   set, and it accepts a directory inside the temporary `HOME` only.
 //! - [`remove_from_command`] applies the same list to a child process.
@@ -116,8 +117,8 @@ pub fn purge_inherited() {
 /// the prior values back on drop, including when the test panics.
 ///
 /// The caller must hold the test binary's environment lock for the whole
-/// lifetime of the guard. `HomeGuard::set`, `set_home` and `EnvGuard::set`
-/// with a `HOME` key take one of these, so a test that sets `HOME` through a
+/// lifetime of the guard. `HomeGuard::set` holds one of these, and the other
+/// `HOME` primitives clear the same five, so a test that sets `HOME` through a
 /// crate's own primitive is isolated without naming this type.
 ///
 /// A variable that was absent is left absent on drop. Values are restored
@@ -138,20 +139,6 @@ impl ClaudeProfileIsolation {
             unsafe { std::env::remove_var(name) };
         }
         Self { saved }
-    }
-
-    /// Record `name`'s current value, if it is not recorded already, so that
-    /// a value this guard goes on to set is still undone on drop.
-    fn remember(&mut self, name: &'static str) {
-        if !self.saved.iter().any(|(saved, _)| *saved == name) {
-            self.saved.push((name, std::env::var_os(name)));
-        }
-    }
-}
-
-impl Default for ClaudeProfileIsolation {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -197,8 +184,9 @@ pub fn with_config_dir(home: &Path, dir: &Path) -> ClaudeProfileIsolation {
         resolved_dir.display(),
         resolved_home.display()
     );
-    let mut isolation = ClaudeProfileIsolation::new();
-    isolation.remember("CLAUDE_CONFIG_DIR");
+    // `new` has already saved `CLAUDE_CONFIG_DIR` with the other four, so the
+    // value set below is undone on drop.
+    let isolation = ClaudeProfileIsolation::new();
     // SAFETY: as in `ClaudeProfileIsolation::new`; the caller holds the lock.
     unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", dir) };
     isolation
