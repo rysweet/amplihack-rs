@@ -1843,6 +1843,53 @@ fn step18c_diverged_remote_without_upstream_is_merged_and_pushed() {
     before.assert_held(&f, &run);
 }
 
+/// #2994: step-18c's upstream has a commit that conflicts with the run's.
+/// The step merges and never rebases, so the conflicting merge is aborted and
+/// the agent finds the run's branch checked out, not the detached HEAD a
+/// stopped rebase leaves. The agent merges with `-s ours` and pushes, and the
+/// gate accepts the merge.
+#[test]
+fn step18c_conflicting_remote_with_upstream_reaches_the_agent_on_its_branch() {
+    let _ = runner_or_skip!();
+    let f = Fixture::new(Upstream::Conflict);
+    f.set_agent_mode("merge-ours");
+    let before = Untouched::capture(&f);
+    let remote_before = f.remote_ref(BRANCH);
+    let run_head = f.head();
+    let run = f.run(&f.pr_review_recipe(&f.wt()), &[], &[]);
+
+    assert_eq!(
+        run.status("step-18c-push-feedback-changes"),
+        "failed",
+        "the conflicting merge fails the step; {}",
+        run.debug()
+    );
+    assert_eq!(
+        f.agent_calls(),
+        vec!["step-18c-push-feedback-changes"],
+        "{}",
+        run.debug()
+    );
+    assert!(
+        !run.all_text().contains("unsafe-ref"),
+        "the agent must find the run's branch checked out; {}",
+        run.debug()
+    );
+    let snap = snapshot(&run);
+    assert_eq!(snap["head"], run_head.as_str(), "snapshot: {snap}");
+    assert_eq!(snap["local_branch"], BRANCH, "snapshot: {snap}");
+    assert_eq!(run.code, 0, "{}", run.debug());
+    let head = f.head();
+    assert_eq!(
+        f.git(&f.wt(), &["rev-list", "--parents", "-n1", "HEAD"]),
+        format!("{head} {run_head} {remote_before}"),
+        "HEAD is one merge of the run's commit and the remote's commit"
+    );
+    assert_recovered(&run, "push_recovery_result", "recovered-environment", &head);
+    assert_eq!(f.ls_remote(BRANCH), head, "the plain push reached origin");
+    before.assert_held(&f, &run);
+}
+
 #[test]
 fn step18c_environment_fault_is_recovered() {
     let _ = runner_or_skip!();

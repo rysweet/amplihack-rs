@@ -6,9 +6,21 @@ use std::sync::{Mutex, OnceLock};
 ///
 /// Both HOME and CWD mutations must serialize through one lock to prevent
 /// races. Tests that need both HOME and CWD should acquire `env_lock()` once.
+///
+/// Creating the lock also fires [`claude_profile_isolation::purge_inherited`]
+/// (issue #2922), so a `CLAUDE_CONFIG_DIR` or login profile inherited from the
+/// session that started `cargo test` is gone before the first test that holds
+/// this lock mutates anything. The purge sits in the initialiser rather than
+/// in a separate step each test must remember, because a step each test must
+/// remember is the shape that let a test write a fixture's settings into a
+/// developer's live profile in the first place. It runs exactly once per
+/// process, at the first call, and never again.
 pub(crate) fn env_lock() -> &'static Mutex<()> {
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    ENV_LOCK.get_or_init(|| Mutex::new(()))
+    ENV_LOCK.get_or_init(|| {
+        claude_profile_isolation::purge_inherited();
+        Mutex::new(())
+    })
 }
 
 /// Alias for `env_lock()` — all env locks use the same underlying mutex.
@@ -99,6 +111,13 @@ pub(crate) fn release_flock(held: std::fs::File, path: &Path) {
 #[path = "test_support_proc.rs"]
 pub(crate) mod proc;
 
+/// The five profile-redirecting variables and the guards that keep a test's
+/// settings writes inside its own temporary home (issue #2922). Shared with
+/// the other crates' `test_support`, with `cli_integration` and with the
+/// golden-hook harness.
+#[path = "../../../tests/support/claude_profile_isolation.rs"]
+pub(crate) mod claude_profile_isolation;
+
 #[path = "../tests/support/scratch_base.rs"]
 #[allow(dead_code)]
 mod scratch_base;
@@ -160,6 +179,14 @@ mod scratch_base_tests {
 /// RAII guard for process environment variables mutated by tests.
 ///
 /// Tests must acquire `env_lock()` before constructing this guard.
+///
+/// A guard that moves `HOME` also clears the five
+/// [`claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS`] and restores them
+/// with everything else it touched, so pointing `HOME` at a temporary folder
+/// through this type cannot leave an inherited `CLAUDE_CONFIG_DIR` pointing at
+/// a developer's live profile (issue #2922). Each variable is saved once, the
+/// first time the guard touches it, so the restore does not depend on the
+/// order in which the variables were touched.
 pub(crate) struct EnvGuard {
     previous: Vec<(OsString, Option<OsString>)>,
 }
@@ -177,14 +204,12 @@ impl EnvGuard {
     }
 
     pub(crate) fn set<const N: usize>(values: [(&str, &str); N]) -> Self {
-        let previous = values
-            .iter()
-            .map(|(name, _)| (OsString::from(name), std::env::var_os(name)))
-            .collect();
+        let mut guard = Self::capture(&[]);
+        guard.clear_profile_if_home(values.iter().map(|(name, _)| *name));
         for (name, value) in values {
-            unsafe { std::env::set_var(name, value) };
+            guard.put(name, value);
         }
-        Self { previous }
+        guard
     }
 
     /// Remove `names` from the environment until the guard is dropped.
@@ -201,7 +226,18 @@ impl EnvGuard {
 
     /// Set `key` to `value` until the guard is dropped. The value `key` had
     /// before the guard first touched it is restored on drop, panics included.
+    ///
+    /// Assigning `HOME` also clears the five profile variables (issue #2922),
+    /// so a guard built with [`EnvGuard::capture`] and then pointed at a
+    /// temporary home is isolated in the same way as one built with
+    /// [`EnvGuard::set`]. A profile variable must therefore be assigned after
+    /// `HOME`, not before.
     pub(crate) fn assign(&mut self, key: &str, value: impl AsRef<OsStr>) {
+        self.clear_profile_if_home([key]);
+        self.put(key, value);
+    }
+
+    fn put(&mut self, key: &str, value: impl AsRef<OsStr>) {
         self.remember(key);
         unsafe { std::env::set_var(key, value) };
     }
@@ -216,6 +252,21 @@ impl EnvGuard {
         if !self.previous.iter().any(|(name, _)| name == key) {
             self.previous
                 .push((OsString::from(key), std::env::var_os(key)));
+        }
+    }
+
+    /// Clear the five [`claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS`]
+    /// until the guard drops, if `keys` contains `HOME` (issue #2922).
+    ///
+    /// A guard that moves `HOME` may make installer code write a settings
+    /// file, and these are the variables that would redirect that write out of
+    /// the temporary home. A guard that leaves `HOME` alone leaves them alone
+    /// too, so a test that deliberately exercises them still observes them.
+    fn clear_profile_if_home<'a>(&mut self, keys: impl IntoIterator<Item = &'a str>) {
+        if keys.into_iter().any(|key| key == "HOME") {
+            for name in claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS {
+                self.clear(name);
+            }
         }
     }
 }
@@ -250,9 +301,10 @@ pub(crate) fn clear_outer_run_env() -> EnvGuard {
 /// because its values are `&str`.
 pub(crate) fn env_paths(vars: &[(&str, Option<&Path>)]) -> EnvGuard {
     let mut guard = EnvGuard::capture(&[]);
+    guard.clear_profile_if_home(vars.iter().map(|(key, _)| *key));
     for (key, value) in vars {
         match value {
-            Some(path) => guard.assign(key, path),
+            Some(path) => guard.put(key, path),
             None => guard.clear(key),
         }
     }
@@ -264,7 +316,8 @@ pub(crate) fn env_paths(vars: &[(&str, Option<&Path>)]) -> EnvGuard {
 pub(crate) fn with_env<T>(vars: &[(&str, Option<&OsStr>)], f: impl FnOnce() -> T) -> T {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let keys: Vec<&str> = vars.iter().map(|(k, _)| *k).collect();
-    let _restore = EnvGuard::capture(&keys);
+    let mut restore = EnvGuard::capture(&keys);
+    restore.clear_profile_if_home(keys.iter().copied());
     for (key, value) in vars {
         unsafe {
             match value {
@@ -392,7 +445,20 @@ impl Drop for AgentBinaryEnv {
     }
 }
 
+/// Point `HOME` at `path`, returning the prior value for [`restore_home`].
+///
+/// This also fires [`claude_profile_isolation::purge_inherited`] (issue
+/// #2922), so an inherited `CLAUDE_CONFIG_DIR` cannot send a settings write
+/// out of `path`. The purge has no restore, which is why this function cannot
+/// offer one: its `Option<OsString>` return is unwound by `restore_home` at
+/// call sites that have no guard to hang a restore on. A fixture that needs
+/// the five profile variables put back afterwards takes a [`HomeGuard`]
+/// instead, or a [`claude_profile_isolation::ClaudeProfileIsolation`] of its
+/// own.
+///
+/// The caller must hold `env_lock()`.
 pub(crate) fn set_home(path: &Path) -> Option<std::ffi::OsString> {
+    claude_profile_isolation::purge_inherited();
     let previous = std::env::var_os("HOME");
     unsafe {
         std::env::set_var("HOME", path);
@@ -453,18 +519,32 @@ impl Drop for CwdGuard {
 /// this guard so concurrent tests don't observe the mutated HOME.
 pub(crate) struct HomeGuard {
     previous: Option<std::ffi::OsString>,
+    // Issue #2922. Field order is drop order, and `Drop::drop` below runs
+    // before either field, so `HOME` is restored first and the five profile
+    // variables after it.
+    _profile: claude_profile_isolation::ClaudeProfileIsolation,
 }
 
 impl HomeGuard {
     /// Set `HOME` to `path`, returning a guard that restores (or unsets) the
     /// prior value on drop.
+    ///
+    /// The guard also clears the five variables that would redirect a settings
+    /// write out of `path` ([`claude_profile_isolation`], issue #2922) and
+    /// restores them with `HOME`. A test that must keep `CLAUDE_CONFIG_DIR`
+    /// set takes `claude_profile_isolation::with_config_dir` afterwards, which
+    /// accepts a directory inside `path` only.
     pub(crate) fn set(path: &Path) -> Self {
+        let profile = claude_profile_isolation::ClaudeProfileIsolation::new();
         let previous = std::env::var_os("HOME");
         // SAFETY: edition 2024 requires unsafe; tests serialise via env_lock().
         unsafe {
             std::env::set_var("HOME", path);
         }
-        Self { previous }
+        Self {
+            previous,
+            _profile: profile,
+        }
     }
 }
 

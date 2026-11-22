@@ -112,8 +112,16 @@ const ALLOWED_SKIPS: &[(&str, &str)] = &[
         "runs only on a needs_work PR verdict; the stubbed review gives none",
     ),
     (
+        "step9-push-recovery",
+        "runs only when commit_result.push_reason is 'push_failed'; the stubbed step9-commit reports none",
+    ),
+    (
         "step12-push-updates",
         "runs only on a needs_work PR verdict; the stubbed review gives none",
+    ),
+    (
+        "step12-push-recovery",
+        "runs only on a needs_work PR verdict with a failed push; the stubbed review gives none",
     ),
     (
         "step14-diagnose-ci",

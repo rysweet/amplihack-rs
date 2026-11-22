@@ -2,6 +2,11 @@
 
 pub mod amplihack_bin;
 pub mod auto_drive_light;
+/// The five profile-redirecting variables and the guards that keep a
+/// test's settings writes inside its own temporary home (issue #2922).
+/// One definition, shared with every crate's `test_support`.
+#[path = "../../../../tests/support/claude_profile_isolation.rs"]
+pub mod claude_profile_isolation;
 /// Fixture for #2569: the criterion-1 QA judgement.
 pub mod criterion1_world;
 pub mod events;

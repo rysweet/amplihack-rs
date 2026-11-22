@@ -7,7 +7,8 @@ owner: workflow-team
 
 # Recipe Push Failure Recovery Reference
 
-When step-15 or step-18c of `default-workflow` fails to push, the run no
+When step-15 or step-18c of `default-workflow`, or step 9 or step 12 of the
+consensus recipes, fails to push, the run no
 longer ends at once. A recovery agent works out whether the change or the
 environment caused the failure. When the remote branch has commits the
 local branch lacks, the agent merges them first. For an environment cause it
@@ -28,6 +29,7 @@ a push step has failed for any reason.
 ## Contents
 
 - [Where it applies](#where-it-applies)
+- [Merging a moved remote (#2994)](#merging-a-moved-remote-2994)
 - [How a failed push is handled](#how-a-failed-push-is-handled)
 - [When recovery runs](#when-recovery-runs)
 - [The `push-failure-recovery` sub-recipe](#the-push-failure-recovery-sub-recipe)
@@ -56,6 +58,8 @@ a push step has failed for any reason.
 |---|---|---|---|
 | `workflow-publish.yaml` | `step-15-commit-push` | `step-15-push-recovery` | `commit_result` |
 | `workflow-pr-review.yaml` | `step-18c-push-feedback-changes` | `step-18c-push-recovery` | `feedback_push_result` |
+| `consensus-publish.yaml` | `step9-commit` | `step9-push-recovery` | `commit_result` |
+| `consensus-pr-feedback.yaml` | `step12-push-updates` | `step12-push-recovery` | `review_updates` |
 
 Step-20b (`step-20b-push-cleanup` in `workflow-finalize.yaml`) is not covered
 here. Its failures belong to the general recovery step from #2570
@@ -79,6 +83,44 @@ step-18c prints plain text, not an object, and has no reason field either.
 
 The recovery condition holds either way: the empty value has no `pushed`
 field, so `commit_result.pushed != 'true'` is true.
+
+## Merging a moved remote (#2994)
+
+Publishing steps never rebase. When the remote branch has moved, each step
+merges it with `workflow_pull_merge` (a plain merge commit) and pushes once
+through the hooks. Nothing is retried.
+
+| Outcome of the merge | What the step does | What happens next |
+|---|---|---|
+| Clean merge | pushes the merge commit | the step succeeds |
+| Conflict or other refusal | prints git's message on stderr, leaves the branch checked out and fails (steps 9 and 12 report `push_failed` instead). A merge this pull started is aborted, so there is no `MERGE_HEAD`; a merge that was already in progress is left as found (see [Pulling after staging](recipe-commit-hook-repair.md#pulling-after-staging)) | recovery runs and its agent re-runs `git fetch` and `git merge --no-edit origin/<branch>`, resolves the conflict or returns `CHANGE` with its explanation |
+| Push refused | prints git's message on stderr and fails (steps 9 and 12 report `push_failed`) | recovery runs as above |
+
+Step 18c keeps its call to this recipe, and steps 9 and 12 gain one each.
+Step 9 and step 12 write `push_reason` themselves (`push_failed`, `success` or
+`no_remote`) and always exit 0, so their JSON stays valid; the recovery
+conditions test that field. Step 12 reports `updates_pushed` as true only after
+a push has succeeded. Both steps, and step 10, run in the run's worktree.
+
+Step 16b of `workflow-publish` has no recovery call. Its prose tells the agent
+what to do on a conflict: run `git merge --no-edit @{u}`, resolve the
+conflicts, run `git commit`, push, and never rebase.
+
+Steps 9 and 12 pass the pull's and the push's output through
+`redact_to_stderr`, so a credential in a remote URL does not reach the log.
+Steps 18c and 16b do not redact. A test covers the redaction in steps 9 and 12.
+A shared redaction helper for all four steps is a mandatory follow-up.
+
+Accepted risks:
+
+- The consensus callers pass no `base_branch`, so for them the gate protects
+  only `main` and `master`.
+- `commit_result` loses `committed` after a recovered push, because the
+  write-back records only the push outcome.
+
+A run that ends because the agent returns `CHANGE` with an explanation has
+done what the recipe allows. Step 20b still ends the run through its general
+recovery when its merge conflicts; that is tracked as a follow-up.
 
 ## How a failed push is handled
 
@@ -110,6 +152,8 @@ for word, followed by a test that the push did not happen:
 |---|---|
 | `step-15-push-recovery` | `goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true' && commit_result.pushed != 'true' && commit_result.reason != 'no-upstream'` |
 | `step-18c-push-recovery` | `terminal_state.terminal_success != 'true' && 'Changes Pushed' not in feedback_push_result` |
+| `step9-push-recovery` | `commit_result.push_reason == 'push_failed'` |
+| `step12-push-recovery` | `pr_review_consensus.final_verdict == 'needs_work' && review_updates.push_reason == 'push_failed'` |
 
 The repeated push-step condition stops recovery from running after a push step
 that was skipped on purpose.
@@ -574,9 +618,9 @@ reason shown:
    file the repository already tracks and the run has rewritten is reset in
    the index and kept on disk (#2839, see
    [Staging rules](recipe-commit-hook-repair.md#staging-rules)). This gate
-   cannot clear it — the agent may not stage, commit, reset or rebase — so a
+   cannot clear it, because the agent may not stage, commit, reset or rebase, so a
    push step that reached recovery in that state would end the run needing a
-   person. That is why those steps pull through `workflow_pull_rebase`
+   person. That is why those steps pull through `workflow_pull_merge`
    instead, which autostashes the report so the pull and push succeed and
    recovery is never reached for it. See
    [Pulling after staging](recipe-commit-hook-repair.md#pulling-after-staging).
@@ -932,6 +976,9 @@ budget; the next step added to either of them needs a split.
   variables stay.
 - Agent output is untrusted: it is validated, defanged, redacted and cut
   before it is stored or printed.
+- Steps 9 and 12 redact the pull and push output with `redact_to_stderr`.
+  Steps 18c and 16b do not, and a shared helper is a mandatory follow-up
+  ([Merging a moved remote](#merging-a-moved-remote-2994)).
 
 ## Residual risks
 
@@ -997,6 +1044,9 @@ that names a reason, an owner and what is needed.
 | `tests/integration/workflow_finalize_resilience.rs` | Part 1 of #2471: every `workflow_pr_ready.sh` case runs through `private_scope_command`, which calls `isolate_scope_child`, which clears the environment and sets `HOME`, `TMPDIR`, `GH_CONFIG_DIR`, `GIT_CONFIG_GLOBAL=/dev/null` and `PATH=<tmp>/bin:/usr/bin:/bin`. No `RECIPE_VAR_*`, `WORKFLOW_*`, `GH_TOKEN`, `GITHUB_TOKEN` or `GIT_ASKPASS` value from the host reaches the script, and the fake `gh` lives in `<tmp>/bin` |
 | `default_workflow_decomposition_test.rs` | step inventories include `step-15-push-recovery` and `step-18c-push-recovery`; phase line budgets and unique ids hold |
 | `issue_1333_leaf_steps_do_not_orchestrate.rs` | the recovery prompt does not start another orchestration |
+| `amplifier-bundle/recipes/tests/test-issue-2994-publish-merges-moved-remote.sh` | each publishing step merges a moved remote with `workflow_pull_merge`, never rebases, leaves no `MERGE_HEAD` after a failed pull it started, and leaves an earlier merge in progress untouched; steps 9 and 12 redact credentials |
+| `tests/integration/push_failure_recovery.rs`, `step18c_conflicting_remote_with_upstream_reaches_the_agent_on_its_branch` | when step 18c's merge conflicts, the agent finds the run's branch checked out (no `unsafe-ref`), merges and pushes, and the gate accepts the two-parent merge |
+| `consensus_workflow_decomposition_test.rs`, `issue_1966_consensus_criticality.rs` | the step inventory lists `step9-push-recovery` and `step12-push-recovery`, and a run with no failed push skips both |
 | `issue_978_step15_rebase_base_test`, `issue_1762_caller_branch_alias_test`, `issue_1671_hook_rejection_repair_test`, `issue_1561_step_outputs_prefer_recipe_var` | the push scripts' `command:` text is unchanged |
 
 `push_failure_recovery.rs` builds a small recipe from the real step-15,
