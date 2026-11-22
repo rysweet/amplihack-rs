@@ -78,6 +78,7 @@ nav:
       - Keep Recipe Shell Tests out of the Shared Work Root: howto/keep-recipe-shell-tests-out-of-the-shared-work-root.md
       - Wait Without Leaving Orphan Processes: howto/wait-without-orphan-processes.md
       - Profile Command Reference: reference/profile-command.md
+      - Usage-Limit Waits and Limit Records: reference/usage-limit-waits.md
       - Capacity Governor: reference/capacity-governor.md
       - Sessions Command Reference: reference/sessions-command.md
       - Agent Command Reference: reference/agent-command.md

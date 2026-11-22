@@ -516,9 +516,11 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 Some(r) => {
                     let wait_now = waiter.now();
                     let reset = wait_now.saturating_add(r.saturating_sub(fsx::now()));
-                    let wait = plan::from_reading(Harness::Claude, reset, wait_now);
-                    let seen = Some((Harness::Claude, Some(reset)));
-                    inherited_wait = Some(plan::upgrade(wait, seen, || takeover(&waiter)));
+                    // `from_reading` decides the wait on its own (#2911): a
+                    // reset too far away, or already behind the clock, is a
+                    // capacity wait whether or not another login has room
+                    // this instant.
+                    inherited_wait = Some(plan::from_reading(Harness::Claude, reset, wait_now));
                 }
                 None => inherited_has_capacity = true,
             }
@@ -621,14 +623,10 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // no auto-switch candidate is chosen: the step waits on the login it
         // is on.
         if limited.is_none() {
-            let planned = plan::upgrade(
-                WaitFor::Skip(NoWait::NoReset),
-                Some((Harness::Claude, None)),
-                || takeover(&waiter),
-            );
-            if !matches!(planned, WaitFor::Capacity { .. }) {
+            let Some(planned) = plan::rate_limit_capacity(Harness::Claude, || takeover(&waiter))
+            else {
                 return finish(attempt, None, &stdin);
-            }
+            };
             inherited_wait = Some(planned);
         }
         // Issue #2857: a usage limit decides the wait, as it always has. The
@@ -636,63 +634,44 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // retry that printed both is planned by the message here and the 429
         // beside it adds nothing.
         if let Some(lim) = &limited {
-            // Issue #2890: a Claude spend limit that states a reset blocks
-            // the login this attempt ran under, until that reset. The
-            // rotator's `/usage` probe cannot see such a limit, so without
-            // this record it keeps the login live and every step on it
-            // fails. It is data the rotator reads: it ends no run, and the
-            // wait below is planned whatever happens to it.
+            // Issues #2890, #2911, #2909: every limit of every kind blocks
+            // the login this attempt ran under, until the reset the message
+            // stated. The rotator's `/usage` probe cannot see a spend limit
+            // at all and learns of a window limit only on its own cycle, so
+            // without this record it keeps the login live while every step
+            // on it fails. It is data the rotator reads: it ends no run, and
+            // the wait below is planned whatever happens to it. The emitter
+            // returns `()`, so there is nothing here to branch on.
             //
-            // Recorded *before* the wait is planned, so the one takeover
-            // check and the wake condition already leave the blocked login
-            // out, with no second mechanism.
-            if let Some((Harness::Claude, reset)) = lim.spend_reset
+            // Recorded *before* the wait is planned, so the wake conditions
+            // and the rotator's own target choice already leave the blocked
+            // login out, with no second mechanism.
+            if let Some((kind, reset)) = lim.block
                 && let Some(login) = waiter.attempt_profile(profile.as_ref())
                 && let Some(root) = waiter.store_root()
             {
                 // The reset was read against the wait's clock, which a test
                 // may set; the ledger is expired against the real one. Move
-                // it over as the distance it is, saturating.
+                // it over as the distance it is, saturating. A message that
+                // stated no reset passes `None` through, and the emitter
+                // decides what, if anything, that means for the kind.
                 let at = fsx::now();
-                let until = at.saturating_add(reset.saturating_sub(now));
-                rotate::step_block::note_spend_block(root, &login, at, until);
+                let until = reset.map(|r| at.saturating_add(r.saturating_sub(now)));
+                rotate::step_block::note_limit_block(root, &login, at, until, kind);
             }
             if profile.is_none() {
-                // This attempt ran under the inherited profile: its limit is the
-                // freshest word on that profile.
-                //
-                // Issue #2857, part 1: when this attempt is the retry a wait
-                // earned, and the limit it met states a reset the clock has
-                // already passed, a reset wait for it would end at once and
-                // spend none of the step's budget. It is planned from capacity
-                // instead, so the step waits again and does not end.
-                // `ordinarily_refused` is read here, before anything records a
-                // mark, and is exactly the rule `after_limit` applies to this
-                // same limit; `now` is the wait's own clock, the very reading
-                // the reset was parsed against.
-                let passed = plan::upgrade_passed_reset(
-                    lim.wait,
-                    lim.seen,
-                    matches!(met, Some(Met::UsageLimit)) && waiter.ordinarily_refused(),
-                    now,
-                );
-                // Issue #2882: a spend limit that states a reset is judged
-                // like a weekly limit, by whether another login could take
-                // over, rather than by the failed login's own reset days
-                // away. Only this promotion sees it: the re-entry above
-                // and `upgrade_spend` below keep reading `lim.seen` and
-                // `lim.spend`, so #2857 and #2731 are untouched.
-                let seen = lim
-                    .seen
-                    .or_else(|| lim.spend_reset.map(|(h, r)| (h, Some(r))));
-                let wait = plan::upgrade(passed, seen, || takeover(&waiter));
-                // Issue #2731: an organisation spend limit with no reset on a
-                // `$HOME/.claude` step waits for the login to change instead.
-                inherited_wait = Some(plan::upgrade_spend(
-                    wait,
-                    lim.spend.filter(|_| waiter.is_home()),
-                    || waiter.rotator_running(),
-                ));
+                // This attempt ran under the inherited profile: its limit is
+                // the freshest word on that profile, and `plan` has already
+                // decided which wait it earns (issue #2911). There is no
+                // promotion left here: a reset too far away, a reset already
+                // behind the clock, a message with no readable reset and a
+                // spend limit are each a wait in their own right, and none of
+                // them is gated on another login being free *now*. A login
+                // can gain room during a wait, and the wait's own wake
+                // conditions see that; refusing to start the wait because
+                // none has room yet is exactly the `reset_too_far` ending
+                // #2911 reports.
+                inherited_wait = Some(lim.wait);
             }
             if let Some(sw) = &switch {
                 let current = profile.as_ref().unwrap_or(&sw.inherited).clone();

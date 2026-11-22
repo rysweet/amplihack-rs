@@ -3,13 +3,21 @@
 //! When a supervised `-p` step fails on a usage limit and no auto-switch
 //! rerun is left, the step waits for the reset (or for the login to change),
 //! then runs once more with the same inputs. A limit that will not reset soon
-//! waits for another login with capacity instead when one could take over
-//! (issue #1801), and an organisation spend limit on a `$HOME/.claude` step
-//! waits for the rotator to move another login in (issue #2731). A step waits
-//! once per login it runs on, inside one `max_wait_secs` budget (`marks`).
-//! Each wait's `start` and `end` also reach the run's recipe log, so a
-//! waiting step is visible there and not just in its own stderr
-//! (`recipe_log`). See docs/reference/profile-command.md#usage-limit-wait.
+//! waits for another login with capacity instead (issue #1801), and a spend
+//! limit that states no reset waits for the rotator to move another login in
+//! (issue #2731).
+//!
+//! Issue #2911: a limit never ends a step. Every limit this module can read
+//! becomes a wait, a step may wait as many times as it meets one, and the
+//! chain is paced by the waits costing time rather than by a count or a
+//! budget. A wait with no reset it can end on says so plainly, as
+//! `waiting_for_capacity`, naming the login and why. What still ends a step
+//! is its own timeout, a stop signal, the end of its session, output with no
+//! limit message in it, and a piped prompt that cannot be replayed.
+//!
+//! Each wait's `start`, `waiting_for_capacity` and `end` also reach the run's
+//! recipe log, so a waiting step is visible there and not just in its own
+//! stderr (`recipe_log`). See docs/reference/usage-limit-waits.md.
 //!
 //! `Waiter` decides what happens after a limit; the one supervisor loop,
 //! `auto_switch::rerun::run`, runs the attempts with or without auto-switch.
@@ -222,7 +230,7 @@ impl RetryMove {
 pub(crate) struct Waiter {
     /// `None` when `AMPLIHACK_NONINTERACTIVE` is not exactly `1`.
     settings: Option<WaitSettings>,
-    /// Which logins this step has waited on, and what it has spent (#2731).
+    /// Which logins this step has waited on (#2731, #2911).
     marks: Marks,
     /// The login the attempt now running was launched on, and which file
     /// named it, read before the attempt started. `None` for any step the
@@ -246,9 +254,6 @@ pub(crate) struct Waiter {
     /// (#1801), called only when a limit is seen. Always false for a step
     /// with an explicit login or an inherited profile.
     home_takeover: Box<dyn Fn() -> bool>,
-    /// Whether a rotator is running that could move another login into
-    /// `$HOME/.claude` (#2731), called only when a spend limit is seen.
-    home_rotator: Box<dyn Fn() -> bool>,
     /// Set when the retry after this step's wait may run under another
     /// login. Written once, when the wait returns; `None` leaves the retry
     /// on the inherited profile.
@@ -265,7 +270,6 @@ impl Waiter {
         watch: Watch,
         args: claude_args::ClaudeArgs,
         home_takeover: Box<dyn Fn() -> bool>,
-        home_rotator: Box<dyn Fn() -> bool>,
     ) -> Self {
         let clock = Clock::new();
         let step_start = clock.now();
@@ -289,7 +293,6 @@ impl Waiter {
             blocked: None,
             args,
             home_takeover,
-            home_rotator,
             retry_move: None,
             said_try_now: false,
         }
@@ -327,12 +330,6 @@ impl Waiter {
         self.attempt_login = self.watch.login();
     }
 
-    /// Whether this step runs on `$HOME/.claude`, the one directory the
-    /// rotator swaps logins into.
-    pub(crate) fn is_home(&self) -> bool {
-        self.watch.is_home()
-    }
-
     /// The profile root whose rotate ledger this step's login is recorded
     /// in (issue #2890); `None` when the step has no store to record in.
     pub(crate) fn store_root(&self) -> Option<&std::path::Path> {
@@ -358,11 +355,6 @@ impl Waiter {
         self.attempt_login
             .as_ref()
             .and_then(|(_, name)| ProfileName::parse(name).ok())
-    }
-
-    /// Whether a rotator is running that could move another login in.
-    pub(crate) fn rotator_running(&self) -> bool {
-        (self.home_rotator)()
     }
 
     /// Never wait for this step, for `why`.
@@ -409,25 +401,6 @@ impl Waiter {
         self.attempt_login.as_ref().map(|(_, n)| n.clone())
     }
 
-    /// Whether the ordinary rule refuses a wait after the attempt now
-    /// running: this step has already waited on that login, or it has waited
-    /// before and its `max_wait_secs` budget is spent (#2731).
-    ///
-    /// The one place that rule is computed. [`Waiter::after_limit`] asks it
-    /// for the limit it is judging, and the supervisor asks it before that
-    /// call, because [`plan::upgrade_passed_reset`] is narrowed to a
-    /// re-entry this rule would have refused and so must know the answer
-    /// while the limit is still being planned. Asking records nothing and
-    /// nothing between the two readings writes the marks or the attempt's
-    /// login, so the two agree.
-    ///
-    /// False for a step that may not wait at all: with no settings there is
-    /// no rule that could have refused anything.
-    pub(crate) fn ordinarily_refused(&self) -> bool {
-        self.settings
-            .is_some_and(|s| self.marks.refuses(&self.mark(), s.max_wait_secs))
-    }
-
     /// Whether the retry may run under another login, and what it costs if
     /// none has room; `None` keeps the inherited profile. Cleared as each
     /// wait is planned, so it only ever describes the wait that just ran.
@@ -472,18 +445,18 @@ impl Waiter {
     ///
     /// `resumed` says how the attempt that hit this limit came to run
     /// (issue #2857). [`Resumed::AfterASignal`] means a wait had just ended
-    /// claiming the login was usable and this limit contradicts it: the
-    /// same-login refusal is lifted for that one wait, and the step says so
-    /// once, on a `reentered` line before the wait's `start`. The budget and
-    /// the step timeout still refuse, unchanged, and a re-entry whose reset
-    /// plan would wait for no length at all ([`plan::Plan::ends_at_once`]) is
-    /// refused as well, because such a wait spends none of the budget that
-    /// bounds the chain. Except for the cases listed in the comment above
-    /// that check in the body below, a usage limit stating a reset already
-    /// behind the clock no longer arrives as one: the supervisor has made it a
-    /// capacity wait ([`plan::upgrade_passed_reset`]), which takes the
-    /// remaining budget as its deadline and so spends it. A capacity plan is
-    /// never refused on this ground.
+    /// claiming the login was usable and this limit contradicts it; the step
+    /// says so once, on a `reentered` line before the wait's `start`, so a
+    /// reader can tell a second wait that follows a contradicted signal from
+    /// one that follows a new login.
+    ///
+    /// Issue #2911: nothing here refuses a wait for a limit. A second and a
+    /// third limit in one step each wait, and the chain is paced by the
+    /// waits costing time rather than by a count or a budget: every plan a
+    /// limit produces ends strictly after `now` unless the step timeout
+    /// brings it back (see `plan`). What still ends a step is the step's own
+    /// timeout, a stop signal, the end of its session, output with no limit
+    /// message in it, and a piped prompt that cannot be replayed.
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
@@ -511,51 +484,42 @@ impl Waiter {
             return AfterLimit::Finish(None);
         }
         // The mark is the login the failed attempt ran on, read before it
-        // was launched. A login this step has already waited on, or a spent
-        // budget after an earlier wait, refuses this one (#2731).
+        // was launched. It refuses nothing (#2911); it is what the
+        // `reentered` line reports and what `used` reads.
         let mark = self.mark();
+        // `max_wait_secs` is the length of one wait, not a budget for the
+        // step: a later wait gets the same length as the first, and no total
+        // ends the chain (#2911). The floor that keeps a configured value
+        // from planning a wait of no length is applied where the value is
+        // read (`settings`).
         let max = settings.max_wait_secs;
-        // What the ordinary rule says, kept whether or not it is applied:
-        // a re-entry is only *reported* when it lifted that refusal, so a
+        // Issue #2857: a wait had just ended claiming this login was usable
+        // and the limit now being judged contradicts it. Reported once,
+        // below; it refuses nothing.
+        // Reported only when this step has waited on this login before, so
+        // the line says what it has always said: the step is going *back*
+        // into a wait on a login a signal had just claimed was usable. A
         // retry that merely landed on a login this step has never waited on
-        // is an ordinary first wait for that login and reads as one. Read
-        // through the same method the supervisor reads it through, so the
-        // rule that narrows `plan::upgrade_passed_reset` and the rule applied
-        // here cannot drift apart.
-        let ordinarily_refused = self.ordinarily_refused();
-        let met = match resumed {
-            Resumed::AfterASignal(met) => Some(met),
-            Resumed::Ordinarily => None,
+        // is that login's first wait and reads as one.
+        let reentry = match resumed {
+            Resumed::AfterASignal(met) if self.marks.waited_on(&mark) => Some(met),
+            Resumed::AfterASignal(_) | Resumed::Ordinarily => None,
         };
-        // The one re-entry #2857 buys, when this is one: a signal said the
-        // login was usable, this limit contradicts it, and the ordinary rule
-        // would have refused the wait. Read twice below, so it is decided
-        // once here.
-        let reentry = met.filter(|_| ordinarily_refused);
-        let refused = match met {
-            Some(_) => self.marks.refuses_reentry(max),
-            None => ordinarily_refused,
-        };
-        if refused {
-            return already_waited();
-        }
         let now = self.clock.now();
         let step = self.step_timeout.map(|t| (self.step_start, t));
-        // `max_wait_secs` is a budget for the whole step, so a later wait
-        // gets only what the earlier ones left.
-        let budget = self.marks.remaining(max);
-        let (harness, p, shape) = match self.blocked.map_or(inherited, WaitFor::Skip) {
+        let waiting = self.blocked.map_or(inherited, WaitFor::Skip);
+        let (harness, p, shape) = match waiting {
             WaitFor::Reset { harness, reset } => {
-                (harness, plan(now, reset, budget, step), Shape::Reset)
+                (harness, plan(now, reset, max, step), Shape::Reset)
             }
-            WaitFor::Capacity { harness, reset } => (
+            WaitFor::Capacity { harness, reset, .. } => (
                 harness,
-                plan_capacity(now, reset, budget, step),
+                plan_capacity(now, reset, max, step),
                 Shape::Capacity,
             ),
             WaitFor::LoginChange { harness } => (
                 harness,
-                plan_login_change(now, budget, step),
+                plan_login_change(now, max, step),
                 Shape::LoginChange,
             ),
             WaitFor::Skip(why) => {
@@ -563,32 +527,6 @@ impl Waiter {
                 return AfterLimit::Finish(None);
             }
         };
-        // Issue #2857: the lifted same-login refusal buys one more *wait*,
-        // not one more attempt. A reset the retry has already passed plans a
-        // wait that ends the moment it starts, so it would spend none of the
-        // budget and the chain would be bounded by nothing but how long the
-        // harness kept repeating the message. With nothing left to wait on,
-        // the limit is passed up as already waited, exactly as it was before
-        // #2857. The refusal is of the *lifted* rule only: the same plan on a
-        // login this step has not waited on is that login's first wait and
-        // keeps its grace.
-        //
-        // This is the backstop rather than the first answer. A usage limit
-        // stating a passed reset on a re-entry is planned as a capacity wait
-        // upstream by `plan::upgrade_passed_reset`, and such a plan is never
-        // `ends_at_once`. Only a reset plan can still arrive here with a
-        // deadline of now, and three build one: a spend limit stating a passed
-        // session reset, which no other login would lift; `plan::from_reading`,
-        // which the supervisor builds without passing through the rule and
-        // which rejects only a reset more than five hours ahead, never one
-        // behind; and a limit on an attempt that ran under a profile the
-        // auto-switch chose, which the supervisor does not upgrade. For those
-        // the step still ends here, and loudly. A blocked step never reaches
-        // this line at all: `blocked_skip` is a `WaitFor::Skip`, and the arm
-        // above returns.
-        if reentry.is_some() && p.ends_at_once(now) {
-            return already_waited();
-        }
         self.marks.record(mark.clone());
         let account = mark.as_deref();
         // Each wait chooses its own retry login and only its own. The
@@ -598,12 +536,24 @@ impl Waiter {
         // readings taken before this limit was hit (issue #2731). It is
         // written again only by a wait that actually ran.
         self.retry_move = None;
-        // Issue #2857: one line per re-entry, after everything that could
-        // still refuse this wait and before the wait's own `start`, so a
-        // refused re-entry and a re-entry whose limit the planner skipped
-        // both write nothing.
+        // Issue #2857: one line per re-entry, before the wait's own `start`,
+        // so a re-entry whose limit the planner skipped writes nothing.
         if let Some(met) = reentry {
             emit(&Event::Reentered { met }, account);
+        }
+        // Issue #2911: a wait with no reset it can end on says so plainly,
+        // on stderr and in the run's recipe log, naming the login and why.
+        // Such a step may wait a long time, and an operator must be able to
+        // see that it is waiting for capacity rather than hung.
+        if let Some(why) = waiting.waiting_for_capacity() {
+            emit(
+                &Event::WaitingForCapacity {
+                    harness,
+                    why,
+                    until: p.until,
+                },
+                account,
+            );
         }
         emit(
             &Event::Start {
@@ -651,7 +601,6 @@ impl Waiter {
             // Nothing is recorded in the wait ledger: no time passed.
             return AfterLimit::Retry;
         }
-        let before = self.clock.now();
         let mut deps = RealDeps {
             clock: &mut self.clock,
             watch: &self.watch,
@@ -662,14 +611,7 @@ impl Waiter {
             plan: &p,
         };
         let waited_from = std::time::Instant::now();
-        let mut end = wait::wait(&p, &mut deps);
-        // Issue #2857: a re-entry planned from a reset the clock had passed
-        // ends on its budget, which is the only deadline it has. It retries
-        // once there, as a reset wait does at its own deadline, instead of
-        // ending without a try (see `Plan::is_passed_reset_capacity`).
-        if end == End::CapacityExpired && p.is_passed_reset_capacity(now) {
-            end = End::MaxReached;
-        }
+        let end = wait::wait(&p, &mut deps);
         // Real time, not the test clock: auto-drive compares it with its own
         // wall time (issue #1743).
         ledger::record(waited_from.elapsed());
@@ -682,10 +624,6 @@ impl Waiter {
             start: now,
             room_was_seen,
         });
-        // The budget is spent on the wait's own clock, the one that planned
-        // the deadline.
-        self.marks
-            .spend(u64::try_from(self.clock.now().saturating_sub(before)).unwrap_or(0));
         emit(&Event::End(end), account);
         match end {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),
@@ -696,17 +634,15 @@ impl Waiter {
                 log(&Event::Failed(FailReason::StepTimeout));
                 AfterLimit::Finish(None)
             }
-            End::CapacityExpired => {
-                log(&Event::Failed(FailReason::CapacityExpired));
-                AfterLimit::Finish(None)
-            }
-            // A login-change wait that reached its deadline: no reset lifts
-            // an organisation spend limit, and no login arrived that might.
-            End::MaxReached if shape == Shape::LoginChange => {
-                log(&Event::Failed(FailReason::SpendLimit));
-                AfterLimit::Finish(None)
-            }
-            End::ResetReached
+            // Issue #2911: a capacity wait that reached its deadline, and a
+            // login-change wait that reached its, each retry rather than end
+            // the step. Nothing has lifted the limit, and the retry may well
+            // meet it again; that is another wait, not a failure. The two
+            // used to write `failed reason=capacity_expired` and `failed
+            // reason=spend_limit`, which between them ended most of the runs
+            // #2911 reports.
+            End::CapacityExpired
+            | End::ResetReached
             | End::MaxReached
             | End::LoginChanged
             | End::RotatorCapacity
@@ -725,20 +661,6 @@ impl Waiter {
             }
         }
     }
-}
-
-/// The step ends on the limit it hit, because it has no wait left to make:
-/// the `skipped` line saying so, the closing line, and the result.
-///
-/// The two refusals in [`Waiter::after_limit`] that end a step this way are
-/// the same refusal reached twice: the same-login or spent-budget rule
-/// (#2731), and, for the one re-entry a contradicted signal earns, a plan
-/// with nothing left to wait on (#2857). They write the same pair of lines
-/// because a reader has the same question either way.
-fn already_waited() -> AfterLimit {
-    log(&Event::Skipped(Skip::AlreadyWaited));
-    log(&Event::Failed(FailReason::AlreadyWaited));
-    AfterLimit::Finish(None)
 }
 
 /// Whether the retry this wait earned has no prompt to read, asked of
@@ -868,11 +790,12 @@ pub(crate) fn supervise_unprofiled(
     // Only `$HOME/.claude` can get another login: an explicit directory or a
     // `.default` profile is the login the launch chose (#1801).
     let home_store = store.filter(|_| watch.is_home()).cloned();
-    let home_takeover = super::auto_switch::takeover::home_check(home_store.clone());
-    // Issue #2731: a login-change wait needs only a running rotator.
-    let home_rotator = super::auto_switch::takeover::home_rotator(home_store);
+    let home_takeover = super::auto_switch::takeover::home_check(home_store);
+    // Issue #2911: a login-change wait no longer asks whether a rotator is
+    // running. With none running nothing ends the wait early, so it runs its
+    // length and the step retries; before, it ended the step instead.
     super::auto_switch::rerun::run(
         None,
-        Waiter::new(Some(settings), watch, args, home_takeover, home_rotator),
+        Waiter::new(Some(settings), watch, args, home_takeover),
     )
 }

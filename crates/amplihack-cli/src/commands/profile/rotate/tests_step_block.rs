@@ -17,8 +17,8 @@
 //!   with `<why>` one of `stated reset already passed`, `stated reset out
 //!   of range`, `rotator busy`, `ledger unreadable`, `ledger not written`,
 //!   `too many blocks`.
-//! - `msg::alert_step_spend_limit(&ProfileName, until) -> String` and
-//!   `msg::step_spend_limit_not_blocked(&ProfileName, why: &str) -> String`
+//! - `spend_alert(&ProfileName, until) -> String` and
+//!   `spend_not_blocked(&ProfileName, why: &str) -> String`
 //!   with the two texts above (without the `ALERT: ` prefix being optional:
 //!   the prefix is part of the returned string).
 //! - `overflow::decide_restricted`: a plan login (not an overflow profile)
@@ -29,6 +29,12 @@
 //!   `<name> (blocked until <time>)`, joined by `, `; `-` for none and for
 //!   an unreadable ledger (no `(blocks unknown)` suffix).
 
+/// Issue #2911's other limit kinds, in their own file so that this one stays
+/// about the spend path. Wired from here rather than from `rotate/mod.rs`,
+/// which is at the 400-line budget `tests_source_scan.rs` holds it to.
+#[path = "tests_step_block_kinds.rs"]
+mod kinds;
+
 use super::control::blocked_logins_line;
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows};
 use super::ledger::{
@@ -38,10 +44,11 @@ use super::ledger::{
 use super::log::{msg, timestamp};
 use super::overflow::{OverflowInput, decide_overflow};
 use super::settings::Settings;
-use super::step_block::note_spend_block;
+use super::step_block::note_limit_block;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::recipe::run::limit_patterns::LimitKind;
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -54,6 +61,23 @@ const WEEK: i64 = 7 * DAY;
 
 fn n(s: &str) -> ProfileName {
     ProfileName::parse(s).unwrap()
+}
+
+/// The spend-limit writer this file has always tested, now one kind of the
+/// general [`note_limit_block`] (issue #2911). Every assertion below is
+/// unchanged, which is the point: generalising the writer left the spend
+/// path, its ALERT lines and its eight-step order exactly as 1.2.193 had
+/// them. The other kinds are covered in `tests_step_block_kinds.rs`.
+fn note_spend_block(root: &std::path::Path, login: &ProfileName, at: i64, until: i64) {
+    note_limit_block(root, login, at, Some(until), LimitKind::Spend);
+}
+
+fn spend_alert(login: &ProfileName, until: i64) -> String {
+    msg::alert_step_limit_block(login, LimitKind::Spend, until)
+}
+
+fn spend_not_blocked(login: &ProfileName, why: &str) -> String {
+    msg::step_limit_block_not_written(login, LimitKind::Spend, why)
 }
 
 struct Root {
@@ -123,7 +147,7 @@ fn a_stated_reset_is_stored_for_the_login_with_one_alert() {
     assert_eq!(l.overflow_blocked["wwest"], spend(NOW, NOW + WEEK));
     assert_eq!(l.live.as_deref(), Some("wwest"), "other fields kept");
     let log = log_text(&r);
-    let expected = msg::alert_step_spend_limit(&n("wwest"), NOW + WEEK);
+    let expected = spend_alert(&n("wwest"), NOW + WEEK);
     assert_eq!(
         expected,
         format!(
@@ -161,7 +185,7 @@ fn an_active_block_is_neither_extended_nor_alerted_twice() {
     note_spend_block(&r.path, &n("wwest"), NOW + 60, NOW + 2 * WEEK);
     let l = loaded(&r);
     assert_eq!(l.overflow_blocked["wwest"], spend(NOW, NOW + WEEK));
-    let first = msg::alert_step_spend_limit(&n("wwest"), NOW + WEEK);
+    let first = spend_alert(&n("wwest"), NOW + WEEK);
     assert_eq!(log_text(&r).matches(&first).count(), 1);
     assert!(!log_text(&r).contains("not blocked"), "{}", log_text(&r));
 }
@@ -216,7 +240,7 @@ fn a_reset_in_the_past_or_out_of_range_is_reported_and_not_stored() {
         note_spend_block(&r.path, &n("wwest"), NOW, until);
         let l = loaded(&r);
         assert!(l.overflow_blocked.is_empty(), "{label}: stored");
-        let line = msg::step_spend_limit_not_blocked(&n("wwest"), why);
+        let line = spend_not_blocked(&n("wwest"), why);
         assert_eq!(
             line,
             format!("ALERT: login wwest spend limit not blocked ({why})")
@@ -320,7 +344,7 @@ fn a_symlinked_ledger_is_not_followed() {
 fn the_alert_lines_carry_only_a_name_a_time_and_a_closed_reason() {
     // The message the step read never reaches the log: the writer takes no
     // text, so an escape sequence or newline in agent output cannot appear.
-    let line = msg::alert_step_spend_limit(&n("wwest"), NOW + WEEK);
+    let line = spend_alert(&n("wwest"), NOW + WEEK);
     assert!(!line.contains('\n') && !line.contains('\u{1b}'));
     for why in [
         "stated reset already passed",
@@ -330,7 +354,7 @@ fn the_alert_lines_carry_only_a_name_a_time_and_a_closed_reason() {
         "ledger not written",
         "too many blocks",
     ] {
-        let l = msg::step_spend_limit_not_blocked(&n("wwest"), why);
+        let l = spend_not_blocked(&n("wwest"), why);
         assert_eq!(
             l,
             format!("ALERT: login wwest spend limit not blocked ({why})")

@@ -6,19 +6,25 @@ description: >
   ended indeterminate. The scenario (via
   tests/gadugi/run-issue-2857-wait-wakes-on-room-scenario.sh) drives the real
   binary's supervised launch against a stub agent and a stub rotate ledger.
-  Case A: a limit on the retry that a wait ended `reset reached` earned is
-  waited for again, once reported with one `reentered met=usage_limit` line
-  before the second wait's `start`, and the third attempt succeeds instead of
-  the step ending `already_waited`. Case B: a wait on a $HOME/.claude step
-  ends `login changed` on a swap only when the rotator's last cycle records
-  `live_room: true`; a swap onto a login with no room, a ledger from a rotator
-  that records no room bit, and the record a stopping rotator leaves all let
-  the wait run to its own end. A person's own `profile switch` records no room
-  bit and still wakes the wait unless it says `live_room: false`. The limit
-  states a reset five minutes in the past, so the first wait ends at once; the
-  re-entry on the retry is a capacity wait cut short by a lowered
-  `usage_limit_max_wait_secs`, so the scenario takes seconds and needs no
-  debug-only clock seam. Everything runs under `env -i` with a scratch HOME,
+  Case A: a limit on the retry a wait earned is waited for again, once
+  reported with one `reentered met=usage_limit` line before the second wait's
+  `start`, and the third attempt succeeds instead of the step ending
+  `already_waited`. Issue #2911 extends case A: each wait announces itself as
+  `waiting_for_capacity reason=passed_reset`, because a reset the clock has
+  already passed is a wait for capacity, and no `failed` or `skipped` line is
+  written at all, because a limit may now only delay a step and never end it.
+  Case B: a wait on a $HOME/.claude step ends `login changed` on a swap only
+  when the rotator's last cycle records `live_room: true`; a swap onto a login
+  with no room, a ledger from a rotator that records no room bit, and the
+  record a stopping rotator leaves are all held back. A person's own `profile
+  switch` records no room bit and still wakes the wait unless it says
+  `live_room: false`. The limit states a reset five minutes in the past. Case
+  A's two waits each run the 60-second floor the binary applies to one wait's
+  length, so case A takes about two minutes; case B's held-back cases are
+  bounded by a step timeout below the planner's lead, so they end at once and
+  also pin that the step timeout still binds a capacity wait now that every
+  limit-shaped ending retries. No debug-only clock seam is needed.
+  Everything runs under `env -i` with a scratch HOME,
   so the real ~/.claude and ~/.amplihack are never read or written, and no
   agent, account, rotator or network call is made. CI's Install Smoke Test job
   runs the driver script directly against the binary it installs; CI does not
@@ -71,6 +77,16 @@ assertions:
     params:
       target: stdout
       expected: "PASS: reentry_reported_once_before_the_second_start - "
+  - name: each-wait-says-it-is-waiting-for-capacity
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: each_wait_says_it_is_waiting_for_capacity - "
+  - name: no-limit-ended-the-step
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: no_limit_ended_the_step - "
   - name: swap-onto-a-login-with-room-wakes-the-wait
     type: output_contains
     params:

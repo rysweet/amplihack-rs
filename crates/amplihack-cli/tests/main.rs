@@ -420,6 +420,18 @@ mod issue_2882_spend_limit_capacity_wait;
 mod issue_2889_freshest_live_reading;
 #[path = "issue_2890_spend_blocked_login.rs"]
 mod issue_2890_spend_blocked_login;
+#[path = "issue_2911_codex_credits.rs"]
+mod issue_2911_codex_credits;
+#[path = "issue_2911_forged_limit_message.rs"]
+mod issue_2911_forged_limit_message;
+#[path = "issue_2911_limit_block_recorded.rs"]
+mod issue_2911_limit_block_recorded;
+#[path = "issue_2911_repeated_limits_wait.rs"]
+mod issue_2911_repeated_limits_wait;
+#[path = "issue_2911_spend_limit_no_reset.rs"]
+mod issue_2911_spend_limit_no_reset;
+#[path = "issue_2911_weekly_limit_waits.rs"]
+mod issue_2911_weekly_limit_waits;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

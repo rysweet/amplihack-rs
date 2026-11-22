@@ -3,11 +3,21 @@
 //! and runs once more with the same inputs, instead of ending the run.
 //!
 //! Covers AC1 (one retry, identical argv, cwd and stdin, only the retry's
-//! stdout), AC7 (a second limit is passed up), AC10 (exact log lines), the
-//! epoch and past-reset forms, the limits that are never waited out (spend,
-//! a far or unreadable reset, model prose), and ST7 (a marker on exit 0 or a
-//! failure that is not a usage limit never waits). The stdin cases (a piped
-//! prompt, a held-open pipe) are in `issue_1618_wait_stdin`. See
+//! stdout), AC7 (a second limit is waited out too, and never refused),
+//! AC10 (exact log lines), the epoch form, and ST7 (a marker on exit 0 or a
+//! failure that is not a usage limit never waits).
+//!
+//! Issue #2911 changed what the limits with no usable reset do. A spend
+//! limit, a reset more than five hours away, a reset that does not parse and
+//! a reset already behind the clock were each passed up at once, as
+//! `skipped reason=spend_limit`, `reset_too_far`, `no_reset` or, for a reset
+//! inside a ten-minute grace, a wait of no length. Each is now a wait for
+//! capacity or for the login to change, announced by a
+//! `waiting_for_capacity` line naming why, and the step retries when the
+//! wait ends however it ended. Nothing counts a step's waits and no limit
+//! refuses one: the only reading left here that ends a step is output with
+//! no limit message in it at all. The stdin cases (a piped prompt, a
+//! held-open pipe) are in `issue_1618_wait_stdin`. See
 //! `issue_1618_fixture`.
 
 #![cfg(unix)]
@@ -124,35 +134,91 @@ fn the_epoch_form_gives_its_reset() {
     );
 }
 
+/// Issue #2911: a limit a wait cannot outlast is waited for all the same.
+///
+/// This is the core claim the issue reverses. Each of these messages used to
+/// be passed up the moment it was read, as `skipped reason=spend_limit`,
+/// `skipped reason=reset_too_far` or `skipped reason=no_reset`, on the
+/// grounds that this single-login fixture has no other login that could take
+/// over: refusing to wait because nothing has room *right now* is exactly
+/// the failure #2911 removes, because the wait's own wake conditions notice a
+/// login gaining room later. Every one of them now says
+/// `waiting_for_capacity` with its reason, waits, and retries when the wait
+/// ends. The one reading left that no wait can help, work prose with no
+/// limit message in it, still ends the step, and is checked last.
+///
+/// Each wait is bounded by the 60-second floor and the fixture's virtual
+/// clock, so the chain costs no real time.
 #[test]
-fn limits_a_wait_cannot_outlast_are_passed_up_at_once() {
-    let prose = "Done. Note: the usage limit resets 8:30am (America/Los_Angeles).";
-    for (message, stdout, reason) in [
-        (SPEND_TEXT, "", "spend_limit"),
-        // Single-login (storeless) fixture: no other login can take over, so a
-        // far reset stays reset_too_far rather than becoming a capacity wait.
-        (SPEND_WEEKLY_TEXT, "", "reset_too_far"),
-        (WEEKLY_TEXT, "", "reset_too_far"),
+fn limits_a_wait_cannot_outlast_are_waited_for_not_passed_up() {
+    // Every wait here is bounded by its configured maximum of 60 seconds,
+    // the floor `plan::MIN_WAIT_SECS` sets.
+    const UNTIL: &str = "2026-10-18 08:01:00 -07:00";
+    for (message, why, start_reason, reset, end) in [
+        // A spend limit with no reset waits for the login itself to change.
+        (
+            SPEND_TEXT,
+            "spend_limit",
+            "spend_limit wait=login_change",
+            "none",
+            "max reached",
+        ),
+        // A weekly reset is more than five hours away: next year's Oct 8.
+        (
+            SPEND_WEEKLY_TEXT,
+            "reset_too_far",
+            "usage_limit wait=capacity",
+            "2027-10-08 00:00:00 -07:00",
+            "capacity expired",
+        ),
+        (
+            WEEKLY_TEXT,
+            "reset_too_far",
+            "usage_limit wait=capacity",
+            "2027-10-08 00:00:00 -07:00",
+            "capacity expired",
+        ),
+        // No reset that parses at all.
         (
             "You've hit your session limit · try again later",
-            "",
             "no_reset",
+            "usage_limit wait=capacity",
+            "none",
+            "capacity expired",
         ),
-        // Neutral stderr: work markers such as "failed" outrank a limit.
-        ("step stopped", prose, "no_limit_message"),
     ] {
         let f = Fixture::new();
         let mut c = f.step();
-        c.env("LIMIT_MESSAGE", message).env("STDOUT_TEXT", stdout);
+        c.env("LIMIT_MESSAGE", message)
+            .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "60");
         let out = f.run(&mut c);
-        assert_eq!(out.status.code(), Some(1), "{reason}: {}", describe(&out));
-        assert_eq!(f.count("0"), 1, "{reason}: no rerun");
+        assert!(out.status.success(), "{why}: {}", describe(&out));
+        assert_eq!(f.count("0"), 2, "{why}: the step waits, then retries once");
         assert_eq!(
             events(&out),
-            [format!("skipped reason={reason}")],
-            "{reason}"
+            [
+                format!("waiting_for_capacity reason={why} harness=claude until={UNTIL}"),
+                format!(
+                    "start reason={start_reason} harness=claude reset={reset} until={UNTIL} \
+                     bound=max_wait"
+                ),
+                format!("end reason={end}"),
+                "resume attempt=2".to_string(),
+            ],
+            "{why}"
         );
     }
+    // Neutral stderr: work markers such as "failed" outrank a limit, so the
+    // output carries no limit message and no wait could help.
+    let prose = "Done. Note: the usage limit resets 8:30am (America/Los_Angeles).";
+    let f = Fixture::new();
+    let mut c = f.step();
+    c.env("LIMIT_MESSAGE", "step stopped")
+        .env("STDOUT_TEXT", prose);
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 1, "no rerun for a step that met no limit");
+    assert_eq!(events(&out), ["skipped reason=no_limit_message"]);
 }
 
 #[test]
@@ -174,81 +240,123 @@ fn a_spend_limit_that_states_a_session_reset_waits_for_it() {
     );
 }
 
+/// Issue #2911: the ten-minute grace is gone, and a reset already behind the
+/// clock is a real wait for capacity.
+///
+/// A reset five minutes old used to fall inside a grace that planned a wait
+/// of no length (`upgrade_passed_reset`, now deleted), so the step retried at
+/// once. There are no zero-length waits any more: such a reset is always
+/// `Capacity(PassedReset)`, because the message may be minutes stale and a
+/// time that has been and gone is not something to sleep to, so the step
+/// waits for a reading instead and retries when the wait ends.
 #[test]
-fn a_reset_inside_the_ten_minute_grace_retries_at_once() {
+fn a_reset_already_behind_the_clock_waits_for_capacity() {
     let f = Fixture::new();
     let mut c = f.step();
     c.env(
         "LIMIT_MESSAGE",
         "You've hit your session limit · resets 7:55am (America/Los_Angeles)",
-    );
+    )
+    .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "60");
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
         events(&out),
         vec![
-            "start reason=usage_limit harness=claude reset=2026-10-18 07:55:00 -07:00 \
-             until=2026-10-18 08:00:00 -07:00 bound=reset+margin",
-            "end reason=reset reached",
+            "waiting_for_capacity reason=passed_reset harness=claude \
+             until=2026-10-18 08:01:00 -07:00",
+            "start reason=usage_limit wait=capacity harness=claude \
+             reset=2026-10-18 07:55:00 -07:00 until=2026-10-18 08:01:00 -07:00 bound=max_wait",
+            "end reason=capacity expired",
             "resume attempt=2",
         ]
     );
     assert_eq!(f.count("0"), 2);
 }
 
-/// Issue #2857 changed what this test pins. The first wait ends `reset reached`,
-/// which says *try now*, and the retry meets the same message, "resets 8:30am",
-/// read at 08:32: a reset two minutes past. A limit after a wait must go back
-/// into a wait and must not end the step, so that limit is a re-entry: it is
-/// reported once and waits on capacity for the budget the step has left. The
-/// budget ends that wait with `max reached` and the step retries once more.
-/// That retry meets the limit again and is refused, because the budget is now
-/// spent. The chain is bounded by the budget, not by a count, and the stub's
-/// five limits are never waited for in zero time.
+/// Issue #2911: a second limit is waited out too, and a limit is never
+/// refused however many the step meets.
+///
+/// The step used to carry a per-step budget. The first wait ended
+/// `reset reached`, the retry met the same message read two minutes past its
+/// reset, that re-entry waited on capacity for whatever budget was left, and
+/// the attempt after it was refused with `skipped reason=already_waited` and
+/// `failed reason=already_waited`. That refusal is one of the exact failures
+/// #2911 reports: a run ended by a limit that only meant *wait longer*. The
+/// budget, the refusal and the marks that counted a login's waits are all
+/// gone.
+///
+/// So the stub's five limits now produce five waits and six attempts, and the
+/// step succeeds. The chain is paced by the waits costing time, not by a
+/// count: every wait here ends strictly after it began, and the virtual clock
+/// moves only when a wait sleeps, which is why the whole chain is exact. The
+/// test is bounded by `LIMIT_CALLS`, that is, by the stub running out of
+/// limits to report, rather than by anything ending the chain.
+///
+/// The second wait is the re-entry #2857 named, reported once on its own
+/// line: the first wait said *try now* and the limit on its retry
+/// contradicted that.
 #[test]
-fn ac7_a_second_limit_is_waited_out_by_the_budget_then_refused() {
+fn ac7_a_second_limit_is_waited_out_and_never_refused() {
     let f = Fixture::new();
     let mut c = f.step();
     c.env("LIMIT_CALLS", "5");
     let out = f.run(&mut c);
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(
-        f.count("0"),
-        3,
-        "one wait, one retry, one budget wait, one retry, then give up"
-    );
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 6, "five waits, and one attempt after each");
     let ev = events(&out);
     assert_eq!(
-        ev.iter().filter(|l| l.starts_with("start ")).count(),
-        2,
-        "{ev:?}"
-    );
-    assert_eq!(
-        ev.iter()
-            .filter(|l| *l == "reentered met=usage_limit")
-            .count(),
-        1,
-        "one line for the re-entry, before the budget wait's start: {ev:?}"
-    );
-    assert!(
-        ev[4].starts_with("start reason=usage_limit wait=capacity ")
-            && ev[4].ends_with("bound=max_wait"),
-        "the re-entry waits on capacity for the budget: {ev:?}"
-    );
-    assert_eq!(ev[5], "end reason=max reached", "{ev:?}");
-    // Issue #1801: the closing line keeps the class in the runner's evidence.
-    assert_eq!(
-        ev[ev.len() - 2..],
+        ev,
         [
-            "skipped reason=already_waited",
-            "failed reason=already_waited: usage limit not lifted",
+            // The limit's own reset, two minutes of margin added.
+            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 \
+             until=2026-10-18 08:32:00 -07:00 bound=reset+margin",
+            "end reason=reset reached",
+            "resume attempt=2",
+            // The retry meets the same message, now read at 08:32: a reset
+            // two minutes past, which contradicts the wait that said to try
+            // now and waits for capacity rather than ending the step.
+            "reentered met=usage_limit",
+            "waiting_for_capacity reason=passed_reset harness=claude \
+             until=2026-10-18 14:32:00 -07:00",
+            "start reason=usage_limit wait=capacity harness=claude \
+             reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 14:32:00 -07:00 bound=max_wait",
+            // Nothing lifted the limit, and the step retries all the same.
+            "end reason=capacity expired",
+            "resume attempt=3",
+            // From here each 8:30am is tomorrow's, more than five hours off.
+            "waiting_for_capacity reason=reset_too_far harness=claude \
+             until=2026-10-18 20:32:00 -07:00",
+            "start reason=usage_limit wait=capacity harness=claude \
+             reset=2026-10-19 08:30:00 -07:00 until=2026-10-18 20:32:00 -07:00 bound=max_wait",
+            "end reason=capacity expired",
+            "resume attempt=4",
+            "waiting_for_capacity reason=reset_too_far harness=claude \
+             until=2026-10-19 02:32:00 -07:00",
+            "start reason=usage_limit wait=capacity harness=claude \
+             reset=2026-10-19 08:30:00 -07:00 until=2026-10-19 02:32:00 -07:00 bound=max_wait",
+            "end reason=capacity expired",
+            "resume attempt=5",
+            // The fifth wait reaches that reset, which is now within the
+            // wait's own length, so the step is retried on its arrival.
+            "waiting_for_capacity reason=reset_too_far harness=claude \
+             until=2026-10-19 08:32:00 -07:00",
+            "start reason=usage_limit wait=capacity harness=claude \
+             reset=2026-10-19 08:30:00 -07:00 until=2026-10-19 08:32:00 -07:00 bound=reset+margin",
+            "end reason=reset reached",
+            "resume attempt=6",
         ]
     );
-    assert_eq!(claude_stdout(&out), "attempt 3 output\n");
+    assert!(
+        !ev.iter()
+            .any(|l| l.starts_with("skipped ") || l.starts_with("failed ")),
+        "no limit in the chain is refused and none ends the step: {ev:?}"
+    );
+    assert_eq!(claude_stdout(&out), "attempt 6 output\n");
     let stderr = text(&out.stderr);
     assert!(
         stderr.contains(LIMIT_TEXT),
-        "the runner's classifier must still see the limit: {stderr}"
+        "each failed attempt's limit message still reaches the runner: {stderr}"
     );
 }
 

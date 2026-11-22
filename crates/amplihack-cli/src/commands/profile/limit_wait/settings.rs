@@ -6,6 +6,24 @@
 //! no rotator or second login to wait for, and its own timeout is the
 //! better bound. Setting the key in a user or project file, or the
 //! variable, turns it back on there.
+//!
+//! `recipe.usage_limit_max_wait_secs` is the length of *one* wait, not a
+//! budget for the whole step (issue #2911). A step that meets limit after
+//! limit waits each of them out; nothing counts the waits or ends the step
+//! when a total is reached. A configured value below
+//! [`plan::MIN_WAIT_SECS`] is raised to it, which is what holds the pacing
+//! rule for every configured value rather than only for zero: the wait loop
+//! polls every 30 seconds, so a shorter wait has no wake condition that
+//! could end it and would simply return. A zero therefore no longer means
+//! "do not wait"; `recipe.usage_limit_wait = false` is how to turn the wait
+//! off.
+//!
+//! The floor is applied here, where the value is read, and not in the
+//! planners, so that there is one place to look and `lower_only` keeps
+//! working: a filter that dropped a zero instead would silently raise a
+//! project's configured value to the 21 600-second default.
+//!
+//! [`plan::MIN_WAIT_SECS`]: super::plan::MIN_WAIT_SECS
 
 use crate::user_config::{Effective, Origin, Value};
 use std::path::Path;
@@ -56,7 +74,8 @@ pub(crate) fn from_effective(effective: &Effective, ci: Option<&str>) -> WaitSet
             .entry(MAX_WAIT_KEY)
             .value
             .as_ref()
-            .and_then(Value::as_int),
+            .and_then(Value::as_int)
+            .map(|v| v.max(super::plan::MIN_WAIT_SECS)),
     }
 }
 

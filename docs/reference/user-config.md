@@ -168,7 +168,7 @@ command, so it never prints `flag`.
 | `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | — | — | user, project |
 | `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
 | `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
-| `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | `21600` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
+| `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 (read as 60 when below 60) | `21600` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
 | `policy.deny_commands` | list of command prefixes | (unset: the shipped defaults only) | — | — | user only |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 | `model.force` | model id | (unset) | `AMPLIHACK_FORCE_MODEL` | — | user only |
@@ -369,23 +369,23 @@ in the environment or a file, it is on, except in CI: any `CI` that is
 not, after trimming, empty, `0` or `false` in any case. Setting it in a file or the variable turns it on
 in CI too. The environment variable also accepts `1` and `0`.
 
-`recipe.usage_limit_max_wait_secs` bounds the time one step spends waiting,
-across every wait it makes, and defaults to `21600` (six hours). It shortens
-a wait for a reset, which never lasts beyond the reset plus 120 seconds, and
-sets how long a [capacity wait](./profile-command.md#capacity-wait) for
-another login, or a
-[login-change wait](./profile-command.md#login-change-wait) on an
-organisation spend limit with no reset, lasts. `0` means one more attempt
-with no wait for a reset, and an immediate `usage_limit` failure for a
-capacity or login-change wait. A step that waits again after the login in
-`~/.claude` changes gets only what its earlier waits left; see
-[One wait per login](./profile-command.md#one-wait-per-login).
+`recipe.usage_limit_max_wait_secs` is the length of one capacity or
+login-change wait, and defaults to `21600` (six hours). It is not a per-step
+budget: a step that meets another limit after a wait waits again for the same
+length, and no count or total ends the chain. A wait for a reset still never
+lasts beyond the reset plus 120 seconds, and a
+[capacity wait](./profile-command.md#capacity-wait) still ends sooner on room
+or at the failed login's own reset plus 120 seconds. See
+[Usage-limit waits](./usage-limit-waits.md#what-max_wait_secs-means).
+
+The length has a floor of 60 seconds, twice the wait's poll interval, so a
+configured `0` means 60 seconds and not "do not wait". To stop steps waiting
+at all, set `recipe.usage_limit_wait` to `false`.
 
 The default is not a ceiling. A user file or
-`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a higher value, and a capacity
-or login-change wait honours it. A project file is `lower only`: it can shorten the maximum
-but never raise it above the user or default value, so a repository cannot
-make your runs wait longer.
+`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a higher value. A project file
+is `lower only`: it can shorten the length but never raise it above the user or
+default value, so a repository cannot make your runs wait longer.
 
 A value that is not a whole number of seconds from `0` upwards is handled
 like any other invalid value: `amplihack config set` rejects it with exit

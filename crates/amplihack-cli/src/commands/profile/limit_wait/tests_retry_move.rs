@@ -126,7 +126,6 @@ impl Env {
                 stream_stdin: false,
             },
             Box::new(|| false),
-            Box::new(|| true),
         )
     }
 }
@@ -135,6 +134,7 @@ fn capacity() -> WaitFor {
     WaitFor::Capacity {
         harness: Harness::Claude,
         reset: None,
+        why: super::plan::Waiting::NoReset,
     }
 }
 
@@ -352,9 +352,18 @@ fn a_later_wait_that_earns_no_move_clears_the_earlier_ones() {
 }
 
 /// The clear is about `retry_move` alone. The mark is a different record,
-/// answering a different question (*may this step wait again*), and the
-/// early return records it like any other wait: a login the step has
-/// already waited on must not earn a second wait later in the chain.
+/// answering a different question, and the early return records it like any
+/// other wait.
+///
+/// Issue #2911: what the mark answers has changed. It used to refuse a
+/// second wait on a login the step had already waited on, which ended the
+/// chain the moment the rotator came back round; `reset_too_far` and
+/// `already_waited` between them account for most of the runs #2911
+/// reports. The refusal is gone, so a login that comes round twice is
+/// waited on twice. The record itself stays, because two readers still want
+/// it: `used`, which stops auto-switch choosing another candidate once the
+/// step has waited, and the `reentered` line, which says whether this step
+/// has waited on this login before.
 #[test]
 fn the_wait_that_returns_early_still_records_its_mark() {
     // No wait runs here at all: both calls take the early return, so the
@@ -380,9 +389,15 @@ fn the_wait_that_returns_early_still_records_its_mark() {
             w.used(),
             "the step has waited, as far as auto-switch reads it"
         );
+        assert!(
+            w.marks.waited_on(&Some("a".to_string())),
+            "the early return recorded the login it returned on"
+        );
 
         // The rotator comes back round to `a`, which this step has already
-        // waited on once.
+        // waited on once. Before #2911 that ended the step; now it waits
+        // again, and the record of the first wait is what the `reentered`
+        // line reads rather than a refusal.
         e.rotator("a");
         w.note_attempt_login();
         e.rotator("b");
@@ -396,9 +411,13 @@ fn the_wait_that_returns_early_still_records_its_mark() {
                     &mut || None,
                     Resumed::Ordinarily
                 ),
-                AfterLimit::Finish(_)
+                AfterLimit::Retry
             ),
-            "a login that comes round twice ends the chain"
+            "a login that comes round twice is waited on twice (#2911)"
+        );
+        assert!(
+            w.marks.waited_on(&Some("a".to_string())),
+            "and the second wait on it is recorded too"
         );
     });
 }

@@ -51,7 +51,7 @@
 use super::change_may_end;
 use super::events::Met;
 use super::fingerprint::Watch;
-use super::plan::{Bound, WaitFor};
+use super::plan::{Bound, NoWait, WaitFor, Waiting};
 use super::settings::WaitSettings;
 use super::tests_fingerprint::{Env, env, private, rotate_ledger};
 use super::tests_wait::{capacity_plan_in, login_change_plan_in, plan_in};
@@ -455,7 +455,6 @@ pub(super) fn waiter(e: &Env, max_wait_secs: Option<u64>) -> Waiter {
             stream_stdin: false,
         },
         Box::new(|| false),
-        Box::new(|| true),
     )
 }
 
@@ -467,6 +466,7 @@ fn capacity() -> WaitFor {
     WaitFor::Capacity {
         harness: Harness::Claude,
         reset: None,
+        why: Waiting::NoReset,
     }
 }
 
@@ -638,14 +638,14 @@ fn a_retry_that_skipped_the_wait_because_the_login_had_room_also_said_try_now() 
 
 /// A wait that merely reached its maximum retried because the maximum said so,
 /// not because anything said the login was usable: a limit after it is no
-/// contradiction, and the `already_waited` refusal stands.
+/// contradiction, so it writes no `reentered` line.
 #[test]
 fn a_retry_after_a_wait_that_ran_out_said_nothing() {
     guarded(|| {
         let e = env();
-        // A budget of zero: the reset wait ends at once on its maximum and
-        // still earns its one retry.
-        let mut w = waiter(&e, Some(0));
+        // The shortest wait the setting can ask for: it ends on its own
+        // maximum, well before the reset, and earns a retry (issue #2911).
+        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
         e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
         w.note_attempt_login();
         let reset = w.now() + 1800;
@@ -668,6 +668,10 @@ fn a_retry_after_a_wait_that_ran_out_said_nothing() {
 /// Cleared on every return that is not a `Retry`, and set only at the two
 /// `Retry` returns. A flag a `Finish` left set would be inherited by the next
 /// attempt, which may be an auto-switch rerun under another profile.
+///
+/// Issue #2911: no limit produces a `Finish` any more, so the second call
+/// here is made with the one reading that still does - output carrying no
+/// limit message at all.
 #[test]
 fn a_finish_clears_what_an_earlier_retry_set() {
     guarded(|| {
@@ -678,12 +682,12 @@ fn a_finish_clears_what_an_earlier_retry_set() {
         let probed = Cell::new(0);
         let got = after(&mut w, capacity(), 1, &probe_counting(&probed));
         assert!(matches!(got, AfterLimit::Retry));
-        // The flag is deliberately not read here. The next attempt runs on the
-        // same login, which this step has waited on, and this call (made as an
-        // ordinary one, not as the retry a signal earned) is refused: `Finish`.
+        // The flag is deliberately not read here.
         w.note_attempt_login();
-        let got = after(&mut w, capacity(), 2, &|_, _| false);
-        assert!(matches!(got, AfterLimit::Finish(_)), "already waited on a");
+        let got = after(&mut w, WaitFor::Skip(NoWait::NoLimitMessage), 2, &|_, _| {
+            false
+        });
+        assert!(matches!(got, AfterLimit::Finish(_)), "no limit message");
         assert!(
             !w.resumed_on_a_signal(),
             "a Finish carries nothing forward, whatever the last Retry said"
@@ -703,22 +707,22 @@ fn a_waiter_that_has_never_waited_has_not_resumed_on_a_signal() {
     });
 }
 
-// --- what bounds a re-entry when nothing sets a maximum (SEC-7) -------------------------
-
-/// What `plan_capacity` and `refuses_reentry` fall back to for a step with no
-/// `max_wait_secs`: the same default, so a chain of re-entries has a budget and
-/// not a count or a timer.
-const DEFAULT_BUDGET: u64 = super::plan::CAPACITY_DEFAULT_MAX;
+// --- issue #2911: what bounds a chain of limits now -------------------------------------
+//
+// #2731 bounded it with a per-step `max_wait_secs` budget, and #2857 with a
+// same-login refusal that a re-entry lifted. Both ended runs that a limit
+// should only have delayed: over the 72 hours to 21 November 2026 they
+// accounted for `already_waited` 141 times and the spent-budget ending
+// besides. Both are gone.
+//
+// What bounds the chain now is that every wait costs time. A limit's plan
+// always ends strictly after `now` (`plan`, and the `MIN_WAIT_SECS` floor on
+// the configured length), so a step meeting limit after limit waits each of
+// them out and is woken by a login gaining room or by a reset passing. The
+// tests below pin the behaviour that replaces the two refusals.
 
 /// One `after_limit` call as the retry a wait that said *try now* earned.
-fn after_a_signal(w: &mut Waiter, n: u32) -> AfterLimit {
-    // A reset a minute away: with no maximum the wait runs to it, which at the
-    // test clock's speed is two polls.
-    let reset = w.now() + 60;
-    let wait = WaitFor::Reset {
-        harness: Harness::Claude,
-        reset,
-    };
+fn after_a_signal(w: &mut Waiter, n: u32, wait: WaitFor) -> AfterLimit {
     w.after_limit(
         wait,
         n,
@@ -729,168 +733,145 @@ fn after_a_signal(w: &mut Waiter, n: u32) -> AfterLimit {
     )
 }
 
-/// A step that has already waited on this login and set no maximum is not
-/// unlimited. With one second of the default budget left a re-entry is planned
-/// (and ends at its own ceiling, so it retries); with none left it is refused
-/// and the step ends, as the refusal for an ordinary second wait does.
-#[test]
-fn a_re_entry_with_no_maximum_set_ends_where_the_default_budget_does() {
-    guarded(|| {
-        let e = env();
-        for (spent, re_entered) in [
-            (0, true),
-            (DEFAULT_BUDGET - 1, true),
-            (DEFAULT_BUDGET, false),
-        ] {
-            let mut w = waiter(&e, None);
-            w.note_attempt_login();
-            w.marks.record(None);
-            w.marks.spend(spent);
-            let got = after_a_signal(&mut w, 2);
-            assert_eq!(
-                matches!(got, AfterLimit::Retry),
-                re_entered,
-                "{spent} of {DEFAULT_BUDGET} seconds spent"
-            );
-            if !re_entered {
-                assert!(
-                    matches!(got, AfterLimit::Finish(None)),
-                    "a spent budget ends the step on the limit it already has"
-                );
-            }
-        }
-    });
-}
-
-// --- a re-entry needs something to wait on ----------------------------------------------
-
-/// One `after_limit` call as the retry a wait that said *try now* earned, for a
-/// limit whose message states a reset `ahead` seconds from now (negative for one
-/// that has passed).
-fn after_a_signal_for_a_reset(w: &mut Waiter, n: u32, ahead: i64) -> AfterLimit {
-    let reset = w.now() + ahead;
-    let wait = WaitFor::Reset {
+/// A reset wait for a reset `ahead` seconds from now (negative for one that
+/// has passed).
+fn reset_in(w: &Waiter, ahead: i64) -> WaitFor {
+    WaitFor::Reset {
         harness: Harness::Claude,
-        reset,
-    };
-    w.after_limit(
-        wait,
-        n,
-        &signals(),
-        &|_, _| false,
-        &mut || None,
-        Resumed::AfterASignal(Met::UsageLimit),
-    )
+        reset: w.now() + ahead,
+    }
 }
 
-/// The same-login refusal is lifted for a re-entry so a limit that contradicts
-/// a wake can be waited on again. It is not lifted for a limit that states a
-/// reset which is not in the future: that wait would end at once, spend none of
-/// the budget and launch the same attempt again, and so the budget would bound
-/// nothing. With no reset ahead and no capacity signal there is nothing to wait
-/// on, and the limit is passed up as already waited, as it was before #2857.
-/// Issue #2857 ("until the stated reset or the next real capacity signal").
+/// The refusal #2857 added, removed. A limit that contradicts a wake is
+/// waited on again however often it happens: three limits in one step, each
+/// on the same login, each a wait and none an ending.
 #[test]
-fn a_re_entry_for_a_reset_that_is_not_ahead_is_refused_as_already_waited() {
+fn issue_2911_a_second_and_a_third_limit_on_one_login_each_wait() {
     guarded(|| {
         let e = env();
-        // The reset as the retry reads it: just reached, two minutes past (the
-        // grace the first limit of a step gets), and far past it.
-        for ahead in [0, -1, -120, -599] {
-            let mut w = waiter(&e, None);
+        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
+        for n in 1..=3 {
             w.note_attempt_login();
-            w.marks.record(None);
-            let got = after_a_signal_for_a_reset(&mut w, 2, ahead);
-            assert!(
-                matches!(got, AfterLimit::Finish(None)),
-                "a reset {ahead}s from now gives a re-entry nothing to wait on"
-            );
-            assert!(
-                !w.resumed_on_a_signal(),
-                "a refusal carries no claim to the next attempt (reset {ahead}s)"
-            );
-        }
-    });
-}
-
-/// The positive control: a reset still ahead is a wait, so the re-entry runs.
-/// One second is enough; what matters is that it is in the future.
-#[test]
-fn a_re_entry_for_a_reset_that_is_ahead_is_planned() {
-    guarded(|| {
-        let e = env();
-        for ahead in [1, 60, 1800] {
-            let mut w = waiter(&e, None);
-            w.note_attempt_login();
-            w.marks.record(None);
-            let got = after_a_signal_for_a_reset(&mut w, 2, ahead);
+            let before = w.now();
+            let wait = reset_in(&w, 1800);
+            let got = after_a_signal(&mut w, n, wait);
             assert!(
                 matches!(got, AfterLimit::Retry),
-                "a reset {ahead}s ahead is a wait"
+                "limit {n} ended the step instead of waiting"
+            );
+            assert!(
+                w.now() > before,
+                "limit {n}: the wait cost no time, so nothing paces the chain"
             );
         }
     });
 }
 
-/// The refusal above is of the lifted same-login refusal only. A limit on a
-/// login this step has not waited on is an ordinary first wait for that login,
-/// and a reset inside the grace on it retries at once, as it always has
-/// (`a_reset_inside_the_ten_minute_grace_retries_at_once` in the #1618 tests).
-/// Refusing it too would end a step that moved to a fresh login on that login's
-/// first limit.
+/// The same for a capacity wait, which is what every limit with no usable
+/// reset now becomes. Nothing counts them, and nothing refuses the later
+/// ones.
 #[test]
-fn a_reset_that_is_not_ahead_on_a_login_not_yet_waited_on_still_retries_at_once() {
+fn issue_2911_repeated_capacity_waits_are_never_refused() {
     guarded(|| {
         let e = env();
-        let mut w = waiter(&e, None);
-        w.note_attempt_login();
-        // Nothing recorded: this step has not waited on this login.
-        let got = after_a_signal_for_a_reset(&mut w, 1, -120);
+        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        e.rotator_cycle_room("a", 1, None, "stayed", false, Some(true));
+        let before = w.now();
+        for n in 1..=4 {
+            w.note_attempt_login();
+            let got = after_a_signal(&mut w, n, capacity());
+            assert!(matches!(got, AfterLimit::Retry), "capacity wait {n}");
+        }
         assert!(
-            matches!(got, AfterLimit::Retry),
-            "the grace retries at once"
+            w.now() - before >= 4 * i64::try_from(super::plan::MIN_WAIT_SECS).unwrap(),
+            "four waits of the configured length each cost their length"
         );
     });
 }
 
-/// The same-login rule that ends the chain for a past reset also bounds it: the
-/// retry a past-reset wait earned is refused the next time, so the chain is the
-/// first at-once retry and then the refusal, whatever the stub keeps saying.
+/// A reset the clock has already passed used to end the step as
+/// `already_waited`. The planner no longer produces a reset wait for one -
+/// `wait_for_message` makes it a capacity wait - and the margin floor means
+/// that even a reset wait built directly from a passed reset has real length
+/// rather than returning at once.
 #[test]
-fn a_past_reset_chain_ends_at_the_second_limit_on_the_same_login() {
+fn issue_2911_a_passed_reset_waits_instead_of_ending_the_step() {
     guarded(|| {
         let e = env();
-        let mut w = waiter(&e, None);
+        for ahead in [0, -1, -120, -599, -86_400] {
+            let mut w = waiter(&e, None);
+            w.note_attempt_login();
+            w.marks.record(None);
+            let before = w.now();
+            let wait = reset_in(&w, ahead);
+            let got = after_a_signal(&mut w, 2, wait);
+            assert!(
+                matches!(got, AfterLimit::Retry),
+                "a reset {ahead}s from now ended the step"
+            );
+            assert!(w.now() > before, "a reset {ahead}s from now waited no time");
+        }
+    });
+}
+
+/// A login-change wait that reaches its deadline retries. It used to write
+/// `failed reason=spend_limit` and end the step, which is the
+/// `skipped reason=spend_limit` ending #2911 reports.
+#[test]
+fn issue_2911_a_login_change_wait_that_runs_out_retries() {
+    guarded(|| {
+        let e = env();
+        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
         w.note_attempt_login();
-        let first = after_a_signal_for_a_reset(&mut w, 1, -120);
-        assert!(matches!(first, AfterLimit::Retry), "the grace retries once");
-        w.note_attempt_login();
-        let second = after_a_signal_for_a_reset(&mut w, 2, -120);
+        let before = w.now();
+        let got = after(&mut w, login_change(), 1, &|_, _| false);
+        assert!(matches!(got, AfterLimit::Retry));
+        assert!(w.now() > before, "the wait ran its length");
         assert!(
-            matches!(second, AfterLimit::Finish(None)),
-            "the same message on the same login is refused"
+            !w.resumed_on_a_signal(),
+            "reaching a deadline claims nothing about the next attempt"
         );
     });
 }
 
-/// The same re-entry with a maximum set is bounded by that maximum and not by
-/// the default: a step that set 600 and spent 600 is done, though it is far
-/// short of the default.
+/// A capacity wait that reaches its deadline retries. It used to write
+/// `failed reason=capacity_expired`.
 #[test]
-fn a_re_entry_with_a_maximum_set_ends_where_that_maximum_does() {
+fn issue_2911_a_capacity_wait_that_runs_out_retries() {
     guarded(|| {
         let e = env();
-        for (spent, re_entered) in [(599, true), (600, false)] {
-            let mut w = waiter(&e, Some(600));
-            w.note_attempt_login();
-            w.marks.record(None);
-            w.marks.spend(spent);
-            let got = after_a_signal(&mut w, 2);
-            assert_eq!(
-                matches!(got, AfterLimit::Retry),
-                re_entered,
-                "spent {spent}"
-            );
-        }
+        let mut w = waiter(&e, Some(super::plan::MIN_WAIT_SECS));
+        w.note_attempt_login();
+        let before = w.now();
+        let got = after(&mut w, capacity(), 1, &|_, _| false);
+        assert!(matches!(got, AfterLimit::Retry));
+        assert!(w.now() > before, "the wait ran its length");
     });
+}
+
+/// The step's own timeout is not a limit budget and still ends the step. It
+/// is the recipe runner's bound on the step, and a wait may not outlive it.
+#[test]
+fn issue_2911_the_step_timeout_still_ends_the_step() {
+    let _lock = env_lock()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = EnvGuard::set([("AMPLIHACK_STEP_TIMEOUT", "1")]);
+    for name in SILENCED {
+        guard.clear(name);
+    }
+    guard.assign(
+        "AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW",
+        crate::commands::profile::fsx::now().to_string(),
+    );
+    guard.assign("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", FAST);
+    let e = env();
+    let mut w = waiter(&e, None);
+    w.note_attempt_login();
+    let got = after(&mut w, capacity(), 1, &|_, _| false);
+    assert!(
+        matches!(got, AfterLimit::Finish(None)),
+        "the step's own deadline is already behind the clock"
+    );
 }

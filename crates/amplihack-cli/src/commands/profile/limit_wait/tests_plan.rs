@@ -1,14 +1,25 @@
-//! `wait_for` and `plan` (issue #1618): which limits are waited out (real
-//! messages, spend limits, unparsed and far resets, model prose), and the
-//! deadline table. The earliest applicable row wins, a tie is named by the
-//! earlier row, a reset at or before now means now, and no input can push
-//! the deadline past now + 5 h + 120 s.
+//! `wait_for_message` and the deadline table (issues #1618, #2911).
+//!
+//! Two halves:
+//!
+//! - **which wait a limit earns.** Every limit this module can read waits.
+//!   A reset the step can use inside five hours is waited for directly; a
+//!   reset too far away, a reset already behind the clock, a message with no
+//!   readable reset and Codex's credits each become a capacity wait naming
+//!   its [`Waiting`]; a spend limit stating no reset becomes a login-change
+//!   wait. The only two readings left that end a step are not limits: output
+//!   with no limit message in it, and a prompt that cannot be replayed.
+//! - **the deadline.** The earliest applicable row of the table wins, a tie
+//!   is named by the earlier row, and no reset row can push a reset wait
+//!   past now + 5 h + 120 s. Every plan a limit produces ends strictly after
+//!   `now` unless the step timeout brings it back: that is the pacing rule
+//!   that replaced #2731's per-step budget.
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_plan;`.
 
 use super::plan::{
-    Bound, CAPACITY_DEFAULT_MAX, NoWait, Plan, PlanKind, WaitFor, plan, plan_capacity, upgrade,
-    upgrade_passed_reset, upgrade_spend, wait_for_message,
+    Bound, CAPACITY_DEFAULT_MAX, MIN_WAIT_SECS, NoWait, Plan, PlanKind, WaitFor, Waiting, plan,
+    plan_capacity, plan_login_change, rate_limit_capacity, wait_for_message,
 };
 use crate::commands::recipe::run::limit_patterns::{self, Harness};
 
@@ -25,6 +36,7 @@ const SPEND_SESSION: &str = "You've hit your org's monthly spend limit · run /u
 const SPEND_WEEKLY: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 8, 12am (America/Los_Angeles)";
 const WEEKLY: &str = "You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)";
 const SESSION: &str = "You've hit your session limit · resets 1pm (America/Los_Angeles)";
+const CREDITS: &str = "Your workspace is out of credits. Add credits to continue.";
 
 fn wait_for(stderr: &[u8], stdout: &[u8], now: i64) -> WaitFor {
     wait_for_message(limit_patterns::limit_message(stderr, stdout, now), now)
@@ -34,55 +46,83 @@ fn p(reset: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
     plan(NOW, reset, max, step)
 }
 
-// --- wait_for ------------------------------------------------------------
+fn reset_wait(reset: i64) -> WaitFor {
+    WaitFor::Reset {
+        harness: Harness::Claude,
+        reset,
+    }
+}
+
+fn capacity_wait(reset: Option<i64>, why: Waiting) -> WaitFor {
+    WaitFor::Capacity {
+        harness: Harness::Claude,
+        reset,
+        why,
+    }
+}
+
+// --- which wait a limit earns --------------------------------------------
 
 #[test]
 fn a_session_limit_within_five_hours_is_waited_for() {
-    assert_eq!(
-        wait_for(SESSION.as_bytes(), b"", NOW),
-        WaitFor::Reset {
-            harness: Harness::Claude,
-            reset: LA_1300
-        }
-    );
+    assert_eq!(wait_for(SESSION.as_bytes(), b"", NOW), reset_wait(LA_1300));
 }
 
 #[test]
-fn a_spend_limit_is_waited_for_only_when_it_states_a_near_reset() {
+fn issue_2911_a_spend_limit_with_no_reset_waits_for_the_login_to_change() {
     assert_eq!(
         wait_for(SPEND.as_bytes(), b"", NOW),
-        WaitFor::Skip(NoWait::SpendLimit),
-        "no reset stated"
-    );
-    assert_eq!(
-        wait_for(SPEND_SESSION.as_bytes(), b"", NOW),
-        WaitFor::Reset {
-            harness: Harness::Claude,
-            reset: LA_1300
+        WaitFor::LoginChange {
+            harness: Harness::Claude
         },
-        "the session limit resets within five hours"
-    );
-    assert_eq!(
-        wait_for(SPEND_WEEKLY.as_bytes(), b"", NOW),
-        WaitFor::Skip(NoWait::ResetTooFar)
+        "no usage window's reset lifts a spend limit"
     );
 }
 
 #[test]
-fn a_weekly_reset_beyond_five_hours_is_not_waited_for() {
+fn a_spend_limit_that_states_a_near_reset_waits_that_window_out() {
+    assert_eq!(
+        wait_for(SPEND_SESSION.as_bytes(), b"", NOW),
+        reset_wait(LA_1300),
+        "the session window is what stops work first"
+    );
+}
+
+#[test]
+fn issue_2911_a_spend_limit_stating_a_far_reset_waits_for_capacity() {
+    assert_eq!(
+        wait_for(SPEND_WEEKLY.as_bytes(), b"", NOW),
+        capacity_wait(
+            Some(
+                limit_patterns::limit_message(SPEND_WEEKLY.as_bytes(), b"", NOW)
+                    .and_then(|m| m.reset)
+                    .expect("the line states a weekly reset")
+            ),
+            Waiting::ResetTooFar
+        )
+    );
+}
+
+#[test]
+fn issue_2911_a_reset_beyond_five_hours_waits_for_capacity() {
+    // Before #2911 this was `Skip(ResetTooFar)`, which over 72 hours was the
+    // reason 217 waits were refused outright and their runs ended.
+    let weekly = limit_patterns::limit_message(WEEKLY.as_bytes(), b"", NOW)
+        .and_then(|m| m.reset)
+        .expect("the line states a weekly reset");
     assert_eq!(
         wait_for(WEEKLY.as_bytes(), b"", NOW),
-        WaitFor::Skip(NoWait::ResetTooFar)
+        capacity_wait(Some(weekly), Waiting::ResetTooFar)
     );
     // One second past the cap.
     assert_eq!(
         wait_for(SESSION.as_bytes(), b"", NOW - 1),
-        WaitFor::Skip(NoWait::ResetTooFar)
+        capacity_wait(Some(LA_1300), Waiting::ResetTooFar)
     );
 }
 
 #[test]
-fn a_message_with_no_readable_reset_is_not_waited_for() {
+fn issue_2911_a_message_with_no_readable_reset_waits_for_capacity() {
     for msg in [
         "You've hit your session limit · try again later",
         "You've hit your weekly limit · resets Oct 8 (America/Los_Angeles)",
@@ -90,10 +130,36 @@ fn a_message_with_no_readable_reset_is_not_waited_for() {
     ] {
         assert_eq!(
             wait_for(msg.as_bytes(), b"", NOW),
-            WaitFor::Skip(NoWait::NoReset),
+            capacity_wait(None, Waiting::NoReset),
             "{msg}"
         );
     }
+}
+
+#[test]
+fn issue_2911_a_reset_already_behind_the_clock_waits_for_capacity() {
+    // 13:02 local: the session limit's "1pm" is two minutes ago, inside the
+    // ten minutes a bare clock time is still read as today's. A reset wait
+    // for it would have a deadline of `now`, which is the zero-length wait
+    // the pacing rule exists to prevent.
+    let late = LA_1300 + 120;
+    assert_eq!(
+        wait_for(SESSION.as_bytes(), b"", late),
+        capacity_wait(Some(LA_1300), Waiting::PassedReset)
+    );
+}
+
+#[test]
+fn issue_2911_codex_credits_wait_for_capacity() {
+    assert_eq!(
+        wait_for(CREDITS.as_bytes(), b"", NOW),
+        WaitFor::Capacity {
+            harness: Harness::Codex,
+            reset: None,
+            why: Waiting::Credits,
+        },
+        "Codex states no reset, so there is nothing to sleep to"
+    );
 }
 
 #[test]
@@ -104,6 +170,111 @@ fn model_output_about_usage_limits_is_not_waited_for() {
         wait_for(b"error: tests failed\n", answer.as_bytes(), NOW),
         WaitFor::Skip(NoWait::NoLimitMessage)
     );
+}
+
+/// The whole of what is left of [`NoWait`]: two readings, neither of them a
+/// limit. Issue #2911's first invariant is that no limit can end a step, and
+/// this is the enum that would have to grow for one to.
+#[test]
+fn issue_2911_only_two_readings_end_a_step_and_neither_is_a_limit() {
+    assert_eq!(
+        [
+            NoWait::NoLimitMessage.as_str(),
+            NoWait::PipedPrompt.as_str()
+        ],
+        ["no_limit_message", "piped_prompt"]
+    );
+    for text in [SESSION, SPEND, SPEND_SESSION, SPEND_WEEKLY, WEEKLY, CREDITS] {
+        for now in [NOW, LA_1300 + 120, NOW + 10 * 86_400] {
+            let got = wait_for(text.as_bytes(), b"", now);
+            assert!(
+                !matches!(got, WaitFor::Skip(_)),
+                "{text:?} at {now} gave {got:?}"
+            );
+        }
+    }
+}
+
+/// The three tokens an operator greps the logs for survive the move out of
+/// `Skip`: they now name why a *wait* has no reset, rather than why a step
+/// ended.
+#[test]
+fn issue_2911_the_log_vocabulary_survives_the_move_out_of_skip() {
+    assert_eq!(
+        [
+            Waiting::ResetTooFar.as_str(),
+            Waiting::NoReset.as_str(),
+            Waiting::SpendLimit.as_str(),
+            Waiting::Credits.as_str(),
+            Waiting::PassedReset.as_str(),
+        ],
+        [
+            "reset_too_far",
+            "no_reset",
+            "spend_limit",
+            "credits",
+            "passed_reset"
+        ]
+    );
+}
+
+#[test]
+fn a_wait_says_whether_it_has_a_reset_to_end_on() {
+    assert_eq!(reset_wait(NOW + 60).waiting_for_capacity(), None);
+    assert_eq!(
+        WaitFor::Skip(NoWait::PipedPrompt).waiting_for_capacity(),
+        None
+    );
+    assert_eq!(
+        capacity_wait(None, Waiting::NoReset).waiting_for_capacity(),
+        Some(Waiting::NoReset)
+    );
+    assert_eq!(
+        WaitFor::LoginChange {
+            harness: Harness::Claude
+        }
+        .waiting_for_capacity(),
+        Some(Waiting::SpendLimit),
+        "the token a reader greps for is still written"
+    );
+}
+
+// --- rate_limit_capacity (issue #2857) -----------------------------------
+//
+// The one reading left that is not a limit message. A bare 429 states no
+// reset and says nothing about an account's windows, so with no login that
+// could take over it goes back to the runner as the transient fault the
+// classifier calls it, and nothing is logged.
+
+#[test]
+fn a_bare_429_is_a_capacity_wait_when_a_login_could_take_over() {
+    assert_eq!(
+        rate_limit_capacity(Harness::Claude, || true),
+        Some(capacity_wait(None, Waiting::NoReset))
+    );
+}
+
+#[test]
+fn a_bare_429_with_no_login_to_take_over_is_not_a_wait_at_all() {
+    assert_eq!(rate_limit_capacity(Harness::Claude, || false), None);
+}
+
+#[test]
+fn the_takeover_check_is_asked_once_and_only_here() {
+    let calls = std::cell::Cell::new(0);
+    let check = || {
+        calls.set(calls.get() + 1);
+        true
+    };
+    rate_limit_capacity(Harness::Claude, check);
+    assert_eq!(calls.get(), 1);
+    // And no limit message consults it: `wait_for_message` takes no such
+    // argument, which is how #2911 removed the `reset_too_far` ending.
+    assert_eq!(
+        wait_for(WEEKLY.as_bytes(), b"", NOW).waiting_for_capacity(),
+        Some(Waiting::ResetTooFar)
+    );
+    assert_eq!(calls.get(), 1, "a limit never asks");
 }
 
 // --- plan ----------------------------------------------------------------
@@ -118,32 +289,17 @@ fn a_future_reset_waits_until_reset_plus_margin() {
 }
 
 #[test]
-fn a_reset_at_or_before_now_waits_zero_seconds_and_keeps_the_reset() {
-    for reset in [NOW, NOW - 300] {
-        let got = p(reset, None, None);
-        assert_eq!(
-            (got.until, got.bound, got.reset),
-            (NOW, Bound::ResetMargin, Some(reset))
-        );
-    }
-}
-
-#[test]
 fn a_maximum_only_shortens_the_wait() {
     let got = p(NOW + 1800, Some(600), None);
     assert_eq!((got.until, got.bound), (NOW + 600, Bound::MaxWait));
     let got = p(NOW + 1800, Some(7200), None);
     assert_eq!((got.until, got.bound), (NOW + 1920, Bound::ResetMargin));
-    let got = p(NOW + 1800, Some(0), None);
-    assert_eq!((got.until, got.bound), (NOW, Bound::MaxWait));
 }
 
 #[test]
 fn a_tie_is_named_by_the_earlier_row() {
     let got = p(NOW + 480, Some(600), None);
     assert_eq!((got.until, got.bound), (NOW + 600, Bound::ResetMargin));
-    let got = p(NOW - 1, Some(0), None);
-    assert_eq!((got.until, got.bound), (NOW, Bound::ResetMargin));
     let got = p(NOW + 1800, Some(600), Some((NOW, 660)));
     assert_eq!((got.until, got.bound), (NOW + 600, Bound::MaxWait));
 }
@@ -206,94 +362,77 @@ fn until_is_always_between_now_and_the_ceiling() {
     }
 }
 
-// --- upgrade (issue #1801) -----------------------------------------------
+// --- the pacing rule (issue #2911) ---------------------------------------
+//
+// #2731 bounded a chain of limits with a per-step budget, which ended runs.
+// What bounds it now is that every wait costs time: each plan a limit can
+// produce ends strictly after `now`, so a chain is paced by waiting rather
+// than by counting. Only the step's own timeout may bring a deadline back
+// to `now`, and that is the recipe runner's bound and not a limit budget.
 
-const SEEN_FAR: Option<(Harness, Option<i64>)> = Some((Harness::Claude, Some(NOW + 86_400)));
-const SEEN_NONE: Option<(Harness, Option<i64>)> = Some((Harness::Claude, None));
-
+/// The floor the configured length is read through, which is what keeps the
+/// rule true for every configured value and not only for an unset one. Two
+/// poll intervals of the wait loop; `tests_settings.rs` holds the reading.
 #[test]
-fn a_far_or_unreadable_reset_becomes_a_capacity_wait_when_a_login_could_take_over() {
-    assert_eq!(
-        upgrade(WaitFor::Skip(NoWait::ResetTooFar), SEEN_FAR, || true),
-        WaitFor::Capacity {
-            harness: Harness::Claude,
-            reset: Some(NOW + 86_400)
-        }
-    );
-    assert_eq!(
-        upgrade(WaitFor::Skip(NoWait::NoReset), SEEN_NONE, || true),
-        WaitFor::Capacity {
-            harness: Harness::Claude,
-            reset: None
-        }
-    );
+fn issue_2911_the_floor_is_two_poll_intervals() {
+    assert_eq!(MIN_WAIT_SECS, 60);
 }
 
 #[test]
-fn no_login_to_take_over_keeps_the_skip() {
-    for why in [NoWait::ResetTooFar, NoWait::NoReset] {
-        assert_eq!(
-            upgrade(WaitFor::Skip(why), SEEN_FAR, || false),
-            WaitFor::Skip(why)
-        );
+fn issue_2911_every_plan_a_limit_produces_ends_strictly_after_now() {
+    // The reset rows a limit can reach: `wait_for_message` only builds a
+    // reset wait from a reset strictly ahead of `now` and inside five hours,
+    // and every other limit is a capacity or login-change wait.
+    let maxes = [None, Some(MIN_WAIT_SECS), Some(600), Some(21_600)];
+    for max in maxes {
+        for ahead in [1i64, 60, 1800, FIVE_HOURS] {
+            let got = plan(NOW, NOW + ahead, max, None);
+            assert!(
+                got.until > NOW,
+                "reset {ahead}s ahead, max {max:?}: {got:?}"
+            );
+        }
+        for reset in [None, Some(NOW - 86_400), Some(NOW + 7 * 86_400)] {
+            let got = plan_capacity(NOW, reset, max, None);
+            assert!(got.until > NOW, "capacity, reset {reset:?}, max {max:?}");
+        }
+        let got = plan_login_change(NOW, max, None);
+        assert!(got.until > NOW, "login change, max {max:?}");
     }
 }
 
 #[test]
-fn nothing_seen_keeps_the_skip_even_with_a_login_to_take_over() {
-    // A spend limit reports nothing as seen, so a stated weekly reset stays
-    // `reset_too_far` (D3).
+fn issue_2911_only_the_step_timeout_may_end_a_wait_at_once() {
+    let step = Some((NOW - 5000, 1000));
     assert_eq!(
-        upgrade(WaitFor::Skip(NoWait::ResetTooFar), None, || true),
-        WaitFor::Skip(NoWait::ResetTooFar)
+        (
+            plan(NOW, NOW + 1800, None, step).bound,
+            plan_capacity(NOW, None, None, step).bound,
+            plan_login_change(NOW, None, step).bound,
+        ),
+        (Bound::StepTimeout, Bound::StepTimeout, Bound::StepTimeout)
     );
-}
-
-#[test]
-fn only_a_far_or_unreadable_reset_is_upgraded() {
-    for why in [
-        NoWait::NoLimitMessage,
-        NoWait::SpendLimit,
-        NoWait::PipedPrompt,
+    for got in [
+        plan(NOW, NOW + 1800, None, step),
+        plan_capacity(NOW, None, None, step),
+        plan_login_change(NOW, None, step),
     ] {
-        assert_eq!(
-            upgrade(WaitFor::Skip(why), SEEN_FAR, || true),
-            WaitFor::Skip(why),
-            "{why:?}"
-        );
+        assert_eq!(got.until, NOW, "{got:?}");
     }
 }
 
+/// A reset already behind the clock never reaches [`plan`]: it is a capacity
+/// wait before it gets there. The floor here is the backstop, so that a
+/// caller this file cannot see still cannot plan a wait of no length.
 #[test]
-fn a_reset_wait_is_never_upgraded() {
-    let near = WaitFor::Reset {
-        harness: Harness::Claude,
-        reset: NOW + 1800,
-    };
-    assert_eq!(upgrade(near, SEEN_FAR, || true), near);
-}
-
-#[test]
-fn the_takeover_check_runs_only_for_a_limit_that_qualifies() {
-    let calls = std::cell::Cell::new(0);
-    let check = || {
-        calls.set(calls.get() + 1);
-        true
-    };
-    let near = WaitFor::Reset {
-        harness: Harness::Claude,
-        reset: NOW + 1800,
-    };
-    upgrade(near, SEEN_FAR, check);
-    upgrade(WaitFor::Skip(NoWait::ResetTooFar), None, check);
-    upgrade(WaitFor::Skip(NoWait::PipedPrompt), SEEN_FAR, check);
-    assert_eq!(
-        calls.get(),
-        0,
-        "no store read for a limit that cannot qualify"
-    );
-    upgrade(WaitFor::Skip(NoWait::ResetTooFar), SEEN_FAR, check);
-    assert_eq!(calls.get(), 1);
+fn a_reset_at_or_before_now_is_still_floored_at_the_margin() {
+    for reset in [NOW, NOW - 300, i64::MIN] {
+        let got = p(reset, None, None);
+        assert_eq!(
+            (got.until, got.bound, got.reset),
+            (NOW + MARGIN, Bound::ResetMargin, Some(reset))
+        );
+    }
 }
 
 // --- plan_capacity (issue #1801) -----------------------------------------
@@ -344,12 +483,6 @@ fn a_tie_on_a_capacity_wait_is_named_max_wait() {
 }
 
 #[test]
-fn a_zero_maximum_is_an_immediate_capacity_deadline() {
-    let got = plan_capacity(NOW, None, Some(0), None);
-    assert_eq!((got.until, got.bound), (NOW, Bound::MaxWait));
-}
-
-#[test]
 fn extreme_capacity_inputs_saturate_without_panicking() {
     let got = plan_capacity(NOW, None, Some(u64::MAX), None);
     assert_eq!(got.until, i64::MAX, "no overflow, no ceiling");
@@ -362,7 +495,7 @@ fn extreme_capacity_inputs_saturate_without_panicking() {
         Some((i64::MAX, u64::MAX)),
     );
     assert!(got.until >= i64::MAX - 10);
-    let got = plan_capacity(i64::MIN, None, Some(0), Some((i64::MIN, 1)));
+    let got = plan_capacity(i64::MIN, None, Some(MIN_WAIT_SECS), Some((i64::MIN, 1)));
     assert_eq!(got.until, i64::MIN, "never earlier than now");
 }
 
@@ -405,11 +538,15 @@ fn the_capacity_default_does_not_bound_a_reset_wait() {
     );
 }
 
-// V1: one second of maximum is one second of wait, and the largest value
-// the schema accepts saturates rather than wrapping below now.
+// V1: the shortest length the setting can ask for is one wait of that
+// length, and the largest value the schema accepts saturates rather than
+// wrapping below now.
 #[test]
 fn capacity_maximum_boundaries() {
-    assert_eq!(plan_capacity(NOW, None, Some(1), None).until, NOW + 1);
+    assert_eq!(
+        plan_capacity(NOW, None, Some(MIN_WAIT_SECS), None).until,
+        NOW + i64::try_from(MIN_WAIT_SECS).unwrap()
+    );
     let big = u64::try_from(i64::MAX).unwrap();
     for max in [big - 1, big, big + 1] {
         let got = plan_capacity(NOW, None, Some(max), None);
@@ -454,347 +591,21 @@ fn a_capacity_wait_ends_at_the_failed_logins_reset_before_the_maximum() {
     );
 }
 
-// --- upgrade_passed_reset (issue #2857) ----------------------------------
-//
-// The retry a wait earned met a usage-limit message whose stated reset the
-// clock has already passed. A reset wait for it would end the moment it began
-// and spend none of the budget, and a limit after a wait must go back into a
-// wait. A reset in the past shows the stated reset cannot be relied on; it does
-// not show that no wait is owed. The wait is planned from capacity instead,
-// which keeps it non-zero and so keeps the budget a bound on the chain.
-//
-// The rule is `upgrade_passed_reset(w, seen, reentry_refused, now)`: `seen`
-// (the limit as read, `None` for a spend limit) is its gate, and
-// `reentry_refused` the narrowing to a retry the ordinary one-wait-per-login
-// rule would have refused.
-
-fn reset_wait(reset: i64) -> WaitFor {
-    WaitFor::Reset {
-        harness: Harness::Claude,
-        reset,
-    }
-}
-
-fn capacity_wait(reset: i64) -> WaitFor {
-    WaitFor::Capacity {
-        harness: Harness::Claude,
-        reset: Some(reset),
-    }
-}
-
-fn seen_at(reset: i64) -> Option<(Harness, Option<i64>)> {
-    Some((Harness::Claude, Some(reset)))
-}
-
+/// Why a passed reset is a capacity wait and not a reset wait: the plan the
+/// capacity route gives has real length, so a chain of limits is paced.
 #[test]
-fn a_reset_the_clock_has_passed_on_a_refused_re_entry_becomes_a_capacity_wait() {
-    // The stated reset is kept: the `start` line prints it, and a reader of the
-    // log can then see what the message claimed.
-    for reset in [
-        NOW,
-        NOW - 1,
-        NOW - 120,
-        NOW - 599,
-        NOW - 86_400,
-        1,
-        0,
-        i64::MIN,
-    ] {
-        assert_eq!(
-            upgrade_passed_reset(reset_wait(reset), seen_at(reset), true, NOW),
-            capacity_wait(reset),
-            "reset {reset}"
-        );
-    }
-}
-
-#[test]
-fn the_boundary_is_the_clock_itself() {
-    assert_eq!(
-        upgrade_passed_reset(reset_wait(NOW), seen_at(NOW), true, NOW),
-        capacity_wait(NOW),
-        "a reset at now has passed: a wait for it ends at once"
-    );
-    for ahead in [1, 60, 1800, FIVE_HOURS] {
-        let reset = NOW + ahead;
-        assert_eq!(
-            upgrade_passed_reset(reset_wait(reset), seen_at(reset), true, NOW),
-            reset_wait(reset),
-            "a reset {ahead}s ahead is an ordinary reset wait"
-        );
-    }
-}
-
-#[test]
-fn a_passed_reset_on_a_refused_re_entry_is_a_capacity_wait_with_no_login_to_take_over() {
-    // No login is asked about: a re-entry must go back into a wait, and the
-    // budget bounds the wait when nothing else ends it. Where a login could
-    // take over, the capacity wait ends early on its reading, as it always did.
-    let w = reset_wait(NOW - 120);
-    assert_eq!(
-        upgrade_passed_reset(w, seen_at(NOW - 120), true, NOW),
-        capacity_wait(NOW - 120),
-        "a limit after a wait does not end the step"
-    );
-}
-
-#[test]
-fn only_a_refused_re_entry_for_a_passed_reset_is_upgraded() {
+fn issue_2911_the_wait_for_a_passed_reset_has_real_length() {
     let past = NOW - 120;
-    // A retry the ordinary rule would not refuse is a login's first wait and
-    // keeps its grace: nothing to lift.
-    assert_eq!(
-        upgrade_passed_reset(reset_wait(past), seen_at(past), false, NOW),
-        reset_wait(past),
-        "not a refused re-entry"
-    );
-    // Only a reset wait is upgraded; every other shape passes through.
-    let others = [
-        capacity_wait(past),
-        WaitFor::Capacity {
-            harness: Harness::Claude,
-            reset: None,
-        },
-        WaitFor::LoginChange {
-            harness: Harness::Claude,
-        },
-        WaitFor::Skip(NoWait::NoLimitMessage),
-        WaitFor::Skip(NoWait::SpendLimit),
-        WaitFor::Skip(NoWait::NoReset),
-        WaitFor::Skip(NoWait::ResetTooFar),
-        WaitFor::Skip(NoWait::PipedPrompt),
-    ];
-    for w in others {
-        assert_eq!(
-            upgrade_passed_reset(w, seen_at(past), true, NOW),
-            w,
-            "{w:?}"
-        );
-    }
-}
-
-/// An organisation spend limit that also states a session reset arrives as a
-/// reset wait, because `wait_for_message` waits out the session limit it
-/// names. Another login of the same organisation does not lift the spend limit
-/// (#2731), so it must never become a capacity wait, whatever else is true.
-/// `seen` is `None` for a spend limit, and that is the whole gate.
-#[test]
-fn a_spend_limit_is_never_made_a_capacity_wait() {
-    let past = NOW - 120;
-    assert_eq!(
-        upgrade_passed_reset(reset_wait(past), None, true, NOW),
-        reset_wait(past),
-        "a spend limit that states a session reset the clock has passed"
-    );
-    assert_eq!(
-        upgrade_passed_reset(WaitFor::Skip(NoWait::SpendLimit), None, true, NOW),
-        WaitFor::Skip(NoWait::SpendLimit),
-        "a spend limit that states no reset"
-    );
-}
-
-#[test]
-fn a_reset_at_either_end_of_the_clock_is_compared_and_never_subtracted() {
-    // `now - reset` would overflow for these; the rule compares and nothing else.
-    assert_eq!(
-        upgrade_passed_reset(reset_wait(i64::MAX), seen_at(i64::MAX), true, i64::MAX),
-        capacity_wait(i64::MAX)
-    );
-    assert_eq!(
-        upgrade_passed_reset(reset_wait(i64::MIN), seen_at(i64::MIN), true, i64::MAX),
-        capacity_wait(i64::MIN)
-    );
-    assert_eq!(
-        upgrade_passed_reset(reset_wait(i64::MAX), seen_at(i64::MAX), true, 0),
-        reset_wait(i64::MAX),
-        "a reset far ahead is not passed"
-    );
-    assert_eq!(
-        upgrade_passed_reset(reset_wait(i64::MAX), seen_at(i64::MAX), true, i64::MIN),
-        reset_wait(i64::MAX)
-    );
-}
-
-/// Why the rule exists. A reset wait for a passed reset has a deadline of now,
-/// so a chain of them spends nothing and the budget bounds nothing. The
-/// capacity wait it becomes is planned from the budget the step has left, so
-/// each one is non-zero and the budget does bound the chain.
-#[test]
-fn the_capacity_wait_for_a_passed_reset_is_not_a_zero_length_wait() {
-    let past = NOW - 120;
-    let reset_plan = plan(NOW, past, Some(600), None);
-    assert!(
-        reset_plan.ends_at_once(NOW),
-        "the wait this replaces: until {} is now",
-        reset_plan.until
-    );
-    let WaitFor::Capacity { reset, .. } =
-        upgrade_passed_reset(reset_wait(past), seen_at(past), true, NOW)
+    let WaitFor::Capacity { reset, why, .. } = wait_for(SESSION.as_bytes(), b"", LA_1300 + 120)
     else {
-        panic!("a passed reset on a refused re-entry is a capacity wait");
+        panic!("a passed reset is a capacity wait");
     };
-    for left in [1u64, 30, 600, 3480] {
-        let got = plan_capacity(NOW, reset, Some(left), None);
-        assert!(!got.ends_at_once(NOW), "{left}s left: {got:?}");
-        assert_eq!(
-            (got.until, got.bound, got.kind, got.reset),
-            (
-                NOW + i64::try_from(left).unwrap(),
-                Bound::MaxWait,
-                PlanKind::Capacity,
-                Some(past)
-            ),
-            "the passed reset adds no deadline; the budget left sets it"
-        );
+    assert_eq!(why, Waiting::PassedReset);
+    for max in [Some(MIN_WAIT_SECS), Some(600), Some(21_600), None] {
+        let got = plan_capacity(NOW, reset, max, None);
+        assert!(got.until > NOW, "max {max:?}: {got:?}");
     }
-    let got = plan_capacity(NOW, reset, Some(3480), Some((NOW - 100, 1000)));
-    assert_eq!(
-        (got.until, got.bound),
-        (NOW + 840, Bound::StepTimeout),
-        "the step timeout still clamps it"
-    );
-}
-
-/// What the supervisor does with a usage limit on the retry, in the order it
-/// does it: `wait_for_message`, then `upgrade_passed_reset`, `upgrade`,
-/// `upgrade_spend`. One row per shape of limit the docs table names.
-fn at_the_call_site(
-    text: &str,
-    now: i64,
-    reentry_refused: bool,
-    takeover: bool,
-    rotator: bool,
-) -> WaitFor {
-    let message = limit_patterns::limit_message(text.as_bytes(), b"", now);
-    let wait = wait_for_message(message, now);
-    let seen = message.filter(|m| !m.spend).map(|m| (m.harness, m.reset));
-    let spend = message
-        .filter(|m| m.spend && m.reset.is_none())
-        .map(|m| m.harness);
-    let wait = upgrade_passed_reset(wait, seen, reentry_refused, now);
-    let wait = upgrade(wait, seen, || takeover);
-    upgrade_spend(wait, spend, || rotator)
-}
-
-#[test]
-fn each_shape_of_limit_on_the_retry_gets_the_documented_wait() {
-    // 13:02: the session limit's "1pm" is two minutes ago, which is inside the
-    // ten minutes a clock time is still read as today.
-    let late = LA_1300 + 120;
-    assert_eq!(
-        wait_for(SESSION.as_bytes(), b"", late),
-        reset_wait(LA_1300),
-        "the precondition: the message states a reset that has passed"
-    );
-    // (what, the limit, a login could take over, a rotator is running, the wait)
-    let rows = [
-        (
-            "a passed reset on a refused re-entry, with a takeover",
-            SESSION,
-            true,
-            true,
-            capacity_wait(LA_1300),
-        ),
-        (
-            "the same with no takeover: still a capacity wait, so the step waits again",
-            SESSION,
-            false,
-            false,
-            capacity_wait(LA_1300),
-        ),
-        (
-            "a spend limit stating the passed session reset, with a takeover and a rotator",
-            SPEND_SESSION,
-            true,
-            true,
-            reset_wait(LA_1300),
-        ),
-        (
-            "a spend limit stating no reset, with a rotator",
-            SPEND,
-            true,
-            true,
-            WaitFor::LoginChange {
-                harness: Harness::Claude,
-            },
-        ),
-        (
-            "a spend limit stating no reset, with no rotator",
-            SPEND,
-            true,
-            false,
-            WaitFor::Skip(NoWait::SpendLimit),
-        ),
-        (
-            "a spend limit stating a weekly reset",
-            SPEND_WEEKLY,
-            true,
-            true,
-            WaitFor::Skip(NoWait::ResetTooFar),
-        ),
-    ];
-    for (what, text, takeover, rotator, expected) in rows {
-        assert_eq!(
-            at_the_call_site(text, late, true, takeover, rotator),
-            expected,
-            "{what}"
-        );
-    }
-    // The ordinary upgrade is unchanged by the new rule in front of it: a
-    // weekly limit and a message with no readable reset are capacity waits.
-    assert!(
-        matches!(
-            at_the_call_site(WEEKLY, late, true, true, true),
-            WaitFor::Capacity { reset: Some(_), .. }
-        ),
-        "a weekly limit"
-    );
-    assert_eq!(
-        at_the_call_site(
-            "You've hit your session limit · try again later",
-            late,
-            true,
-            true,
-            true
-        ),
-        WaitFor::Capacity {
-            harness: Harness::Claude,
-            reset: None
-        },
-        "no readable reset"
-    );
-}
-
-#[test]
-fn a_passed_reset_on_a_login_the_step_has_not_waited_on_keeps_its_grace() {
-    // The retry that landed on a login this step has never waited on is that
-    // login's first wait: the ordinary rule refuses nothing, `reentry_refused`
-    // is false, and the planner's own handling stands (a reset wait that ends
-    // at once and retries).
-    let late = LA_1300 + 120;
-    assert_eq!(
-        at_the_call_site(SESSION, late, false, true, true),
-        reset_wait(LA_1300)
-    );
-}
-
-/// Only the capacity wait a passed-reset re-entry is planned as retries at its
-/// budget's end (issue #2857). Every other plan ends as it always did.
-#[test]
-fn only_a_capacity_wait_for_a_passed_reset_retries_at_its_budget() {
-    let past = NOW - 120;
-    let passed = plan_capacity(NOW, Some(past), Some(600), None);
-    assert!(passed.is_passed_reset_capacity(NOW), "{passed:?}");
-    assert!(
-        !plan_capacity(NOW, Some(NOW + 60), Some(600), None).is_passed_reset_capacity(NOW),
-        "a capacity wait for a reset still ahead"
-    );
-    assert!(
-        !plan_capacity(NOW, None, Some(600), None).is_passed_reset_capacity(NOW),
-        "a capacity wait with no reset"
-    );
-    assert!(
-        !plan(NOW, past, Some(600), None).is_passed_reset_capacity(NOW),
-        "a reset wait for a passed reset ends at once, and is not a capacity wait"
-    );
+    // And the plan a reset wait would have given, had the planner built one:
+    // the margin is what keeps even that above `now`.
+    assert_eq!(plan(NOW, past, None, None).until, NOW + MARGIN);
 }

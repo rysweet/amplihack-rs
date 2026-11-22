@@ -1,12 +1,13 @@
 //! The wait's log lines (issue #1618): `amplihack.recipe.usage_limit_wait`
 //! followed by the event. Built only from static text, integers and parsed
-//! instants, with one exception: the recipe-log `start` line carries the
-//! login being waited on, which [`recipe_line`] re-validates against the
-//! rotator's own name form before it can reach a file (issue #2731).
+//! instants, with one exception: the recipe-log `start` and
+//! `waiting_for_capacity` lines carry the login being waited on, which
+//! [`recipe_line`] re-validates against the rotator's own name form before
+//! it can reach a file (issues #2731, #2911).
 //!
 //! Tested in `tests_log.rs` and `tests_log_recipe.rs`.
 
-use super::plan::{Bound, NoWait};
+use super::plan::{Bound, NoWait, Waiting};
 use super::wait::End;
 use crate::commands::recipe::run::limit_patterns::Harness;
 use chrono::TimeZone;
@@ -83,6 +84,20 @@ pub(super) enum Event {
     Reentered {
         met: Met,
     },
+    /// The step is waiting for capacity, and nothing can be known about
+    /// when the limit lifts (issue #2911). Written immediately before the
+    /// wait's [`Event::Start`], to the step's stderr and to the run's
+    /// recipe log, so an operator reading either can see that the step is
+    /// waiting rather than hung, which login it is on and why the wait has
+    /// no reset to end at.
+    ///
+    /// Every field is a closed set, an integer or a formatted instant: the
+    /// harness's own words reach neither sink.
+    WaitingForCapacity {
+        harness: Harness,
+        why: Waiting,
+        until: i64,
+    },
 }
 
 /// Which limit met the retry a wait earned (issue #2857). A closed set, so
@@ -95,36 +110,37 @@ pub(crate) enum Met {
     RateLimit,
 }
 
-/// Why the step ended on a usage limit after a wait could not lift it.
+/// Why the step ended on a usage limit a wait could not lift.
+///
+/// One reason is left (issue #2911). `capacity_expired`, `spend_limit` and
+/// `already_waited` each ended a run that a limit should only have delayed,
+/// so the paths that wrote them are gone: a capacity wait that reaches its
+/// deadline retries, as does a login-change wait, and no refusal counts a
+/// step's waits. The step timeout is not a limit budget but the recipe
+/// runner's own bound on the step, so it stays.
 #[derive(Clone, Copy)]
 pub(super) enum FailReason {
-    CapacityExpired,
-    /// A login-change wait reached its deadline: no reset lifts an
-    /// organisation spend limit, and no login arrived that might (#2731).
-    SpendLimit,
     StepTimeout,
-    AlreadyWaited,
 }
 
 impl FailReason {
     fn as_str(self) -> &'static str {
         match self {
-            FailReason::CapacityExpired => "capacity_expired",
-            FailReason::SpendLimit => "spend_limit",
             FailReason::StepTimeout => "step_timeout",
-            FailReason::AlreadyWaited => "already_waited",
         }
     }
 }
 
+/// Why no wait was made at all. Neither remaining limit-shaped reason ends
+/// a step: `Cannot` now carries only the two readings that are not limits
+/// ([`NoWait`]).
 #[derive(Clone, Copy)]
 pub(super) enum Skip {
     Disabled,
-    AlreadyWaited,
     NotSupervised,
     /// Off because this is CI and nothing turned it on.
     Ci,
-    /// The limit is not one a wait can outlast.
+    /// The output carries no limit message, or the prompt cannot be replayed.
     Cannot(NoWait),
 }
 
@@ -194,9 +210,38 @@ where
                 start_body(*shape, &who, *reset, *until, *bound, tz)
             ))
         }
+        Event::WaitingForCapacity { why, until, .. } => {
+            let name = account.filter(|n| amplihack_utils::rotator_status::valid_live_name(n));
+            Some(format!(
+                "{PREFIX} {}",
+                capacity_body(
+                    *why,
+                    &format!("account={}", name.unwrap_or(UNKNOWN)),
+                    *until,
+                    tz
+                )
+            ))
+        }
         Event::End(_) | Event::Reentered { .. } => Some(line(e, tz)),
         _ => None,
     }
+}
+
+/// A `waiting_for_capacity` line's body, with `who` naming the harness or
+/// the account, as [`start_body`] does.
+///
+/// The reason comes first, because that is the question an operator finding
+/// a waiting step asks, and it is the field the tests match on.
+fn capacity_body<Z: TimeZone>(why: Waiting, who: &str, until: i64, tz: &Z) -> String
+where
+    Z::Offset: Display,
+{
+    format!(
+        "waiting_for_capacity reason={} {} until={}",
+        why.as_str(),
+        who,
+        fmt_time(until, tz)
+    )
 }
 
 /// The log line for `e`, times in zone `tz`.
@@ -222,11 +267,15 @@ where
         Event::Progress { remaining } => format!("progress remaining={remaining}s"),
         Event::End(end) => format!("end reason={}", end.as_str()),
         Event::Resume { attempt } => format!("resume attempt={attempt}"),
+        Event::WaitingForCapacity {
+            harness,
+            why,
+            until,
+        } => capacity_body(*why, &format!("harness={}", harness.as_str()), *until, tz),
         Event::Skipped(skip) => format!(
             "skipped reason={}",
             match skip {
                 Skip::Disabled => "disabled",
-                Skip::AlreadyWaited => "already_waited",
                 Skip::NotSupervised => "not_supervised",
                 Skip::Ci => "ci",
                 Skip::Cannot(why) => why.as_str(),

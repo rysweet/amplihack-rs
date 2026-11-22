@@ -1133,21 +1133,19 @@ ignored. See the
 **Config key:** [`recipe.usage_limit_max_wait_secs`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
-Upper bound on the time one step spends waiting out usage limits, across
-every wait it makes. For a wait on a reset it only shortens the wait, and `0`
-means no wait but one more attempt; such a wait never lasts longer than five
-hours and 120 seconds. For a
-[capacity wait](./profile-command.md#capacity-wait) on a weekly or
-unreadable reset, or a
-[login-change wait](./profile-command.md#login-change-wait) on an
-organisation spend limit with no reset, it sets the length of the wait, with
-no five-hour ceiling (a capacity wait still ends sooner at the failed login's
-own reset plus 120 s), and `0` means the step ends at once as a usage limit.
+The length of one capacity or login-change wait. It is not a per-step
+budget: a step that meets another limit after a wait waits again for the same
+length, and nothing ends the chain. A wait on a reset ends at the reset (plus
+120 s) and is never longer than five hours and 120 seconds. A
+[capacity wait](./profile-command.md#capacity-wait) for a login with room, and
+a [login-change wait](./profile-command.md#login-change-wait) on an
+organisation spend limit with no reset, last up to this length, with no
+five-hour ceiling; a capacity wait still ends sooner at the failed login's own
+reset plus 120 s.
 
-A step that waits again after its login changes draws on the same budget, so
-a chain of waits across several logins lasts no longer in total than the one
-wait the same step would have made before; see
-[One wait per login](./profile-command.md#one-wait-per-login).
+The length has a floor of 60 seconds. `0` means 60 seconds, not "do not wait";
+set `AMPLIHACK_USAGE_LIMIT_WAIT=false` to turn waiting off. See
+[Usage-limit waits](./usage-limit-waits.md#what-max_wait_secs-means).
 
 The variable may set a value above the default. Overrides the config files;
 empty means unset; an invalid value prints one warning, naming the variable

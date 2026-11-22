@@ -5,6 +5,7 @@
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_settings;`.
 
+use super::plan::MIN_WAIT_SECS;
 use super::settings::{WaitSettings, from_effective};
 use crate::user_config::{LoadCtx, load};
 use std::fs;
@@ -95,11 +96,11 @@ fn the_file_sets_both_keys_and_the_variable_outranks_it() {
     assert_eq!(settings(home.path(), &[], None), file);
     let env = [
         ("AMPLIHACK_USAGE_LIMIT_WAIT", "true"),
-        ("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "30"),
+        ("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "300"),
     ];
     let both = WaitSettings {
         enabled: true,
-        max_wait_secs: Some(30),
+        max_wait_secs: Some(300),
         off_in_ci: false,
     };
     assert_eq!(settings(home.path(), &env, None), both);
@@ -163,9 +164,65 @@ fn an_invalid_maximum_variable_falls_back_to_the_file_then_the_default() {
     assert_eq!(settings(home.path(), &env, None).max_wait_secs, Some(600));
 }
 
+// Issue #2911: the key is the length of *one* wait, not a budget for the
+// whole step, and a configured value below one wait's floor is raised to it
+// rather than dropped. The wait loop polls every 30 seconds, so a shorter
+// wait has no wake condition that could end it: a chain of those is the busy
+// loop the pacing rule exists to prevent.
+//
+// The floor is applied here, where the value is read, so that `lower_only`
+// keeps working. Dropping a too-small value instead would silently raise a
+// project's configured number to the 21 600-second default.
+
 #[test]
-fn a_zero_maximum_is_kept_not_replaced_by_the_default() {
+fn issue_2911_a_length_below_one_poll_interval_is_raised_to_the_floor() {
+    for body in [0u64, 1, 30, 59] {
+        let home = tempfile::tempdir().unwrap();
+        user_file(
+            home.path(),
+            &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
+        );
+        assert_eq!(
+            settings(home.path(), &[], None).max_wait_secs,
+            Some(MIN_WAIT_SECS),
+            "a configured {body}"
+        );
+        let value = body.to_string();
+        let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", value.as_str())];
+        assert_eq!(
+            settings(home.path(), &env, None).max_wait_secs,
+            Some(MIN_WAIT_SECS),
+            "the variable set to {body}"
+        );
+    }
+}
+
+#[test]
+fn issue_2911_a_length_at_or_above_the_floor_is_kept_as_configured() {
+    for body in [MIN_WAIT_SECS, MIN_WAIT_SECS + 1, 600, SIX_HOURS] {
+        let home = tempfile::tempdir().unwrap();
+        user_file(
+            home.path(),
+            &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
+        );
+        assert_eq!(
+            settings(home.path(), &[], None).max_wait_secs,
+            Some(body),
+            "a configured {body}"
+        );
+    }
+}
+
+/// A zero no longer means "do not wait": the way to turn the wait off is
+/// `recipe.usage_limit_wait = false`, and that is unaffected by the floor.
+#[test]
+fn issue_2911_turning_the_wait_off_is_its_own_key() {
     let home = tempfile::tempdir().unwrap();
-    user_file(home.path(), "[recipe]\nusage_limit_max_wait_secs = 0\n");
-    assert_eq!(settings(home.path(), &[], None).max_wait_secs, Some(0));
+    user_file(
+        home.path(),
+        "[recipe]\nusage_limit_wait = false\nusage_limit_max_wait_secs = 0\n",
+    );
+    let got = settings(home.path(), &[], None);
+    assert!(!got.enabled);
+    assert_eq!(got.max_wait_secs, Some(MIN_WAIT_SECS));
 }

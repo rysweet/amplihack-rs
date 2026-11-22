@@ -1,7 +1,9 @@
 //! Issue #1618: how the usage-limit wait ends other than at the reset.
 //!
-//! - AC4: `max_wait_secs = 0` waits zero seconds and still retries once;
-//!   a step timeout of 60 s or less ends the wait at once with no retry.
+//! - AC4: `max_wait_secs = 0` is raised to the 60-second floor and waits
+//!   that long before retrying once (issue #2911: there are no zero-length
+//!   waits any more, and a zero no longer means "do not wait"); a step
+//!   timeout of 60 s or less ends the wait at once with no retry.
 //! - AC5: a login that changes during the wait ends it with
 //!   `login changed`, then the retry runs.
 //!
@@ -12,8 +14,21 @@
 use crate::issue_1618_fixture::{Fixture, WAIT_PREFIX, claude_stdout, describe, events};
 use std::fs;
 
+/// Issue #2911: a configured maximum of zero is raised to the floor of 60
+/// seconds, so it plans a real wait of that length and then retries once.
+///
+/// This used to assert a wait of zero seconds, ending at `TEST_NOW` itself:
+/// a zero was read as "do not wait" in all but name. The floor is applied
+/// where the value is read (`settings::from_effective`, which raises it to
+/// `plan::MIN_WAIT_SECS`), because the wait loop polls every 30 seconds: a
+/// wait shorter than one poll interval has no wake condition that could end
+/// it and would simply return, and a chain of those is the busy loop the
+/// pacing rule exists to prevent. To turn waiting off a config must now set
+/// `recipe.usage_limit_wait = false`; no length means "do not wait".
+///
+/// The fixture's virtual clock keeps the 60-second wait instant in real time.
 #[test]
-fn ac4_a_zero_maximum_waits_zero_seconds_and_retries_once() {
+fn ac4_a_zero_maximum_is_raised_to_the_sixty_second_floor_and_retries_once() {
     let f = Fixture::new();
     let mut c = f.step();
     c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0");
@@ -23,7 +38,7 @@ fn ac4_a_zero_maximum_waits_zero_seconds_and_retries_once() {
         events(&out),
         vec![
             "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 \
-             until=2026-10-18 08:00:00 -07:00 bound=max_wait",
+             until=2026-10-18 08:01:00 -07:00 bound=max_wait",
             "end reason=max reached",
             "resume attempt=2",
         ]

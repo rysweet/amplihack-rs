@@ -6,7 +6,7 @@
 
 use super::Met;
 use super::events::{Event, FailReason, Shape, Skip, line};
-use super::plan::{Bound, NoWait};
+use super::plan::{Bound, NoWait, Waiting};
 use super::wait::End;
 use crate::commands::recipe::run::limit_patterns::{self, Harness};
 use crate::commands::recipe::run::{FailureClass, classify_failure_text};
@@ -81,27 +81,13 @@ fn every_other_event_has_its_documented_fields() {
         (Event::Resume { attempt: 2 }, "resume attempt=2"),
         (Event::Skipped(Skip::Disabled), "skipped reason=disabled"),
         (
-            Event::Skipped(Skip::AlreadyWaited),
-            "skipped reason=already_waited",
-        ),
-        (
             Event::Skipped(Skip::NotSupervised),
             "skipped reason=not_supervised",
         ),
-        (
-            Event::Skipped(Skip::Cannot(NoWait::SpendLimit)),
-            "skipped reason=spend_limit",
-        ),
-        // Rendering only: the upgrade to a capacity wait is decided before
-        // logging and is tested in tests_plan.rs.
-        (
-            Event::Skipped(Skip::Cannot(NoWait::ResetTooFar)),
-            "skipped reason=reset_too_far",
-        ),
-        (
-            Event::Skipped(Skip::Cannot(NoWait::NoReset)),
-            "skipped reason=no_reset",
-        ),
+        // Issue #2911: `spend_limit`, `reset_too_far` and `no_reset` are no
+        // longer skips. They name why a *wait* has no reset to end on, on
+        // the `waiting_for_capacity` line below, so the tokens an operator
+        // greps for still appear and now mean "waiting" rather than "ended".
         (
             Event::Skipped(Skip::Cannot(NoWait::NoLimitMessage)),
             "skipped reason=no_limit_message",
@@ -117,16 +103,8 @@ fn every_other_event_has_its_documented_fields() {
         ),
         (Event::End(End::OtherCapacity), "end reason=login capacity"),
         (
-            Event::Failed(FailReason::CapacityExpired),
-            "failed reason=capacity_expired: usage limit not lifted",
-        ),
-        (
             Event::Failed(FailReason::StepTimeout),
             "failed reason=step_timeout: usage limit not lifted",
-        ),
-        (
-            Event::Failed(FailReason::AlreadyWaited),
-            "failed reason=already_waited: usage limit not lifted",
         ),
     ];
     for (event, rest) in cases {
@@ -181,6 +159,81 @@ fn a_capacity_start_line_with_no_reset_says_none() {
     );
 }
 
+// --- waiting_for_capacity (issue #2911) ----------------------------------
+//
+// A wait that has no reset it can end on says so plainly, on stderr and in
+// the run's recipe log, naming the harness or the login and why. Such a step
+// may wait a long time, and an operator reading either sink must be able to
+// see that it is waiting for capacity rather than hung. The reason comes
+// first, because that is the question a reader of a waiting step asks.
+
+fn waiting(why: Waiting, until: i64) -> Event {
+    Event::WaitingForCapacity {
+        harness: Harness::Claude,
+        why,
+        until,
+    }
+}
+
+#[test]
+fn issue_2911_the_waiting_line_names_the_reason_first_then_the_harness() {
+    assert_eq!(
+        line(&waiting(Waiting::ResetTooFar, T0 + 21_600), &LA),
+        "amplihack.recipe.usage_limit_wait waiting_for_capacity reason=reset_too_far \
+         harness=claude until=2026-10-18 14:00:00 -07:00"
+    );
+}
+
+#[test]
+fn issue_2911_each_reason_has_its_own_token() {
+    let rows = [
+        (Waiting::ResetTooFar, "reset_too_far"),
+        (Waiting::NoReset, "no_reset"),
+        (Waiting::SpendLimit, "spend_limit"),
+        (Waiting::Credits, "credits"),
+        (Waiting::PassedReset, "passed_reset"),
+    ];
+    for (why, token) in rows {
+        let l = line(&waiting(why, T0), &LA);
+        assert!(
+            l.contains(&format!("waiting_for_capacity reason={token} ")),
+            "{l}"
+        );
+    }
+}
+
+/// The reason set is closed and the line is built from fixed text, so no
+/// harness output can reach either sink through it, however extreme the
+/// instant.
+#[test]
+fn issue_2911_the_waiting_line_is_one_printable_ascii_line_for_any_instant() {
+    for until in [i64::MIN, 0, T0, i64::MAX] {
+        for why in [
+            Waiting::ResetTooFar,
+            Waiting::NoReset,
+            Waiting::SpendLimit,
+            Waiting::Credits,
+            Waiting::PassedReset,
+        ] {
+            let l = line(&waiting(why, until), &LA);
+            assert!(l.starts_with(PREFIX), "{l}");
+            assert!(
+                l.bytes().all(|b| (0x20..0x7f).contains(&b)),
+                "non-printable byte in {l:?}"
+            );
+            assert!(!l.contains('/'), "{l}");
+        }
+    }
+}
+
+/// It is not itself a limit message, so a step reading its own log back
+/// cannot start a wait from it.
+#[test]
+fn issue_2911_the_waiting_line_starts_no_wait_of_its_own() {
+    let l = line(&waiting(Waiting::Credits, T0), &LA);
+    assert_eq!(limit_patterns::limit_message(l.as_bytes(), b"", T0), None);
+}
+
 // Issue #2857: a re-entry on a usage limit that states a reset the clock has
 // already passed is a capacity wait, and its `start` line prints that reset.
 // The reset is whatever the message stated, so it can be any past instant: the
@@ -218,11 +271,11 @@ fn issue_2857_an_instant_the_zone_cannot_write_is_written_as_seconds() {
     assert!(l.is_ascii() && !l.contains('\n'), "{l:?}");
 }
 
-const FAILED: [FailReason; 3] = [
-    FailReason::CapacityExpired,
-    FailReason::StepTimeout,
-    FailReason::AlreadyWaited,
-];
+/// Issue #2911: one reason is left. `capacity_expired`, `spend_limit` and
+/// `already_waited` each ended a run that a limit should only have delayed,
+/// so the paths that wrote them are gone. The step timeout is the recipe
+/// runner's own bound on the step and not a limit budget, so it stays.
+const FAILED: [FailReason; 1] = [FailReason::StepTimeout];
 
 #[test]
 fn the_closing_line_is_classified_as_a_usage_limit() {
@@ -246,6 +299,14 @@ fn the_closing_line_is_not_a_limit_message_so_it_starts_no_wait() {
 
 /// AC4: a six-hour wait writes 360 progress lines, which push Claude's own
 /// message out of the runner's 40-line evidence tail.
+///
+/// Issue #2911 changed what such a wait does when it reaches its deadline:
+/// it retries instead of writing `failed reason=capacity_expired`, so the
+/// sequence this test follows is now a six-hour wait, a retry, a second
+/// limit, a second wait, and the step's own timeout ending the chain. That
+/// closing line is the only one left in the tail that names the limit, and
+/// the step is still classed `usage_limit` rather than `indeterminate`, so
+/// auto-drive stops as USAGE_LIMIT and not as STUCK (#1801).
 #[test]
 fn the_class_survives_a_real_number_of_progress_lines() {
     let mut lines = vec![
@@ -260,10 +321,51 @@ fn the_class_survives_a_real_number_of_progress_lines() {
             &LA,
         ));
     }
+    // The wait's deadline arrives with nothing lifted, so the step retries.
     lines.push(line(&Event::End(End::CapacityExpired), &LA));
-    lines.push(line(&Event::Failed(FailReason::CapacityExpired), &LA));
+    lines.push(line(&Event::Resume { attempt: 2 }, &LA));
+    // The retry meets the limit again and waits again, this time bounded by
+    // the step's own timeout, which is what finally ends the step.
+    lines.push(line(&waiting(Waiting::ResetTooFar, T0 + 43_200), &LA));
+    lines.push(line(
+        &capacity_start(None, T0 + 43_200, Bound::StepTimeout),
+        &LA,
+    ));
+    for k in 1..=60u64 {
+        lines.push(line(
+            &Event::Progress {
+                remaining: 21_600 - k * 60,
+            },
+            &LA,
+        ));
+    }
+    lines.push(line(&Event::End(End::StepTimeout), &LA));
+    lines.push(line(&Event::Failed(FailReason::StepTimeout), &LA));
     let tail = lines[lines.len() - 40..].join("\n");
+    assert!(
+        !tail.contains("weekly limit"),
+        "the harness's own message is long out of the tail"
+    );
     assert_eq!(classify_failure_text(&tail).0, FailureClass::UsageLimit);
+}
+
+/// The other half of the same change: while the chain is still running, the
+/// step has not failed, and the lines it is writing are not a failure to
+/// classify. A capacity wait reaching its deadline is followed by `resume`,
+/// so nothing in that tail claims the step ended on a limit.
+#[test]
+fn issue_2911_a_wait_that_retries_writes_no_closing_line() {
+    let lines = [
+        line(&capacity_start(None, T0 + 21_600, Bound::MaxWait), &LA),
+        line(&Event::Progress { remaining: 60 }, &LA),
+        line(&Event::End(End::CapacityExpired), &LA),
+        line(&Event::Resume { attempt: 2 }, &LA),
+    ];
+    let tail = lines.join("\n");
+    assert!(
+        !tail.contains("failed reason="),
+        "a limit that is being waited out ends nothing: {tail}"
+    );
 }
 
 /// A reset wait ended by the step timeout also closes with the failed line,
@@ -307,7 +409,12 @@ fn no_event_can_hold_a_name_a_path_or_an_address() {
     let events = [
         capacity_start(None, T0, Bound::MaxWait),
         Event::End(End::OtherCapacity),
-        Event::Failed(FailReason::CapacityExpired),
+        Event::Failed(FailReason::StepTimeout),
+        Event::WaitingForCapacity {
+            harness: Harness::Claude,
+            why: Waiting::ResetTooFar,
+            until: T0 + 21_600,
+        },
     ];
     for e in &events {
         let l = line(e, &LA);

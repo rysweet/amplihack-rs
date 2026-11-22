@@ -519,6 +519,8 @@ mod tests_failure_class_1437;
 #[cfg(test)]
 mod tests_format;
 #[cfg(test)]
+mod tests_limit_kind;
+#[cfg(test)]
 mod tests_limit_patterns;
 #[cfg(test)]
 mod tests_limit_reset;

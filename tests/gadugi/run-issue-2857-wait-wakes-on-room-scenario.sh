@@ -32,21 +32,38 @@
 # real rotator or the network.
 #
 # A first limit message carries its reset as an epoch five minutes in the
-# past, so the wait it plans ends the moment it starts and the scenario does
-# not sleep. The debug-only clock seams of the Rust tests are deliberately not
+# past. The debug-only clock seams of the Rust tests are deliberately not
 # used: CI runs this against the release binary it installs, where those seams
 # are compiled out. The two ends of a wait that has nothing to wait for are
-# then told apart by their reason: `login changed` is the early wake,
-# `reset reached` is the wait that ran to its own end.
+# told apart by their reason: `login changed` is the early wake, and
+# `capacity expired` is the wait that ran to its own end.
 #
 # A second limit repeats the first one's reset, already behind the clock, as a
 # harness does when it repeats the window that has just turned over. A limit
-# after a wait may not end the step, so the binary plans the re-entry as a
-# capacity wait on the budget the step has left. With no login to take over,
-# nothing ends that wait early, so the budget ends it. The step's own budget is
-# lowered by AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS below, to two seconds, so the
-# wait ends on its maximum rather than after hours. The budget never shortens
-# a wait whose deadline has already passed, so case B is unaffected.
+# after a wait may not end the step, so the binary waits again. With no login
+# to take over, nothing ends that wait early, so it runs its own length.
+#
+# Issue #2911 changed two things this scenario depends on, and it is written
+# against the new behaviour:
+#
+#   * A reset already behind the clock is a wait for capacity, not a reset
+#     wait that returns the instant it starts. There is no zero-length wait
+#     left anywhere: every plan a limit produces ends strictly after `now`,
+#     which is the whole of the pacing rule that replaced the per-step budget.
+#     So a wait that runs to its end now ends `capacity expired`, where before
+#     it ended `reset reached`.
+#   * AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS is the length of one wait, not a
+#     budget for the step, and it is floored at 60 seconds, because the wait
+#     loop polls every 30 seconds and a shorter wait has no wake condition
+#     that could end it. The two seconds this scenario used to ask for would
+#     be raised to 60 in any case, so it asks for 60 plainly.
+#
+# The cost of that floor is wall clock, and it falls on case A, whose point is
+# that a second limit really does wait: its two waits take a minute each. Case
+# B needs only to tell an early wake from no wake, so its held-back cases are
+# bounded by the step timeout instead and stay instant (see case B below). The
+# scenario therefore takes a little over two minutes, inside the timeout the
+# gadugi wrapper already allows.
 #
 # Every scenario command runs under `env -i` with an explicit allowlist (see
 # scenario_env below): no token, key or setting from the caller's environment
@@ -117,13 +134,15 @@ mkdir -p -- "$HOME_DIR/.claude" "$CONFIG" "$RECORDS" "$TOOLS" "$RUNDIR" "$WORK/t
 mkdir -m 700 -- "$PROFILES" "$PROFILES/.auto-switch.d" "$LEDGER_DIR" \
   || { echo "FAIL: cannot create the profile root"; echo "SCENARIO_FAILED"; exit 1; }
 
-# A reset five minutes ago: the wait has a deadline it has already passed, so
-# it starts, ends and resumes without the scenario sleeping.
+# A reset five minutes ago: the limit states a reset the clock has passed, so
+# the step waits for capacity rather than for a time that has been and gone.
 NOW="$(date +%s)"
 LIMIT_EPOCH=$(( NOW - 300 ))
-# The step's whole waiting budget, lowered from its 21600-second default so the
-# re-entry's capacity wait ends after two seconds on `bound=max_wait`.
-MAX_WAIT_SECS=2
+# The length of one wait, lowered from its 21600-second default so a wait that
+# nothing ends early ends on `bound=max_wait` in a minute rather than in six
+# hours. 60 is the floor the binary applies (two poll intervals of the wait
+# loop), so asking for less would be raised to it anyway (issue #2911).
+MAX_WAIT_SECS=60
 
 # scenario_env <config-dir|home> <command...>: runs the command with only the
 # variables below.
@@ -135,8 +154,11 @@ MAX_WAIT_SECS=2
 #   AMPLIHACK_CLAUDE_BINARY_PATH        the stub agent
 #   RECORD_DIR, LEDGER_DIR, LEDGER_BODY,
 #   LIMIT_CALLS, LIMIT_EPOCH            the stub's own inputs
-#   AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS the step's waiting budget, lowered so
-#                                       a capacity wait ends in seconds
+#   AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS the length of one wait, lowered to the
+#                                       binary's own 60-second floor
+#   AMPLIHACK_STEP_TIMEOUT              the step's own bound, set only by the
+#                                       case B cases that need one; empty
+#                                       reads as unset, as it does anywhere
 #   AMPLIHACK_NONINTERACTIVE            the shape a recipe step runs in
 #   AMPLIHACK_NO_FRESHNESS_CHECK,
 #   AMPLIHACK_SKIP_AUTO_INSTALL,
@@ -164,6 +186,7 @@ scenario_env() {
     LIMIT_CALLS="${LIMIT_CALLS:-1}" \
     LIMIT_EPOCH="$LIMIT_EPOCH" \
     AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS="$MAX_WAIT_SECS" \
+    AMPLIHACK_STEP_TIMEOUT="${STEP_TIMEOUT:-}" \
     AMPLIHACK_NONINTERACTIVE=1 \
     AMPLIHACK_NO_FRESHNESS_CHECK=1 \
     AMPLIHACK_SKIP_AUTO_INSTALL=1 \
@@ -231,13 +254,20 @@ write_initial_ledger() {
 cd -- "$RUNDIR" || { echo "FAIL: cannot enter the working folder"; echo "SCENARIO_FAILED"; exit 1; }
 
 # --- case A: a limit on the retry a wait earned is waited for again ---------
-# Both attempts report the same reset, already past. The first wait ends
-# `reset reached` at once, which says try now; the retry meets a limit, so the
-# signal was wrong. Before #2857 the step ended there with
+# Both attempts report the same reset, already past. That reset is one the step
+# cannot use, so each limit becomes a wait for capacity: the wait announces
+# itself as `waiting_for_capacity reason=passed_reset`, runs its own length,
+# ends `capacity expired` and retries. The retry meets a limit, so the wait
+# that had just ended was not the end of the matter.
+#
+# Before #2857 the step ended on the second limit with
 # `skipped reason=already_waited`, because it had already waited on this login.
-# Now it waits again, writes one `reentered` line before the second `start`,
-# ends that wait on the lowered budget (`bound=max_wait`), and the third
-# attempt succeeds.
+# #2857 made it wait again but left the refusal in place for a third, and
+# #2911 removed the refusal and the per-step budget entirely: two waits start,
+# one `reentered` line is written before the second `start`, nothing is ever
+# refused, no `failed` line is written, and the third attempt succeeds.
+#
+# Each wait runs for MAX_WAIT_SECS, so this case takes about two minutes.
 reset_records
 LIMIT_CALLS=2 LEDGER_BODY="" scenario_env config-dir "$BIN" claude --subprocess-safe -- -p step \
   >"$WORK/a.out" 2>"$WORK/a.err" </dev/null && A_RC=0 || A_RC=$?
@@ -245,6 +275,14 @@ A_CALLS="$(cat "$RECORDS/count.0" 2>/dev/null || echo 0)"
 A_STARTS="$(count_in 'amplihack.recipe.usage_limit_wait start reason=usage_limit' "$WORK/a.err")"
 A_REENTERED="$(count_in 'amplihack.recipe.usage_limit_wait reentered met=usage_limit$' "$WORK/a.err")"
 A_REFUSED="$(count_in 'already_waited' "$WORK/a.err")"
+# Issue #2911: the operator-visible line a wait with no reset to end on
+# writes, with its reason from the closed set. Two waits, so two lines.
+A_WAITING="$(count_in 'amplihack.recipe.usage_limit_wait waiting_for_capacity reason=passed_reset ' "$WORK/a.err")"
+# Nothing a limit does ends the step any more. Only the step's own timeout,
+# a stop signal or the end of its session writes a closing line, and none of
+# the three happens here.
+A_FAILED="$(count_in 'amplihack.recipe.usage_limit_wait failed reason=' "$WORK/a.err")"
+A_SKIPPED="$(count_in 'amplihack.recipe.usage_limit_wait skipped reason=' "$WORK/a.err")"
 A_ORDER="$(grep -n 'amplihack.recipe.usage_limit_wait \(resume attempt=2\|reentered \|start \)' "$WORK/a.err" 2>/dev/null \
   | sed 's/^[0-9]*:amplihack.recipe.usage_limit_wait //' | awk '{print $1}' | tr '\n' ' ' || true)"
 A_DIAG="rc=$A_RC calls=$A_CALLS a.err tail: $(tail -n 12 "$WORK/a.err" 2>/dev/null | tr '\n' ' ')"
@@ -264,6 +302,16 @@ if [ "$A_REENTERED" = 1 ] && [ "$A_ORDER" = "start resume reentered start " ]; t
 else
   fl reentry_reported_once_before_the_second_start "reentered=$A_REENTERED order='${A_ORDER}', want 1 and 'start resume reentered start '; $A_DIAG"
 fi
+if [ "$A_WAITING" = 2 ]; then
+  pass each_wait_says_it_is_waiting_for_capacity "two waiting_for_capacity reason=passed_reset lines, one per wait"
+else
+  fl each_wait_says_it_is_waiting_for_capacity "waiting_for_capacity=$A_WAITING, want 2; $A_DIAG"
+fi
+if [ "$A_FAILED" = 0 ] && [ "$A_SKIPPED" = 0 ]; then
+  pass no_limit_ended_the_step "no failed and no skipped line: a limit only delays a step (#2911)"
+else
+  fl no_limit_ended_the_step "failed=$A_FAILED skipped=$A_SKIPPED, want 0/0; $A_DIAG"
+fi
 
 # --- case B: a wait wakes on a login change only when the login has room -----
 # A $HOME/.claude step (no CLAUDE_CONFIG_DIR). The stub swaps the rotate
@@ -275,29 +323,57 @@ fi
 #   without room,
 #   or no room bit,
 #   or a stopping
-#   rotator's record -> `end reason=reset reached` (the wait ran to its end)
+#   rotator's record -> no `login changed` at all: the change was held back
 #   a manual switch with no room bit
 #                    -> `end reason=login changed`  (a person chose the login)
 #   a manual switch that says no room
-#                    -> `end reason=reset reached`
+#                    -> no `login changed`
+#
+# Telling the two groups apart needs the wait to stop for some reason other
+# than the login change, and after #2911 nothing a limit does stops it: a
+# reset already behind the clock is now a wait for capacity, and reaching a
+# capacity wait's own deadline retries the step instead of ending it. Waiting
+# the full MAX_WAIT_SECS in each of the four held-back cases would add four
+# minutes to a smoke test.
+#
+# So the held-back cases are bounded by the one bound a limit cannot remove:
+# the step's own timeout. AMPLIHACK_STEP_TIMEOUT is set below the 60-second
+# lead the planner keeps before it, so the plan's deadline is already behind
+# the clock when the wait starts and the wait ends `step timeout` at once.
+# That is instant, and it also pins the thing #2911 makes load-bearing: with
+# every limit-shaped ending now retrying, the step timeout is the only bound
+# left on a capacity wait, and it must still bind. If a held-back change had
+# woken the wait we would see `login changed` and a second attempt instead.
+#
+# The waking cases get no step timeout, because the change they are testing
+# for is read before the wait begins and a deadline already behind the clock
+# would finish the step before it could be seen.
+STEP_TIMEOUT_FOR_HELD_BACK=30
+
 run_swap_case() {
-  local name="$1" body="$2" want="$3" other="$4"
+  local name="$1" body="$2" wakes="$3"
+  local want other step_timeout want_rc want_calls
+  if [ "$wakes" = wakes ]; then
+    want="login changed"; other="step timeout"
+    step_timeout=""; want_rc=0; want_calls=2
+  else
+    want="step timeout"; other="login changed"
+    step_timeout="$STEP_TIMEOUT_FOR_HELD_BACK"; want_rc=1; want_calls=1
+  fi
   reset_records
   write_initial_ledger
-  LIMIT_CALLS=1 LEDGER_BODY="$body" scenario_env home "$BIN" claude --subprocess-safe -- -p step \
+  LIMIT_CALLS=1 LEDGER_BODY="$body" STEP_TIMEOUT="$step_timeout" \
+    scenario_env home "$BIN" claude --subprocess-safe -- -p step \
     >"$WORK/$name.out" 2>"$WORK/$name.err" </dev/null && rc=0 || rc=$?
-  local calls got diag
+  local calls got wrong diag
   calls="$(cat "$RECORDS/count.0" 2>/dev/null || echo 0)"
-  got="$(grep -c "amplihack.recipe.usage_limit_wait end reason=$want\$" "$WORK/$name.err" 2>/dev/null || true)"
-  [ -n "$got" ] || got=0
-  local wrong
-  wrong="$(grep -c "amplihack.recipe.usage_limit_wait end reason=$other\$" "$WORK/$name.err" 2>/dev/null || true)"
-  [ -n "$wrong" ] || wrong=0
+  got="$(count_in "amplihack.recipe.usage_limit_wait end reason=$want\$" "$WORK/$name.err")"
+  wrong="$(count_in "amplihack.recipe.usage_limit_wait end reason=$other\$" "$WORK/$name.err")"
   diag="rc=$rc calls=$calls $name.err tail: $(tail -n 8 "$WORK/$name.err" 2>/dev/null | tr '\n' ' ')"
-  if [ "$rc" -eq 0 ] && [ "$calls" = 2 ] && [ "$got" = 1 ] && [ "$wrong" = 0 ]; then
-    pass "$name" "the wait ended '$want' and the step retried once"
+  if [ "$rc" -eq "$want_rc" ] && [ "$calls" = "$want_calls" ] && [ "$got" = 1 ] && [ "$wrong" = 0 ]; then
+    pass "$name" "the wait ended '$want' after $calls attempt(s)"
   else
-    fl "$name" "want one 'end reason=$want' and none '$other'; got $got/$wrong; $diag"
+    fl "$name" "want one 'end reason=$want', none '$other', rc=$want_rc calls=$want_calls; got $got/$wrong; $diag"
   fi
 }
 
@@ -309,12 +385,12 @@ SWITCHED="$(printf '{"version":1,"live":"Y","alert":null,"last_cycle":{"at":%s,"
 SWITCHED_FULL="$(printf '{"version":1,"live":"Y","alert":null,"last_cycle":{"at":%s,"measured_at":%s,"outcome":"switched","live_room":false}}' "$T" "$T")"
 STOPPED="$(printf '{"version":1,"live":"Y","alert":null,"last_cycle":{"at":%s,"outcome":"idle"}}' "$T")"
 
-run_swap_case swap_onto_a_login_with_room_wakes_the_wait "$SWAPPED_ROOM" "login changed" "reset reached"
-run_swap_case swap_onto_a_full_login_does_not_wake_the_wait "$SWAPPED_FULL" "reset reached" "login changed"
-run_swap_case swap_recorded_by_an_older_rotator_does_not_wake_the_wait "$SWAPPED_OLD" "reset reached" "login changed"
-run_swap_case a_stopping_rotators_record_does_not_wake_the_wait "$STOPPED" "reset reached" "login changed"
-run_swap_case a_manual_switch_without_a_room_reading_wakes_the_wait "$SWITCHED" "login changed" "reset reached"
-run_swap_case a_manual_switch_that_recorded_no_room_does_not_wake_the_wait "$SWITCHED_FULL" "reset reached" "login changed"
+run_swap_case swap_onto_a_login_with_room_wakes_the_wait "$SWAPPED_ROOM" wakes
+run_swap_case swap_onto_a_full_login_does_not_wake_the_wait "$SWAPPED_FULL" held-back
+run_swap_case swap_recorded_by_an_older_rotator_does_not_wake_the_wait "$SWAPPED_OLD" held-back
+run_swap_case a_stopping_rotators_record_does_not_wake_the_wait "$STOPPED" held-back
+run_swap_case a_manual_switch_without_a_room_reading_wakes_the_wait "$SWITCHED" wakes
+run_swap_case a_manual_switch_that_recorded_no_room_does_not_wake_the_wait "$SWITCHED_FULL" held-back
 
 if [ "$fail" -eq 0 ]; then
   echo "ALL_CASES_PASSED"

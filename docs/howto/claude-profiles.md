@@ -2130,20 +2130,19 @@ to turn it on there). A failure that is not a usage limit is passed back at once
 3. The step runs once more with the same arguments and input, and the same
    environment except for `CLAUDE_CONFIG_DIR`, which names the other
    profile when the wait ended on its capacity.
-   If it hits the limit again on the **same** login, there is no second
-   wait. The supervisor writes `skipped reason=already_waited` and then the
-   [closing line](../reference/profile-command.md#closing-line),
-   `failed reason=already_waited: usage limit not lifted`, and the step ends
-   as a usage limit. If the login in `~/.claude` has changed in the
-   meantime, the step waits again on the new login instead; see
-   [One shared login on the host](#one-shared-login-on-the-host).
-   There is one exception: when the wait ended because something said to try
-   again (the reset arrived, a login had room, or the login changed) and the
-   very first attempt after it hits a limit, the step waits again and logs one
-   `reentered` line. A usage-limit message whose reset has already passed starts
-   a capacity wait bounded by the step's budget, and the step retries once when
-   that budget runs out. A `429` starts that wait only where a capacity wait
-   could start; see [A limit right after a wait](#a-limit-right-after-a-wait).
+   If it hits the limit again, on the same login or another, it waits again.
+   A limit never ends the step, and no count or budget bounds the chain. Each
+   wait is paced by its own deadline, which is always in the future, and a
+   wait that has no reset to end on writes a `waiting_for_capacity` line
+   saying so; see
+   [Usage-limit waits](../reference/usage-limit-waits.md). Only the step
+   timeout, a stop signal or the session ending stops the chain.
+   When the wait ended because something said to try again (the reset
+   arrived, a login had room, or the login changed) and the very first
+   attempt after it hits a limit, the step waits again and logs one
+   `reentered` line. A usage-limit message whose reset has already passed
+   starts a capacity wait, and the step retries when it ends; see
+   [A limit right after a wait](#a-limit-right-after-a-wait).
 
 Both the auto-switch rerun in step 1 and the usage-reading exit in step 2
 (logged as `end reason=login capacity`) can move a step onto another
@@ -2181,32 +2180,30 @@ Three things follow, and all of them apply only to a step that runs on
   amplihack.recipe.usage_limit_wait resume attempt=2
   ```
 
-- **A new login that is also at its limit gets its own wait.** The step waits
-  once for each login it runs on, keyed to the account name the rotator
-  records. The short-circuit above spends that account's turn too: it is
-  marked against the account the failed attempt ran on, not the one that has
-  just arrived, so the arriving account can still have a wait of its own. A
-  rotator that swaps back to an account the step has already waited on starts
-  no further wait, so the chain always ends, however often the rotator swaps.
+- **A new login that is also at its limit gets its own wait.** The wait is
+  keyed to the account name the rotator records, which names the login in the
+  log. A step has no count of waits and no mark per login, so a rotator that
+  swaps back to an account the step has already waited on starts a wait like
+  any other.
 
-- **The waits share one budget.** `recipe.usage_limit_max_wait_secs` (six
-  hours by default) is the total for the step, not for each wait. Waiting
-  across three logins therefore takes no longer than the one wait the same
-  step would have made before. Raise the maximum if you want the chain to
-  have more room.
+- **Each wait has the full length.** `recipe.usage_limit_max_wait_secs` (six
+  hours by default) is the length of one wait, not a total for the step.
+  Raise it to lengthen each wait.
+
 
 Before this, such a step slept until its **own** account's reset, however
 many accounts with room the rotator moved through `~/.claude` in the
 meantime.
 
-An organisation spend limit with no reset also waits on this kind of host,
-**provided a rotator is running**. Nothing lifts that limit for the account
-that hit it, but the next account the rotator brings in may belong to another
-organisation, so the step waits for the login to change and nothing else.
-With no rotator running, or one paused because auto-switch is off, nothing
-could ever bring that account in, so the step ends at once as it did before
-rather than sleeping out the maximum. On any other step a spend limit with no
-reset still ends the run at once, whatever room other logins have.
+An organisation spend limit with no reset also waits on this kind of host.
+Nothing lifts that limit for the account that hit it, but the next account the
+rotator brings in may belong to another organisation, so the step waits for the
+login to change and nothing else. The wait needs no running rotator: with none
+running it runs one `max_wait_secs` and the step retries. A step pinned to
+`~/.claude` with a spend limit that no login change lifts therefore waits in
+cycles of six hours until the limit lifts, the step timeout applies or the run
+is stopped.
+
 
 "And nothing else" is literal. A spend limit is on the organisation's
 credit, and no reading of session capacity reports credit, so neither the
@@ -2265,32 +2262,31 @@ amplihack.recipe.usage_limit_wait reentered met=rate_limit
 amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=2026-11-19 14:20:09 -08:00 bound=max_wait
 ```
 
-The second wait's deadline comes from what is left of the step's
-`max_wait_secs` budget, so it is later than the first by the time the retry
-took.
+Each wait is planned with the full `max_wait_secs`; the second wait's deadline
+is later than the first by the time the retry took.
 
 `met=usage_limit` means the attempt printed a usage-limit message, and
 `met=rate_limit` means it ended on a `429` report. A usage-limit message is
-planned as the first wait was, with the same checks, with one exception: a
-message whose stated reset has already passed is waited out as a capacity wait
-instead of being refused. A retry at 08:32 that meets "resets 8:30am" again
-is the usual case. The wait ends early if a login has room, otherwise at the
-step's remaining `max_wait_secs` budget, and the step then retries once. It
-does not apply to a spend limit. See
+planned as the first wait was. A message whose stated reset has already passed
+is waited out as a capacity wait, announced with `reason=passed_reset`. A
+retry at 08:32 that meets "resets 8:30am" again is the usual case. The wait
+ends early if a login has room, otherwise after one `max_wait_secs`, and the
+step then retries. See
 [A reset that has already passed](../reference/profile-command.md#a-reset-that-has-already-passed).
-A `429` states no reset,
-so the second wait is a capacity wait, and it starts only when a capacity wait
-could start for the step: a rotator running with auto-switch on, and another
-login that could take over. Without those the `429` goes back to the recipe
-runner as before and no `reentered` line is written.
+A `429` states no reset, so when it starts a wait at all that wait is a
+capacity wait with `reset=none`. A `429` is the one case where the step still
+asks whether another login could take over before it waits, because a `429`
+is not a limit message and says nothing about any account's window: with no
+login that could take over there is nothing to wait out, and the `429` goes
+back to the recipe runner as the transient fault it is.
 
-This applies only when the wait that just ended said *try now*: its reset
-arrived, a login had room, or the login changed. A wait that ran out its own
-maximum, hit the step timeout, was stopped, or lost its session has nothing
-behind it, so a limit after it still ends the step with
-`skipped reason=already_waited`. The step's `max_wait_secs` budget still
-applies to a second wait, which is refused once earlier waits have spent it,
-and there is no retry count.
+A wait that ran out its own maximum is followed by an ordinary retry like any
+other, and a limit on that retry starts another wait. There is no refusal, no
+retry count and no budget; the chain is paced by the deadline of each wait.
+The step timeout, a stop signal and the end of the session are different: each
+of those ends the step, and they are the only endings that still do. See
+[What ends a step and what does not](../reference/usage-limit-waits.md#what-ends-a-step-and-what-does-not).
+
 
 A `429` counts only when it is the harness's own error line, on standard error
 or as the last line of the output. The same words inside the model's answer do
@@ -2301,49 +2297,60 @@ phrases and the plan for each kind of limit.
 
 ### Weekly limits: waiting for another login
 
-A weekly limit, or a limit whose message states no reset amplihack can
-read, will not lift within the run. When another login could take over,
-amplihack waits for **any** login to have capacity instead, for up to six
-hours by default:
+A weekly limit, a limit whose message states no reset amplihack can read, a
+reset that has already passed and credit exhaustion will not lift on a reset
+the step can use. Each starts a capacity wait for up to one
+`recipe.usage_limit_max_wait_secs` (six hours by default). The wait starts
+whether or not another login has room now, because a login can gain room while
+it runs:
 
 - for a step that uses `~/.claude`, until the
   [login rotator](claude-profile-rotation.md) records a fresh cycle with
   capacity that left a login with room live, or a different account with room
   becoming live in `~/.claude` (see
-  [A swap onto a full login](#a-swap-onto-a-full-login)). This needs a rotator
-  running; without one the run ends at once, as before;
+  [A swap onto a full login](#a-swap-onto-a-full-login)). The rotator cycle
+  needs a rotator running; with none, the wait runs its length;
 - for a step under an inherited profile with auto-switch on, until a usage
   reading taken during the wait shows that another profile has capacity;
-  the step then runs on that profile, not on the exhausted one. This also
-  needs a rotator running; without one nothing may record a reading during
-  an unattended run, so the run ends at once, as before.
+  the step then runs on that profile, not on the exhausted one. With no
+  rotator, nothing may record a reading during an unattended run, so the wait
+  runs its length.
 
 The caveat under [What happens](#what-happens) applies here too: a step
 pinned to a profile may finish on another account unless you hold it.
 
-"Another login could take over" means the profile store holds another
-login that auto-switch could choose once its readings allow: not excluded
-from auto-switch (`amplihack profile auto-switch exclude`), holding a login
-on this platform, with no spend block, and either a plan login or a marked
-overflow profile while the overflow gate is open. An API-key profile counts
-only when `overflow=` marks it and its key passes the login check; an
-unmarked one never counts, because auto-switch never chooses it.
-A login that is over its threshold or has hit its own weekly limit still
-counts, because it may recover during the wait. With a single stored login
-there is nothing to wait for, and the run ends as before, even when the
-rotator is running.
-
-If no login has capacity by the deadline, the step is not run again. The
-log ends with:
+When the wait reaches its deadline with no login having capacity, the step
+runs again. If it meets the limit again, it waits again, and each wait writes
+a `waiting_for_capacity` line that names why it has no reset to end on:
 
 ```
-amplihack.recipe.usage_limit_wait end reason=capacity expired
-amplihack.recipe.usage_limit_wait failed reason=capacity_expired: usage limit not lifted
+amplihack.recipe.usage_limit_wait waiting_for_capacity reason=no_reset harness=claude until=2026-10-31 15:43:00 -07:00
+amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=2026-10-31 15:43:00 -07:00 bound=max_wait
+amplihack.recipe.usage_limit_wait end reason=max reached
+amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
-and the recipe runner records the failure as `usage_limit`.
-[Auto-drive](../reference/auto-drive-to-merge.md#usage-limits-are-not-stuck-or-hand-off)
+To see which runs are waiting, search the recipe log:
+
+```sh
+grep 'usage_limit_wait waiting_for_capacity' "$AMPLIHACK_RECIPE_LOG"
+```
+
+A step the wait cannot lift stays in this loop until the step timeout, a stop
+signal or the end of the session. If you would rather a run end at a limit,
+set `recipe.usage_limit_wait = false`; `recipe.usage_limit_max_wait_secs = 0`
+does not do that, because it reads as the 60-second minimum. See
+[Usage-limit waits](../reference/usage-limit-waits.md#what-max_wait_secs-means).
+The recipe runner records the failure class as `usage_limit` when a step does
+end on one, and
+[auto-drive](../reference/auto-drive-to-merge.md#usage-limits-are-not-stuck-or-hand-off)
 stops such a loop as `USAGE_LIMIT`, not `STUCK`.
+
+The same applies to the
+[loop-health evaluator](../reference/loop-health-evaluator.md#retry-inside-the-step)
+that auto-drive runs after each round: a limit on its agent step is waited
+out and the step retried, so the loop gets an ordinary verdict.
+
 
 The same applies to the
 [loop-health evaluator](../reference/loop-health-evaluator.md#retry-inside-the-step)
@@ -2352,19 +2359,12 @@ out and the step retried, so the loop gets an ordinary verdict.
 
 ### When it does not wait
 
-The run ends as before, with no wait, when:
+A usage limit always starts a wait. The run ends with no wait only when:
 
-- the limit is an organisation spend limit with a weekly reset, or one with
-  no reset on a step that does not run on `~/.claude`, or one with no reset
-  on a `~/.claude` step with no rotator running (a spend limit that also says
-  when your session limit resets is waited out, and one with no reset on a
-  `~/.claude` step with a rotator running waits for the login to change
-  instead);
-- the limit is weekly, or states no readable reset, and no other login
-  could take over, or no rotator is running;
-- the step uses an explicit `CLAUDE_CONFIG_DIR`, an inherited profile with
-  auto-switch off, or a `.default` profile that is not the rotator's live
-  one, and the limit is weekly or states no readable reset;
+- the wait is turned off (`recipe.usage_limit_wait = false`), or the run is in
+  CI with no setting;
+- the output carries no limit message in the harness's own shape, so it is
+  not a limit;
 - the prompt came on a pipe and could not be copied aside, so no attempt
   after the first could read it (auto-switch then does not rerun the step
   under another profile either). A piped prompt that was copied is replayed
@@ -2418,10 +2418,10 @@ take. Work through these:
   are in
   [Capacity for a profile step](../reference/profile-command.md#capacity-for-a-profile-step).
 - **The limit was an organisation spend limit with no reset.** Room on
-  another login never lifts one. On a step that does not run on
-  `~/.claude`, no wait starts at all (`skipped reason=spend_limit`); on a
-  `~/.claude` step with a rotator running, the wait is for the login to
-  change and capacity readings do not end it. See
+  another login never lifts one, so the wait is for the login to change and
+  capacity readings do not end it. With nothing changing the login, the wait
+  runs its full length and the step retries; it writes
+  `waiting_for_capacity reason=spend_limit` so the cause is visible. See
   [When it does not wait](#when-it-does-not-wait).
 
 The `observed` column of

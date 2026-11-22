@@ -1,30 +1,42 @@
-//! The spend block a failed agent step records for the login it ran under
-//! (issue #2890).
+//! The block a failed agent step records for the login it ran under (issues
+//! #2890, #2911).
 //!
-//! The rotator's `/usage` probe cannot see an individual spend limit, so a
-//! plan login that has reached one reads as healthy and the rotator keeps it
-//! live while every step on it fails. The step that meets the limit is the
-//! only witness, so it writes the block itself, into the same
-//! `overflow_blocked` map and with the same `spend_limit` reason the rotator
-//! already uses. Nothing else changes: `active_blocks` and `prune_blocks`
-//! expire it at the stated reset, `profile overflow clear` removes it, and
-//! every reader that already honours a block honours this one.
+//! The rotator's `/usage` probe cannot see an individual spend limit, and it
+//! learns of a session or weekly limit only on its own cycle, minutes after
+//! the step that met one. The step is the first witness either way, so it
+//! writes the block itself, into the same `overflow_blocked` map and with
+//! the same `spend_limit` reason the rotator already uses. Nothing else
+//! changes: `active_blocks` and `prune_blocks` expire it at the stated
+//! reset, `profile overflow clear` removes it, and every reader that already
+//! honours a block honours this one.
 //!
-//! This is data the rotator reads, not a gate. [`note_spend_block`] returns
+//! The reason stays `spend_limit` for every kind on purpose. `valid_overflow`
+//! refuses a whole ledger holding a block with any other reason, so a host
+//! still running an older binary would lose its rotator on the first cycle
+//! after reading a ledger this writer had widened. The *kind* is not lost: it
+//! names the limit in the ALERT line and on the step's own stderr.
+//!
+//! This is data the rotator reads, not a gate. [`note_limit_block`] returns
 //! `()` so that no caller can branch on the outcome: whatever happens here,
 //! the step goes on to plan its wait exactly as it would have. Every failure
 //! is reported, on stderr and in the rotate log, and nothing is stored.
 //!
 //! The order is fixed, and each step exists for a reason:
 //!
-//! 1. **The ledger exists.** A step never creates the rotator's state.
+//! 0. **The ledger exists.** A step never creates the rotator's state, and a
+//!    host with no rotator says nothing at all. It is asked before the reset
+//!    is resolved, so an unresolvable reset on such a host is silent too.
+//! 1. **The reset resolves** ([`resolved_until`]). A spend limit that states
+//!    none falls back to the monthly reset the rotator already assumes; any
+//!    other kind with no stated reset writes nothing, because a block with
+//!    an invented end would hold a healthy login out of rotation.
 //! 2. **The span is valid** ([`valid_span`], the loader's own rule). A block
 //!    outside it would make the whole ledger unreadable on the next load,
 //!    which would stop the rotator's prelude on every cycle.
 //! 3. **The lock**, waited for at most [`CLEAR_LOCK_WAIT`] and then given
 //!    up. A busy rotator can hold a step up for that long and no longer;
 //!    there is no retry, so the wait has a ceiling even under contention.
-//! 4. **Load**; a ledger that disappeared between 1 and 3 is left alone.
+//! 4. **Load**; a ledger that disappeared between 0 and 3 is left alone.
 //! 5. **Expired blocks are pruned**, so that a block left for this login is
 //!    an active one. **It is then kept as it is**: never extended, never
 //!    alerted about twice.
@@ -33,43 +45,87 @@
 //! 8. **Log**, outside the lock.
 
 use super::control::CLEAR_LOCK_WAIT;
-use super::ledger::{MAX_BLOCKS, OverflowBlock, RotateState, prune_blocks};
+use super::ledger::{MAX_BLOCKS, OverflowBlock, RotateState, prune_blocks, spend_reset};
 use super::log::msg;
 use super::spend_blocks::valid_span;
 use crate::commands::profile::auto_switch::kit::{State, exists};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::recipe::run::limit_patterns::LimitKind;
 use std::path::Path;
 
 /// Why a block was not stored. A closed set of fixed strings: the ALERT
-/// lines interpolate one of these, a parsed [`ProfileName`] and a formatted
-/// time, and nothing else. No limit-message text, no reset as read, no
-/// process output and no path can reach the log through them.
+/// lines interpolate one of these, a parsed [`ProfileName`], a
+/// [`LimitKind`]'s own noun and a formatted time, and nothing else. No
+/// limit-message text, no reset as read, no process output and no path can
+/// reach the log through them.
 const OUT_OF_RANGE: &str = "stated reset out of range";
 const ALREADY_PASSED: &str = "stated reset already passed";
+const NO_RESET: &str = "no stated reset";
 const BUSY: &str = "rotator busy";
 const UNREADABLE: &str = "ledger unreadable";
 const NOT_WRITTEN: &str = "ledger not written";
 const TOO_MANY: &str = "too many blocks";
 
-/// Records `login` as spend-blocked from `at` until `until` in the rotate
-/// ledger under `root`, with one ALERT.
+/// Records `login` as blocked from `at` until `until` in the rotate ledger
+/// under `root`, with one ALERT naming `kind`.
 ///
 /// `at` is the real clock and `until` the reset the limit message stated,
-/// moved onto the same clock by the caller. Both are checked here before
-/// anything is written.
+/// moved onto the same clock by the caller, or `None` when the message
+/// stated none. Both are checked here before anything is written.
 ///
 /// Never ends, delays or refuses the run, and never panics: every outcome
-/// but a stored block is a line on stderr and in the rotate log.
-pub fn note_spend_block(root: &Path, login: &ProfileName, at: i64, until: i64) {
+/// but a stored block is a line on stderr and in the rotate log. The return
+/// type is what enforces that; there is nothing for a caller to branch on.
+pub fn note_limit_block(
+    root: &Path,
+    login: &ProfileName,
+    at: i64,
+    until: Option<i64>,
+    kind: LimitKind,
+) {
     let rs = RotateState::new(root);
+    // 0. No ledger: the rotator has never run under this root, so there is
+    //    nothing that reads a block, nothing to create, and nothing worth
+    //    saying. Hoisted above the resolution below so that a host with no
+    //    rotator stays silent whatever the message said.
+    if !exists(&rs.ledger) {
+        return;
+    }
+    let Some(until) = resolved_until(until, at, kind) else {
+        report(
+            &rs,
+            at,
+            &msg::step_limit_block_not_written(login, kind, NO_RESET),
+        );
+        return;
+    };
     match store(&rs, login, at, until) {
-        Ok(Some(until)) => report(&rs, at, &msg::alert_step_spend_limit(login, until)),
+        Ok(Some(until)) => report(&rs, at, &msg::alert_step_limit_block(login, kind, until)),
         Ok(None) => {}
-        Err(why) => report(&rs, at, &msg::step_spend_limit_not_blocked(login, why)),
+        Err(why) => report(
+            &rs,
+            at,
+            &msg::step_limit_block_not_written(login, kind, why),
+        ),
     }
 }
 
-/// Steps 1 to 7. `Ok(Some(until))` stored a block, `Ok(None)` found nothing
+/// The end of the block to write, or `None` when none can be known.
+///
+/// A spend limit that states no reset falls back to [`spend_reset`], the
+/// month boundary the rotator already assumes for one; that is the only
+/// assumption made anywhere here. Every other kind writes nothing rather
+/// than invent an end, because a block that outlives the limit keeps a
+/// healthy login out of rotation.
+fn resolved_until(until: Option<i64>, at: i64, kind: LimitKind) -> Option<i64> {
+    match (until, kind) {
+        (Some(u), _) => Some(u),
+        (None, LimitKind::Spend) => Some(spend_reset(at)),
+        (None, _) => None,
+    }
+}
+
+/// Steps 2 to 7. `Ok(Some(until))` stored a block, `Ok(None)` found nothing
 /// to do, `Err(why)` is one of the fixed reasons above. The lock is released
 /// on every path before this returns, so the log append never holds it.
 fn store(
@@ -78,11 +134,6 @@ fn store(
     at: i64,
     until: i64,
 ) -> Result<Option<i64>, &'static str> {
-    // 1. No ledger: the rotator has never run under this root, so there is
-    //    nothing that reads a block and nothing to create.
-    if !exists(&rs.ledger) {
-        return Ok(None);
-    }
     // 2. The loader's own span rule, applied before the insert. A reset
     //    the clock has already gone past is named separately: `valid_span`
     //    refuses it for the same reason it refuses a reset beyond the cap,
@@ -110,7 +161,7 @@ fn store(
             return Err(NOT_WRITTEN);
         }
     };
-    // 4. Load under the lock. A ledger removed since step 1 is left alone:
+    // 4. Load under the lock. A ledger removed since step 0 is left alone:
     //    returning here is what keeps the writer from creating one.
     let mut l = match rs.load_ledger() {
         Ok(Some(l)) => l,

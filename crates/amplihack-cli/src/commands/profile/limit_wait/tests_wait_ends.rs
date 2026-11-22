@@ -461,8 +461,9 @@ fn a_login_change_wait_still_ends_on_a_signal_and_on_the_sessions_end() {
 
 #[test]
 fn a_login_change_wait_that_reaches_its_deadline_reads_as_max_reached() {
-    // `mod.rs` turns this into `failed reason=spend_limit`, so the mapping
-    // from the deadline to the closing line must not move with the flag.
+    // `mod.rs` retries on this (issue #2911), and `max reached` is the one
+    // end that claims nothing about the login, so the mapping from the
+    // deadline to the end reason must not move with the flag.
     let mut f = Fake::new();
     assert_eq!(wait(&login_change_plan_in(0), &mut f), End::MaxReached);
     assert_eq!(f.elapsed(), 0, "a zero-length wait never sleeps");

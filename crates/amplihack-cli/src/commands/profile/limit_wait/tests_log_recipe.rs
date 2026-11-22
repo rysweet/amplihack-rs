@@ -19,7 +19,7 @@
 
 use super::Met;
 use super::events::{Event, FailReason, Shape, Skip, line, recipe_line};
-use super::plan::{Bound, NoWait};
+use super::plan::{Bound, NoWait, Waiting};
 use super::wait::End;
 use crate::commands::recipe::run::limit_patterns::Harness;
 
@@ -97,11 +97,25 @@ fn the_reason_and_the_wait_token_are_not_the_same_field() {
     }
 }
 
+/// Issue #2911: a spend limit no longer closes a step, so there is no
+/// closing line for one. The token a reader greps for is written by the
+/// wait itself instead: on the `start` line's `reason=`, above, and on the
+/// `waiting_for_capacity` line below.
 #[test]
-fn the_closing_line_for_a_spend_limit_names_it() {
+fn issue_2911_a_spend_limit_writes_its_token_on_the_wait_and_not_on_an_ending() {
+    let l = stderr(&Event::WaitingForCapacity {
+        harness: Harness::Claude,
+        why: Waiting::SpendLimit,
+        until: T32,
+    });
+    assert!(
+        l.contains("waiting_for_capacity reason=spend_limit "),
+        "{l}"
+    );
     assert_eq!(
-        stderr(&Event::Failed(FailReason::SpendLimit)),
-        "amplihack.recipe.usage_limit_wait failed reason=spend_limit: usage limit not lifted"
+        stderr(&Event::Failed(FailReason::StepTimeout)),
+        "amplihack.recipe.usage_limit_wait failed reason=step_timeout: usage limit not lifted",
+        "the one closing reason left is the step's own bound"
     );
 }
 
@@ -274,11 +288,8 @@ fn only_start_and_end_reach_the_recipe_log() {
     for e in [
         Event::Progress { remaining: 1740 },
         Event::Resume { attempt: 2 },
-        Event::Skipped(Skip::AlreadyWaited),
-        Event::Skipped(Skip::Cannot(NoWait::SpendLimit)),
-        Event::Failed(FailReason::SpendLimit),
-        Event::Failed(FailReason::AlreadyWaited),
-        Event::Failed(FailReason::CapacityExpired),
+        Event::Skipped(Skip::Cannot(NoWait::NoLimitMessage)),
+        Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)),
         Event::Failed(FailReason::StepTimeout),
     ] {
         assert_eq!(
@@ -323,9 +334,77 @@ fn issue_2857_the_re_entry_line_is_the_only_addition_to_what_the_recipe_log_carr
     for e in [
         Event::Progress { remaining: 5 },
         Event::Resume { attempt: 2 },
-        Event::Skipped(Skip::AlreadyWaited),
-        Event::Failed(FailReason::AlreadyWaited),
+        Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)),
+        Event::Failed(FailReason::StepTimeout),
     ] {
         assert_eq!(recipe(&e, Some("work")), None);
+    }
+}
+
+// --- Issue #2911: the waiting_for_capacity line in its two sinks ----------
+//
+// The fourth event that reaches the run's recipe log. It is the stderr line
+// with `harness=` dropped and `account=` put in its place, exactly as the
+// `start` line is, and the account is re-validated at the same point: a name
+// outside the rotator's own form is written as `unknown` whole rather than
+// trimmed to fit.
+
+fn waiting(why: Waiting, until: i64) -> Event {
+    Event::WaitingForCapacity {
+        harness: Harness::Claude,
+        why,
+        until,
+    }
+}
+
+#[test]
+fn issue_2911_the_waiting_line_swaps_harness_for_account_as_the_start_line_does() {
+    assert_eq!(
+        recipe(&waiting(Waiting::ResetTooFar, T32), Some("work")).unwrap(),
+        "amplihack.recipe.usage_limit_wait waiting_for_capacity reason=reset_too_far \
+         account=work until=2026-10-18 08:32:00 -07:00"
+    );
+    assert_eq!(
+        stderr(&waiting(Waiting::ResetTooFar, T32)),
+        "amplihack.recipe.usage_limit_wait waiting_for_capacity reason=reset_too_far \
+         harness=claude until=2026-10-18 08:32:00 -07:00"
+    );
+}
+
+#[test]
+fn issue_2911_a_waiting_line_with_no_usable_account_says_unknown() {
+    for account in [
+        None,
+        Some(""),
+        Some("a name with spaces"),
+        Some("work\nstart reason=usage_limit account=other"),
+        Some("../escape"),
+    ] {
+        let l = recipe(&waiting(Waiting::Credits, T32), account).unwrap();
+        assert!(
+            l.contains(" account=unknown "),
+            "account {account:?} gave {l}"
+        );
+        assert!(!l.contains('\n'), "one line only: {l:?}");
+    }
+}
+
+#[test]
+fn issue_2911_every_reason_reaches_the_recipe_log() {
+    for why in [
+        Waiting::ResetTooFar,
+        Waiting::NoReset,
+        Waiting::SpendLimit,
+        Waiting::Credits,
+        Waiting::PassedReset,
+    ] {
+        let l = recipe(&waiting(why, T32), Some("work")).expect("it reaches the recipe log");
+        assert!(
+            l.starts_with(&format!(
+                "{PREFIX}waiting_for_capacity reason={} ",
+                why.as_str()
+            )),
+            "{l}"
+        );
     }
 }
