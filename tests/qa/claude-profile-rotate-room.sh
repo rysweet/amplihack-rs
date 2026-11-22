@@ -283,7 +283,13 @@ write_block() { # name from_ago until_in kind
 storm() { echo 429 > "$FX/usage-mode"; printf '%s\n' "$LIVE" > "$FX/usage-ok"; }
 
 live_token() { sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p' "$QA_HOME/.claude/.credentials.json"; }
-rotate_log() { cat "$ROOT/.auto-switch.d/rotate/rotate.log" 2>/dev/null || true; }
+# The rotator's log. A missing log is a failure, not an empty log, so a check
+# that something is absent cannot pass for a cycle that never ran.
+rotate_log() {
+  local file="$ROOT/.auto-switch.d/rotate/rotate.log"
+  [[ -f "$file" ]] || { echo "FAIL: the rotator wrote no rotate.log" >&2; return 1; }
+  cat "$file"
+}
 # The lines a case passed on, for the record: rotate-log text only (names,
 # percentages, fixed labels and times), never a path.
 evidence() { grep -E "$1" | sed 's/^/  | /' || true; }
@@ -354,11 +360,22 @@ printf '%s\n' llarame > "$FX/profile-mismatch"
 write_history llarame 78 92 1800
 before="$(live_token)"
 run_cli profile rotate "${FLAGS[@]}"
+# A one-shot cycle reports a refused swap to its caller (watch mode does not),
+# so the exit is 1 and stderr carries the refusal.
+[[ $STATUS -eq 1 ]] || { cat "$WORK/stderr" >&2; cat "$WORK/stdout" >&2; fail "case 5: rotate exited $STATUS, not 1"; }
+grep -q "swap refused: trusted login identity conflicts with the account recorded for profile llarame" "$WORK/stderr" \
+  || { cat "$WORK/stderr" >&2; fail "case 5: stderr does not carry the refusal"; }
+log="$(rotate_log)"
+# The cycle ran and tried llarame: it says so, and says why it did not move.
+grep -q "llarame:unknown, HTTP 429, last s=78%,w=92% " <<< "$log" \
+  || { echo "$log" >&2; fail "case 5: the cycle line does not show that llarame was tried"; }
+grep -q " ALERT: swap refused: trusted login identity conflicts with the account recorded for profile llarame" <<< "$log" \
+  || { echo "$log" >&2; fail "case 5: the refusal was not logged"; }
 [[ "$(live_token)" == "$before" ]] || fail "case 5: ~/.claude changed for a login whose identity did not match"
-! grep -q " swap $LIVE->llarame" <<< "$(rotate_log)" || fail "case 5: the rotator swapped to llarame"
+! grep -q " swap $LIVE->llarame" <<< "$log" || fail "case 5: the rotator swapped to llarame"
 : > "$FX/profile-mismatch"
 echo "PASS: case 5: an identity that does not match moves nothing"
-evidence ' (ALERT|swap|reject:) ' <<< "$(rotate_log)"
+evidence ' (ALERT|swap|reject:) ' <<< "$log"
 
 # --- Case 6: the dry run at 05:48Z, the live login still has room ------------------------------------------
 # The live login read 86% / 65% (room 14). The logins that have room are in

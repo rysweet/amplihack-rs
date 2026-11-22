@@ -166,6 +166,7 @@ pub fn build(
             (Some(lg), Some(label)) => Basis::LastGood {
                 label,
                 reading: lg.reading,
+                // A reading dated after `now` (a clock step back) is 0 old.
                 age: u64::try_from(now.saturating_sub(lg.at)).unwrap_or(0),
             },
             _ if p.reading != Reading::Failed || p.spend_limit => Basis::Probe,

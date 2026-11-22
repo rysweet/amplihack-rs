@@ -9,6 +9,7 @@
 //! credentials file or a stored reason chose.
 
 use super::super::alert::NO_CAPACITY;
+use super::super::fresh::MAX_REREADS_PER_CYCLE;
 use super::super::identify::LiveId;
 use super::super::log::msg::pct;
 use super::super::log::{Shown, msg};
@@ -152,7 +153,10 @@ fn counts(seen: &Seen) -> (String, bool) {
     push(blocked, format!("blocked until {when}"));
     push(exhausted, "exhausted".to_string());
     push(above, format!("above week ceiling {}%", seen.week_max));
-    push(not_tried, "not tried (re-read limit 3)".to_string());
+    push(
+        not_tried,
+        format!("not tried (re-read limit {MAX_REREADS_PER_CYCLE})"),
+    );
     let known =
         unknown.is_empty() && not_read.is_empty() && failed + above + not_tried + other == 0;
     let text = if parts.is_empty() {

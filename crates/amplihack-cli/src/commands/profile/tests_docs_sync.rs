@@ -203,6 +203,10 @@ fn reference_and_howto_document_profile_rotate() {
         "AMPLIHACK_ROTATE_TARGET_WEEK_MAX",
     ] {
         assert!(REFERENCE.contains(var), "reference is missing {var}");
+        assert!(
+            ENV_VARS.contains(&format!("`{var}`")),
+            "env-vars is missing {var}"
+        );
     }
 }
 
