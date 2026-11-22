@@ -145,6 +145,10 @@ mod workflow_publish_pr_metadata;
 #[path = "workflow_publish_resilience.rs"]
 mod workflow_publish_resilience;
 
+// Issue #2335: amplihack runtime files never make a worktree dirty.
+#[path = "issue_2335_runtime_paths_publish.rs"]
+mod issue_2335_runtime_paths_publish;
+
 // Issue #1976: step-16 publishes a local tracking reference as no linked issue.
 #[path = "issue_1976_publish_local_issue.rs"]
 mod issue_1976_publish_local_issue;
