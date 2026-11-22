@@ -150,6 +150,14 @@ steps:
          There is no round or time cap.
       3. Decide only on what you read after the last write.
 
+      If you must stop before the head is green and before you can name a
+      cause the run cannot fix, still return a terminal state, never nothing:
+      report what you read, with the head commit and the count of green,
+      failing, pending and unknown checks, and say in `next_action` what the
+      next attempt should try. An empty or unparseable answer is the one
+      ending that names no cause and no owner, and finalization can only
+      report it as missing evidence.
+
       After a push, GitHub moves the pull request to the new commit shortly
       afterwards, not at once. Until it has, `gh pr checks` reports the
       previous head's checks, and `--watch` returns at once if those had all
@@ -189,8 +197,15 @@ steps:
         write.
 
       A check that failed again after a fix needs a different attempt. Before
-      the next one, state to yourself why it differs from the last; if you
-      cannot, the cause is one the run cannot fix, and you name it.
+      the next one, state to yourself why it differs from the last. If you
+      cannot yet say, that means you do not understand the failure, not that
+      the run cannot fix it: read the failing check's log again and further
+      back, reproduce the check's own command locally, and widen what you
+      read until you can name the cause. A cause in the always-fixable list
+      above stays fixable however many attempts it has survived; a stubborn
+      test, lint, build, format or smoke failure is never `BLOCKED_CI`. Name a
+      cause the run cannot fix only when the evidence itself shows it is one
+      of those causes, with an owner and a step that owner must take.
 
       ## Choose one terminal state
 

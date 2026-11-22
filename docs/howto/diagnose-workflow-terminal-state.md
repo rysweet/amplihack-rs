@@ -301,13 +301,14 @@ The driver prints the binary path it uses and fails if the variable does not
 name an existing executable; without the variable it builds `amplihack` with
 cargo first. It runs with `env -i` and an allowlist, a fresh
 `HOME` per case and temporary folders under `$TMPDIR`, so it never reads a real
-Claude profile or a GitHub token. Three cases run in turn:
+Claude profile or a GitHub token. Four cases run in turn:
 
 | Case | What the stubs do | Expected result |
 | --- | --- | --- |
 | `red_ci_is_repaired` | Checks fail until the fix is pushed. The `step-22` stub applies the fix, commits and pushes. | At least one repair push, `EXISTING_OPEN_PR`, `terminal_success=true`, no hand-off in the step-recovery report, exit `0` (not `81`). |
 | `assessment_finishes_the_repair` | Checks fail on the first head, and the `step-22` stub ends without pushing a fix, so the second point of the loop has work to do. The assessment stub applies the fix and pushes it, and the stub `gh` reports green only for the new head. | `assessment_action=repaired_ci`, `EXISTING_OPEN_PR`, `terminal_success=true`, exit `0`. |
 | `unfixable_cause_is_handed_to_its_owner` | A check fails because a secret is not defined. | `BLOCKED_CI` with the check and cause as the reason, the owner and step as the next action, hand-off recorded, exit `81`. |
+| `pending_checks_are_waited_on` | A check is still in progress, and the stub `gh` reports it settled and green only once `pr checks --watch` has been run. The `step-22` stub pushes nothing. | The assessment waits with `gh pr checks --watch` and decides on the settled head: `EXISTING_OPEN_PR`, `terminal_success=true`, no push, no hand-off, exit `0`. |
 
 Every case also asserts that the stub logs are not empty, that the stub `gh`
 saw no call outside its table, and that no agent prompt went unmatched by a
