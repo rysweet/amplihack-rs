@@ -187,8 +187,14 @@ fn untracked_and_modified_product_files_are_named() {
         msg.starts_with(FIRST_SENTENCE),
         "first sentence kept: {msg}"
     );
-    assert!(msg.contains("?? new.rs"), "names untracked file: {msg}");
-    assert!(msg.contains(" M feature.txt"), "names modified file: {msg}");
+    assert!(
+        msg.contains(r#""?? new.rs""#),
+        "names untracked file: {msg}"
+    );
+    assert!(
+        msg.contains(r#"" M feature.txt""#),
+        "names modified file: {msg}"
+    );
     assert!(!msg.contains(".amplihack"), "runtime paths absent: {msg}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("new.rs") && stderr.contains("feature.txt"));
@@ -250,8 +256,19 @@ fn hostile_filenames_are_sanitised_and_json_stays_valid() {
     write(&f.wt.join("q\"uote\\back\u{202e}rtl.txt"), "x\n");
     let out = run_step16(&f);
     let msg = message(&out); // panics when the JSON is invalid
-    assert!(msg.contains("q\"uote\\back"), "{msg}");
+    assert!(
+        msg.contains(r#"q\"uote\\back"#),
+        "escaped inside quotes: {msg}"
+    );
     assert!(!msg.contains('\u{202e}'), "bidi override must be stripped");
+}
+
+#[test]
+fn a_filename_with_a_separator_is_one_quoted_entry() {
+    let f = fixture();
+    write(&f.wt.join("a; b.txt"), "x\n");
+    let msg = message(&run_step16(&f));
+    assert!(msg.contains(r#""?? a; b.txt""#), "one quoted entry: {msg}");
 }
 
 #[test]

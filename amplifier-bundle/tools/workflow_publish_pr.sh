@@ -311,7 +311,9 @@ strip_invisible_chars() {
 # with a newline in the name), invisible characters stripped, control
 # characters removed, credentials redacted, then each entry cut to 200
 # characters with "..." (after redaction, so a token is never cut in half and
-# missed). At most 20 entries, joined with "; ", then "(+N more)".
+# missed). Each entry is then double-quoted with `\` and `"` escaped (after the
+# cut, so an escape is never split), so a name containing "; " stays one
+# entry. At most 20 entries, joined with "; ", then "(+N more)".
 describe_dirty_entries() (
   set -o pipefail
   # The body is a subshell, so `raw` is not local: the EXIT trap still sees it.
@@ -334,6 +336,9 @@ describe_dirty_entries() (
     if [ "${#entry}" -gt 200 ]; then
       entry="${entry:0:200}..."
     fi
+    entry="${entry//\\/\\\\}"
+    entry="${entry//\"/\\\"}"
+    entry="\"$entry\""
     if [ -n "$shown" ]; then shown="$shown; $entry"; else shown="$entry"; fi
     count=$((count + 1))
   done <"$raw"
