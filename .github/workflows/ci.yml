@@ -816,16 +816,6 @@ jobs:
       - name: "Outside-in: whole build and whole drive (issue #2806)"
         shell: bash
         run: AMPLIHACK_2806_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2806-end-to-end-build-and-drive-scenario.sh
-      # Issue #2569: merge-ready criterion 1 is a recorded judgement, so a QA
-      # measurement that cannot be completed is a named blocker and the round
-      # carries on, and the change set is measured against the PR's own base.
-      # The shipped autodrive-merge-evidence recipe runs against the binary
-      # installed above and the pinned runner. `gh`, `claude` and `npm` are
-      # stand-ins on a private PATH; the repositories are scratch folders.
-      # Missing prerequisites fail; nothing reaches GitHub or a live agent.
-      - name: "Outside-in: QA blockers are named, not stops (issue #2569)"
-        shell: bash
-        run: AMPLIHACK_2569_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2569-qa-blocker-not-stop-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing

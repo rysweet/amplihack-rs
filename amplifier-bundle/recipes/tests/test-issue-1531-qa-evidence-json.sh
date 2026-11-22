@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # test-issue-1531-qa-evidence-json.sh — regression test for #1531.
 #
-# A failing suite's last lines are evidence, and the measurement keeps a
-# bounded, scrubbed tail of them in qa_summary (#2569). That is the splice
-# #1531 was about: a runner that prints ANSI colour (gadugi-test does) put raw
-# ESC bytes into qa_summary, the record was invalid JSON, and the merge round
-# read a passing QA run as qa_status=MISSING.
+# The merge loop's QA evidence record splices the last lines of the repository
+# test command's log (qa_summary) and the scenario file list (qa_scenarios)
+# into a JSON record built with printf. A runner that prints ANSI colour
+# (gadugi-test does) put raw ESC bytes into qa_summary, the record was invalid
+# JSON, and the merge round read a passing QA run as qa_status=MISSING.
 #
-# This runs amplifier-bundle/tools/autodrive_qa_evidence.sh, unmodified, on a
-# scratch Rust repository whose suite prints terminal escapes, quotes,
-# backslashes, tabs, multi-byte text and control bytes and then fails. Every
-# record must be strict-UTF-8 JSON, the runner's own words must survive the
-# sanitising, no escape may reach the record or the diagnostics, and a token
-# shape must be replaced. A passing suite leaves no excerpt at all. Awkward
-# scenario names remain JSON data.
+# The record is built by amplifier-bundle/tools/autodrive_qa_evidence.sh, which
+# step-02-qa-team-scenarios of autodrive-merge-evidence.yaml runs. This runs
+# that tool, unmodified, on a scratch Rust repository whose test command
+# (AUTODRIVE_QA_COMMAND) prints logs with colour, cursor and erase sequences,
+# quotes, backslashes, tabs, multibyte text and control bytes, and over awkward
+# scenario file names. It checks that every record is valid strict-UTF-8 JSON
+# and that the runner's own words survive the sanitising.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -52,13 +52,16 @@ mkdir -p "$REPO"
   && git update-ref HEAD "$c" ) >/dev/null 2>&1 \
   || harness_error "could not create a scratch git repo"
 
-# record <log-file> [exit] — the tool's qa record for a repository whose suite
-# prints <log-file> and exits with that status (7 by default, so the tail is
-# taken). The tool's stderr goes to <log-file>.err.
+# record <log-file> — the tool's qa record for a repository whose test command
+# prints <log-file>. The tool's stderr goes to <log-file>.err.
+# Only the last line of the tool's stdout is the record; take it with a shell
+# substring, not `| tail -n 1` (issue #1434: no early-exit pipeline stages).
 record() {
-    env -i HOME="$WORK" TMPDIR="$WORK" PATH="/usr/bin:/bin" REPO_PATH="$REPO" \
-        AUTODRIVE_ROUND_LABEL=round-1 AUTODRIVE_QA_COMMANDS="cat $1; exit ${2:-7}" \
-        bash "$TOOL" 2>"$1.err"
+    local stdout
+    stdout="$(env -i HOME="$WORK" TMPDIR="$WORK" PATH="/usr/bin:/bin" REPO_PATH="$REPO" \
+        AUTODRIVE_ROUND_LABEL=round-1 AUTODRIVE_QA_COMMAND="cat $1" \
+        bash "$TOOL" 2>"$1.err")"
+    printf '%s' "${stdout##*$'\n'}"
 }
 
 # check_log <id> <description> <printf-format for the log> [text the summary must keep]...
@@ -73,30 +76,22 @@ check_log() {
         return 0
     fi
     summary="$(printf '%s' "$out" | field_of qa_summary)"
-    if [[ "$(printf '%s' "$out" | field_of qa_exit_code)" != 7 ]] ||
-        ! grep -Fq 'QA suite command 1 (env) exited 7' "$log.err"; then
-        ok=0
-        fail "$id" "$desc: the tool must report the suite's exit status"
-    fi
-    if [[ "${#summary}" -gt 400 ]]; then
-        ok=0
-        fail "$id" "$desc: the excerpt is not bounded (${#summary} bytes)"
-    fi
     for want in "$@"; do
         if [[ "$summary" != *"$want"* ]]; then
             ok=0
-            fail "$id" "$desc: the summary lost '$want': $(printf '%q' "$summary")"
+            fail "$id" "$desc: qa_summary lost '$want' (got '$summary')"
         fi
     done
-    if [[ "$out" == *$'\033'* || "$(cat "$log.err")" == *$'\033'* ]]; then
+    # A partly stripped CSI sequence leaves its tail behind, e.g. `[34m` or `[2K`.
+    if [[ "$fmt" == *'\033['* && "$summary" =~ \[[0-9:\;?\>]+[A-Za-z] ]]; then
         ok=0
-        fail "$id" "$desc: terminal escapes reached measurement or diagnostics"
+        fail "$id" "$desc: an escape sequence was only partly stripped (got '$summary')"
     fi
     if [[ "$ok" -eq 1 ]]; then pass "$id" "$desc"; fi
     return 0
 }
 
-echo "== #1531: a failing suite's excerpt is sanitised, bounded and valid JSON =="
+echo "== #1531: qa_summary is valid JSON and keeps the runner's words =="
 check_log colour "ANSI colour (gadugi-test output)" \
     '\033[34mdebug\033[39m: \033[2m Tests \033[22m \033[1m\033[32m 3 passed\033[39m\033[22m\n\033[32m✓\033[39m all scenarios passed\n' \
     "debug:" "3 passed" "all scenarios passed"
@@ -109,7 +104,7 @@ check_log column "cursor-to-column before a path" \
 check_log bare "parameterless erase-to-end and reset (ESC[K, ESC[m)" \
     'A\033[KB\033[mC done\n' "ABC done"
 check_log truecolour "colon-separated and private-parameter sequences" \
-    '\033[38:2:255:0:0mcolourfixture\033[0m \033[>4;1mkeys\033[0m done\n' "colourfixture" "keys" "done"
+    '\033[38:2:255:0:0mred\033[0m \033[>4;1mkeys\033[0m done\n' "red" "keys" "done"
 check_log quotes "double quotes" \
     'assert "a" == "b" failed\n' "assert a == b failed"
 check_log backslash "backslashes become '/'" \
@@ -118,29 +113,17 @@ check_log tabs "tabs and CRs become spaces" \
     'name\tstatus\r\npytest\tPASS\n' "name status" "pytest PASS"
 check_log utf8 "a 300-byte cut that would split a multibyte character" \
     "x$(printf 'é%.0s' $(seq 1 200))\\n"
-check_log secret "a token shape is replaced before it is recorded" \
-    'FAILED: posting with ghp_0123456789abcdefghij0123456789abcdef\n' "FAILED:" "[redacted]"
 check_log control "other control bytes" \
     'bell\a here \001\002 raw\n' "bell here" "raw"
 check_log plain "an ordinary log" \
     'test result: ok. 12 passed; 0 failed; 0 ignored\n' "test result: ok. 12 passed; 0 failed; 0 ignored"
-
-echo "== #2569: a passing suite leaves no excerpt =="
-printf 'test result: ok. 12 passed\n' > "$WORK/pass.log"
-out="$(record "$WORK/pass.log" 0)"
-if [[ -z "$(printf '%s' "$out" | field_of qa_summary)" \
-    && "$(printf '%s' "$out" | field_of qa_exit_code)" = 0 ]]; then
-    pass passing-suite "a suite that passed is reported without a log excerpt"
-else
-    fail passing-suite "a passing suite must leave qa_summary empty: $out"
-fi
 
 echo "== #1531: qa_scenarios is valid JSON for awkward file names =="
 mkdir -p "$REPO/tests/parity/scenarios"
 touch "$REPO/tests/parity/scenarios/say \"hi\".yaml" "$REPO/tests/parity/scenarios/back\\slash.yaml" \
       "$REPO/tests/parity/scenarios/$(printf 'tab\tname').yaml" "$REPO/tests/parity/scenarios/plain.yaml"
 printf 'ok\n' > "$WORK/scen.log"
-out="$(record "$WORK/scen.log" 0)"
+out="$(record "$WORK/scen.log")"
 if printf '%s' "$out" | valid_json; then
     pass scenarios "quotes, backslashes and tabs in scenario file names"
 else

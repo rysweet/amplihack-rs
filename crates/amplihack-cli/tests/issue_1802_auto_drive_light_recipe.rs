@@ -1134,34 +1134,11 @@ fn light_qa_inputs_measures_against_the_branch_origin_head_names() {
         "taking trunk instead would carry the source file: {rec}"
     );
     assert!(
-        rec_field(&rec, "qa_guidance").ends_with("skills/merge-ready/criterion-1-qa-judgement.md"),
-        "the pinned guidance path is a field of the record: {rec}"
-    );
-    assert!(
         e.fakes.gh_calls().is_empty(),
         "there is no PR yet, so the hosting interface is not asked: {:?} {}",
         e.fakes.gh_calls(),
         show(&o)
     );
-}
-
-/// #2569: where `origin/HEAD` names no branch, the change set is not
-/// measured, rather than measured against a branch nobody chose. The record
-/// says so, and the judgement carries on from that fact.
-#[test]
-fn light_qa_inputs_measures_nothing_when_origin_head_names_no_branch() {
-    if skip() {
-        return;
-    }
-    let e = light_world_with_trunk();
-    git(
-        &e.repo.wt,
-        &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
-    );
-    let (_, rec) = light_qa_record(&e, &[("RECIPE_VAR_base_branch", "trunk")]);
-    assert_eq!(rec_field(&rec, "qa_base"), "", "{rec}");
-    assert_eq!(rec_field(&rec, "qa_command_paths"), "(unknown)", "{rec}");
-    assert_eq!(rec_field(&rec, "docs_only"), "unknown", "{rec}");
 }
 
 #[test]

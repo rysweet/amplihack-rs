@@ -29,7 +29,6 @@
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
 #   AUTODRIVE_QA_EVIDENCE  file the record is written to, private (optional)
-#   AUTODRIVE_QA_GUIDANCE  trusted guidance path resolved by the caller (optional)
 #   AUTODRIVE_ROUND_LABEL  recorded as qa_round
 #   AUTODRIVE_QA_BASE      the base the caller resolved, recorded as qa_base;
 #                          empty for an unresolved target, unset for direct
@@ -175,29 +174,8 @@ else
     fi
   fi
 fi
-# Suite processes run repository code: credentials and agent sockets stay out.
-SUITE_ENV=(env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN
-  -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u CODEX_HOME -u CLAUDE_CONFIG_DIR
-  -u SSH_AUTH_SOCK -u GH_CONFIG_DIR -u AMPLIHACK_HOME -u BASH_ENV -u ENV --)
-# A failing suite reports why it failed, not only that it did. Each command's
-# output passes through `tail -c` into one temporary file, so that file holds
-# the last 64 KiB of that one command, never the whole run: a suite printing
-# megabytes cannot fill /tmp, which a whole suite on a shared host has already
-# done twice (#2569). Only the first command to fail is read back, so the kept
-# lines belong to the recorded exit code: 40 on stderr for the round log, 5 cut
-# to 300 bytes in qa_summary. `scrub` replaces the token shapes a suite
-# sometimes prints before either is written (#1531).
 LOG="$(mktemp -t autodrive-qa-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
-trap 'rm -f -- "$LOG"' EXIT HUP INT TERM
-scrub() { LC_ALL=C sed -E -e 's/(gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}/[redacted]/g' \
-  -e 's/sk-[A-Za-z0-9_-]{16,}/[redacted]/g' -e 's/eyJ[A-Za-z0-9._-]{20,}/[redacted]/g' \
-  -e 's/(AKIA|ASIA)[A-Z0-9]{12,}/[redacted]/g'; }
-# `san` folds newlines into spaces, which one JSON field needs and the round's
-# log does not: 40 lines would arrive as one, behind a single 300-byte cut.
-# `sanl` strips the same ANSI sequences and control bytes but keeps the line
-# breaks, so `cut`, working a line at a time, bounds each line on its own.
-sanl() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr -d '\000-\010\013-\037\177'; }
-CMDTEXT=""; RAN=0; FIRST_NZ=""; TAIL=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
+CMDTEXT=""; RAN=0; FIRST_NZ=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
 if [ "${#TEXTS[@]}" -eq 0 ] && [ -z "${QUNRES}${CFGBAD}" ]; then
   S_MISSING="true"; [ -n "$NOSCOPE" ] || cause "no repository test command for repository type ${TYPE}"
 fi
@@ -206,9 +184,10 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
   kind="${KINDS[$i]}"; text="${TEXTS[$i]}"; i=$((i + 1))
   CMDTEXT="${CMDTEXT}${CMDTEXT:+; }${text}"
   if [ "$kind" = "entry" ]; then
-    # Its own process from the root: a `cd` never reaches the next entry.
-    ( cd -- "$ROOT" && "${SUITE_ENV[@]}" bash -c "$text" ) </dev/null 2>&1 | tail -c 65536 >"$LOG"
-    rc="${PIPESTATUS[0]}"
+    # Its own process from the repository root: a `cd` in one entry
+    # never reaches the next, and entries are never joined or sourced.
+    ( cd -- "$ROOT" && bash -c "$text" ) >>"$LOG" 2>&1 </dev/null
+    rc=$?
   else
     dir="$QA_DIR"
     first="$(set -f; set -- $text; printf '%s' "${1:-}")"
@@ -218,10 +197,12 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       continue
     fi
     # One run path for every word and detected command. Installed means
-    # `command -v` finds it on PATH from qa_dir (a word may also be ./<first>
-    # there); where it resolves is not checked, and this is no sandbox: a
-    # suite always runs branch code. `./` keeps a relative `-` from meaning
-    # $OLDPWD. No timeout: a suite is never cut off mid-run (#439).
+    # `command -v` finds it on PATH from qa_dir (a word may also be
+    # ./<first> there). Where it resolves is not checked, and this is not a
+    # sandbox: `npm test` runs scripts.test, pytest imports conftest.py and
+    # cargo runs build.rs, so a suite always runs branch code; a project
+    # `.venv/bin/pytest` on PATH is used as it is. `./` keeps a relative `-`
+    # from meaning $OLDPWD. No timeout: a suite is never cut off mid-run.
     case "$dir" in /*) ;; *) dir="./$dir" ;; esac
     if ! ( cd -- "$dir" 2>/dev/null && { command -v -- "$first" >/dev/null 2>&1 \
            || { [ "$kind" = "word" ] && [ -x "./${first}" ]; }; } ); then
@@ -229,26 +210,18 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       continue
     fi
     # shellcheck disable=SC2086
-    ( set -f; cd -- "$dir" && "${SUITE_ENV[@]}" $text ) </dev/null 2>&1 | tail -c 65536 >"$LOG"
-    rc="${PIPESTATUS[0]}"
+    ( set -f; cd -- "$dir" && $text ) >>"$LOG" 2>&1 </dev/null
+    rc=$?
   fi
   RAN=$((RAN + 1))
-  echo "INFO: QA suite command ${i} (${SRC}) exited ${rc}" >&2
-  # Read back here, while $LOG still holds this command; the next overwrites
-  # it. Only the first failure is kept, matching the recorded exit code.
-  if [ "$rc" -ne 0 ]; then
-    if [ "$S_FAILED" = "false" ]; then
-      FIRST_NZ="$rc"
-      TAIL="$(tail -n 5 "$LOG" | scrub | san | ascii | cut -c1-300)"
-      { echo "INFO: QA suite command ${i} (${SRC}) failed; its last lines, scrubbed:"
-        tail -n 40 "$LOG" | scrub | sanl | ascii | cut -c1-300; } >&2
-    fi
-    S_FAILED="true"
-  fi
+  echo "INFO: qa-team (${TYPE}) suite command exited ${rc}: $(printf '%s' "$text" | san | cut -c1-200)" >&2
+  if [ "$rc" -ne 0 ]; then S_FAILED="true"; [ -n "$FIRST_NZ" ] || FIRST_NZ="$rc"; fi
 done
 [ "$S_FAILED" = "true" ] && cause "repository test failure"
 RC=""; [ "$RAN" -gt 0 ] && RC="${FIRST_NZ:-0}"
-rm -f -- "$LOG"
+TAIL="$(tail -n 5 "$LOG" | san | ascii | cut -c1-300)"
+tail -n 60 "$LOG" >&2 || true
+rm -f "$LOG"
 # --- the scenario directory ------------------------------------------
 # Consulted only where gadugi is required. AUTODRIVE_QA_SCENARIO_DIR comes from
 # the environment only; without it the directory is the first of tests/agentic,
@@ -362,7 +335,7 @@ F="${F}"'"qa_round":"%s","head_sha":"%s","docs_only":"%s","gadugi_required":"%s"
 F="${F}"'"gadugi_validate_exit_code":"","gadugi_run_exit_code":"","gadugi_scenario_count":"%s",'
 F="${F}"'"gadugi_scenario_dir":"%s","gadugi_scenario_dir_state":"%s","gadugi_scenarios_validated":"0",'
 F="${F}"'"gadugi_scenarios_run":"0","gadugi_scenarios_passed":"0","gadugi_scenarios_failed":"0",'
-F="${F}"'"gadugi_failed_scenarios":"","gadugi_scenario_results":"","qa_base":"%s","git_env_cleared":"%s","run_env_cleared":"%s","qa_guidance":"%s"}'
+F="${F}"'"gadugi_failed_scenarios":"","gadugi_scenario_results":"","qa_base":"%s","git_env_cleared":"%s","run_env_cleared":"%s"}'
 # shellcheck disable=SC2059 # F is the fixed format above, never input
 OUT="$(printf "$F" \
   "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$QD" | san | ascii | cut -c1-200)" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" \
@@ -371,21 +344,8 @@ OUT="$(printf "$F" \
   "$(printf '%s' "$SCEN" | san | ascii | cut -c1-2000)" "$RC" "$SUMMARY" \
   "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
   "$DOCSONLY" "$GREQ" "$G_STATUS" "$COUNT" "$(printf '%s' "$SREL" | san | ascii | cut -c1-200)" "$SSTATE" \
-  "$QBASE" "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)" \
-  "$(printf '%s' "${AUTODRIVE_QA_GUIDANCE:-}" | san)")"
+  "$QBASE" "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)")"
 
-# Write the complete record beside its destination under a private mode, then
-# replace that entry. A symlink at the destination is never followed.
-if [ -n "$EVIDENCE" ]; then
-  (
-    umask 077
-    tmp="$(mktemp -- "${EVIDENCE}.XXXXXX")" || exit 1
-    trap 'rm -f -- "$tmp"' EXIT
-    printf '%s\n' "$OUT" > "$tmp" || exit 1
-    case "$(uname -s)" in
-      Darwin|*BSD) mv -fh -- "$tmp" "$EVIDENCE" ;;
-      *) mv -fT -- "$tmp" "$EVIDENCE" ;;
-    esac
-  ) || { echo "ERROR: could not publish private QA evidence" >&2; exit 1; }
-fi
+# Private to this user (#1517 D5), and never written through a planted symlink.
+[ -z "$EVIDENCE" ] || ( umask 077; rm -f -- "$EVIDENCE"; printf '%s' "$OUT" > "$EVIDENCE" )
 printf '%s\n' "$OUT"
