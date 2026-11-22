@@ -242,6 +242,26 @@ rm -rf "$standin"
 
 Never point either variable at a real profile.
 
+The QA scenario `tests/qa/scenarios/inherited-claude-profile.yaml` makes the
+same check from outside. Its driver, `tests/qa/inherited-claude-profile.sh`,
+builds a temporary `HOME` and stand-ins for a profile, a profile root and an
+amplihack home, exports all five variables at them, runs `cargo test`, and
+compares a manifest of every stand-in (type, mode and SHA-256 per entry)
+before and after:
+
+```bash
+bash tests/qa/inherited-claude-profile.sh install    # the install tests
+bash tests/qa/inherited-claude-profile.sh workspace  # the pre-push command
+```
+
+Set `QA_EVIDENCE_DIR` to keep the cargo log and both manifests.
+
+The driver also checks the `.claude` and `.amplihack` folders of the `HOME`
+it runs under, which stands in for the real home. The `workspace` step fails
+on `.amplihack` until issue #2986 is fixed: tests that leave `HOME` alone
+write session-tree state and the bundle compatibility cache there, through
+paths taken from `HOME` rather than from any of the five variables.
+
 ## Limits
 
 - The fix is on the test side. The install code still follows an inherited
