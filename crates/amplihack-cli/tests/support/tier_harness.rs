@@ -110,8 +110,19 @@ impl Fixture {
     /// `amplihack <harness> -- <passthrough>`, isolated and not yet run, so a
     /// caller can add the variables its own question needs.
     pub fn launch(&self, harness: &str, passthrough: &[&str]) -> Command {
+        self.launch_with_flags(harness, &[], passthrough)
+    }
+
+    /// As [`Fixture::launch`], with amplihack's own flags (`--docker`, say)
+    /// placed before the `--` that starts the passthrough.
+    pub fn launch_with_flags(
+        &self,
+        harness: &str,
+        flags: &[&str],
+        passthrough: &[&str],
+    ) -> Command {
         let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
-        c.arg(harness).arg("--").args(passthrough);
+        c.arg(harness).args(flags).arg("--").args(passthrough);
         c.current_dir(&self.work)
             .env(
                 "PATH",

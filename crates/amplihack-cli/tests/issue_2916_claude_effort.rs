@@ -344,30 +344,85 @@ fn a_claude_too_old_for_effort_runs_the_step_without_it_and_says_so() {
     );
 }
 
-/// A launch that stops before the binary is resolved still writes the record
-/// the tier decision made, as it did before the `--help` probe existed: the
-/// record no longer waits on a probe the launch never reached.
-#[test]
-fn a_launch_that_stops_before_the_binary_is_resolved_still_writes_the_record() {
-    let f = Fixture::new();
-    let output = f
-        .launch("claude", &["--model", "strong", "-p"])
-        .env(
-            "AMPLIHACK_CLAUDE_BINARY_PATH",
-            f.tools.join("no-such-claude"),
-        )
+/// The record a launch that stops early leaves, and its stderr.
+///
+/// Each early exit below ends the launch before the stand-in Claude runs. The
+/// tier decision is made, recorded and announced first, so the record and the
+/// applied line must still be there, once.
+fn record_of_a_stopped_launch(f: &Fixture, command: &mut std::process::Command) -> String {
+    let output = command
         .env("AMPLIHACK_RUN_DIR", &f.run_dir)
         .output()
         .expect("run amplihack");
-    assert!(!output.status.success(), "a missing binary ends the launch");
-    let text = std::fs::read_to_string(f.run_dir.join("model-tiers.jsonl")).unwrap_or_else(|e| {
-        panic!(
-            "no record: {e}. stderr:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-    });
-    let line: serde_json::Value =
-        serde_json::from_str(text.lines().next().expect("one line")).expect("json");
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        !output.status.success(),
+        "the launch stops early:\n{stderr}"
+    );
+    assert!(
+        !f.argv_log.exists(),
+        "the stand-in Claude never ran:\n{stderr}"
+    );
+    let text = std::fs::read_to_string(f.run_dir.join("model-tiers.jsonl"))
+        .unwrap_or_else(|e| panic!("no record: {e}. stderr:\n{stderr}"));
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 1, "exactly one record: {text}");
+    let line: serde_json::Value = serde_json::from_str(lines[0]).expect("json");
     assert_eq!(line["tier"], "strong", "record: {text}");
     assert_eq!(line["effective_effort"], "xhigh", "record: {text}");
+    assert_eq!(
+        stderr.matches("`--effort xhigh`").count(),
+        1,
+        "the applied line prints once:\n{stderr}"
+    );
+    stderr
+}
+
+/// A missing Claude binary ends the launch after the tier was resolved.
+#[test]
+fn a_launch_whose_binary_cannot_be_resolved_still_writes_the_record() {
+    let f = Fixture::new();
+    let mut command = f.launch("claude", &["--model", "strong", "-p"]);
+    command.env(
+        "AMPLIHACK_CLAUDE_BINARY_PATH",
+        f.tools.join("no-such-claude"),
+    );
+    record_of_a_stopped_launch(&f, &mut command);
+}
+
+/// A Claude Code older than the contract gate's minimum is refused before it
+/// is spawned (issue #2030); the tier decision was already recorded.
+#[test]
+fn a_launch_the_contract_gate_refuses_still_writes_the_record() {
+    let f = Fixture::new();
+    let old = crate::support::tier_harness::FAKE_HARNESS
+        .replace("2.1.319 (Claude Code)", "2.1.100 (Claude Code)");
+    crate::support::exec_stub::write_executable(&f.tools.join("claude"), &old, 0o755);
+    let stderr =
+        record_of_a_stopped_launch(&f, &mut f.launch("claude", &["--model", "strong", "-p"]));
+    assert!(
+        stderr.contains("2.1.100"),
+        "the refusal names the installed version:\n{stderr}"
+    );
+}
+
+/// The Docker hand-off returns before the binary is resolved. A stand-in
+/// `docker` that fails `docker info` makes the hand-off end at once with
+/// "Docker is not running", so nothing real is started.
+#[test]
+fn a_docker_launch_still_writes_the_record() {
+    let f = Fixture::new();
+    crate::support::exec_stub::write_executable(
+        &f.tools.join("docker"),
+        "#!/bin/sh\nexit 1\n",
+        0o755,
+    );
+    let stderr = record_of_a_stopped_launch(
+        &f,
+        &mut f.launch_with_flags("claude", &["--docker"], &["--model", "strong", "-p"]),
+    );
+    assert!(
+        stderr.contains("Docker is not running"),
+        "the launch took the Docker hand-off:\n{stderr}"
+    );
 }
