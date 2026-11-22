@@ -159,6 +159,11 @@ impl Sandbox {
     }
 
     fn isolate<'a>(&self, command: &'a mut Command) -> &'a mut Command {
+        // Issue #2922: this sandbox keeps the parent environment rather than
+        // clearing it, and its PATH still ends in the real one, so a run that
+        // finds an `amplihack` past the stubs must not also find an inherited
+        // `CLAUDE_CONFIG_DIR` beside the sandbox HOME below.
+        crate::isolated_amplihack::claude_profile_isolation::remove_from_command(command);
         amplihack_git::scrub(command)
             .env_remove("AMPLIHACK_WORK_ROOT")
             .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT")

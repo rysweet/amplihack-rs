@@ -178,6 +178,8 @@ set -euo pipefail
 W="$(cd -- "$(dirname -- "$0")/.." && pwd -P)"
 printf '%s\n' "$*" >> "$W/gh-calls"
 if [ "${1:-} ${2:-}" = 'pr view' ]; then cat "$W/head"; exit 0; fi
+# #2333: completion dispatch reads the PR head once, read-only, over REST.
+if [ "$*" = 'api repos/{owner}/{repo}/pulls/7 --jq .head.sha' ]; then cat "$W/head"; exit 0; fi
 echo 'unexpected GitHub operation in dry-run scenario' >&2
 exit 45
 STUB
@@ -234,10 +236,13 @@ cp -- "$RECORD.findings" "$WORK/state/crusty-latest.json.findings" ||
   fail 'publish crusty-latest.json.findings'
 HASH="$(fixture_git -C "$WORK/pr" hash-object --no-filters "$RECORD")" || fail 'hash round record'
 printf 'round-1\tcrusty-round-1.json\t%s\n' "$HASH" > "$WORK/state/crusty-records.tsv"
-scenario_env "$BIN" orch helper autodrive-completion-dispatch \
+# autodrive_loop.sh passes the drive's PR as PR_NUMBER (#2333).
+scenario_env PR_NUMBER=7 "$BIN" orch helper autodrive-completion-dispatch \
   --private-state "$PRIVATE_STATE" --child-exit-code 0 > "$WORK/completion.json" ||
   fail 'autodrive-completion-dispatch'
-jq -e '.loop_result == "DONE" and .round_verdict == "CLEAN" and .evaluator_invoked == false' \
+jq -e --arg head "$HEAD_SHA" '.loop_result == "DONE" and .round_verdict == "CLEAN" and
+  .evaluator_invoked == false and .pr_head.read == "matches" and
+  .pr_head.github_head == $head and .pr_head.reviewed_head == $head' \
   "$WORK/completion.json" >/dev/null || fail 'real_completion_writer_and_dispatcher_complete (dispatch result)'
 DECISION="$(jq -er .decision_file "$WORK/prepared.json")" || fail 'prepared.json has no decision_file'
 jq -e '.action == "complete"' "$DECISION" >/dev/null ||
@@ -246,7 +251,9 @@ echo 'PASS: real_completion_writer_and_dispatcher_complete'
 if ! cmp -s -- "$WORK/codex-config.before" "$WORK/home/.codex/config.toml"; then
   echo 'FAIL: Codex configuration changed'; exit 1
 fi
-if grep -Eq '^(pr comment|pr review|api) ' "$WORK/gh-calls"; then
+# The one REST head read above is a GET; every other `gh api` call counts as a write.
+if grep -v -Fx 'api repos/{owner}/{repo}/pulls/7 --jq .head.sha' "$WORK/gh-calls" |
+  grep -Eq '^(pr comment|pr review|api) '; then
   echo 'FAIL: unexpected GitHub write'; exit 1
 fi
 echo 'PASS: isolated_configuration_unchanged'

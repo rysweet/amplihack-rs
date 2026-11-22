@@ -518,6 +518,8 @@ mod tests_failure_class;
 mod tests_failure_class_1437;
 #[cfg(test)]
 mod tests_format;
+#[cfg(all(test, unix))]
+mod tests_issue_3049_release_pin;
 #[cfg(test)]
 mod tests_limit_kind;
 #[cfg(test)]

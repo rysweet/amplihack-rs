@@ -429,13 +429,20 @@ fn record_base_sweeps_only_old_state_directories() {
         d
     };
     let (old, recent, other) = (dir("123"), dir("456"), dir("not-a-cksum"));
+    // Set in Rust: `touch -d "30 days ago"` is a GNU date form that BSD
+    // `touch` rejects (issue #2931). Both times, as `touch` set both.
+    let thirty_days_ago =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 24 * 60 * 60);
     for d in [&old, &other] {
-        let o = std::process::Command::new("touch")
-            .args(["-d", "30 days ago"])
-            .arg(d)
-            .output()
-            .unwrap();
-        assert!(o.status.success());
+        std::fs::File::open(d)
+            .and_then(|folder| {
+                folder.set_times(
+                    std::fs::FileTimes::new()
+                        .set_accessed(thirty_days_ago)
+                        .set_modified(thirty_days_ago),
+                )
+            })
+            .unwrap_or_else(|e| panic!("age {}: {e}", d.display()));
     }
     record_base(&r);
     assert!(!old.exists(), "a directory idle for 30 days is swept");

@@ -15,6 +15,8 @@ pub(crate) mod fixture;
 mod live;
 #[path = "issue_2336_autodrive_completion_regressions.rs"]
 mod regressions;
+#[path = "issue_2333_rest_head_read.rs"]
+mod rest_head_read;
 #[path = "issue_2336_autodrive_completion_security.rs"]
 mod security;
 

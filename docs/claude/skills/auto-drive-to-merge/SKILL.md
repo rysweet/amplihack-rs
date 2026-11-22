@@ -90,7 +90,7 @@ The round, merge and hand-off steps are described in
 facts and judge readiness; Rust helpers capture authorization and manage
 private state, and do not contact the hosting service or merge.
 
-The `crusty-old-engineer` skill supplies maintainer review. Apply the `qa-team` repository-type table and trusted merge-base QA selection for criterion 1.
+The `crusty-old-engineer` skill supplies maintainer review. Criterion 1 is judged by an agent step following `skills/merge-ready/criterion-1-qa-judgement.md` in the amplifier bundle, with the trusted merge-base QA command as one of its inputs; it writes or extends outside-in scenarios with the `qa-team` skill.
 
 ## Crusty and loop contracts
 

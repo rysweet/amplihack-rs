@@ -148,11 +148,14 @@ pub(crate) fn runner_payload(
     );
     let (code, text) = run_fixture(&stub);
     assert_eq!(code, 1, "structured failed runs exit 1:\n{text}");
+    // The whole log on a failure: without it a run that ended before any
+    // marker was written (a failed runner check, say) cannot be told from
+    // one that classified nothing (issue #2931).
     let last = text
         .lines()
         .filter_map(|line| line.strip_prefix(PREFIX))
         .next_back()
-        .unwrap();
+        .unwrap_or_else(|| panic!("the log holds no `{PREFIX}` line:\n{text}"));
     (serde_json::from_str(last).unwrap(), text)
 }
 

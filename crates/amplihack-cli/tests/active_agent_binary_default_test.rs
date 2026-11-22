@@ -29,6 +29,11 @@ fn run_probe(test_name: &str, env_override: Option<&str>) -> String {
     // Issue #1606: the resolver also reads ~/.amplihack/config.toml, so the
     // probe gets a HOME with no config in it, never the developer's.
     cmd.env("HOME", probe_dir.path());
+    // Issue #2922: this probe is not a quiet child, so the purge that
+    // `quiet_process` fires never runs in it, and this binary has no
+    // `env_lock()`. The five profile variables are removed here so an
+    // inherited `CLAUDE_CONFIG_DIR` cannot outlive the temporary HOME above.
+    crate::support::claude_profile_isolation::remove_from_command(&mut cmd);
     cmd.env("TMPDIR", std::env::temp_dir());
     cmd.env(crate::isolated_amplihack::HOME_GUARD_ENV, "1");
     cmd.args([

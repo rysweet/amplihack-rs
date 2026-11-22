@@ -24,7 +24,7 @@
 #![cfg(unix)]
 
 use crate::issue_1618_fixture::{
-    Fixture, SPEND_TEXT, WEEKLY_TEXT, describe, events, private_file, text, wait_lines,
+    Fixture, SPEND_TEXT, WAIT_PREFIX, WEEKLY_TEXT, describe, events, private_file, text, wait_lines,
 };
 use crate::support::profile_default::set_default;
 use std::process::Command;
@@ -219,9 +219,10 @@ fn with_a_default_pointer_the_wait_watches_that_profiles_login() {
     // Only the pointer: `profile switch X` would also move X's login into
     // `~/.claude` (#1691), and this test needs it in X's directory.
     set_default(&f.profiles, "X");
-    // X's login arrives during the wait (the stub creates the file in the
-    // directory it runs with); nothing changes in CLAUDE_CONFIG_DIR.
-    std::fs::remove_file(f.profiles.join("X").join(".credentials.json")).unwrap();
+    // X's login arrives during the wait, in X's own directory; nothing
+    // changes in CLAUDE_CONFIG_DIR.
+    let login = f.profiles.join("X").join(".credentials.json");
+    std::fs::remove_file(&login).unwrap();
     // Without a login of its own X is refused by the launch guard (issue
     // #1700); an explicit API-key kind is the documented way to launch it.
     let out = f.run(&mut f.cmd(&["profile", "kind", "set", "X", "api-key"]));
@@ -231,9 +232,23 @@ fn with_a_default_pointer_the_wait_watches_that_profiles_login() {
         describe(&out)
     );
     let mut c = f.step();
-    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "100")
-        .env("CHANGE_LOGIN_AFTER", "1");
-    let out = f.run(&mut c);
+    // The test moves the login into place itself, when the wait's first
+    // `progress` line shows it is polling, as `ac5` of `issue_1618_wait_ends`
+    // does (#1973). Before, the stub started a process that made the file
+    // one second after the first attempt while the wait ran at 100x, and on
+    // a loaded host the reset came first (issue #2931). At 3x the wait
+    // cannot reach its reset before the change; the `end reason=login
+    // changed` event shows what ended it.
+    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "3");
+    let progress = format!("{WAIT_PREFIX}progress ");
+    let mut moved = false;
+    let out = f.run_watching(&mut c, |line| {
+        if !moved && line.starts_with(&progress) {
+            std::fs::write(&login, "").expect("move X's login into place");
+            moved = true;
+        }
+    });
+    assert!(moved, "the wait wrote no progress line: {}", describe(&out));
     assert!(out.status.success(), "{}", describe(&out));
     let x = f.profiles.join("X").to_string_lossy().to_string();
     assert_eq!(
