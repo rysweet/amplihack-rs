@@ -13,6 +13,12 @@
 //! status, so the test decides when the process exits and what the rotator's
 //! swap record says at that moment. A run counts as started by the wrapper
 //! once the wrapper's id thread has recorded its process.
+//!
+//! A run that is meant to have done something appends a line to its
+//! conversation's transcript, as a real session does on every turn. That
+//! growth is the evidence the wrapper's brake reads, so a stand-in that
+//! writes nothing is a session that started and crashed with nothing for
+//! `--continue` to carry on.
 
 #![cfg(target_os = "linux")]
 
@@ -29,29 +35,60 @@ const NAME: &str = "area-docs";
 const CLAUDE_PID: u32 = 60001;
 
 /// The stand-in session. Run `n` records its arguments, then acts on line
-/// `n` of `claude.script`: `hold:N` waits for `release.<n>` and exits N,
-/// `exit:N` exits N at once. Anything else exits 0.
-fn install_stand_in(fx: &Fx, script: &[&str]) {
+/// `n` of `claude.script`:
+///
+/// - `hold:N` appends one turn to its conversation's transcript, waits for
+///   `release.<n>` and exits N: a run that did something.
+/// - `wait:N` waits for `release.<n>` and exits N, having written nothing:
+///   a run the wrapper certainly saw, since the test can wait for its
+///   process to be recorded before releasing it, and which still leaves
+///   nothing for `--continue` to carry on.
+/// - `exit:N` exits N at once, having written nothing: a run that started
+///   and crashed before anything could be recorded of it.
+///
+/// Anything else exits 0.
+fn install_stand_in(fx: &Fx, dir: &Path, script: &[&str]) {
     let body = format!(
         r#"#!/bin/sh
 case "$1" in --version) echo '2.1.319 (Claude Code)'; exit 0 ;; esac
 d='{records}'
+t='{transcript}'
 {{ for a in "$@"; do printf '%s ' "$a"; done; echo; }} >> "$d/claude.runs"
 n=$(wc -l < "$d/claude.runs" | tr -d ' ')
 verb=$(sed -n "${{n}}p" "$d/claude.script")
 : > "$d/claude.started"
 echo FAKE-CLAUDE-STARTED >&2
 case "$verb" in
-  hold:*) while [ ! -e "$d/release.$n" ]; do sleep 0.05; done
+  hold:*) mkdir -p "$(dirname "$t")"
+          printf '{{"type":"user","run":%s}}\n' "$n" >> "$t"
+          while [ ! -e "$d/release.$n" ]; do sleep 0.05; done
           : > "$d/exited.$n"; exit "${{verb#hold:}}" ;;
+  wait:*) while [ ! -e "$d/release.$n" ]; do sleep 0.05; done
+          : > "$d/exited.$n"; exit "${{verb#wait:}}" ;;
   exit:*) : > "$d/exited.$n"; exit "${{verb#exit:}}" ;;
   *) : > "$d/exited.$n"; exit 0 ;;
 esac
 "#,
-        records = fx.records.display()
+        records = fx.records.display(),
+        transcript = transcript(fx, dir).display()
     );
     write_executable(&fx.tools.join("claude"), body, 0o755);
     fs::write(fx.records.join("claude.script"), script.join("\n") + "\n").unwrap();
+}
+
+/// `~/.claude/projects/<launch dir>/<CONV_C>.jsonl`: the transcript of the
+/// conversation the stand-in's sessions file names, which is where
+/// `claude --continue` would read from and where the stand-in writes.
+///
+/// It is not created here. The stand-in creates it when it runs, so a run
+/// that writes nothing leaves no transcript at all, and the first run of a
+/// session starts from nothing as a real one does.
+fn transcript(fx: &Fx, dir: &Path) -> PathBuf {
+    let enc = dir.display().to_string().replace(['/', '.'], "-");
+    fx.claude_dir
+        .join("projects")
+        .join(enc)
+        .join(format!("{CONV_C}.jsonl"))
 }
 
 fn runs(fx: &Fx) -> Vec<String> {
@@ -228,9 +265,20 @@ fn waiting_for_room(fx: &Fx, n: usize) {
 fn fixture(script: &[&str]) -> (Fx, PathBuf) {
     let fx = Fx::new();
     let dir = fx.dir("docs");
-    install_stand_in(&fx, script);
+    install_stand_in(&fx, &dir, script);
     show_claude(&fx, &dir);
     (fx, dir)
+}
+
+/// The one refusal line the log holds, with the test's own message.
+fn refusal(fx: &Fx, what: &str) -> String {
+    let log = fx.log_lines();
+    let found: Vec<_> = log
+        .iter()
+        .filter(|l| l.contains(" standing session refused "))
+        .collect();
+    assert_eq!(found.len(), 1, "{what}: {log:?}");
+    found[0].clone()
 }
 
 #[test]
@@ -384,27 +432,124 @@ fn the_standing_flag_overrides_the_key_both_ways() {
     assert_eq!(runs(&fx).len(), 1);
 }
 
-/// A session whose Claude never started has nothing to continue, and
-/// relaunching it would spin.
+/// The brake on the relaunch loop, and the case the brief asks to be
+/// evidenced: a session that starts, is seen, and exits non-zero on every
+/// start. Without a brake the script below would run four times and then
+/// run on; with it there are two runs and a refusal that says why.
+///
+/// Run 1 does a turn of work and exits 1, so it is relaunched. Run 2 is
+/// waited for until the wrapper's id thread has recorded its process, so
+/// the wrapper certainly saw it and it certainly outlived the first scan;
+/// it then exits 1 having written nothing, and the wrapper stops. What
+/// stops it is the evidence of the exit itself and not a count of attempts,
+/// a timer or a scan: the conversation is the size it was when run 2
+/// started, and a login had room throughout.
 #[test]
-fn a_session_whose_claude_never_started_is_refused_loudly() {
-    let fx = Fx::new();
-    let dir = fx.dir("docs");
-    install_stand_in(&fx, &["exit:1", "exit:0"]);
+fn a_session_that_keeps_crashing_with_nothing_to_show_is_refused_loudly() {
+    let (fx, dir) = fixture(&["hold:1", "wait:1", "wait:1", "wait:1"]);
     set_standing(&fx, true);
-    let out = fx.output(&mut wrapped(&fx, &dir, &[], &[]));
+    let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
+    run_is_up(&fx, 1);
+    release(&fx, 1);
+    run_is_up(&fx, 2);
+    release(&fx, 2);
+    let out = w.finish();
     expect_code(&out, 1);
-    assert_eq!(runs(&fx).len(), 1, "{:?}", runs(&fx));
-    let log = fx.log_lines();
-    let refusal = log
-        .iter()
-        .find(|l| l.contains(" standing session refused "))
-        .unwrap_or_else(|| panic!("no refusal line in {log:?}"));
+    assert_eq!(
+        runs(&fx).len(),
+        2,
+        "the crashing run is not started again: {:?}",
+        runs(&fx)
+    );
+    assert_eq!(
+        relaunch_lines(&fx.log_lines()).len(),
+        1,
+        "{:?}",
+        fx.log_lines()
+    );
+    let refusal = refusal(&fx, "start then crash");
     assert!(
-        refusal.ends_with(" standing session refused session=area-docs reason=never-started"),
+        refusal.ends_with(" standing session refused session=area-docs reason=no-progress"),
         "{refusal}"
     );
     assert!(stderr(&out).contains(refusal.as_str()), "{}", stderr(&out));
+}
+
+/// The same brake on the first exit: a session that never gets anywhere at
+/// all, whether its Claude Code never started or started and died at once,
+/// is not started again. The window between the two cases was decided by
+/// the wrapper's once-a-second process scan, and is not consulted here.
+#[test]
+fn a_session_that_gets_nowhere_at_all_is_refused_on_its_first_exit() {
+    for seen in [true, false] {
+        let fx = Fx::new();
+        let dir = fx.dir("docs");
+        install_stand_in(&fx, &dir, &["exit:1", "exit:0"]);
+        if seen {
+            show_claude(&fx, &dir);
+        }
+        set_standing(&fx, true);
+        let out = fx.output(&mut wrapped(&fx, &dir, &[], &[]));
+        expect_code(&out, 1);
+        assert_eq!(runs(&fx).len(), 1, "seen={seen}: {:?}", runs(&fx));
+        let refusal = refusal(&fx, &format!("seen={seen}"));
+        assert!(
+            refusal.ends_with(" standing session refused session=area-docs reason=no-progress"),
+            "seen={seen}: {refusal}"
+        );
+        assert!(
+            stderr(&out).contains(refusal.as_str()),
+            "seen={seen}: {}",
+            stderr(&out)
+        );
+    }
+}
+
+/// A refusal that leaves a session stopped reaches the supervisor, not only
+/// the log: the reason is on the session's own record, and the record is
+/// left `active`, so the supervisor's own recovery is the next thing to try
+/// and the alert is in `amplihack agent status`.
+#[test]
+fn a_no_progress_refusal_is_left_on_the_record_for_the_supervisor() {
+    let (fx, dir) = fixture(&["exit:7", "exit:0"]);
+    set_standing(&fx, true);
+    expect_code(&fx.output(&mut wrapped(&fx, &dir, &[], &[])), 7);
+    let e = fx.agent(NAME);
+    assert_eq!(e["state"], "active", "the supervisor may still recover it");
+    let alert = e["alert"].as_str().unwrap_or_default();
+    assert_eq!(
+        alert,
+        "not relaunched: exited exit-status-7 without advancing its conversation \
+         while a login had room, so a relaunch would repeat it",
+        "{e}"
+    );
+    let status = fx.run(&["agent", "status"]);
+    assert!(
+        stdout(&status).contains(&format!("ALERT {NAME}: {alert}")),
+        "the status shows it: {}",
+        stdout(&status)
+    );
+}
+
+/// Work keeps a session going with no count limit: four crashes after four
+/// turns of work are four relaunches, with a login with room throughout.
+#[test]
+fn a_session_that_keeps_working_is_relaunched_as_often_as_it_exits() {
+    let (fx, dir) = fixture(&["hold:1", "hold:1", "hold:1", "hold:1", "hold:0"]);
+    set_standing(&fx, true);
+    let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
+    for n in 1..=5usize {
+        run_is_up(&fx, n);
+        release(&fx, n);
+    }
+    expect_code(&w.finish(), 0);
+    assert_eq!(runs(&fx).len(), 5, "{:?}", runs(&fx));
+    let log = fx.log_lines();
+    assert_eq!(relaunch_lines(&log).len(), 4, "{log:?}");
+    assert!(
+        !log.iter().any(|l| l.contains(" standing session refused ")),
+        "{log:?}"
+    );
 }
 
 /// No login has room at the exit: nothing runs until a room event arrives,

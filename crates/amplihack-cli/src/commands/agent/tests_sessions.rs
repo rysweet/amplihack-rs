@@ -18,7 +18,8 @@
 //! - `index(dirs: &[PathBuf]) -> Result<Index, String>`, `Index { by_id: map
 //!   String -> Vec<(u32, u64)> }`
 //! - `project_dir_names(launch_dir: &Path) -> Vec<String>`,
-//!   `transcript_exists(config_dir: &Path, launch_dir: &Path, id: &str) -> bool`
+//!   `transcript_exists(config_dir: &Path, launch_dir: &Path, id: &str) -> bool`,
+//!   `transcript_len(config_dir: &Path, launch_dir: &Path, id: &str) -> Option<u64>`
 //! - `profile_of_config_dir(home: &Path, config_dir: &Path) -> Option<String>`
 
 use super::sessions::*;
@@ -261,6 +262,34 @@ fn transcripts_are_found_under_either_encoding() {
         "A4 second encoding"
     );
     assert!(!transcript_exists(tmp.path(), launch, ID2));
+}
+
+/// Issue #2912: how much of a conversation is on disk is what the
+/// standing-session wrapper compares across a run, so the size has to come
+/// from whichever encoding holds the transcript, and a missing one has to
+/// be `None` rather than zero.
+#[test]
+fn the_length_of_a_transcript_is_read_from_either_encoding() {
+    let tmp = tempfile::tempdir().unwrap();
+    let launch = Path::new("/home/u/src/my.app_x");
+    assert_eq!(
+        transcript_len(tmp.path(), launch, ID),
+        None,
+        "nothing there"
+    );
+    let alt = tmp.path().join("projects/-home-u-src-my-app-x");
+    fs::create_dir_all(&alt).unwrap();
+    let f = alt.join(format!("{ID}.jsonl"));
+    fs::write(&f, "{}\n").unwrap();
+    assert_eq!(transcript_len(tmp.path(), launch, ID), Some(3));
+    fs::write(&f, "{}\n{}\n").unwrap();
+    assert_eq!(transcript_len(tmp.path(), launch, ID), Some(6), "it grew");
+    assert_eq!(transcript_len(tmp.path(), launch, ID2), None);
+    assert_eq!(transcript_len(tmp.path(), launch, "not-an-id"), None);
+    // A directory in the transcript's place is not a transcript.
+    let dir_id = alt.join(format!("{ID2}.jsonl"));
+    fs::create_dir(&dir_id).unwrap();
+    assert_eq!(transcript_len(tmp.path(), launch, ID2), None, "a directory");
 }
 
 /// The profile a launch ran under, read from the directory its sessions

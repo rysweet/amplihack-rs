@@ -79,7 +79,7 @@ pub fn run_wrapped(
         socket,
         session,
         window,
-        launch_dir: cwd,
+        launch_dir: cwd.clone(),
         conversation: cmdline::resume_as_conversation(&opts).map(String::from),
         model: opts.model,
         effort: opts.effort,
@@ -120,8 +120,14 @@ pub fn run_wrapped(
             launch_id.clone(),
             Arc::clone(&run),
         );
+        // Issue #2912: how much conversation the session has before this
+        // run. Whether it holds more afterwards is the evidence that a
+        // relaunch would answer something new; see
+        // `standing::worth_relaunching`.
+        let before = standing.conversation_bytes(&dir, &home, &cwd, req.name);
         let result = launch(&args);
         run.over.store(true, Ordering::SeqCst);
+        let advanced = standing.conversation_bytes(&dir, &home, &cwd, req.name) > before;
         let signalled = stopped.load(Ordering::SeqCst);
         if result.is_ok()
             && !signalled
@@ -141,7 +147,7 @@ pub fn run_wrapped(
             first_conversation: first_conversation.as_deref(),
             result: &result,
             signalled,
-            saw_claude: run.saw_claude.load(Ordering::SeqCst),
+            advanced,
         };
         let Some((next_id, entry)) = standing.next(&dir, req.name, &exit, &stopped) else {
             return result;
@@ -161,13 +167,18 @@ pub fn run_wrapped(
 /// `WARNING:` line to the supervisor log with the last reason; nothing is
 /// written to the terminal (B4).
 ///
-/// Issue #2912: finding the process also sets `run.saw_claude`, which is
-/// how the wrapper knows a session had something to continue. The thread
-/// stops at its next tick once `run.over` is set, silently, as it did when
-/// the wrapper exited with its one run. A standing session's wrapper
-/// outlives each run, and without this every relaunch would leave one more
-/// thread scanning the process table each second for the rest of its two
-/// minutes, and writing a warning about a run that had already ended.
+/// Issue #2912: the thread stops at its next tick once `run.over` is set,
+/// silently, as it did when the wrapper exited with its one run. A standing
+/// session's wrapper outlives each run, and without this every relaunch
+/// would leave one more thread scanning the process table each second for
+/// the rest of its two minutes, and writing a warning about a run that had
+/// already ended.
+///
+/// Nothing in the standing-session decision rests on what this thread saw.
+/// It records the conversation, and the decision reads that record and the
+/// conversation's transcript off the disk after the exit, so a run that
+/// ended between two of these ticks is judged on what it did rather than on
+/// whether a scan happened to catch it.
 fn watch_for_claude(
     dir: AgentsDir,
     home: PathBuf,
@@ -179,14 +190,7 @@ fn watch_for_claude(
         .name("agent-id-watch".into())
         .spawn(move || {
             let root = procfs::proc_root();
-            // `find_claude` lists the config directories only once it has
-            // found a Claude process below this one, so that is the moment
-            // the run counts as started, whether or not its sessions file
-            // can be read yet.
-            let dirs = || {
-                run.saw_claude.store(true, Ordering::SeqCst);
-                sessions::config_dirs_from(&home, |k| std::env::var_os(k))
-            };
+            let dirs = || sessions::config_dirs_from(&home, |k| std::env::var_os(k));
             let mut last_error = None;
             for _ in 0..ID_WATCH_SECS {
                 std::thread::sleep(Duration::from_secs(1));
@@ -219,8 +223,6 @@ fn watch_for_claude(
 /// What one run's id thread and the wrapper share (issue #2912).
 #[derive(Default)]
 struct RunWatch {
-    /// The id thread found a Claude Code process below the wrapper.
-    saw_claude: AtomicBool,
     /// The run has returned, so its id thread has nothing left to find.
     over: AtomicBool,
 }

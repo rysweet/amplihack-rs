@@ -1,7 +1,8 @@
 //! Every registry write the in-pane wrapper makes for its own session:
 //! starting it, recording the Claude Code process the id thread found,
-//! marking it ended, reading whether its owner ended it, and taking it
-//! again for a relaunch (issue #2912).
+//! marking it ended, reading whether its owner ended it, taking it again
+//! for a relaunch, and leaving on it the reason a relaunch was refused
+//! (issue #2912).
 //!
 //! Nothing here widens a permission or removes a file: the ended markers
 //! are only read, and every write happens under the registry's own lock,
@@ -89,6 +90,49 @@ pub(super) fn owner_ended(
         .into_iter()
         .flatten()
         .any(|id| markers::ended_since(&ended, &id, since))
+}
+
+/// The conversation this session's entry names: the one `--resume` gave
+/// before Claude Code started, or the one the id thread found in its
+/// sessions file. `None` when the entry names none, is gone, or cannot be
+/// read.
+///
+/// The launch id is deliberately not matched here. The conversation belongs
+/// to the session and not to one launch, and the standing-session wrapper
+/// measures it to tell a run that did something from one that did not
+/// (issue #2912). A supervisor that rebuilt the session in another window
+/// while this run was going would otherwise make the run look idle, and the
+/// refusal would name the wrong cause; the relaunch itself still happens
+/// only under this launch's id, in [`reactivate`].
+pub(super) fn conversation(dir: &AgentsDir, name: &str) -> Option<String> {
+    let reg = store::load(dir).ok()?;
+    reg.agents.get(name)?.conversation_id.clone()
+}
+
+/// Leaves the reason a standing session was not started again on its own
+/// record, while the record is still this launch's and active (issue
+/// #2912), so the failure reaches `amplihack agent status` and the
+/// supervisor's next pass rather than only the supervisor log.
+///
+/// The state is left `active` on purpose. The supervisor's own recovery is
+/// the next thing to try, and it carries the brake an in-pane relaunch must
+/// not have: it counts the restarts of the last hour and, at its limit,
+/// stops the session with an alert. Stopping the record here would instead
+/// be the fourteen-hour outage this issue fixes.
+pub(super) fn note_refusal(dir: &AgentsDir, name: &str, launch_id: &str, alert: &str) {
+    let now = registry::now();
+    let out = store::update(dir, now, |reg| {
+        if let Some(e) = reg.agents.get_mut(name)
+            && e.state == State::Active
+            && e.launch_id == launch_id
+        {
+            e.alert = Some(alert.to_string());
+        }
+        Ok(())
+    });
+    if let Err(e) = out {
+        eprintln!("warning: agent {name}: the refusal could not be recorded: {e:#}");
+    }
 }
 
 /// This launch's entry, or `None` when the registry cannot be read or the

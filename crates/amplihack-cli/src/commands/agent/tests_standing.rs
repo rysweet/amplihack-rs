@@ -5,7 +5,7 @@
 //! `tests/issue_2912_standing_relaunch.rs`.
 
 use super::relaunch::{Room, wait_for_room_until};
-use super::{AfterExit, after_exit};
+use super::{AfterExit, after_exit, no_progress_alert, worth_relaunching};
 use amplihack_utils::rotator_status::swap_record::{
     SWAP_FILE, SwapReading, SwapRecord, rotate_dir,
 };
@@ -19,28 +19,19 @@ const NOW: i64 = 1_793_316_490;
 // ── after_exit ──────────────────────────────────────────────────────────────
 
 #[test]
-fn a_standing_session_that_exits_badly_after_starting_is_relaunched() {
-    // standing, ok, signalled, ended_marker, saw_claude
-    assert_eq!(
-        after_exit(true, false, false, false, true),
-        AfterExit::Relaunch
-    );
+fn a_standing_session_that_exits_badly_puts_a_relaunch_in_question() {
+    // standing, ok, signalled, ended_marker
+    assert_eq!(after_exit(true, false, false, false), AfterExit::Relaunch);
 }
 
 #[test]
 fn a_clean_return_is_the_owner_ending_the_session() {
-    assert_eq!(
-        after_exit(true, true, false, false, true),
-        AfterExit::OwnerEnded
-    );
+    assert_eq!(after_exit(true, true, false, false), AfterExit::OwnerEnded);
 }
 
 #[test]
 fn the_ended_marker_is_the_owner_ending_the_session() {
-    assert_eq!(
-        after_exit(true, false, false, true, true),
-        AfterExit::OwnerEnded
-    );
+    assert_eq!(after_exit(true, false, false, true), AfterExit::OwnerEnded);
 }
 
 #[test]
@@ -48,7 +39,7 @@ fn a_signal_to_the_wrapper_means_the_pane_is_going_away() {
     for ok in [true, false] {
         for marker in [true, false] {
             assert_eq!(
-                after_exit(true, ok, true, marker, true),
+                after_exit(true, ok, true, marker),
                 AfterExit::GoingAway,
                 "ok={ok} marker={marker}"
             );
@@ -57,28 +48,59 @@ fn a_signal_to_the_wrapper_means_the_pane_is_going_away() {
 }
 
 #[test]
-fn a_session_whose_claude_never_started_is_not_relaunched() {
-    assert_eq!(
-        after_exit(true, false, false, false, false),
-        AfterExit::NeverStarted
-    );
-}
-
-#[test]
 fn a_session_that_is_not_standing_is_never_relaunched() {
     for ok in [true, false] {
         for signalled in [true, false] {
             for marker in [true, false] {
-                for saw in [true, false] {
-                    assert_ne!(
-                        after_exit(false, ok, signalled, marker, saw),
-                        AfterExit::Relaunch,
-                        "ok={ok} signalled={signalled} marker={marker} saw={saw}"
-                    );
-                }
+                assert_ne!(
+                    after_exit(false, ok, signalled, marker),
+                    AfterExit::Relaunch,
+                    "ok={ok} signalled={signalled} marker={marker}"
+                );
             }
         }
     }
+}
+
+// ── the brake on the relaunch loop ──────────────────────────────────────────
+
+/// A run that added to the conversation is started again however often it
+/// happens: the evidence is work done, not a number of attempts, so a
+/// working session is never capped.
+#[test]
+fn a_run_that_advanced_the_conversation_is_relaunched() {
+    for room_appeared in [true, false] {
+        assert!(worth_relaunching(true, room_appeared), "{room_appeared}");
+    }
+}
+
+/// The usage-limit case the feature exists for: a process that died with
+/// nothing to show is still started again once the wait for room has found
+/// capacity, because the capacity is what has changed.
+#[test]
+fn a_run_that_waited_for_room_is_relaunched_with_nothing_else_to_show() {
+    assert!(worth_relaunching(false, true));
+}
+
+/// The brake: a process that ran while a login had room and left the
+/// conversation where it was would only do the same again.
+#[test]
+fn a_run_with_neither_progress_nor_new_room_is_not_relaunched() {
+    assert!(!worth_relaunching(false, false));
+}
+
+/// The alert names the exit and the evidence, carries no control character,
+/// and does not grow without bound on a hostile exit reason.
+#[test]
+fn the_no_progress_alert_names_the_exit_and_the_evidence() {
+    assert_eq!(
+        no_progress_alert("exit-status-1"),
+        "not relaunched: exited exit-status-1 without advancing its conversation \
+         while a login had room, so a relaunch would repeat it"
+    );
+    let hostile = no_progress_alert(&format!("a\u{1b}[31mb\nc{}", "x".repeat(4096)));
+    assert!(!hostile.chars().any(char::is_control), "{hostile:?}");
+    assert!(hostile.chars().count() <= super::MAX_LINE, "{hostile:?}");
 }
 
 // ── the room rule ───────────────────────────────────────────────────────────
