@@ -89,19 +89,26 @@ pub(crate) fn resolve_passthrough(
     for notice in &resolved.notices {
         eprintln!("{}", notice.render());
     }
-    let pending = TierLaunch {
+    let pending = TierLaunch(Some(Pending {
         tool: tool.to_string(),
         claude_effort: matches!(effort, EffortOutcome::Added(_))
             && table::column_for(tool) != "codex",
         record: resolved.record,
         effort,
-    };
+    }));
     (argv, pending)
 }
 
 /// A tier decision waiting for the launch's binary.
-#[must_use = "finish it once the binary is resolved, or the record and the applied line are lost"]
-pub(crate) struct TierLaunch {
+///
+/// A launch that returns before [`TierLaunch::finish`] (the Docker hand-off,
+/// or a binary that cannot be resolved or fails its version gate) still
+/// prints the applied line and writes the record when this is dropped, with
+/// no `--help` probe, so those launches are recorded as they were before the
+/// probe existed.
+pub(crate) struct TierLaunch(Option<Pending>);
+
+struct Pending {
     tool: String,
     /// Whether amplihack itself put `--effort` on a Claude command line.
     claude_effort: bool,
@@ -129,23 +136,41 @@ impl TierLaunch {
         binary: &Path,
         probe: impl FnOnce(&Path) -> Option<String>,
     ) -> Vec<String> {
-        if let (true, EffortOutcome::Added(effort)) = (self.claude_effort, self.effort)
+        let Some(mut pending) = self.0.take() else {
+            return argv;
+        };
+        if let (true, EffortOutcome::Added(effort)) = (pending.claude_effort, pending.effort)
             && probe(binary).is_some_and(|help| !claude_effort::help_lists_flag(&help))
         {
             argv = claude_effort::withdraw(argv);
-            self.effort = EffortOutcome::Withdrawn;
-            if let Some(tier) = self.record.as_ref().and_then(|r| r.tier) {
+            pending.effort = EffortOutcome::Withdrawn;
+            if let Some(tier) = pending.record.as_ref().and_then(|r| r.tier) {
                 let notice = Notice::EffortUnsupported {
-                    harness: self.tool.clone(),
+                    harness: pending.tool.clone(),
                     tier,
                     effort,
                 };
                 eprintln!("{}", notice.render());
             }
         }
-        // The record is written after the check, so `effective_effort` says
-        // what actually reached the harness rather than what the tier asked
-        // for.
+        pending.write();
+        argv
+    }
+}
+
+impl Drop for TierLaunch {
+    fn drop(&mut self) {
+        if let Some(pending) = self.0.take() {
+            pending.write();
+        }
+    }
+}
+
+impl Pending {
+    /// Print the applied line and append the record. Written after the
+    /// check, so `effective_effort` says what actually reached the harness
+    /// rather than what the tier asked for.
+    fn write(mut self) {
         if let Some(record) = self.record.as_mut() {
             record.effective_effort = match self.effort {
                 EffortOutcome::Added(effort) => Some(effort),
@@ -157,7 +182,6 @@ impl TierLaunch {
             }
             record::append(run_dir().as_deref(), record);
         }
-        argv
     }
 }
 

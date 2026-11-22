@@ -502,7 +502,8 @@ fn run_launch_core(
     // Issue #2916: a Claude effort the tier added is checked against the
     // binary that will run, and taken back off when that Claude Code does not
     // know `--effort`. The record and the applied line are written here, so
-    // they say what reached the harness.
+    // they say what reached the harness; a launch that returned earlier wrote
+    // them when `tier_launch` was dropped.
     let extra_args = tier_launch.finish(extra_args, &binary.path);
 
     if let Some(proxy_target) = proxy_target {

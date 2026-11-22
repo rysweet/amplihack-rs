@@ -343,3 +343,31 @@ fn a_claude_too_old_for_effort_runs_the_step_without_it_and_says_so() {
         "the step says it ran without the effort:\n{stderr}"
     );
 }
+
+/// A launch that stops before the binary is resolved still writes the record
+/// the tier decision made, as it did before the `--help` probe existed: the
+/// record no longer waits on a probe the launch never reached.
+#[test]
+fn a_launch_that_stops_before_the_binary_is_resolved_still_writes_the_record() {
+    let f = Fixture::new();
+    let output = f
+        .launch("claude", &["--model", "strong", "-p"])
+        .env(
+            "AMPLIHACK_CLAUDE_BINARY_PATH",
+            f.tools.join("no-such-claude"),
+        )
+        .env("AMPLIHACK_RUN_DIR", &f.run_dir)
+        .output()
+        .expect("run amplihack");
+    assert!(!output.status.success(), "a missing binary ends the launch");
+    let text = std::fs::read_to_string(f.run_dir.join("model-tiers.jsonl")).unwrap_or_else(|e| {
+        panic!(
+            "no record: {e}. stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    let line: serde_json::Value =
+        serde_json::from_str(text.lines().next().expect("one line")).expect("json");
+    assert_eq!(line["tier"], "strong", "record: {text}");
+    assert_eq!(line["effective_effort"], "xhigh", "record: {text}");
+}
