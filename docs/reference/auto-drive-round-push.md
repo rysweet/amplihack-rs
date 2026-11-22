@@ -103,8 +103,8 @@ which is unchanged.
 - Dry run is unchanged. In `autodrive-crusty-round.yaml` only
   `step-03c-post-verdict` is skipped when `autodrive_dry_run` is `true`;
   `step-04-address-concerns` runs whenever the verdict is `CONCERNS`, so it
-  commits and pushes in a dry run, as before. That gap will be tracked as a
-  separate follow-up issue; this page will name it once it is filed.
+  commits and pushes in a dry run, as before. That gap is tracked as issue
+  #2926.
 - Fork behaviour is unchanged. The step's plain `git push` follows the branch's
   configured upstream, so for a fork-sourced head the push goes to the remote
   that branch is configured for. Recovery pushes only to the failed step's
