@@ -195,13 +195,16 @@ waiting must set `recipe.usage_limit_wait` to `false` instead. See
 
 `Your workspace is out of credits`, Codex's own words, is classed
 `usage_limit`, not `indeterminate`. The recipe runner's failure class marker
-therefore reads `"class":"usage_limit"`. `credit balance is too low`, the
-Anthropic API message, still classes `environmental`.
+therefore reads `"class":"usage_limit"`, with
+`"signal":"your workspace is out of credits"`. `credit balance is too low`,
+the Anthropic API message, still classes `environmental`.
 
-The match is a whole-line match: the phrase must be the whole line, or begin
-it and be followed by a delimiter, on a whole standard-error line or the last
-non-empty standard-output line. The phrase appearing inside prose does not
-match.
+Two readers match the phrase, by different rules:
+
+| Reader | Rule |
+|--------|------|
+| The recipe runner's failure class | The phrase anywhere in a failed step's evidence, in any case, as for every other limit marker. A failed step whose output quotes the phrase inside prose is also classed `usage_limit`. |
+| The usage-limit wait | A whole-line match: the phrase must be the whole line, or begin it and be followed by a delimiter, on a whole standard-error line or the last non-empty standard-output line. The phrase inside prose does not start a wait. |
 
 Where such output reaches the Claude supervisor (a step that mixes
 harnesses), it starts a capacity wait as in the table above. A Codex step
