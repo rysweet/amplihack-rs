@@ -184,7 +184,7 @@ command, so it never prints `flag`.
 | `governor.eval_interval_secs` | integer seconds, 1 to 3600 | `60` | — | — | user only |
 | `governor.wait_secs` | integer seconds, 0 to 86400 | `600` | — | — | user only |
 | `governor.max_reading_age_secs` | integer seconds, 60 to 86400 | `3600` | — | — | user only |
-| `agent.standing` | bool | `false` | — | `--standing`, `--no-standing` | user only |
+| `agent.standing` | bool | `false` | none | `--standing`, `--no-standing` | user only |
 | `sessions.daily_archive` | bool | `true` | — | — | user only |
 | `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | — | `--days` | user only |
 | `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | — | `--dest` | user only |
@@ -536,8 +536,7 @@ than you ending it, the wrapper relaunches it in the same pane with
 [Keep a session running after its process exits](../howto/keep-sessions-running.md).
 Off by default.
 
-The value kind is `Bool` (`true` or `false`), not `SessionPattern`, and the
-default is `false`.
+The value is `true` or `false`, and the default is `false`.
 
 ```sh
 amplihack config set agent.standing true
