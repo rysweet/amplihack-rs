@@ -722,17 +722,34 @@ that guarantee. On its first call in a test process it:
 1. Returns `AMPLIHACK_TEST_BINARY` unchanged if it is set, without copying.
    Do not point it at `target/debug/amplihack`: cargo can re-link that file
    during the run, which is the race the private copy prevents.
-2. Otherwise runs `cargo build -p amplihack --bin amplihack` once.
-3. Creates a private `tempfile::TempDir` with mode `0700` under
-   `CARGO_TARGET_TMPDIR`, or under `env::temp_dir()` when that is unset.
-4. Copies `amplihack`, and `amplihack-hooks` when `symlink_metadata` shows it
-   is a regular file, into that directory. Each copy is written to
-   `.name.tmp` with `create_new`, set to mode `0755`, and renamed into place.
+2. Otherwise, when the test runner names the run (cargo-nextest sets
+   `NEXTEST_RUN_ID` to the same value in every test process of a run), uses
+   the copy that belongs to that run, in
+   `CARGO_TARGET_TMPDIR/amplihack-bin-run-<run id>/`. The first process of
+   the run to ask takes a file lock beside that directory, runs
+   `cargo build -p amplihack --bin amplihack` once, and copies the binaries
+   in. Every other process of the run finds the copy and builds nothing.
+3. Otherwise (plain `cargo test`, where one process runs the whole test
+   binary) runs the build once and copies into a private
+   `tempfile::TempDir` under `CARGO_TARGET_TMPDIR`, or under
+   `env::temp_dir()` when that is unset, removed when the process exits.
 
-Every later call returns the same path. Nothing re-links the copy while the
-test process runs, and the directory is removed when the process exits.
-`amplihack-hooks` is copied beside it because the binary
-finds its hooks binary as a sibling of its own path.
+In both cases the directory has mode `0700`, and `amplihack`, and
+`amplihack-hooks` when `symlink_metadata` shows it is a regular file, are
+each written to `.name.tmp`, set to mode `0755` and renamed into place.
+`amplihack` is renamed last, so a process that sees it has a complete copy.
+`amplihack-hooks` is copied beside it because the binary finds its hooks
+binary as a sibling of its own path.
+
+Every later call returns the same path, and nothing re-links the copy while
+the run goes on. A run's directory is left when the run ends, because no
+single test process knows it is the last; a later run removes run
+directories more than a day old, and `cargo clean` removes them all.
+
+Before issue #2932 the build and the copy happened in every test process.
+Under cargo-nextest that is once per test: the median `cli_integration`
+test took about 14 seconds, most of it waiting for cargo's lock on the build
+directory.
 
 Use it for every path to the binary, including the ones a test hands to a
 script:

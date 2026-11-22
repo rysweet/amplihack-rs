@@ -125,3 +125,185 @@ fn the_copy_runs() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// Issue #2932: under cargo-nextest every test is its own process, and each
+// one ran `cargo build` and copied the binary. With the run id nextest gives
+// them all, the first process prepares the copy and the rest reuse it.
+// These tests give `run_copy` a directory they made and a builder that
+// counts its calls, so nothing is built and the host's cargo is not used.
+
+use crate::support::amplihack_bin::{run_copy, run_id_is_plain};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, SystemTime};
+
+/// A directory standing in for `target/debug`, holding a small `amplihack`
+/// and, when asked, an `amplihack-hooks`.
+fn fake_built_dir(root: &Path, with_hooks: bool) -> PathBuf {
+    let built = root.join("built");
+    fs::create_dir_all(&built).unwrap();
+    fs::write(built.join("amplihack"), b"#!/bin/sh\nexit 0\n").unwrap();
+    if with_hooks {
+        fs::write(built.join("amplihack-hooks"), b"#!/bin/sh\nexit 0\n").unwrap();
+    }
+    built
+}
+
+#[test]
+fn one_run_builds_and_copies_once_however_many_processes_ask() {
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().join("tmp");
+    let built = fake_built_dir(root.path(), true);
+    let builds = AtomicUsize::new(0);
+    let now = SystemTime::now();
+    let ask = || {
+        run_copy(&base, "run-a", now, || {
+            builds.fetch_add(1, Ordering::SeqCst);
+            built.clone()
+        })
+        .unwrap()
+    };
+    // Eight callers at once stand in for eight test processes of one run.
+    let paths: Vec<PathBuf> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..8).map(|_| s.spawn(ask)).collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    assert_eq!(builds.load(Ordering::SeqCst), 1, "the build ran once");
+    let first = &paths[0];
+    assert!(
+        paths.iter().all(|p| p == first),
+        "every caller got one path"
+    );
+    assert_eq!(
+        first,
+        &base.join("amplihack-bin-run-run-a").join("amplihack")
+    );
+    assert_eq!(ask(), *first, "a later caller reuses the copy");
+    assert_eq!(builds.load(Ordering::SeqCst), 1, "and builds nothing");
+}
+
+#[test]
+fn the_run_copy_is_private_complete_and_holds_only_the_binaries() {
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().join("tmp");
+    let built = fake_built_dir(root.path(), true);
+    let bin = run_copy(&base, "run-b", SystemTime::now(), || built.clone()).unwrap();
+    let dir = bin.parent().unwrap();
+    assert_eq!(mode(dir), 0o700, "the run directory is private");
+    for name in ["amplihack", "amplihack-hooks"] {
+        let copy = dir.join(name);
+        assert!(fs::symlink_metadata(&copy).unwrap().file_type().is_file());
+        assert_eq!(mode(&copy), 0o755);
+        assert_eq!(
+            fs::read(&copy).unwrap(),
+            fs::read(built.join(name)).unwrap()
+        );
+    }
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["amplihack", "amplihack-hooks"],
+        "no lock or .tmp file inside"
+    );
+}
+
+#[test]
+fn a_build_without_a_hooks_binary_copies_the_binary_alone() {
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().join("tmp");
+    let built = fake_built_dir(root.path(), false);
+    let bin = run_copy(&base, "run-c", SystemTime::now(), || built.clone()).unwrap();
+    assert!(bin.is_file());
+    assert!(fs::symlink_metadata(bin.parent().unwrap().join("amplihack-hooks")).is_err());
+}
+
+#[test]
+fn two_runs_get_separate_copies() {
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().join("tmp");
+    let built = fake_built_dir(root.path(), false);
+    let now = SystemTime::now();
+    let a = run_copy(&base, "run-d", now, || built.clone()).unwrap();
+    // The second run starts after a rebuild changed the binary.
+    fs::write(built.join("amplihack"), b"#!/bin/sh\nexit 3\n").unwrap();
+    let b = run_copy(&base, "run-e", now, || built.clone()).unwrap();
+    assert_ne!(a, b);
+    assert_eq!(
+        fs::read(&a).unwrap(),
+        b"#!/bin/sh\nexit 0\n",
+        "the first run keeps what it copied"
+    );
+    assert_eq!(
+        fs::read(&b).unwrap(),
+        b"#!/bin/sh\nexit 3\n",
+        "the second run copies what was built for it"
+    );
+}
+
+#[test]
+fn a_later_run_removes_run_directories_more_than_a_day_old_and_keeps_recent_ones() {
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().join("tmp");
+    let built = fake_built_dir(root.path(), false);
+    let start = SystemTime::now();
+    let old = run_copy(&base, "run-old", start, || built.clone()).unwrap();
+    let other = base.join("kept-by-someone-else");
+    fs::create_dir_all(&other).unwrap();
+    // An hour later a second run starts: the first run's copy is recent.
+    let hour = start + Duration::from_secs(60 * 60);
+    run_copy(&base, "run-next", hour, || built.clone()).unwrap();
+    assert!(
+        old.is_file(),
+        "a recent run's copy is kept: that run may still be going"
+    );
+    // Two days later a third run starts: both earlier copies are stale.
+    let later = start + Duration::from_secs(2 * 24 * 60 * 60);
+    let fresh = run_copy(&base, "run-new", later, || built.clone()).unwrap();
+    assert!(fresh.is_file());
+    for stale in ["run-old", "run-next"] {
+        assert!(
+            fs::symlink_metadata(base.join(format!("amplihack-bin-run-{stale}"))).is_err(),
+            "{stale}'s directory is removed"
+        );
+        assert!(
+            fs::symlink_metadata(base.join(format!("amplihack-bin-run-{stale}.lock"))).is_err(),
+            "{stale}'s lock file is removed"
+        );
+    }
+    assert!(
+        other.is_dir(),
+        "a directory that is not a run copy is left alone"
+    );
+}
+
+#[test]
+fn only_a_plain_run_id_names_a_directory() {
+    for plain in ["0c8f2e1a-7b3d-4f6a-9c1e-2d5b8a7f4e30", "run-1", "A"] {
+        assert!(run_id_is_plain(plain), "{plain:?}");
+    }
+    let long = "a".repeat(65);
+    for odd in ["", "..", "a/b", "a b", "a\n", "é", long.as_str()] {
+        assert!(!run_id_is_plain(odd), "{odd:?}");
+    }
+}
+
+#[test]
+fn under_a_test_run_with_an_id_the_binary_is_that_runs_copy() {
+    if overridden().is_some() {
+        return;
+    }
+    let Ok(id) = std::env::var("NEXTEST_RUN_ID") else {
+        return;
+    };
+    if !run_id_is_plain(&id) {
+        return;
+    }
+    let bin = amplihack_bin();
+    assert_eq!(
+        bin.parent().unwrap().file_name().unwrap().to_string_lossy(),
+        format!("amplihack-bin-run-{id}")
+    );
+}
