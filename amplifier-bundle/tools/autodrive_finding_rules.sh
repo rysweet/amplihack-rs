@@ -32,14 +32,19 @@
 #                 break_refs. Titles are not HTML-escaped and an issue title
 #                 now opens with agent text, so an override left in it could
 #                 reorder what a reader sees. Above GitHub's 256 characters it
-#                 is cut back to the last space, with no truncation marker; a
-#                 256-character run with no space in it has no boundary to
-#                 keep and is cut where the limit falls. break_refs runs first
-#                 and never spans a space, so the cut cannot rejoin a broken
-#                 @ or #N, and jq counts codepoints, so no character is split.
+#                 keeps the longest run of whole words that fits (the first
+#                 257 characters cut back to their last space), with no
+#                 truncation marker; a 257-character run with no space in it
+#                 has no boundary to keep and is cut at 256. break_refs runs
+#                 first and never spans a space, so the cut cannot rejoin a
+#                 broken @ or #N, and jq counts codepoints, so no character is
+#                 split.
 #                 <fallback> is the title when the result is empty or only
 #                 [[:space:]], because gh refuses an empty title; a text of
 #                 only zero-width characters is not caught by that test.
+#                 <text> must be valid UTF-8, as jq -r output is: the
+#                 bidirectional strip is one pass, so malformed bytes could
+#                 join into an override or isolate once a match is removed.
 #                 Needs sanitize_cli_output and jq.
 # AUTODRIVE_FINDING_JQ
 #                 jq definitions: `clean` (any value to a one-line string of
@@ -81,7 +86,7 @@ issue_title() {
     | LC_ALL=C sed -e $'s/\xe2\x80[\xaa-\xae]//g' -e $'s/\xe2\x81[\xa6-\xa9]//g')")"
   t="$(jq -rn --arg t "$t" '
     if ($t | length) <= 256 then $t
-    else $t[0:256] | (if test(" ") then sub(" [^ ]*\\z"; "") else . end) | sub("[[:space:]]+\\z"; "")
+    else $t[0:257] | (if test(" ") then sub(" [^ ]*\\z"; "") else .[0:256] end) | sub("[[:space:]]+\\z"; "")
     end')"
   if [[ "$t" =~ ^[[:space:]]*$ ]]; then printf '%s' "$2"; else printf '%s' "$t"; fi
 }

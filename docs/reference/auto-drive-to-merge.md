@@ -273,10 +273,11 @@ description of an existing `follow-up` label, including one set by a
 maintainer. An issue is never filed without the label: if it cannot be created,
 the create step fails and `followup-create-failed` reports gh's message. The
 title is the finding's summary with no task id, sanitised with mentions and
-references broken, and cut at the last space only above 256 characters. Because
-the summary is already clipped to 200 characters upstream, usually mid-word,
-that cut rarely applies. The body names the task, the PR and the last crusty
-round recorded at filing time (`not recorded` when none can be read).
+references broken. Only above 256 characters is it cut, to the longest run of
+whole words that fits. Because the summary is already clipped to 200 characters
+upstream, usually mid-word, that cut rarely applies. The body names the task,
+the PR and the last crusty round recorded at filing time (`not recorded` when
+none can be read).
 
 After each round record is written, an agent step
 (`autodrive-crusty-round.yaml` `step-07-select-next-action`) selects

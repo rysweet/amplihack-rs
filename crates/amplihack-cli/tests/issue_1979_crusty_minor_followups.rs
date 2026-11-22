@@ -1521,6 +1521,27 @@ fn file_title_keeps_whole_words_when_break_refs_inflates_it() {
     }
 }
 
+/// Contrived on purpose, like the test above: only `break_refs` inflation
+/// takes a summary past 256 characters. "abcd", sixty-three ` #1` tokens and
+/// " tail" are 198 characters and become 261, with a space at character 257,
+/// so the first 256 characters already end on a whole word and keep it.
+#[test]
+fn file_title_keeps_the_last_word_when_the_cut_falls_on_a_space() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let summary = format!("abcd{} tail", " #1".repeat(63));
+    assert_eq!(summary.chars().count(), 198);
+    d.minor_drive(&[("naming-1", summary.as_str(), "e")]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let title = arg_after(&d.creates()[0], "--title").unwrap().to_string();
+    let want = format!("abcd{}", format!(" #{ZW}1").repeat(63));
+    assert_eq!(title, want, "the 63rd token is kept");
+    assert_eq!(title.chars().count(), 256);
+}
+
 #[test]
 fn file_title_passes_an_ordinary_long_summary_through_whole() {
     if skip() {
