@@ -208,6 +208,31 @@ fn inherited_pin_is_kept() {
     );
 }
 
+/// A retry after an upgrade: the first attempt pinned N and the link has since
+/// moved to N+1. The retry carries the first attempt's value, so it keeps N
+/// rather than resolving the link again.
+#[test]
+fn retry_after_a_swap_keeps_the_first_pin() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let mut f = fixture(true);
+    let first = run_once(&f);
+    assert_eq!(first, helper_of(&f.n));
+    assert!(
+        fs::canonicalize(f.home.join("amplifier-bundle"))
+            .unwrap()
+            .starts_with(fs::canonicalize(&f.n1).unwrap()),
+        "the first attempt must have moved the link to N+1"
+    );
+    f._env.assign(PIN_VAR, &first);
+    assert_eq!(
+        run_once(&f),
+        first,
+        "a retry must keep the first attempt's release, not the link's"
+    );
+}
+
 #[test]
 fn missing_helper_gives_no_pin() {
     let _guard = crate::test_support::home_env_lock()

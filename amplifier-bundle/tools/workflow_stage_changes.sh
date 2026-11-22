@@ -218,7 +218,8 @@ workflow_pull_merge() {
 # workflow_pull_rebase: the name before #3019 renamed it. A run started on an
 # older release read its recipes at start and still calls this name after an
 # upgrade replaces the helper under it (#3049). It forwards to
-# workflow_pull_merge, so it merges and never rebases.
+# workflow_pull_merge, so it merges and never rebases. Remove it once no
+# supported release can start a run that calls the old name (#3062).
 workflow_pull_rebase() { workflow_pull_merge "$@"; }
 
 stage_workflow_changes() {
