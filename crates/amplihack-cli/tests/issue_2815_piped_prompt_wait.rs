@@ -20,7 +20,7 @@
 
 #![cfg(unix)]
 
-use crate::issue_1618_fixture::{Fixture, describe, events, sha256_hex, text};
+use crate::issue_1618_fixture::{Fixture, LIMIT_TEXT, describe, events, sha256_hex, text};
 use std::io::Write;
 use std::process::{Child, Output, Stdio};
 use std::time::Duration;
@@ -457,6 +457,20 @@ fn a_held_open_captured_pipe_with_a_limit_ends_with_the_limit_result() {
         "the refusal names its cause\n{}",
         describe(&out)
     );
+    // Review of PR #2992: `skipped reason=piped_prompt` reads like one more
+    // of the endings #2911 removed, so the step also says in words that it
+    // is the missing prompt and not the limit that ends it, and who has to
+    // act.
+    assert!(
+        err.contains("met a usage limit and cannot be run again"),
+        "the consequence is named\n{}",
+        describe(&out)
+    );
+    assert!(
+        err.contains("this step has to be sent again"),
+        "and the remedy, which this step cannot carry out itself\n{}",
+        describe(&out)
+    );
     assert!(
         text(&out.stdout).contains("attempt 1 output"),
         "the attempt's held-back output is still printed\n{}",
@@ -521,6 +535,36 @@ fn an_input_format_channel_on_stdin_is_not_captured() {
         events(&out),
         vec!["skipped reason=piped_prompt".to_string()],
         "no wait was ever started\n{}",
+        describe(&out)
+    );
+    // Review of PR #2992: the only ending here that a limit reaches, so the
+    // step says which of the three shapes of unreplayable prompt it is -
+    // this one can never gain a copy, whatever waits - and says that the
+    // prompt has to be sent again.
+    let err = text(&out.stderr);
+    assert!(
+        err.contains("met a usage limit and cannot be run again"),
+        "the consequence is named\n{}",
+        describe(&out)
+    );
+    assert!(
+        err.contains("--input-format stream channel"),
+        "and which shape it is\n{}",
+        describe(&out)
+    );
+    assert!(
+        err.contains("this step has to be sent again"),
+        "and the remedy\n{}",
+        describe(&out)
+    );
+    // The attempt's own output still carries the harness's limit line, so
+    // the recipe runner classes the failure `usage_limit` - temporary, and
+    // not work that failed - and a supervising loop resumes the run. The
+    // step cannot re-prompt itself; this is how the layer that can hears
+    // about it.
+    assert!(
+        err.contains(LIMIT_TEXT),
+        "the limit message reaches the runner's evidence\n{}",
         describe(&out)
     );
     assert_eq!(

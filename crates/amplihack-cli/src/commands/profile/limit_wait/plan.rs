@@ -22,6 +22,14 @@
 //! reset in the future, and because [`MIN_WAIT_SECS`] floors the configured
 //! wait length where it is read (`settings`), so no `max` row can land on
 //! `now` either.
+//!
+//! The step timeout is the one exception and the only row that can end a
+//! step while a limit still stands. It is not a budget this module keeps:
+//! the recipe runner kills the step at that time whatever this code does,
+//! and [`STEP_TIMEOUT_LEAD`] exists so the step reports instead of being
+//! killed mid-sleep. Whether an unattended run should carry such a bound at
+//! all is issue #3037; `docs/reference/usage-limit-waits.md` states the
+//! interaction for operators.
 
 use crate::commands::recipe::run::limit_patterns::{Harness, LimitKind, LimitMessage};
 
@@ -30,6 +38,13 @@ pub(crate) const MARGIN: i64 = 120;
 /// A reset further away than this is not waited for directly.
 pub(crate) const FIVE_HOURS: i64 = 5 * 3600;
 /// The wait ends this long before the step timeout.
+///
+/// The recipe runner kills the step at `AMPLIHACK_STEP_TIMEOUT`. A wait that
+/// ran up to it would be killed while sleeping: no line would say why, and
+/// the failed attempt's own result would never be passed up. Ending a minute
+/// early is what buys the step its `end reason=step timeout`, its
+/// `failed reason=step_timeout` and the attempt's output. So this row is the
+/// step's own bound reaching the wait, not a bound on limits (issue #3037).
 pub(crate) const STEP_TIMEOUT_LEAD: i64 = 60;
 /// A capacity wait's length when nothing sets one: the schema's default.
 pub(crate) const CAPACITY_DEFAULT_MAX: u64 = 21_600;
@@ -57,6 +72,16 @@ pub(crate) enum NoWait {
     /// rerun cannot read it again (issue #2815). A piped prompt that was
     /// copied is replayed and never reaches this reason; the name is kept
     /// because it is the logged value callers already match on.
+    ///
+    /// Three shapes reach it: stdin is an `--input-format` stream channel,
+    /// which its caller holds open and which has no end to copy; the prompt
+    /// came on a pipe and no copy could be made; or a copy was made and was
+    /// lost, or the prompt was still arriving when the wait ended. In all
+    /// three a retry has no bytes to read, so there is no retry for a wait
+    /// to earn, which is why this is a reading of the step and not a limit
+    /// refused. The supervisor names which shape it is in words beside the
+    /// event (`mod.rs::no_retry_is_possible`), because the reason alone does
+    /// not say. Whether such a step should wait first anyway is issue #3036.
     PipedPrompt,
 }
 

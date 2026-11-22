@@ -44,6 +44,24 @@ pub(super) use crate::commands::profile::attempt::limit_reset;
 const NO_STORED_PROMPT: &str = "this step's prompt came on a pipe and could not be stored, so a \
                                 rerun cannot read it again";
 
+/// The static sentence the wait prints when a limit ends a step that has no
+/// replayable prompt, for the two shapes of stdin that reach it (review of
+/// PR #2992). Chosen by the arguments the step was given, never built from
+/// what arrived on the pipe.
+fn why_no_copy(waiter: &Waiter) -> &'static str {
+    if waiter.stdin_is_a_channel() {
+        "its prompt arrives on an --input-format stream channel, which its caller holds \
+         open for the session, so there is no end of it to copy and no prompt to replay"
+    } else {
+        "its prompt came on a pipe and no copy of it could be made, so no later attempt \
+         can read the same bytes"
+    }
+}
+
+/// The same sentence for a copy that existed and was lost (issue #2816).
+const COPY_LOST: &str = "the copy kept of its piped prompt was lost, so no later attempt can \
+                         read the same bytes";
+
 /// A profile for a nested launch.
 #[derive(Debug, PartialEq)]
 pub struct Pick {
@@ -475,7 +493,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // again below if the copy is later lost (#2816).
     let mut no_capture = input_on_stdin && !stdin.is_captured();
     if no_capture {
-        waiter.block(NoWait::PipedPrompt);
+        waiter.block(NoWait::PipedPrompt, why_no_copy(&waiter));
     }
     let signals = match Signals::register() {
         Ok(s) => s,
@@ -635,7 +653,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         // adds an outcome no caller asked for.
         if !no_capture && stdin.capture_lost() {
             no_capture = true;
-            waiter.block(NoWait::PipedPrompt);
+            waiter.block(NoWait::PipedPrompt, COPY_LOST);
         }
         if let Some(client) = &recovery {
             client.outcome(recipe_runner_rs::recovery::model::Outcome::UsageLimit)?;

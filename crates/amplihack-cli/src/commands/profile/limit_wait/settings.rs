@@ -26,15 +26,37 @@
 //! Raising it is not silent. Before #2911 a `0` meant "fail at once", so a
 //! host may still carry one that now means a 60-second wait. While the wait
 //! is on, [`resolve`] says so on stderr each time it reads such a value
-//! ([`floor_warning`]), and names the key that turns the wait off.
+//! ([`length_warning`]), and names the key that turns the wait off.
+//!
+//! The same line reports the cost of any short length, not only one below
+//! the floor (review of PR #2992). Because the value is the length of one
+//! wait and a step still limited when a wait ends runs its agent again,
+//! the value *is* the interval at which a waiting step re-asks the harness,
+//! and each ask is a fresh agent launch. Nothing bounds that chain but the
+//! step's own timeout, so a short length is a poll of the harness and is
+//! named as one; see [`SHORT_WAIT_SECS`].
 //!
 //! [`plan::MIN_WAIT_SECS`]: super::plan::MIN_WAIT_SECS
 
+use super::plan::{CAPACITY_DEFAULT_MAX, MIN_WAIT_SECS};
 use crate::user_config::{Effective, Origin, Value};
 use std::path::Path;
 
 pub(crate) const ENABLED_KEY: &str = "recipe.usage_limit_wait";
 pub(crate) const MAX_WAIT_KEY: &str = "recipe.usage_limit_max_wait_secs";
+
+/// A configured length below this is reported as the poll it is (review of
+/// PR #2992).
+///
+/// Six hundred seconds is the rotator's own default cycle
+/// (`--interval`/`AMPLIHACK_ROTATE_INTERVAL`), which on a host with no
+/// signal to wake a wait is the soonest anything can have been learnt: a
+/// shorter length re-launches the step's agent before a reading, a swap or
+/// a reset could have arrived. It bounds nothing - [`MIN_WAIT_SECS`] is the
+/// only floor, and a deliberately fast poll stays allowed - but an operator
+/// who asks for one is told what it costs, because every expiry starts a
+/// fresh agent.
+pub(crate) const SHORT_WAIT_SECS: u64 = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct WaitSettings {
@@ -57,35 +79,49 @@ pub(crate) fn resolve(cwd: &Path) -> WaitSettings {
         }
     }
     let settings = from_effective(&effective, ci.as_deref());
-    if let Some(warning) = floor_warning(&effective, &settings) {
+    if let Some(warning) = length_warning(&effective, &settings) {
         eprintln!("{warning}");
     }
     settings
 }
 
-/// The warning [`resolve`] prints when the configured length is below
-/// [`plan::MIN_WAIT_SECS`] and was raised to it, or `None`.
+/// The warning [`resolve`] prints for a short configured length, or `None`.
+///
+/// Two causes, one line. A length below [`MIN_WAIT_SECS`] was raised to it,
+/// which a host carrying the pre-#2911 `0` needs to be told. A length below
+/// [`SHORT_WAIT_SECS`] is a poll of the harness: the value is the length of
+/// one wait, and a step still limited when that wait ends launches its agent
+/// again, so the step re-asks about that often for as long as the limit
+/// lasts. Neither is refused.
 ///
 /// Only while the wait is on: with it off the length is never used, so
-/// there is nothing to warn about. The line names the key and the variable,
-/// never the configured value, as the invalid-variable warning above does.
-///
-/// [`plan::MIN_WAIT_SECS`]: super::plan::MIN_WAIT_SECS
-pub(crate) fn floor_warning(effective: &Effective, settings: &WaitSettings) -> Option<String> {
-    let floor = super::plan::MIN_WAIT_SECS;
+/// there is nothing to warn about. The line names the keys, the variable and
+/// the two lengths it compares, never the configured value, as the
+/// invalid-variable warning above does.
+pub(crate) fn length_warning(effective: &Effective, settings: &WaitSettings) -> Option<String> {
     let configured = effective
         .entry(MAX_WAIT_KEY)
         .value
         .as_ref()
         .and_then(Value::as_int)?;
-    (settings.enabled && configured < floor).then(|| {
+    if !settings.enabled || configured >= SHORT_WAIT_SECS {
+        return None;
+    }
+    let cause = if configured < MIN_WAIT_SECS {
         format!(
-            "warning: {MAX_WAIT_KEY} (AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS) is below \
-             {floor} seconds, so each usage-limit wait lasts {floor} seconds; 0 no \
-             longer turns the wait off: set {ENABLED_KEY} = false \
-             (AMPLIHACK_USAGE_LIMIT_WAIT=0) to stop steps waiting"
+            "is below {MIN_WAIT_SECS} seconds, so each usage-limit wait lasts \
+             {MIN_WAIT_SECS} seconds; 0 no longer turns the wait off"
         )
-    })
+    } else {
+        format!("is below {SHORT_WAIT_SECS} seconds, the rotator's own cycle")
+    };
+    Some(format!(
+        "warning: {MAX_WAIT_KEY} (AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS) {cause}. It is \
+         the length of one wait, and a step still limited when a wait ends runs its \
+         agent again, so this is how often such a step re-asks; the default of \
+         {CAPACITY_DEFAULT_MAX} seconds asks once every six hours. Set \
+         {ENABLED_KEY} = false (AMPLIHACK_USAGE_LIMIT_WAIT=0) to stop steps waiting"
+    ))
 }
 
 /// [`resolve`] from a loaded config and the value of `CI`.
@@ -109,7 +145,7 @@ pub(crate) fn from_effective(effective: &Effective, ci: Option<&str>) -> WaitSet
             .value
             .as_ref()
             .and_then(Value::as_int)
-            .map(|v| v.max(super::plan::MIN_WAIT_SECS)),
+            .map(|v| v.max(MIN_WAIT_SECS)),
     }
 }
 

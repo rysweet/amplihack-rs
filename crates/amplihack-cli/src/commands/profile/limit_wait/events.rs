@@ -117,7 +117,12 @@ pub(crate) enum Met {
 /// so the paths that wrote them are gone: a capacity wait that reaches its
 /// deadline retries, as does a login-change wait, and no refusal counts a
 /// step's waits. The step timeout is not a limit budget but the recipe
-/// runner's own bound on the step, so it stays.
+/// runner's own bound on the step, so it stays: the runner kills the step at
+/// that time regardless, and the wait ends just before it so that this line
+/// is written at all. It does mean a step with a timeout set can fail while
+/// a limit still stands; the step says so in words beside this event
+/// (`mod.rs::the_step_timeout_cut_the_wait`), and issue #3037 carries the
+/// question of whether an unattended run should carry such a bound.
 #[derive(Clone, Copy)]
 pub(super) enum FailReason {
     StepTimeout,

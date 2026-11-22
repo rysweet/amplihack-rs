@@ -19,9 +19,22 @@ const NOW: i64 = 1_792_335_600;
 const SPEND_WEEKLY: &str = "You've hit your individual spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 24, 2pm (America/Los_Angeles)";
 const SPEND_SESSION: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your session limit resets 1pm (America/Los_Angeles)";
 const SPEND_NO_RESET: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage";
+/// The line that ended run `amp-auto-drive-to-merge-mistt-infra-20261121-213610`
+/// on hypatia at 21:45Z on 21 November 2026, quoted in #2911 by the owner's
+/// deputy: Claude Code 2.1.33x's per-member spend cap, which names the
+/// session window by its newer name. Kept here byte for byte, because both
+/// halves of it have to be read correctly for the step to wait: the spend
+/// phrase decides the kind, and "5-hour limit resets" is where the reset is.
+const SPEND_FIVE_HOUR: &str = "You've hit your individual spend limit · run /usage-credits to ask your admin for a higher limit · your 5-hour limit resets 6:30pm (America/Los_Angeles)";
 
 fn message(text: &str) -> limit_patterns::LimitMessage {
-    limit_patterns::limit_message(text.as_bytes(), b"", NOW).expect("a limit message")
+    message_at(text, NOW)
+}
+
+/// [`message`] read against another instant, for a line whose reset is a
+/// time of day: what it means depends on where the clock stands.
+fn message_at(text: &str, now: i64) -> limit_patterns::LimitMessage {
+    limit_patterns::limit_message(text.as_bytes(), b"", now).expect("a limit message")
 }
 
 #[test]
@@ -95,9 +108,53 @@ fn a_spend_limit_with_no_reset_still_waits_for_the_login_to_change() {
     );
 }
 
+/// Issue #2911, the deputy's case 1: the message's own words name the
+/// session window as "5-hour limit", and the reset after that phrase is the
+/// one the step waits for. Read at 15:00, so the stated 6:30pm is 3.5 hours
+/// ahead and inside the five-hour ceiling.
+#[test]
+fn issue_2911_an_individual_spend_cap_states_its_five_hour_reset() {
+    // 2026-10-18 15:00:00 -07:00, seven hours after NOW.
+    let at = NOW + 7 * 3600;
+    let m = message_at(SPEND_FIVE_HOUR, at);
+    assert_eq!(
+        m.kind,
+        LimitKind::Spend,
+        "the spend phrase decides the kind, not the window named"
+    );
+    let reset = m.reset.expect("the reset after \"5-hour limit resets\"");
+    assert!(
+        reset > at && reset <= at + 5 * 3600,
+        "3.5 hours ahead of {at}: {reset}"
+    );
+    assert_eq!(
+        wait_for_message(Some(m), at),
+        WaitFor::Reset {
+            harness: Harness::Claude,
+            reset,
+        },
+        "a reset the step can sleep to is slept to, spend limit or not"
+    );
+}
+
+/// The same line read before that reset is more than five hours away: still
+/// a wait, for capacity, and never an ending (#2911).
+#[test]
+fn issue_2911_an_individual_spend_cap_with_a_far_reset_waits_for_capacity() {
+    let m = message(SPEND_FIVE_HOUR);
+    assert_eq!(
+        wait_for_message(Some(m), NOW),
+        WaitFor::Capacity {
+            harness: Harness::Claude,
+            reset: m.reset,
+            why: Waiting::ResetTooFar,
+        }
+    );
+}
+
 #[test]
 fn issue_2911_no_shape_of_spend_limit_ends_the_step() {
-    for text in [SPEND_WEEKLY, SPEND_SESSION, SPEND_NO_RESET] {
+    for text in [SPEND_WEEKLY, SPEND_SESSION, SPEND_NO_RESET, SPEND_FIVE_HOUR] {
         let m = message(text);
         for now in [NOW, NOW + 86_400, NOW + 40 * 86_400] {
             let got = wait_for_message(Some(m), now);

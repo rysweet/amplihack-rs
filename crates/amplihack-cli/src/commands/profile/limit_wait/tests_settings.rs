@@ -6,7 +6,7 @@
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_settings;`.
 
 use super::plan::MIN_WAIT_SECS;
-use super::settings::{WaitSettings, floor_warning, from_effective};
+use super::settings::{SHORT_WAIT_SECS, WaitSettings, from_effective, length_warning};
 use crate::user_config::{LoadCtx, load};
 use std::fs;
 use std::path::Path;
@@ -15,7 +15,7 @@ fn settings(home: &Path, env: &[(&str, &str)], ci: Option<&str>) -> WaitSettings
     settings_and_warning(home, env, ci).0
 }
 
-/// The settings and the floor warning `resolve` would print for them.
+/// The settings and the length warning `resolve` would print for them.
 fn settings_and_warning(
     home: &Path,
     env: &[(&str, &str)],
@@ -34,7 +34,7 @@ fn settings_and_warning(
         migrate: false,
     });
     let s = from_effective(&effective, ci);
-    let warning = floor_warning(&effective, &s);
+    let warning = length_warning(&effective, &s);
     (s, warning)
 }
 
@@ -271,13 +271,52 @@ fn issue_2911_a_length_raised_to_the_floor_is_reported() {
     }
 }
 
+/// Review of PR #2992: a length at or above the floor but below the
+/// rotator's own cycle is not raised, and is not silent either. The value
+/// is the length of one wait, and a step still limited when a wait ends
+/// runs its agent again, so such a length re-launches the agent that often
+/// for as long as the limit lasts. The line says so and names the default.
 #[test]
-fn issue_2911_no_floor_warning_without_cause() {
+fn a_short_length_above_the_floor_is_reported_as_the_poll_it_is() {
+    for body in [MIN_WAIT_SECS, SHORT_WAIT_SECS - 1] {
+        let home = tempfile::tempdir().unwrap();
+        user_file(
+            home.path(),
+            &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
+        );
+        let (settings, warning) = settings_and_warning(home.path(), &[], None);
+        assert_eq!(settings.max_wait_secs, Some(body), "not raised: {body}");
+        let warning = warning.unwrap_or_else(|| panic!("a configured {body}: no warning"));
+        assert!(warning.starts_with("warning: "), "{warning}");
+        assert!(
+            warning.contains("recipe.usage_limit_max_wait_secs"),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("runs its agent again"),
+            "the cost is named: {warning}"
+        );
+        assert!(
+            warning.contains("recipe.usage_limit_wait = false"),
+            "{warning}"
+        );
+    }
+    // The wait off, so the length is never used.
     let home = tempfile::tempdir().unwrap();
-    // Nothing configured: the default is above the floor.
+    user_file(
+        home.path(),
+        "[recipe]\nusage_limit_wait = false\nusage_limit_max_wait_secs = 120\n",
+    );
     assert_eq!(settings_and_warning(home.path(), &[], None).1, None);
-    // A length at or above the floor.
-    for body in [MIN_WAIT_SECS, 600] {
+}
+
+#[test]
+fn issue_2911_no_length_warning_without_cause() {
+    let home = tempfile::tempdir().unwrap();
+    // Nothing configured: the default is above both thresholds.
+    assert_eq!(settings_and_warning(home.path(), &[], None).1, None);
+    // A length at or above the short-wait threshold.
+    for body in [SHORT_WAIT_SECS, 21_600] {
         user_file(
             home.path(),
             &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),

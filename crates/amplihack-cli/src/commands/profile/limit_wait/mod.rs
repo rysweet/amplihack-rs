@@ -15,6 +15,18 @@
 //! is its own timeout, a stop signal, the end of its session, output with no
 //! limit message in it, and a piped prompt that cannot be replayed.
 //!
+//! Two of those need saying twice, because both can end a step that met a
+//! limit and neither is a limit being refused. The step timeout is
+//! the recipe runner's bound on the step, which the runner enforces by
+//! killing it; the wait ends a minute early so the step can report instead
+//! (issue #3037). A prompt that cannot be replayed leaves no retry for a
+//! wait to earn (issue #3036). Each of them writes a sentence beside its
+//! event saying which it is and what to do about it
+//! ([`the_step_timeout_cut_the_wait`], [`no_retry_is_possible`]), because
+//! `failed reason=step_timeout` and `skipped reason=piped_prompt` read, to
+//! someone grepping a log for #2911's removed endings, like two more of
+//! them.
+//!
 //! Each wait's `start`, `waiting_for_capacity` and `end` also reach the run's
 //! recipe log, so a waiting step is visible there and not just in its own
 //! stderr (`recipe_log`). See docs/reference/usage-limit-waits.md.
@@ -245,8 +257,11 @@ pub(crate) struct Waiter {
     watch: Watch,
     /// The process that started this step, read before any attempt runs.
     parent: libc::pid_t,
-    /// Why no wait can help this step, whatever the limit says.
-    blocked: Option<NoWait>,
+    /// Why no wait can help this step, whatever the limit says, and the
+    /// static words that say which case it is. The words are printed when a
+    /// limit actually ends the step, never when the block is set, so a step
+    /// that meets no limit says nothing (review of PR #2992).
+    blocked: Option<(NoWait, &'static str)>,
     /// What this step's Claude arguments ask for, which is how the
     /// supervisor knows whether stdin carries anything it must keep and
     /// whether that thing is a prompt at all (issues #2815, #2816).
@@ -358,16 +373,20 @@ impl Waiter {
             .and_then(|(_, name)| ProfileName::parse(name).ok())
     }
 
-    /// Never wait for this step, for `why`.
-    pub(crate) fn block(&mut self, why: NoWait) {
-        self.blocked = Some(why);
+    /// Never wait for this step, for `why`. `cause` is the static sentence
+    /// [`Waiter::after_limit`] prints when a limit does end the step this
+    /// way: `why` is the logged reason an operator greps for, and a reason
+    /// alone does not say which of the cases it covers happened here, nor
+    /// what has to be done about it (review of PR #2992).
+    pub(crate) fn block(&mut self, why: NoWait, cause: &'static str) {
+        self.blocked = Some((why, cause));
     }
 
     /// `WaitFor::Skip` for the reason set by `block`, if any. Passed to
     /// `after_limit` when no limit of the inherited profile is known, so the
     /// refusal is still logged.
     pub(crate) fn blocked_skip(&self) -> Option<WaitFor> {
-        self.blocked.map(WaitFor::Skip)
+        self.blocked.map(|(why, _)| WaitFor::Skip(why))
     }
 
     /// Whether Claude's arguments carry the prompt, so stdin holds nothing
@@ -442,7 +461,10 @@ impl Waiter {
     /// arrived by the time a wait of hours ends: a refusal before the wait
     /// would throw away the rerun that waiting earns. A refusal here ends
     /// the step with the limit result and `skipped reason=piped_prompt`,
-    /// rather than announcing a retry that cannot run.
+    /// rather than announcing a retry that cannot run. That is a reading of
+    /// the step and not of the limit: there are no bytes for a retry to
+    /// read, so a wait would earn nothing (see [`no_retry_is_possible`] and
+    /// issue #3036).
     ///
     /// `resumed` says how the attempt that hit this limit came to run
     /// (issue #2857). [`Resumed::AfterASignal`] means a wait had just ended
@@ -505,7 +527,9 @@ impl Waiter {
         };
         let now = self.clock.now();
         let step = self.step_timeout.map(|t| (self.step_start, t));
-        let waiting = self.blocked.map_or(inherited, WaitFor::Skip);
+        let waiting = self
+            .blocked
+            .map_or(inherited, |(why, _)| WaitFor::Skip(why));
         let (harness, p, shape) = match waiting {
             WaitFor::Reset { harness, reset } => {
                 (harness, plan(now, reset, max, step), Shape::Reset)
@@ -521,6 +545,16 @@ impl Waiter {
                 Shape::LoginChange,
             ),
             WaitFor::Skip(why) => {
+                // Review of PR #2992: the step is about to end carrying the
+                // limit's own result, and `skipped reason=piped_prompt`
+                // alone reads as a refusal to wait for a limit. It is not
+                // one: there is no prompt for a retry to read, so there is
+                // no retry for a wait to earn. Say that in words beside the
+                // event, name which case it is, and name what has to happen
+                // instead, because this step cannot do it.
+                if let Some((NoWait::PipedPrompt, cause)) = self.blocked {
+                    no_retry_is_possible(cause);
+                }
                 log(&Event::Skipped(Skip::Cannot(why)));
                 return AfterLimit::Finish(None);
             }
@@ -583,6 +617,7 @@ impl Waiter {
             // is about to kill (issue #2731).
             if p.bound == Bound::StepTimeout && self.clock.now() >= p.until {
                 emit(&Event::End(End::StepTimeout), account);
+                the_step_timeout_cut_the_wait();
                 log(&Event::Failed(FailReason::StepTimeout));
                 return AfterLimit::Finish(None);
             }
@@ -627,6 +662,7 @@ impl Waiter {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),
             End::SessionEnded => AfterLimit::Finish(None),
             End::StepTimeout => {
+                the_step_timeout_cut_the_wait();
                 // Progress lines may have pushed the limit message out of the
                 // runner's evidence tail, so this line keeps it classed.
                 log(&Event::Failed(FailReason::StepTimeout));
@@ -661,6 +697,44 @@ impl Waiter {
     }
 }
 
+/// Says that the step's own timeout, and not the limit, ended the step
+/// here (review of PR #2992).
+///
+/// The wait's deadline is pulled back to `AMPLIHACK_STEP_TIMEOUT` less
+/// [`plan::STEP_TIMEOUT_LEAD`] because the recipe runner kills the step at
+/// that timeout: a wait that ran past it would be killed mid-sleep, with no
+/// line saying why and no attempt result passed up. Ending just before it
+/// is what lets the step report. So this is the step's own bound, applied
+/// by the layer that owns it, and not a budget this module keeps for
+/// limits - but it does mean a limit wait is cut short by it, which the
+/// `failed reason=step_timeout` event alone does not say. The remedy is the
+/// operator's: raise the step timeout, or leave it unset and let the wait
+/// run (`docs/reference/usage-limit-waits.md`).
+fn the_step_timeout_cut_the_wait() {
+    eprintln!(
+        "amplihack: this step's own timeout (${STEP_TIMEOUT_ENV}) ended a usage-limit \
+         wait before the limit lifted, so the step ends here with the limit's result. \
+         The timeout is the step's bound and not a budget for limits: raise it, or \
+         leave it unset, to let a limit wait run longer. See \
+         docs/reference/usage-limit-waits.md"
+    );
+}
+
+/// Says that a limit has ended this step because no retry could be given
+/// its prompt, and what has to happen instead (review of PR #2992).
+///
+/// `cause` is static text chosen by the supervisor from the shape of the
+/// step's stdin, never built from what arrived on it.
+fn no_retry_is_possible(cause: &'static str) {
+    eprintln!(
+        "amplihack: this step met a usage limit and cannot be run again: {cause}. The \
+         limit is not lifted, and no wait can lift it for this step, because a retry \
+         would have no prompt to read; the attempt's own result is this step's \
+         result, and this step has to be sent again. See \
+         docs/reference/usage-limit-waits.md"
+    );
+}
+
 /// Whether the retry this wait earned has no prompt to read, asked of
 /// `replay` the moment before the retry would be announced (issue #2816).
 ///
@@ -676,6 +750,7 @@ fn no_prompt_for_a_retry(replay: &mut dyn FnMut() -> Option<String>) -> bool {
         return false;
     };
     eprintln!("amplihack: no retry after the wait: this step's prompt {why}");
+    no_retry_is_possible("the wait ended and its prompt was still not there to read");
     log(&Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)));
     true
 }

@@ -99,6 +99,21 @@ fn ac4_a_step_timeout_of_sixty_seconds_or_less_ends_the_step_without_a_retry() {
         "attempt 1 output\n",
         "the failed attempt's held-back stdout is printed"
     );
+    // Review of PR #2992: this is the one ending left that can stop a step
+    // while its limit still stands, and `failed reason=step_timeout` alone
+    // does not say whose bound it was or what to do about it. The step says
+    // both in words beside the event. The timeout is the recipe runner's
+    // own bound - it kills the step at that time whatever this code does,
+    // which is why the wait ends a minute early - and raising or unsetting
+    // it is the operator's remedy.
+    let err = crate::issue_1618_fixture::text(&out.stderr);
+    for words in [
+        "$AMPLIHACK_STEP_TIMEOUT",
+        "ended a usage-limit wait before the limit lifted",
+        "not a budget for limits",
+    ] {
+        assert!(err.contains(words), "{words:?} missing from\n{err}");
+    }
 }
 
 #[test]

@@ -472,7 +472,7 @@ amplihack recipe run recipe.yaml
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
 
-**Usage-limit wait:** a Claude agent step that waits on a usage limit, for a reset, for another login with capacity, or for the login in `~/.claude` to change, ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. The deadline is taken from the step's start, not the wait's, so a step that waits several times over, once per login the rotator brings in, is still bounded by it. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner. See [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
+**Usage-limit wait:** a Claude agent step that waits on a usage limit, for a reset, for another login with capacity, or for the login in `~/.claude` to change, ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. The deadline is taken from the step's start, not the wait's, so a step that waits several times over, once per login the rotator brings in, is still bounded by it. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner, as `failed reason=step_timeout`, with one line on standard error saying that the step's own timeout and not the limit ended it. So setting this variable bounds how long a limit may hold a step, and leaving it unset lets a limit wait run as long as the limit does: see [The step timeout cuts a wait](./usage-limit-waits.md#the-step-timeout-cuts-a-wait) and [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
 
 ---
 
@@ -1143,8 +1143,14 @@ organisation spend limit with no reset, last up to this length, with no
 five-hour ceiling; a capacity wait still ends sooner at the failed login's own
 reset plus 120 s.
 
+Because it is the length of one wait, and a step still limited when a wait
+ends runs its agent again, it is also how often such a step re-asks the
+harness, and each ask is a fresh agent launch.
+
 The length has a floor of 60 seconds. `0` means 60 seconds, not "do not wait";
-set `AMPLIHACK_USAGE_LIMIT_WAIT=false` to turn waiting off. See
+set `AMPLIHACK_USAGE_LIMIT_WAIT=false` to turn waiting off. A value below 600
+seconds, the rotator's own default cycle, prints one warning naming that cost;
+it is not refused. See
 [Usage-limit waits](./usage-limit-waits.md#what-max_wait_secs-means).
 
 The variable may set a value above the default. Overrides the config files;

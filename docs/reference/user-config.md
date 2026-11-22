@@ -378,10 +378,18 @@ lasts beyond the reset plus 120 seconds, and a
 or at the failed login's own reset plus 120 seconds. See
 [Usage-limit waits](./usage-limit-waits.md#what-max_wait_secs-means).
 
+Because it is the length of one wait, and a step still limited when a wait
+ends runs its agent again, it is also how often such a step re-asks the
+harness. Each ask is a fresh agent launch, so a short length is a poll of the
+harness and not a cheap one; the default asks once every six hours.
+
 The length has a floor of 60 seconds, twice the wait's poll interval, so a
 configured `0` means 60 seconds and not "do not wait". While the wait is on, a
-step that reads a value below 60 says so in a warning on standard error. To
-stop steps waiting at all, set `recipe.usage_limit_wait` to `false`.
+step that reads a value below 600 seconds, the rotator's own default cycle
+and so the soonest a host with no signal can have learnt anything, says so in
+a warning on standard error, naming the cost; a value below the 60-second
+floor says that too. Neither is refused. To stop steps waiting at all, set
+`recipe.usage_limit_wait` to `false`.
 
 The default is not a ceiling. A user file or
 `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a higher value. A project file
