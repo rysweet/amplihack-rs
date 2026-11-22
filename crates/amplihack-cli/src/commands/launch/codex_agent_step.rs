@@ -9,9 +9,9 @@
 //! `--dangerously-bypass-hook-trust`, because Codex silently skips hooks whose
 //! trust is not recorded. The amplihack hooks enforce the same deny rules for
 //! both harnesses. A sandbox the caller chose is never overridden. This module
-//! is pure: it reads only the argv tail.
-//! It also describes the injection as one stderr line for issue #2010, which
-//! the caller prints; the module itself still does no I/O.
+//! is pure: it reads only the argv tail. It describes the injection as one stderr line
+//! for issue #2010, which the caller prints; the module itself still does no
+//! I/O.
 //!
 //! Whether an option takes a value comes from the per-scope Codex option
 //! tables in `amplihack-launcher/src/prompt_delivery/codex_options.rs`, the
@@ -197,23 +197,17 @@ pub(super) fn codex_agent_step_args(args: &[String]) -> Vec<String> {
 /// for example `amplihack: codex exec: added --sandbox danger-full-access,
 /// --dangerously-bypass-hook-trust (#1985)`.
 ///
-/// Returns `None` unless `--sandbox danger-full-access` is added. When the caller
-/// chose a sandbox, the hook-trust bypass may still be added but no line is
-/// returned; issue #2048 tracks reporting that case. Issue #2009 covers
-/// whether the bypass is added at all, not whether it is reported.
-///
-/// Pure. The text is built only from fixed constants, never from caller argv,
-/// so paths, `-c` values, profile names and prompt text cannot reach stderr.
+/// Returns `None` when the caller chose a sandbox; the hook-trust-only notice
+/// remains tracked separately by #2048. Only fixed constants reach stderr.
 pub(super) fn codex_agent_step_notice(args: &[String]) -> Option<String> {
     let plan = plan(args).filter(|plan| plan.sandbox)?;
-    let line = if plan.hook_trust {
-        NOTICE_WITH_HOOK_TRUST
-    } else {
-        NOTICE_SANDBOX_ONLY
-    };
-    Some(line.to_string())
+    let sandbox = SANDBOX.join(" ");
+    let mut flags = vec![sandbox.as_str()];
+    if plan.hook_trust {
+        flags.push(HOOK_TRUST);
+    }
+    Some(format!(
+        "amplihack: codex exec: added {} (#1985)",
+        flags.join(", ")
+    ))
 }
-
-const NOTICE_WITH_HOOK_TRUST: &str = "amplihack: codex exec: added --sandbox danger-full-access, --dangerously-bypass-hook-trust (#1985)";
-const NOTICE_SANDBOX_ONLY: &str =
-    "amplihack: codex exec: added --sandbox danger-full-access (#1985)";

@@ -14,7 +14,6 @@ Status: ✓ Success
 Log pointer: status=success branch=feat/issue-1510-fix-issue-1510-read-it worktree=/work/amplihack-rs/worktrees/feat/issue-1510-fix-issue-1510-read-it child_pid=3729716 exit_code=0 runner_path=/opt/amplihack/bin/amplihack
 
 Steps:
-  ✓ step-00-review-dir-guard: completed
     Output: 9db119d12091007dd0f5ad40e596047f6c774233
   ✓ step-01-round-context: completed
     Output: {"head_sha":"19488a7c094f76c7f4cc87032a13532b2967c369","pr":"1632","resolved_concerns":"exit-79-regex-reads-unprefixed-prose,log-pointer-echoes-task-description","round_label":"round-2"}
@@ -23,7 +22,7 @@ Steps:
 CLEAN: echoed BLOCKED_TERMINAL orchestration_unavailable and exit 79 are ignored.
 
 **What... (truncated)
-  ✓ step-02b-review-dir-unchanged: completed
+  ✓ step-02b-assess-review-changes: completed
   ✓ step-03-extract-crusty-verdict: completed
     Output: {"concern_count":3,"crusty_verdict":"CONCERNS","verdict_source":"crusty"}
   ✓ step-04-address-concerns: completed

@@ -1,5 +1,7 @@
 //! Execute current owning consumers; no copied gate bodies or fake orch helpers.
 //! Each authority case has its own selection so RED cannot mask later branches.
+#[path = "issue_1538_context_transport/assessed.rs"]
+mod assessed;
 #[path = "issue_1538_context_transport/authority.rs"]
 mod authority;
 #[path = "issue_1538_context_transport/completion.rs"]
@@ -12,8 +14,12 @@ mod emitter;
 mod finalization;
 #[path = "issue_1538_context_transport/finalization_integrity.rs"]
 mod finalization_integrity;
+#[path = "issue_1538_context_transport/finalization_validator.rs"]
+mod finalization_validator;
 #[path = "issue_1538_context_transport/fixtures.rs"]
 mod fixtures;
+#[path = "issue_1538_context_transport/integrity_routes.rs"]
+mod integrity_routes;
 #[path = "issue_1538_context_transport/native.rs"]
 mod native;
 #[path = "issue_1538_context_transport/policies.rs"]

@@ -661,14 +661,26 @@ pub(crate) fn sanitized_stderr(stderr: &[u8]) -> String {
     }
 }
 
-pub(crate) fn git_has_dirty_state(path: &Path) -> bool {
+/// Whether the work tree at `path` holds uncommitted changes, or why Git
+/// could not say. A timeout, a refusal and a `git status` that exits non-zero
+/// all land in `Err`, carrying Git's own words, so a caller that reports a
+/// reason to the user can name what it met rather than calling the folder
+/// dirty.
+pub(crate) fn git_dirty_state(path: &Path) -> Result<bool, String> {
     let mut command = hardened_git();
     command.arg("-C").arg(path).arg("status").arg("--porcelain");
-    let output = run_output_with_timeout(command, GIT_COMMAND_TIMEOUT);
-    match output {
-        Ok(output) if output.status.success() => !output.stdout.is_empty(),
-        _ => true,
+    match run_output_with_timeout(command, GIT_COMMAND_TIMEOUT) {
+        Ok(output) if output.status.success() => Ok(!output.stdout.is_empty()),
+        Ok(output) => Err(sanitized_stderr_short(&output.stderr)),
+        Err(error) => Err(format!("{error:#}")),
     }
+}
+
+/// [`git_dirty_state`] for a caller that has only "may this be removed" to
+/// settle and no reason to report: whatever Git could not answer counts as
+/// dirty, so the folder stays.
+pub(crate) fn git_has_dirty_state(path: &Path) -> bool {
+    git_dirty_state(path).unwrap_or(true)
 }
 
 pub(crate) fn git_has_unpushed_commits(path: &Path) -> bool {

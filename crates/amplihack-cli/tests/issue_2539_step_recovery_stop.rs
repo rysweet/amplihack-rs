@@ -45,26 +45,13 @@ fn bash_step(id: &str, command: &str) -> Value {
 
 /// Runs `steps` as one recipe through the real runner with the fixture's
 /// recovery dir. The driver's agent call goes to the fixture's stub runner.
-fn run_recipe(f: &Fixture, steps: Vec<Value>, env: &[(&str, &str)]) -> Option<Output> {
+fn run_recipe(f: &Fixture, steps: Vec<Value>, env: &[(&str, &str)]) -> Output {
     run_recipe_in(f, steps, f.dir.to_str().unwrap(), env)
 }
 
-/// As [`run_recipe`] with `step_recovery_dir=<srd>`. `None` when no real
-/// runner exists (a failure under `AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER`).
-fn run_recipe_in(
-    f: &Fixture,
-    steps: Vec<Value>,
-    srd: &str,
-    env: &[(&str, &str)],
-) -> Option<Output> {
-    let Some(runner) = real_runner() else {
-        assert!(
-            std::env::var_os("AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER").is_none(),
-            "no recipe-runner-rs found"
-        );
-        eprintln!("recipe-runner-rs unavailable; skipping the recipe run");
-        return None;
-    };
+/// As [`run_recipe`] with `step_recovery_dir=<srd>`, on the pinned runner.
+fn run_recipe_in(f: &Fixture, steps: Vec<Value>, srd: &str, env: &[(&str, &str)]) -> Output {
+    let runner = real_runner();
     let recipes = f.root.join("recipes");
     private_dir(&recipes);
     let recipe = serde_yaml::to_string(&json!({
@@ -105,7 +92,7 @@ fn run_recipe_in(
     for (k, v) in env {
         cmd.env(k, v);
     }
-    Some(cmd.output().unwrap())
+    cmd.output().unwrap()
 }
 
 /// The real command, with the driver's agent call sent to the stub runner.
@@ -132,9 +119,7 @@ fn a_handoff_on_pr_ready_ends_the_recipe_with_81_and_the_ci_step_never_runs() {
         marker_step(&f, "step-22"),
     ];
     // On a GitHub host with no PR-ready helper installed, step-21 fails.
-    let Some(o) = run_recipe(&f, steps, &[("REMOTE_HOST_TYPE", "github")]) else {
-        return;
-    };
+    let o = run_recipe(&f, steps, &[("REMOTE_HOST_TYPE", "github")]);
     assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
     assert!(
         !f.root.join("step-22").exists(),
@@ -150,60 +135,6 @@ fn a_handoff_on_pr_ready_ends_the_recipe_with_81_and_the_ci_step_never_runs() {
         records[0],
         show(&o)
     );
-}
-
-#[test]
-fn a_handoff_on_the_crusty_review_dir_guard_ends_the_round_before_step_01() {
-    let f = Fixture::new();
-    f.choose(1, handoff());
-    let empty = f.root.join("no-tools");
-    private_dir(&empty);
-    let guard = via_stub(&bundle_command(
-        "autodrive-crusty-round",
-        "step-00-review-dir-guard",
-    ));
-    let steps = vec![
-        bash_step("step-00-review-dir-guard", &guard),
-        marker_step(&f, "step-01-round-context"),
-        marker_step(&f, "step-02-crusty-review"),
-    ];
-    let tools = empty.to_str().unwrap();
-    let Some(o) = run_recipe(&f, steps, &[("AUTODRIVE_LAUNCH_TOOLS", tools)]) else {
-        return;
-    };
-    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
-    for later in ["step-01-round-context", "step-02-crusty-review"] {
-        assert!(!f.root.join(later).exists(), "{later} ran:\n{}", show(&o));
-    }
-    let evidence = f.evidence(1);
-    assert_eq!(evidence["guard"], true);
-    assert_eq!(evidence["allowed_choices"], json!(["handoff"]));
-}
-
-#[test]
-fn a_guard_step_refuses_a_repair_and_hands_off_with_81() {
-    let f = Fixture::new();
-    let tool = f.tool(
-        "guard",
-        "#!/bin/sh\necho 'STOP: review dir changed' >&2\nexit 1\n",
-    );
-    f.choose(
-        1,
-        json!({"choice": "retry_after_repair", "reason": "restore the review dir",
-        "repair": "git checkout the review dir"}),
-    );
-    let o = f.run(
-        "step-02b-review-dir-unchanged",
-        &["--guard"],
-        &[tool.to_str().unwrap()],
-    );
-    assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
-    let line = outcome(&o);
-    assert_eq!(line["choice"], "handoff");
-    assert_eq!(line["source"], "validator");
-    let reason = f.records("step-02b-review-dir-unchanged")[0]["reason"].clone();
-    assert!(reason.as_str().unwrap().contains("check 3"), "{reason}");
-    assert_eq!(f.agent_calls().len(), 1, "the guard step never ran again");
 }
 
 #[test]
@@ -256,9 +187,7 @@ fn init_under_a_home_holding_a_symlink_disables_recovery_and_steps_run_unwrapped
         ("XDG_STATE_HOME", "relative-state"),
         ("REMOTE_HOST_TYPE", "github"),
     ];
-    let Some(o) = run_recipe_in(&f, steps, "", &env) else {
-        return;
-    };
+    let o = run_recipe_in(&f, steps, "", &env);
     let all = format!("{}{}", text(&o.stdout), text(&o.stderr));
     assert_eq!(o.status.code(), Some(1), "fails as before recovery:\n{all}");
     // The runner does not show a successful step's stderr; the warning is

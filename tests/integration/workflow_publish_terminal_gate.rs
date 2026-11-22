@@ -55,8 +55,17 @@ fn step_condition<'a>(recipe: &'a Value, id: &str) -> &'a str {
         .unwrap_or_else(|| panic!("workflow-publish step `{id}` must declare a condition"))
 }
 
+/// The recipe, plus the shell of every step whose body was extracted into
+/// `amplifier-bundle/tools/` for the brick budget (issue #1619), so a text
+/// search still sees what the steps really run.
 fn recipe_text(recipe: &Value) -> String {
-    serde_yaml::to_string(recipe).expect("serialize workflow-publish")
+    let mut text = serde_yaml::to_string(recipe).expect("serialize workflow-publish");
+    for step in steps(recipe) {
+        if let Some(command) = step.get("command").and_then(Value::as_str) {
+            text.push_str(&crate::recipe_step_body::resolved(command));
+        }
+    }
+    text
 }
 
 #[test]

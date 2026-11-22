@@ -58,8 +58,10 @@ fn snapshot(dir: &Path) -> Result<Vec<(String, usize, Vec<u8>)>> {
 
 /// The choices on offer for this failure. A guard step checks something,
 /// so it may only report: no repair, and never a skip (`guard` implies
-/// `essential`). A `no_repair` step publishes the worktree, so it is never
-/// retried after a repair that no review has seen.
+/// `essential`). A `no_repair` step is one a retry could not help: it
+/// publishes the worktree, so a repair would go out without review, or every
+/// input it reads was recorded before the first attempt, so the second run
+/// reads the same values and ends the same way (#2819).
 pub fn allowed_choices(
     has_alternatives: bool,
     essential: bool,

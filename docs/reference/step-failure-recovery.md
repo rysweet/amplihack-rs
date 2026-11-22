@@ -1,6 +1,6 @@
 ---
 title: Step Failure Recovery Reference
-last_updated: 2026-11-14
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -64,13 +64,11 @@ record is an ordinary failure.
 | `autodrive-build` | `step-02-default-workflow` (sub-recipe), recovered by `step-02r-default-workflow-recovery` | `--already-failed --essential` |
 | `autodrive-crusty-loop` | `step-02-crusty-loop` | `--essential --stop-on-handoff` |
 | `autodrive-crusty-loop` | `step-03-record-crusty-phase` (agent), recovered by `step-03r-record-crusty-phase-recovery` | `--essential` |
-| `autodrive-crusty-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
-| `autodrive-merge-round` | `step-00-review-dir-guard`, `step-02b-review-dir-unchanged` | `--guard` |
 | `autodrive-merge-loop` | `step-02-merge-ready-loop` | `--essential --stop-on-handoff` |
 | `autodrive-merge-loop` | `step-03-finalize` (sub-recipe), recovered by `step-03r-finalize-recovery` only when the loop asked for finalisation | `--already-failed --essential` |
 | `workflow-finalize` | `step-20b-push-cleanup` | `--essential --stop-on-handoff --no-repair` |
 | `workflow-finalize` | `step-21-pr-ready` | `--essential --stop-on-handoff` |
-| `workflow-finalize` | `validate-agentic-finalization` | `--guard` |
+| `workflow-finalize` | `validate-agentic-finalization` | `--essential --stop-on-handoff --no-repair` |
 
 Report steps: `workflow-finalize` `step-recovery-report` (before
 `workflow-complete`), `auto-drive-to-merge` `autodrive-report`, and
@@ -78,18 +76,29 @@ Report steps: `workflow-finalize` `step-recovery-report` (before
 
 ### Recovery inside the auto-drive loops
 
-The round recipes run on the private review generations of
-[Auto Drive To Merge](./auto-drive-to-merge.md#review-generations) (issue
-#2096). Recovery still wraps the round guard steps and `step-02b` there:
+The round recipes run directly in the actual linked PR worktree. Trusted
+recipe/tool selection remains independent of cwd. The former review-directory
+guards and mutation gate are removed; a following agent assesses reviewer
+changes against ordinary pre-review evidence and handles them without failing
+on a mere difference. See
+[review and preservation](recipe-checkout-isolation.md#assessment-after-review).
 
-- Agent steps in the rounds start in `{{review_launch_dir}}`, which only the
-  loop sets.
-- `autodrive_loop.sh` takes the recovery directory as
-  `--context step_recovery_dir=<dir>` and passes it on to each round.
-- A caller cannot set the loop's own keys. `--context` refuses
-  `review_dir`, `review_launch_dir`, `reviewed_head_sha`,
-  `autodrive_launch_tools` and `autodrive_completion_state`, and the loop's
-  own `-c` values come after the caller's, so the loop's values win.
+`autodrive_loop.sh` passes `step_recovery_dir` to each round. Recovery retains
+the baseline associated with an interrupted reviewer invocation; it does not
+replace the baseline with partial reviewer changes. Pre-existing staged,
+unstaged, and untracked work remains recoverable. There are no
+`review_launch_dir` or private review-generation context values.
+
+That retention holds across the round and past its end. The loop reclaims the
+round's `pre-review.*` baseline only once the round has returned and the loop
+is going on; the reclaim runs after `orphan_stop`, the terminal-refusal check,
+`usage_limit_stop` and `recovery_stop`, so a round that ends the run — and in
+particular one that ends it on a recorded handoff — leaves its baseline in
+place for the operator who has to act on it. The next run's first round
+reclaims every `pre-review.*` in the state directory, so a handoff nobody
+resumes leaves one on disk until then; #2834 tracks giving it a reclaimer that
+does not depend on a later run. See
+[pre-review evidence](recipe-checkout-isolation.md#pre-review-evidence).
 
 `workflow-worktree` `step-04-setup-worktree` writes the build's branch to
 `build-branch.txt` in the recovery directory. A retried build passes it as
@@ -131,6 +140,38 @@ grep -n 'recipe: "push-failure-recovery"' amplifier-bundle/recipes/*.yaml
 
 `owner` must be one of the evidence file's `owner_roles`, the caller's
 `--owner`, or `default_owner` (the caller's `--owner`, else `run-requester`).
+
+### When a retry cannot observe a repair
+
+`retry_after_repair` re-runs the same command with the same environment. That
+is only a way forward when the command's answer depends on something the
+agent can change and the command will read again. A step that reads only
+values recorded before its first attempt has no such input: the second run
+reads the same bytes and ends the same way, and offering the choice promises
+a convergence that cannot happen. Such a step takes `--no-repair`, so the
+agent is asked for the move it can actually make.
+
+`validate-agentic-finalization` is the worked example. It reports the
+terminal state `assess-finalization` decided, from `finalization_assessment`,
+over the facts and blockers in `finalization_evidence` -- all recorded. The
+recovery agent may push only commits the run itself made, on the branch the
+failed step was working on, and may make no other GitHub write and start no
+recipe. This step has no commit of its own to push, and opening the pull
+request that a `FAILED_IMPLEMENTATION` is missing stays forbidden, so the agent
+can neither open it nor produce an assessment where there is none. The repair
+belongs to `assess-finalization`, which is permitted exactly those two actions and
+then decides on what it did.
+
+Making the step read live instead would not rescue the retry. The terminal
+state is still the one recorded before the first attempt, so fresher facts
+could not change it; and the one local repair that is physically available --
+committing a dirty worktree -- would move the local head away from the commit
+the recorded decision was made about, so a retry that accepted it would
+certify a pull request that does not hold the new commit. The convergent move
+is to run finalization again, assessment included, not to retry the reporter.
+See
+[Recipe Recovery](./recipe-recovery.md) and
+[The Run's Real Outcome](./default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
 
 ## Opting a step in
 
@@ -207,7 +248,7 @@ run --step-id <id> --dir <dir> --goal <text> [--owner <v>]
 | `--alternative` | Named alternative, repeatable; name `^[A-Za-z0-9_-]{1,64}$`; command split on whitespace, no shell |
 | `--essential` | `continue_recorded` not offered |
 | `--stop-on-handoff` | A handoff exits 81 |
-| `--no-repair` | `retry_after_repair` not offered (a step that publishes the worktree) |
+| `--no-repair` | `retry_after_repair` not offered (a step that publishes the worktree, or one whose every input was recorded before the first attempt) |
 | `--guard` | Only `handoff` and declared alternatives; implies the three flags above |
 | `--already-failed` | Go straight to recovery; the record has `unavailable_reason` |
 | `--recipe-dir` | Run `<dir>/step-failure-recovery.yaml` (tests) |
@@ -242,14 +283,23 @@ directory that recipe was given by its caller.
 The driver runs `amplihack recipe run step-failure-recovery -c
 step_recovery_evidence=<path>` with `AMPLIHACK_STEP_RECOVERY_ACTIVE=1`. The
 prompt says the evidence is untrusted data, and that the agent must not make
-GitHub writes, bypass hooks, read credentials, change the review directory,
-the main checkout, guard or validator scripts or their evidence, write under
-the recovery directory, or start another orchestration.
+GitHub writes other than a plain push of commits the run made (see below),
+bypass hooks, read credentials, change the main checkout,
+guard or validator scripts or their evidence, write under the recovery
+directory, or start another orchestration.
 
 A local repair adds new commits only. The prompt forbids rewriting or
 discarding commits (amend, rebase, squash, reset to an earlier commit) and
-force-pushing (issue #2629). This limits how a repair may change history; it
-does not allow a push, which stays forbidden.
+force-pushing (issue #2629). This limits how a repair may change history.
+
+The one permitted GitHub write is a plain `git push` of commits the run itself
+made, on the branch the failed step was working on, through the repository's
+hooks and never with a flag that skips them. It lets recovery publish a commit
+a review has already seen locally instead of handing off (issue #2923, see
+[Auto-drive Round Push Before Review](auto-drive-round-push.md)). Opening,
+editing, merging or commenting on pull requests and issues, labels, reviews and
+any other API write stay forbidden. The permission is prompt text; no Rust code
+enforces it.
 
 Evidence (`evidence-<id>-<n>-<8 hex>.json`, mode `0600`, schema 1):
 `untrusted_notice`, `step_id`, `goal`, `failure`, `allowed_choices`,
@@ -342,6 +392,13 @@ Behaviour change: a failure at `step-20b-push-cleanup`, `step-21-pr-ready` or
 `validate-agentic-finalization` now ends the run with exit 81 and a record,
 where it used to exit 1.
 
+`validate-agentic-finalization` ends the run only on a failure the run really
+has: a branch that was not pushed, no open PR, a PR at a different head, a
+failing check, a dirty worktree or missing `git`/`jq`. A missing or unreadable
+context file, an unset empty object key and pending CI no longer produce a
+failure, so they never reach the guard (#2343, #1726). See
+[The Run's Real Outcome](./default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).
+
 ## Recovery directory
 
 One directory per top-level run, shared with every child recipe and loop
@@ -361,6 +418,34 @@ output is `{"step_recovery":"disabled",…}` and auto-drive's output shows an
 empty recovery directory.
 
 Directory mode `0700`; record, evidence and spool files `0600`.
+
+### The directory path as a recovery input
+
+`step_recovery_dir` is an ordinary context key, so the Rust runner counts it as
+an input of every bash and recipe step that can see it, whether or not the step
+mentions it. Runner #208 widened that coverage to bash steps; agent steps are
+outside it. The key is set in every `default-workflow` run, and a key that
+cannot be saved makes its steps non-replayable, so `default-workflow`,
+`workflow-prep` and `workflow-design` name it in `recovery.persist.context`.
+
+Without that entry the bash `replay: reuse` steps of the two phase recipes
+cannot replay after a usage-limit relaunch:
+`step-02d-detect-host-type`, `step-03-create-issue` and
+`step-03b-extract-issue-number` in `workflow-prep`, and
+`step-06b-checkpoint-doc-review` and `step-06d-goal-already-met-probe` in
+`workflow-design`. The relaunch then restarts at the earliest of them and
+redoes work the first attempt had finished, including issue creation. Their
+agent steps are unaffected either way.
+
+Neither phase recipe reads the value; they persist it because the runner counts
+it, not because a step consults it. Inside the phase tree the readers are
+`workflow-worktree`, which writes `build-branch.txt` under the directory, and
+`workflow-finalize`, which guards three of its steps with it and, at its first
+step, runs `init --created-by workflow-finalize` and rebinds the key to its own
+output. An empty inherited value therefore means recovery is off everywhere
+except in `workflow-finalize`, where it means the phase makes a directory of its
+own. See
+[caller-set keys in routing and workflow recipes](recipe-recovery.md#caller-set-keys-in-routing-and-workflow-recipes).
 
 ## Security
 
@@ -389,12 +474,13 @@ Directory mode `0700`; record, evidence and spool files `0600`.
 Integration tests are modules of `cli_integration` in
 `crates/amplihack-cli/tests/issue_2539_step_recovery_*.rs`; unit tests are in
 `step_recovery/tests.rs` and `tests_review.rs`. The agent is a stub runner
-replaying scripted replies. Tests that need the real `recipe-runner-rs`
-skip without it, and fail without it when
-`AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER` is set (as in CI).
+replaying scripted replies. Tests that need the real `recipe-runner-rs` use
+the pinned build from `tests/support/pinned_runner.rs` and never skip; see
+[Run tests against the pinned recipe runner](../howto/run-tests-against-the-pinned-recipe-runner.md).
+The loop tests also need `jq` and fail without it.
 
 ```bash
-AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER=1 cargo test -p amplihack-cli --test cli_integration issue_2539_step_recovery
+cargo test -p amplihack-cli --test cli_integration issue_2539_step_recovery
 cargo test -p amplihack-cli --lib step_recovery
 ```
 
@@ -405,3 +491,5 @@ cargo test -p amplihack-cli --lib step_recovery
 - [Recipe Check Exit Status](./recipe-check-exit-status.md)
 - [Auto Drive To Merge](./auto-drive-to-merge.md)
 - [Default Workflow Agentic Finalization](./default-workflow-agentic-finalization.md)
+- [Recipe Recovery Reference](./recipe-recovery.md#caller-set-keys-in-routing-and-workflow-recipes)
+- [Auto-drive Round Push Before Review](./auto-drive-round-push.md)

@@ -465,9 +465,15 @@ case "$(pwd -P)/" in "$T"/*|"$(cd "$T" && pwd -P)"/*) ;; *) echo "fake agent: cw
 prompt=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -p|--system-prompt) prompt="$prompt
+    # The pinned runner sends the task on stdin behind a bare -p and the
+    # system prompt in --system-prompt-file (runner #205,
+    # agent_prompt_file_v1); older runners gave both as argument values.
+    -p) if [ "$#" -ge 2 ] && [ "${{2#-}}" = "$2" ]; then prompt="$prompt
+$2"; shift 2; else prompt="$prompt
+$(cat)"; shift; fi ;;
+    --system-prompt) prompt="$prompt
 ${{2:-}}"; shift 2 ;;
-    --append-system-prompt-file) [ -f "${{2:-}}" ] && prompt="$prompt
+    --system-prompt-file|--append-system-prompt-file) [ -f "${{2:-}}" ] && prompt="$prompt
 $(cat "$2")"; shift 2 ;;
     *) shift ;;
   esac

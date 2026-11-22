@@ -123,7 +123,11 @@ fn a_file_with_a_differing_timeout_is_repaired_at_launch() {
 #[test]
 fn a_current_file_is_not_rewritten_and_gets_no_backup() {
     let f = fixture();
-    let mut s = json!({"model": "opus"});
+    // Issue #2589: current means current for both passes a launch makes --
+    // the hooks block and the deny entries -- so the file starts with the
+    // entries the policy would add, and neither pass has anything to write.
+    let mut s = json!({"model": "opus", "permissions": {"deny": []}});
+    crate::policy::claude::ensure_deny(&mut s, &[]);
     hook_block::merge(&mut s, &f.target());
     let path = f.home_settings();
     f.write(&path, &s);
@@ -216,7 +220,7 @@ fn a_relative_claude_config_dir_is_ignored() {
 }
 
 #[test]
-fn an_unparseable_file_gets_one_warning_and_no_write() {
+fn an_unparseable_file_is_reported_by_each_pass_and_never_written() {
     let f = fixture();
     let path = f.home_settings();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -234,4 +238,190 @@ fn an_unparseable_file_gets_one_warning_and_no_write() {
     let notice = String::from_utf8_lossy(&notice);
     assert!(!notice.contains("sk-test-do-not-print"), "{notice}");
     assert!(backups(path.parent().unwrap()).is_empty());
+    // Issue #2589: a launch makes two passes over this file, the hooks
+    // repair and the deny refresh, and neither may meet a file it cannot
+    // read in silence (SEC-C3). One warning each, so two.
+    assert_eq!(
+        notice.matches("amplihack: warning:").count(),
+        2,
+        "one warning per pass: {notice}"
+    );
+}
+
+// --- issue #2589: the deny entries are refreshed on every launch -----------
+//
+// `repair_settings_hooks` returns when amplihack's hooks block is clean, so
+// the settings writer -- and with it `ensure_permissions` -- is never
+// reached on an ordinary launch. `refresh_deny_entries` runs beside it for
+// exactly that case. Before it existed, a user who added a
+// `policy.deny_commands` entry and then only ever launched kept the old
+// entries until the next explicit install or update.
+
+/// A settings file whose hooks block is current, so the hook repair returns
+/// before it writes anything.
+fn clean_hooks_settings(f: &Fixture, extra: Value) -> PathBuf {
+    let mut settings = extra;
+    hook_block::merge(&mut settings, &f.target());
+    let path = f.home_settings();
+    f.write(&path, &settings);
+    assert_eq!(
+        hook_block::drift_file(&path, &f.target()),
+        hook_block::FileDrift::Clean,
+        "the fixture must start with a clean hooks block"
+    );
+    path
+}
+
+fn deny_entries(settings: &Value) -> Vec<String> {
+    settings["permissions"]["deny"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|e| e.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Writes `[policy] deny_commands = [...]` into `<home>/.amplihack/config.toml`.
+fn instance_config(home: &Path, entries: &[&str]) {
+    let dir = home.join(".amplihack");
+    fs::create_dir_all(&dir).unwrap();
+    let list = entries
+        .iter()
+        .map(|e| format!("\"{e}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    fs::write(
+        dir.join("config.toml"),
+        format!("[policy]\ndeny_commands = [{list}]\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_launch_with_clean_hooks_still_writes_the_default_deny_entries() {
+    let f = fixture();
+    let path = clean_hooks_settings(&f, json!({"model": "opus"}));
+
+    f.launch();
+
+    let after = f.read(&path);
+    let entries = deny_entries(&after);
+    for expected in crate::policy::claude::deny_entries(&[]) {
+        assert!(
+            entries.contains(&expected),
+            "{expected} missing: {entries:?}"
+        );
+    }
+    assert_eq!(after["model"], "opus", "the rest of the file is kept");
+}
+
+#[test]
+fn a_launch_with_clean_hooks_picks_up_an_instance_addition() {
+    let f = fixture();
+    instance_config(&f.home, &["terraform apply"]);
+    let path = clean_hooks_settings(&f, json!({}));
+
+    f.launch();
+
+    assert!(
+        deny_entries(&f.read(&path)).contains(&"Bash(terraform apply:*)".to_string()),
+        "{:?}",
+        deny_entries(&f.read(&path))
+    );
+}
+
+#[test]
+fn a_user_entry_already_in_the_file_is_kept_and_a_second_launch_rewrites_nothing() {
+    let f = fixture();
+    let path = clean_hooks_settings(
+        &f,
+        json!({"permissions": {"deny": ["Bash(my-own-command:*)"]}}),
+    );
+
+    f.launch();
+    assert_eq!(
+        deny_entries(&f.read(&path)).first().map(String::as_str),
+        Some("Bash(my-own-command:*)"),
+        "the user's own entry keeps its place"
+    );
+
+    let before = fs::metadata(&path).unwrap();
+    let bytes = fs::read(&path).unwrap();
+    f.launch();
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(
+        std::os::unix::fs::MetadataExt::ino(&fs::metadata(&path).unwrap()),
+        std::os::unix::fs::MetadataExt::ino(&before),
+        "a current file is not rewritten"
+    );
+}
+
+#[test]
+fn no_claude_settings_file_is_created_by_the_deny_refresh() {
+    let mut f = fixture();
+    // `CLAUDE_CONFIG_DIR` is the target the launch repair never creates, so
+    // a launch there leaves no settings file for the refresh to write into.
+    let cfg = f.home.join("cfg");
+    fs::create_dir_all(&cfg).unwrap();
+    f.env.set("CLAUDE_CONFIG_DIR", &cfg);
+
+    f.launch();
+
+    assert!(!cfg.join("settings.json").exists());
+}
+
+#[test]
+fn an_unmergeable_permissions_value_is_reported_and_never_replaced() {
+    let f = fixture();
+    let path = clean_hooks_settings(&f, json!({"permissions": "SENTINEL_SECRET_VALUE"}));
+    let before = fs::read(&path).unwrap();
+
+    let notice = f.launch();
+
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        before,
+        "the file is left as it was"
+    );
+    assert!(
+        notice.contains("permissions is not a JSON object"),
+        "{notice}"
+    );
+    assert!(!notice.contains("SENTINEL_SECRET_VALUE"), "{notice}");
+}
+
+#[test]
+fn a_drifting_launch_converges_in_one_pass_and_the_next_changes_nothing() {
+    // The deny refresh runs after the hook repair precisely so that a launch
+    // which did rewrite the file has already written the entries. This pins
+    // the consequence: one launch leaves the file current for both passes,
+    // and a second launch does not touch it.
+    let f = fixture();
+    let path = f.home_settings();
+    f.write(&path, &json!({"hooks": {}}));
+
+    f.launch();
+
+    let after = f.read(&path);
+    assert!(hook_block::drift(&after, &f.target()).is_clean());
+    let entries = deny_entries(&after);
+    for expected in crate::policy::claude::deny_entries(&[]) {
+        assert!(
+            entries.contains(&expected),
+            "{expected} missing: {entries:?}"
+        );
+    }
+
+    let bytes = fs::read(&path).unwrap();
+    let ino = std::os::unix::fs::MetadataExt::ino(&fs::metadata(&path).unwrap());
+    f.launch();
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(
+        std::os::unix::fs::MetadataExt::ino(&fs::metadata(&path).unwrap()),
+        ino,
+        "the second launch writes nothing"
+    );
 }

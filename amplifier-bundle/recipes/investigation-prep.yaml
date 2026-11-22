@@ -94,6 +94,7 @@ steps:
   # ==========================================================================
   - id: "scope-definition"
     agent: "amplihack:prompt-writer"
+    model: "strong"
     working_dir: "{{repo_path}}"
     prompt: |
       Define the scope for this investigation task.
@@ -148,6 +149,7 @@ steps:
 
   - id: "clarify-ambiguities"
     agent: "amplihack:ambiguity"
+    model: "strong"
     working_dir: "{{repo_path}}"
     # recipe-runner-rs supports dotted access in conditions but rejects
     # bracket subscripts like scope['has_ambiguities'] with a parse error.

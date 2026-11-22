@@ -1,0 +1,80 @@
+name: issue-1619-model-tiers
+description: >
+  Outside-in QA for issue #1619: the model and reasoning effort each harness
+  receives when a recipe agent step declares a model tier. The scenario runs
+  the real amplihack binary (via tests/gadugi/run-issue-1619-tier-scenario.sh)
+  through `amplihack recipe run` and the pinned recipe runner, under env -i
+  with a fresh HOME and a fresh git project directory per case. The tools are
+  stub claude, codex and copilot executables that record their argv. Each
+  case runs one agent step declaring `model: "strong"`. Claude receives
+  `--model claude-opus-5[1m]`. Codex receives no --model and
+  `-c model_reasoning_effort=high`. Copilot receives no --model. With
+  AMPLIHACK_DEFAULT_MODEL set to a Claude id, Claude receives that id and
+  Codex still receives no Claude id and effort high. The cases need
+  recipe-runner-rs (RECIPE_RUNNER_RS_PATH or on PATH). The step runs the
+  script with AMPLIHACK_1619_QA_REQUIRE_ALL=1, so a case that could not run
+  fails the scenario through the exit code. CI's Install Smoke Test job
+  installs the pinned runner and runs the runner script directly, with
+  AMPLIHACK_1619_QA_REQUIRE_ALL=1, against the binary it installs; CI does
+  not run gadugi-test itself.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, recipe-run, model-selection, regression]
+  priority: high
+  issues: ["1619"]
+steps:
+  - name: run-issue-1619-tier-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: env AMPLIHACK_1619_QA_REQUIRE_ALL=1 tests/gadugi/run-issue-1619-tier-scenario.sh
+    timeout: 880000
+  - name: all-tier-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: contract-green
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: "issue 1619 model tier contract green"
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: claude-strong-gets-the-strong-claude-model
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: claude-strong "
+  - name: codex-strong-gets-an-effort-and-no-model
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: codex-strong "
+  - name: copilot-strong-gets-no-model
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: copilot-strong "
+  - name: a-claude-default-never-reaches-codex
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: codex-strong-claude-default "
+  - name: a-claude-default-still-chooses-the-claude-model
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: claude-strong-claude-default "

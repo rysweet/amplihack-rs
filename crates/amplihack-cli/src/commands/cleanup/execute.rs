@@ -43,7 +43,6 @@ fn is_managed(item: &Item, roots: &ManagedRoots) -> bool {
         // planned shape; this is the containment half of that check.
         Op::RemoveTarget { .. } => target_remove::location(&item.path)
             .is_ok_and(|at| is_contained(OwnedKind::Target, &at, roots, None)),
-        Op::ReclaimExec { .. } => c.parent() == Some(roots.exec.as_path()),
     }
 }
 
@@ -128,25 +127,18 @@ pub(super) fn execute(
     let target = item.canonical.as_path();
     match &item.op {
         Op::Skip | Op::Fail | Op::Archive { .. } | Op::RemoveTarget { .. } => Ok(()),
-        Op::ReclaimExec { tombstone } => {
-            if procs.in_use(target) {
-                refuse!("in use by a running process");
-            }
-            if *tombstone {
-                return exec_storage::remove_tombstone(target, None);
-            }
-            match exec_storage::reclaim(target, run_has_ended)? {
-                exec_storage::Verdict::Reclaimable(_) => Ok(()),
-                exec_storage::Verdict::Absent => refuse!("{} is already gone", target.display()),
-                exec_storage::Verdict::Kept(reason) => refuse!("{reason}"),
-            }
-        }
         Op::RemoveRunTmp { run_dir } => {
             run_still_inactive(run_dir)?;
             // A child of a killed runner (an agent, cargo) may outlive it and
             // still use its TMPDIR.
             if procs.in_use(target) {
                 refuse!("in use by a running process");
+            }
+            // Issue #2785, last of the free checks and so closest to the
+            // delete: work that appeared since this was planned is still
+            // seen. A refusal is reported as skipped, never as a failure.
+            if let Some(keep) = keep_and_report_unsaved_work(target) {
+                refuse!("{keep}");
             }
             remove_real_dir(target)
         }
@@ -163,6 +155,13 @@ pub(super) fn execute(
             }
             if procs.in_use(target) {
                 refuse!("in use by a running process");
+            }
+            // Issue #2785, before the Cargo lock so nothing slow sits
+            // between the judgement and the delete. This one arm covers the
+            // run-owned folder, `untagged-target` and `tmp-leftover`, and is
+            // the only judgement the last two get.
+            if let Some(keep) = keep_and_report_unsaved_work(target) {
+                refuse!("{keep}");
             }
             // Issue #2039: a Cargo target is locked exclusively from the
             // check through the delete, so a build cannot start in between.

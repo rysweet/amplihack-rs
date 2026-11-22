@@ -238,6 +238,9 @@ fn run_step(e: &Env, id: &str, tools: &Path, env: &[(&str, &str)]) -> Output {
         ("AUTODRIVE_ROUND_LABEL", OsStr::new("crusty-round-1")),
         ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
         ("RECIPE_VAR_crusty_round_context", OsStr::new(&ctx)),
+        // #2814: the loop measures the round's head and passes it in; the
+        // record writer compares the review's claim with it.
+        ("RECIPE_VAR_reviewed_head_sha", OsStr::new(&e.head)),
         ("REPO_PATH", e.repo.wt.as_os_str()),
         ("RECIPE_VAR_repo_path", e.repo.wt.as_os_str()),
         ("RECIPE_VAR_pr_number", OsStr::new("7")),
@@ -258,11 +261,10 @@ fn step03(e: &Env, tools: &Path, review: &str, env: &[(&str, &str)]) -> Output {
     run_step(e, STEP03, tools, &v)
 }
 
-/// Step-06 binds its record to the drive's private review generation (#2096),
-/// so each call gets a real generation of the fixture worktree at its head.
+/// Step-06 writes ordinary round evidence directly from the PR worktree. The
+/// review names the head the loop measured, as an uninterrupted round does.
 fn step06(e: &Env, tools: &Path, verdict: &str, fix: &str) -> Output {
-    let review = review_generation(e);
-    let review = review.to_str().unwrap();
+    let review = json!({ "reviewed_head_sha": e.head }).to_string();
     run_step(
         e,
         STEP06,
@@ -270,40 +272,19 @@ fn step06(e: &Env, tools: &Path, verdict: &str, fix: &str) -> Output {
         &[
             ("RECIPE_VAR_crusty_verdict", verdict),
             ("RECIPE_VAR_crusty_fix_evidence", fix),
-            ("REVIEW_DIR", review),
+            ("RECIPE_VAR_crusty_review", &review),
         ],
     )
 }
 
-/// A private review generation of the fixture worktree at `e.head`, made by
-/// the real `amplihack internal review-checkout`, outside the state dir.
-fn review_generation(e: &Env) -> PathBuf {
-    let parent = e.repo.tmp.path().join("review-generations");
-    std::fs::create_dir_all(&parent).unwrap();
-    let dest = parent.join(format!("g{}", std::fs::read_dir(&parent).unwrap().count()));
-    let out = crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin())
-        .args(["internal", "review-checkout"])
-        .arg(&e.repo.wt)
-        .arg(&dest)
-        .arg(&e.head)
-        .env("HOME", &e.repo.home)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .expect("run amplihack internal review-checkout");
-    assert!(out.status.success(), "review-checkout: {}", show(&out));
-    PathBuf::from(String::from_utf8(out.stdout).unwrap().trim())
-}
-
-/// Step-06's record and stdout: `golden` (the record as written before
-/// binding) plus a non-empty `review_generation`, verdict tag still first.
+/// Step-06 prints its ordinary round record, with the verdict tag first.
 fn assert_bound(e: &Env, o: &Output, golden: &str) {
     let rec = std::fs::read_to_string(&e.record).unwrap();
     assert_eq!(stdout(o), rec, "stdout is the bound record: {}", show(o));
     assert_bound_record(&rec, golden);
 }
 
-/// A bound record: `golden` plus a non-empty `review_generation`, with the
-/// verdict tag first and the record on one line.
+/// An ordinary round record with the verdict first, on one line.
 fn assert_bound_record(rec: &str, golden: &str) {
     let golden: Value = serde_json::from_str(golden).unwrap();
     let first = golden
@@ -318,13 +299,7 @@ fn assert_bound_record(rec: &str, golden: &str) {
         "the verdict tag stays first: {rec}"
     );
     assert_eq!(rec.lines().count(), 1, "one line: {rec}");
-    let mut bound: Value = serde_json::from_str(rec).unwrap();
-    let generation = bound
-        .as_object_mut()
-        .unwrap()
-        .remove("review_generation")
-        .unwrap_or_else(|| panic!("no review_generation: {rec}"));
-    assert!(generation.as_str().is_some_and(|g| !g.is_empty()), "{rec}");
+    let bound: Value = serde_json::from_str(rec).unwrap();
     assert_eq!(bound, golden, "{rec}");
 }
 
@@ -594,6 +569,7 @@ fn real_tools(e: &Env) -> PathBuf {
     for f in [
         "autodrive_crusty_record.sh",
         "autodrive_followups.sh",
+        "autodrive_followups_file.sh",
         "autodrive_followups_check.sh",
         "autodrive_finding_rules.sh",
         "autodrive_state.sh",

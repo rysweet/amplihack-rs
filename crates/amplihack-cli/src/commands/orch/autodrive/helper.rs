@@ -24,9 +24,11 @@ pub enum Operations {
     ///
     /// Prints `{"allows_merge":bool,"run_id":"..."}`, plus `"pr_selected":bool`
     /// when `--pr` is given: false when the operator selected another PR by
-    /// number or URL at launch. Any error exits 2 and
-    /// prints nothing on standard output; the finalize merge step then reports
-    /// `authorization-unreadable`, does not merge and hands the PR off.
+    /// number or URL at launch. Any error exits 2, prints nothing on standard
+    /// output and names the record path or both state folders on standard
+    /// error; the finalize merge step then reports `authorization-unreadable`,
+    /// does not merge and fails loudly so the merge loop's recovery step can
+    /// re-run finalisation (#2959).
     Authorization {
         #[arg(long)]
         invocation: PathBuf,
@@ -105,13 +107,23 @@ fn authorization(
     directory: &Path,
     pr: Option<u64>,
 ) -> Result<serde_json::Value> {
-    let auth = InvocationAuthorization::read_private(invocation)?;
-    let bound = auth
-        .state_dir()
-        .context("the invocation has no runner-bound state directory")?;
+    let auth = InvocationAuthorization::read_private(invocation).with_context(|| {
+        format!(
+            "cannot read the captured invocation record {}",
+            invocation.display()
+        )
+    })?;
+    let bound = auth.state_dir().with_context(|| {
+        format!(
+            "the invocation record {} has no runner-bound state directory",
+            invocation.display()
+        )
+    })?;
     ensure!(
         bound == directory,
-        "--directory is not the invocation's runner-bound state directory"
+        "--directory {} is not the invocation's runner-bound state directory {}",
+        directory.display(),
+        bound.display()
     );
     EvidenceStore::create(directory)?;
     let mut out = serde_json::json!({"allows_merge": auth.allows_merge(), "run_id": auth.run_id()});
@@ -119,4 +131,50 @@ fn authorization(
         out["pr_selected"] = auth.selects_pr(pr).into();
     }
     Ok(out)
+}
+
+#[cfg(all(test, unix))]
+mod tests_2959 {
+    use super::authorization;
+    use crate::commands::orch::autodrive::authorization::InvocationAuthorization;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// #2959: a folder mismatch is still refused (the check stays strict), and
+    /// the error names both folders so the finalize step's evidence says which
+    /// state folder the runner bound and which one finalisation was given.
+    #[test]
+    fn a_state_folder_mismatch_is_refused_and_names_both_folders() {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let root = temp.path();
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+        let bound = root.join("bound-state");
+        let other = root.join("other-state");
+        let mut auth =
+            InvocationAuthorization::capture("auto-drive-to-merge", &BTreeMap::new()).unwrap();
+        auth.bind_policy(format!("trusted-launch-bundle:sha256:{}", "a".repeat(64)));
+        auth.bind_state_dir(bound.clone());
+        let invocation = root.join("invocation.json");
+        fs::write(&invocation, serde_json::to_string(&auth).unwrap()).unwrap();
+        fs::set_permissions(&invocation, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let error = authorization(&invocation, &other, None).expect_err("mismatch is refused");
+        let text = format!("{error:#}");
+        assert!(text.contains(&bound.display().to_string()), "{text}");
+        assert!(text.contains(&other.display().to_string()), "{text}");
+        assert!(!other.exists(), "a refused mismatch creates nothing");
+    }
+
+    /// #2959: a record that is not there is an error that names the path.
+    #[test]
+    fn a_missing_record_error_names_the_invocation_path() {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+        let missing = temp
+            .path()
+            .join("autodrive-invocation-gone/invocation.json");
+        let error = authorization(&missing, temp.path(), None).expect_err("missing is refused");
+        let text = format!("{error:#}");
+        assert!(text.contains(&missing.display().to_string()), "{text}");
+    }
 }

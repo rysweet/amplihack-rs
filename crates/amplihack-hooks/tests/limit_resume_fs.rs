@@ -21,7 +21,7 @@ use amplihack_hooks::limit_resume::decide::{event_key, session_key};
 use amplihack_hooks::limit_resume::guard::{
     CommitError, FsGuard, GuardStore, LOCK_TIMEOUT, PROMPTED_RETENTION_SECS,
 };
-use amplihack_hooks::limit_resume::keys::{Key, Pane};
+use amplihack_hooks::limit_resume::keys::{Key, Pane, PaneCheck, ScreenCheck};
 use amplihack_hooks::limit_resume::log::{LOG_MAX_BYTES, LogEntry, append, format_line, sanitize};
 use amplihack_hooks::limit_resume::{
     Deps, Event, MAX_RESUMES_PER_SESSION, Outcome, check_watch_dir, record_prompt_at, run_with,
@@ -852,6 +852,7 @@ impl Deps for DiskDeps {
             live: Some("work".into()),
             overflow: None,
             platform_live: false,
+            live_room: None,
         })
     }
     fn guard(&mut self) -> &mut dyn GuardStore {
@@ -889,8 +890,11 @@ impl Deps for DiskDeps {
     fn stop_time(&mut self, _transcript: Option<&Path>, _start: i64) -> Option<i64> {
         None
     }
-    fn pane(&mut self) -> Option<Pane> {
-        None
+    fn pane_check(&mut self) -> PaneCheck {
+        PaneCheck::None
+    }
+    fn screen_check(&mut self, _pane: &Pane) -> ScreenCheck {
+        panic!("no pane, so no screen is read")
     }
     fn send_keys(&mut self, _pane: &Pane, _key: Key) -> std::io::Result<()> {
         panic!("no pane, so no keys")
@@ -1172,8 +1176,11 @@ impl Deps for SwapDeps {
     fn stop_time(&mut self, transcript: Option<&Path>, start: i64) -> Option<i64> {
         transcript.and_then(|p| read_stop_time(p, start))
     }
-    fn pane(&mut self) -> Option<Pane> {
-        None
+    fn pane_check(&mut self) -> PaneCheck {
+        PaneCheck::None
+    }
+    fn screen_check(&mut self, _pane: &Pane) -> ScreenCheck {
+        panic!("no pane, so no screen is read")
     }
     fn send_keys(&mut self, _pane: &Pane, _key: Key) -> std::io::Result<()> {
         panic!("no pane, so no keys")

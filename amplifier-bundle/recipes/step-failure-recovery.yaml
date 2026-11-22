@@ -59,11 +59,16 @@ steps:
       normal tools: fix a script, set a missing value, remove a stale lock
       file, regenerate an artefact. Then say exactly what you changed.
 
+      Pushing is allowed within the limit below, so do not hand off on the
+      ground that pushing is forbidden here.
+
       You must not:
-      - modify the review directory, the main checkout, any validator or guard
-        script, or the evidence files they read;
-      - push, open, edit, merge or comment on pull requests or issues, or make
-        any other GitHub write;
+      - modify the main checkout, any validator or guard script, or the
+        evidence files they read;
+      - push anything other than commits this run itself made, on the branch
+        the failed step was working on, through the repository's hooks;
+      - open, edit, merge or comment on pull requests or issues, set labels or
+        reviews, or make any other GitHub write;
       - bypass or disable hooks (`--no-verify`, `SKIP=`, `core.hooksPath`) or
         edit hook configuration;
       - rewrite or discard commits (amend, rebase, squash, reset to an earlier

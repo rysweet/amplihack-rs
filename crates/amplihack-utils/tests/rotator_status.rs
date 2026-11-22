@@ -296,6 +296,7 @@ fn parse_cycle_reads_the_five_fields() {
             live: Some("work".into()),
             overflow: None,
             platform_live: false,
+            live_room: None,
         }
     );
 }
@@ -426,6 +427,7 @@ fn status(outcome: &str, alert: bool) -> CycleStatus {
         live: Some("work".into()),
         overflow: None,
         platform_live: false,
+        live_room: None,
     }
 }
 
@@ -618,6 +620,7 @@ fn on_overflow_cycle(outcome: &str, tag: &str, at: i64) -> CycleStatus {
         live: Some("cred".into()),
         overflow: Some(tag.into()),
         platform_live: false,
+        live_room: None,
     }
 }
 
@@ -866,4 +869,339 @@ fn issue_1907_a_hard_alert_still_blocks_whatever_the_advisory_field_says() {
         r#","alert":"no-capacity:work","advisory_alert":null"#,
     );
     assert!(!parse_cycle(&raw, NOW).unwrap().has_capacity());
+}
+
+// ── Issue #2857: `live_room`, the rotator's reading of room on the live login
+//
+// `last_cycle.live_room` is one optional bit the rotator writes from the
+// measurement it already holds: the live login after the cycle reads below the
+// rotator's own `--session-at` on the session window and below 100% on the
+// week. The limit wait wakes on a login change only when it is `true`.
+//
+// `fresh_room(start)` is exactly `fresh_capacity(start) && says_room()`, and
+// `says_room()` is a pure reading of the outcome and the bit: `true` only on
+// `Some(true)` for a `swapped` or `stayed` cycle, and for a `switched` one
+// (a person's own `profile switch`, #1691) unless the bit says `false`. So it
+// adds a requirement and takes none away. `has_capacity` and
+// `fresh_capacity` keep their meaning byte for byte, because the limit-resume
+// hook reads them and #2857 does not change that hook.
+
+fn cycle_with(last_cycle_extra: &str, top_extra: &str) -> Vec<u8> {
+    format!(
+        r#"{{"version":1,"live":"work","alert":null{top_extra},"last_cycle":{{"at":{at},"measured_at":{m},"outcome":"swapped"{last_cycle_extra}}}}}"#,
+        at = NOW - 10,
+        m = NOW - 20,
+    )
+    .into_bytes()
+}
+
+#[test]
+fn issue_2857_live_room_reads_true_and_false_from_the_last_cycle() {
+    let yes = parse_cycle(&cycle_with(r#","live_room":true"#, ""), NOW).unwrap();
+    assert_eq!(yes.live_room, Some(true));
+    let no = parse_cycle(&cycle_with(r#","live_room":false"#, ""), NOW).unwrap();
+    assert_eq!(no.live_room, Some(false));
+}
+
+#[test]
+fn issue_2857_a_ledger_from_an_older_rotator_has_no_live_room() {
+    let s = parse_cycle(&cycle_with("", ""), NOW).unwrap();
+    assert_eq!(
+        s.live_room, None,
+        "absent is absent, never defaulted to room"
+    );
+    assert!(
+        !s.fresh_room(NOW - 100),
+        "an older rotator's cycle never counts as room, whatever its capacity says"
+    );
+    assert!(
+        s.fresh_capacity(NOW - 100),
+        "and the hook's rule for the same ledger is untouched"
+    );
+}
+
+/// Parsed loosely, as every field of this ledger is: anything that is not a
+/// JSON boolean in `last_cycle` reads as absent, and absent is no room.
+#[test]
+fn issue_2857_a_wrongly_typed_or_misplaced_live_room_reads_as_absent() {
+    for (what, last, top) in [
+        ("null", r#","live_room":null"#, ""),
+        ("a string", r#","live_room":"true""#, ""),
+        ("a number", r#","live_room":1"#, ""),
+        ("an array", r#","live_room":[true]"#, ""),
+        ("an object", r#","live_room":{"v":true}"#, ""),
+        ("a top-level key", "", r#","live_room":true"#),
+    ] {
+        let s = parse_cycle(&cycle_with(last, top), NOW).unwrap_or_else(|| panic!("{what}"));
+        assert_eq!(s.live_room, None, "{what}");
+        assert!(!s.fresh_room(NOW - 100), "{what}");
+    }
+}
+
+#[test]
+fn issue_2857_fresh_room_needs_fresh_capacity_and_a_true_live_room() {
+    let start = NOW - 600;
+    let mut s = status("swapped", false);
+    s.live_room = Some(true);
+    assert!(s.fresh_room(start), "capacity, fresh, room");
+    s.live_room = Some(false);
+    assert!(
+        !s.fresh_room(start),
+        "capacity and fresh, but the login is full"
+    );
+    assert!(
+        s.fresh_capacity(start),
+        "the same cycle is still capacity for the hook"
+    );
+    s.live_room = None;
+    assert!(!s.fresh_room(start));
+}
+
+/// The positive control for every case below: the same cycle with
+/// `live_room: true` and nothing else wrong is room.
+#[test]
+fn issue_2857_a_true_live_room_does_not_rescue_a_cycle_that_is_not_capacity() {
+    let start = NOW - 600;
+    let mut ok = status("swapped", false);
+    ok.live_room = Some(true);
+    assert!(ok.fresh_room(start), "positive control");
+
+    for outcome in [
+        "alerted",
+        "stayed-unread",
+        "held",
+        "stopped",
+        "idle",
+        "skipped",
+        "",
+    ] {
+        let mut s = status(outcome, false);
+        s.live_room = Some(true);
+        assert!(!s.fresh_room(start), "outcome {outcome:?}");
+    }
+    let mut alerted = status("swapped", true);
+    alerted.live_room = Some(true);
+    assert!(!alerted.fresh_room(start), "an ALERT is set");
+}
+
+#[test]
+fn issue_2857_a_stale_cycle_with_room_is_not_fresh_room() {
+    let start = NOW - 600;
+    let mut s = status("swapped", false);
+    s.live_room = Some(true);
+    for measured in [start - 1, start] {
+        s.measured_at = Some(measured);
+        assert!(!s.fresh_room(start), "measured at {measured}");
+    }
+    s.measured_at = Some(start + 1);
+    assert!(
+        s.fresh_room(start),
+        "positive control: measured after the limit"
+    );
+    // From a rotator that wrote no `measured_at`, the cycle must have been
+    // recorded more than the margin after the limit: `fresh_capacity`'s rule.
+    s.measured_at = None;
+    s.at = Some(start + FRESH_MARGIN_SECS);
+    assert!(!s.fresh_room(start));
+    s.at = Some(start + FRESH_MARGIN_SECS + 1);
+    assert!(s.fresh_room(start));
+}
+
+#[test]
+fn issue_2857_live_room_changes_neither_has_capacity_nor_fresh_capacity() {
+    let start = NOW - 600;
+    for room in [None, Some(false), Some(true)] {
+        let mut s = status("stayed", false);
+        s.live_room = room;
+        assert!(s.has_capacity(), "{room:?}");
+        assert!(s.fresh_capacity(start), "{room:?}");
+        let mut alerted = status("stayed", true);
+        alerted.live_room = room;
+        assert!(!alerted.has_capacity(), "{room:?}");
+    }
+}
+
+#[test]
+fn issue_2857_live_room_survives_the_file_checks_unchanged() {
+    // Through `read_cycle`, as the limit wait reads it: a private file.
+    let root = root_with_ledger(&cycle_with(r#","live_room":true"#, ""));
+    let s = read_cycle(root.path(), NOW).expect("a private ledger is read");
+    assert_eq!(s.live_room, Some(true));
+    // A ledger the checks refuse yields no status at all, so no room.
+    let root = root_with_ledger(&cycle_with(r#","live_room":true"#, ""));
+    fs::set_permissions(ledger_path(root.path()), fs::Permissions::from_mode(0o666)).unwrap();
+    assert!(read_cycle(root.path(), NOW).is_none(), "world-writable");
+    let big = format!(
+        r#"{{"version":1,"pad":"{}","last_cycle":{{"at":{NOW},"outcome":"swapped","live_room":true}}}}"#,
+        "x".repeat(70 * 1024)
+    );
+    assert!(parse_cycle(big.as_bytes(), NOW).is_none(), "over 64 KiB");
+    let v2 = br#"{"version":2,"last_cycle":{"at":1,"outcome":"swapped","live_room":true}}"#;
+    assert!(parse_cycle(v2, NOW).is_none(), "an unknown version");
+}
+
+// ── Issue #2857: `says_room`, the one rule the wait gate and `fresh_room` share
+//
+// `says_room()` is the whole of the question "does this record claim room on
+// the live login", with no clock and no I/O, so the gate in the limit wait and
+// `fresh_room` cannot disagree about it. It does not look at `alert`; the
+// callers take that from `has_capacity`.
+//
+// The one carve-out is `switched`. A person who runs `profile switch` has
+// chosen the login, and the rotator has measured nothing about it, so the
+// record has no bit. The wake #1691 gave that person stays unless the record
+// positively says there is no room. Every other outcome needs `Some(true)`,
+// and an outcome this reader does not know is never room, whatever the bit.
+
+/// `(outcome, live_room none, live_room true, live_room false)`.
+const SAYS_ROOM: [(&str, bool, bool, bool); 11] = [
+    ("swapped", false, true, false),
+    ("stayed", false, true, false),
+    ("switched", true, true, false),
+    ("stayed-unread", false, false, false),
+    ("alerted", false, false, false),
+    ("held", false, false, false),
+    ("idle", false, false, false),
+    ("skipped", false, false, false),
+    ("stopped", false, false, false),
+    ("Swapped", false, false, false),
+    ("", false, false, false),
+];
+
+#[test]
+fn issue_2857_says_room_for_every_outcome_and_every_reading_of_the_bit() {
+    for (outcome, none, yes, no) in SAYS_ROOM {
+        for (room, want) in [(None, none), (Some(true), yes), (Some(false), no)] {
+            let mut s = status(outcome, false);
+            s.live_room = room;
+            assert_eq!(
+                s.says_room(),
+                want,
+                "outcome {outcome:?}, live_room {room:?}"
+            );
+        }
+    }
+}
+
+/// SEC-4: fail closed. An outcome outside swapped/stayed/switched is never
+/// room, and the bit cannot make it so; and a record with no outcome at all
+/// says nothing.
+#[test]
+fn issue_2857_an_outcome_nobody_knows_is_never_room_whatever_the_bit_says() {
+    for outcome in ["stopped", "resumed", "SWITCHED", "switched ", "swapped\n"] {
+        let mut s = status(outcome, false);
+        s.live_room = Some(true);
+        assert!(!s.says_room(), "outcome {outcome:?}");
+    }
+    let mut none = status("swapped", false);
+    none.outcome = None;
+    none.live_room = Some(true);
+    assert!(!none.says_room(), "no outcome at all");
+}
+
+/// SEC-8: pure. The answer depends on the outcome and the bit and on nothing
+/// else in the record: not when it was written, not when it measured, not
+/// which login is live.
+#[test]
+fn issue_2857_says_room_reads_only_the_outcome_and_the_bit() {
+    for (outcome, room) in [
+        ("swapped", Some(true)),
+        ("switched", None),
+        ("stayed", Some(false)),
+    ] {
+        let mut base = status(outcome, false);
+        base.live_room = room;
+        let want = base.says_room();
+        for (at, measured_at) in [(None, None), (Some(1), Some(1)), (Some(NOW * 2), None)] {
+            let mut s = base.clone();
+            s.at = at;
+            s.measured_at = measured_at;
+            s.live = None;
+            s.overflow = Some("in".into());
+            s.platform_live = true;
+            assert_eq!(s.says_room(), want, "{outcome}, {room:?}, at {at:?}");
+        }
+    }
+}
+
+/// A manual switch has capacity for the hook and says room for the wait, with
+/// no bit written, and a fresh record of it is fresh room. The same switch is
+/// stale room once the limit is newer than its probe.
+#[test]
+fn issue_2857_a_manual_switch_with_no_bit_is_fresh_room() {
+    let start = NOW - 600;
+    let mut s = status("switched", false);
+    assert_eq!(s.live_room, None, "profile switch measures nothing");
+    assert!(s.fresh_capacity(start), "capacity, as the hook reads it");
+    assert!(s.fresh_room(start), "and room for the wait");
+    s.measured_at = Some(start);
+    assert!(!s.fresh_room(start), "freshness is still required");
+    s.measured_at = Some(start + 1);
+    assert!(s.fresh_room(start), "positive control");
+}
+
+#[test]
+fn issue_2857_a_manual_switch_that_recorded_no_room_is_not_fresh_room() {
+    let start = NOW - 600;
+    let mut s = status("switched", false);
+    s.live_room = Some(false);
+    assert!(
+        s.fresh_capacity(start),
+        "still capacity for the hook, whatever the bit"
+    );
+    assert!(
+        !s.fresh_room(start),
+        "a record that positively says there is no room is not room"
+    );
+    s.live_room = Some(true);
+    assert!(s.fresh_room(start), "positive control");
+}
+
+/// The carve-out lifts the bit's requirement and nothing else: a `switched`
+/// cycle under an ALERT has no capacity, so it has no room.
+#[test]
+fn issue_2857_a_manual_switch_under_an_alert_is_no_room() {
+    let start = NOW - 600;
+    for room in [None, Some(true)] {
+        let mut s = status("switched", true);
+        s.live_room = room;
+        assert!(!s.fresh_room(start), "{room:?}");
+    }
+}
+
+/// Only a `switched` record is let through without a bit. The rotator's own
+/// `swapped` and `stayed` were the incident, and still need `Some(true)`.
+#[test]
+fn issue_2857_the_carve_out_is_for_switched_alone() {
+    let start = NOW - 600;
+    for outcome in ["swapped", "stayed"] {
+        let s = status(outcome, false);
+        assert!(s.fresh_capacity(start), "{outcome}: capacity");
+        assert!(!s.fresh_room(start), "{outcome}: no bit, no room");
+    }
+}
+
+/// Through the parser as the wait reads the file: a `switched` ledger with no
+/// `live_room` key, and one with a wrongly typed key, which reads as absent.
+#[test]
+fn issue_2857_a_switched_ledger_from_disk_says_room_unless_the_bit_says_otherwise() {
+    let ledger = |extra: &str| {
+        format!(
+            r#"{{"version":1,"live":"work","alert":null,"last_cycle":{{"at":{at},"measured_at":{m},"outcome":"switched"{extra}}}}}"#,
+            at = NOW - 10,
+            m = NOW - 20,
+        )
+        .into_bytes()
+    };
+    for (what, extra, want) in [
+        ("no key", "", true),
+        ("true", r#","live_room":true"#, true),
+        ("false", r#","live_room":false"#, false),
+        ("a string", r#","live_room":"false""#, true),
+        ("null", r#","live_room":null"#, true),
+    ] {
+        let s = parse_cycle(&ledger(extra), NOW).unwrap_or_else(|| panic!("{what}"));
+        assert_eq!(s.says_room(), want, "{what}");
+        assert_eq!(s.fresh_room(NOW - 100), want, "{what}");
+    }
 }

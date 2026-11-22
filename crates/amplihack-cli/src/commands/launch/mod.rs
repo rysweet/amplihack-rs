@@ -14,6 +14,9 @@ mod context;
 /// Issue #2030 — the 0600 contract file and the Claude Code version gate.
 mod contract_file;
 pub(crate) mod hook_settings;
+/// Issue #1619 — a recipe step declares a model tier and amplihack turns it
+/// into whatever the harness it launches actually has.
+pub(crate) mod model_tiers;
 /// Issue #2030 — `amplihack claude` passthrough arguments never carry prompt
 /// text to the agent's argv.
 mod passthrough_rewrite;
@@ -43,6 +46,8 @@ mod tests_issue_2361;
 #[cfg(all(test, unix))]
 mod tests_issue_2535_guidance;
 #[cfg(test)]
+mod tests_issue_2589_copilot_deny;
+#[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
 mod tests_model;
@@ -59,6 +64,10 @@ mod tests_system_prompt_append;
 
 // Re-exports — public API of the launch module.
 pub(crate) use checkout::resolve_checkout_repo;
+/// Issue #1619: the shipped `strong` tier reuses this id rather than naming a
+/// second one that can drift away from it, which `model_tiers` pins.
+#[cfg(test)]
+pub(crate) use command::DEFAULT_MODEL;
 pub(crate) use command::{
     pin_profile_for_descendants, resolve_no_reflection, resolve_subprocess_safe,
     validate_routed_copilot_workspace,
@@ -296,6 +305,20 @@ fn run_launch_core(
     root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
+    // Issue #1619, launch order step 0: a recipe agent step declares a model
+    // tier (`fast`, `standard`, `strong`), which the recipe runner puts on
+    // this passthrough tail as `--model <word>`. Turn it into a model this
+    // harness actually has — or remove it, so amplihack's existing chain
+    // decides — before anything else reads the tail. The LiteLLM routing
+    // check below refuses a launch whose explicit `--model` is not
+    // AMPLIHACK_LITELLM_MODEL, so a tier word left in place would stop every
+    // gateway launch before it started.
+    //
+    // `proxy_target` names which harnesses the gateway routes, and is handed
+    // down rather than re-derived: Copilot CLI is a gateway target that
+    // `is_claude_compatible_tool` excludes.
+    let (extra_args, tier_launch) =
+        model_tiers::resolve_passthrough(tool, &extra_args, proxy_target.is_some());
     let proxy_config = amplihack_utils::litellm_proxy::ProxyConfig::from_env()
         .context("invalid external LiteLLM proxy configuration")?;
     let proxy_enabled = proxy_config.is_some();
@@ -475,6 +498,14 @@ fn run_launch_core(
             },
         },
     };
+
+    // Issue #2916: a Claude effort the tier added is checked against the
+    // version already read for the binary that will run, and taken back off
+    // when that version is older than the first to accept `--effort` or could
+    // not be read. Nothing is spawned for it. The record and the applied line
+    // are written here, so they say what reached the harness; a launch that
+    // returned earlier wrote them when `tier_launch` was dropped.
+    let extra_args = tier_launch.finish(extra_args, binary.version.as_deref());
 
     if let Some(proxy_target) = proxy_target {
         validate_proxy_launch_args(proxy_target, resume, continue_session, &extra_args)?;

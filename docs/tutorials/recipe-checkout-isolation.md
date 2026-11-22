@@ -1,31 +1,27 @@
 ---
-title: Inspect a Local-Input Snapshot
-description: Run a recipe against staged, unstaged and untracked changes and confirm the caller's checkout is untouched.
+title: Run a Recipe in a Selected Worktree
+description: Observe staged, unstaged, and untracked content and writes in a real linked Git worktree.
 doc_type: tutorial
-last_updated: 2026-11-12
+last_updated: 2026-11-18
 ---
 
-# Inspect a local-input snapshot
+# Run a recipe in a selected worktree
 
-In this tutorial you make a repository with a staged version and a different
-working version of one file, plus an untracked file. You run a recipe that
-reads all three and stages a file. Then you check that the recipe saw each
-version and that your own index and `HEAD` did not change.
+Create a local repository and a linked task worktree. Run a small recipe in
+that worktree, then inspect its writes and the original checkout's index.
+No agent login or network is needed. You need Git, `jq`, `amplihack`, and
+`recipe-runner-rs` on `PATH`.
 
-It takes about five minutes. You need Linux, Git, `jq`, `amplihack` and
-`recipe-runner-rs`. No agent login or network is used. The rules behind each
-result are in [checkout isolation](../reference/recipe-checkout-isolation.md).
+## Start a temporary shell
 
-## Start an isolated shell
-
-Find the binaries first, then start a shell whose home, profile and work
-directories are all temporary:
+Find the binaries before changing home directories. Run the remaining steps
+inside the shell this command opens:
 
 ```bash
 demo=$(mktemp -d)
 amplihack_bin=$(command -v amplihack)
 runner_bin=$(command -v recipe-runner-rs)
-mkdir -p "$demo/home" "$demo/tmp"
+mkdir -m 700 "$demo/home" "$demo/tmp"
 env -i PATH="$PATH" HOME="$demo/home" DEMO="$demo" \
   AMPLIHACK_BIN="$amplihack_bin" RECIPE_RUNNER_RS_PATH="$runner_bin" \
   AMPLIHACK_HOME="$demo/home/.amplihack" \
@@ -35,25 +31,30 @@ env -i PATH="$PATH" HOME="$demo/home" DEMO="$demo" \
   AMPLIHACK_WORK_ROOT="$demo/work" TMPDIR="$demo/tmp" \
   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
   GIT_TERMINAL_PROMPT=0 AMPLIHACK_NONINTERACTIVE=1 \
+  RECIPE_RUNNER_NO_UPDATE_CHECK=1 \
   AMPLIHACK_NO_FRESHNESS_CHECK=1 AMPLIHACK_SKIP_AUTO_INSTALL=1 \
   AMPLIHACK_ROTATE_AUTOSTART=0 \
   bash --noprofile --norc
 ```
 
-Run everything below inside this shell. Nothing touches your real
-`~/.claude`, `~/.amplihack` or profiles.
+The temporary home has mode `0700`. The real `~/.claude`, `~/.amplihack`,
+and profiles are untouched.
 
-## Create two local versions
+## Create the repository and task worktree
 
 ```bash
-mkdir "$DEMO/caller"
-cd "$DEMO/caller"
+mkdir "$DEMO/repository"
+cd "$DEMO/repository"
 git init -q
-git config user.name 'Isolation Tutorial'
-git config user.email 'isolation@example.invalid'
+git config user.name 'Worktree Tutorial'
+git config user.email 'worktree@example.invalid'
 printf 'committed version\n' > notes.txt
 git add -- notes.txt
 git commit -qm 'Create tutorial input'
+git worktree add -q -b tutorial/named-checkout "$DEMO/task"
+caller_head=$(git rev-parse HEAD)
+caller_index=$(git hash-object .git/index)
+cd "$DEMO/task"
 printf 'staged version\n' > notes.txt
 git add -- notes.txt
 printf 'working version\n' > notes.txt
@@ -61,29 +62,22 @@ printf 'local recipe input\n' > local-notes.txt
 git status --short
 ```
 
-Output:
+Output (the untracked line may appear first):
 
 ```text
 MM notes.txt
 ?? local-notes.txt
 ```
 
-Save the index digest and commit so you can compare them later:
+## Write and run the recipe
 
-```bash
-before_index=$(git hash-object .git/index)
-before_head=$(git rev-parse HEAD)
-```
-
-## Write the recipe
-
-Put the recipe outside the repository. `local-notes.txt` is an ordinary
-untracked file, so the run copies it without any declaration.
+The recipe stays outside the repository. Its step reads the index and working
+content separately, then stages the untracked file in the selected worktree.
 
 ```bash
 cat > "$DEMO/inspect-inputs.yaml" <<'YAML'
 name: inspect-local-inputs
-description: Read the staged, working and untracked inputs, then stage one file.
+description: Read staged, working, and untracked content, then stage one file.
 steps:
   - id: inspect-inputs
     type: bash
@@ -93,30 +87,17 @@ steps:
       cat notes.txt
       cat local-notes.txt
       git add -- local-notes.txt
+      git rev-parse --show-toplevel
 YAML
 "$AMPLIHACK_BIN" recipe validate "$DEMO/inspect-inputs.yaml"
-```
-
-## Try a dry run
-
-```bash
 "$AMPLIHACK_BIN" recipe run "$DEMO/inspect-inputs.yaml" \
-  -w "$DEMO/caller" --dry-run
-ls "$DEMO/work/runs" 2>/dev/null | wc -l
-```
-
-The last line prints `0`. A dry run prepares no checkout, records nothing and
-creates no run folder.
-
-## Run it
-
-```bash
-"$AMPLIHACK_BIN" recipe run "$DEMO/inspect-inputs.yaml" \
-  -w "$DEMO/caller" --no-detach --format json > "$DEMO/result.json"
+  -w "$DEMO/task" -c repo_path="$DEMO/task" \
+  --no-detach --format json > "$DEMO/result.json"
 jq -r '.success, .step_results[].output' "$DEMO/result.json"
 ```
 
-Output:
+Output ends with the physical path to your task worktree; its temporary
+prefix varies:
 
 ```text
 true
@@ -125,61 +106,49 @@ working version
 local recipe input
 ```
 
-The first two lines differ: the step read the staged version from the index
-and the working version from the file. The third line shows the untracked
-file was copied. Progress messages go to stderr.
+The next line is the task path, which the following comparison verifies.
+Progress messages go to stderr.
 
-## Check your checkout
+## Verify the execution directory and retained work
 
 ```bash
-test "$before_index" = "$(git hash-object .git/index)" && echo index unchanged
-test "$before_head" = "$(git rev-parse HEAD)" && echo HEAD unchanged
+step_root=$(jq -r '.step_results[].output' "$DEMO/result.json" | tail -n 1)
+task_root=$(cd "$DEMO/task" && pwd -P)
+test "$step_root" = "$task_root" && echo 'step ran in the selected worktree'
+git diff --cached --name-only -- local-notes.txt
+test "$caller_head" = "$(git -C "$DEMO/repository" rev-parse HEAD)" \
+  && echo 'original HEAD unchanged'
+test "$caller_index" = "$(git -C "$DEMO/repository" hash-object .git/index)" \
+  && echo 'original index unchanged'
 git status --short
 ```
 
-Output:
+Output includes:
 
 ```text
-index unchanged
-HEAD unchanged
+step ran in the selected worktree
+local-notes.txt
+original HEAD unchanged
+original index unchanged
+A  local-notes.txt
 MM notes.txt
-?? local-notes.txt
 ```
 
-The step's `git add` changed only the execution checkout's index. In real
-workflows, commits you want to keep go to a durable task or PR worktree.
+The original checkout is unchanged because you selected a separate legitimate
+worktree. The recipe's `git add` changed that worktree's index. Its staged,
+unstaged, and newly staged work remains after the run ends. No private
+execution repository is created or released.
 
-## Read the Git command record
+## Finish the tutorial
 
-```bash
-find "$DEMO/work/runs" -name git-commands.jsonl -type f \
-  -exec jq -c '{argv, cwd, index_file}' {} +
-```
-
-One line shows `["git","add","--","local-notes.txt"]` with a `cwd` under
-`$DEMO/work/runs/<id>/execution-<id>/checkout`, never `$DEMO/caller`. The
-execution checkout itself is gone; only the record stays:
+Exit the temporary shell when finished. Keep the temporary directory while
+you inspect the retained work; this tutorial does not run cleanup against it.
 
 ```bash
-find "$DEMO/work/runs" -maxdepth 2 -name 'execution-*' | wc -l
-```
-
-prints `0`.
-
-## Clean up
-
-```bash
-cd "$DEMO"
-"$AMPLIHACK_BIN" cleanup
 exit
 ```
 
-`exit` returns you to your normal shell. Delete `$demo` when you are done.
-
-## Next steps
-
-- What is copied and what is refused:
-  [checkout isolation reference](../reference/recipe-checkout-isolation.md#what-the-run-copies)
-- Record fields: [Git command record](../reference/recipe-runner-logging.md#git-command-record)
-- How auto-drive reviews in its own checkout:
-  [private review generations](../reference/recipe-checkout-isolation.md#private-review-generations)
+For development, the default workflow creates or recovers its task worktree.
+Auto-drive uses its PR worktree and follows review with agentic change
+assessment. See [run a recipe](../howto/run-a-recipe.md) and the
+[execution reference](../reference/recipe-checkout-isolation.md).

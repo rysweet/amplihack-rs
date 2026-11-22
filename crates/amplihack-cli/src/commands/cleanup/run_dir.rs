@@ -59,6 +59,12 @@ pub(crate) enum RuntimeRemoval {
     /// Another process still uses the folder, so it was left in place for a
     /// later sweep (issue #2486).
     KeptInUse,
+    /// A Git work tree in the folder holds changes that were never
+    /// committed, or commits that are on no remote, or could not be checked,
+    /// so the folder was left in place (issue #2785). Deleting it would
+    /// destroy work that exists nowhere else. This is an outcome, not an
+    /// error: it never fails a run and never changes its outcome.
+    KeptUnsavedWork,
 }
 
 /// Removes a runtime folder when dropped, including during unwinding, unless
@@ -183,6 +189,14 @@ impl RuntimeGuard {
         // a step left locked, so removal is not stopped by them.
         let unchanged = restore_owner_access(&path, euid());
         report_unchanged(&path, &unchanged);
+        // Issue #2785, after the restore and not before it: a folder a step
+        // left at mode 000 would otherwise hide the work tree inside it, and
+        // a locked folder holding nothing would be kept for ever, which the
+        // #2486 case forbids. The judgement says once why it keeps the
+        // folder; it is the last thing before the delete.
+        if super::sweep::keep_and_report_unsaved_work(&path).is_some() {
+            return Ok(RuntimeRemoval::KeptUnsavedWork);
+        }
         match fs::remove_dir_all(&path) {
             Ok(()) => Ok(RuntimeRemoval::Removed),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(RuntimeRemoval::Removed),
@@ -602,8 +616,6 @@ pub(crate) struct RunReport {
     pub steps: Vec<StepStatus>,
     #[serde(default)]
     pub log_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub git_recording: Option<serde_json::Value>,
 }
 
 impl RunReport {
@@ -643,6 +655,10 @@ pub(crate) struct RunScope {
     pub work_root: WorkRoot,
     pub run_id: String,
     pub run_dir: PathBuf,
+    /// The folder the run was launched in. Kept so the end-of-run build
+    /// output removal knows which worktree the run was started in (issue
+    /// #2886); it is only ever compared and inspected.
+    pub cwd: PathBuf,
     report: RunReport,
 }
 
@@ -680,13 +696,13 @@ impl RunScope {
             attempts: Vec::new(),
             steps: Vec::new(),
             log_path: None,
-            git_recording: None,
         };
         let runtime_dir = runtime_dir_for(&work_root.path, &run_id);
         let scope = Self {
             work_root,
             run_id,
             run_dir,
+            cwd: cwd.to_path_buf(),
             report,
         };
         scope.write_report()?;
@@ -743,14 +759,6 @@ impl RunWorkspace {
     ) -> Result<()> {
         match self {
             Self::Scoped { mut scope, guard } => {
-                let recording = scope.run_dir.join("git-recording.json");
-                match read_capped_nofollow(&recording, 4096) {
-                    Ok(bytes) => scope.report.git_recording = Some(serde_json::from_slice(&bytes)?),
-                    Err(error) if error.kind() == ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(error).context("read required recording finalization");
-                    }
-                }
                 let runtime = guard.remove();
                 scope.report.ended_at = Some(now_rfc3339());
                 scope.report.outcome = if runtime.is_err() {
@@ -763,6 +771,18 @@ impl RunWorkspace {
                 scope.report.steps = steps;
                 scope.report.log_path = log_path;
                 let report = scope.write_report();
+                // Issue #2886: a run removes the build output it made for
+                // itself, whatever its outcome and whether or not the sweep
+                // below runs. It reports what it did and never fails the run,
+                // so it is not part of the result below.
+                super::build_output::end_of_run(
+                    &super::build_output::RunEnd {
+                        run_dir: scope.run_dir.clone(),
+                        cwd: scope.cwd.clone(),
+                        work_root: scope.work_root.path.clone(),
+                    },
+                    &super::build_output::Launch::from_env(),
+                );
                 match (runtime, report) {
                     (Err(runtime), Err(report)) => {
                         return Err(runtime).context(format!("run report also failed: {report:#}"));
@@ -849,14 +869,6 @@ impl RunWorkspace {
         }
     }
 
-    /// The work root of a durable run, or `None` for a dry run.
-    pub(crate) fn work_root_path(&self) -> Option<PathBuf> {
-        match self {
-            Self::Scoped { scope, .. } => Some(scope.work_root.path.clone()),
-            Self::Legacy { .. } => None,
-        }
-    }
-
     /// Re-creates this run's own `<runtime>/tmp` and `<runtime>/artifacts`
     /// before an attempt, at the same path every time (issue #2486), so a
     /// step never starts with a TMPDIR that no longer exists. A real folder
@@ -932,6 +944,10 @@ impl RunWorkspace {
             ("TMPDIR", tmp.clone()),
             ("TMP", tmp.clone()),
             ("TEMP", tmp),
+            // Issue #2886: only a launcher claims a target folder as a run's
+            // own. Cleared, not left to be inherited, so no step can claim
+            // one; empty means unset to every reader.
+            (super::PRIVATE_TARGET_DIR_ENV, std::ffi::OsString::new()),
         ];
         if let Self::Scoped { scope, .. } = self {
             vars.push((

@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: small-change eligibility, authorization, escalation, and shared readiness outcomes.
-last_updated: 2026-11-11
+last_updated: 2026-11-22
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -9,9 +9,11 @@ doc_type: reference
 
 # Auto-Drive-Light Recipe
 
-Judging agents review the PR in a private checkout at the recorded PR-head
-SHA and start in a separate trusted launch directory, as in
-[`auto-drive-to-merge`](auto-drive-to-merge.md#review-generations).
+Judging agents run directly in the actual linked PR worktree at the intended
+reviewed commit, as in
+[`auto-drive-to-merge`](auto-drive-to-merge.md#review-in-the-pr-worktree).
+The same pre-review evidence and agentic assessment preserve existing work;
+reviewer differences alone do not fail the run.
 
 Light mode shares the runner-captured authorization, evidence snapshots and agentic finalization of full auto-drive. Its default is `no_merge=true`, preserved through escalation. Controlled tests verify propagation; actual OS/runtime execution remains unverified.
 
@@ -80,7 +82,7 @@ suppresses follow-up creation even when merging would otherwise be allowed.
 | Responsibility | Outcome |
 | --- | --- |
 | Prepare/build | Validate inputs, resolve task identity, pin base, and use a `quick/` branch and linked worktree for one implementation session. Run repository checks and hooks, commit, push, and open the PR. Skip build for an existing PR. |
-| Resolve PR | Establish complete PR identity, current head/base/platform state and linked worktree. Refuse cross-repository PRs under light eligibility; do not execute fetched PR instructions as trusted tools. |
+| Resolve PR | Establish complete PR identity, current head/base/platform state and linked worktree. Return the observed `isCrossRepository` as `is_cross_repository`; `light-eligibility` refuses the PR unless it is exactly `false` (see [Same-repository check](#same-repository-check)). Do not execute fetched PR instructions as trusted tools. |
 | Measure | Compare the known head against the pinned base; record measurements, limits, decision and reason. Unreadable diffs are faults, not zero measurements. |
 | Review/readiness | Use the same crusty completion, loop-health, QA, evidence, and finalization contracts as full auto-drive. |
 | Report | State path (`light` or `escalate`), eligibility reason, follow-ups, readiness, requested action, observed platform state, blockers, and stop reason. |
@@ -91,6 +93,19 @@ violation. Build/check failures preserve their causes for incomplete reporting
 and recovery.
 
 ## Eligibility rules
+
+### Same-repository check
+
+`light-resolve-pr` returns the PR's observed `isCrossRepository` as
+`build_result.is_cross_repository`. Before it measures anything or reuses a
+cached decision, `light-eligibility` stops with `light-cross-repo` unless
+`jq -e '.is_cross_repository == false'` succeeds. `true`, a missing field,
+`null` and the string `"false"` all stop the run (#2538). The stop is a
+failure, not an escalation, so a fork PR is never handed to
+`auto-drive-to-merge`. The step makes no `gh` call; it relies on the value the
+agent step observed.
+
+### Measurement
 
 Measure the diff from the pinned base to the observed PR head.
 Equality to a limit passes. The first exceeded rule in table order supplies

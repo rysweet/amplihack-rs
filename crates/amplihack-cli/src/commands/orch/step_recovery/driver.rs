@@ -33,8 +33,10 @@ pub struct RunArgs {
     /// A recorded handoff exits 81, so the recipe stops at this step.
     #[arg(long)]
     pub stop_on_handoff: bool,
-    /// `retry_after_repair` is not offered: the step publishes what is in
-    /// the worktree, so a repair would go out without review.
+    /// `retry_after_repair` is not offered, for either reason: the step
+    /// publishes what is in the worktree, so a repair would go out without
+    /// review; or every input the step reads was recorded before the first
+    /// attempt, so a retry cannot observe one (#2819).
     #[arg(long)]
     pub no_repair: bool,
     /// The step checks something: only `handoff` and declared alternatives

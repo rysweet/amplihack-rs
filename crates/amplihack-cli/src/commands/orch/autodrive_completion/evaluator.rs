@@ -70,33 +70,12 @@ pub(crate) fn verdict(log: &str) -> &'static str {
     result
 }
 
-/// Runs the loop-health evaluation for one round.
-///
-/// `head_read` is `Some(token)` when the dispatch could not read the PR head
-/// (#2333). It reaches the recipe as `loop_head_read`, so the evaluator judges
-/// the round knowing that the fault was in the read rather than in the branch.
-/// Deliberately not a member of [`FIELDS`]: the key is inserted here and the
-/// shell cannot supply one, so the round's own agent cannot tell the evaluator
-/// that GitHub was unreadable (S14).
 pub fn run(
     state: &State,
     record: &serde_json::Value,
     child_rc: i32,
-    head_read: Option<&str>,
 ) -> Result<(serde_json::Value, i32)> {
     let mut context = state.context.clone();
-    if let Some(token) = head_read {
-        // The tokens are program-generated constants, so this holds by
-        // construction; checked at the point of insertion all the same,
-        // because the key bypasses validate_context by design.
-        ensure!(
-            !token.is_empty()
-                && token.len() <= evidence::LIMIT
-                && !token.bytes().any(|b| b < 0x20 || b == 0x7f),
-            "invalid head-read token"
-        );
-        context.insert("loop_head_read".into(), token.to_string());
-    }
     let label = &state.round_label;
     for (key, value) in [
         ("loop_name", "auto-drive:crusty".to_string()),
@@ -104,7 +83,7 @@ pub fn run(
         ("loop_repo_path", state.repo.to_string_lossy().into_owned()),
         (
             "loop_agent_working_dir",
-            state.review_dir.to_string_lossy().into_owned(),
+            state.repo.to_string_lossy().into_owned(),
         ),
         ("loop_child_exit_code", child_rc.to_string()),
         (
@@ -159,8 +138,8 @@ pub fn run(
                 .join("../recipes/loop-health-evaluator.yaml"),
         )
         .arg("--working-dir")
-        .arg(&state.review_dir)
-        .current_dir(&state.review_dir);
+        .arg(&state.repo)
+        .current_dir(&state.repo);
     // Preserve the launcher's policy ceilings and sibling depth, never values
     // from agent output or context. No shell evaluates any of these arguments.
     for (key, value) in [
@@ -198,10 +177,6 @@ pub fn run(
     )?;
     let log = String::from_utf8_lossy(&log);
     eprint!("{log}");
-    ensure!(
-        evidence::review_stamp(&state.launch_tools, &state.review_dir)? == state.review_stamp,
-        "loop-health evaluator changed the trusted review directory"
-    );
     let rc = status.code().unwrap_or(1);
     let (result, code) = classify_exit(rc, &log);
     let evaluator_verdict = result;

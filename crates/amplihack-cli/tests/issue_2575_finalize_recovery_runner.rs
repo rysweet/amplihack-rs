@@ -357,7 +357,7 @@ steps:
     output: merge_loop_preflight
     command: |
       jq -cn --arg r "$RECIPE_VAR_fixture_repo" --arg s "$RECIPE_VAR_autodrive_state_dir" --arg pr "$RECIPE_VAR_pr_number" \
-        '{should_run:"true",pr:$pr,repo:$r,review_dir:$r,state_dir:$s}'
+        '{should_run:"true",pr:$pr,repo:$r,state_dir:$s}'
   - id: loop
     type: bash
     output: merge_loop_result
@@ -387,16 +387,11 @@ steps:
     serde_yaml::to_string(&doc).unwrap()
 }
 
-fn runner() -> Option<PathBuf> {
-    let found = crate::issue_2539_step_recovery_fixture::real_runner();
-    if found.is_none() {
-        assert!(
-            std::env::var_os("AMPLIHACK_2539_REQUIRE_RECIPE_RUNNER").is_none(),
-            "no recipe-runner-rs found"
-        );
-        eprintln!("recipe-runner-rs unavailable; skipping the real-runner finalisation test");
-    }
-    found
+/// The runner at the pinned revision, built once and shared with the other
+/// runner-backed tests (#2658). It is always available, so these tests no
+/// longer look on the host or skip themselves.
+fn runner() -> PathBuf {
+    crate::issue_2539_step_recovery_fixture::real_runner()
 }
 
 fn show(o: &Output) -> String {
@@ -416,7 +411,7 @@ fn outcome(o: &Output) -> Value {
 
 #[test]
 fn a_merge_made_by_recovered_finalisation_ends_the_run_completed() {
-    let Some(runner) = runner() else { return };
+    let runner = runner();
     let f = Fixture::new();
     let o = f.run(&runner, "false");
     let v = outcome(&o);
@@ -440,7 +435,7 @@ fn a_merge_made_by_recovered_finalisation_ends_the_run_completed() {
 
 #[test]
 fn a_recovered_finalisation_that_finds_the_base_behind_hands_the_pr_off() {
-    let Some(runner) = runner() else { return };
+    let runner = runner();
     let f = Fixture::new();
     fs::write(f.log.join("behind"), "").unwrap();
     let o = f.run(&runner, "false");
@@ -464,7 +459,7 @@ fn a_recovered_finalisation_that_finds_the_base_behind_hands_the_pr_off() {
 
 #[test]
 fn a_verify_only_run_that_reaches_done_ends_completed() {
-    let Some(runner) = runner() else { return };
+    let runner = runner();
     let f = Fixture::new();
     let o = f.run(&runner, "true");
     let v = outcome(&o);

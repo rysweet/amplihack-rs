@@ -101,14 +101,19 @@ warning. A same-organisation plan login with capacity is always taken
 first.
 
 The plan-room pool applies the same rules with room in place of strict
-capacity: a Same target restricts it only when the plan-room fallback, offered
-that target alone, would pick it. A Same login without room therefore never
-excludes an Unresolved login with room. From a plan login the plan-room pool
+capacity. For the rotator, room here means a
+[plan-room target](./profile-command.md#rotate-plan-room-swap): both windows
+below 100% and session use below `--session-at`. Auto-switch keeps its own
+test, both windows below 100%. A Same target restricts the pool only when the
+plan-room fallback, offered that target alone, would pick it. A Same login
+that is not a target therefore never excludes an Unresolved login that is
+one. From a plan login the plan-room pool
 never crosses. From an overflow login it is the way off paid spend, including
 the best-headroom fallback used when the overflow login is blocked, so it may
 cross on the same terms as the selection pool. A blocked overflow login
-therefore moves to a plan login with room in another organisation rather
-than raising an alert and staying.
+therefore moves to a plan login with room in another organisation (for the
+rotator, one that is a plan-room target) rather than raising an alert and
+staying.
 
 A better headroom score in another organisation does not override available
 same-organisation capacity. Missing metadata never keeps a session where it
@@ -146,7 +151,7 @@ These are policy examples, using profile names from the rotation guide:
 | `work` is a paid overflow login with no recorded organisation; plan login `spare` recovers | Back to `spare`, with a risk warning |
 | `work` is a paid overflow login in organisation B; plan login `spare` (A) recovers and nothing in B has capacity | Back to `spare`, with a confirmed-crossing warning |
 | `work` is a paid overflow login in B; `spare` (B) and `personal` (A) both have capacity, `personal` with more headroom | Back to `spare` |
-| `work` is a blocked overflow login in B; no plan login has capacity; `personal` (A) has room | Moves to `personal`, with a confirmed-crossing warning |
+| `work` is a blocked overflow login in B; no plan login has capacity; `personal` (A) has room (for the rotator, a plan-room target, so its session is below `--session-at`) | Moves to `personal`, with a confirmed-crossing warning |
 | Plan-room fallback from a plan login finds only Crossing targets | No plan-room swap |
 | `work` (A) reads 63%, projected to 76%; `spare` (A) has capacity on the projection; `third` (B) has more headroom | Projected swap to `spare` |
 | `work` (A) reads 63%, projected to 76%; only `third` (B) has capacity | No swap and no ALERT on the projection; the measured threshold crosses to `third` |
@@ -262,11 +267,14 @@ test `shell_wrapped_hook_delivers_the_warning_from_the_swap_record_alone`
 (`bins/amplihack-hooks/tests/limit_resume_binary.rs`) runs the real binary
 through `/bin/sh -c` twice to cover this.
 
-The same shell wrapper means the tmux route's pane check, which compares the
-pane's terminal with the hook parent's standard input, does not match on
-such hosts, and the hook falls back to the exit-2 wake. That behaviour
-predates this feature; the warning goes out on whichever route the resume
-takes.
+The same shell wrapper once stopped the tmux route: the pane check compared
+the pane's terminal with the hook parent's standard input, and on such hosts
+the parent is the shell, whose standard input is the payload pipe. The check
+now walks up the hook's own ancestry to the nearest process whose standard
+input is a terminal, which passes the shell and reaches Claude Code, so the
+route is available on those hosts too (issue
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695)). The warning
+goes out on whichever route the resume takes.
 
 Warning delivery does not change `judge()` or resume authorisation. A
 failure to write the warning to stderr still exits 2. The tmux route sends
@@ -295,4 +303,7 @@ The existing selectors define capacity using the configured thresholds; affinity
 does not introduce a second percentage limit. Same-organisation room above a
 threshold cannot hide a different organisation's eligible capacity relief.
 When no strict relief target is selected, existing plan-room policy can still
-choose an eligible, confirmed same-organisation target with room.
+choose an eligible, confirmed same-organisation target with room. For the
+rotator that target must also have session use below `--session-at`, as the
+[plan-room swap](./profile-command.md#rotate-plan-room-swap) requires of every
+target.

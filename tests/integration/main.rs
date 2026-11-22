@@ -26,6 +26,13 @@ mod investigation_workflow_decomposition;
 mod isolated_amplihack;
 #[path = "isolated_amplihack_scan.rs"]
 mod isolated_amplihack_scan;
+// Issue #2658: the real-runner tests build or reuse recipe-runner-rs at the
+// pinned revision instead of using whatever the host has installed.
+#[path = "../support/pinned_runner.rs"]
+mod pinned_runner;
+// The helper's unit tests run in this binary only.
+#[path = "../support/pinned_runner_tests.rs"]
+mod pinned_runner_tests;
 
 // Issue #1973: condition waits with one ceiling, shared with cli_integration.
 #[path = "../../crates/amplihack-cli/tests/support/wait.rs"]
@@ -137,6 +144,10 @@ mod workflow_publish_pr_metadata;
 
 #[path = "workflow_publish_resilience.rs"]
 mod workflow_publish_resilience;
+
+// Issue #2335: amplihack runtime files never make a worktree dirty.
+#[path = "issue_2335_runtime_paths_publish.rs"]
+mod issue_2335_runtime_paths_publish;
 
 // Issue #1976: step-16 publishes a local tracking reference as no linked issue.
 #[path = "issue_1976_publish_local_issue.rs"]
@@ -402,6 +413,8 @@ mod issue_815_804_local_tracking_extract;
 #[path = "issue_815_804_local_tracking_scope_args_test.rs"]
 mod issue_815_804_local_tracking_scope_args;
 
+#[path = "issue_2538_terminal_state_cross_repo.rs"]
+mod issue_2538_terminal_state_cross_repo;
 // Issue #1017: PR-scope must match on the (head,base,same-repo) primary key so
 // the recipe adopts its own unique-by-branch PR (stale --issue/--head-sha), and
 // publish must be collision-tolerant (adopt an existing OPEN PR on create fail).
@@ -535,6 +548,15 @@ mod issue_1764_git_never_prompts;
 #[path = "issue_1771_precommit_symlinked_caches_test.rs"]
 mod issue_1771_precommit_symlinked_caches;
 
+// Issue #2712: a recipe shell suite started inside a recipe run inherited
+// AMPLIHACK_WORK_ROOT and AMPLIHACK_WORK_ROOT_EXPLICIT=1 and put its
+// worktrees in the shared work root, outside its own EXIT trap. Runs
+// test-default-workflow-reliability.sh with an explicit work root supplied
+// from outside and requires that directory to stay empty, plus two unit tests
+// of the shared setup fragment the suites source.
+#[path = "issue_2712_recipe_test_work_root.rs"]
+mod issue_2712_recipe_test_work_root;
+
 // Issue #1966: is_critical_code is a required caller input. consensus-workflow
 // step 0 and consensus-tdd-impl reject a missing or malformed value before any
 // route, and the route gate fails unless exactly one route completed. Static
@@ -542,3 +564,19 @@ mod issue_1771_precommit_symlinked_caches;
 // recipe-runner-rs with agent steps stubbed, all under isolated(..).
 #[path = "issue_1966_consensus_criticality.rs"]
 mod issue_1966_consensus_criticality;
+
+// Issue #1619 (TDD): the small-diff combined review. Runs the review-mode
+// step's script against a temporary git repository with the settings in a
+// temporary home, and checks the answer it prints in each case.
+#[path = "issue_1619_review_mode_test.rs"]
+mod issue_1619_review_mode;
+
+// Issue #1619: a step whose shell body was extracted into
+// amplifier-bundle/tools/ for the brick budget still has to be readable by
+// the tests that assert on it. One place follows the call-out.
+#[path = "recipe_step_body.rs"]
+mod recipe_step_body;
+
+// Issues #2343, #1726, #2809: finalization reads the run's real outcome.
+#[path = "issue_2343_finalization_outcome.rs"]
+mod issue_2343_finalization_outcome;

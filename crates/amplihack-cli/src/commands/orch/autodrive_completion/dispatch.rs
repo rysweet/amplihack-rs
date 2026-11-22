@@ -3,7 +3,7 @@ use super::{
     decision::{Action, Decision},
     evaluator, evidence, private_state, secure_fs,
 };
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, ensure};
 
 pub fn run(args: Dispatch) -> Result<i32> {
     let state = private_state::load(&args.private_state)?;
@@ -32,55 +32,39 @@ pub fn run(args: Dispatch) -> Result<i32> {
             && decision.round_record_hash == snapshot.record_hash,
         "decision identity or record hash mismatch"
     );
-    let record = evidence::validate(&state, &snapshot)?;
+    let record = evidence::validate(
+        &state,
+        &snapshot,
+        matches!(decision.action, Action::Complete),
+    )?;
     let complete = matches!(
         record["crusty_verdict"].as_str(),
         Some("CLEAN" | "MINOR_ONLY")
-    );
-    // The remote head is read only for a completion claim, after every record
-    // check (#2333). Each outcome is matched by name: a head that moved fails
-    // closed as before, while a read that did not answer leaves the head
-    // unconfirmed and is judged by the loop-health evaluator, with the fault
-    // in front of it. It is not an invalid decision, and it is not a
-    // completion either.
-    let mut head_unavailable = None;
-    if complete {
-        match evidence::head_check(&state)? {
-            evidence::HeadCheck::Matches => {}
-            evidence::HeadCheck::Differs { local, remote } => bail!(
-                "current PR head {remote} differs from the reviewed evidence at {local}; \
-                 the completion claim does not cover the branch as it now stands"
-            ),
-            evidence::HeadCheck::Unavailable(u) => {
-                // The guard the Complete arm applies, kept ahead of the
-                // evaluator so an unreadable head cannot route a decision
-                // past a check it would otherwise have failed.
-                ensure!(
-                    decision.action == Action::Complete && args.child_exit_code == 0,
-                    "the PR head could not be read and the decision cannot complete"
-                );
-                head_unavailable = Some(u);
-            }
-        }
-    }
-    if let Some(u) = head_unavailable {
-        eprintln!(
-            "WARNING: the PR head could not be read on either route ({}); the round goes to the loop-health evaluator rather than completing",
-            u.token()
-        );
-        secure_fs::create(
-            secure_fs::Scope::of(&state.state_dir),
-            &args.private_state.with_extension("dispatched"),
-            state.run_id.as_bytes(),
-        )?;
-        let (mut result, code) =
-            evaluator::run(&state, &record, args.child_exit_code, Some(u.token()))?;
-        result["head_read"] = serde_json::json!(format!("unavailable:{}", u.token()));
-        println!("{result}");
-        return Ok(code);
-    }
+    ) && record["reviewed_head_sha"] == record["head_sha"]
+        && record["commits_this_round"].as_u64() == Some(0)
+        && args.child_exit_code == 0;
     let (result, code) = match decision.action {
         Action::Complete => {
+            // #2769: `--child-exit-code` is `ROUND_RC` in `autodrive_loop.sh`,
+            // the exit status of whichever round that script ran: the Crusty
+            // round or the merge-ready round. Dispatch is called on the Crusty
+            // branch, so this arm sees the Crusty round's status. While the
+            // #2663 outcome rule judged every `autodrive-*` sub-recipe by
+            // whether it merged, that status was non-zero whatever the round
+            // did and this check was constant-false, so the arm never fired.
+            // Narrowing the rule to the two entry points makes the check
+            // load-bearing: it now carries the round's real verdict, which is
+            // meaningful only while every step in `autodrive-crusty-round.yaml`
+            // is fatal. That is an assumption about the shipped recipe, not a
+            // property enforced here: a step marked `continue_on_error` would
+            // let a failed round exit 0 and complete the objective.
+            // `tests/issue_2769_autodrive_outcome_scope.rs` holds the
+            // end-to-end direction that matters here, with this dispatcher
+            // stood in for by the fixture's own exit-status propagation: a
+            // drive over a round whose own step fails stops at that round.
+            // The check below is not itself exercised by a test, and the
+            // recipe's step fatality is not enforced anywhere: #2775
+            // tracks both.
             ensure!(
                 args.child_exit_code == 0,
                 "unsuccessful child cannot complete the objective"
@@ -93,22 +77,26 @@ pub fn run(args: Dispatch) -> Result<i32> {
             )?;
             (
                 serde_json::json!({"loop":"crusty","loop_result":"DONE","round_label":state.round_label,
-                "round_verdict":record["crusty_verdict"],"source":"objective-completion","evaluator_invoked":false,
-                "head_read":"matches"}),
+                "round_verdict":record["crusty_verdict"],"source":"objective-completion","evaluator_invoked":false}),
                 0,
             )
         }
         Action::Evaluate => {
-            ensure!(
-                !complete,
-                "completed objective must select complete before convergence evaluation"
-            );
+            // #2814: asking for convergence evaluation is never refused here.
+            // This arm used to carry `ensure!(!complete)`, so a round the
+            // next-action agent judged unfinished while this predicate called
+            // it complete had no valid action at all, and a dispatch refusal
+            // ends the whole drive with INVALID_DECISION. An unnecessary
+            // evaluator call costs one invocation; a stopped drive costs the
+            // run. The check that matters runs the other way round, in the
+            // `Complete` arm above: a completion claim the evidence cannot
+            // carry is still refused.
             secure_fs::create(
                 secure_fs::Scope::of(&state.state_dir),
                 &args.private_state.with_extension("dispatched"),
                 state.run_id.as_bytes(),
             )?;
-            evaluator::run(&state, &record, args.child_exit_code, None)?
+            evaluator::run(&state, &record, args.child_exit_code)?
         }
     };
     // The dispatch result is iteration evidence only. Follow-up receipts and

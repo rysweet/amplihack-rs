@@ -3,6 +3,7 @@
 //! `docs/howto/clean-up-after-recipe-runs.md`.
 
 pub(crate) mod archive;
+mod build_output;
 pub(crate) mod eligibility;
 pub(crate) mod procs;
 pub(crate) mod run_dir;
@@ -19,6 +20,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use sweep::{Entry, Settings};
 
+/// The only code that may delete a pre-commit target, reached from the
+/// end-of-run build output removal too (issue #2886).
+use sweep::target_remove;
+
 pub(crate) const DEFAULT_KEEP_HOURS: u64 = 24;
 const MAX_KEEP_HOURS: u64 = 87_600;
 const DEFAULT_LOG_DAYS: u64 = 30;
@@ -27,6 +32,9 @@ const KEEP_HOURS_ENV: &str = "AMPLIHACK_CLEANUP_KEEP_HOURS";
 const LOG_DAYS_ENV: &str = "AMPLIHACK_LOG_ARCHIVE_DAYS";
 const ARCHIVE_DIR_ENV: &str = "AMPLIHACK_LOG_ARCHIVE_DIR";
 pub(crate) const CLEANUP_ON_EXIT_ENV: &str = "AMPLIHACK_CLEANUP_ON_EXIT";
+/// How a launcher says that the `CARGO_TARGET_DIR` it set is this run's own,
+/// so the run removes it when it ends (issue #2886).
+pub(crate) const PRIVATE_TARGET_DIR_ENV: &str = "AMPLIHACK_CLEANUP_PRIVATE_TARGET_DIR";
 const LOCK_WAIT: Duration = Duration::from_secs(10);
 
 /// A cleanup category.
@@ -35,7 +43,6 @@ pub enum Category {
     RunTmp,
     RunWorktree,
     RunTarget,
-    RunExec,
     UntaggedTarget,
     TmpLeftover,
     RecipeLog,
@@ -43,11 +50,10 @@ pub enum Category {
 }
 
 impl Category {
-    pub(crate) const ALL: [Category; 8] = [
+    pub(crate) const ALL: [Category; 7] = [
         Self::RunTmp,
         Self::RunWorktree,
         Self::RunTarget,
-        Self::RunExec,
         Self::UntaggedTarget,
         Self::TmpLeftover,
         Self::RecipeLog,
@@ -59,7 +65,6 @@ impl Category {
             Self::RunTmp => "run-tmp",
             Self::RunWorktree => "run-worktree",
             Self::RunTarget => "run-target",
-            Self::RunExec => "run-exec",
             Self::UntaggedTarget => "untagged-target",
             Self::TmpLeftover => "tmp-leftover",
             Self::RecipeLog => "recipe-log",
@@ -446,6 +451,17 @@ fn run_restore(path: &Path, dest: Option<&Path>) -> Result<bool> {
 /// Whether the end-of-run sweep is enabled (`AMPLIHACK_CLEANUP_ON_EXIT`).
 pub(crate) fn cleanup_on_exit_enabled() -> bool {
     std::env::var(CLEANUP_ON_EXIT_ENV).map_or(true, |v| v.trim() != "0")
+}
+
+/// Whether the launch claims this run's `CARGO_TARGET_DIR` as its own
+/// (issue #2886).
+///
+/// Exactly `1` after trimming claims it. Unset, empty, `0`, `true` and `yes`
+/// all mean "leave that folder alone": the polarity is the opposite of
+/// [`cleanup_on_exit_enabled`] on purpose, because this one names a folder to
+/// delete and must be asked for, never assumed.
+pub(crate) fn private_target_dir_claimed() -> bool {
+    std::env::var(PRIVATE_TARGET_DIR_ENV).is_ok_and(|value| value.trim() == "1")
 }
 
 #[cfg(test)]

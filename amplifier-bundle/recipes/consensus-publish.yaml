@@ -34,8 +34,11 @@ steps:
       fi
 
       # Stage all changes
+      S=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_stage_changes.sh" ] && { S="$c/amplifier-bundle/tools/workflow_stage_changes.sh"; break; }; done
+      [ -n "$S" ] || { echo "ERROR: amplifier-bundle/tools/workflow_stage_changes.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$S"  # #2839: private root run/reports/ stays on disk and out of the index
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
+      stage_workflow_changes; amplihack hygiene artifact-guard --repo . --mode pre-publish
 
       # Issue #1570: agent text is read with write_context_value (RECIPE_VAR_* or
       # AMPLIHACK_CONTEXT_FILE) into private files and never placed in argv.
@@ -73,7 +76,7 @@ steps:
       PUSH_RESULT=false
       PUSH_REASON="no_remote"
       if git remote get-url origin >/dev/null 2>&1; then
-        if git pull --rebase 2>/dev/null && git push 2>/dev/null; then
+        if workflow_pull_rebase 2>/dev/null && git push 2>/dev/null; then  # #2839: autostash the rewritten tracked report the staging helper left unstaged
           PUSH_RESULT=true
           PUSH_REASON="success"
         else

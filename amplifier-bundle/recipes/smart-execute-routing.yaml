@@ -27,7 +27,7 @@ context:
 recovery:
   version: 1
   persist:
-    context: ["adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
+    context: ["adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "base_branch", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "closing_reference", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "forbidden_base_branches", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_repository", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "repository", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "strict_delivery", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
     outputs: ["handle-qa", "handle-ops-agent", "ops-file-change-check", "derive-recursion-guard", "execute-single-round-1-development", "execute-single-round-1-quick-change", "handover-reselect-workflow", "execute-single-round-1-investigation", "create-workstreams-config", "launch-parallel-round-1", "blocked-fallback-reselect-workflow", "execute-single-fallback-blocked-development", "execute-single-fallback-blocked-investigation", "detect-execution-gap", "file-routing-bug", "adaptive-reselect-workflow", "adaptive-execute-development", "adaptive-execute-investigation", "cleanup-helper"]
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -38,6 +38,7 @@ steps:
     type: "agent"
     condition: "'Q&A' in task_type"
     agent: "amplihack:core:analyzer"
+    model: "standard"
     prompt: |
       Answer this question directly.
 
@@ -57,6 +58,7 @@ steps:
     type: "agent"
     condition: "'Operations' in task_type"
     agent: "amplihack:core:builder"
+    model: "strong"
     prompt: |
       Execute this operational task directly.
 
@@ -91,22 +93,12 @@ steps:
     type: "bash"
     condition: "'Development' in task_type or 'Investigation' in task_type"
     command: |
-      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
-      SESSION_JSON="${RECIPE_VAR_session_info:-}"
-      # Issue #1062 (finding D1): read `status` through the tested
-      # extract-json|extract-field pipeline; unknown -> BLOCKED:unknown fail-safe.
-      STATUS=$(printf '%s' "$SESSION_JSON" \
-        | amplihack orch helper extract-json \
-        | amplihack orch helper extract-field --field status --default unknown)
-      if [ "$STATUS" = "ok" ] || [ "$STATUS" = "no_tree_script" ]; then
-        echo "ALLOWED"
-      elif [ "$STATUS" = "registration_failed" ]; then
-        echo "NOTE: Session tree registration was skipped — depth and capacity limits inactive." >&2
-        echo "BLOCKED:registration_failed"
-      else
-        # Unknown status — default to blocked
-        echo "BLOCKED:unknown"
-      fi
+      # The body of this step lives in amplifier-bundle/tools/smart_recursion_guard_step.sh,
+      # extracted for the brick budget (issue #1619). It is unchanged and
+      # reads the same RECIPE_VAR_* variables the runner exports.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/smart_recursion_guard_step.sh" ] && { H="$c/amplifier-bundle/tools/smart_recursion_guard_step.sh"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: smart_recursion_guard_step.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      bash "$H"
     output: "recursion_guard"
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2c: Single dev/investigation workstream -- round 1

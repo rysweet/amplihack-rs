@@ -41,6 +41,22 @@ pub struct Point {
     pub resets: Option<i64>,
 }
 
+/// Issue #2889: the last reading the live step accepted, kept for the next
+/// cycle. Unlike a [`Point`] it carries the week figure and the weekly
+/// window's reset time, so a cycle that decides on it reports the week the
+/// login showed when the reading was taken, not the last measured one.
+///
+/// Times and percentages only: never a token, an account id or a path. It
+/// is never serialised and never logged through `{:?}`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Held {
+    pub at: i64,
+    pub session: f64,
+    pub week: f64,
+    pub resets: Option<i64>,
+    pub week_resets: Option<i64>,
+}
+
 /// How a reading's session window compares with a point's, by reset time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Window {
@@ -83,6 +99,13 @@ pub(super) fn session_resets(p: &Probed) -> Option<i64> {
     p.windows.session.and_then(|w| w.resets_at)
 }
 
+/// When the weekly window of probe `p` resets, if it gave a reset time.
+/// Issue #2889: a held reading is offered only while this window can still
+/// be open, so a held week never outlives the week it was read in.
+pub fn week_resets(p: &Probed) -> Option<i64> {
+    p.windows.week.and_then(|w| w.resets_at)
+}
+
 /// The live login's recent readings, kept in memory across watch cycles.
 #[derive(Debug, Default)]
 pub struct Series {
@@ -97,6 +120,9 @@ pub struct Series {
     /// source is behind, so a measured figure below the last point is stale,
     /// not a new session window.
     behind: bool,
+    /// Issue #2889: the last reading the step accepted, offered to a later
+    /// cycle that can read nothing ([`Series::held`]).
+    held: Option<Held>,
 }
 
 #[cfg(test)]
@@ -126,20 +152,31 @@ impl Series {
     /// window, is stale and is not added. With no reset time to compare, a
     /// lower figure clears the series: `step` reads a lower cached figure
     /// again first, so only a direct read reaches here with one.
-    pub fn note(&mut self, name: &ProfileName, at: i64, session: f64, resets: Option<i64>, t: i64) {
+    ///
+    /// Returns whether the reading was added. Issue #2889: only a reading
+    /// the series accepted is worth holding for a later cycle, so `step`
+    /// calls [`Series::hold`] on `true` alone.
+    pub fn note(
+        &mut self,
+        name: &ProfileName,
+        at: i64,
+        session: f64,
+        resets: Option<i64>,
+        t: i64,
+    ) -> bool {
         if !session.is_finite() || at > t {
-            return;
+            return false;
         }
         self.own(name);
         if let Some(last) = self.points.back() {
             if at <= last.at {
-                return;
+                return false;
             }
             let lower = session < last.session;
             match window(last.resets, resets) {
                 Window::Later => self.points.clear(),
-                Window::Earlier => return,
-                Window::Same if lower => return,
+                Window::Earlier => return false,
+                Window::Same if lower => return false,
                 Window::Unknown if lower => self.points.clear(),
                 Window::Same | Window::Unknown => {}
             }
@@ -152,6 +189,35 @@ impl Series {
         while self.points.len() > MAX_POINTS {
             self.points.pop_front();
         }
+        true
+    }
+
+    /// Issue #2889: keeps `h` as the live login's last accepted reading,
+    /// replacing any earlier one. Another login taking the series clears it,
+    /// as [`Series::clear`] does.
+    pub fn hold(&mut self, name: &ProfileName, h: Held) {
+        self.own(name);
+        self.held = Some(h);
+    }
+
+    /// Issue #2889: the held reading for `name` while both the window it was
+    /// read in and its weekly window can still be open at `t`: before each
+    /// reset time that is known, and less than [`SESSION_WINDOW_SECS`] after
+    /// it was read either way. Only then does it still describe the login,
+    /// so only then may a cycle that can read nothing decide on it.
+    ///
+    /// The same bound as [`Series::last_known`], applied to both windows: a
+    /// held week that outlived its week would deny the login room it has,
+    /// and one that outlived its session would misstate the session.
+    pub fn held(&self, name: &ProfileName, t: i64) -> Option<Held> {
+        if self.name.as_ref() != Some(name) {
+            return None;
+        }
+        self.held.filter(|h| {
+            t.saturating_sub(h.at) < SESSION_WINDOW_SECS
+                && h.resets.is_none_or(|r| t < r)
+                && h.week_resets.is_none_or(|r| t < r)
+        })
     }
 
     pub fn clear(&mut self) {

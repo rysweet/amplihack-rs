@@ -7,8 +7,35 @@ use std::{
     process::Command,
 };
 
+/// Every invocation the auto-drive launch path applies to: the two entry
+/// points and every `autodrive-*` sub-recipe.
+///
+/// Written in terms of [`is_top_level_drive`] so that the narrower predicate
+/// is a subset of this one by construction (#2769). A name judged by the
+/// #2663 outcome rule but not accepted here would be judged with no captured
+/// authorisation, no pinned bundle and no stamped recipe; composing the two
+/// makes that unrepresentable instead of leaving it to a test.
 pub fn applies(name: &str) -> bool {
-    name == "auto-drive-to-merge" || name == "auto-drive-light" || name.starts_with("autodrive-")
+    is_top_level_drive(name) || name.starts_with("autodrive-")
+}
+
+/// The drive's two top-level entry points, named exactly.
+///
+/// #2769: deliberately narrower than [`applies`], and not a substitute for
+/// it. `applies` decides which invocations capture merge authorisation, get a
+/// launch bundle and have their recipes and prompts stamped, and it accepts
+/// every `autodrive-*` sub-recipe on top of these two. This decides one
+/// thing only: which
+/// invocations the #2663 outcome rule judges, that a run succeeds only if it
+/// merged. A nested round merges nothing, so judging it by the merge reported
+/// every CLEAN round failed. A sub-recipe's success is its own steps'.
+///
+/// Exact byte equality, on purpose: `invocation_name` comes from the recipe's
+/// own `name:` field, so it is a bundle-controlled routing label rather than
+/// an authenticated identity, and any prefix, trim or case-folding match would
+/// widen which recipes can claim the rule.
+pub fn is_top_level_drive(name: &str) -> bool {
+    name == "auto-drive-to-merge" || name == "auto-drive-light"
 }
 
 /// Assets a launch bundle must hold before any loop runs. The finalize and
@@ -71,10 +98,22 @@ impl LaunchBundle {
         fs::rename(&temp, &path)?;
         Ok(())
     }
-    pub fn prepare(home: &Path, auth: &mut InvocationAuthorization) -> Result<Self> {
+    /// Copies the trusted bundle and writes the invocation record into a new
+    /// private `autodrive-invocation-*` folder inside `parent`.
+    ///
+    /// #2959: `parent` is the run's own durable folder (`runs/<id>/`), so the
+    /// record lives as long as the run that owns it; a dry run, which has no
+    /// durable folder, passes the inherited TMPDIR. The folder is removed when
+    /// the returned bundle is dropped.
+    pub fn prepare(home: &Path, parent: &Path, auth: &mut InvocationAuthorization) -> Result<Self> {
         ensure!(
             home.is_absolute(),
             "auto-drive trusted AMPLIHACK_HOME must be absolute"
+        );
+        ensure!(
+            parent.is_absolute(),
+            "auto-drive invocation folder parent {} must be absolute",
+            parent.display()
         );
         let bundle = pin_bundle(home)?;
         for relative in REQUIRED_ASSETS {
@@ -95,7 +134,12 @@ impl LaunchBundle {
             use std::os::unix::fs::PermissionsExt;
             builder.permissions(fs::Permissions::from_mode(0o700));
         }
-        let temp = builder.tempdir()?;
+        let temp = builder.tempdir_in(parent).with_context(|| {
+            format!(
+                "cannot create the auto-drive invocation folder in {}",
+                parent.display()
+            )
+        })?;
         let dest = temp.path().join("amplifier-bundle");
         copy_tree(&bundle, &dest)?;
         auth.bind_policy(bundle_digest(&dest)?);
@@ -344,6 +388,52 @@ fn bundle_digest(root: &Path) -> Result<String> {
     ))
 }
 
+/// #2769: `applies` is written in terms of `is_top_level_drive`, so the
+/// subset relation is a compile-time consequence and needs no test. What a
+/// test still has to pin is which names the narrower predicate accepts, and
+/// that it accepts them byte for byte.
+#[cfg(test)]
+mod invocation_name_tests {
+    use super::is_top_level_drive;
+
+    /// The two entry points, and nothing else, are judged by the #2663
+    /// outcome rule that a run succeeds only if it merged.
+    #[test]
+    fn only_the_two_entry_points_are_top_level_drives() {
+        for name in ["auto-drive-to-merge", "auto-drive-light"] {
+            assert!(is_top_level_drive(name), "{name} must be a top-level drive");
+        }
+    }
+
+    /// Exact byte equality: no prefix, trim or case-folding match, so a
+    /// recipe cannot claim the outcome rule by naming itself close to an
+    /// entry point. The `autodrive-*` names are the #2769 defect in one
+    /// assertion: a sub-recipe merges nothing, so it is never judged by
+    /// whether it merged.
+    #[test]
+    fn a_name_that_is_not_byte_equal_is_not_a_top_level_drive() {
+        for name in [
+            "Auto-Drive-To-Merge",
+            "AUTO-DRIVE-LIGHT",
+            "auto-drive-to-merge ",
+            " auto-drive-to-merge",
+            "auto-drive-to-merge\n",
+            "auto-drive-to-merge-x",
+            "auto-drive-lightly",
+            "autodrive-auto-drive-to-merge",
+            "autodrive-crusty-round",
+            "autodrive-merge-round",
+            "autodrive-finalize",
+            "",
+        ] {
+            assert!(
+                !is_top_level_drive(name),
+                "{name:?} is not byte-equal to an entry point"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod required_assets_tests {
     use super::REQUIRED_ASSETS;
@@ -460,8 +550,8 @@ mod umask_tests {
     #[test]
     fn invocation_copy_passes_trust_check_under_umask_002() {
         under_umask_002("invocation_copy_passes_trust_check_under_umask_002", || {
-            let (_temp, home) = fake_home();
-            let launch = LaunchBundle::prepare(&home, &mut authorization()).unwrap();
+            let (temp, home) = fake_home();
+            let launch = LaunchBundle::prepare(&home, temp.path(), &mut authorization()).unwrap();
             let copy = launch.home.join("amplifier-bundle");
             // The child invocation pins the copy as its own trusted bundle.
             assert_eq!(pin_bundle(&launch.home).unwrap(), copy);
@@ -470,7 +560,7 @@ mod umask_tests {
             assert_eq!(mode_of(&copy.join("tools/autodrive_loop.sh")), 0o755);
             assert_eq!(mode_of(&copy.join("skills/merge-ready/SKILL.md")), 0o644);
             // The invocation proceeds: a nested launch from the copy is accepted.
-            LaunchBundle::prepare(&launch.home, &mut authorization()).unwrap();
+            LaunchBundle::prepare(&launch.home, temp.path(), &mut authorization()).unwrap();
         });
     }
 
@@ -478,8 +568,8 @@ mod umask_tests {
     /// invocation record in it passes the private read that
     /// `orch helper autodrive authorization` performs at finalize.
     fn invocation_folder_is_private_and_passes_evidence_check() {
-        let (_temp, home) = fake_home();
-        let launch = LaunchBundle::prepare(&home, &mut authorization()).unwrap();
+        let (temp, home) = fake_home();
+        let launch = LaunchBundle::prepare(&home, temp.path(), &mut authorization()).unwrap();
         assert_eq!(mode_of(&launch.home), 0o700);
         InvocationAuthorization::read_private(&launch.home.join("invocation.json"))
             .expect("the finalize authorization read must accept the invocation folder");
@@ -491,7 +581,7 @@ mod umask_tests {
     fn invocation_record_names_the_bound_state_directory() {
         let (temp, home) = fake_home();
         let mut auth = authorization();
-        let launch = LaunchBundle::prepare(&home, &mut auth).unwrap();
+        let launch = LaunchBundle::prepare(&home, temp.path(), &mut auth).unwrap();
         let record = launch.home.join("invocation.json");
         assert!(
             InvocationAuthorization::read_private(&record)
@@ -531,15 +621,69 @@ mod umask_tests {
         under_umask_002(
             "group_writable_source_bundle_is_still_refused_under_umask_002",
             || {
-                let (_temp, home) = fake_home();
+                let (temp, home) = fake_home();
                 let bundle = home.join("amplifier-bundle");
                 fs::set_permissions(&bundle, fs::Permissions::from_mode(0o775)).unwrap();
-                assert!(LaunchBundle::prepare(&home, &mut authorization()).is_err());
+                assert!(LaunchBundle::prepare(&home, temp.path(), &mut authorization()).is_err());
                 fs::set_permissions(&bundle, fs::Permissions::from_mode(0o755)).unwrap();
                 let asset = bundle.join("skills/merge-ready/SKILL.md");
                 fs::set_permissions(&asset, fs::Permissions::from_mode(0o664)).unwrap();
-                assert!(LaunchBundle::prepare(&home, &mut authorization()).is_err());
+                assert!(LaunchBundle::prepare(&home, temp.path(), &mut authorization()).is_err());
             },
         );
+    }
+
+    /// #2959: the folder is made inside the parent the caller names (the run's
+    /// own durable folder), not in a loose TMPDIR folder, so the run's
+    /// protected folder owns the record for as long as the run lives.
+    #[test]
+    fn invocation_folder_is_made_inside_the_given_parent() {
+        let (temp, home) = fake_home();
+        let parent = temp.path().join("run");
+        fs::create_dir(&parent).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        let launch = LaunchBundle::prepare(&home, &parent, &mut authorization()).unwrap();
+        assert_eq!(launch.home.parent().unwrap(), parent.as_path());
+        assert!(
+            launch
+                .home
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("autodrive-invocation-")
+        );
+        assert_eq!(mode_of(&launch.home), 0o700);
+        assert_eq!(mode_of(&launch.home.join("invocation.json")), 0o600);
+        InvocationAuthorization::read_private(&launch.home.join("invocation.json")).unwrap();
+        // It still goes when the owner drops it, and nothing else in the parent.
+        let gone = launch.home.clone();
+        drop(launch);
+        assert!(!gone.exists());
+        assert!(parent.exists());
+    }
+
+    #[test]
+    fn a_relative_parent_is_refused() {
+        let (_temp, home) = fake_home();
+        let error = LaunchBundle::prepare(&home, Path::new("relative/run"), &mut authorization())
+            .err()
+            .expect("a relative parent must be refused");
+        assert!(format!("{error:#}").contains("absolute"), "{error:#}");
+    }
+
+    /// #2959: binding the state directory replaces the record by rename, so it
+    /// stays 0600 and no temporary file is left beside it.
+    #[test]
+    fn record_stays_private_after_the_state_directory_is_bound_in_a_given_parent() {
+        let (temp, home) = fake_home();
+        let parent = temp.path().join("run");
+        fs::create_dir(&parent).unwrap();
+        let mut auth = authorization();
+        let launch = LaunchBundle::prepare(&home, &parent, &mut auth).unwrap();
+        auth.bind_state_dir(parent.join("autodrive-state"));
+        launch.record_state_dir(&auth).unwrap();
+        let record = launch.home.join("invocation.json");
+        assert_eq!(mode_of(&record), 0o600);
+        assert!(!launch.home.join(".invocation.json.new").exists());
     }
 }

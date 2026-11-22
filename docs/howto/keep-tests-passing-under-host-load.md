@@ -329,8 +329,11 @@ state, and the wait would run to the reset.
 `run_watching`:
 
 1. It reads the child's stderr line by line.
-2. On the line `WAIT_PREFIX + "start reason=usage_limit"` it records the
-   current second and signals a writer thread.
+2. On the line `WAIT_PREFIX + "start "` it records the current second and
+   signals a writer thread. The match is on `start ` and not on a `reason=`,
+   because a login-change wait's start line reads `reason=spend_limit`: a
+   matcher pinned to one reason would simply never fire, and the test would
+   fail at the shared ten-minute ceiling rather than on an assertion.
 3. The writer waits for the signal under `CEILING` and panics with
    `the wait never started` if it does not come.
 4. The writer waits until the clock has moved past the recorded second, then
@@ -719,17 +722,41 @@ that guarantee. On its first call in a test process it:
 1. Returns `AMPLIHACK_TEST_BINARY` unchanged if it is set, without copying.
    Do not point it at `target/debug/amplihack`: cargo can re-link that file
    during the run, which is the race the private copy prevents.
-2. Otherwise runs `cargo build -p amplihack --bin amplihack` once.
-3. Creates a private `tempfile::TempDir` with mode `0700` under
-   `CARGO_TARGET_TMPDIR`, or under `env::temp_dir()` when that is unset.
-4. Copies `amplihack`, and `amplihack-hooks` when `symlink_metadata` shows it
-   is a regular file, into that directory. Each copy is written to
-   `.name.tmp` with `create_new`, set to mode `0755`, and renamed into place.
+2. Otherwise, when the test runner names the run (cargo-nextest sets
+   `NEXTEST_RUN_ID` to the same value in every test process of a run), uses
+   the copy that belongs to that run, in
+   `CARGO_TARGET_TMPDIR/amplihack-bin-run-<run id>/`. The first process of
+   the run to ask takes a file lock beside that directory, runs
+   `cargo build -p amplihack --bin amplihack` once, and copies the binaries
+   in. Every other process of the run finds the copy and builds nothing.
+3. Otherwise (plain `cargo test`, where one process runs the whole test
+   binary) runs the build once and copies into a private
+   `tempfile::TempDir` under `CARGO_TARGET_TMPDIR`, or under
+   `env::temp_dir()` when that is unset, removed when the process exits.
 
-Every later call returns the same path. Nothing re-links the copy while the
-test process runs, and the directory is removed when the process exits.
-`amplihack-hooks` is copied beside it because the binary
-finds its hooks binary as a sibling of its own path.
+In both cases the directory has mode `0700`, and `amplihack-hooks`, when
+`symlink_metadata` shows it is a regular file, and then `amplihack` are each
+written to a temporary file named for the copying process, set to mode
+`0755` and renamed into place. `amplihack` is renamed last, so a process
+that sees it has a complete copy. A run directory found already made is
+used only if it is a real directory that the current user owns and nobody
+else can enter. If the file system gives no lock, the test process says so
+on standard error and makes a copy of its own, as in step 3.
+`amplihack-hooks` is copied beside it because the binary finds its hooks
+binary as a sibling of its own path.
+
+Every later call returns the same path, and nothing re-links the copy while
+the run goes on. A run's directory is left when the run ends, because no
+single test process knows it is the last; a later run removes run
+directories more than a day old, and `cargo clean` removes them all. The
+day is counted from the start of the run, so a test run that lasts longer
+than a day, or a clock set forward by a day, can lose its copy to another
+run.
+
+Before issue #2932 the build and the copy happened in every test process.
+Under cargo-nextest that is once per test: the median `cli_integration`
+test took about 14 seconds, most of it waiting for cargo's lock on the build
+directory.
 
 Use it for every path to the binary, including the ones a test hands to a
 script:
@@ -982,35 +1009,24 @@ the executor reads (`recipe_runner_timeout()`). The test sets
 `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` once, and the advance follows it.
 
 The executor reads that control through one value, `RunnerClock` in
-`run/execute.rs`, taken once per attempt. Every real run on Linux is
-spawned under the native Git observer, and a dry run, or any run on another
-platform, as a plain child. Both paths use it:
+`run/execute.rs`, taken once per attempt. The runner is spawned as a plain
+child on every platform, and every wait and grace reads that value:
 
-- The wait. `wait_for_recipe_runner` (plain child) and
-  `wait_for_observed_runner` (observer) both poll in `wait_for_runner`.
-  They differ only in how they ask whether the runner has exited, so
-  neither can measure the timeout on a clock the test does not control.
-- Every teardown grace. The plain child's `terminate_recipe_runner` waits
-  on it in `wait_until_exited`, and so does `reap_recipe_runner_group`,
-  which sweeps the group of a runner that has already exited. Every tree
-  sweep waits on it in `sweep_runner_tree`, which calls `stop::sweep_on`:
-  the observed teardown (`terminate_observed_runner`, which sends SIGTERM
-  to the runner's tree, waits, kills the survivors and only then calls
-  `Observer::terminate`), the observer's finished-scope sweeps and the
-  sweep after a runner that exited with a stop signal pending. In virtual
-  time the grace stays frozen until the tree exits, so the SIGTERM handler
-  in `test_timeout_teardown_sends_sigterm_before_sigkill` always runs
-  before SIGKILL, on either path.
+- The wait. `wait_for_recipe_runner` polls on that clock, so the timeout
+  cannot be measured on a clock the test does not control.
+- Every teardown grace. `terminate_recipe_runner` waits on it in
+  `wait_until_exited`, and so does `reap_recipe_runner_group`, which sweeps
+  the group of a runner that has already exited. Every tree sweep waits on
+  it in `sweep_runner_tree`, which calls `stop::sweep_on`. In virtual time
+  the grace stays frozen until the tree exits, so the SIGTERM handler in
+  `test_timeout_teardown_sends_sigterm_before_sigkill` always runs before
+  SIGKILL.
 - Cancellation. Each poll asks whether the runner has exited before it
   checks the cancel flag, so a runner that has exited is reported as
   exited. Otherwise a cancelled worker ends the wait as a timeout and ends
-  any grace at once. On the plain path the wait first kills the runner's
-  group: only the executor waits on a plain child, and it has just found
-  it running, so its pid is still the runner's. On the observed path the
-  tracing thread reaps the runner as soon as it exits, so the runner's pid
-  is never used: the timeout and stop teardowns take their snapshot from
-  the tasks the observer still traces (`Observer::traced_tasks`), and
-  `Observer::terminate` kills every task it still traces.
+  any grace at once. The wait first kills the runner's group: only the
+  executor waits on the child, and it has just found it running, so its pid
+  is still the runner's.
 
 `tests_teardown.rs` checks the clock wiring of the tree sweep directly:
 `test_sweep_runner_tree_measures_the_grace_on_the_runner_clock` runs

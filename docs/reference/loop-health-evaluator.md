@@ -1,6 +1,6 @@
 ---
 title: Loop-Health Evaluator Reference
-last_updated: 2026-11-15
+last_updated: 2026-11-11
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -27,13 +27,6 @@ pending check does not reach the evaluator at all; it ends the loop
 `WAITING`. See
 [A pending check is a wait](autodrive-merge-ready-round.md#a-pending-check-is-a-wait-not-a-lack-of-progress).
 
-The Crusty completion dispatch sets `loop_head_read` when it could not read
-the PR's head on GitHub. A non-empty value is a fault in a read, not
-evidence about the branch: the round's own verdict still stands and the
-usual rules decide the verdict. The dispatch inserts it directly, so a
-context key of that name supplied through the shell is still rejected. See
-[Head check outcomes](autodrive-crusty-completion.md#head-check-outcomes).
-
 It is deliberately **not** an iteration counter. See
 [Why not a numeric iteration cap](#why-not-a-numeric-iteration-cap).
 
@@ -52,6 +45,8 @@ It is deliberately **not** an iteration counter. See
   - [Round text never decides a refusal](#round-text-never-decides-a-refusal)
 - [A usage limit is not a verdict](#a-usage-limit-is-not-a-verdict)
   - [Retry inside the step](#retry-inside-the-step)
+  - [The wait is visible in the recipe log](#the-wait-is-visible-in-the-recipe-log)
+  - [When the wait does not lift the limit](#when-the-wait-does-not-lift-the-limit)
 - [Fail-safe guarantees](#fail-safe-guarantees)
 - [Worked example — the 2h47m run](#worked-example--the-2h47m-run)
 - [Tests](#tests)
@@ -645,7 +640,6 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | `loop_findings_current` / `loop_findings_previous` | `""` | Newline-separated finding identifiers for the last two rounds. |
 | `loop_test_signal` / `loop_test_signal_previous` | `""` | Test result summaries for the last two rounds. |
 | `loop_ci_signal` / `loop_ci_signal_previous` | `""` | CI result summaries for the last two rounds. |
-| `loop_head_read` | `""` | Empty unless the caller could not read the PR's head on GitHub. A non-empty value is one of the tokens `read-failed`, `origin-not-github`, `pr-number-unresolved`, `ambiguous-ref` and `bad-sha`, and says that a read failed, not that anything about the branch changed; the round's own verdict still stands. Only the Crusty completion dispatch sets it, directly rather than through the context fields a caller may supply ([Head check outcomes](autodrive-crusty-completion.md#head-check-outcomes)). |
 | `loop_clean_token` | `""` | The verdict that makes a round clean for this loop: `CLEAN` (crusty) or `MERGE_READY` (merge-ready). `DONE` is legal only when `loop_round_verdict` equals it. Empty means: use the reviewer verdict for this round in `loop_history` if there is one, otherwise decide as before. |
 | `loop_round_verdict` | `""` | The reviewer's verdict for the round just finished, for example `CONCERNS` or `MERGE_READY`, or `MISSING` when the round wrote no record. `autodrive_loop.sh` passes it with every character outside `A-Za-z0-9_` removed; a non-clean verdict that would then equal the clean token (`CLEAN!`) arrives as `CLEAN_NONCANONICAL`. |
 | `loop_health_enforce` | `"true"` | When `"false"`, `STUCK` is reported loudly but exits `0`, leaving the stop entirely to the caller's `condition:`. |
@@ -826,12 +820,26 @@ runner sees the failure:
    wait. A weekly limit, or one with no readable reset, gets a
    [capacity wait](profile-command.md#capacity-wait) when another stored
    login could take over and a rotator is running, for up to six hours by
-   default. Inside a recipe run `AMPLIHACK_RECIPE_RUN_ID` stops launches
-   from starting the rotator, so start one before auto-drive; without one
-   the step fails at once on the usage limit.
-3. The wait ends on `rotator capacity`, `login changed`, `login capacity`
-   or `reset reached`, and step-02 runs once more with the same prompt under
-   whichever login is now live.
+   default. An organisation spend limit with no reset gets a
+   [login-change wait](profile-command.md#login-change-wait) when step-02
+   runs on `~/.claude`. Inside a recipe run `AMPLIHACK_RECIPE_RUN_ID` stops
+   launches from starting the rotator, so start one before auto-drive;
+   without one neither a capacity wait nor a login-change wait is started
+   and the step fails at once on the usage limit. Those two kinds need the
+   rotator for the same reason: only it moves a login into `~/.claude`, so
+   with none running there is nothing for them to wait for. A reset wait
+   needs no rotator — it waits out the limit the step already has.
+3. A reset or capacity wait ends on `rotator capacity`, `login changed`,
+   `login capacity` or `reset reached`, and step-02 runs once more with the
+   same prompt. On `rotator capacity`, `login changed` and `reset reached`
+   that is whichever login is now live; on `login capacity` the step runs
+   under the stored profile that showed room, which is never made live in
+   `~/.claude`. A login-change wait ends on `login changed` alone, because
+   no capacity reading says whether the next login's organisation has
+   credit; its retry runs on whatever login is live in `~/.claude`. On a
+   host where every step shares one `~/.claude` login, the wait usually ends
+   on `login changed` within seconds, because the rotator has already
+   swapped the login by the time the failed attempt returns.
 4. The second attempt answers as usual. Step-02 exits `0`, and step-03 and
    step-04 resolve and enforce its verdict exactly as if the limit had never
    happened.
@@ -839,13 +847,59 @@ runner sees the failure:
 The retry happens inside the step, so `loop-health-evaluator.yaml` is
 unchanged. The caller sees one completed evaluator run with an ordinary
 `LOOP_HEALTH:` line, and the step's stderr holds the
-`amplihack.recipe.usage_limit_wait` `start`, `end` and `resume` lines. There
-is at most one wait and one retry per step.
+`amplihack.recipe.usage_limit_wait` `start`, `end` and `resume` lines.
+Step-02 waits at most once for each login it runs on, and all of its waits
+share one `max_wait_secs` budget, so the total time it can spend waiting is
+what it always was; see
+[One wait per login](profile-command.md#one-wait-per-login).
+
+### The wait is visible in the recipe log
+
+A detached run's recipe log carries two lines for each wait step-02 makes:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit account=work reset=2026-11-16 13:00:00 +00:00 until=2026-11-16 13:02:00 +00:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait end reason=login changed
+```
+
+A waiting step therefore no longer reads as a hung one: the log says what it
+is waiting for, on which login and until when. The tokens are the ones the
+step's own stderr uses, so a capacity or login-change wait carries its
+`wait=` field here too, and a login-change wait, which only an organisation
+spend limit starts, reads `reason=spend_limit`:
+
+```
+amplihack.recipe.usage_limit_wait start reason=spend_limit wait=login_change account=work reset=none until=2026-11-16 17:50:00 +00:00 bound=max_wait
+amplihack.recipe.usage_limit_wait end reason=login changed
+```
+
+Both lines arrive whole. The runner's own `working (Ns elapsed)` heartbeat
+is written a line at a time, so a wait line is never spliced into the middle
+of one, and `grep amplihack.recipe.usage_limit_wait` over the log finds each
+line complete. The full rules are in
+[The wait in the recipe log](profile-command.md#the-wait-in-the-recipe-log).
+
+The time a wait spends is appended to the ledger
+`AMPLIHACK_USAGE_WAIT_LEDGER` names and so is left out of auto-drive's wall
+budget. A step-02 that waits across several logins can therefore hold the
+drive for up to `max_wait_secs` of wall time without the budget moving. That
+is the same bargain every kind of wait makes, and the per-step budget is what
+bounds it; see
+[One wait per login](profile-command.md#one-wait-per-login).
+
+These lines are informational and nothing in this recipe reads them. The
+detached run copies each step's own output into the same log, so an agent
+step could print a line in this shape; it would change no verdict, no budget
+and no failure class. The verdict still comes from step-02's own
+`LOOP_HEALTH:` line and the usage-limit classification from the recipe
+runner's `amplihack.recipe.failure_class` marker.
 
 ### When the wait does not lift the limit
 
 When the wait is skipped (for example `reset_too_far` with a single stored
-login), expires (`capacity expired`, `step timeout`) or was already used,
+login), expires (`capacity expired`, `max reached` on a login-change wait,
+`step timeout`) or has none left for step-02's current login
+(`already_waited`),
 step-02 fails and the recipe runner writes its
 `amplihack.recipe.failure_class` marker with `"class":"usage_limit"`.
 Step-02 does not set `continue_on_error`, so the runner stops the recipe
@@ -856,7 +910,7 @@ because step-03 would then resolve the missing verdict as `STUCK` with
 as `STUCK`:
 
 - `autodrive_loop.sh` stops as `USAGE_LIMIT`, exit `1`; see
-  [Usage limits are not STUCK](auto-drive-to-merge.md#usage-limits-are-not-stuck);
+  [Usage limits are not STUCK](auto-drive-to-merge.md#usage-limits-are-not-stuck-or-hand-off);
 - `hook_repair_evaluate` reports `USAGE_LIMIT` and the repair ends with
   status `usage_limit`; see
   [`hook_repair_run`](recipe-commit-hook-repair.md#hook_repair_run).
@@ -1068,6 +1122,3 @@ comes from this workspace. A predictable path in a shared directory such as
 - [Recipe Quick Reference](recipe-quick-reference.md) — recipe authoring basics.
 - [Usage-limit wait](profile-command.md#usage-limit-wait): how an agent step
   waits for a reset or for another login, and retries once.
-- [Crusty completion contract](autodrive-crusty-completion.md) — the head
-  read behind `loop_head_read`, and the `round_waiting` exemption from the
-  no-progress rule that runs before this brick.

@@ -14,22 +14,8 @@ if [ "${1:-} ${2:-}" = 'recipe show' ]; then exit 0; fi
 [ "${1:-} ${2:-}" = 'recipe run' ] || exit 2
 name="$(basename "$3" .yaml)"; shift 3
 if [ "$name" = loop-health-evaluator ]; then
-  # The context dir is a temporary of the dispatch and is gone once it
-  # returns, so the values are read here and logged with the call (#2333).
-  ctx="$(
-    prev=""
-    for a in "$@"; do
-      case "$prev" in
-        --context-from-file) jq -n --arg k "${a%%=*}" --rawfile v "${a#*=}" '{($k): $v}' 2>/dev/null ;;
-        -c) jq -n --arg k "${a%%=*}" --arg v "${a#*=}" '{($k): $v}' ;;
-      esac
-      prev="$a"
-    done | jq -cs 'add // {}'
-  )"
-  [ -n "$ctx" ] || ctx='{}'
   jq -cn --arg depth "$AMPLIHACK_SESSION_DEPTH" --arg ceiling "$AMPLIHACK_MAX_DEPTH" \
-    --argjson ctx "$ctx" \
-    --arg cwd "$PWD" --args '$ARGS.positional as $argv | {depth:$depth,ceiling:$ceiling,cwd:$cwd,context:$ctx,argv:$argv}' -- "$@" >> "$FAKE_LOG/evaluator.jsonl"
+    --arg cwd "$PWD" --args '$ARGS.positional as $argv | {depth:$depth,ceiling:$ceiling,cwd:$cwd,argv:$argv}' -- "$@" >> "$FAKE_LOG/evaluator.jsonl"
   if [ -f "$FIXTURE/eval-rc" ]; then
     [ ! -f "$FIXTURE/eval-message" ] || cat "$FIXTURE/eval-message"
     exit "$(cat "$FIXTURE/eval-rc")"
@@ -41,7 +27,9 @@ fi
 [ "$name" = autodrive-crusty-round ] || exit 2
 while [ $# -gt 0 ]; do
   case "$1" in
-    -c) key="$(printf '%s' "${2%%=*}" | tr '[:lower:]' '[:upper:]')"; val="${2#*=}"; export "$key=$val"; shift 2 ;;
+    # The runner exports both forms of every context key: RECIPE_VAR_<key>
+    # always, and the uppercase alias (recipe-runner-rs context.rs).
+    -c) key="$(printf '%s' "${2%%=*}" | tr '[:lower:]' '[:upper:]')"; val="${2#*=}"; export "$key=$val" "RECIPE_VAR_${2%%=*}=$val"; shift 2 ;;
     --working-dir) cd "$2" || exit 1; shift 2 ;;
     *) shift ;;
   esac
@@ -65,10 +53,19 @@ jq -cn --arg pr "${PR_NUMBER:-}" --arg head "$head" --arg resolved "$resolved" \
 "#;
 
 pub const ROUND_SCRIPT: &str = r#"set -euo pipefail
-export RECIPE_VAR_review_index="$(bash "$FIXTURE/guard.sh")"
 export RECIPE_VAR_crusty_round_context="$(bash "$FIXTURE/context.sh")"
-export RECIPE_VAR_crusty_review="$(cat "$FIXTURE/review.json")"
-bash "$FIXTURE/guard-check.sh"
+# A reviewer names the commit it read (#2814). This double reads the one the
+# loop measured and asked for, as an uninterrupted round does. $FIXTURE/review-head
+# replaces that claim with another commit, so a round whose review disagrees with
+# the loop can be driven end to end.
+claim="${RECIPE_VAR_reviewed_head_sha:-}"
+[ ! -f "$FIXTURE/review-head" ] || claim="$(cat "$FIXTURE/review-head")"
+if [ -n "$claim" ]; then
+  export RECIPE_VAR_crusty_review="$(jq -c --arg s "$claim" \
+    '. + {reviewed_head_sha:$s}' "$FIXTURE/review.json")"
+else
+  export RECIPE_VAR_crusty_review="$(jq -c 'del(.reviewed_head_sha)' "$FIXTURE/review.json")"
+fi
 export RECIPE_VAR_crusty_verdict="$(bash "$FIXTURE/classify.sh")"
 bash "$FIXTURE/record.sh"
 if [ -n "${AUTODRIVE_COMPLETION_STATE:-}" ]; then

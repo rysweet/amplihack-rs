@@ -25,6 +25,7 @@
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 
@@ -95,6 +96,23 @@ S="$FAKE_STATE"
 ( IFS=$'\037'; printf '%s\n' "$*" ) >> "$S/gh.log"
 [ -f "$S/rc79_on" ] && [ "$(cat "$S/rc79_on")" = "${2:-}" ] && { echo "HTTP 401: Bad credentials (fixture terminal refusal)" >&2; exit 79; }
 opt() { local want="$1" prev="" a; shift; for a in "$@"; do [ "$prev" = "$want" ] && { printf '%s' "$a"; return 0; }; prev="$a"; done; return 1; }
+# #1888: `gh api repos/{owner}/{repo} --jq '[...]|@tsv'` answers the three
+# allowed-method booleans (allow_merge_commit, allow_squash_merge,
+# allow_rebase_merge) from `allow_merge`, `allow_squash`, `allow_rebase`
+# (each default true). `api_rc` makes the call fail with that status, writing
+# `api_err` verbatim to standard error when it exists and a fixed line
+# otherwise; `api_out` replaces the answer verbatim. Keyed on $1: for `gh api`
+# the second word is the path, so `rc79_on` never matches it.
+if [ "${1:-}" = api ]; then
+  if [ -f "$S/api_rc" ]; then
+    if [ -f "$S/api_err" ]; then cat "$S/api_err" >&2; else echo "fixture: gh api failed" >&2; fi
+    exit "$(cat "$S/api_rc")"
+  fi
+  [ -f "$S/api_out" ] && { cat "$S/api_out"; exit 0; }
+  printf '%s\t%s\t%s\n' "$(cat "$S/allow_merge" 2>/dev/null || echo true)" \
+    "$(cat "$S/allow_squash" 2>/dev/null || echo true)" "$(cat "$S/allow_rebase" 2>/dev/null || echo true)"
+  exit 0
+fi
 case "${1:-} ${2:-}" in
   "pr view")
     ms="$(cat "$S/merge_state" 2>/dev/null || echo CLEAN)"
@@ -141,16 +159,12 @@ exit 0
 
 /// A fake `amplihack`: `orch helper autodrive authorization` answers from
 /// `auth_out` / `auth_rc`; `extract-json` / `extract-field` are jq-based.
-/// `internal review-allocate` makes and prints `review-gen` in the fake state
-/// (#2290); `internal review-release` succeeds. Every call is logged to
-/// `amplihack.log`.
+/// Every call is logged to `amplihack.log`.
 const FAKE_AMPLIHACK: &str = r#"#!/usr/bin/env bash
 set -u
 S="$FAKE_STATE"
 ( IFS=$'\037'; printf '%s\n' "$*" ) >> "$S/amplihack.log"
 case "${1:-} ${2:-}" in
-  "internal review-allocate") mkdir -p "$S/review-gen" && printf '%s\n' "$S/review-gen"; exit 0 ;;
-  "internal review-release") exit 0 ;;
 esac
 case "${1:-} ${2:-} ${3:-} ${4:-}" in
   "orch helper autodrive authorization")
@@ -178,13 +192,19 @@ exit 0
 
 /// Replaces `autodrive_loop.sh` in the copied bundle for the loop-step
 /// tests: writes `loop_result` (when present) to the driver's own result file
-/// under umask 077, prints `loop_stdout` (text an agent might have printed)
-/// and exits `loop_rc`.
+/// under umask 077, prints `loop_stdout` (text an agent might have printed),
+/// writes `loop_stderr` to standard error (#2849) and exits `loop_rc`. It
+/// also records in `loop-fd4` whether it inherited the kept copy's descriptor,
+/// and in `loop-umask` the umask it was started with.
 const FAKE_LOOP_DRIVER: &str = r#"#!/usr/bin/env bash
 S="$FAKE_STATE"; dir=""; repo=""; prev=""
 for a in "$@"; do [ "$prev" = --state-dir ] && dir="$a"; [ "$prev" = --repo ] && repo="$a"; prev="$a"; done
 printf '%s\n' "$@" > "$S/loop-argv"
 printf '%s\n' "$@" >> "$S/loop-argv-all"; echo "--" >> "$S/loop-argv-all"
+# #2849: whether the driver inherited the kept copy's descriptor. The step
+# closes it on this side of the pipe, so the answer must be `closed`.
+if [ -e /proc/self/fd/4 ]; then echo open > "$S/loop-fd4"; else echo closed > "$S/loop-fd4"; fi
+umask > "$S/loop-umask"
 if [ -f "$S/loop_result" ]; then
   ( umask 077; jq -cn --arg r "$(cat "$S/loop_result")" \
       '{loop:"merge-ready",loop_result:$r,round_label:"round-2",reason:"fixture stop"}' > "$dir/merge-ready-result.json" )
@@ -192,6 +212,11 @@ if [ -f "$S/loop_result" ]; then
   [ -n "$repo" ] && ( umask 077; git -C "$repo" rev-parse HEAD > "$dir/merge-ready-latest.head" 2>/dev/null )
 fi
 [ -f "$S/loop_stdout" ] && cat "$S/loop_stdout"
+# #2849: what a driver that dies noisily leaves behind. `loop_stderr` is
+# written to standard error after `loop_stdout`; `loop_result_raw` is written
+# verbatim as a partial result file.
+[ -f "$S/loop_stderr" ] && cat "$S/loop_stderr" >&2
+[ -f "$S/loop_result_raw" ] && ( umask 077; cp "$S/loop_result_raw" "$dir/merge-ready-result.json" )
 exit "$(cat "$S/loop_rc" 2>/dev/null || echo 0)"
 "#;
 
@@ -325,15 +350,29 @@ impl Fx {
     }
 
     fn merge_tool(&self, pr: &str, sha: &str) -> Output {
+        self.merge_tool_method(pr, sha, "")
+    }
+
+    /// `autodrive_merge <pr> <sha> <merge_method>`; an empty method is what a
+    /// caller that was given none passes.
+    fn merge_tool_method(&self, pr: &str, sha: &str, method: &str) -> Output {
         let mut c = self.bash();
         c.arg("-c")
             .arg(
                 "set -u\n. \"$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge.sh\" || exit 90\n\
-                 autodrive_merge \"$1\" \"$2\"",
+                 autodrive_merge \"$1\" \"$2\" \"$3\"",
             )
             .arg("bash")
-            .args([pr, sha]);
+            .args([pr, sha, method]);
         feed(c, b"")
+    }
+
+    /// The `gh api` calls made so far.
+    fn api_calls(&self) -> Vec<Vec<String>> {
+        self.gh_calls()
+            .into_iter()
+            .filter(|c| c.first().map(String::as_str) == Some("api"))
+            .collect()
     }
 
     fn log(&self, name: &str) -> Vec<Vec<String>> {
@@ -869,6 +908,476 @@ fn merge_tool_refuses_a_symlinked_merge_message_helper() {
 }
 
 // ===========================================================================
+// #1888: the merge method is one the repository allows
+// ===========================================================================
+
+/// The flags of the single merge request, asserting that exactly one was made,
+/// that the head is pinned and that no bypass flag is present.
+fn merge_flags(fx: &Fx) -> Vec<String> {
+    let merges = fx.merge_calls();
+    assert_eq!(merges.len(), 1, "one merge request: {merges:?}");
+    let m = merges[0].clone();
+    let at = m.iter().position(|a| a == "--match-head-commit");
+    assert_eq!(
+        at.and_then(|i| m.get(i + 1)).map(String::as_str),
+        Some(SHA_A),
+        "every method pins the head: {m:?}"
+    );
+    for forbidden in ["--admin", "--auto", "--bypass"] {
+        assert!(!m.contains(&forbidden.to_string()), "{forbidden}: {m:?}");
+    }
+    m
+}
+
+fn method_flags(m: &[String]) -> Vec<&str> {
+    m.iter()
+        .map(String::as_str)
+        .filter(|a| matches!(*a, "--squash" | "--merge" | "--rebase"))
+        .collect()
+}
+
+/// Only the repository settings differ from the defaults (all allowed).
+fn repo_allows(fx: &Fx, merge: bool, squash: bool, rebase: bool) {
+    fx.set("allow_merge", &merge.to_string());
+    fx.set("allow_squash", &squash.to_string());
+    fx.set("allow_rebase", &rebase.to_string());
+}
+
+/// Exit 4, `refused`, a reason that starts as the hand-off expects, one JSON
+/// line, and no merge request.
+fn assert_unsettled(fx: &Fx, out: &Output) -> Value {
+    assert_eq!(out.status.code(), Some(4), "{}", show(out));
+    let json_lines: Vec<Value> = stdout(out)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l:?}")))
+        .collect();
+    assert_eq!(json_lines.len(), 1, "one JSON line: {}", show(out));
+    let v = json_lines[0].clone();
+    assert_eq!(v["result"], json!("refused"), "{v}");
+    let why = v["reason"].as_str().unwrap_or_default();
+    assert!(
+        why.starts_with("the merge method could not be settled:"),
+        "{why:?}"
+    );
+    assert_no_merge_attempt(fx);
+    v
+}
+
+#[test]
+fn merge_only_repository_merges_with_a_merge_commit() {
+    let Some(fx) = Fx::new() else { return };
+    repo_allows(&fx, true, false, false);
+    let out = fx.merge_tool(PR, SHA_A);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let m = merge_flags(&fx);
+    assert_eq!(method_flags(&m), ["--merge"], "{m:?}");
+    assert!(m.contains(&"--subject".to_string()), "{m:?}");
+    assert!(m.contains(&"--body-file".to_string()), "{m:?}");
+    let body = std::fs::read_to_string(fx.fake.join("merge-body")).unwrap();
+    assert!(body.starts_with("Description text."), "{body:?}");
+    let v = last_json(&out, "result");
+    assert_eq!(v["result"], json!("merged"));
+    assert_eq!(v["merge_method"], json!("merge"), "{v}");
+    assert!(
+        !v["merge_method_reason"].as_str().unwrap_or("").is_empty(),
+        "the reason is recorded: {v}"
+    );
+}
+
+#[test]
+fn squash_allowed_repository_squashes_when_no_method_is_given() {
+    let Some(fx) = Fx::new() else { return };
+    // All three allowed (the fixture default): squash stays the default.
+    let out = fx.merge_tool_method(PR, SHA_A, "");
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let m = merge_flags(&fx);
+    assert_eq!(method_flags(&m), ["--squash"], "{m:?}");
+    assert!(m.contains(&"--subject".to_string()), "{m:?}");
+    let v = last_json(&out, "result");
+    assert_eq!(v["merge_method"], json!("squash"), "{v}");
+    assert!(!v["merge_method_reason"].as_str().unwrap_or("").is_empty());
+    assert_eq!(fx.api_calls().len(), 1, "the repository is read once");
+}
+
+#[test]
+fn default_order_is_squash_then_merge_then_rebase() {
+    let Some(fx) = Fx::new() else { return };
+    repo_allows(&fx, true, false, true);
+    let out = fx.merge_tool(PR, SHA_A);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(method_flags(&merge_flags(&fx)), ["--merge"]);
+}
+
+#[test]
+fn rebase_only_repository_rebases_without_a_message() {
+    let Some(fx) = Fx::new() else { return };
+    repo_allows(&fx, false, false, true);
+    let out = fx.merge_tool(PR, SHA_A);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let m = merge_flags(&fx);
+    assert_eq!(method_flags(&m), ["--rebase"], "{m:?}");
+    assert!(!m.contains(&"--subject".to_string()), "no subject: {m:?}");
+    assert!(!m.contains(&"--body-file".to_string()), "no body: {m:?}");
+    assert_eq!(last_json(&out, "result")["merge_method"], json!("rebase"));
+}
+
+#[test]
+fn an_explicit_method_wins_where_squash_is_also_allowed() {
+    let Some(fx) = Fx::new() else { return };
+    let out = fx.merge_tool_method(PR, SHA_A, "merge");
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(method_flags(&merge_flags(&fx)), ["--merge"]);
+    let v = last_json(&out, "result");
+    assert_eq!(v["merge_method"], json!("merge"), "{v}");
+    let why = v["merge_method_reason"].as_str().unwrap_or("");
+    assert!(
+        why.contains("merge"),
+        "the reason names the method: {why:?}"
+    );
+}
+
+#[test]
+fn every_explicit_method_pins_the_head() {
+    for method in ["merge", "squash", "rebase"] {
+        let Some(fx) = Fx::new() else { return };
+        let out = fx.merge_tool_method(PR, SHA_A, method);
+        assert_eq!(out.status.code(), Some(0), "{method}: {}", show(&out));
+        let m = merge_flags(&fx);
+        assert_eq!(method_flags(&m), [format!("--{method}")], "{m:?}");
+    }
+}
+
+#[test]
+fn a_moved_head_is_still_refused_by_github_for_every_method() {
+    for method in ["merge", "squash", "rebase"] {
+        let Some(fx) = Fx::new() else { return };
+        fx.set("server_head", SHA_B);
+        let out = fx.merge_tool_method(PR, SHA_A, method);
+        assert_eq!(out.status.code(), Some(4), "{method}: {}", show(&out));
+        assert_eq!(last_json(&out, "result")["result"], json!("refused"));
+        assert_eq!(fx.merge_calls().len(), 1, "{method}");
+    }
+}
+
+#[test]
+fn an_explicit_method_the_repository_disallows_is_never_used() {
+    // The spec case, and its siblings: no other method takes its place.
+    for (method, allow) in [
+        ("rebase", (true, true, false)),
+        ("squash", (true, false, true)),
+        ("merge", (false, true, true)),
+    ] {
+        let Some(fx) = Fx::new() else { return };
+        repo_allows(&fx, allow.0, allow.1, allow.2);
+        let out = fx.merge_tool_method(PR, SHA_A, method);
+        let v = assert_unsettled(&fx, &out);
+        let why = v["reason"].as_str().unwrap();
+        assert!(why.contains(method), "the reason names {method}: {why:?}");
+    }
+}
+
+#[test]
+fn a_repository_that_allows_no_method_is_handed_off_not_merged() {
+    let Some(fx) = Fx::new() else { return };
+    repo_allows(&fx, false, false, false);
+    let out = fx.merge_tool(PR, SHA_A);
+    assert_unsettled(&fx, &out);
+}
+
+#[test]
+fn an_unreadable_repository_is_handed_off_with_the_exit_status() {
+    let Some(fx) = Fx::new() else { return };
+    fx.set("api_rc", "1");
+    let out = fx.merge_tool(PR, SHA_A);
+    let v = assert_unsettled(&fx, &out);
+    assert!(
+        v["reason"].as_str().unwrap().contains("exit 1"),
+        "names the status: {v}"
+    );
+    // An explicit method does not skip the read: the repository decides.
+    let out = fx.merge_tool_method(PR, SHA_A, "merge");
+    assert_unsettled(&fx, &out);
+}
+
+/// #1888 review: a failed repository read says why, not only that it failed.
+/// The first line of gh's error that is not blank follows the exit status in
+/// the reason; gh's whole error still reaches the step's log.
+#[test]
+fn an_unreadable_repository_reason_carries_the_first_line_of_gh_error() {
+    let Some(fx) = Fx::new() else { return };
+    fx.set("api_rc", "1");
+    fx.set(
+        "api_err",
+        "\n   \nHTTP 403: Resource not accessible by integration\nsecond line of detail\n",
+    );
+    let out = fx.merge_tool(PR, SHA_A);
+    let v = assert_unsettled(&fx, &out);
+    let why = v["reason"].as_str().unwrap();
+    assert!(
+        why.contains("(gh exit 1: HTTP 403: Resource not accessible by integration)"),
+        "the status, then gh's first line: {why:?}"
+    );
+    assert!(!why.contains("second line"), "only the first line: {why:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("HTTP 403") && err.contains("second line of detail"),
+        "gh's error still reaches the log: {err:?}"
+    );
+}
+
+/// The gh error is text this tool did not write: it is made printable ASCII
+/// and cut at 200 bytes before the reason repeats it, so no escape sequence,
+/// control character or long page of output reaches the finalisation
+/// statement or the hand-off comment. A read with no error text keeps the
+/// status alone.
+#[test]
+fn a_gh_error_in_the_reason_is_cut_to_200_bytes_and_printable() {
+    let Some(fx) = Fx::new() else { return };
+    fx.set("api_rc", "1");
+    let noisy = format!(
+        "\u{1b}[31mHTTP 500\u{7} caf\u{e9} {}\r\nsecond line\n",
+        "x".repeat(500)
+    );
+    fx.set("api_err", &noisy);
+    let out = fx.merge_tool(PR, SHA_A);
+    let v = assert_unsettled(&fx, &out);
+    let why = v["reason"].as_str().unwrap();
+    assert!(
+        why.chars().all(|c| c.is_ascii() && !c.is_control()),
+        "{why:?}"
+    );
+    let shown = why
+        .split_once("(gh exit 1: ")
+        .map(|(_, rest)| rest.strip_suffix(')').unwrap_or(rest))
+        .unwrap_or_else(|| panic!("the status, then gh's text: {why:?}"));
+    assert!(
+        shown.len() <= 200,
+        "cut at 200 bytes: {} {shown:?}",
+        shown.len()
+    );
+    assert!(shown.contains("HTTP 500"), "{shown:?}");
+    assert!(
+        shown.ends_with('x'),
+        "the long line is cut, not dropped: {shown:?}"
+    );
+    assert!(!why.contains("second line"), "{why:?}");
+
+    let Some(fx) = Fx::new() else { return };
+    fx.set("api_rc", "1");
+    fx.set("api_err", "");
+    let out = fx.merge_tool(PR, SHA_A);
+    let v = assert_unsettled(&fx, &out);
+    assert!(
+        v["reason"].as_str().unwrap().ends_with("(gh exit 1)"),
+        "no text, no colon: {v}"
+    );
+}
+
+#[test]
+fn an_unparseable_repository_reading_is_handed_off() {
+    for raw in [
+        "",
+        "\n",
+        "true\ttrue\n",
+        "true\ttrue\ttrue\ttrue\n",
+        "yes\tno\tmaybe\n",
+        "null\tnull\tnull\n",
+        "<html>not json</html>\n",
+        "True\tTrue\tTrue\n",
+    ] {
+        let Some(fx) = Fx::new() else { return };
+        fx.set("api_out", raw);
+        for method in ["", "squash"] {
+            let out = fx.merge_tool_method(PR, SHA_A, method);
+            assert_unsettled(&fx, &out);
+        }
+    }
+}
+
+#[test]
+fn gh_exit_79_on_the_repository_read_passes_through() {
+    let Some(fx) = Fx::new() else { return };
+    fx.set("api_rc", "79");
+    let out = fx.merge_tool(PR, SHA_A);
+    assert_eq!(out.status.code(), Some(79), "{}", show(&out));
+    assert_no_merge_attempt(&fx);
+    let calls = fx.gh_calls();
+    assert_eq!(
+        calls.last().and_then(|c| c.first()).map(String::as_str),
+        Some("api"),
+        "nothing runs after a 79: {calls:?}"
+    );
+}
+
+#[test]
+fn hostile_method_text_is_refused_and_never_reaches_argv() {
+    // A path no shell of this test ever writes: it exists only if the method
+    // text was executed rather than matched.
+    let marker_dir = tempfile::tempdir().expect("temporary folder");
+    let marker = marker_dir.path().join("ran");
+    let hostile = [
+        format!("merge\"; touch {} #", marker.display()),
+        format!("$(touch {})", marker.display()),
+        format!("`touch {}`", marker.display()),
+        "merge\nsquash".to_string(),
+        "merge ".to_string(),
+        " merge".to_string(),
+        "Merge".to_string(),
+        "SQUASH".to_string(),
+        "--admin".to_string(),
+        "merge --admin".to_string(),
+        "auto".to_string(),
+        "'; echo x".to_string(),
+    ];
+    for method in hostile {
+        let Some(fx) = Fx::new() else { return };
+        let out = fx.merge_tool_method(PR, SHA_A, &method);
+        assert_eq!(out.status.code(), Some(4), "{method:?}: {}", show(&out));
+        let v = assert_unsettled(&fx, &out);
+        assert_eq!(v["pr"], json!(2575));
+        assert_eq!(v["expected_head"], json!(SHA_A));
+        assert!(
+            !fx.gh_calls()
+                .iter()
+                .flatten()
+                .any(|a| a.contains("--admin")),
+            "{method:?}"
+        );
+        assert!(
+            fx.api_calls().is_empty(),
+            "{method:?}: refused before the repository read: {:?}",
+            fx.gh_calls()
+        );
+    }
+    assert!(!marker.exists(), "the method text was executed");
+}
+
+#[test]
+fn an_echoed_method_is_cut_to_32_characters_and_printable() {
+    let Some(fx) = Fx::new() else { return };
+    let long = "a".repeat(200);
+    let out = fx.merge_tool_method(PR, SHA_A, &long);
+    let v = assert_unsettled(&fx, &out);
+    let why = v["reason"].as_str().unwrap();
+    assert!(!why.contains(&"a".repeat(33)), "cut at 32: {why:?}");
+    assert!(why.contains("aaaa"), "the cut text is still named: {why:?}");
+    // A control character or non-ASCII byte is replaced, not echoed.
+    let out = fx.merge_tool_method(PR, SHA_A, "me\u{7}rg\u{e9}\u{1b}[31m");
+    let v = assert_unsettled(&fx, &out);
+    let why = v["reason"].as_str().unwrap();
+    assert!(
+        why.chars().all(|c| !c.is_control() && c.is_ascii()),
+        "{why:?}"
+    );
+}
+
+#[test]
+fn the_repository_read_is_a_read_of_the_repository_and_nothing_else() {
+    let Some(fx) = Fx::new() else { return };
+    let out = fx.merge_tool(PR, SHA_A);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let api = fx.api_calls();
+    assert_eq!(api.len(), 1, "{api:?}");
+    let line = api[0].join(" ");
+    assert!(line.contains("repos/{owner}/{repo}"), "{line}");
+    assert!(!line.contains("/merge"), "no merge through the API: {line}");
+    for flag in ["--method", "-X", "--input", "-f", "-F", "--field"] {
+        assert!(!api[0].contains(&flag.to_string()), "{flag}: {line}");
+    }
+    // Between the message helper and the merge: after the last checks call,
+    // before the merge request.
+    let calls = fx.gh_calls();
+    let pos = |k: &str, n: &str| {
+        calls.iter().rposition(|c| {
+            c.first().map(String::as_str) == Some(k) && c.get(1).map(String::as_str) == Some(n)
+        })
+    };
+    let checks = pos("pr", "checks").unwrap();
+    let merge = pos("pr", "merge").unwrap();
+    let api_at = calls
+        .iter()
+        .position(|c| c.first().map(String::as_str) == Some("api"))
+        .unwrap();
+    assert!(checks < api_at && api_at < merge, "{calls:?}");
+}
+
+#[test]
+fn paths_that_never_reach_a_merge_make_no_repository_call() {
+    // Not open, failing checks, pending checks and DIRTY end before the read.
+    let cases: [(&str, &str); 4] = [
+        ("state", "CLOSED"),
+        ("required", "fail"),
+        ("required", "pending"),
+        ("merge_state", "DIRTY"),
+    ];
+    for (name, value) in cases {
+        let Some(fx) = Fx::new() else { return };
+        fx.set(name, value);
+        let out = fx.merge_tool_method(PR, SHA_A, "merge");
+        assert_ne!(out.status.code(), Some(0), "{name}={value}: {}", show(&out));
+        assert!(
+            fx.api_calls().is_empty(),
+            "{name}={value}: {:?}",
+            fx.gh_calls()
+        );
+        assert_no_merge_attempt(&fx);
+    }
+}
+
+#[test]
+fn the_method_is_recorded_when_github_refuses_the_merge() {
+    let Some(fx) = Fx::new() else { return };
+    repo_allows(&fx, true, false, false);
+    fx.set("merge_rc", "1");
+    let out = fx.merge_tool(PR, SHA_A);
+    assert_eq!(out.status.code(), Some(4), "{}", show(&out));
+    let v = last_json(&out, "result");
+    assert_eq!(v["result"], json!("refused"));
+    assert_eq!(v["merge_method"], json!("merge"), "{v}");
+    assert!(!v["merge_method_reason"].as_str().unwrap_or("").is_empty());
+    assert_eq!(method_flags(&merge_flags(&fx)), ["--merge"]);
+}
+
+#[test]
+fn a_fourth_argument_is_a_usage_error_without_calling_gh() {
+    let Some(fx) = Fx::new() else { return };
+    let mut c = fx.bash();
+    c.arg("-c")
+        .arg(
+            "set -u\n. \"$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge.sh\" || exit 90\n\
+             autodrive_merge \"$1\" \"$2\" merge extra",
+        )
+        .arg("bash")
+        .args([PR, SHA_A]);
+    let out = feed(c, b"");
+    assert_eq!(out.status.code(), Some(2), "{}", show(&out));
+    assert!(fx.gh_calls().is_empty(), "{:?}", fx.gh_calls());
+}
+
+#[test]
+fn the_message_helper_still_gates_every_method() {
+    // Exit 6 stays reachable whichever method the repository settles on.
+    for (m, s, r) in [
+        (true, true, true),
+        (true, false, false),
+        (false, false, true),
+    ] {
+        let Some(fx) = Fx::new() else { return };
+        repo_allows(&fx, m, s, r);
+        fx.set("title", "");
+        let out = fx.merge_tool(PR, SHA_A);
+        assert_eq!(out.status.code(), Some(6), "{}", show(&out));
+        assert!(
+            fx.api_calls().is_empty(),
+            "no read before the message: {:?}",
+            fx.gh_calls()
+        );
+        assert_no_merge_attempt(&fx);
+    }
+}
+
+// ===========================================================================
 // autodrive-finalize `merge` step: authorisation, assessed head, then GitHub
 // ===========================================================================
 
@@ -961,18 +1470,37 @@ fn merge_refused_without_captured_authorization() {
     let Some((fx, _)) = finalize_fixture() else {
         return;
     };
-    // The helper fails on a merge run (bad invocation, wrong directory):
-    // exit 2, no stdout. The PR is handed off, not reported as refused.
+    // The helper fails on a merge run (record missing, wrong directory):
+    // exit 2, no stdout. #2959: the step fails loudly with its evidence and
+    // exits 1 before any merge command, so the recovery step takes over. It
+    // is neither a hand-off nor a draft.
     std::fs::remove_file(fx.fake.join("auth_out")).unwrap();
     fx.set("auth_rc", "2");
     let out = finalize_merge(&fx, &AUTHORISED);
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
     let v = finalize_result(&out);
     assert_eq!(v["result"], json!("authorization-unreadable"), "{v}");
-    assert_eq!(v["handoff"], json!("true"), "{v}");
-    assert_eq!(
-        v["reason"],
-        json!("the captured invocation could not be read (helper exit 2)")
+    assert_eq!(v["handoff"], json!("false"), "{v}");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    let error_line = err
+        .lines()
+        .find(|l| l.starts_with("ERROR:") && l.contains("authorization-unreadable"))
+        .unwrap_or_else(|| panic!("an ERROR: line with the result name:\n{err}"));
+    assert!(
+        error_line.contains(&fx.state.join("invocation.json").display().to_string()),
+        "names the record path: {error_line}"
+    );
+    assert!(
+        error_line.contains(&fx.state.display().to_string()),
+        "names the state folder: {error_line}"
+    );
+    assert!(
+        error_line.contains("helper exit 2"),
+        "names the helper exit code: {error_line}"
+    );
+    assert!(
+        error_line.contains("missing") || error_line.contains("present"),
+        "says whether the record exists: {error_line}"
     );
     assert_no_merge_attempt(&fx);
 
@@ -980,10 +1508,18 @@ fn merge_refused_without_captured_authorization() {
     fx.set("auth_rc", "0");
     fx.set("auth_out", r#"{"allows_merge": "yes"}"#);
     let out = finalize_merge(&fx, &AUTHORISED);
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
     let v = finalize_result(&out);
     assert_eq!(v["result"], json!("authorization-unreadable"), "{v}");
-    assert_eq!(v["handoff"], json!("true"), "{v}");
+    assert_eq!(v["handoff"], json!("false"), "{v}");
     assert_no_merge_attempt(&fx);
+
+    // Exit 79 stays terminal: it is a refusal, never sent to recovery.
+    fx.set("auth_rc", "79");
+    let out = finalize_merge(&fx, &AUTHORISED);
+    assert_eq!(out.status.code(), Some(79), "{}", show(&out));
+    assert_no_merge_attempt(&fx);
+    fx.set("auth_rc", "0");
 
     // The captured invocation does not allow a merge.
     fx.set(
@@ -1163,6 +1699,57 @@ fn github_refusal_at_finalisation_is_handed_off() {
 }
 
 #[test]
+fn finalize_passes_the_given_method_and_reports_it() {
+    let Some((fx, head)) = finalize_fixture() else {
+        return;
+    };
+    let out = finalize_merge_with(&fx, &AUTHORISED, &[("merge_method", "merge")]);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let v = finalize_result(&out);
+    assert_eq!(v["result"], json!("merged"), "{v}");
+    assert_eq!(v["merge_method"], json!("merge"), "{v}");
+    assert!(!v["merge_method_reason"].as_str().unwrap_or("").is_empty());
+    let m = &fx.merge_calls()[0];
+    assert!(m.contains(&"--merge".to_string()), "{m:?}");
+    assert!(!m.contains(&"--squash".to_string()), "{m:?}");
+    let i = m.iter().position(|a| a == "--match-head-commit").unwrap();
+    assert_eq!(m[i + 1], head);
+}
+
+#[test]
+fn finalize_without_a_method_follows_the_repository() {
+    let Some((fx, _)) = finalize_fixture() else {
+        return;
+    };
+    repo_allows(&fx, true, false, false);
+    let out = finalize_merge(&fx, &AUTHORISED);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(finalize_result(&out)["merge_method"], json!("merge"));
+    assert!(fx.merge_calls()[0].contains(&"--merge".to_string()));
+}
+
+#[test]
+fn finalize_hands_off_an_unsettled_method_with_what_was_found() {
+    let Some((fx, _)) = finalize_fixture() else {
+        return;
+    };
+    repo_allows(&fx, true, true, false);
+    let out = finalize_merge_with(&fx, &AUTHORISED, &[("merge_method", "rebase")]);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let v = finalize_result(&out);
+    assert_eq!(v["result"], json!("refused"), "{v}");
+    assert_eq!(v["handoff"], json!("true"), "{v}");
+    assert!(
+        v["reason"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("the merge method could not be settled:"),
+        "{v}"
+    );
+    assert_no_merge_attempt(&fx);
+}
+
+#[test]
 fn gh_exit_79_passes_through_merge_step() {
     let Some((fx, _)) = finalize_fixture() else {
         return;
@@ -1327,17 +1914,22 @@ struct LoopCase {
     rc: &'static str,
     result: Option<&'static str>,
     printed: Option<String>,
+    /// Text the stub driver writes to standard error (#2849).
+    stderr: Option<String>,
 }
 
-fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
+/// Puts the stub loop driver in the copied bundle and sets its fixture files
+/// for one run, clearing what the run before left behind.
+fn stage_loop_driver(fx: &Fx, case: &LoopCase) {
     write_executable(
         &fx.tools().join("autodrive_loop.sh"),
         FAKE_LOOP_DRIVER,
         0o755,
     );
     fx.set("loop_rc", case.rc);
-    let _ = std::fs::remove_file(fx.fake.join("loop_result"));
-    let _ = std::fs::remove_file(fx.fake.join("loop_stdout"));
+    for f in ["loop_result", "loop_stdout", "loop_stderr", "loop-fd4"] {
+        let _ = std::fs::remove_file(fx.fake.join(f));
+    }
     let _ = std::fs::remove_file(fx.state.join("merge-ready-result.json"));
     if let Some(r) = case.result {
         fx.set("loop_result", r);
@@ -1345,44 +1937,78 @@ fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
     if let Some(p) = &case.printed {
         fx.set("loop_stdout", p);
     }
-    let review = fx.root.join("review");
-    std::fs::create_dir_all(&review).unwrap();
-    let preflight = json!({
+    if let Some(e) = &case.stderr {
+        fx.set("loop_stderr", e);
+    }
+}
+
+/// The preflight JSON a loop step reads its PR, repo and state directory from.
+fn loop_preflight(fx: &Fx) -> String {
+    json!({
         "should_run": "true", "pr": PR, "pr_url": "", "pr_state": "OPEN",
         "branch": "feat/issue-2575", "head_sha": SHA_A, "base_branch": "main",
         "base_sha": SHA_B, "state_dir": fx.state, "repo": fx.repo,
-        "review_dir": review, "reason": "fixture", "blockers": [], "attempts": []
+        "reason": "fixture", "blockers": [], "attempts": []
     })
-    .to_string();
-    let env = |c: &mut Command| {
-        c.env("RECIPE_VAR_merge_loop_preflight", &preflight)
-            .env("RECIPE_VAR_task_description", "issue 2575 fixture task")
-            .env("RECIPE_VAR_autodrive_state_dir", &fx.state)
-            .env("RECIPE_VAR_pr_number", PR)
-            .env("RECIPE_VAR_no_merge", "false")
-            .env("RECIPE_VAR_autodrive_dry_run", "false")
-            .env(
-                "RECIPE_VAR_autodrive_invocation_file",
-                fx.state.join("invocation.json"),
-            )
-            .env("REPO_PATH", &fx.repo)
-            .current_dir(&fx.repo)
-            .stdin(Stdio::null());
-    };
+    .to_string()
+}
+
+/// The environment and working directory every loop-step run needs.
+fn loop_env(c: &mut Command, fx: &Fx, preflight: &str) {
+    c.env("RECIPE_VAR_merge_loop_preflight", preflight)
+        .env("RECIPE_VAR_task_description", "issue 2575 fixture task")
+        .env("RECIPE_VAR_autodrive_state_dir", &fx.state)
+        .env("RECIPE_VAR_pr_number", PR)
+        .env("RECIPE_VAR_no_merge", "false")
+        .env("RECIPE_VAR_autodrive_dry_run", "false")
+        .env(
+            "RECIPE_VAR_autodrive_invocation_file",
+            fx.state.join("invocation.json"),
+        )
+        .env("REPO_PATH", &fx.repo)
+        .current_dir(&fx.repo)
+        .stdin(Stdio::null());
+}
+
+/// The commands of `step-02` and `step-02a`. `autodrive-merge-loop.yaml` is
+/// 21 KB of YAML that no run changes, so it is read and parsed once for the
+/// whole test binary rather than twice for every step run.
+fn loop_commands() -> &'static (String, String) {
+    static CMDS: OnceLock<(String, String)> = OnceLock::new();
+    CMDS.get_or_init(|| {
+        (
+            command_of("autodrive-merge-loop", "step-02"),
+            command_of("autodrive-merge-loop", "step-02a"),
+        )
+    })
+}
+
+/// Runs `step-02` alone. `step-02a` is a second process, so [`loop_step`]
+/// adds it only for the callers that read the outcome it produces.
+fn loop_step_02(fx: &Fx, case: &LoopCase) -> Output {
+    stage_loop_driver(fx, case);
+    let mut c = fx.bash();
+    c.arg("-c").arg(&loop_commands().0);
+    loop_env(&mut c, fx, &loop_preflight(fx));
+    c.output().expect("run merge loop step-02")
+}
+
+/// Runs `step-02a` over the loop line a `step-02` that exited 0 printed.
+fn loop_outcome_step(fx: &Fx, out: &Output) -> Output {
     let mut c = fx.bash();
     c.arg("-c")
-        .arg(command_of("autodrive-merge-loop", "step-02"));
-    env(&mut c);
-    let out = c.output().expect("run merge loop step-02");
+        .arg(&loop_commands().1)
+        .env("RECIPE_VAR_merge_loop_result", stdout(out));
+    loop_env(&mut c, fx, &loop_preflight(fx));
+    c.output().expect("run merge loop step-02a")
+}
+
+fn loop_step(fx: &Fx, case: &LoopCase) -> (Output, Option<Output>) {
+    let out = loop_step_02(fx, case);
     if out.status.code() != Some(0) {
         return (out, None);
     }
-    let mut c = fx.bash();
-    c.arg("-c")
-        .arg(command_of("autodrive-merge-loop", "step-02a"))
-        .env("RECIPE_VAR_merge_loop_result", stdout(&out));
-    env(&mut c);
-    let classified = c.output().expect("run merge loop step-02a");
+    let classified = loop_outcome_step(fx, &out);
     (out, Some(classified))
 }
 
@@ -1409,6 +2035,7 @@ fn step02_keeps_refusal_and_usage_limit_exits() {
                 rc,
                 result,
                 printed: None,
+                stderr: None,
             },
         );
         assert_eq!(
@@ -1435,6 +2062,7 @@ fn step02_turns_every_other_loop_ending_into_a_handoff() {
                 rc: "1",
                 result,
                 printed: None,
+                stderr: None,
             },
         );
         assert_eq!(out.status.code(), Some(0), "{result:?}: {}", show(&out));
@@ -1458,6 +2086,7 @@ fn step02_done_leads_to_finalisation() {
             rc: "0",
             result: Some("DONE"),
             printed: None,
+            stderr: None,
         },
     );
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
@@ -1476,6 +2105,7 @@ fn done_result_with_a_failed_driver_exit_is_handed_off() {
             rc: "1",
             result: Some("DONE"),
             printed: None,
+            stderr: None,
         },
     );
     assert_eq!(out.status.code(), Some(0), "{}", show(&out));
@@ -1498,6 +2128,7 @@ fn agent_printed_loop_result_is_ignored() {
                 rc: "1",
                 result: Some("STUCK"),
                 printed: Some(format!("{line}\n")),
+                stderr: None,
             },
         );
         assert_eq!(
@@ -1520,6 +2151,7 @@ fn step02a_reason_is_bounded() {
             rc: "1",
             result: Some("STUCK"),
             printed: Some("x".repeat(5000)),
+            stderr: None,
         },
     );
     let v = last_json(&classified.unwrap(), "outcome");
@@ -1536,22 +2168,10 @@ fn step02a_reason_is_bounded() {
 /// real `autodrive_round_word` and `autodrive_round_file`; the evaluator
 /// answers DONE when the round file says MERGE_READY and CONTINUE otherwise,
 /// and STUCK after six calls so a broken driver cannot loop for ever.
-/// `internal review-allocate` and `review-next` add a detached worktree of the
-/// PR worktree's HEAD as the next private review generation (#2290);
-/// `review-launch` prints a separate launch directory, `review-head` the
-/// generation's HEAD, and `review-release` succeeds.
 const DRIVER_AMPLIHACK: &str = r#"#!/usr/bin/env bash
 set -u
 S="$STUB_STATE"
 case "${1:-} ${2:-}" in
-  "internal review-allocate"|"internal review-next")
-    n="$(( $(cat "$S/review-gens" 2>/dev/null || echo 0) + 1 ))"; printf '%s' "$n" > "$S/review-gens"
-    g="$S/review-gen-$n"
-    git -C "$3" worktree add -q --detach "$g" HEAD >/dev/null 2>&1 || exit 1
-    printf '%s\n' "$g"; exit 0 ;;
-  "internal review-launch") mkdir -p "$S/launch" && printf '%s\n' "$S/launch"; exit 0 ;;
-  "internal review-head") exec git -C "$3" rev-parse --verify HEAD ;;
-  "internal review-release") exit 0 ;;
   "recipe show") exit 0 ;;
   "orch helper")
     in="$(cat)"
@@ -1591,7 +2211,13 @@ if [ "$name" = "loop-health-evaluator" ]; then
   # The evaluator contract (#2575 B2): a round with no movement since the last
   # one is STUCK, unless loop_ci_signal says a check is pending at that head.
   ci=""; prev=""
-  for a in "$@"; do case "$prev:$a" in -c:loop_ci_signal=*) ci="${a#loop_ci_signal=}" ;; esac; prev=$a; done
+  # Both forms: #2582 moved the evaluator's free-text keys, loop_ci_signal
+  # among them, from `-c key=<text>` to `--context-from-file key=<file>`, as
+  # loop_round_label is read above.
+  for a in "$@"; do case "$prev:$a" in
+    -c:loop_ci_signal=*) ci="${a#loop_ci_signal=}" ;;
+    --context-from-file:loop_ci_signal=*) ci="$(cat -- "${a#*=}")" ;;
+  esac; prev=$a; done
   printf '%s\n' "$ci" >> "$S/evaluator-ci"
   h="$(git -C "$STUB_REPO" rev-parse HEAD)"
   last="$(cat "$S/evaluator-head" 2>/dev/null || :)"; printf '%s' "$h" > "$S/evaluator-head"
@@ -1888,3 +2514,9 @@ fn handoff_word_stops_the_loop_before_the_evaluator() {
 // merged. A child module, so it shares the fakes and fixtures above.
 #[path = "issue_2575_wait_sync_success.rs"]
 mod wait_sync_success;
+
+// #2849 item 1: the loop driver's output is kept in the PR's state folder and
+// an UNREADABLE hand-off names it. A child module, so it shares the stub
+// driver and the loop-step fixtures above.
+#[path = "issue_2849_loop_driver_evidence.rs"]
+mod loop_driver_evidence;

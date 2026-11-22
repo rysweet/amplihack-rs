@@ -398,9 +398,13 @@ fn default_workflow_direct_commit_paths_use_safe_pre_commit_handling() {
             ));
         }
 
+        // #2839 removed the `git add -A` needle from the list below: these
+        // steps now stage through `stage_workflow_changes` or, in the TDD
+        // checkpoint, a scoped `--pathspec-from-file` add. What each one
+        // stages is covered by behaviour, in
+        // amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh.
         for required in [
             "set -euo pipefail",
-            "git add -A",
             "git diff --cached --name-only",
             "commit_output_file=$(mktemp",
             "git commit",

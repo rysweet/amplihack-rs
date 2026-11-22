@@ -7,9 +7,6 @@ use std::fs;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 
-/// The folder of stable execution storage under the work root.
-pub(crate) const EXEC_DIR: &str = "exec";
-
 pub(crate) const WORK_ROOT_ENV: &str = "AMPLIHACK_WORK_ROOT";
 pub(crate) const WORK_ROOT_EXPLICIT_ENV: &str = "AMPLIHACK_WORK_ROOT_EXPLICIT";
 
@@ -71,7 +68,10 @@ pub(crate) fn resolve_from_env() -> Result<WorkRoot> {
     )
 }
 
-/// Refuses a work root that cleanup could not safely manage.
+/// Refuses a work root in a location cleanup could not safely manage, then
+/// checks its ownership and permissions. One function, used by creation,
+/// cleanup and discovery alike: a caller that wanted the location half on
+/// its own would be accepting a work root another user can write to.
 pub(crate) fn validate(path: &Path, home: &Path) -> Result<()> {
     if !path.is_absolute() {
         bail!("work root {} must be an absolute path", path.display());
@@ -185,12 +185,6 @@ impl WorkRoot {
 
     pub(crate) fn short_runtime_dir(&self) -> PathBuf {
         self.path.join("r")
-    }
-
-    /// `<work root>/exec/`: the stable execution storage of runs with a
-    /// recovery identity (issue #2096, #2493).
-    pub(crate) fn exec_dir(&self) -> PathBuf {
-        self.path.join(EXEC_DIR)
     }
 
     pub(crate) fn lock_path(&self) -> PathBuf {

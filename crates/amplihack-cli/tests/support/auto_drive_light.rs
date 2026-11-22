@@ -263,34 +263,15 @@ pub fn fault(o: &Output, token: &str) {
 /// - `issue create`              `https://github.com/o/r/issues/$FAKE_GH_NEW_ISSUE`
 /// - `issue comment`, `pr comment` nothing
 ///
-/// REST answers the one read the head check needs without GraphQL (#2333):
-///
-/// - `api repos/*/*/pulls/<n>`   `$FAKE_GH_REST_PR`, by default PR 7 open at
-///   `$FAKE_GH_HEAD` with `mergeable_state` `$FAKE_GH_REST_MERGE_STATE`
-///   (default `clean`)
-///
 /// When `$FAKE_GH_FAIL` is set and the joined argv contains it, the call
 /// prints `HTTP 404: Not Found` on stderr and exits `$FAKE_GH_EXIT_CODE`
 /// (default 1; a 404 is not retried).
-///
-/// When `$FAKE_GH_GRAPHQL_UNAVAILABLE` is set, every GraphQL-backed read
-/// (`pr view`, `pr checks`, `api graphql`) prints GitHub's secondary-limit
-/// message on stderr and exits `$FAKE_GH_GRAPHQL_EXIT` (default 1). This is
-/// not a 404: the account's allowance is spent, so REST still answers and
-/// the merge mutation still answers (#2333 D1). `$FAKE_GH_FAIL` is a
-/// separate, unchanged mode.
-///
-/// Each call also appends one line to `$FAKE_LOG/gh-env.log` naming the two
-/// variables that can send a REST read somewhere other than the repository
-/// it was given, so a test may assert they did not reach `gh`
-/// ([`Fakes::gh_env`]).
 pub const FAKE_GH: &str = r#"#!/usr/bin/env bash
 case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 set -u
 log="${FAKE_LOG:?}"
 n=$(( $(wc -l < "$log/gh.log" 2>/dev/null || echo 0) + 1 ))
 ( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "$log/gh.log"
-printf 'GH_HOST=%s\tGH_REPO=%s\n' "${GH_HOST-<unset>}" "${GH_REPO-<unset>}" >> "$log/gh-env.log"
 args=("$@")
 jqf=""
 for ((i=0; i<${#args[@]}; i++)); do
@@ -305,13 +286,6 @@ if [ -n "${FAKE_GH_FAIL:-}" ] && [[ "$joined" == *"$FAKE_GH_FAIL"* ]]; then
   echo "HTTP 404: Not Found" >&2
   exit "${FAKE_GH_EXIT_CODE:-1}"
 fi
-if [ -n "${FAKE_GH_GRAPHQL_UNAVAILABLE:-}" ]; then
-  case "$1 ${2:-}" in
-    "pr view"|"pr checks"|"api graphql")
-      echo "You have exceeded a secondary rate limit. Please wait a few minutes before you try again." >&2
-      exit "${FAKE_GH_GRAPHQL_EXIT:-1}" ;;
-  esac
-fi
 emit() { if [ -n "$jqf" ]; then printf '%s' "$1" | jq -r "$jqf"; else printf '%s\n' "$1"; fi; }
 login="${FAKE_GH_LOGIN:-me}"
 case "$1 ${2:-}" in
@@ -324,9 +298,7 @@ case "$1 ${2:-}" in
   "issue create") printf 'https://github.com/o/r/issues/%s\n' "${FAKE_GH_NEW_ISSUE:-1851}" ;;
   "issue comment"|"pr comment") : ;;
   *)
-    if [ "$1" = api ] && [[ "$2" == repos/*/*/pulls/* ]] && [[ "$2" != */pulls/*/* ]]; then
-      emit "${FAKE_GH_REST_PR:-{\"number\":7,\"state\":\"open\",\"merged\":false,\"title\":\"fixture pull request\",\"body\":\"fixture body\",\"draft\":false,\"mergeable_state\":\"${FAKE_GH_REST_MERGE_STATE:-clean}\",\"head\":{\"sha\":\"${FAKE_GH_HEAD:-}\",\"ref\":\"quick/demo\"},\"base\":{\"ref\":\"${FAKE_GH_BASE_NAME:-main}\",\"sha\":\"${FAKE_GH_BASE_OID:-}\"}}}"
-    elif [ "$1" = api ] && [[ "$joined" == *search/issues* ]]; then
+    if [ "$1" = api ] && [[ "$joined" == *search/issues* ]]; then
       emit "{\"total_count\":0,\"items\":${FAKE_GH_SEARCH_API:-[]}}"
     elif [ "$1" = api ] && [[ "$joined" == *repos/o/r/issues/* ]]; then
       emit "${FAKE_GH_ISSUE_API:-{\"state\":\"open\",\"user\":{\"login\":\"$login\"},\"body\":\"\"}}"
@@ -365,46 +337,6 @@ esac
 exit 0
 "#;
 
-/// A fake `git` for the #2333 head read. Only `ls-remote` is answered here;
-/// every other subcommand is the real `git`, found by dropping `$FAKE_BIN`
-/// from `PATH`. Each call appends its argv to `$FAKE_LOG/git.log`, so a test
-/// may assert which URL was asked for, or that none was.
-///
-/// `$FAKE_GIT_LS_REMOTE` picks the answer for `refs/pull/$FAKE_GIT_PR/head`
-/// (default `7`):
-///
-/// - `answer` (default) one line, `$FAKE_GH_HEAD`
-/// - `other`             one line, `$FAKE_GIT_OTHER_SHA`
-/// - `empty`             no lines, exit 0 (the route did not answer)
-/// - `ambiguous`         two lines for the one ref
-/// - `bad-sha`           one line whose first field is not a SHA
-/// - `fail`              git's own remote error on stderr, exit 128
-pub const FAKE_GIT: &str = r#"#!/usr/bin/env bash
-set -u
-[ -n "${FAKE_LOG:-}" ] && ( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "$FAKE_LOG/git.log"
-sub=""; skip=0
-for a in "$@"; do
-  if [ "$skip" = 1 ]; then skip=0; continue; fi
-  case "$a" in -C|-c) skip=1; continue ;; -*) continue ;; esac
-  sub="$a"; break
-done
-if [ "$sub" = ls-remote ]; then
-  pr="${FAKE_GIT_PR:-7}"
-  case "${FAKE_GIT_LS_REMOTE:-answer}" in
-    answer)    printf '%s\trefs/pull/%s/head\n' "${FAKE_GH_HEAD:-}" "$pr" ;;
-    other)     printf '%s\trefs/pull/%s/head\n' "${FAKE_GIT_OTHER_SHA:?}" "$pr" ;;
-    empty)     : ;;
-    ambiguous) printf '%s\trefs/pull/%s/head\n%s\trefs/pull/%s/head\n' "${FAKE_GH_HEAD:-}" "$pr" "${FAKE_GH_HEAD:-}" "$pr" ;;
-    bad-sha)   printf 'not-a-sha\trefs/pull/%s/head\n' "$pr" ;;
-    fail)      echo "fatal: could not read from remote repository" >&2; exit 128 ;;
-    *)         echo "fake git: unknown FAKE_GIT_LS_REMOTE mode" >&2; exit 2 ;;
-  esac
-  exit 0
-fi
-PATH="${PATH#"${FAKE_BIN:-}":}"
-exec git "$@"
-"#;
-
 /// A directory holding the fake `gh` and `amplihack`, and the log dir.
 pub struct Fakes {
     pub bin: PathBuf,
@@ -422,41 +354,9 @@ pub fn fake_bin(root: &Path) -> Fakes {
 }
 
 impl Fakes {
-    /// Install the fake `git` of [`FAKE_GIT`]. Not installed by [`fake_bin`]:
-    /// only the tests that drive the #2333 head read want it.
-    pub fn with_fake_git(&self) -> &Self {
-        crate::support::exec_stub::write_executable(&self.bin.join("git"), FAKE_GIT, 0o755);
-        self
-    }
-
-    /// Every `git` call the fake saw, each as its argv. Empty when the fake
-    /// `git` is not installed.
-    pub fn git_calls(&self) -> Vec<Vec<String>> {
-        read_log(&self.log.join("git.log"))
-    }
-
-    /// Every `git ls-remote` call the fake saw, each as its argv.
-    pub fn ls_remote_calls(&self) -> Vec<Vec<String>> {
-        self.git_calls()
-            .into_iter()
-            .filter(|a| a.iter().any(|x| x == "ls-remote"))
-            .collect()
-    }
-
     /// Every `gh` call, each as its argv.
     pub fn gh_calls(&self) -> Vec<Vec<String>> {
         read_log(&self.log.join("gh.log"))
-    }
-
-    /// What each `gh` call saw in `GH_HOST` and `GH_REPO`, one line per call
-    /// in call order: `GH_HOST=<value>\tGH_REPO=<value>`, with `<unset>`
-    /// where the variable was not in the environment at all.
-    pub fn gh_env(&self) -> Vec<String> {
-        std::fs::read_to_string(self.log.join("gh-env.log"))
-            .unwrap_or_default()
-            .lines()
-            .map(str::to_owned)
-            .collect()
     }
 
     pub fn amplihack_calls(&self) -> Vec<Vec<String>> {

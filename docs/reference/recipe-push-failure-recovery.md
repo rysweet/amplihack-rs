@@ -570,6 +570,17 @@ reason shown:
    (`uncommitted-changes`). This runs before rule 11, so `NONE` and
    `ENVIRONMENT` cannot skip it.
 
+   One tracked change is left behind on purpose: a top-level `run/reports/`
+   file the repository already tracks and the run has rewritten is reset in
+   the index and kept on disk (#2839, see
+   [Staging rules](recipe-commit-hook-repair.md#staging-rules)). This gate
+   cannot clear it — the agent may not stage, commit, reset or rebase — so a
+   push step that reached recovery in that state would end the run needing a
+   person. That is why those steps pull through `workflow_pull_rebase`
+   instead, which autostashes the report so the pull and push succeed and
+   recovery is never reached for it. See
+   [Pulling after staging](recipe-commit-hook-repair.md#pulling-after-staging).
+
    The gate also lists the untracked paths again and records how many are
    new as `new_untracked_count`:
 

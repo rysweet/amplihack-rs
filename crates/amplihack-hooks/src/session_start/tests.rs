@@ -288,6 +288,7 @@ fn session_start_process_surfaces_blarify_setup_failure_notice() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _blarify = crate::test_support::blarify_not_disabled();
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/app.py"), "print('hi')\n").unwrap();

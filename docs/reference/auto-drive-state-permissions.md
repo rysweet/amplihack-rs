@@ -1,7 +1,7 @@
 ---
 title: Auto-drive State Permissions
 description: How auto-drive writes its state and evidence 0700/0600 under any umask, and when the evidence check repairs or refuses an entry, decided by the state folder's location under the auto-drive state root or, for files, by the folder being private.
-last_updated: 2026-11-13
+last_updated: 2026-11-18
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -59,7 +59,16 @@ Files written by agent steps with a plain write (for example
 umask: `0664` under umask `002`, `0644` under umask `022`. A drive's QA agent
 that redirects a log into `<run dir>/autodrive-state`, for example
 `qa-criterion1-attempt2-ffi.log`, leaves such a file. The evidence check
-repairs those files, as described below.
+repairs those files, as described below. For a drive started with
+`amplihack recipe run --detach`, the umask is that of the shell that ran the
+command, not the tmux server's (#2778); see
+[Detached runs](./recipe-command.md#detached-runs).
+
+Pre-review baselines use existing restricted artifact storage with directories
+`0700` and files `0600`. Collection is read-only, handles arbitrary filenames,
+and records symlink targets without following external content. Baselines
+retain original staged, unstaged, and untracked state across review recovery;
+see [pre-review evidence](recipe-checkout-isolation.md#pre-review-evidence).
 
 ## What the evidence check does
 
@@ -445,7 +454,7 @@ way.
 
 - **Shell finalization check.** `autodrive_private` and
   `autodrive_untrusted_entries` in `autodrive_state.sh` do not repair. They
-  move any entry with group or other bits aside into an `untrusted-*`
+  move any entry with group or other write bits aside into an `untrusted-*`
   folder, log a warning, and the run redoes that work. Adding repair there
   would mean new shell logic; it is left for a follow-up issue.
 - **Existing state folders.** No migration pass runs over old folders. Each
