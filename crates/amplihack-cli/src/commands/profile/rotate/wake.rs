@@ -13,7 +13,9 @@
 //! a stop pipe together. It wakes when:
 //!
 //! - the ledger changes, unless this process wrote exactly those bytes
-//!   ([`is_self_write`]);
+//!   ([`is_self_write`]), or the blocks in force differ from those the last
+//!   cycle began with ([`Blocks`]), which catches a record written while
+//!   that cycle ran and kept by its own save;
 //! - the earliest recorded reset passes ([`deadline`]), so a login comes
 //!   back the moment its block ends;
 //! - SIGTERM or SIGINT arrives, through the stop pipe, so `rotate stop`
@@ -27,10 +29,11 @@
 //! rotator running on `--interval` alone, because a rotator that stops is
 //! worse than a rotator that is slow.
 
-use super::super::ledger::{MAX_STATE, RotateLedger, RotateState, trusted};
+use super::super::ledger::{MAX_STATE, OverflowBlock, RotateLedger, RotateState, trusted};
 use super::super::log::wake_msg::{self, Reason};
 use crate::commands::profile::auto_switch::kit::{now, read_bounded_nofollow};
 use amplihack_utils::file_event::{SWAP_MASK, Waiter, Watch, Woke};
+use std::collections::BTreeMap;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -157,6 +160,47 @@ pub fn event_due(started: Instant, now: Instant, floor: Duration) -> Instant {
     now.max(started + floor)
 }
 
+/// Every block the ledger records, as a cycle could have read them.
+///
+/// A step that meets a limit records it under the rotate lock, and a cycle
+/// holds that lock only from revalidation to its last save, not while it
+/// measures. A record written while a cycle measures is therefore kept by
+/// that cycle's own save, under the lock, but the cycle decided without
+/// it. The file then holds, byte for byte, what this process wrote, so
+/// [`is_self_write`] alone would take the record for the rotator's own
+/// write and the limit would wait for `--interval`. Comparing these with
+/// the blocks the cycle began with catches it. A block the cycle added
+/// itself differs too, and costs one extra cycle: the cheaper error.
+#[derive(Default)]
+pub struct Blocks {
+    overflow: BTreeMap<String, OverflowBlock>,
+    platform: Option<OverflowBlock>,
+}
+
+impl Blocks {
+    pub fn of(l: &RotateLedger) -> Self {
+        Self {
+            overflow: l.overflow_blocked.clone(),
+            platform: l.platform_block.clone(),
+        }
+    }
+
+    /// Whether the blocks in force at `now` differ between the two. A
+    /// block that expired in between is out of both, so a prune is not a
+    /// change; a reset that passed during a cycle is [`reset_fell_due`]'s.
+    pub fn differ_at(&self, other: &Self, now: i64) -> bool {
+        self.active(now) != other.active(now)
+    }
+
+    fn active(&self, now: i64) -> (Vec<(&String, &OverflowBlock)>, Option<&OverflowBlock>) {
+        let overflow = self.overflow.iter().filter(|(_, v)| now < v.until);
+        (
+            overflow.collect(),
+            self.platform.as_ref().filter(|p| now < p.until),
+        )
+    }
+}
+
 /// The watch loop's intake: the waiter, the stop pipe behind it, and the
 /// lines it has already said.
 pub struct Waker {
@@ -175,6 +219,8 @@ pub struct Waker {
     /// When the cycle before this wait began, in unix seconds, for
     /// [`reset_fell_due`].
     cycle_from: i64,
+    /// The blocks when the cycle before this wait began, for [`Blocks`].
+    seen: Blocks,
 }
 
 impl Waker {
@@ -191,6 +237,7 @@ impl Waker {
             said: Vec::new(),
             last: None,
             cycle_from: now(),
+            seen: Blocks::of(&current(rs)),
         };
         match stop_pipe().and_then(|i| build(rs, &i).map(|waiter| (i, waiter))) {
             Ok((i, waiter)) => {
@@ -202,15 +249,12 @@ impl Waker {
         w
     }
 
-    /// Waits until the next cycle is due: a ledger change this process did
-    /// not make, the earliest recorded reset, a stop signal, or
-    /// `--interval`. Returns having changed nothing.
+    /// Waits until the next cycle is due: a ledger change or a block the
+    /// last cycle did not act on, the earliest recorded reset, a stop
+    /// signal, or `--interval`. Returns having changed nothing.
     pub fn wait(&mut self, rs: &RotateState, interval: u64, stop: &AtomicBool) {
         let interval = Duration::from_secs(interval);
-        // A ledger that cannot be read contributes no reset, so the wait is
-        // the interval. Not reported here: the cycle loads the same ledger
-        // and logs the refusal itself, once per cycle, with its reason.
-        let ledger = rs.load_ledger().ok().flatten().unwrap_or_default();
+        let ledger = current(rs);
         // One clock for both, so the comparison below is exact.
         let (start, now_unix) = (Instant::now(), now());
         let mut until = deadline(start, now_unix, interval, &ledger);
@@ -221,10 +265,15 @@ impl Waker {
         } else {
             Reason::Interval
         };
+        let floor = coalesce_floor(interval);
+        // A block recorded while the last cycle ran, and kept by its save.
+        if self.seen.differ_at(&Blocks::of(&ledger), now_unix) {
+            why = Reason::Ledger;
+            until = until.min(event_due(start, start, floor));
+        }
         if reset_fell_due(&ledger, self.cycle_from, now_unix) {
             (until, why) = (start, Reason::Reset);
         }
-        let floor = coalesce_floor(interval);
         while !stop.load(Ordering::SeqCst) && Instant::now() < until {
             let woke = match self.waiter.as_mut() {
                 // No intake: the interval wait, exactly as it was.
@@ -260,6 +309,7 @@ impl Waker {
         }
         self.said_why(rs, why, stop);
         self.cycle_from = now();
+        self.seen = Blocks::of(&current(rs));
     }
 
     /// Writes why the wait ended. A limit event and a reset are always
@@ -302,6 +352,14 @@ impl Waker {
         self.said.push(kind);
         super::log_line(rs, line);
     }
+}
+
+/// The ledger as it is now. One that cannot be read reads as empty: it
+/// contributes no reset and no block, so the wait is the interval. Not
+/// reported here: the cycle loads the same ledger and logs the refusal
+/// itself, once per cycle, with its reason.
+fn current(rs: &RotateState) -> RotateLedger {
+    rs.load_ledger().ok().flatten().unwrap_or_default()
 }
 
 /// One watch on the rotate directory for the name `ledger.json`, with a

@@ -99,9 +99,15 @@ fn all_plan_logins_out_direct(f: &Fixture) {
 /// session room and the most weekly room among those, extra with the lowest
 /// week but its session nearly spent. No candidate beats the live login by
 /// `--margin`.
+///
+/// spare's week was 91% until issue #2910 bound every target below
+/// `--week-at` (90 by default), which takes a login at 91% out of every
+/// pass. At 89% it is still the only target with session room, and still
+/// short of the live login's headroom by less than `--margin`, so the cycle
+/// is the one #1804 is about: the plan-room swap, not a threshold swap.
 fn near_limits(f: &Fixture) {
     f.usage_resetting("work", 87, 61, 3);
-    f.usage_resetting("spare", 0, 91, 3);
+    f.usage_resetting("spare", 0, 89, 3);
     f.usage_resetting("extra", 98, 17, 3);
 }
 
@@ -221,9 +227,9 @@ fn the_plan_room_swap_does_not_flap_back_on_the_next_cycle() {
     near_limits(&f);
     f.ok(&["profile", "rotate"]);
     assert_eq!(ino(&f.home_login()), Some(f.spare_ino), "{}", f.log());
-    // spare is now live at 0/91 (week past --week-at), short of work's
-    // headroom by less than --margin. spare wins pass 1 itself (work at 87%
-    // is past --session-at), so it stays.
+    // spare is now live at 0/89, below both thresholds, so it needs no swap
+    // and stays. (Before issue #2910 it was at 0/91, past --week-at, and
+    // stayed because it won pass 1 itself; either way there is no flap.)
     f.ok(&["profile", "rotate"]);
     assert_eq!(ino(&f.home_login()), Some(f.spare_ino), "{}", f.log());
     assert_eq!(

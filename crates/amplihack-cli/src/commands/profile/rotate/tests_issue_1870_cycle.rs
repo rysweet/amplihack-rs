@@ -121,7 +121,7 @@ fn a_regression_an_old_reading_is_read_again_and_the_full_login_is_not_chosen() 
     // no login with room. It must say why it passed each candidate over,
     // and the lines the settled decision brings are the ones that count.
     assert!(
-        log.contains("reject: spare no usable reading"),
+        log.contains("reject: spare no room left"),
         "the re-read left spare with no room, and the cycle says so:\n{log}"
     );
     assert!(

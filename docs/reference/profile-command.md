@@ -1295,6 +1295,18 @@ own write, and it waits on unchanged. Any other content runs a cycle. A
 failed save, and a file that is missing or over the size limit, count as
 changed content and cost one extra cycle.
 
+A writer records a block under the rotate lock, and a cycle holds that lock
+only from its check before a swap to its last save, not while it measures. A
+block recorded while a cycle measures is therefore kept by that cycle's own
+save, although the cycle decided without it, and the file is then byte for
+byte the rotator's own write. So the rotator also keeps the blocks as they
+stood when each cycle began, and when it starts to wait it compares them with
+the blocks now in force. If they differ, the next cycle runs as for any other
+ledger change, logged as `wake: ledger changed`. A block the cycle recorded
+itself differs too, and costs one extra cycle. A writer that does not take the
+lock can still lose its record to a cycle's save; the step and hook writers
+take it.
+
 A ledger change runs a cycle at once, unless the previous cycle ended less
 than 5 seconds ago (or `--interval`, when that is shorter). Then the cycle
 runs when those 5 seconds have passed, and further changes in that time join
@@ -7712,12 +7724,18 @@ every pass, the plan-room swap included:
    `Failed` or `Exhausted`, the target is dropped, `reject: <name> fresh
    reading shows no room` is logged, and the next-ranked candidate goes
    through the same steps.
-   When the confirming read cannot be made at all (the cycle holds the lock,
-   there is no read hook, or the cycle's re-read budget is spent) the swap
+   When the cycle's re-read limit or time limit is already spent, the swap
    proceeds on the stored reading, and the rotator logs
    `confirm: skipped, no reading could be taken in this cycle`. Refusing every
    swap whenever a reading cannot be taken would turn this check into an
    outage, so the weaker guarantee is said out loud instead.
+   The check made again under the lock, just before the swap, never reads.
+   By then the target has been confirmed, or its confirmation skipped and
+   logged, by the cycle's own check. The exception is a target the check
+   under the lock chose in place of one that stopped being eligible
+   ([revalidation](#rotate-revalidation)): the swap onto it goes ahead on the
+   reading the cycle already had, after the `revalidate: ... reconsidered`
+   line, as it did before this rule.
 
 Candidates that pass these rules rank as they always have: by headroom for a
 threshold or upgrade swap, and by week, then session, then name for the
@@ -7727,17 +7745,28 @@ usable room first, so no second ranking was added.
 
 When no candidate has room the rotator does not swap. It writes its usual
 [`no-capacity` ALERT](#rotate-decision-rule) and, before it, one line per
-candidate it passed over with that candidate's reason. Nothing ends: later cycles run as
-usual, and the next limit event or recorded reset wakes one. A cycle that did
-find a target writes no `reject:` line, because the `swap` line already says
-what it chose.
+candidate it passed over with that candidate's reason. Nothing ends: later
+cycles run as usual, and the next limit event or recorded reset wakes one.
+
+A cycle that swaps writes the same lines, before its `swap` line, for every
+other login it passed over. A login kept out by a recorded block still shows
+its probed figures on the `cycle` line, so without its `reject:` line nothing
+would say why the rotator moved elsewhere. The live login and the chosen
+target get no `reject:` line, and a cycle that stays writes none, because it
+was not choosing a target.
 
 ```
 reject: ccapstone spend limit recorded until 2026-11-26T00:00:00Z
 reject: ddrumpf week w=98% at or above --week-at 90
 reject: aanderson session s=88% at or above --session-at 85
+reject: bbuck no room left
 reject: nnorth no usable reading
 ```
+
+`no room left` means the login's reading is exhausted: its probe found a
+window spent, or a reading taken for the swap showed no room. `no usable
+reading` means its probe failed, timed out or returned a figure that could not
+be read.
 
 A target dropped by its confirming read is logged as it is dropped, whatever
 the cycle then decides:
@@ -7745,6 +7774,11 @@ the cycle then decides:
 ```
 reject: nnorth fresh reading shows no room
 ```
+
+The `reject:` lines of the decision the cycle then makes follow, just before
+its `swap` line or ALERT; in them that login reads `no room left`. They are
+the lines of the decision the cycle acts on: a decision the freshness gate or
+the check under the lock moved off writes none.
 
 Only fixed text appears in these lines: a profile name, a whole percentage, a
 threshold, a timestamp, and the limit kind as a label. A stored `reason` value
@@ -9800,6 +9834,9 @@ run and prints their `reread:` lines; see
 | `reread: <name> failed; treated as unknown` | The re-read timed out or failed, or the re-read returned a reading that is itself still stale. `<name>` is unknown for this cycle: not chosen, not recorded as exhausted, and counted in `F` of the no-capacity ALERT's suffix. After a [`stale live reading; re-read`](#stale-live-reading) line, `<name>` is the live login: its re-read failed or was still stale, and the cycle is decided by the [near-threshold rule](#failed-or-stale-reading-near-the-threshold). |
 | `reread: <name> limit reached; treated as unknown` | The chosen target was stale, but this cycle had already made 3 target re-reads. The separate live re-read does not count toward this limit. `<name>` is unknown for this cycle. |
 | `reread: <name> time limit reached; treated as unknown` | The chosen target was stale, but this cycle's target re-reads had already used their shared time limit of one [probe deadline](#probe-deadline). The live re-read has a separate budget. `<name>` is not read and is unknown for this cycle. |
+| `confirm: <name> was s=<n>% w=<n>%; now s=<n>% w=<n>%` | The chosen swap target's reading was a stored one (passive, or carried from an earlier cycle), so it was read once more before the swap; see [Rotate target choice](#rotate-target-choice). Figures as in the `swap` line. The decision was then made again on the new figures. |
+| `confirm: skipped, no reading could be taken in this cycle` | The chosen target's stored reading could not be confirmed, because this cycle's re-read limit or time limit was spent; the swap went ahead on it. |
+| `reject: <name> <reason>` | A login the cycle passed over as a swap target, with fixed text for why: `<kind> recorded until <time>` for an active [block](#rotate-target-choice), where `<kind>` is `spend limit`, `session limit`, `week limit`, `credit limit` or `a recorded limit`; `week w=<n>% at or above --week-at <N>`; `session s=<n>% at or above --session-at <N>`; `no room left` for an exhausted reading; `no usable reading` for a failed or unreadable one; or `fresh reading shows no room` when a [confirming read](#rotate-target-choice) dropped the chosen target. Written by a cycle that swaps or alerts, never by one that stays, and never for the live login or the chosen target. A stored block reason is never quoted. |
 | `damp: <name> swapped away exhausted; no later reading shows room` | `<name>` is in the ledger's `swapped_away`, and its re-read shows it still at or above `--session-at` or `--week-at`, or exhausted. It stays damped. See [Swap-back damping](#swap-back-damping). |
 | `damp: <name> later reading shows room; swap-back allowed` | A reading of `<name>` taken after the rotator swapped away from it shows room, so its `swapped_away` entry was removed. Written in the [record step](#rotate-cycle), after the cycle's `swap`, stay or ALERT line, and never by `--dry-run`. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` / `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)` | A threshold is reached and no candidate meets the margin. The suffix is added only when `F + E > 0`: `F` candidates had a failed probe and `E` were exhausted, whatever figures each exhausted candidate read. When every candidate failed, the probes are at fault rather than the accounts. The suffix holds no profile names, and the ALERT key stays `no-capacity`, so a change in the counts does not repeat the ALERT. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`, without the `ALERT: ` prefix, and with the same rule for the suffix. |
@@ -9839,6 +9876,8 @@ run and prints their `reread:` lines; see
 | `revalidate: ~/.claude.json held no account; read again` | Retained diagnostic wording for the bounded retry of trusted credential identity. Session JSON supplies no identity evidence. |
 | `skip: the external rotator is running` / `skip: <error>` | `watch` only: the cycle failed with that error and the rotator carries on. |
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
+| `wake: ledger changed` / `wake: reset due` / `wake: interval` | `watch` only: why the wait after the last cycle ended, written before the next cycle; see [Rotate wake](#rotate-wake). `wake: interval` is written only when the previous wake had another reason. |
+| `wake: watch rebuilt` / `wake: unavailable (<cause>), using --interval` / `wake: lost (<cause>), using --interval` | `watch` only: the ledger watch was lost and rebuilt, could not be made, or stopped working. `<cause>` is fixed text; see [Rotate wake](#rotate-wake). Each is written at most once per process, and none ends the rotator. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
 | `ALERT: auto-switch is off while the live login is exhausted (<profile>: <reason>)` | `watch` with auto-switch turned off, while the live login has no capacity left; see [Exhausted while off](#exhausted-while-off). Written on every cycle while the condition holds, and does not change what the cycle does. |

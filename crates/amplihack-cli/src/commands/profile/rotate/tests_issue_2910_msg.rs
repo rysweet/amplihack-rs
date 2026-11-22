@@ -3,9 +3,8 @@
 //!
 //! The brief asks for a line per rejected candidate and exactly one line
 //! when no candidate has room. What is pinned here is the text itself and
-//! which cycles write it: the ALERT cycle, which is the one that found no
-//! target, and not a cycle that swapped, where the `swap` line already says
-//! what was chosen.
+//! which cycles write it: a cycle that looked for a target, whether it
+//! swapped or found none, and not a cycle that stayed.
 
 use super::{CONFIRM_SKIPPED, Reject, blocked, no_room, reject, rejections};
 use crate::commands::profile::name::ProfileName;
@@ -121,11 +120,15 @@ fn a_login_with_room_has_no_reason_to_report() {
 }
 
 #[test]
-fn a_failed_an_exhausted_and_an_unreadable_login_all_read_as_unread() {
+fn an_exhausted_login_has_no_room_left_and_a_failed_or_unreadable_one_no_reading() {
     let s = settings();
+    assert_eq!(Reject::of(&s, &Reading::EXHAUSTED), Some(Reject::Spent));
+    assert_eq!(
+        reject(&s, &n("nnorth"), Reject::Spent),
+        "reject: nnorth no room left"
+    );
     for r in [
         Reading::Failed,
-        Reading::EXHAUSTED,
         Reading::Measured {
             session: f64::NAN,
             week: 10.0,
@@ -166,28 +169,45 @@ fn an_unknown_limit_kind_is_labelled_and_never_quoted() {
     assert!(!line.contains(odd), "{line}");
 }
 
+/// A cycle that stays was not choosing a target, so it names no candidate.
+/// A cycle that swapped and the ALERT both did choose, and both say why
+/// each other login was passed over. The live login and the swap's own
+/// target are left out: the `cycle` and `swap` lines already name them.
 #[test]
-fn only_the_alert_cycle_says_why_it_passed_each_candidate_over() {
+fn a_cycle_that_chose_a_target_says_why_it_passed_each_other_candidate_over() {
     let s = settings();
-    let measured = [m("work", 50.0, 50.0), m("spare", 10.0, 98.0)];
+    let until = NOW + 4 * 3600;
+    let measured = [
+        m("work", 50.0, 50.0),
+        m("spare", 10.0, 98.0),
+        m("extra", 20.0, 30.0),
+        m("blocked", 1.0, 1.0),
+    ];
     let live = n("work");
-    let none = BTreeMap::new();
-    for d in [
-        Decision::Stay,
-        Decision::Swap {
-            to: n("spare"),
-            reason: Reason::Threshold,
-        },
-    ] {
-        assert!(
-            rejections(&s, &d, &measured, Some(&live), &none, NOW).is_empty(),
-            "{d:?} already says what it did"
-        );
-    }
+    let b = blocks(&[("blocked", block("session_limit", until))]);
+    assert!(
+        rejections(&s, &Decision::Stay, &measured, Some(&live), &b, NOW).is_empty(),
+        "a cycle that stays was not choosing"
+    );
+    let swap = Decision::Swap {
+        to: n("extra"),
+        reason: Reason::Threshold,
+    };
+    let expected = [
+        "reject: spare week w=98% at or above --week-at 90".to_string(),
+        "reject: blocked session limit recorded until 2026-10-30T23:42:56Z".to_string(),
+    ];
     assert_eq!(
-        rejections(&s, &Decision::Alert, &measured, Some(&live), &none, NOW),
-        ["reject: spare week w=98% at or above --week-at 90"],
-        "the live login is left out: the cycle line already names it"
+        rejections(&s, &swap, &measured, Some(&live), &b, NOW),
+        expected,
+        "a swap names the logins it passed over, the block included, and not its target"
+    );
+    // The decision is a stand-in: `rejections` reports each reading against
+    // the target rules, so extra, which has room, is not named either way.
+    assert_eq!(
+        rejections(&s, &Decision::Alert, &measured, Some(&live), &b, NOW),
+        expected,
+        "the ALERT names every other login without room"
     );
 }
 

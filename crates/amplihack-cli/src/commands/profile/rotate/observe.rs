@@ -40,8 +40,7 @@ pub struct Snap {
     /// [`PLATFORM_TIER`].
     pub overflow: Vec<OverflowEntry>,
     pub pin: PinState,
-    /// Marked API-key profiles that are not used: another comes first by
-    /// name.
+    /// Marked API-key profiles not used: another comes first by name.
     pub ignored: Vec<ProfileName>,
     /// API-key profiles that `overflow=` does not mark (issue #1804): never
     /// candidates, never probed, never plan capacity or plan room.
@@ -224,6 +223,8 @@ pub struct Measurement {
     pub probed: Option<Probes>,
     /// Issue #1870: the freshness gate's `reread:` and `damp:` lines.
     pub fresh_lines: Vec<String>,
+    /// Issue #2910: why this decision passed each candidate over.
+    pub rejected: Vec<String>,
 }
 
 pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
@@ -368,14 +369,12 @@ pub(super) fn decide_measured(
         (Decision::Stay, Some(Tag::Out)) => Some(Tag::On),
         (_, tag) => tag,
     };
-    // `probed` is always `Some` here: `Room::of` treats `None` (test stubs
-    // only) as clean.
+    // `probed` is always `Some` here: `Room::of` reads `None` (stubs) as clean.
     Ok(Measurement {
         live: probe.reading,
         others: probes.iter().map(|(n, p)| (n.clone(), p.reading)).collect(),
         probed: Some((probe, probes)),
-        // Issue #2910: why each candidate was passed over, when none had room.
-        fresh_lines: msg::rejections(&ctx.settings, &decision, &measured, live_name, &blocks, t),
+        rejected: msg::rejections(&ctx.settings, &decision, &measured, live_name, &blocks, t),
         decision,
         note,
         failed,
@@ -385,6 +384,7 @@ pub(super) fn decide_measured(
         unknown_plan: verdict.unknown_plan,
         key_held: verdict.key_held,
         measured_at,
+        fresh_lines: Vec::new(),
     })
 }
 

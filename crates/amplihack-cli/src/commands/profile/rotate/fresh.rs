@@ -305,15 +305,9 @@ pub(super) fn settle(
         );
         m = again;
     }
-    // Issue #2910: the decision the gate settled on brings rejection lines
-    // of its own, and they are the ones that matter. `msg::rejections`
-    // writes only for the ALERT, so a cycle that becomes an ALERT because
-    // the gate re-read its target, which is exactly the cycle that found no
-    // login with room, would otherwise say nothing about why. Appended
-    // after the gate's own lines, because they explain what those reads led
-    // to. Only the settled decision's lines are kept: each pass round the
-    // loop replaced `m`, so an ALERT the gate then moved off never speaks.
-    lines.append(&mut m.fresh_lines);
+    // Issue #2910: the settled `m` carries the `rejected` lines of the
+    // decision the gate settled on, not of one it moved off, because every
+    // pass round the loop replaced `m` with a new decision.
     m.fresh_lines = lines;
     Ok(m)
 }

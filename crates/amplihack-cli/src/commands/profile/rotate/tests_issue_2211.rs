@@ -1268,17 +1268,16 @@ mod evidence {
         let m = fresh::gate(&c, &snap, m, fresh::Reread::Allowed).unwrap();
         assert!(!matches!(m.decision, Decision::Swap { .. }));
         assert_eq!(m.probed.as_ref().unwrap().1[0].1, Probed::failed());
-        // Issue #2910 added the third line: the gate's two reads left no
-        // login with room, so the settled decision is the ALERT and it
-        // reports why its only candidate was passed over.
         assert_eq!(
             m.fresh_lines,
             [
                 "reread: spare reading stale s=0% w=20%; fresh s=0% w=0%",
                 "reread: spare failed; treated as unknown",
-                "reject: spare no usable reading",
             ]
         );
+        // Issue #2910: the gate's two reads left no login with room, so the
+        // settled decision is the ALERT and it says why it passed spare over.
+        assert_eq!(m.rejected, ["reject: spare no usable reading"]);
         CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["spare"]));
     }
 

@@ -20,9 +20,13 @@
 //! - `wake::note_written(&[u8])` and `wake::is_self_write(&Path) -> bool`:
 //!   identical bytes to the last write are this rotator's own; anything
 //!   else, a missing file included, is not.
+//! - `wake::Blocks::of(&RotateLedger)` and `Blocks::differ_at(&other, now)`:
+//!   a block recorded while a cycle ran, and kept by that cycle's own save,
+//!   differs from the blocks the cycle began with, so it still wakes the
+//!   rotator although the file is byte for byte its own write.
 
 use super::super::daemon::wake::{
-    coalesce_floor, deadline, event_due, is_self_write, note_written, reset_fell_due,
+    Blocks, coalesce_floor, deadline, event_due, is_self_write, note_written, reset_fell_due,
 };
 use super::super::ledger::{MAX_BLOCK_SECS, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState};
 use super::{active_blocks, kind_label, prune_blocks, valid_kind};
@@ -314,5 +318,62 @@ fn a_ledger_this_process_did_not_write_is_not_a_self_write() {
     assert!(
         !is_self_write(&rs.ledger),
         "an external writer is not suppressed"
+    );
+}
+
+/// The race the daemon-level test met: a step records a limit while a cycle
+/// measures, under the lock, and the cycle's own save keeps it. The file is
+/// then this process's own write, byte for byte, yet the cycle decided
+/// without the block, so the blocks it began with must differ from the
+/// blocks in force.
+#[test]
+fn a_block_kept_by_the_rotators_own_save_still_counts_as_a_change() {
+    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (_t, rs) = root();
+    let began = Blocks::of(&RotateLedger::default());
+    // The cycle's save, made after the step's record, carries the block.
+    let saved = ledger_with("work", block("session_limit", NOW, NOW + 3 * 3600));
+    rs.save_ledger(&saved).unwrap();
+    assert!(
+        is_self_write(&rs.ledger),
+        "the file is this process's own write"
+    );
+    assert!(
+        began.differ_at(&Blocks::of(&saved), NOW),
+        "but the block was not there when the cycle began"
+    );
+}
+
+#[test]
+fn the_same_blocks_a_prune_and_a_lapsed_block_are_not_a_change() {
+    let l = ledger_with("work", block("session_limit", NOW - 60, NOW + 600));
+    assert!(!Blocks::of(&l).differ_at(&Blocks::of(&l), NOW), "unchanged");
+    // A prune removes only a block whose reset has passed: out of both.
+    let mut pruned = l.clone();
+    pruned.overflow_blocked.clear();
+    assert!(
+        !Blocks::of(&l).differ_at(&Blocks::of(&pruned), NOW + 600),
+        "a lapsed block is in force in neither"
+    );
+    assert!(
+        Blocks::of(&l).differ_at(&Blocks::of(&pruned), NOW),
+        "a block removed while in force (profile overflow clear) is a change"
+    );
+}
+
+#[test]
+fn a_new_or_moved_platform_block_is_a_change() {
+    let mut l = RotateLedger::default();
+    let before = Blocks::of(&l);
+    l.platform_block = Some(OverflowBlock::key("key_exhausted", NOW, NOW + 600));
+    assert!(
+        before.differ_at(&Blocks::of(&l), NOW),
+        "a new API-key block"
+    );
+    let mut later = l.clone();
+    later.platform_block = Some(OverflowBlock::key("key_exhausted", NOW, NOW + 900));
+    assert!(
+        Blocks::of(&l).differ_at(&Blocks::of(&later), NOW),
+        "a block whose reset moved"
     );
 }

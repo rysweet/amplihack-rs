@@ -596,16 +596,13 @@ fn a_spent_time_limit_makes_the_target_unknown_with_no_read() {
         |live, probes, at| decide_measured(&c, &s, live, probes, at),
     )
     .unwrap();
-    // Issue #2910: no read was made, but the decision the gate settled on
-    // is the ALERT, so the reason the only candidate was passed over is
-    // reported. The first line is still the only one the gate itself wrote.
     assert_eq!(
         got.fresh_lines,
-        [
-            "reread: spare time limit reached; treated as unknown",
-            "reject: spare no usable reading",
-        ]
+        ["reread: spare time limit reached; treated as unknown"]
     );
+    // Issue #2910: the decision the gate settled on is the ALERT, so it
+    // says why it passed its only candidate over.
+    assert_eq!(got.rejected, ["reject: spare no usable reading"]);
     assert!(
         !matches!(got.decision, Decision::Swap { .. }),
         "{:?}",
@@ -650,17 +647,13 @@ fn gate_rereads_a_stale_target_and_decides_again_without_writing() {
     let probed = &got.probed.as_ref().expect("probes kept").1;
     let p = probed.iter().find(|(n_, _)| n_ == &n("spare")).unwrap();
     assert_eq!(p.1.reading, exh(43.0, 100.0).reading);
-    // Issue #2910 added the second line. The gate's re-read left no login
-    // with room, so the settled decision is the ALERT, and the cycle that
-    // found no target has to say why it passed each candidate over. The
-    // gate's own line still comes first: it is the read that found it.
     assert_eq!(
         got.fresh_lines,
-        [
-            "reread: spare reading stale s=11% w=20%; fresh s=43% w=100%",
-            "reject: spare no usable reading",
-        ]
+        ["reread: spare reading stale s=11% w=20%; fresh s=43% w=100%"]
     );
+    // Issue #2910: the re-read left no login with room, so the settled
+    // decision is the ALERT, and it says why it passed spare over.
+    assert_eq!(got.rejected, ["reject: spare no room left"]);
     assert_eq!(
         e.rs.load_ledger().unwrap().unwrap().account.as_deref(),
         Some("u-work"),
@@ -685,20 +678,10 @@ fn gate_never_reads_under_the_lock_and_a_stale_target_is_unknown() {
     .unwrap();
     let got = fresh::gate(&c, &s, m, Reread::Never).unwrap();
     assert_eq!(got.decision, Decision::Alert);
-    // Issue #2910 split what this assertion used to conflate. The Never
-    // path still writes no line of its own, which is what the test is
-    // about: `panics` as the re-read hook proves no read was made, and
-    // there is no `reread:` or `confirm:` line. The ALERT the gate settled
-    // on does report why its only candidate was passed over, in every mode,
-    // because a cycle that finds no login with room has to say so.
-    assert!(
-        !got.fresh_lines
-            .iter()
-            .any(|l| l.starts_with("reread:") || l.starts_with("confirm:")),
-        "the Never path writes no line of its own: {:?}",
-        got.fresh_lines
-    );
-    assert_eq!(got.fresh_lines, ["reject: spare no usable reading"]);
+    assert!(got.fresh_lines.is_empty(), "the Never path writes no line");
+    // Issue #2910: the ALERT the gate settled on still says why it passed
+    // its only candidate over, in every mode.
+    assert_eq!(got.rejected, ["reject: spare no usable reading"]);
 }
 
 #[test]

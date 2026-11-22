@@ -210,6 +210,9 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             return Ok(CycleOutcome::Skipped);
         }
     };
+    // Issue #2910: why the decision acted on below, and no earlier one,
+    // passed each other login over. Written just before its swap or ALERT.
+    m.rejected.iter().for_each(|line| out.emit(t, line));
     let (live_shown, others_shown) = shown(&m, first.live_excluded, (ctx.now)());
     let Measurement {
         live,

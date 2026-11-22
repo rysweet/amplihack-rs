@@ -132,7 +132,8 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         &msg::cycle(name, &live_shown, &others_shown, snap.shown_platform()),
     );
     let m = fresh::gate(ctx, &snap, m, Reread::Allowed)?;
-    for line in &m.fresh_lines {
+    // Issue #2910: the `reject:` lines of the decision previewed below.
+    for line in m.fresh_lines.iter().chain(&m.rejected) {
         out.emit(0, line);
     }
     let (live_shown, others_shown) = super::log::shown(&m, snap.live_excluded, (ctx.now)());

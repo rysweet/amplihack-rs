@@ -122,7 +122,10 @@ fn settled(
         decide_measured(&c, &s, live, probes, at)
     })
     .unwrap();
-    (got.decision, got.fresh_lines)
+    // The lines in the order the cycle writes them: the gate's own, then
+    // the `reject:` lines of the decision it settled on.
+    let lines = got.fresh_lines.into_iter().chain(got.rejected).collect();
+    (got.decision, lines)
 }
 
 const BUDGET: Duration = Duration::from_secs(30);
@@ -178,6 +181,11 @@ fn a_target_whose_fresh_reading_shows_no_room_gives_way_to_the_next_candidate() 
     assert!(
         lines.contains(&msg::no_room(&n("spare"))),
         "the skip is logged with its reason: {lines:?}"
+    );
+    assert_eq!(
+        lines.last().map(String::as_str),
+        Some("reject: spare no room left"),
+        "the swap onto extra says why spare was passed over: {lines:?}"
     );
 }
 

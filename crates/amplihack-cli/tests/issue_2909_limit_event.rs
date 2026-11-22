@@ -11,7 +11,8 @@ use crate::support::fake_proc::FakeProc;
 use crate::support::profile_rotate::*;
 use crate::support::wait::{output_within, wait_until};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 
 /// Kills the rotator named by the fixture's pid file if a test fails first.
@@ -66,9 +67,30 @@ fn start_long(f: &Fixture) -> (Reaper, i32) {
     (reaper, pid)
 }
 
-/// The stand-in recorder: merges one block into the ledger and renames it
-/// into place, as the rotator's own atomic write does.
+/// The stand-in recorder, writing as `rotate/step_block.rs` does: under the
+/// rotate lock, so it never races a cycle's own read-modify-write of the
+/// ledger, it merges one block and renames the file into place.
+///
+/// Without the lock a record written while a cycle runs can be overwritten
+/// by that cycle's save and lost outright, which no reader can recover.
+/// With it, a record written while a cycle measures is kept by the cycle's
+/// save, and the rotator must still act on it although the file is then
+/// its own write; that is the case this test met first.
 fn record_block(f: &Fixture, login: &str, reason: &str, at: i64, until: i64) {
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(f.rotate_dir().parent().unwrap().join("lock"))
+        .unwrap();
+    wait_until("the rotate lock", || {
+        // SAFETY: flock(2) on a descriptor this test owns; LOCK_NB never
+        // blocks. The lock is released when `lock` is dropped below.
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+    });
     let path = f.rotate_dir().join("ledger.json");
     let mut v = f
         .ledger()
@@ -78,6 +100,7 @@ fn record_block(f: &Fixture, login: &str, reason: &str, at: i64, until: i64) {
     fs::write(&tmp, v.to_string()).unwrap();
     fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)).unwrap();
     fs::rename(&tmp, &path).unwrap();
+    drop(lock);
 }
 
 fn cycles(f: &Fixture) -> usize {

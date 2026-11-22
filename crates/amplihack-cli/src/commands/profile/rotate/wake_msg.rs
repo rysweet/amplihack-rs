@@ -88,7 +88,10 @@ pub enum Reject {
     Week(u64),
     /// Its session window is at or above `--session-at`.
     Session(u64),
-    /// Its probe failed, timed out, read nothing usable, or is exhausted.
+    /// Its reading is exhausted: the probe found a window spent, or the
+    /// reading taken for the swap showed no room.
+    Spent,
+    /// Its probe failed, timed out or read nothing usable.
     Unread,
 }
 
@@ -116,7 +119,8 @@ impl Reject {
                     None
                 }
             }
-            Reading::Exhausted { .. } | Reading::Failed => Some(Self::Unread),
+            Reading::Exhausted { .. } => Some(Self::Spent),
+            Reading::Failed => Some(Self::Unread),
         }
     }
 
@@ -126,6 +130,7 @@ impl Reject {
             Self::Session(v) => {
                 format!("session s={v}% at or above --session-at {}", s.session_at)
             }
+            Self::Spent => "no room left".to_string(),
             Self::Unread => "no usable reading".to_string(),
         }
     }
@@ -150,11 +155,14 @@ pub fn blocked(name: &ProfileName, kind: &str, until: i64) -> String {
 /// A recorded block is reported first and by its kind, because that is the
 /// evidence a limit event left; otherwise the threshold the reading failed.
 ///
-/// Empty unless `d` is the ALERT, which is the cycle that found no target
-/// at all: a cycle that swapped has already said what it did, and a line
-/// per candidate per cycle would bury it. `live` is left out, because a
-/// line about the login already in place says nothing the `cycle` line
-/// does not.
+/// Written only by a cycle that looked for a target: one that swapped, and
+/// the ALERT, which found none. A cycle that stays was not choosing, and a
+/// line per candidate on every quiet cycle would bury the lines that
+/// matter. A swap needs these lines as much as the ALERT does: a login
+/// passed over for a recorded block shows its probed figures on the
+/// `cycle` line, so without its `reject:` line nothing says why the
+/// rotator moved elsewhere. `live` and the swap's own target are left out:
+/// the `cycle` and `swap` lines already say everything about them.
 pub fn rejections(
     s: &Settings,
     d: &Decision,
@@ -163,12 +171,14 @@ pub fn rejections(
     blocks: &BTreeMap<String, OverflowBlock>,
     now: i64,
 ) -> Vec<String> {
-    if *d != Decision::Alert {
-        return Vec::new();
-    }
+    let target = match d {
+        Decision::Stay => return Vec::new(),
+        Decision::Swap { to, .. } => Some(to),
+        Decision::Alert => None,
+    };
     measured
         .iter()
-        .filter(|c| Some(&c.name) != live)
+        .filter(|c| Some(&c.name) != live && Some(&c.name) != target)
         .filter_map(
             |c| match blocks.get(c.name.as_str()).filter(|b| now < b.until) {
                 Some(b) => Some(blocked(&c.name, &b.reason, b.until)),

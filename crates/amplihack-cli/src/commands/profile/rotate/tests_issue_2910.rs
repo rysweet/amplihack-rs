@@ -16,10 +16,12 @@
 
 use super::super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, decide};
 use super::super::fresh::must_confirm;
-use super::super::overflow::plan_usable;
+use super::super::ledger::OverflowBlock;
+use super::super::overflow::{OverflowInput, decide_overflow, plan_usable};
 use super::super::settings::Settings;
 use super::{choose, room_under};
 use crate::commands::profile::name::ProfileName;
+use std::collections::BTreeMap;
 
 const NOW: i64 = 1_793_389_376;
 
@@ -166,4 +168,75 @@ fn the_chosen_target_is_confirmed_once_per_cycle_and_only_when_a_read_is_possibl
         "no read possible: the swap is not refused for it"
     );
     assert!(!must_confirm(false, false));
+}
+
+/// A probe of a plan login reading `session`% and `week`%.
+fn probed(session: f64, week: f64) -> Probed {
+    Probed {
+        reading: r(session, week),
+        windows: Windows::default(),
+        spend_limit: false,
+        unknown: false,
+        still_running: false,
+        observed_at: None,
+        carried: false,
+        passive: false,
+    }
+}
+
+/// Issue #2910, rule 1, through the decision the cycle makes: a login with
+/// a recorded block of any limit kind is passed over before its reset and
+/// chosen after it, on exactly the same readings. Only the clock moves.
+#[test]
+fn a_blocked_login_is_passed_over_before_its_reset_and_chosen_after_it() {
+    let s = settings();
+    let live_name = n("work");
+    // work is past --session-at, so the cycle looks for a target. spare has
+    // the most room; extra has less but is not blocked.
+    let live = probed(95.0, 40.0);
+    let candidates = [
+        Measured::new(n("spare"), &probed(10.0, 20.0)),
+        Measured::new(n("extra"), &probed(50.0, 50.0)),
+    ];
+    let until = NOW + 600;
+    let mut blocks = BTreeMap::new();
+    blocks.insert(
+        "spare".to_string(),
+        OverflowBlock {
+            at: NOW - 60,
+            until,
+            reason: "session_limit".into(),
+        },
+    );
+    let decide_at = |now: i64| {
+        decide_overflow(&OverflowInput {
+            settings: &s,
+            live_name: Some(&live_name),
+            live: &live,
+            candidates: &candidates,
+            unmeasured_plan: &[],
+            refused: &[],
+            overflow: &[],
+            blocks: &blocks,
+            platform_block: None,
+            swapped_at: Some(NOW - 7200),
+            now,
+        })
+        .decision
+    };
+    assert_eq!(
+        swapped_to(&decide_at(NOW)),
+        Some("extra"),
+        "before its reset the blocked login is not a target"
+    );
+    assert_eq!(
+        swapped_to(&decide_at(until - 1)),
+        Some("extra"),
+        "one second before its reset it is still blocked"
+    );
+    assert_eq!(
+        swapped_to(&decide_at(until)),
+        Some("spare"),
+        "at its reset it is an ordinary candidate again, and the best one"
+    );
 }

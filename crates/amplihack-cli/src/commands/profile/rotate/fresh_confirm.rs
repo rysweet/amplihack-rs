@@ -25,12 +25,16 @@ use std::time::{Duration, Instant};
 ///
 /// `first_visit` is false once this cycle has already confirmed that name,
 /// so the confirmation happens once per cycle and the gate cannot loop on
-/// it. `can_read` is false where no read is possible at all: under the
-/// lock (`Reread::Never`), or with no re-read hook, as in the dry run and
-/// in tests. There the swap is not refused for want of a confirmation,
-/// because refusing every swap whenever a read cannot be made would turn a
-/// safety check into an outage. That weaker guarantee is logged
-/// ([`msg::CONFIRM_SKIPPED`]), never silent.
+/// it. `can_read` is false where no read is allowed at all: under the lock
+/// (`Reread::Never`), or with no re-read hook, which only tests build; the
+/// watch and the one-shot command always install one. There the swap is
+/// not refused for want of a confirmation, because refusing every swap
+/// whenever a read cannot be made would turn a safety check into an
+/// outage. Under the lock the target has normally been confirmed already
+/// by the cycle's own gate; a target the revalidation chose in its place
+/// is swapped to on the reading the cycle had, after the `revalidate:`
+/// line. A confirmation skipped because the budget is spent is logged
+/// ([`msg::CONFIRM_SKIPPED`]) by [`read`].
 pub fn must_confirm(first_visit: bool, can_read: bool) -> bool {
     first_visit && can_read
 }
