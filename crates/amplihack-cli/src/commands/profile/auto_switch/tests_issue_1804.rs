@@ -8,11 +8,13 @@ use super::candidate::{Pool, select_with_overflow};
 use super::capacity::{self, Evidence, refresh};
 use super::config::{self, Config};
 use super::fsx;
+use super::liveness::FakeSessions;
 use super::overflow_inputs::OverflowInputs;
+use super::overflow_inputs::{ChosenStorage, LoginStorage};
 use super::per_token;
 use super::rerun::{Pick, nested_candidate};
 use super::state::{CREDS, Ledger, State, UsageFile};
-use super::swap::swap_check;
+use super::swap::swap_check_seeing;
 use super::usage::{RateLimits, Reading, ReadingSource, Window};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{Gate, OverflowEntry};
@@ -46,10 +48,22 @@ fn private(p: &Path, body: &str) {
     fs::set_permissions(p, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+/// The view of running sessions these tests hand to `swap_check`: sessions
+/// can be seen, and no profile has one. Held in memory (issue #2935).
+fn no_sessions() -> FakeSessions {
+    FakeSessions::running(&[])
+}
+
 /// A private root: `work`, `spare` and `cred` hold OAuth logins; `console`
 /// and `ignored` are API-key profiles with mode-600 `{}` logins, which pass
 /// `fsx::movable_login` like the host's did on 30 October.
+///
+/// Every login here is a file, so the fixture states that logins are kept
+/// in files for as long as it lives (issue #2935). The host's own answer,
+/// the Keychain on macOS, would make a missing file say nothing; the tests
+/// of that answer are at the end of this file.
 struct Fx {
+    _logins: ChosenStorage,
     _tmp: tempfile::TempDir,
     home: PathBuf,
     root: PathBuf,
@@ -84,6 +98,7 @@ fn fx(auto_switch: &str) -> Fx {
     let state = State::new(&root).unwrap();
     state.ensure().unwrap();
     Fx {
+        _logins: LoginStorage::File.for_this_thread(),
         _tmp: tmp,
         home,
         root,
@@ -434,11 +449,10 @@ fn a_held_key_names_the_login_that_held_it() {
     );
 }
 
-/// `swap_check` needs the liveness scan, over an empty synthetic process
-/// table (issue #2196), and the real gate.
+/// `swap_check` needs a view of running sessions, here one that sees none
+/// (`no_sessions`), and the real overflow setting (`Gate`).
 #[test]
 fn swap_check_moves_nothing_onto_a_key_with_a_mode_600_login() {
-    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\n");
     let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
@@ -464,7 +478,15 @@ fn swap_check_moves_nothing_onto_a_key_with_a_mode_600_login() {
         five_hour: window,
         seven_day: window,
     };
-    swap_check(&f.state, &f.profiles, &n("work"), &rl, &cfg(&[])).unwrap();
+    swap_check_seeing(
+        &no_sessions(),
+        &f.state,
+        &f.profiles,
+        &n("work"),
+        &rl,
+        &cfg(&[]),
+    )
+    .unwrap();
     assert!(
         f.state.load_ledger().unwrap().hosts.is_empty(),
         "no login moved"
@@ -549,7 +571,6 @@ fn a_session_on_an_unmarked_key_never_moves_onto_another_key() {
 /// `{}` login is no login on its own, so the session would be logged out.
 #[test]
 fn swap_check_never_swaps_a_marked_key_into_a_session() {
-    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\noverflow=console\n");
     // A key the login check accepts, so only the swap rule can refuse.
@@ -589,7 +610,7 @@ fn swap_check_never_swaps_a_marked_key_into_a_session() {
     let inputs = OverflowInputs::load(&f.root, &c, now);
     assert!(inputs.gate.is_some(), "the gate must be open for this test");
     assert!(inputs.check_note(&f.root, &n("console")).is_some());
-    swap_check(&f.state, &f.profiles, &n("work"), &rl, &c).unwrap();
+    swap_check_seeing(&no_sessions(), &f.state, &f.profiles, &n("work"), &rl, &c).unwrap();
     assert!(
         f.state.load_ledger().unwrap().hosts.is_empty(),
         "no login moved"
@@ -730,7 +751,6 @@ fn a_recorded_reason_is_in_the_rotate_log() {
 
 #[test]
 fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
-    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\noverflow=cred\n");
     let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
@@ -752,7 +772,15 @@ fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
         five_hour: window,
         seven_day: window,
     };
-    swap_check(&f.state, &f.profiles, &n("work"), &rl, &cfg(&["cred"])).unwrap();
+    swap_check_seeing(
+        &no_sessions(),
+        &f.state,
+        &f.profiles,
+        &n("work"),
+        &rl,
+        &cfg(&["cred"]),
+    )
+    .unwrap();
     assert!(
         f.state.load_ledger().unwrap().hosts.contains_key("work"),
         "the login moved"
@@ -803,7 +831,15 @@ fn crossing_run(spare_org: &str) -> (Fx, Vec<String>, Option<String>) {
         five_hour: window,
         seven_day: window,
     };
-    swap_check(&f.state, &f.profiles, &n("work"), &rl, &cfg(&[])).unwrap();
+    swap_check_seeing(
+        &no_sessions(),
+        &f.state,
+        &f.profiles,
+        &n("work"),
+        &rl,
+        &cfg(&[]),
+    )
+    .unwrap();
     assert_eq!(
         f.state
             .load_ledger()
@@ -909,3 +945,41 @@ fn the_rotators_capacity_write_reads_the_home_it_is_given() {
 
 #[path = "tests_issue_1804_held.rs"]
 mod held;
+
+// --- Where the host keeps logins (issue #2935) ---------------------------------
+
+/// A host that keeps logins in the Keychain (macOS) writes no login file, so
+/// a missing file proves nothing there: the profile can still take a login,
+/// and it is not listed as one the rotator would skip. On a host that keeps
+/// logins in files, the same root gives the opposite answers.
+#[test]
+fn a_missing_login_file_says_nothing_where_logins_are_in_the_keychain() {
+    let f = fx("enabled=on\noverflow=console\n");
+    fs::remove_file(f.root.join("spare").join(CREDS)).unwrap();
+    let c = cfg(&["console"]);
+    let now = 2_000_000_000;
+    assert!(!super::can_take_login(&f.root, &n("spare")), "files");
+    assert_eq!(f.inputs(&c, Some(GATE), now).no_login, vec![n("spare")]);
+
+    let _keychain = LoginStorage::Keychain.for_this_thread();
+    assert!(super::can_take_login(&f.root, &n("spare")), "Keychain");
+    assert!(f.inputs(&c, Some(GATE), now).no_login.is_empty());
+}
+
+/// The choice a test makes ends with the value it holds, and the host's
+/// answer is the Keychain on macOS and a file anywhere else.
+#[test]
+fn the_hosts_login_storage_follows_the_system_and_a_test_choice_ends_with_its_scope() {
+    let host = if cfg!(target_os = "macos") {
+        LoginStorage::Keychain
+    } else {
+        LoginStorage::File
+    };
+    assert_eq!(LoginStorage::host(), host);
+    for chosen in [LoginStorage::File, LoginStorage::Keychain] {
+        let scope = chosen.for_this_thread();
+        assert_eq!(LoginStorage::host(), chosen);
+        drop(scope);
+        assert_eq!(LoginStorage::host(), host);
+    }
+}

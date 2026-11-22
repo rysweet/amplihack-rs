@@ -962,25 +962,25 @@ mod tests {
     #[test]
     fn the_tmux_query_waits_for_exit_without_a_limit_and_gives_up_at_one() {
         let dir = crate::test_support::tempdir_outside_framework_roots();
-        let gate = dir.path().join("gate");
-        let gate_c = std::ffi::CString::new(gate.to_str().unwrap()).unwrap();
+        let pipe = dir.path().join("release");
+        let pipe_c = std::ffi::CString::new(pipe.to_str().unwrap()).unwrap();
         // SAFETY: a valid NUL-terminated path and a plain mode.
-        assert_eq!(unsafe { libc::mkfifo(gate_c.as_ptr(), 0o600) }, 0);
-        let tmux = dir.path().join("gated-tmux");
+        assert_eq!(unsafe { libc::mkfifo(pipe_c.as_ptr(), 0o600) }, 0);
+        let tmux = dir.path().join("waiting-tmux");
         crate::test_support::write_executable(
             &tmux,
             &format!(
                 "#!/bin/sh\nIFS= read -r _ < {}\necho \"$3=1\"\n",
-                crate::test_support::sh_quote(gate.to_str().unwrap())
+                crate::test_support::sh_quote(pipe.to_str().unwrap())
             ),
         );
         let value = OsStr::new("1");
 
-        // Opening the gate for writing blocks until the stand-in has opened
+        // Opening the pipe for writing blocks until the stand-in has opened
         // it for reading, so the answer below can only follow a wait for it.
         let opener = std::thread::spawn({
-            let gate = gate.clone();
-            move || std::fs::write(gate, "go\n").expect("release the gate")
+            let pipe = pipe.clone();
+            move || std::fs::write(pipe, "go\n").expect("write to the pipe")
         });
         assert!(tmux_holds_within(
             tmux.as_os_str(),
@@ -988,7 +988,7 @@ mod tests {
             value,
             None
         ));
-        opener.join().expect("the gate was released");
+        opener.join().expect("the pipe was written");
 
         // A limit that is not reached changes nothing: the answer is read
         // through the capture the shipped binary uses. The minute is a
@@ -1002,7 +1002,7 @@ mod tests {
             Some(std::time::Duration::from_secs(60))
         ));
 
-        // Nothing opens the gate now: the stand-in never answers, and is
+        // Nothing writes to the pipe now: the stand-in never answers, and is
         // stopped at the limit.
         assert!(!tmux_holds_within(
             tmux.as_os_str(),

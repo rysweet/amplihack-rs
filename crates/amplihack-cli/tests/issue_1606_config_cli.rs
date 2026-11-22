@@ -307,13 +307,13 @@ fn the_guard_keeps_a_non_temp_home_untouched() {
     assert_eq!(stdout(&unguarded), "codex\n");
 }
 
-/// Issue #2931 (GUARD): the library's own test build also accepts `/var/tmp`
-/// and `/tmp` as temporary bases, because fixtures made there are not a
-/// developer's home. The shipped binary must not: with `TMPDIR` naming another
+/// Issue #2931 (the fixture-home group): the library's own test build also
+/// accepts `/var/tmp` and `/tmp` as temporary bases, because fixtures made
+/// there are not a developer's home. The shipped binary must not: with `TMPDIR` naming another
 /// folder, a `HOME` under either is still discarded, and nothing is created
 /// there (the paths below are never made).
 #[test]
-fn the_shipped_binary_keeps_temp_dir_as_its_only_guard_base() {
+fn the_shipped_binary_accepts_a_test_home_under_temp_dir_only() {
     let tmpdir = tempfile::tempdir().unwrap();
     for outside in ["/var/tmp", "/tmp"] {
         let home =

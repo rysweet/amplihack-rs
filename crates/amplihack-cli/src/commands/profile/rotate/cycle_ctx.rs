@@ -8,7 +8,9 @@ use super::super::ledger::RotateState;
 use super::super::revalidate;
 use super::super::settings::Settings;
 use super::MeasureFn;
-use crate::commands::profile::auto_switch::kit::{Liveness, scan_system};
+use crate::commands::profile::auto_switch::kit::{
+    Liveness, LoginExchange, host_exchange, scan_system,
+};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::ProbeMode;
 use crate::commands::profile::store::ProfileStore;
@@ -29,8 +31,13 @@ pub struct Ctx {
     pub(in crate::commands::profile::rotate) last_proto: Option<&'static str>,
     pub(super) last_gate: Option<String>,
     pub(in crate::commands::profile::rotate) failed_live: u32,
-    /// Finds running sessions; tests inject synthetic liveness.
+    /// The view of running sessions (a `SessionView`): the host's process
+    /// table by default. A test sets a function that returns a table it
+    /// wrote in memory.
     pub(in crate::commands::profile::rotate) scan: fn(&Path) -> Liveness,
+    /// The atomic exchange of two logins: the host's by default, which
+    /// only Linux has. A test sets a fake it holds (issue #2935).
+    pub(in crate::commands::profile::rotate) exchange: Arc<dyn LoginExchange>,
     /// Tests inject measurement while the lock is released.
     pub(in crate::commands::profile::rotate) measure: Option<MeasureFn>,
     /// Freshness re-read by the configured method; None reads nothing.
@@ -79,6 +86,7 @@ impl Ctx {
             last_gate: None,
             failed_live: 0,
             scan: scan_system,
+            exchange: host_exchange(),
             measure: None,
             reread: None,
             reread_live: None,

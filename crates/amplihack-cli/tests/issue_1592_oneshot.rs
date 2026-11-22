@@ -102,6 +102,31 @@ fn a_threshold_swap_moves_both_logins_and_only_the_account() {
     }
 }
 
+/// Issue #2935: every other rotation test asks the binary for the stand-in
+/// exchange, so that it runs the same on every system. This one does not ask.
+/// On Linux the host's own atomic exchange (`renameat2`) must still move both
+/// logins, end to end.
+#[test]
+fn the_hosts_own_exchange_moves_both_logins() {
+    let f = Fixture::new();
+    let mut rotate = f.cmd(&["profile", "rotate"]);
+    rotate.env_remove(crate::isolated_amplihack::LOGIN_EXCHANGE_ENV);
+    let out = crate::support::wait::output_within(
+        "`amplihack profile rotate` with the host's exchange",
+        &mut rotate,
+    );
+    assert!(
+        out.status.success(),
+        "stdout: {}\nstderr: {}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    assert_eq!(ino(&f.home_login()), Some(f.spare_ino));
+    assert_eq!(ino(&f.slot("work")), Some(f.live_ino));
+    assert_eq!(ino(&f.slot("spare")), None);
+    f.assert_each_login_once();
+}
+
 /// Issue #1698: the rotator warns about a bad probe variable, the deadline as
 /// well as the pool size, escaped, and the cycle still runs on the defaults.
 #[test]

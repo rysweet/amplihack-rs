@@ -2,7 +2,7 @@
 title: Clean up after recipe runs
 description: Locate, retain, remove, or archive run-owned files and recovery state, and see which folders cleanup keeps because they hold unsaved Git work.
 doc_type: howto
-last_updated: 2026-11-21
+last_updated: 2026-11-22
 ---
 
 # Clean Up After Recipe Runs
@@ -413,11 +413,13 @@ earlier one failed, and the final error names every failure.
 1. Finishes the recovery admission with an outcome judged from the run.
 2. Finishes the workspace (`finish_workspace`):
    1. Removes `<run dir>/runtime/`, including everything steps wrote to
-      `TMPDIR` and `artifacts/`, unless a running process still uses it or it
-      holds unsaved Git work.
+      `TMPDIR` and `artifacts/`, unless a running process still uses it,
+      running processes cannot be seen on this system, or it holds unsaved
+      Git work.
       Durable `recovery/` state and copied artifacts remain outside that
       disposable folder. See
       [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept),
+      [Where running processes cannot be seen](#where-running-processes-cannot-be-seen),
       [Locked folders inside the runtime folder](#locked-folders-inside-the-runtime-folder)
       and
       [Folders with unsaved work are kept](#folders-with-unsaved-work-are-kept).
@@ -539,9 +541,25 @@ runs after that process exits. To remove it now, stop the process and run:
 amplihack cleanup --apply --only run-tmp
 ```
 
-The check needs `/proc`. Where `/proc` cannot be read, as on macOS, the
-runner removes `runtime/` at the end of the run as before, while the sweep
-still keeps every folder it cannot prove unused.
+#### Where running processes cannot be seen
+
+The check needs `/proc`. A system without `/proc`, as macOS is, gives the
+runner no view of running processes, so it cannot tell whether `runtime/` is
+still in use. It then keeps the folder, changes nothing in it, and prints one
+line on stderr:
+
+```text
+amplihack: running processes cannot be seen on this system, so whether runtime folder "~/.amplihack/work/r/<id>" is still in use is not known; leaving it in place. Cleanup will not remove it either: delete it by hand once nothing started by the run is still running
+```
+
+The run's exit status does not change. Before issue #2935 the runner removed
+the folder in this case.
+
+The sweep and `amplihack cleanup --apply` have the same limit: they keep every
+folder they cannot prove unused, so on such a system neither removes a kept
+`runtime/` folder later. These folders stay until they are deleted by hand.
+See [the troubleshooting entry](#troubleshooting) for how to check that
+nothing still uses a folder before deleting it.
 
 The folder of a `recipe run --dry-run` is not checked: it lives in the system
 temporary folder, no sweep ever looks at it, and keeping it would leave it
@@ -1825,6 +1843,27 @@ done
 The loop reads every process, so it can take a minute or more on a busy host.
 
 See [A runtime folder still in use is kept](#a-runtime-folder-still-in-use-is-kept).
+
+**A run printed `running processes cannot be seen on this system`.** The
+system has no `/proc` (macOS, for example), so the runner could not check
+whether the run's runtime folder is still in use, and kept it. No later sweep
+and no `amplihack cleanup --apply` removes it, for the same reason. Once
+nothing that the run started is still running, check the folder and delete it.
+Set `DIR` to the quoted path from the message:
+
+```bash
+DIR="$HOME/.amplihack/work/r/<id>"   # the quoted path from the message
+lsof +D "$DIR"                       # lists processes with a file or working folder inside it
+rm -rf -- "$DIR"                     # only when lsof printed nothing
+```
+
+`lsof +D` does not show a process whose only link to the folder is a `TMPDIR`
+value, so also make sure that no build server, language server or background
+job from that run is still alive. If the folder holds a Git work tree, look
+for uncommitted or unpushed work in it first: deleting by hand skips the check
+described in the next entry.
+
+See [Where running processes cannot be seen](#where-running-processes-cannot-be-seen).
 
 **A folder stays, and stderr says `leaving "<folder>" in place`.** The folder
 holds a Git work tree with uncommitted changes or unpushed commits, or cleanup

@@ -205,7 +205,8 @@ fn candidate(reads: Reads<'_>, current: &str, skip: &[String], alert: KeyAlert) 
 /// (`takeover::could_take_over`, issue #1801) both use this one rule, so a
 /// capacity wait never starts for a login the selection would refuse.
 pub(super) fn login_ready(state: &State, overflow: &OverflowInputs, c: &ProfileName) -> bool {
-    (cfg!(target_os = "macos") || fsx::exists(&state.live_creds(c.as_str())))
+    (!super::overflow_inputs::LoginStorage::host().has_login_files()
+        || fsx::exists(&state.live_creds(c.as_str())))
         && overflow.check_note(&state.root, c).is_some()
 }
 

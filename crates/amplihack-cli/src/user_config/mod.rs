@@ -20,7 +20,7 @@ pub(crate) mod schema;
 pub(crate) mod schema_governor;
 
 #[cfg(test)]
-mod tests_guard;
+mod tests_home_check;
 #[cfg(test)]
 mod tests_load;
 #[cfg(test)]
@@ -209,7 +209,7 @@ pub(crate) fn guard_forbids(path: &Path) -> bool {
     test_guard() && !under_temp_dir(path)
 }
 
-/// Whether `path` lies under a base the test guard accepts: the temp dir,
+/// Whether `path` lies under a base the test home check accepts: the temp dir,
 /// read on each call because tests change `TMPDIR`.
 ///
 /// The unit tests of this library also accept `/var/tmp` and `/tmp` (issue

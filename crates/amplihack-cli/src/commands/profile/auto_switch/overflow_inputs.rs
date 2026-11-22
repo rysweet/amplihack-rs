@@ -32,12 +32,67 @@ use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd;
 use std::path::Path;
 
+/// Where a host keeps a Claude login (issue #2935): a file in the
+/// configuration directory, or the macOS Keychain, which writes no file. The
+/// checks below that look for a login file ask this first, so a test of
+/// either answer states the one it is about and runs on every system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginStorage {
+    File,
+    Keychain,
+}
+
+impl LoginStorage {
+    /// The host's: the Keychain on macOS, a file anywhere else. A lib test
+    /// that called [`LoginStorage::for_this_thread`] gets its own answer.
+    pub fn host() -> Self {
+        #[cfg(test)]
+        if let Some(chosen) = CHOSEN.with(std::cell::Cell::get) {
+            return chosen;
+        }
+        if cfg!(target_os = "macos") {
+            Self::Keychain
+        } else {
+            Self::File
+        }
+    }
+
+    /// Whether a missing login file says anything about the login.
+    pub fn has_login_files(self) -> bool {
+        self == Self::File
+    }
+
+    /// Makes [`LoginStorage::host`] answer `self` on this thread until the
+    /// returned value drops.
+    #[cfg(test)]
+    #[must_use = "the choice ends when this drops"]
+    pub fn for_this_thread(self) -> ChosenStorage {
+        ChosenStorage(CHOSEN.with(|c| c.replace(Some(self))))
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CHOSEN: std::cell::Cell<Option<LoginStorage>> = const { std::cell::Cell::new(None) };
+}
+
+/// Restores the thread's earlier answer when dropped.
+#[cfg(test)]
+pub struct ChosenStorage(Option<LoginStorage>);
+
+#[cfg(test)]
+impl Drop for ChosenStorage {
+    fn drop(&mut self) {
+        CHOSEN.with(|c| c.set(self.0));
+    }
+}
+
 /// Whether a move onto `name` can find a login: its login file is in its
 /// directory, or the rotator has already moved it into `~/.claude`. Selection
 /// asks the first half (`rerun::nested_candidate`) and a swap needs it too.
-/// macOS keeps logins in the Keychain, so there is no file to look for.
+/// A host that keeps logins in the Keychain has no file to look for.
 pub fn can_take_login(root: &Path, name: &ProfileName) -> bool {
-    cfg!(target_os = "macos")
+    !LoginStorage::host().has_login_files()
         || fsx::exists(&root.join(name.as_str()).join(CREDS))
         || RotateState::new(root)
             .load_ledger()
@@ -101,7 +156,7 @@ fn no_login_of(
     now: i64,
 ) -> Vec<ProfileName> {
     let live = kinds.ledger_live();
-    let mut skipped: Vec<ProfileName> = if cfg!(target_os = "macos") {
+    let mut skipped: Vec<ProfileName> = if !LoginStorage::host().has_login_files() {
         Vec::new()
     } else {
         resolved

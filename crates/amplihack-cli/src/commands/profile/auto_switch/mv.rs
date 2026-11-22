@@ -68,17 +68,184 @@ pub fn move_login(src: &Path, dst: &Path, show: &dyn Fn(&Path) -> String) -> Res
     sync_parents(dst, src).map_err(|e| MoveError::Other(format!("sync after move: {e}")))
 }
 
-/// Exchanges two login files in one atomic step, so each path holds a login
-/// throughout. Both must pass [`fsx::movable_login`]. Only Linux has the
-/// call; anywhere else, and on a filesystem that refuses it, the result is
-/// `Unsupported` and nothing has moved. There is no copy fallback.
-pub fn exchange_logins(a: &Path, b: &Path) -> Result<(), MoveError> {
+/// The exchange of two login files in one atomic step (issue #2935). The
+/// swap takes one of these, so a test of the swap's decisions supplies its
+/// own and calls nothing that only one system has.
+pub trait LoginExchange: Send + Sync {
+    /// Whether this exchange exists at all. `false` refuses a swap before
+    /// anything is written.
+    fn supported(&self) -> bool;
+
+    /// Swaps the two existing names, so that each path holds a login
+    /// throughout. On an error nothing has moved.
+    fn exchange(&self, a: &Path, b: &Path) -> std::io::Result<()>;
+}
+
+/// The host's exchange: `renameat2(RENAME_EXCHANGE)`, which only Linux has.
+/// Anywhere else it is not supported and moves nothing. There is no copy
+/// fallback.
+pub struct HostExchange;
+
+impl LoginExchange for HostExchange {
+    fn supported(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+
+    #[cfg(target_os = "linux")]
+    fn exchange(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        use std::os::unix::ffi::OsStrExt;
+        let cstr = |p: &Path| {
+            std::ffi::CString::new(p.as_os_str().as_bytes())
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+        };
+        let (a, b) = (cstr(a)?, cstr(b)?);
+        // SAFETY: both paths are valid NUL-terminated strings; RENAME_EXCHANGE
+        // swaps two existing names atomically and creates or removes nothing.
+        let rc = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                a.as_ptr(),
+                libc::AT_FDCWD,
+                b.as_ptr(),
+                libc::RENAME_EXCHANGE,
+            )
+        };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn exchange(&self, _a: &Path, _b: &Path) -> std::io::Result<()> {
+        Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
+    }
+}
+
+/// A stand-in for tests, on every system: it swaps the two files with three
+/// plain renames through a spare name beside `a`. It is not atomic, so it is
+/// compiled into test and debug builds only and no shipped binary holds it.
+/// A lib test reaches it through `FakeExchange`; a test that starts the
+/// binary asks for it with `AMPLIHACK_TEST_LOGIN_EXCHANGE`.
+#[cfg(any(test, debug_assertions))]
+pub struct RenameExchange;
+
+#[cfg(any(test, debug_assertions))]
+impl LoginExchange for RenameExchange {
+    fn supported(&self) -> bool {
+        true
+    }
+
+    fn exchange(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        let mut spare = a.as_os_str().to_owned();
+        spare.push(".exchange-stand-in");
+        let spare = Path::new(&spare);
+        // Checked first, so a missing `b` moves nothing.
+        fs::symlink_metadata(b)?;
+        rename_noreplace(a, spare)?;
+        if let Err(e) = fs::rename(b, a) {
+            let _ = fs::rename(spare, a);
+            return Err(e);
+        }
+        rename_noreplace(spare, b)
+    }
+}
+
+/// Debug builds only: the value `renames`, in a process that also carries
+/// the test home variable, makes [`host_exchange`] the stand-in.
+#[cfg(debug_assertions)]
+pub const TEST_EXCHANGE_ENV: &str = "AMPLIHACK_TEST_LOGIN_EXCHANGE";
+
+/// The exchange a command uses: the host's. A test that starts a debug
+/// binary can ask for the stand-in instead, and only together with the test
+/// home variable, which every test child carries and no user's shell does.
+pub fn host_exchange() -> std::sync::Arc<dyn LoginExchange> {
+    #[cfg(debug_assertions)]
+    {
+        let set = |name: &str| std::env::var_os(name);
+        if stand_in_requested(
+            set(TEST_EXCHANGE_ENV).as_deref(),
+            set(crate::user_config::TEST_HOME_GUARD_ENV).as_deref(),
+        ) {
+            return std::sync::Arc::new(RenameExchange);
+        }
+    }
+    std::sync::Arc::new(HostExchange)
+}
+
+/// The pure part of [`host_exchange`]: exactly `renames`, and a test home
+/// variable that is not empty.
+#[cfg(any(test, debug_assertions))]
+pub(super) fn stand_in_requested(
+    exchange: Option<&std::ffi::OsStr>,
+    test_home: Option<&std::ffi::OsStr>,
+) -> bool {
+    exchange.is_some_and(|v| v == "renames") && test_home.is_some_and(|v| !v.is_empty())
+}
+
+/// The fake a lib test holds. It keeps every call in memory, and swaps the
+/// two files, which lie in the test's own folder, with [`RenameExchange`].
+/// [`FakeExchange::absent`] answers as the host's does where there is no
+/// such call: not supported, and nothing moves.
+#[cfg(test)]
+pub struct FakeExchange {
+    supported: bool,
+    calls: std::sync::Mutex<Vec<(std::path::PathBuf, std::path::PathBuf)>>,
+}
+
+#[cfg(test)]
+impl FakeExchange {
+    pub fn working() -> std::sync::Arc<Self> {
+        Self::new(true)
+    }
+
+    pub fn absent() -> std::sync::Arc<Self> {
+        Self::new(false)
+    }
+
+    fn new(supported: bool) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            supported,
+            calls: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Every pair this fake was asked to exchange, in order.
+    pub fn calls(&self) -> Vec<(std::path::PathBuf, std::path::PathBuf)> {
+        self.calls.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+}
+
+#[cfg(test)]
+impl LoginExchange for FakeExchange {
+    fn supported(&self) -> bool {
+        self.supported
+    }
+
+    fn exchange(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        self.calls
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((a.to_path_buf(), b.to_path_buf()));
+        if !self.supported {
+            return Err(std::io::Error::from_raw_os_error(libc::ENOSYS));
+        }
+        RenameExchange.exchange(a, b)
+    }
+}
+
+/// Exchanges two login files through `by`, in one atomic step when `by` is
+/// the host's. Both must pass [`fsx::movable_login`]. Where `by` cannot
+/// exchange, and on a filesystem that refuses it, the result is
+/// `Unsupported` and nothing has moved.
+pub fn exchange_logins(by: &dyn LoginExchange, a: &Path, b: &Path) -> Result<(), MoveError> {
     if !fsx::movable_login(a) || !fsx::movable_login(b) {
         return Err(MoveError::Other(
             "a login file is not a private regular file with one link".into(),
         ));
     }
-    exchange(a, b).map_err(|e| {
+    by.exchange(a, b).map_err(|e| {
         if unsupported(&e) {
             MoveError::Unsupported
         } else {
@@ -86,37 +253,6 @@ pub fn exchange_logins(a: &Path, b: &Path) -> Result<(), MoveError> {
         }
     })?;
     sync_parents(a, b).map_err(|e| MoveError::Other(format!("sync after exchange: {e}")))
-}
-
-#[cfg(target_os = "linux")]
-fn exchange(a: &Path, b: &Path) -> std::io::Result<()> {
-    use std::os::unix::ffi::OsStrExt;
-    let cstr = |p: &Path| {
-        std::ffi::CString::new(p.as_os_str().as_bytes())
-            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
-    };
-    let (a, b) = (cstr(a)?, cstr(b)?);
-    // SAFETY: both paths are valid NUL-terminated strings; RENAME_EXCHANGE
-    // swaps two existing names atomically and creates or removes nothing.
-    let rc = unsafe {
-        libc::renameat2(
-            libc::AT_FDCWD,
-            a.as_ptr(),
-            libc::AT_FDCWD,
-            b.as_ptr(),
-            libc::RENAME_EXCHANGE,
-        )
-    };
-    if rc == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn exchange(_a: &Path, _b: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::from_raw_os_error(libc::ENOSYS))
 }
 
 /// Takes `<dir>/.oauth_refresh.lock` with a non-blocking `mkdir`, as Claude

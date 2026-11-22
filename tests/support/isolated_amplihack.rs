@@ -82,6 +82,17 @@ pub const PROBE_WAIT_ENV: &str = "AMPLIHACK_TEST_PROBE_WAIT";
 /// The variable naming the Claude login profile root.
 pub const PROFILE_ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
 
+/// The debug-only variable that makes `profile rotate` and `profile switch`
+/// exchange two logins with a stand-in made of plain renames, in place of
+/// the host's atomic exchange, which only Linux has (issue #2935). The
+/// binary honours it only together with [`HOME_GUARD_ENV`], and only for
+/// the value [`LOGIN_EXCHANGE_STAND_IN`]. A rotation fixture sets it on every
+/// system, so that what its tests decide does not depend on the host.
+pub const LOGIN_EXCHANGE_ENV: &str = "AMPLIHACK_TEST_LOGIN_EXCHANGE";
+
+/// The one value [`LOGIN_EXCHANGE_ENV`] takes.
+pub const LOGIN_EXCHANGE_STAND_IN: &str = "renames";
+
 /// The variable naming the process table the binary reads instead of
 /// `/proc` (issue #2042). The binary honours it only under the home guard,
 /// for a directory under the temp dir owned by this user and not writable by
@@ -227,7 +238,7 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
 /// hand on an [`isolated`] command leaves `TMPDIR`, the profile root and the
 /// process table where the test process had them, and two faults follow:
 ///
-/// - the home guard discards a `HOME` outside the child's temp dir, so a
+/// - the test home check discards a `HOME` outside the child's temp dir, so a
 ///   fixture made under `scratch_base()` (which falls back to `/var/tmp`
 ///   when `TMPDIR` lies inside a framework install) reads as "HOME is not
 ///   set". Here `TMPDIR` is the root and `HOME` lies inside it, whatever the
@@ -313,8 +324,8 @@ impl PrivateEnv {
     }
 
     /// [`isolated`]`(bin)` with every variable that names user state pointed
-    /// inside the root: `HOME`, `TMPDIR` (the root itself, so the home guard
-    /// accepts the `HOME`), the profile root, the process table,
+    /// inside the root: `HOME`, `TMPDIR` (the root itself, so the test home
+    /// check accepts the `HOME`), the profile root, the process table,
     /// `CLAUDE_CONFIG_DIR` and `AMPLIHACK_HOME`. A later `.env()` call wins.
     pub fn command(&self, bin: impl AsRef<OsStr>) -> Command {
         let mut command = isolated(bin);

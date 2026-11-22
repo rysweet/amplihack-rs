@@ -91,8 +91,8 @@ fn in_process_installs_remove_the_profile_root() {
     );
 }
 
-// ── PrivateEnv: a fixture root of the test's own (issue #2931, GUARD and
-// BSDGROUP) ────────────────────────────────────────────────────────────────
+// ── PrivateEnv: a fixture root of the test's own (issue #2931, the
+// fixture-home and folder-group causes) ────────────────────────────────────
 //
 // A fixture that sets `HOME` by hand to a folder it made leaves the profile
 // root, the process table and `TMPDIR` to whatever the test process had, and

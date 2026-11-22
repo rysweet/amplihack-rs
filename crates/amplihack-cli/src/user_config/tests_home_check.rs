@@ -1,4 +1,4 @@
-//! Issue #2931: the home guard's "is this path under an accepted base" rule.
+//! Issue #2931: the test home check's "is this path under an accepted base" rule.
 //!
 //! `under_any(path, bases)` is pure: it reads the file system only to resolve
 //! links, never the process environment. Every case builds its own folders.
@@ -124,15 +124,16 @@ fn an_empty_list_of_bases_accepts_nothing() {
     assert!(!under_any(Path::new(&root), &[]));
 }
 
-/// Under `cfg(test)` of the library the guard also accepts `/var/tmp` and
+/// Under `cfg(test)` of the library the check also accepts `/var/tmp` and
 /// `/tmp`, so a fixture made there is not treated as the user's real home
-/// (issue #2931, GUARD). The shipped binary keeps `temp_dir()` alone; that
-/// half is proved by the binary-level case in `issue_1606_config_cli`.
+/// (issue #2931, the fixture-home group). The shipped binary keeps
+/// `temp_dir()` alone; that half is proved by the binary-level case in
+/// `issue_1606_config_cli`.
 #[test]
 fn the_library_test_build_accepts_var_tmp_and_tmp_but_not_a_home_folder() {
     for base in ["/var/tmp", "/tmp"] {
         assert!(
-            super::under_temp_dir(&Path::new(base).join("amplihack-guard-case")),
+            super::under_temp_dir(&Path::new(base).join("amplihack-base-case")),
             "{base} is a temporary base in the test build"
         );
     }

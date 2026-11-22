@@ -934,11 +934,17 @@ fn mirror_is_current(source: &Path, target: &Path) -> Result<bool> {
     if metadata.file_type().is_symlink() {
         return match fs::read_link(target) {
             Ok(current) => Ok(current == source),
-            // Another launch replaced the mirror between the two calls. On
-            // macOS the link read then fails with "invalid argument", and it
-            // may also find nothing. Neither is a fault of this launch: the
-            // mirror is not known to be current, and `replace_mirror`
-            // publishes over whatever is there now (issue #2931).
+            // Another launch replaced the mirror between the two calls
+            // (issue #2931). `readlink(2)` answers EINVAL for a name that is
+            // not a symbolic link and ENOENT for one that is gone, so these
+            // two kinds mean only that the entry changed after it was
+            // inspected. Neither is a fault of this launch: the mirror is not
+            // known to be current, and `replace_mirror` publishes over
+            // whatever is there now. The test that produces the race is
+            // `issue_1273_concurrent_mirroring_never_exposes_a_missing_asset_tree`;
+            // on macOS it failed with EINVAL in 40 of 40 runs before this arm
+            // existed. No test interleaves the two calls on purpose: that
+            // would need a hook between them, which this code does not have.
             Err(error) if matches!(error.kind(), ErrorKind::InvalidInput | ErrorKind::NotFound) => {
                 Ok(false)
             }
