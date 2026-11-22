@@ -1450,7 +1450,13 @@ fi
     fn install_runtime_does_not_stamp_when_the_release_is_unknown() {
         let run = install_runtime("1.0.0", true, true, "");
         let log = run.log();
-        assert!(run.out.status.success(), "{log}");
+        // With stderr: the runner check's own error, and its cause, are
+        // written there and not to the log (issue #2931).
+        assert!(
+            run.out.status.success(),
+            "{log}\nstderr: {}",
+            String::from_utf8_lossy(&run.out.stderr)
+        );
         assert!(!run.data.path().join("runtime.stamp").exists(), "{log}");
     }
 

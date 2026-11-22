@@ -1514,6 +1514,12 @@ mod tests {
     /// seconds, not 250 ms: the test also requires what the fake printed
     /// before the limit, and on a loaded machine `sh` had not started inside
     /// 250 ms, so the captured output was empty.
+    ///
+    /// The fake is run once before the clock starts, with an argument that
+    /// makes it exit at once. macOS checks a new executable the first time
+    /// it is started, which took from half a second to six seconds on the
+    /// host where this failed, and a later start of the same file takes
+    /// about 50 ms. That first start is the host's cost, not the code's.
     #[cfg(unix)]
     #[test]
     fn bounded_git_times_out_and_reaps_child() {
@@ -1529,10 +1535,17 @@ mod tests {
         let fake = fake_git(
             temp.path(),
             &format!(
-                "{}; (/bin/sleep 60; echo orphan > '{marker_text}') & echo started; exec /bin/sleep 60",
+                "[ \"$1\" = warm-up ] && exit 0\n\
+                 {}; (/bin/sleep 60; echo orphan > '{marker_text}') & echo started; exec /bin/sleep 60",
                 witness.stub_lines()
             ),
         );
+        let warmed = Command::new(&fake)
+            .arg("warm-up")
+            .stdin(Stdio::null())
+            .status()
+            .expect("start the fake once");
+        assert!(warmed.success(), "the fake's warm-up run: {warmed}");
         let start = Instant::now();
 
         let output = run_bounded_git_with(
