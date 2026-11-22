@@ -33,11 +33,8 @@ pub(crate) const MIN_APPEND_PROMPT_FILE_VERSION: (u32, u32, u32) = (2, 1, 319);
 pub(crate) const CONTRACT_PATH_MISSING: &str = "internal error (CONTRACT_PATH_MISSING): the operating contract must be injected but no contract file path was supplied";
 
 /// Timeout and output cap for the one `--version` probe the gate may run.
-/// The `--help` probe of issue #2916 shares the timeout; help text is longer,
-/// so it has its own cap.
 const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const VERSION_PROBE_MAX_BYTES: u64 = 4096;
-const HELP_PROBE_MAX_BYTES: u64 = 64 * 1024;
 
 /// Does the contract go to this launch?
 ///
@@ -219,17 +216,6 @@ fn require_file_flag_capability(binary: &Path, version: Option<&str>, what: &str
 /// stop the probe on SIGTTIN), a 10-second timeout and at most 4 KiB of
 /// output. `None` when the probe fails, times out or prints nothing usable.
 pub(crate) fn probe_claude_version(binary: &Path) -> Option<String> {
-    probe_claude(binary, "--version", VERSION_PROBE_MAX_BYTES)
-}
-
-/// Run `<binary> --help` once, the same way as [`probe_claude_version`], with
-/// a 64 KiB cap. Issue #2916 reads it to learn whether the installed Claude
-/// Code knows `--effort`.
-pub(crate) fn probe_claude_help(binary: &Path) -> Option<String> {
-    probe_claude(binary, "--help", HELP_PROBE_MAX_BYTES)
-}
-
-fn probe_claude(binary: &Path, arg: &str, max_bytes: u64) -> Option<String> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -239,13 +225,13 @@ fn probe_claude(binary: &Path, arg: &str, max_bytes: u64) -> Option<String> {
     // waiter thread below ends; nothing is left running after a failed probe.
     let mut child = Command::new(binary)
         .process_group(0)
-        .arg(arg)
+        .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| {
-            tracing::warn!(binary = %binary.display(), %error, %arg, "Claude Code probe failed to start");
+            tracing::warn!(binary = %binary.display(), %error, "Claude Code version probe failed to start");
         })
         .ok()?;
     let stdout = child.stdout.take()?;
@@ -256,18 +242,18 @@ fn probe_claude(binary: &Path, arg: &str, max_bytes: u64) -> Option<String> {
     // here polls.
     let _waiter = std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let read = stdout.take(max_bytes).read_to_end(&mut buf);
+        let read = stdout.take(VERSION_PROBE_MAX_BYTES).read_to_end(&mut buf);
         let status = child.wait();
         let _ = tx.send((read.map(|_| buf), status));
     });
     match rx.recv_timeout(VERSION_PROBE_TIMEOUT) {
         Ok((Ok(bytes), Ok(_))) => Some(String::from_utf8_lossy(&bytes).into_owned()),
         Ok((Err(error), _)) => {
-            tracing::warn!(binary = %binary.display(), %arg, %error, "Claude Code probe output could not be read");
+            tracing::warn!(binary = %binary.display(), %error, "Claude Code version probe output could not be read");
             None
         }
         Ok((_, Err(error))) => {
-            tracing::warn!(binary = %binary.display(), %arg, %error, "Claude Code probe wait failed");
+            tracing::warn!(binary = %binary.display(), %error, "Claude Code version probe wait failed");
             None
         }
         Err(_) => {
@@ -275,7 +261,7 @@ fn probe_claude(binary: &Path, arg: &str, max_bytes: u64) -> Option<String> {
             // still holds its stdout. Killing the group closes every copy
             // of the pipe, so the thread reads end of file, reaps the child
             // and ends.
-            tracing::warn!(binary = %binary.display(), %arg, "Claude Code probe timed out");
+            tracing::warn!(binary = %binary.display(), "Claude Code version probe timed out");
             kill_probe_group(pid);
             None
         }
@@ -283,7 +269,7 @@ fn probe_claude(binary: &Path, arg: &str, max_bytes: u64) -> Option<String> {
 }
 
 /// Kill the probe's whole process group. The waiter thread in
-/// `probe_claude` then sees its stdout close and reaps the child.
+/// `probe_claude_version` then sees its stdout close and reaps the child.
 fn kill_probe_group(pid: u32) {
     if let Ok(pid) = libc::pid_t::try_from(pid) {
         // SAFETY: `kill` has no memory preconditions; a negative pid names

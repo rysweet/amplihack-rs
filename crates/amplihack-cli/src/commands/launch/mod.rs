@@ -500,11 +500,12 @@ fn run_launch_core(
     };
 
     // Issue #2916: a Claude effort the tier added is checked against the
-    // binary that will run, and taken back off when that Claude Code does not
-    // know `--effort`. The record and the applied line are written here, so
-    // they say what reached the harness; a launch that returned earlier wrote
-    // them when `tier_launch` was dropped.
-    let extra_args = tier_launch.finish(extra_args, &binary.path);
+    // version already read for the binary that will run, and taken back off
+    // when that version is older than the first to accept `--effort` or could
+    // not be read. Nothing is spawned for it. The record and the applied line
+    // are written here, so they say what reached the harness; a launch that
+    // returned earlier wrote them when `tier_launch` was dropped.
+    let extra_args = tier_launch.finish(extra_args, binary.version.as_deref());
 
     if let Some(proxy_target) = proxy_target {
         validate_proxy_launch_args(proxy_target, resume, continue_session, &extra_args)?;

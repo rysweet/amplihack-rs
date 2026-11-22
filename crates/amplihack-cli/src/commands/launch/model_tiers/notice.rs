@@ -10,6 +10,7 @@
 use super::claude_effort;
 use super::codex_effort;
 use super::table::{Effort, Tier, column_for};
+use crate::commands::launch::contract_file::parse_claude_version;
 use crate::user_config::safe::display_safe;
 
 /// Something amplihack decided about a tier, or found in a tier file.
@@ -34,13 +35,16 @@ pub(crate) enum Notice {
     /// The command line already set the reasoning effort, so the tier gave
     /// this launch its model only.
     EffortCallerChose { harness: String, tier: Tier },
-    /// The installed Claude Code does not list `--effort` in its `--help`,
-    /// so the tier's effort was taken back off the command line and the step
-    /// runs without it (issue #2916).
+    /// The installed Claude Code's version is older than the first seen to
+    /// accept `--effort`, or could not be read, so the tier's effort was
+    /// taken back off the command line and the step runs without it (issue
+    /// #2916). `found` is the binary's `--version` output, when there was
+    /// one; it comes from a binary amplihack does not control.
     EffortUnsupported {
         harness: String,
         tier: Tier,
         effort: Effort,
+        found: Option<String>,
     },
     /// The harness has no column at all, so the tier has nothing to resolve
     /// to and the harness's own default model runs.
@@ -198,13 +202,23 @@ impl Notice {
                 harness,
                 tier,
                 effort,
-            } => format!(
-                "amplihack: model tier `{}` on `{harness}`: the installed `{harness}` does not \
-                 list `--effort` in its `--help`, so the step runs without `--effort {}`. \
-                 Upgrade Claude Code to give the step its tier's reasoning effort. {ADVICE}",
-                tier.as_str(),
-                effort.as_str()
-            ),
+                found,
+            } => {
+                let what = match found {
+                    Some(found) => format!(
+                        "the installed Claude Code reports version {}",
+                        shown_version(found)
+                    ),
+                    None => "the installed Claude Code version could not be read".to_string(),
+                };
+                let (a, b, c) = claude_effort::MIN_EFFORT_VERSION;
+                format!(
+                    "amplihack: model tier `{}` on `{harness}`: {what}, and `--effort` needs \
+                     {a}.{b}.{c} or later, so this step runs without `--effort {}`. {ADVICE}",
+                    tier.as_str(),
+                    effort.as_str()
+                )
+            }
             Notice::NoColumn {
                 harness,
                 column,
@@ -294,9 +308,9 @@ impl Notice {
             } => format!(
                 "amplihack: model tiers: `{}.{}`: `{}` is not an accepted reasoning effort; \
                  it is ignored. The accepted values are {}.",
-                display_safe(column),
-                display_safe(tier),
-                display_safe(value),
+                untrusted_text(column),
+                untrusted_text(tier),
+                untrusted_text(value),
                 accepted_efforts(column)
             ),
             Notice::BadStepTier { step, value } => format!(
@@ -349,6 +363,42 @@ impl Notice {
                 display_safe(key)
             ),
         }
+    }
+}
+
+/// The most characters of text from outside amplihack a notice prints.
+const UNTRUSTED_TEXT_CHARS: usize = 64;
+
+/// Text a notice took from a binary's output or an operator's file, made safe
+/// for a terminal: control and bidirectional formatting characters are
+/// removed, and anything past [`UNTRUSTED_TEXT_CHARS`] is cut with an
+/// ellipsis.
+fn untrusted_text(text: &str) -> String {
+    let mut kept = text
+        .chars()
+        .filter(|c| !c.is_control() && !is_bidi_control(*c));
+    let mut out: String = kept.by_ref().take(UNTRUSTED_TEXT_CHARS).collect();
+    if kept.next().is_some() {
+        out.push('…');
+    }
+    out
+}
+
+/// The Unicode bidirectional formatting characters, which can make printed
+/// text read differently from what it contains.
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+/// A Claude Code `--version` output as a notice names it: the parsed
+/// `MAJOR.MINOR.PATCH` when there is one, otherwise the text made safe.
+fn shown_version(found: &str) -> String {
+    match parse_claude_version(found) {
+        Some((a, b, c)) => format!("{a}.{b}.{c}"),
+        None => untrusted_text(found),
     }
 }
 

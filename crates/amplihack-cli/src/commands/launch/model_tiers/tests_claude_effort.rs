@@ -178,23 +178,143 @@ fn a_callers_own_claude_effort_is_reported_rather_than_doubled() {
     assert_eq!(out, args);
 }
 
-// The fall-back for a Claude Code too old to know the option: its `--help`
-// is read once and, when it does not list `--effort`, the pair `inject`
-// added is taken back off.
+// The fall-back for a Claude Code too old to know the option: decided from
+// the version amplihack already holds, with no spawn.
+
+use super::claude_effort::{MIN_EFFORT_VERSION, version_accepts_effort};
 
 #[test]
-fn a_current_claude_help_lists_the_flag() {
-    // As Claude Code 2.1.329 prints it.
-    let help = "  --effort <level>                      Effort level for the current session\n\
-                                                       (low, medium, high, xhigh, max)\n";
-    assert!(super::claude_effort::help_lists_flag(help));
+fn the_minimum_is_the_oldest_version_seen_to_accept_the_flag() {
+    assert_eq!(MIN_EFFORT_VERSION, (2, 1, 329));
 }
 
 #[test]
-fn an_old_claude_help_does_not_list_the_flag() {
-    let help = "  --model <model>   Model for the current session\n  --effort-free   not it\n";
-    assert!(!super::claude_effort::help_lists_flag(help));
-    assert!(!super::claude_effort::help_lists_flag(""));
+fn version_rule_table() {
+    let rows: &[(Option<&str>, bool)] = &[
+        (Some("2.1.328"), false),
+        (Some("2.1.328 (Claude Code)"), false),
+        (Some("2.1.329"), true),
+        (Some("2.1.329 (Claude Code)"), true),
+        (Some("2.2.0"), true),
+        (Some("3.0.0"), true),
+        (Some("1.99.999"), false),
+        (Some("garbage"), false),
+        (Some(""), false),
+        (Some("99999999999.0.0"), false),
+        (None, false),
+    ];
+    for (version, want) in rows {
+        assert_eq!(version_accepts_effort(*version), *want, "{version:?}");
+    }
+}
+
+/// A Claude launch as `resolve_passthrough` leaves it, built from the pure
+/// dispatch so no tier file, home directory or environment is read. With no
+/// record, `finish` writes nothing to any run directory.
+fn launch_for(args: &[&str]) -> (Vec<String>, super::TierLaunch) {
+    let (out, outcome) = reasoning_effort("claude", argv(args), Some(effort("xhigh")));
+    let pending = super::Pending {
+        tool: "claude".to_string(),
+        claude_effort: matches!(outcome, EffortOutcome::Added(_)),
+        record: None,
+        effort: outcome,
+    };
+    (out, super::TierLaunch(Some(pending)))
+}
+
+#[test]
+fn finish_keeps_the_flag_for_a_version_that_accepts_it() {
+    for version in ["2.1.329", "2.1.329 (Claude Code)", "2.2.0"] {
+        let (out, tier) = launch_for(&["--model", "m", "-p"]);
+        assert!(
+            out.windows(2).any(|w| w == ["--effort", "xhigh"]),
+            "{out:?}"
+        );
+        let out = tier.finish(out, Some(version));
+        assert_eq!(
+            out,
+            argv(&["--effort", "xhigh", "--model", "m", "-p"]),
+            "{version}"
+        );
+    }
+}
+
+#[test]
+fn finish_withdraws_the_flag_for_an_older_or_unreadable_version() {
+    for version in [Some("2.1.320"), None, Some("garbage")] {
+        let (out, tier) = launch_for(&["--model", "m", "-p"]);
+        let out = tier.finish(out, version);
+        assert_eq!(out, argv(&["--model", "m", "-p"]), "{version:?}");
+    }
+}
+
+#[test]
+fn finish_never_touches_a_callers_own_effort() {
+    for tail in [
+        &["--effort", "low", "--model", "m", "-p"][..],
+        &["--effort=low", "--model", "m", "-p"][..],
+    ] {
+        for version in [Some("2.1.100"), None] {
+            let (out, tier) = launch_for(tail);
+            assert_eq!(out, argv(tail), "{tail:?}");
+            assert_eq!(
+                tier.finish(out, version),
+                argv(tail),
+                "{tail:?} {version:?}"
+            );
+        }
+    }
+}
+
+// Withdrawal removes the pair `inject` added, by position, and nothing else.
+
+#[test]
+fn withdraw_leaves_a_caller_value_that_equals_the_flag() {
+    // The caller's `--append-system-prompt` value is the text `--effort`.
+    // `inject` reads that as the caller's own choice (its scan is not
+    // arity-aware, on purpose), so the pair is built here as `inject` would
+    // have prepended it, to pin that withdrawal goes by position.
+    let caller = argv(&["--append-system-prompt", "--effort", "-p"]);
+    assert!(matches!(
+        inject(&caller, effort("xhigh")),
+        Injection::CallerChose
+    ));
+    let mut out = argv(&["--effort", "xhigh"]);
+    out.extend(caller.iter().cloned());
+    assert_eq!(super::claude_effort::withdraw(out), caller);
+}
+
+#[test]
+fn withdraw_leaves_a_tail_that_does_not_start_with_the_added_pair() {
+    for tail in [
+        argv(&["--model", "m", "--effort", "xhigh"]),
+        argv(&["--effort", "--model", "m"]),
+        argv(&[]),
+    ] {
+        assert_eq!(super::claude_effort::withdraw(tail.clone()), tail);
+    }
+}
+
+#[test]
+fn withdraw_leaves_positional_text_after_a_terminator() {
+    let caller = argv(&["-p", "--", "--effort", "text"]);
+    let out = added(inject(&caller, effort("xhigh")));
+    assert_eq!(&out[..2], argv(&["--effort", "xhigh"]).as_slice());
+    assert_eq!(super::claude_effort::withdraw(out), caller);
+}
+
+#[test]
+fn inject_does_not_read_text_after_a_terminator_as_the_callers_choice() {
+    let out = added(inject(
+        &argv(&["-p", "--", "--effort", "x"]),
+        effort("high"),
+    ));
+    assert_eq!(out[0], FLAG);
+}
+
+#[test]
+fn a_model_word_is_not_an_effort() {
+    assert!(Effort::parse("--model").is_none());
 }
 
 #[test]

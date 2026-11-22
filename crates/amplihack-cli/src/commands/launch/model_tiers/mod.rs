@@ -33,6 +33,8 @@ mod tests_effort_ceiling;
 #[cfg(test)]
 mod tests_load;
 #[cfg(test)]
+mod tests_notice_effort;
+#[cfg(test)]
 mod tests_record;
 #[cfg(test)]
 mod tests_resolve;
@@ -102,10 +104,9 @@ pub(crate) fn resolve_passthrough(
 /// A tier decision waiting for the launch's binary.
 ///
 /// A launch that returns before [`TierLaunch::finish`] (the Docker hand-off,
-/// or a binary that cannot be resolved or fails its version gate) still
-/// prints the applied line and writes the record when this is dropped, with
-/// no `--help` probe, so those launches are recorded as they were before the
-/// probe existed.
+/// or a binary that cannot be resolved) still prints the applied line and
+/// writes the record when this is dropped, so those launches are recorded
+/// with the effort the tier asked for.
 pub(crate) struct TierLaunch(Option<Pending>);
 
 struct Pending {
@@ -117,30 +118,22 @@ struct Pending {
 }
 
 impl TierLaunch {
-    /// Check a Claude effort against `binary`, then print the applied line
-    /// and write the record.
+    /// Check a Claude effort against the version of the binary that will
+    /// run, then print the applied line and write the record.
     ///
-    /// When amplihack added `--effort` and the binary's `--help` does not
-    /// list it, the pair is taken back off `argv` and a line says so: the
-    /// step runs without the effort rather than failing on an option Claude
-    /// Code does not know (issue #2916). A help text that could not be read
-    /// leaves the flag in place.
-    pub(crate) fn finish(self, argv: Vec<String>, binary: &Path) -> Vec<String> {
-        let probe = |binary: &Path| super::contract_file::probe_claude_help(binary);
-        self.finish_with(argv, binary, probe)
-    }
-
-    fn finish_with(
-        mut self,
-        mut argv: Vec<String>,
-        binary: &Path,
-        probe: impl FnOnce(&Path) -> Option<String>,
-    ) -> Vec<String> {
+    /// `version` is the binary's `--version` output, read when the binary
+    /// was resolved; nothing is spawned here. When amplihack added `--effort`
+    /// and that version is older than
+    /// [`claude_effort::MIN_EFFORT_VERSION`], or could not be read, the pair
+    /// is taken back off `argv` and a line says so: the step runs without
+    /// the effort rather than failing on an option Claude Code does not know
+    /// (issue #2916).
+    pub(crate) fn finish(mut self, mut argv: Vec<String>, version: Option<&str>) -> Vec<String> {
         let Some(mut pending) = self.0.take() else {
             return argv;
         };
         if let (true, EffortOutcome::Added(effort)) = (pending.claude_effort, pending.effort)
-            && probe(binary).is_some_and(|help| !claude_effort::help_lists_flag(&help))
+            && !claude_effort::version_accepts_effort(version)
         {
             argv = claude_effort::withdraw(argv);
             pending.effort = EffortOutcome::Withdrawn;
@@ -149,6 +142,7 @@ impl TierLaunch {
                     harness: pending.tool.clone(),
                     tier,
                     effort,
+                    found: version.map(str::to_owned),
                 };
                 eprintln!("{}", notice.render());
             }
@@ -194,8 +188,9 @@ enum EffortOutcome {
     Added(table::Effort),
     /// The command line already set one, which amplihack never overrides.
     CallerChose,
-    /// It was added for Claude Code, and the installed Claude Code does not
-    /// list `--effort`, so it was taken back off (issue #2916).
+    /// It was added for Claude Code, and the installed Claude Code's version
+    /// is older than the first seen to accept `--effort`, or could not be
+    /// read, so it was taken back off (issue #2916).
     Withdrawn,
 }
 
