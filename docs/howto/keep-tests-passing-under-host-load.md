@@ -734,17 +734,24 @@ that guarantee. On its first call in a test process it:
    `tempfile::TempDir` under `CARGO_TARGET_TMPDIR`, or under
    `env::temp_dir()` when that is unset, removed when the process exits.
 
-In both cases the directory has mode `0700`, and `amplihack`, and
-`amplihack-hooks` when `symlink_metadata` shows it is a regular file, are
-each written to `.name.tmp`, set to mode `0755` and renamed into place.
-`amplihack` is renamed last, so a process that sees it has a complete copy.
+In both cases the directory has mode `0700`, and `amplihack-hooks`, when
+`symlink_metadata` shows it is a regular file, and then `amplihack` are each
+written to a temporary file named for the copying process, set to mode
+`0755` and renamed into place. `amplihack` is renamed last, so a process
+that sees it has a complete copy. A run directory found already made is
+used only if it is a real directory that the current user owns and nobody
+else can enter. If the file system gives no lock, the test process says so
+on standard error and makes a copy of its own, as in step 3.
 `amplihack-hooks` is copied beside it because the binary finds its hooks
 binary as a sibling of its own path.
 
 Every later call returns the same path, and nothing re-links the copy while
 the run goes on. A run's directory is left when the run ends, because no
 single test process knows it is the last; a later run removes run
-directories more than a day old, and `cargo clean` removes them all.
+directories more than a day old, and `cargo clean` removes them all. The
+day is counted from the start of the run, so a test run that lasts longer
+than a day, or a clock set forward by a day, can lose its copy to another
+run.
 
 Before issue #2932 the build and the copy happened in every test process.
 Under cargo-nextest that is once per test: the median `cli_integration`

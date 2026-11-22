@@ -11,6 +11,11 @@
 //!   a private temporary directory (mode 0700, not under `target/debug`).
 //!   Each copy is a regular file of mode 0755; no `.tmp` file is left.
 //! - Every call in the process returns the same path.
+//! - Where the test runner names the run (cargo-nextest's `NEXTEST_RUN_ID`),
+//!   the build and the copy happen once for the run, in its first test
+//!   process, into `amplihack-bin-run-<run id>` (issue #2932). The same
+//!   rules hold for that directory, and `amplihack` is put in place last, so
+//!   its presence means the copy is complete.
 
 #![cfg(unix)]
 
@@ -132,7 +137,8 @@ fn the_copy_runs() {
 // These tests give `run_copy` a directory they made and a builder that
 // counts its calls, so nothing is built and the host's cargo is not used.
 
-use crate::support::amplihack_bin::{run_copy, run_id_is_plain};
+use crate::support::amplihack_bin::{RunCopyError, run_copy, run_id_is_plain};
+use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -162,9 +168,19 @@ fn one_run_builds_and_copies_once_however_many_processes_ask() {
         })
         .unwrap()
     };
-    // Eight callers at once stand in for eight test processes of one run.
+    // Eight callers stand in for eight test processes of one run. Each
+    // opens the lock file itself, as a process would, and they leave the
+    // barrier together, so all eight are asking before any copy can finish.
+    let start = Barrier::new(8);
     let paths: Vec<PathBuf> = std::thread::scope(|s| {
-        let handles: Vec<_> = (0..8).map(|_| s.spawn(ask)).collect();
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                s.spawn(|| {
+                    start.wait();
+                    ask()
+                })
+            })
+            .collect();
         handles.into_iter().map(|h| h.join().unwrap()).collect()
     });
     assert_eq!(builds.load(Ordering::SeqCst), 1, "the build ran once");
@@ -319,6 +335,7 @@ fn a_run_directory_open_to_other_users_or_replaced_by_a_link_is_not_used() {
     let dir = bin.parent().unwrap().to_path_buf();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
     let err = run_copy(&base, "run-f", now, || built.clone()).unwrap_err();
+    assert!(matches!(err, RunCopyError::Other(_)), "{err}");
     assert!(err.to_string().contains("open to other users"), "{err}");
     // A link where the run directory should be, pointing at a directory
     // that holds an `amplihack`.
@@ -341,7 +358,7 @@ fn a_run_directory_left_half_made_is_finished_by_the_next_process() {
     fs::create_dir_all(&dir).unwrap();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(dir.join("amplihack-hooks"), b"old").unwrap();
-    fs::write(dir.join(".amplihack.tmp"), b"partial").unwrap();
+    fs::write(dir.join(".amplihack.4242.tmp"), b"partial").unwrap();
     let builds = AtomicUsize::new(0);
     let bin = run_copy(&base, "run-h", SystemTime::now(), || {
         builds.fetch_add(1, Ordering::SeqCst);
@@ -363,7 +380,45 @@ fn a_run_directory_left_half_made_is_finished_by_the_next_process() {
         "the hooks binary is the one built with it"
     );
     assert!(
-        fs::symlink_metadata(dir.join(".amplihack.tmp")).is_err(),
-        "no temporary file is left"
+        fs::symlink_metadata(dir.join(".amplihack.4242.tmp")).is_err(),
+        "the stopped process's temporary file is removed"
     );
+}
+
+#[test]
+fn a_copy_that_fails_part_way_leaves_no_amplihack_to_be_taken_for_complete() {
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().join("tmp");
+    let built = fake_built_dir(root.path(), true);
+    // Make the hooks copy fail whoever runs the test: a non-empty directory
+    // sits where `amplihack-hooks` has to be renamed into place.
+    let dir = base.join("amplihack-bin-run-run-i");
+    fs::create_dir_all(dir.join("amplihack-hooks")).unwrap();
+    fs::write(dir.join("amplihack-hooks").join("in-the-way"), b"").unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let err = run_copy(&base, "run-i", SystemTime::now(), || built.clone()).unwrap_err();
+    assert!(matches!(err, RunCopyError::Other(_)), "{err}");
+    assert!(
+        fs::symlink_metadata(dir.join("amplihack")).is_err(),
+        "amplihack is put in place last, so a failed copy never looks complete"
+    );
+}
+
+#[test]
+fn a_complete_copy_is_returned_without_the_lock() {
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().join("tmp");
+    let built = fake_built_dir(root.path(), false);
+    let now = SystemTime::now();
+    let bin = run_copy(&base, "run-j", now, || built.clone()).unwrap();
+    // Put a directory where the lock file was: opening the lock now fails,
+    // so only a caller that does not need the lock can succeed.
+    let lock = base.join("amplihack-bin-run-run-j.lock");
+    fs::remove_file(&lock).unwrap();
+    fs::create_dir(&lock).unwrap();
+    let again = run_copy(&base, "run-j", now, || {
+        panic!("a complete copy needs no build")
+    })
+    .unwrap();
+    assert_eq!(again, bin);
 }

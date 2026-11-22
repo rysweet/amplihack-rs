@@ -55,20 +55,31 @@ pub fn amplihack_bin() -> PathBuf {
         let run_id = std::env::var(RUN_ID_VAR)
             .ok()
             .filter(|id| run_id_is_plain(id));
-        match run_id {
-            Some(id) => run_copy(&copy_base(), &id, SystemTime::now(), build).unwrap_or_else(|e| {
-                panic!("could not prepare the amplihack binary for test run {id}: {e}")
-            }),
-            None => {
-                let built_dir = build();
-                private_copy(&built_dir).unwrap_or_else(|e| {
-                    panic!(
-                        "could not copy the amplihack binary from {}: {e}",
-                        built_dir.display()
-                    )
-                })
+        let shared = run_id.and_then(|id| {
+            match run_copy(&copy_base(), &id, SystemTime::now(), build) {
+                Ok(bin) => Some(bin),
+                // No lock, no shared copy: the lock is what makes one. This
+                // process makes its own copy, as every process did before.
+                Err(RunCopyError::NoLock(e)) => {
+                    eprintln!(
+                        "note: no file lock for test run {id} ({e}); this test process builds and copies the amplihack binary itself"
+                    );
+                    None
+                }
+                Err(RunCopyError::Other(e)) => {
+                    panic!("could not prepare the amplihack binary for test run {id}: {e}")
+                }
             }
-        }
+        });
+        shared.unwrap_or_else(|| {
+            let built_dir = build();
+            private_copy(&built_dir).unwrap_or_else(|e| {
+                panic!(
+                    "could not copy the amplihack binary from {}: {e}",
+                    built_dir.display()
+                )
+            })
+        })
     })
     .clone()
 }
@@ -127,7 +138,7 @@ pub(crate) fn run_copy(
     id: &str,
     now: SystemTime,
     build: impl FnOnce() -> PathBuf,
-) -> io::Result<PathBuf> {
+) -> Result<PathBuf, RunCopyError> {
     let dir = base.join(format!("{RUN_DIR_PREFIX}{id}"));
     let bin = dir.join("amplihack");
     if is_regular_file(&bin) {
@@ -142,7 +153,7 @@ pub(crate) fn run_copy(
         .truncate(false)
         .write(true)
         .open(base.join(format!("{RUN_DIR_PREFIX}{id}.lock")))?;
-    fs2::FileExt::lock_exclusive(&lock)?;
+    fs2::FileExt::lock_exclusive(&lock).map_err(RunCopyError::NoLock)?;
     if is_regular_file(&bin) {
         check_private_dir(&dir)?;
         return Ok(bin);
@@ -150,11 +161,54 @@ pub(crate) fn run_copy(
     remove_stale_run_dirs(base, id, now);
     let built_dir = build();
     make_private_dir(&dir)?;
+    // `amplihack-hooks` first and `amplihack` last: the fast path above
+    // takes the presence of `amplihack` to mean the copy is complete.
     let hooks = built_dir.join("amplihack-hooks");
     if is_regular_file(&hooks) {
         copy_into(&hooks, &dir, "amplihack-hooks")?;
     }
-    copy_into(&built_dir.join("amplihack"), &dir, "amplihack")
+    let bin = copy_into(&built_dir.join("amplihack"), &dir, "amplihack")?;
+    remove_leftover_temporaries(&dir);
+    Ok(bin)
+}
+
+/// Why [`run_copy`] gave no shared copy. Without a lock the caller can
+/// still make a copy of its own; any other failure is a fault to report.
+#[derive(Debug)]
+pub(crate) enum RunCopyError {
+    /// The file system would not give an exclusive lock.
+    NoLock(io::Error),
+    Other(io::Error),
+}
+
+impl From<io::Error> for RunCopyError {
+    fn from(e: io::Error) -> Self {
+        Self::Other(e)
+    }
+}
+
+impl std::fmt::Display for RunCopyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoLock(e) => write!(f, "no file lock: {e}"),
+            Self::Other(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// Removes temporary files a stopped process left in the run directory.
+/// Called with the lock held, after this process's own copies are in place.
+fn remove_leftover_temporaries(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') && name.ends_with(".tmp") {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 const RUN_DIR_PREFIX: &str = "amplihack-bin-run-";
@@ -167,7 +221,13 @@ fn is_regular_file(p: &Path) -> bool {
 /// directory left half-made by a process that was stopped is reused; one
 /// that is not this user's own directory is refused.
 fn make_private_dir(dir: &Path) -> io::Result<()> {
-    match fs::create_dir(dir) {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    match builder.create(dir) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(e),
@@ -225,9 +285,12 @@ fn check_own_dir(dir: &Path) -> io::Result<()> {
 }
 
 /// Removes the directories and lock files of other runs last changed more
-/// than [`STALE_AFTER`] before `now`. A run still going keeps its copy: its
-/// directory is younger than that. A failure to remove one is not this
-/// run's failure, so it is ignored; `cargo clean` removes them all.
+/// than [`STALE_AFTER`] before `now`. A directory's time is the moment its
+/// run copied the binaries in, at the start of the run. So a run keeps its
+/// copy for a day; a test run that goes on for longer than that, or a clock
+/// set forward by a day, lets another run remove the copy while it is still
+/// in use. A failure to remove one is not this run's failure, so it is
+/// ignored; `cargo clean` removes them all.
 fn remove_stale_run_dirs(base: &Path, id: &str, now: SystemTime) {
     let Ok(entries) = fs::read_dir(base) else {
         return;
@@ -273,11 +336,11 @@ fn private_copy(built_dir: &Path) -> io::Result<PathBuf> {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700))?;
     }
-    let bin = copy_into(&built_dir.join("amplihack"), dir.path(), "amplihack")?;
     let hooks = built_dir.join("amplihack-hooks");
-    if fs::symlink_metadata(&hooks).is_ok_and(|m| m.file_type().is_file()) {
+    if is_regular_file(&hooks) {
         copy_into(&hooks, dir.path(), "amplihack-hooks")?;
     }
+    let bin = copy_into(&built_dir.join("amplihack"), dir.path(), "amplihack")?;
     *DIR.lock().unwrap_or_else(|p| p.into_inner()) = Some(dir);
     remove_at_exit();
     Ok(bin)
@@ -287,7 +350,8 @@ fn private_copy(built_dir: &Path) -> io::Result<PathBuf> {
 /// executable descriptor. Publish by rename only after the copier exits.
 /// No fsync is needed for a private copy that need not survive a crash.
 fn copy_into(src: &Path, dir: &Path, name: &str) -> io::Result<PathBuf> {
-    let tmp = dir.join(format!(".{name}.tmp"));
+    // Named for this process, so two copiers can never write one file.
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     let dest = dir.join(name);
     #[cfg(unix)]
     {
