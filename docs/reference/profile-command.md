@@ -10590,14 +10590,17 @@ anything under a profile directory.
 The hook resumes a session in one of two ways, never both:
 
 - **Keys** (outcome `resumed-keys`, exit `0`): when the session runs in a
-  [proved tmux pane](#resume-keys), it types Esc, Ctrl+U, `continue` and
-  Enter into that pane. The exit `2` wake has not released Claude Code's
+  [proved tmux pane](#resume-keys) that is showing a
+  [screen the keys answer](#resume-screen), it types Esc, Ctrl+U, `continue`
+  and Enter into that pane. The exit `2` wake has not released Claude Code's
   usage-limit menu in the standing sessions reported in
-  [#2695](https://github.com/rysweet/amplihack-rs/issues/2695), so a session
-  with a proved pane gets the keys.
-- **Wake** (outcome `resumed` with `detail=no-tmux-pane`, `pane-unverified`
-  or `pane-not-reading`, exit `2`): otherwise it exits `2` with the resume
-  message on stderr. The outcome says why the keys path was not taken.
+  [#2695](https://github.com/rysweet/amplihack-rs/issues/2695), so such a
+  session gets the keys.
+- **Wake** (outcome `resumed` with `detail=no-tmux-pane`,
+  `pane-unverified`, `pane-not-reading` or `screen-unrecognised`, exit `2`):
+  otherwise it exits `2` with the resume message on stderr. The outcome says
+  why the keys path was not taken. For `screen-unrecognised` a second fixed
+  line precedes the resume message.
 
 Every other outcome exits `0` with nothing on stdout or stderr. The hook
 never writes to stdout and never exits with any other status. A panic exits
@@ -10610,6 +10613,13 @@ amplihack: the login rotator reports a login with capacity. Continue the task yo
 Claude Code shows it to the model as a system reminder and starts a new turn.
 The message does not claim the limit is gone: the rotator's reading can be
 wrong, so the model is told to stop again if it is not.
+
+For `screen-unrecognised` alone, one further fixed line is written first,
+so the refusal is not left to the log:
+
+```
+amplihack: limit-resume proved this session's terminal but did not recognise what it was showing, so it typed nothing into it. If a usage-limit prompt is still there, press Esc and continue the session by hand.
+```
 
 The hook relies on Claude Code behaviours that a live check against Claude
 Code 2.1.306 confirmed (not re-read at 2.1.329). It used a stub
@@ -10662,9 +10672,9 @@ The checks run in this order. The first one that fails decides the outcome.
 | 6 | The rotator is running: `<root>/.auto-switch.d/rotate/rotate.pid` names a running `amplihack profile rotate watch` process of yours (checked in `/proc`; skipped where there is none), and the ledger, if present, can be read by the trust rules in [Rotator capacity rule](#rotator-capacity-rule). | Exit `0` without waiting, outcome `rotator-down`. |
 | 7 | `resume/` and `resume/prompted/` exist or can be created safely, so a prompt during the wait can be recorded; prompt markers older than 7 days and 1 hour are removed. | Exit `0`, outcome `guard-failed`. |
 | 8 | The hook keeps the swap record it noted in step 3 (or that there was none), sets up the [event wait](#event-wait), and reads the swap record once. Then it waits for a record that passes [Capacity for a resume](#capacity-for-a-resume), for at most 7 days from its start. A record that fails is logged (`swap-stale` or `swap-no-room`) and the wait goes on. | Exit `0`, outcome `watch-lost` if the wait cannot be set up or a watch is lost; `moved-on` if you sent a prompt in that session; `session-gone` if the session exited; `no-capacity-timeout` at the 7-day deadline; `guard-failed` if a prompt marker cannot be read safely. |
-| 9 | Auto-switch is still on, no prompt was sent in the session since the hook started, and, if the hook noted a pane, the pane still [passes its check](#resume-keys); a pane that fails now is dropped and the wake is used instead, with outcome `pane-unverified` or `pane-not-reading`. Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `disabled` if auto-switch was turned off; `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `cap` if the session reached its cap; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
+| 9 | Auto-switch is still on, no prompt was sent in the session since the hook started, and, if the hook noted a pane, the pane still [passes its check](#resume-keys) and is [showing a screen the keys answer](#resume-screen); a pane that fails now is dropped and the wake is used instead, with outcome `pane-unverified`, `pane-not-reading` or `screen-unrecognised`. Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `disabled` if auto-switch was turned off; `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `cap` if the session reached its cap; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
 | 10 | With a pane: send the [resume keys](#resume-keys). | Exit `0`, outcome `resume-keys-failed`, with the number of keys sent. The resume stays recorded and the hook does not exit `2`. |
-| 11 | No further check | Exit `0`, outcome `resumed-keys`, when keys were sent; exit `2` with the resume message when there was no keys path: outcome `resumed` with `detail=no-tmux-pane` for no pane, `pane-unverified` for a pane that was not proved to be this session's terminal, `pane-not-reading` for a terminal Claude Code is not reading. |
+| 11 | No further check | Exit `0`, outcome `resumed-keys`, when keys were sent; exit `2` with the resume message when there was no keys path: outcome `resumed` with `detail=no-tmux-pane` for no pane, `pane-unverified` for a pane that was not proved to be this session's terminal, `pane-not-reading` for a terminal Claude Code is not reading, `screen-unrecognised` for a proved pane that was not showing a screen the keys answer. |
 
 Steps 4 and 5 run once without the lock, so a duplicate or capped session
 exits at once instead of waiting up to 7 days, and again under the lock in
@@ -10939,6 +10949,55 @@ runs `list-panes` or `list-clients`. A pane inherited from a shell that
 started Claude Code outside that pane, or a pane another session owns, is not
 the terminal of any process in this hook's ancestry, so it fails at step 2.
 
+#### Resume screen
+
+Proving the pane says where the keys would land, not whether they are the
+right answer to what is on it. A pane that passes the proof may have moved
+on to a permission prompt, a billing prompt or a shell: there, Ctrl+U would
+clear a draft and Enter would answer a question the hook did not ask. So,
+once the pane is proved and before anything is typed, the hook reads the
+screen once:
+
+```
+tmux capture-pane -p -t %N
+```
+
+No `-S` is given, so only the visible screen is read and never the
+scrollback: a limit notice that has scrolled away cannot stand in for the
+one showing now. The run is made once, with the pane id checked again as a
+whole and passed as its own argument, no shell and null standard input;
+there is no retry, delay or poll.
+
+What tmux printed is matched, lowercased, against a closed list of fixed
+phrases: `what do you want to do?`, `usage limit`, `continuing
+automatically`, `session limit`, `5-hour limit` and `weekly limit`. The
+first two name the screens the sessions in
+[#2695](https://github.com/rysweet/amplihack-rs/issues/2695) and
+[#2085](https://github.com/rysweet/amplihack-rs/issues/2085) were held on;
+the rest are the window names Claude Code prints when a usage limit stops a
+turn. A screen holding any of them gets the keys.
+
+Anything else gets no keys at all. The outcome is `screen-unrecognised`,
+exit `2`, with a `detail` from this closed list:
+
+| `detail` | Cause |
+|----------|-------|
+| `screen-unknown` | The screen was read and holds none of the phrases. |
+| `screen-unreadable` | `tmux` could not be run, exited non-zero, or printed nothing but whitespace. |
+
+Nothing read from the pane is kept, returned or logged: the capture is
+matched and dropped, and the log carries only the fixed word above. The
+match is a substring test over at most 64 KiB, not a parser, and it is the
+whole of the hook's reading of the screen. It can be wrong in both
+directions: a screen that merely mentions a usage limit matches, and a
+future wording of the menu that uses none of these phrases does not. A
+false match sends the four keys to a pane that was already proved to be
+this session's own terminal; a false refusal leaves the session where the
+exit `2` wake leaves it, which is where every session without a proved pane
+already is.
+
+#### Resume key sequence
+
 The keys are four separate `tmux` runs, each with a fixed argument list, no
 shell, null standard input and output, and each waited on for its exit
 status before the next:
@@ -11140,6 +11199,7 @@ and epoch seconds. No pane id is stored.
 2026-11-09T00:41:07Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=swap-no-room live=work cycle=stayed swap_seq=41 swap_live=third
 2026-11-09T00:43:12Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed-keys live=work cycle=stayed swap_seq=42 swap_live=spare pane=5b0e19c4a7d2 keys_sent=4
 2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=resumed live=work cycle=stayed swap_seq=42 swap_live=spare detail=no-tmux-pane
+2026-11-09T00:43:12Z resume session=4e1c8b07d26a event=b73ad9052f14 outcome=screen-unrecognised live=work cycle=stayed swap_seq=42 swap_live=spare detail=screen-unknown
 2026-11-09T02:10:55Z resume session=c41d7a9e0b13 event=e9f2b6a01c7d outcome=resume-keys-failed live=spare cycle=stayed swap_seq=43 swap_live=spare pane=0d3a8f61e2b9 keys_sent=2 detail=session-gone
 2026-11-09T02:15:01Z resume session=6a0b3c9d1e42 event=17c5e8d2f0a6 outcome=watch-lost live=spare cycle=stayed detail=NotFound
 ```
@@ -11156,7 +11216,7 @@ after `cycle` appear only when they apply:
 | `swap_live` | That record's `live_login`. |
 | `pane` | The first 12 hex digits of the SHA-256 of the pane id, when keys were sent or tried. |
 | `keys_sent` | How many of the four keys were sent (0–4). |
-| `detail` | Why there was no keys path, or why a watch or key failed: `session-gone` (the session exited, or was suspended while keys were sent), or the name of the I/O error kind, such as `NotFound` or `PermissionDenied`. For `resumed`, the one fixed word `no-tmux-pane` (the session named no usable pane). For `pane-unverified`, one of `bad-pane-id`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or `not-foreground`; the value is always one of these fixed words, never text taken from `tmux`, `/proc` or the environment. |
+| `detail` | Why there was no keys path, or why a watch or key failed: `session-gone` (the session exited, or was suspended while keys were sent), or the name of the I/O error kind, such as `NotFound` or `PermissionDenied`. For `resumed`, the one fixed word `no-tmux-pane` (the session named no usable pane). For `pane-unverified`, one of `bad-pane-id`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or `not-foreground`. For `screen-unrecognised`, `screen-unreadable` or `screen-unknown`. The value is always one of these fixed words, never text taken from the pane, `tmux`, `/proc` or the environment. |
 
 Every field holds only `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`; any other
 character is written as `-`. The log never holds message text, error text,
@@ -11170,6 +11230,7 @@ outcome.
 | `resumed` | `2` | The same, logged with `detail=no-tmux-pane`, for a session with no usable tmux pane to check: the hook exited `2` and the session was told to continue. |
 | `pane-unverified` | `2` | A pane was named, but it was not proved to be the terminal of this hook's own Claude Code (`detail` says which check failed). The resume was recorded, nothing was typed, and the hook exited `2` with the continue message. A session held on the usage-limit menu stays there, so this outcome in `resume.log` is the sign to continue the session by hand. |
 | `pane-not-reading` | `2` | The pane is this session's terminal, but Claude Code is not the process reading it (for example it is in a background process group behind a wrapper). Nothing was typed; the hook exited `2` with the continue message. |
+| `screen-unrecognised` | `2` | The pane is this session's own terminal, but what it was showing is not a screen the keys answer (`detail=screen-unknown`) or could not be read at all (`detail=screen-unreadable`). Nothing was typed; the hook exited `2` with the unrecognised-screen line and the continue message. See [Resume screen](#resume-screen). |
 | `resume-keys-failed` | `0` | The resume was recorded, but a key failed or the session exited part way; `keys_sent` says how many went. No exit `2` follows. |
 | `swap-stale` | — | A new swap record was swapped at or before the stop. The hook keeps waiting. Never the final outcome. |
 | `swap-no-room` | — | A new swap record shows the new login at 100% on a window. The hook keeps waiting. Never the final outcome. |

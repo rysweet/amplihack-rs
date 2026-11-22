@@ -1093,6 +1093,9 @@ exactly one path:
   up its own ancestry to the nearest process whose standard input is a
   terminal, the pane's `#{pane_tty}` must be that terminal, that process
   must be its foreground process group, and Claude Code must be reading it),
+  and that pane is showing a screen the keys answer (read once with
+  `tmux capture-pane -p`, matched against a closed list of six fixed
+  phrases; see [Resume screen](profile-command.md#resume-screen)),
   it runs
   `tmux send-keys -t %N Escape`, then `C-u`, then `-l continue`, then
   `Enter`, as four separate commands, each waited on for its exit status.
@@ -1109,30 +1112,36 @@ exactly one path:
   wake has not released the menu in the standing sessions reported in
   [#2695](https://github.com/rysweet/amplihack-rs/issues/2695), which is
   why a session with a proved pane gets the keys.
-- **Wake, exit `2`.** Without such a pane, it exits `2` with a one-line
-  continue message on stderr, which wakes the session. The outcome names
-  why there was no keys path: `resumed` with `detail=no-tmux-pane` when
-  there was no tmux pane to check (a fixed value, never a pane id or
-  socket path), `pane-unverified` when a pane was named but not proved to
-  be this session's own terminal, and `pane-not-reading` when it was the
-  terminal but Claude Code is not the process reading it. The three differ
-  only in the log line; each is recorded under the same lock, so the
-  per-session cap and the duplicate guard apply to all of them.
+- **Wake, exit `2`.** Without such a pane and such a screen, it exits `2`
+  with a one-line continue message on stderr, which wakes the session. The
+  outcome names why there was no keys path: `resumed` with
+  `detail=no-tmux-pane` when there was no tmux pane to check (a fixed
+  value, never a pane id or socket path), `pane-unverified` when a pane was
+  named but not proved to be this session's own terminal,
+  `pane-not-reading` when it was the terminal but Claude Code is not the
+  process reading it, and `screen-unrecognised` when the pane was proved
+  but its screen matched no phrase (`detail=screen-unknown`) or could not
+  be read (`detail=screen-unreadable`). `screen-unrecognised` writes one
+  further fixed line before the continue message, so the refusal reaches
+  the model and not only the log. Otherwise the four differ only in the log
+  line; each is recorded under the same lock, so the per-session cap and
+  the duplicate guard apply to all of them.
 
 A pane that fails its check is never replaced by another one. The hook does
 not list panes or clients, and sends nothing to any pane but the one its own
 environment named.
 
-**What the pane check does not cover.** The proof establishes that the pane
-is the terminal of this hook's own Claude Code. It does not establish what
-that terminal is showing: the hook reads no screen contents, and
-`#{pane_tty}` reports the pane's terminal device, not its text. What narrows
-the keys is the situation instead. They are sent only after Claude Code ran
-this hook on a `rate_limit` stop, only after the rotator recorded a swap onto
-a login with room, and only once per limit event within the per-session cap.
-A session that had already recovered by itself therefore receives one extra
-`continue` turn. Telling the menu apart from an ordinary prompt would need a
-parser of the screen's text, which this hook does not have; see
+**What the two checks do not cover.** The proof establishes that the pane is
+the terminal of this hook's own Claude Code; `#{pane_tty}` reports the
+pane's terminal device, not its text, so the screen is read separately. That
+reading is a substring match over the visible screen, not a parser: a screen
+that merely mentions a usage limit matches, and a future wording of the menu
+that uses none of the six phrases does not. The situation narrows the keys
+further: they are sent only after Claude Code ran this hook on a
+`rate_limit` stop, only after the rotator recorded a swap onto a login with
+room, and only once per limit event within the per-session cap. A session
+that had already recovered by itself, and is still showing the notice, can
+therefore receive one extra `continue` turn. See
 [#2695](https://github.com/rysweet/amplihack-rs/issues/2695).
 
 It never sends a digit, `/usage-credits`, `/rate-limit-options` or any text
@@ -1141,8 +1150,8 @@ stop. `tmux` is found through `PATH` and uses the server named by `$TMUX`;
 both are trusted because they belong to the same user as the session.
 
 **Exit codes.** `2` for the outcomes that wake the session: `resumed`,
-`pane-unverified` and `pane-not-reading`. The continue message is written
-for exactly those three. Every other outcome, including
+`pane-unverified`, `pane-not-reading` and `screen-unrecognised`. The
+continue message is written for exactly those four. Every other outcome, including
 `resumed-keys`, `resume-keys-failed`, `watch-lost`, `no-capacity-timeout`,
 `moved-on`, `session-gone`, `disabled`, `duplicate`, `cap`,
 `stop-hook-active`, `rotator-down` and `guard-failed`, exits `0` and prints
