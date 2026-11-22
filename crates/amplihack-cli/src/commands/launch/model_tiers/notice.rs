@@ -308,9 +308,9 @@ impl Notice {
             } => format!(
                 "amplihack: model tiers: `{}.{}`: `{}` is not an accepted reasoning effort; \
                  it is ignored. The accepted values are {}.",
-                untrusted_text(column),
-                untrusted_text(tier),
-                untrusted_text(value),
+                display_safe(column),
+                display_safe(tier),
+                display_safe(value),
                 accepted_efforts(column)
             ),
             Notice::BadStepTier { step, value } => format!(
@@ -366,39 +366,12 @@ impl Notice {
     }
 }
 
-/// The most characters of text from outside amplihack a notice prints.
-const UNTRUSTED_TEXT_CHARS: usize = 64;
-
-/// Text a notice took from a binary's output or an operator's file, made safe
-/// for a terminal: control and bidirectional formatting characters are
-/// removed, and anything past [`UNTRUSTED_TEXT_CHARS`] is cut with an
-/// ellipsis.
-fn untrusted_text(text: &str) -> String {
-    let mut kept = text
-        .chars()
-        .filter(|c| !c.is_control() && !is_bidi_control(*c));
-    let mut out: String = kept.by_ref().take(UNTRUSTED_TEXT_CHARS).collect();
-    if kept.next().is_some() {
-        out.push('…');
-    }
-    out
-}
-
-/// The Unicode bidirectional formatting characters, which can make printed
-/// text read differently from what it contains.
-fn is_bidi_control(c: char) -> bool {
-    matches!(
-        c,
-        '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
-    )
-}
-
 /// A Claude Code `--version` output as a notice names it: the parsed
 /// `MAJOR.MINOR.PATCH` when there is one, otherwise the text made safe.
 fn shown_version(found: &str) -> String {
     match parse_claude_version(found) {
         Some((a, b, c)) => format!("{a}.{b}.{c}"),
-        None => untrusted_text(found),
+        None => display_safe(found),
     }
 }
 

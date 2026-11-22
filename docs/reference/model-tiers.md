@@ -300,8 +300,9 @@ amplihack: model tier `strong` on `claude`: the installed Claude Code version co
 
 A version string that does not look like a Claude Code version, such as one from
 a Claude-compatible tool with its own numbering, is treated as older. Text taken
-from the binary or from an override file is shown with control characters
-removed and is cut at 64 characters.
+from the binary or from an override file is shown with control and
+bidirectional formatting characters escaped, and is cut at 200 characters,
+as in every other model-tier notice.
 
 The threshold 2.1.329 is the oldest version seen to accept the flag, and the
 first release that accepted it is not known. If it was earlier, an install
