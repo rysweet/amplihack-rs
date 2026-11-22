@@ -110,17 +110,18 @@ pub fn run_wrapped(
 
     let mut args: Vec<String> = req.claude_args.to_vec();
     loop {
-        // One flag per run, so a watch thread still looking for an earlier
-        // run's process can never say that this one started.
-        let saw_claude = Arc::new(AtomicBool::new(false));
+        // One per run, so the id thread of an earlier run can never say
+        // that this one started.
+        let run = Arc::new(RunWatch::default());
         watch_for_claude(
             dir.clone(),
             home.clone(),
             req.name.to_string(),
             launch_id.clone(),
-            Arc::clone(&saw_claude),
+            Arc::clone(&run),
         );
         let result = launch(&args);
+        run.over.store(true, Ordering::SeqCst);
         let signalled = stopped.load(Ordering::SeqCst);
         if result.is_ok()
             && !signalled
@@ -140,7 +141,7 @@ pub fn run_wrapped(
             first_conversation: first_conversation.as_deref(),
             result: &result,
             signalled,
-            saw_claude: saw_claude.load(Ordering::SeqCst),
+            saw_claude: run.saw_claude.load(Ordering::SeqCst),
         };
         let Some((next_id, entry)) = standing.next(&dir, req.name, &exit, &stopped) else {
             return result;
@@ -160,15 +161,19 @@ pub fn run_wrapped(
 /// `WARNING:` line to the supervisor log with the last reason; nothing is
 /// written to the terminal (B4).
 ///
-/// Issue #2912: finding the process also sets `saw_claude`, which is how
-/// the wrapper knows a session had something to continue. It is an
-/// observation of one run, not a count of runs: each run has its own.
+/// Issue #2912: finding the process also sets `run.saw_claude`, which is
+/// how the wrapper knows a session had something to continue. The thread
+/// stops at its next tick once `run.over` is set, silently, as it did when
+/// the wrapper exited with its one run. A standing session's wrapper
+/// outlives each run, and without this every relaunch would leave one more
+/// thread scanning the process table each second for the rest of its two
+/// minutes, and writing a warning about a run that had already ended.
 fn watch_for_claude(
     dir: AgentsDir,
     home: PathBuf,
     name: String,
     launch_id: String,
-    saw_claude: Arc<AtomicBool>,
+    run: Arc<RunWatch>,
 ) {
     let spawned = std::thread::Builder::new()
         .name("agent-id-watch".into())
@@ -179,12 +184,15 @@ fn watch_for_claude(
             // the run counts as started, whether or not its sessions file
             // can be read yet.
             let dirs = || {
-                saw_claude.store(true, Ordering::SeqCst);
+                run.saw_claude.store(true, Ordering::SeqCst);
                 sessions::config_dirs_from(&home, |k| std::env::var_os(k))
             };
             let mut last_error = None;
             for _ in 0..ID_WATCH_SECS {
                 std::thread::sleep(Duration::from_secs(1));
+                if run.over.load(Ordering::SeqCst) {
+                    return;
+                }
                 match find_claude(&root, dirs) {
                     Ok(Some(found)) => {
                         if let Err(e) = record_claude(&dir, &home, &name, &launch_id, found) {
@@ -206,6 +214,15 @@ fn watch_for_claude(
     if let Err(e) = spawned {
         tracing::debug!("agent: could not start the id thread: {e}");
     }
+}
+
+/// What one run's id thread and the wrapper share (issue #2912).
+#[derive(Default)]
+struct RunWatch {
+    /// The id thread found a Claude Code process below the wrapper.
+    saw_claude: AtomicBool,
+    /// The run has returned, so its id thread has nothing left to find.
+    over: AtomicBool,
 }
 
 /// Appends the id thread's warning to the supervisor log.
