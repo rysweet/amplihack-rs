@@ -15,25 +15,16 @@
 //!
 //! Pure: it reads only the argv tail, like `codex_agent_step`.
 
-use super::argv_scan::caller_set_config_key;
+use super::argv_scan::{Injection, caller_set_config_key};
 use super::table::Effort;
 
 /// Codex's own name for the setting.
 pub(crate) const KEY: &str = "model_reasoning_effort";
 
-/// What the injection did.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Injection {
-    /// The command line with the pair prepended.
-    Added(Vec<String>),
-    /// The command line already sets the effort; amplihack adds nothing.
-    CallerChose,
-}
-
 /// Add `-c model_reasoning_effort=<effort>` to `args`.
 ///
-/// `effort` is an [`Effort`], not a string, so only one of the five
-/// allowlisted words can ever become the right-hand side of a `-c` token.
+/// `effort` is an [`Effort`], not a string, so only one of Codex's five
+/// accepted words can ever become the right-hand side of a `-c` token.
 /// That is argv safety expressed in the type: a word outside the list is
 /// refused at the table, with a `BadEffort` notice naming the file the
 /// operator wrote it in, and never reaches this function. Whether the

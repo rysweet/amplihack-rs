@@ -2,14 +2,14 @@
 title: Set Recipe Model Tiers
 description: Configure model mappings and step overrides, and remove obsolete auto-drive entry-gate overrides after deployment.
 doc_type: howto
-last_updated: 2026-11-18
+last_updated: 2026-11-21
 ---
 
 # How to Put Recipe Steps on Model Tiers
 
 A recipe step declares how much model it needs, `fast`, `standard` or `strong`,
-and amplihack picks the model and, on Codex, the reasoning effort for the CLI
-it launches. This guide covers the things you do yourself. For the full
+and amplihack picks the model and, on Claude Code and Codex, the reasoning
+effort for the CLI it launches. This guide covers the things you do yourself. For the full
 contract, including precedence, the shipped mapping, the fall-back rules and
 the record schema, see the
 [Model Tiers Reference](../reference/model-tiers.md).
@@ -34,7 +34,8 @@ The file merges cell by cell over the shipped mapping, so this changes
 `standard` on Claude-compatible tools and leaves every other cell alone.
 Nothing merges inside a cell: the cell you write replaces the shipped one
 whole, so write every value you want in it. That matters on Codex, whose
-shipped cells each carry an effort (section 2).
+shipped cells each carry an effort (section 2), and on Claude `strong`, whose
+shipped cell carries `xhigh` (section 3).
 
 The `version = 1` line is required: without it the whole file is ignored with
 one stderr line, which is why every block below repeats it. A file owned by
@@ -62,11 +63,66 @@ The Codex cell names its `effort` as well as its `model`. Your cell replaces
 the shipped `[codex.strong]`, which asks for `high`, so a cell with only a
 `model` line launches with no effort argument and Codex uses its own default.
 
-Accepted effort values are `minimal`, `low`, `medium`, `high` and `xhigh`. Only
-Codex has a launch control for effort; a value in another column is recorded as
-requested rather than effective.
+Accepted effort values depend on the column. Claude takes `low`, `medium`,
+`high`, `xhigh` and `max`; Codex takes `minimal`, `low`, `medium`, `high` and
+`xhigh`. Copilot CLI has no launch control for effort, so a value in its column
+is recorded and not passed on.
 
-## 3. Raise or lower the effort your Codex account is asked for
+## 3. Set the effort a Claude tier is launched at
+
+The shipped `strong` tier on Claude-compatible tools asks for `xhigh`, which
+amplihack passes as `--effort xhigh`; `standard` and `fast` name no effort and
+Claude Code uses its own default. The `xhigh` default raises token consumption
+on every `strong` step. To lower it on this host, restate the cell:
+
+```toml
+# ~/.amplihack/model-tiers.toml
+version = 1
+
+[claude.strong]
+model = "claude-opus-5[1m]"
+effort = "high"
+```
+
+To choose another model for `strong` on this host, such as a Fable model, name
+it in the same cell and say which effort you want:
+
+```toml
+# ~/.amplihack/model-tiers.toml
+version = 1
+
+[claude.strong]
+model = "claude-fable-5-2"
+effort = "max"
+```
+
+Your cell replaces the shipped one whole, so a cell that names only a `model`
+launches with no `--effort` at all.
+
+`--effort` needs Claude Code 2.1.329 or later, which is the oldest version seen
+to accept it. amplihack compares the version it has already read from the
+binary. On an older Claude Code, or when the version cannot be read, the step
+runs on the tier's model without `--effort` and prints a line naming the version
+found and the minimum; nothing for you to change. The Claude Code that a LiteLLM
+gateway installs is pinned to 2.1.247, so gateway launches run without it too.
+To stop the line appearing, leave the effort out of the cell:
+
+```toml
+[claude.strong]
+model = "claude-opus-5[1m]"
+```
+
+To bound every Claude tier at once, declare a ceiling:
+
+```toml
+[claude]
+max_effort = "high"
+```
+
+A ceiling lowers an effort amplihack chooses; it does not lower an `--effort`
+you typed on the command yourself, which is always left alone.
+
+## 4. Raise or lower the effort your Codex account is asked for
 
 The shipped Codex `strong` and `standard` tiers both ask for `high`, and `fast`
 asks for `low`. Where the model your Codex account uses accepts `xhigh`, raise
@@ -96,7 +152,7 @@ lower. amplihack does not test what your account accepts, because that needs a
 live call, so the ceiling is your declaration, and a step whose effort is
 lowered runs rather than failing.
 
-## 4. Move one step to another tier
+## 5. Move one step to another tier
 
 Find the step id in the recipe, then name it in `[step_tiers]`:
 
@@ -118,7 +174,7 @@ recipe for the run. A step id no recipe in the run declares is reported by name
 at the top of the output and changes nothing, which is the usual sign of a
 typo.
 
-## 5. Point a whole column at models your account has
+## 6. Point a whole column at models your account has
 
 The shipped `claude` column names Opus, Sonnet and Haiku. On an account or a
 backend without them, name three models it does have and keep the tiers apart:
@@ -151,7 +207,7 @@ a `[codex.<tier>]` or `[copilot.<tier>]` cell as in section 2, where a Codex
 cell names its `effort` alongside the `model`. It leaves a concrete `--model` a
 recipe pinned alone; to displace those too, use `model.force` below.
 
-## 6. Force one model for every step
+## 7. Force one model for every step
 
 ```sh
 amplihack config set model.force claude-sonnet-5-5
@@ -161,10 +217,10 @@ AMPLIHACK_FORCE_MODEL=claude-sonnet-5-5 amplihack recipe run default-workflow
 
 Every launch then asks for that model whatever tier its step declared, on every
 harness, and unlike `AMPLIHACK_DEFAULT_MODEL` it also replaces a concrete model
-a step pinned. The tier's Codex effort still applies, so a mixed-tier recipe
-keeps its effort split. Unset the key to restore per-step tiers.
+a step pinned. The tier's effort still applies, on Claude and on Codex, so a
+mixed-tier recipe keeps its effort split. Unset the key to restore per-step tiers.
 
-## 7. Run small-change reviews as one pass
+## 8. Run small-change reviews as one pass
 
 ```sh
 amplihack config set review.combined_small_diff true
@@ -177,7 +233,7 @@ anyway. They also run separately whenever the step cannot measure the diff or
 read the setting, and the reason is on stderr. This applies to the review phase
 of a build, not to PR review.
 
-## 8. Read back what the run spent
+## 9. Read back what the run spent
 
 The run summary prints a **Model tiers:** section naming the model and effort
 each step ran on. For the same facts per launch:
@@ -195,8 +251,9 @@ jq -r '[.tier // "none", .effective_model // "harness default"] | @tsv' \
 
 A line whose `effective_model` is `null` fell back, and its `fallback` field
 says why. A line whose `requested_effort` is set and whose `effective_effort`
-is `null` ran on a harness with no launch control for effort; one where the two
-differ was lowered by the column's `max_effort`.
+is `null` ran on a harness with no launch control for effort, or on a Claude
+Code older than 2.1.329. A line where the two differ was lowered by the
+column's `max_effort`.
 
 ## Troubleshooting
 
@@ -210,7 +267,9 @@ differ was lowered by the column's `max_effort`.
 | Steps all run one model you did not ask for | `model.force`, `AMPLIHACK_FORCE_MODEL` or `AMPLIHACK_DEFAULT_MODEL` is set | `amplihack config get model.force --show-origin`, and check your environment |
 | Tiers have no effect at all | The launch goes through the LiteLLM gateway | Unset `AMPLIHACK_LITELLM_ENDPOINT`, `AMPLIHACK_LITELLM_API_KEY` and `AMPLIHACK_LITELLM_MODEL`, or set the gateway's model |
 | One step ran on `auto`, with no tier effort | `AMPLIHACK_RATELIMIT_FALLBACK_AUTO_MODEL` made the runner replace that step's model before amplihack saw a tier | Unset it, or accept that the last retry of a rate-limited step is untiered |
-| An effort value is dropped | It is not one of `minimal`, `low`, `medium`, `high`, `xhigh` | Use an accepted value; the model applied anyway |
+| An effort value is dropped | It is outside its column's list: `low`, `medium`, `high`, `xhigh`, `max` for Claude, or `minimal`, `low`, `medium`, `high`, `xhigh` for Codex | Use an accepted value; the model applied anyway |
+| A line says the step runs without `--effort` | The installed Claude Code is older than 2.1.329, or its version could not be read, so amplihack withheld the flag; the step ran on the tier's model | Update Claude Code, or leave `effort` out of the `[claude.<tier>]` cell to silence the line |
+| A Claude `strong` step ran at a different effort than the cell says | The command already carried its own `--effort`, which amplihack leaves alone, or `[claude] max_effort` lowered it | Check the command line and the column's ceiling |
 | Codex refuses the effort amplihack passed | Your account's model does not accept the value that cell names | Lower `effort` in that `[codex.<tier>]` cell, or set `[codex] max_effort` to bound all three |
 | A Codex or Copilot CLI step ignores `AMPLIHACK_DEFAULT_MODEL`, with no line about it | The variable applies to Claude-compatible tools only | Write a `[codex.<tier>]` cell with `model` and `effort`, or a `[copilot.<tier>]` cell with `model`, in your `model-tiers.toml` |
 | A Codex step lost its tier effort after you gave it a model | Your cell replaces the shipped cell whole and names no `effort` | Add `effort = "high"`, or the value you want, to that `[codex.<tier>]` cell |

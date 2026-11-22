@@ -538,6 +538,9 @@ mod issue_1619_step_tier_diagnostics;
 mod issue_1619_effort_ceiling;
 #[path = "issue_1619_operator_default_model.rs"]
 mod issue_1619_operator_default_model;
+// Issue #2916: a tier's reasoning effort reaches Claude Code as `--effort`.
+#[path = "issue_2916_claude_effort.rs"]
+mod issue_2916_claude_effort;
 
 // Issue #1619: a step whose shell body was extracted into
 // amplifier-bundle/tools/ for the brick budget still has to be readable by

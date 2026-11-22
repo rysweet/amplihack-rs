@@ -18,8 +18,10 @@ use std::process::{Command, Output};
 use crate::support::amplihack_bin::amplihack_bin;
 
 /// A fake harness: answers `--version` plausibly for whichever name it was
-/// invoked under, writes every argument it was given one per line to
-/// `$ARGV_LOG`, then exits 0.
+/// invoked under (a Claude name reports 2.1.329, the oldest Claude Code known
+/// to accept `--effort`, issue #2916), appends one line to
+/// `$ARGV_LOG.launches` for every call that is not `--version`, writes every
+/// argument it was given one per line to `$ARGV_LOG`, then exits 0.
 ///
 /// The Claude version must be at least 2.1.319 or amplihack refuses the
 /// launch rather than deliver its contract without
@@ -28,12 +30,13 @@ pub const FAKE_HARNESS: &str = r#"#!/bin/sh
 case "$1" in
   --version)
     case "${0##*/}" in
-      claude|rusty|rustyclawd|amplifier) echo '2.1.319 (Claude Code)' ;;
+      claude|rusty|rustyclawd|amplifier) echo '2.1.329 (Claude Code)' ;;
       codex*) echo 'codex-cli 0.166.0' ;;
       *) echo '0.0.400' ;;
     esac
     exit 0 ;;
 esac
+echo launch >> "$ARGV_LOG.launches"
 : > "$ARGV_LOG"
 for a in "$@"; do printf '%s\n' "$a" >> "$ARGV_LOG"; done
 exit 0
@@ -102,8 +105,19 @@ impl Fixture {
     /// `amplihack <harness> -- <passthrough>`, isolated and not yet run, so a
     /// caller can add the variables its own question needs.
     pub fn launch(&self, harness: &str, passthrough: &[&str]) -> Command {
+        self.launch_with_flags(harness, &[], passthrough)
+    }
+
+    /// As [`Fixture::launch`], with amplihack's own flags (`--docker`, say)
+    /// placed before the `--` that starts the passthrough.
+    pub fn launch_with_flags(
+        &self,
+        harness: &str,
+        flags: &[&str],
+        passthrough: &[&str],
+    ) -> Command {
         let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
-        c.arg(harness).arg("--").args(passthrough);
+        c.arg(harness).args(flags).arg("--").args(passthrough);
         c.current_dir(&self.work)
             .env(
                 "PATH",
@@ -149,6 +163,14 @@ impl Fixture {
         }
     }
 
+    /// How many times the stand-in was started for anything but `--version`.
+    /// Zero when it never ran.
+    pub fn launches(&self) -> usize {
+        let mut path = self.argv_log.clone().into_os_string();
+        path.push(".launches");
+        fs::read_to_string(PathBuf::from(path)).map_or(0, |t| t.lines().count())
+    }
+
     /// The common case: launch with nothing extra and read the recording.
     pub fn run(&self, harness: &str, passthrough: &[&str]) -> Launch {
         self.finish(&mut self.launch(harness, passthrough))
@@ -189,6 +211,21 @@ impl Launch {
             .iter()
             .filter_map(|a| a.strip_prefix("model_reasoning_effort="))
             .next_back()
+    }
+
+    /// The value of Claude Code's `--effort`, in either spelling, or `None`.
+    /// Occurrence counting stays in the tests, so a duplicate is visible.
+    pub fn claude_effort(&self) -> Option<&str> {
+        let mut found = None;
+        let mut iter = self.argv.iter();
+        while let Some(arg) = iter.next() {
+            if arg == "--effort" {
+                found = iter.next().map(String::as_str);
+            } else if let Some(value) = arg.strip_prefix("--effort=") {
+                found = Some(value);
+            }
+        }
+        found
     }
 
     pub fn stderr(&self) -> String {

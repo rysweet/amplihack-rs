@@ -1,7 +1,7 @@
 //! Issue #1619 (TDD): injecting Codex's reasoning effort.
 //!
-//! `inject` takes an `Effort`, not a string: only one of the five allowlisted
-//! words can become the right-hand side of a `-c` token, and the type says
+//! `inject` takes an `Effort`, not a string: only one of Codex's five
+//! accepted words can become the right-hand side of a `-c` token, and the type says
 //! so. A word outside the list is refused at the table, where the operator
 //! wrote it, with a `BadEffort` notice naming the file — see
 //! `tests_table.rs`. There is therefore no rejection branch here to pin.
@@ -14,7 +14,8 @@
 //!
 //! Pure: it reads only the argv tail, like `codex_agent_step`.
 
-use super::codex_effort::{Injection, KEY, inject};
+use super::argv_scan::Injection;
+use super::codex_effort::{KEY, inject};
 use super::table::Effort;
 
 fn argv(words: &[&str]) -> Vec<String> {
@@ -81,7 +82,7 @@ fn every_accepted_effort_is_injected() {
 #[test]
 fn an_unaccepted_word_is_not_an_effort_at_all() {
     // Argv safety: the value becomes the right-hand side of a `-c` token, so
-    // only the five allowlisted words are ever written. The allowlist is the
+    // only Codex's five accepted words are ever written. The allowlist is the
     // `Effort` type, enforced where the word is read — so these never become
     // an `Effort` and cannot be handed to `inject`. Whether the installed
     // Codex accepts a word it is handed is Codex's decision.
