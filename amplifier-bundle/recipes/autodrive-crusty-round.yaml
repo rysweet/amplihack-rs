@@ -309,7 +309,7 @@ steps:
       git push
       ```
 
-      A refused push does not end the step. Read git's own message and act on what it says: if the remote moved, merge it and push again; if a hook objected, fix the cause and push again. Never a flag that skips the hooks, never a force push, never rewriting history. If the branch on the remote still does not carry the commit after that, report that outcome plainly and quote git's message as the evidence, rather than reporting the round as done.
+      A refused push does not end the step. Read git's own message and act on what it says: if the remote moved, merge it and push again; if a hook objected, fix the cause and push again. Never a flag that skips the hooks, never a force push, never rewriting history. If the branch on the remote still does not carry the commit after that, report that outcome plainly and quote git's message as the evidence, with any token or password in a URL replaced by ***, rather than reporting the round as done.
 
       Read the `git diff --cached --name-status` list before you commit: the reviewer ran in this worktree, so the index may hold more than you staged. It must name only the paths you changed; a path you did not touch, or a gitlink (mode `160000`), means something else staged work here. Unstage it with `git restore --staged -- <path>` and report what you found, or hand off; never commit it and never widen the commit to cover it.
 

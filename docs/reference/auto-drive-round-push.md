@@ -34,7 +34,8 @@ head branch on the remote carries the commit the step just made. The step:
 2. runs a plain `git push` with the run's own environment, so the hooks run
    again on the push;
 3. reports the outcome. If the branch on the remote still lacks the commit, the
-   report says so and quotes git's own message. It does not claim success.
+   report says so and quotes git's own message, with any token or password in
+   a URL replaced by `***`. It does not claim success.
 
 `reviewed_head_sha` continues to come from `git rev-parse --verify HEAD` in the
 worktree. Pushing is what makes that value equal the head GitHub reports; no
