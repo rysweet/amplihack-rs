@@ -103,6 +103,13 @@ pub(crate) mod proc;
 #[allow(dead_code)]
 mod scratch_base;
 
+/// Issue #2931: `ls -ldn` parsing for stubs that inspect a file the test
+/// removes afterwards; one copy, shared with `cli_integration`.
+#[cfg(unix)]
+#[path = "../tests/support/ls_mode.rs"]
+#[allow(dead_code)]
+pub(crate) mod ls_mode;
+
 /// A temporary directory that no framework lookup can see past: no
 /// `amplifier-bundle/`, `.claude/` or `src/amplihack/.claude/` above it, and
 /// not under the real `~/.claude` or `~/.amplihack`. Panics when no candidate
@@ -569,6 +576,14 @@ mod exec_stub;
 #[cfg(unix)]
 pub(crate) fn write_executable(path: &Path, body: &str) {
     exec_stub::write_executable(path, body, 0o755);
+}
+
+/// One word of POSIX shell text holding `value` byte for byte (issue #2931):
+/// every path or name a lib test writes into the text of a stub goes through
+/// this. The one definition is `tests/support/exec_stub.rs`.
+#[cfg(unix)]
+pub(crate) fn sh_quote(value: &str) -> String {
+    exec_stub::sh_quote(value)
 }
 
 #[path = "test_support_proc_guard.rs"]

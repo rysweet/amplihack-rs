@@ -3702,8 +3702,13 @@ fn test_execute_recipe_via_rust_child_sees_no_outer_run_identity() {
 // -------------------------------------------------------------------------
 
 /// A runner stub that records its argv (NUL-separated), copies the file named
-/// by `--context-file` with the file's and folder's modes, and reports
-/// success. `$1` is `CAPS`, a JSON array of capability names.
+/// by `--context-file`, records the `ls -ldn` line of the file and of its
+/// folder (the run removes both afterwards), and reports success. `$1` is
+/// `CAPS`, a JSON array of capability names.
+///
+/// `ls -ldn` and not `stat`: GNU and BSD `stat` take different options, and
+/// `ls -ldn` prints one format on both (issue #2931). [`recorded_mode_2582`]
+/// reads the line.
 #[cfg(unix)]
 fn context_2582_runner(dir: &Path, caps: &str) -> PathBuf {
     let runner = dir.join("recipe-runner-rs");
@@ -3718,8 +3723,8 @@ for a in "$@"; do
   if [ "$prev" = "--context-file" ]; then
     cp "$a" "$rec/context.copy.json"
     printf '%s' "$a" > "$rec/context.path"
-    stat -c %a "$a" > "$rec/file.mode"
-    stat -c %a "$(dirname "$a")" > "$rec/dir.mode"
+    ls -ldn "$a" > "$rec/file.ls"
+    ls -ldn "$(dirname "$a")" > "$rec/dir.ls"
   fi
   prev=$a
 done
@@ -3728,6 +3733,18 @@ printf '%s\n' '{{"recipe_name":"ctx-2582","success":true,"step_results":[],"cont
     );
     crate::test_support::write_executable(&runner, &body);
     runner
+}
+
+/// The permission bits the stub's `ls -ldn` record `<name>` shows, in octal
+/// as `stat` would print them. A missing or malformed record panics, so it
+/// can never read as a private mode.
+#[cfg(unix)]
+fn recorded_mode_2582(records: &Path, name: &str) -> String {
+    let line = std::fs::read_to_string(records.join(name))
+        .unwrap_or_else(|e| panic!("the stub recorded no {name}: {e}"));
+    let entry = crate::test_support::ls_mode::parse_ls_line(line.trim())
+        .unwrap_or_else(|| panic!("{name} is not an `ls -ldn` line: {line:?}"));
+    format!("{:o}", entry.mode)
 }
 
 /// What one stub run leaves behind, with everything that owns a directory
@@ -3902,9 +3919,8 @@ fn test_2582_capability_puts_context_in_a_private_file_not_argv() {
         copied.get("pr_body").and_then(JsonValue::as_str),
         Some("ZQXV2582BODYWORD {\"k\": [1]}")
     );
-    let read = |n: &str| std::fs::read_to_string(records.join(n)).unwrap();
-    assert_eq!(read("file.mode").trim(), "600");
-    assert_eq!(read("dir.mode").trim(), "700");
+    assert_eq!(recorded_mode_2582(records, "file.ls"), "600");
+    assert_eq!(recorded_mode_2582(records, "dir.ls"), "700");
 
     run.assert_live_tree(&path, &run.fixture.work_root.path());
     assert!(
@@ -4093,9 +4109,16 @@ fn test_2582_a_dry_run_writes_the_same_private_file_and_leaves_nothing_behind() 
     assert_eq!(path.file_name().unwrap(), "context.json");
     assert_eq!(path.parent().unwrap().file_name().unwrap(), "context");
 
-    let read = |n: &str| std::fs::read_to_string(records.join(n)).unwrap();
-    assert_eq!(read("file.mode").trim(), "600", "a dry run writes 0600 too");
-    assert_eq!(read("dir.mode").trim(), "700", "in a 0700 folder");
+    assert_eq!(
+        recorded_mode_2582(records, "file.ls"),
+        "600",
+        "a dry run writes 0600 too"
+    );
+    assert_eq!(
+        recorded_mode_2582(records, "dir.ls"),
+        "700",
+        "in a 0700 folder"
+    );
     let copied: serde_json::Map<String, JsonValue> =
         serde_json::from_slice(&std::fs::read(records.join("context.copy.json")).unwrap()).unwrap();
     assert_eq!(
