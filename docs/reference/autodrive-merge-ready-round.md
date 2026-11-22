@@ -439,7 +439,9 @@ written by `autodrive_crusty_record.sh`.
 An optional first argument asks for that many further rounds; it must
 match `^[0-9]+$` and be at least `1`, and the tool turns it into a budget of
 the rounds already used plus that number (see
-[`autodrive_merge_loop_run.sh`](#autodrive_merge_loop_runsh)). The step keeps its default `fatal`
+[`autodrive_merge_loop_run.sh`](#autodrive_merge_loop_runsh)). A
+`merge_method` the merge tool would not take stops the tool with exit `2`
+before the driver starts (see [Merge method](#merge-method)). The step keeps its default `fatal`
 handling and the tool maps the driver's exit status itself, so that exit `79`
 is never hidden by `continue_on_error` (#2490).
 
@@ -827,8 +829,12 @@ exit code and no new way for a run to end. Three readings reach it:
 
 - the run was given a method the repository does not allow, or a word that is
   not `merge`, `squash` or `rebase`;
-- the repository's settings could not be read (the reason names `gh`'s exit
-  status), or did not read as three `true` or `false` values;
+- the repository's settings could not be read, or did not read as three
+  `true` or `false` values. For a failed read the reason names `gh`'s exit
+  status and then the first line of its error output that is not blank, with
+  every byte outside printable ASCII replaced and cut at 200 bytes, so the
+  hand-off says why the read failed (a `403`, a missing scope). The whole
+  error output still goes to the step's log;
 - the repository allows no merge method at all.
 
 The caller's string never reaches the argv: it selects a branch in the tool,
@@ -842,12 +848,27 @@ Paths that end before a merge request, such as a closed PR, failing or
 pending checks, a `DIRTY` branch or an unavailable merge message, make no
 repository call at all.
 
+Branch protection and rulesets, such as a required linear history, are not
+read here. GitHub applies them to the merge request itself, and a merge it
+refuses ends `refused` and is handed off, as set out under
+[Merge state](#merge-state).
+
 The merge loop also passes `merge_method` to every merge-ready round. Where
 the task text states how the PR is to be merged, or a condition only one
 method can keep, such as a commit that must stay an ancestor of the base, the
 assessment treats it as a stated merge condition: it holds only when the run
 was given that method, and otherwise the round concludes hand-off, naming the
 method the task asks for and the method the run was given.
+
+Because the round prompt names the method, `autodrive_merge_loop_run.sh`
+checks it before any round starts, with `autodrive_merge_method_known` from
+`autodrive_merge.sh`, the one list both tools use. A value that is not empty,
+`merge`, `squash` or `rebase` stops the step with exit `2` and an error that
+names the value, cut and made printable as above. No round runs, the state
+folder is not written, and the value is never replaced with an empty one,
+which would let the repository choose a method nobody asked for. The tool is
+the only way a round receives `merge_method`: `autodrive-merge-round.yaml` is
+run only by the loop driver this tool starts, never directly by a recipe.
 
 Every result line carries `merge_method` and `merge_method_reason`, empty
 where the method was never settled. `autodrive-finalize.yaml` passes both on
@@ -1433,6 +1454,12 @@ passes `autodrive_budget_loop_rounds=<used + N>`, never more than the
 operator's own `autodrive_budget_loop_rounds` when one is set. When the
 operator's budget leaves no room, the round stops as `BUDGET_EXHAUSTED` and
 the PR is handed off. `autodrive_budget_total_rounds` applies unchanged.
+
+Before it reads the preflight or touches the state directory, the tool loads
+`autodrive_merge.sh` from beside itself and checks `RECIPE_VAR_merge_method`
+with `autodrive_merge_method_known`. Anything other than empty, `merge`,
+`squash` or `rebase` exits `2` with an error naming the value, made printable
+and cut at 32 bytes, and no round runs (see [Merge method](#merge-method)).
 
 ### `amplihack orch helper autodrive authorization`
 

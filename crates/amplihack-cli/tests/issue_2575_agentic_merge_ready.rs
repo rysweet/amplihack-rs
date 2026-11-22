@@ -99,11 +99,15 @@ opt() { local want="$1" prev="" a; shift; for a in "$@"; do [ "$prev" = "$want" 
 # #1888: `gh api repos/{owner}/{repo} --jq '[...]|@tsv'` answers the three
 # allowed-method booleans (allow_merge_commit, allow_squash_merge,
 # allow_rebase_merge) from `allow_merge`, `allow_squash`, `allow_rebase`
-# (each default true). `api_rc` makes the call fail with that status and
-# `api_out` replaces the answer verbatim. Keyed on $1: for `gh api` the second
-# word is the path, so `rc79_on` never matches it.
+# (each default true). `api_rc` makes the call fail with that status, writing
+# `api_err` verbatim to standard error when it exists and a fixed line
+# otherwise; `api_out` replaces the answer verbatim. Keyed on $1: for `gh api`
+# the second word is the path, so `rc79_on` never matches it.
 if [ "${1:-}" = api ]; then
-  [ -f "$S/api_rc" ] && { echo "fixture: gh api failed" >&2; exit "$(cat "$S/api_rc")"; }
+  if [ -f "$S/api_rc" ]; then
+    if [ -f "$S/api_err" ]; then cat "$S/api_err" >&2; else echo "fixture: gh api failed" >&2; fi
+    exit "$(cat "$S/api_rc")"
+  fi
   [ -f "$S/api_out" ] && { cat "$S/api_out"; exit 0; }
   printf '%s\t%s\t%s\n' "$(cat "$S/allow_merge" 2>/dev/null || echo true)" \
     "$(cat "$S/allow_squash" 2>/dev/null || echo true)" "$(cat "$S/allow_rebase" 2>/dev/null || echo true)"
@@ -1094,6 +1098,80 @@ fn an_unreadable_repository_is_handed_off_with_the_exit_status() {
     // An explicit method does not skip the read: the repository decides.
     let out = fx.merge_tool_method(PR, SHA_A, "merge");
     assert_unsettled(&fx, &out);
+}
+
+/// #1888 review: a failed repository read says why, not only that it failed.
+/// The first line of gh's error that is not blank follows the exit status in
+/// the reason; gh's whole error still reaches the step's log.
+#[test]
+fn an_unreadable_repository_reason_carries_the_first_line_of_gh_error() {
+    let Some(fx) = Fx::new() else { return };
+    fx.set("api_rc", "1");
+    fx.set(
+        "api_err",
+        "\n   \nHTTP 403: Resource not accessible by integration\nsecond line of detail\n",
+    );
+    let out = fx.merge_tool(PR, SHA_A);
+    let v = assert_unsettled(&fx, &out);
+    let why = v["reason"].as_str().unwrap();
+    assert!(
+        why.contains("(gh exit 1: HTTP 403: Resource not accessible by integration)"),
+        "the status, then gh's first line: {why:?}"
+    );
+    assert!(!why.contains("second line"), "only the first line: {why:?}");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("HTTP 403") && err.contains("second line of detail"),
+        "gh's error still reaches the log: {err:?}"
+    );
+}
+
+/// The gh error is text this tool did not write: it is made printable ASCII
+/// and cut at 200 bytes before the reason repeats it, so no escape sequence,
+/// control character or long page of output reaches the finalisation
+/// statement or the hand-off comment. A read with no error text keeps the
+/// status alone.
+#[test]
+fn a_gh_error_in_the_reason_is_cut_to_200_bytes_and_printable() {
+    let Some(fx) = Fx::new() else { return };
+    fx.set("api_rc", "1");
+    let noisy = format!(
+        "\u{1b}[31mHTTP 500\u{7} caf\u{e9} {}\r\nsecond line\n",
+        "x".repeat(500)
+    );
+    fx.set("api_err", &noisy);
+    let out = fx.merge_tool(PR, SHA_A);
+    let v = assert_unsettled(&fx, &out);
+    let why = v["reason"].as_str().unwrap();
+    assert!(
+        why.chars().all(|c| c.is_ascii() && !c.is_control()),
+        "{why:?}"
+    );
+    let shown = why
+        .split_once("(gh exit 1: ")
+        .map(|(_, rest)| rest.strip_suffix(')').unwrap_or(rest))
+        .unwrap_or_else(|| panic!("the status, then gh's text: {why:?}"));
+    assert!(
+        shown.len() <= 200,
+        "cut at 200 bytes: {} {shown:?}",
+        shown.len()
+    );
+    assert!(shown.contains("HTTP 500"), "{shown:?}");
+    assert!(
+        shown.ends_with('x'),
+        "the long line is cut, not dropped: {shown:?}"
+    );
+    assert!(!why.contains("second line"), "{why:?}");
+
+    let Some(fx) = Fx::new() else { return };
+    fx.set("api_rc", "1");
+    fx.set("api_err", "");
+    let out = fx.merge_tool(PR, SHA_A);
+    let v = assert_unsettled(&fx, &out);
+    assert!(
+        v["reason"].as_str().unwrap().ends_with("(gh exit 1)"),
+        "no text, no colon: {v}"
+    );
 }
 
 #[test]

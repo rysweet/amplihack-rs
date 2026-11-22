@@ -9,7 +9,18 @@
 # `gh pr merge --match-head-commit <expected sha>`, which also enforces
 # required reviews, branch protection and a head that moved on the server.
 #
-# This file only DEFINES a function; sourcing it has no other effect.
+# This file only DEFINES functions; sourcing it has no other effect.
+#
+#   autodrive_merge_method_known <method>
+#       True for the methods autodrive_merge takes: empty (the repository's
+#       own choice), merge, squash or rebase. This is the one list of them;
+#       autodrive_merge_loop_run.sh checks a run's method with it before any
+#       merge-ready round prompt names the method (#1888).
+#
+#   autodrive_merge_printable <text> <bytes>
+#       Prints <text> with every byte outside printable ASCII replaced by '?',
+#       cut at <bytes> bytes, for text this file did not write that a reason
+#       or an error repeats.
 #
 #   autodrive_merge <pr> <expected_sha> [merge_method]
 #       Calls gh once for each, in order: PR state, title, body and
@@ -52,11 +63,22 @@
 # chosen method and the reason are recorded on every result line as
 # `merge_method` and `merge_method_reason`.
 
+autodrive_merge_method_known() {
+  case "${1-}" in
+    ""|merge|squash|rebase) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+autodrive_merge_printable() {
+  printf '%s' "$1" | LC_ALL=C tr -c '\040-\176' '?' | head -c "$2"
+}
+
 autodrive_merge() {
   local -x LC_ALL=C
   local pr="${1:-}" sha="${2:-}" given="${3:-}" mm state rc vrc out errf json subject ms
   local method="" method_reason="" allow_merge="" allow_squash="" allow_rebase="" allows=""
-  local api_out api_rc parsed shown
+  local api_out api_rc api_err parsed shown
   _autodrive_merge_emit() { # <result> <reason>
     jq -cn --arg r "$1" --argjson pr "$pr" --arg sha "$sha" --arg why "$2" \
       --arg mm "$method" --arg mmr "$method_reason" \
@@ -150,24 +172,31 @@ autodrive_merge() {
   # whose branch conflicts still ends exactly as it did. Past this case the
   # given method is one of three literals, so every later mention of it is
   # already safe to name. The text refused here is the caller's own: bytes
-  # outside printable ASCII become '?' and it is cut at 32 bytes, so no quote,
-  # newline or escape sequence travels on into the finalisation statement or
-  # the hand-off comment.
-  case "$given" in
-    ""|merge|squash|rebase) ;;
-    *)
-      shown="$(printf '%s' "$given" | tr -c '\040-\176' '?' | head -c 32)"
-      _autodrive_merge_unsettled "the run was given '${shown}', which is not merge, squash or rebase"
-      return 4 ;;
-  esac
+  # outside printable ASCII become '?' and it is cut at 32 bytes, so no
+  # newline, control character or escape sequence travels on into the
+  # finalisation statement or the hand-off comment. Quotes are printable and
+  # stay; the reason is a JSON string, so they stay data.
+  if ! autodrive_merge_method_known "$given"; then
+    shown="$(autodrive_merge_printable "$given" 32)"
+    _autodrive_merge_unsettled "the run was given '${shown}', which is not merge, squash or rebase"
+    return 4
+  fi
   # One read of the repository's own settings. An explicit method is checked
   # against it too: GitHub refuses a method the repository disallows, so a run
   # that was given one is handed off with the reason rather than sent to a
-  # certain refusal.
-  api_out="$(gh api "repos/{owner}/{repo}" --jq '[.allow_merge_commit,.allow_squash_merge,.allow_rebase_merge]|@tsv')"; api_rc=$?
+  # certain refusal. gh's standard error still reaches this step's log, as
+  # before; when the read fails, its first line that is not blank, made
+  # printable and cut at 200 bytes, follows the exit status in the reason, so
+  # the hand-off says why (a 403, a missing scope), not only that it failed.
+  errf="$(mktemp)" || { _autodrive_merge_unsettled "the repository's allowed methods could not be read (no temporary file)"; return 4; }
+  api_out="$(gh api "repos/{owner}/{repo}" --jq '[.allow_merge_commit,.allow_squash_merge,.allow_rebase_merge]|@tsv' 2>"$errf")"; api_rc=$?
+  cat -- "$errf" >&2
+  api_err="$(awk 'NF { print; exit }' "$errf")"
+  rm -f -- "$errf"
   [ "$api_rc" -eq 79 ] && return 79
   if [ "$api_rc" -ne 0 ]; then
-    _autodrive_merge_unsettled "the repository's allowed methods could not be read (gh exit ${api_rc})"
+    shown="$(autodrive_merge_printable "$api_err" 200)"
+    _autodrive_merge_unsettled "the repository's allowed methods could not be read (gh exit ${api_rc}${shown:+: ${shown}})"
     return 4
   fi
   # One line of exactly three true/false fields, or nothing: a reading that is
