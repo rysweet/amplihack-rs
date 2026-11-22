@@ -184,7 +184,7 @@ fn a_timed_out_live_login_shows_failed_in_the_cycle_line() {
 fn a_timed_out_candidate_is_never_the_target() {
     let slow = reading("slow", &timed_out());
     let cands = [measured("a-slow", &slow)];
-    assert_eq!(best(&cands), None);
+    assert_eq!(best(&settings(), &cands), None);
     // At a threshold with only an unknown candidate there is no swap.
     assert_eq!(
         decide(
@@ -220,7 +220,7 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
     // "a-slow" sorts first, so a tie-break bug would pick it.
     let cands = [measured("a-slow", &slow), measured("b-spare", &spare)];
     assert_eq!(
-        best(&cands).map(|(n, h)| (n.as_str(), h)),
+        best(&settings(), &cands).map(|(n, h)| (n.as_str(), h)),
         Some(("b-spare", 90))
     );
     assert_eq!(

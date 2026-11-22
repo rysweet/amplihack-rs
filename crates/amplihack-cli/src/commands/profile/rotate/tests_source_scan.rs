@@ -67,6 +67,11 @@ fn rotate_has_the_planned_files() {
         "fresh.rs",
         "fresh_msg.rs",
         "swap_back.rs",
+        // Issues #2909 and #2910: the event wake, its lines, and the
+        // fresh reading taken of a target before a swap.
+        "wake.rs",
+        "wake_msg.rs",
+        "fresh_confirm.rs",
     ] {
         assert!(names.iter().any(|n| n == want), "missing rotate/{want}");
     }

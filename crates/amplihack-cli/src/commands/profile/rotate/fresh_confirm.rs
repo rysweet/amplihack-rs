@@ -1,0 +1,76 @@
+//! Issue #2910, rule 3: before a swap, one fresh reading of the chosen
+//! target confirms that it has session and week room now. If it does not,
+//! the next candidate is tried; if none has room, the rotator says so and
+//! waits for the next event.
+//!
+//! On 21 November 2026 at 18:00Z the rotator on calypso swapped to nnorth,
+//! which was spent within minutes, and about nine runs went into waits
+//! bound to 22:22Z until the 18:10:15Z swap released them. The stored
+//! reading was right when it was taken and wrong by the time it was used.
+//!
+//! This extends the freshness gate (`fresh::settle`) rather than adding a
+//! probe path of its own: the reading is taken by the same re-read hook,
+//! out of the same per-cycle budget, and the gate's own re-decision picks
+//! the next candidate.
+
+use super::super::cycle::Ctx;
+use super::super::decide::Probed;
+use super::super::log::msg;
+use super::super::overflow::plan_usable;
+use crate::commands::profile::name::ProfileName;
+use std::time::{Duration, Instant};
+
+/// Whether the chosen target must be read once more before the swap
+/// (issue #2910, rule 3).
+///
+/// `first_visit` is false once this cycle has already confirmed that name,
+/// so the confirmation happens once per cycle and the gate cannot loop on
+/// it. `can_read` is false where no read is possible at all: under the
+/// lock (`Reread::Never`), or with no re-read hook, as in the dry run and
+/// in tests. There the swap is not refused for want of a confirmation,
+/// because refusing every swap whenever a read cannot be made would turn a
+/// safety check into an outage. That weaker guarantee is logged
+/// ([`msg::CONFIRM_SKIPPED`]), never silent.
+pub fn must_confirm(first_visit: bool, can_read: bool) -> bool {
+    first_visit && can_read
+}
+
+/// The confirming read of `to` before a swap (issue #2910): one reading,
+/// taken now, out of the same per-cycle budget as the freshness gate's
+/// re-reads.
+///
+/// `None` means no reading could be taken and the swap goes ahead on the
+/// stored one. That happens only where a read is impossible or its budget
+/// is spent, and it always writes a line, so the weaker guarantee is
+/// visible. A reading that shows the login has no room after all becomes
+/// [`Probed::no_room`], and the gate's own re-decision then picks the next
+/// candidate; a read that fails is unknown, as a stale re-read's is.
+pub(super) fn read(
+    ctx: &Ctx,
+    to: &ProfileName,
+    old: &Probed,
+    reads: &mut usize,
+    budget: Duration,
+    started: Instant,
+    lines: &mut Vec<String>,
+) -> Option<Probed> {
+    let left = budget.saturating_sub(started.elapsed());
+    let reread = ctx.reread?;
+    if *reads >= super::MAX_REREADS_PER_CYCLE || left.is_zero() {
+        lines.push(msg::CONFIRM_SKIPPED.to_string());
+        return None;
+    }
+    if ctx.stopping() {
+        return None;
+    }
+    *reads += 1;
+    let p = super::fresh_probe(ctx, to, old, reread(ctx, to, left), false, true, lines);
+    if p == Probed::failed() {
+        return Some(p);
+    }
+    if !plan_usable(&ctx.settings, &p.reading) {
+        lines.push(msg::no_room(to));
+        return Some(Probed::no_room());
+    }
+    Some(p)
+}

@@ -13,6 +13,13 @@
 //! - `decide(&Settings, live: &Reading, candidates: &[Measured], swapped_at:
 //!   Option<i64>, now: i64) -> Decision`, where `Decision` is `Stay`,
 //!   `Swap { to, reason: Reason::{Threshold, Upgrade} }` or `Alert`.
+//! - Issue #2910: a candidate is one the rotator may move onto only when its
+//!   session is below `--session-at` and its week below `--week-at`, both
+//!   strictly. The bound used to be "not exhausted", which let a threshold
+//!   swap name a login already at a threshold. With the defaults (85 and 90)
+//!   the tightest candidate left has headroom 11, so several fixtures below
+//!   put the candidate's pressure on its week and move the margin rather
+//!   than the reading.
 
 use super::decide::{Decision, Measured, Reading, Reason, Windows, decide};
 use super::settings::Settings;
@@ -161,44 +168,72 @@ fn week_threshold_is_inclusive() {
     );
 }
 
+/// Issue #2910 moved the candidates' pressure from their session window to
+/// their week. The old fixtures read 85% and 86% of a session against
+/// `--session-at` 85, so neither is a login the rotator may move onto any
+/// more; 85% and 86% of a week against `--week-at` 90 give the same headroom
+/// of 15 and 14 and are still targets, so the margin is what the test turns
+/// on, as it always was.
 #[test]
 fn margin_of_five_is_inclusive_and_four_is_not_enough() {
     // live headroom 10.
     let live = r(90.0, 0.0);
-    let five = [c("spare", r(85.0, 0.0))];
+    let five = [c("spare", r(0.0, 85.0))];
     assert_eq!(
         decide(&settings(), &live, &five, None, NOW),
         swap("spare", Reason::Threshold)
     );
-    let four = [c("spare", r(86.0, 0.0))];
+    let four = [c("spare", r(0.0, 86.0))];
     assert_eq!(
         decide(&settings(), &live, &four, None, NOW),
         Decision::Alert
     );
 }
 
+/// A failed live probe reads as headroom 0, so the gain a candidate has to
+/// clear is simply its own headroom.
+///
+/// Issue #2910 bounds a candidate at `--session-at` and `--week-at`, so the
+/// tightest login the rotator may move onto has headroom 11 (a week at 89%)
+/// and the old fixtures at 95% and 96% of a session are not targets at all.
+/// The margin moves across that candidate's headroom instead of the reading
+/// moving across the margin, which turns on the same number: with a failed
+/// live probe the gain is 11, not 11 less the live login's own headroom.
 #[test]
 fn a_failed_live_probe_needs_a_swap_with_live_headroom_zero() {
+    let spare = [c("spare", r(0.0, 89.0))];
+    assert_eq!(
+        decide(&settings(), &Reading::Failed, &spare, None, NOW),
+        swap("spare", Reason::Threshold),
+        "headroom 11 clears the default margin against 0"
+    );
     assert_eq!(
         decide(
-            &settings(),
+            &Settings {
+                margin: 11,
+                ..settings()
+            },
             &Reading::Failed,
-            &[c("spare", r(95.0, 0.0))],
+            &spare,
             None,
             NOW
         ),
         swap("spare", Reason::Threshold),
-        "headroom 5 meets the margin against 0"
+        "headroom 11 meets a margin of 11 against 0"
     );
     assert_eq!(
         decide(
-            &settings(),
+            &Settings {
+                margin: 12,
+                ..settings()
+            },
             &Reading::Failed,
-            &[c("spare", r(96.0, 0.0))],
+            &spare,
             None,
             NOW
         ),
-        Decision::Alert
+        Decision::Alert,
+        "a point short of the margin against 0"
     );
 }
 
@@ -336,6 +371,12 @@ fn a_swap_time_in_the_future_still_holds() {
     );
 }
 
+/// Issue #2910: the candidate carries its 50% on its week rather than its
+/// session. At `--session-at` 50 a candidate reading 50% of a session is a
+/// login the rotator may not move onto, while 50% of a week is well under
+/// `--week-at` 90. The headroom is 50 either way, so the live login still
+/// trips the custom session threshold and the custom margin of 0 is still
+/// what admits an equal headroom.
 #[test]
 fn custom_thresholds_and_margins_apply() {
     let s = Settings {
@@ -344,7 +385,7 @@ fn custom_thresholds_and_margins_apply() {
         ..settings()
     };
     assert_eq!(
-        decide(&s, &r(50.0, 0.0), &[c("spare", r(50.0, 0.0))], None, NOW),
+        decide(&s, &r(50.0, 0.0), &[c("spare", r(0.0, 50.0))], None, NOW),
         swap("spare", Reason::Threshold),
         "margin 0: equal headroom is enough"
     );

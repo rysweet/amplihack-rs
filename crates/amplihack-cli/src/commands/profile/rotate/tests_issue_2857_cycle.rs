@@ -9,10 +9,19 @@
 //! only when the bit is `true`; the rotator is the right place to decide,
 //! because it is the one that chose the login.
 //!
-//! The rule the bit records is the same one the plan-room swap uses to choose a
-//! target (`plan_room::room_under`: `room(session, week)` and
-//! `session < session_at`), shared so the rotator cannot swap onto a login its
-//! own ledger then reports as full.
+//! The rule the bit records is `plan_room::room_under`: `room(session, week)`
+//! and `session < session_at`.
+//!
+//! Issue #2857 shared that one rule with the plan-room chooser, so the rotator
+//! could not swap onto a login its own ledger then reported as full. Issue
+//! #2910 split the two, in one direction only. The chooser is now the stricter
+//! `overflow::plan_usable`, which also holds the week below `--week-at`, while
+//! the recorded bit keeps `room_under` and its 100% week bound exactly, because
+//! the usage-limit wait of issue #2911 reads what that bit means. The split is
+//! safe in the direction #2857 cared about: every login the chooser accepts
+//! also satisfies `room_under`, so a swap still cannot record no room. What is
+//! no longer true is the converse, and `d3` below pins it: a login past
+//! `--week-at` has room by the recorded rule and is still not a target.
 //!
 //! Which cycles write it, and which leave it out:
 //!
@@ -172,14 +181,22 @@ fn d_the_rotator_does_not_swap_onto_a_login_at_98_percent_and_records_no_room() 
     assert_ne!(v.live_room, Some(true), "{v:?}");
 }
 
-/// The positive control for the case above: the same cycle with the other login
-/// under `--session-at` but short of capacity (its week is past `--week-at`) is
-/// still a plan-room swap, and it records room, because the writer and the
-/// chooser share one definition of room.
+/// The positive control for the case above: a cycle that does reach a plan-room
+/// swap records room on the login it moved to.
+///
+/// Issue #2910 moved both readings. The fixture was `spare` at 60/97 with the
+/// live login exhausted, which chose `spare` through the plan-room pass even
+/// though its week was past `--week-at`; that is the swap #2910 forbids, and it
+/// is kept as `d3` below. A plan-room target must now be under `--week-at` as
+/// well, so `spare` reads 60/89; and a target under both bounds has at least 11
+/// points of headroom, so the live login needs headroom of its own for the gain
+/// to stay under `--margin` and the threshold pass to stand aside. `work`
+/// therefore reads 0/92: past `--week-at`, so a swap is wanted, with 8 points of
+/// headroom to spare's 11.
 fn measure_a_plan_room_login_left(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let probes = probes_for(snap, &[("spare", rd(60.0, 97.0, None))]);
-    decide_measured(ctx, snap, exh(100.0, 20.0), probes, at)
+    let probes = probes_for(snap, &[("spare", rd(60.0, 89.0, None))]);
+    decide_measured(ctx, snap, rd(0.0, 92.0, None), probes, at)
 }
 
 #[test]
@@ -195,6 +212,36 @@ fn d2_a_plan_room_swap_onto_a_login_under_session_at_records_room() {
     let v = wait_view(&e);
     assert_eq!(v.live_room, Some(true), "{v:?}");
     assert!(v.fresh_room(start), "{v:?}");
+}
+
+/// Issue #2910, rule 2, on the fixture `d2` used to carry: `work` is exhausted
+/// and the only other login reads 60% session and 97% week. It is under
+/// `--session-at`, and `room_under` (what `live_room` records) counts it as
+/// having room, so before #2910 the plan-room pass swapped onto it. On 21
+/// November 2026 at 07:20:31Z that same rule put candide on a login at 98% of
+/// its week, and the next request met the organisation's spend limit.
+///
+/// The week bound now applies in the plan-room pass too, so there is no swap,
+/// and nothing is recorded as room because the live login was never read with
+/// room of its own.
+fn measure_a_week_spent_login_left(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = now();
+    let probes = probes_for(snap, &[("spare", rd(60.0, 97.0, None))]);
+    decide_measured(ctx, snap, exh(100.0, 20.0), probes, at)
+}
+
+#[test]
+fn d3_the_rotator_does_not_swap_onto_a_login_past_week_at_and_records_no_room() {
+    let e = env();
+    let start = limit_hit();
+    let got = run(&e, measure_a_week_spent_login_left);
+    let log = log_of(&e);
+    assert_ne!(got, CycleOutcome::Swapped, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.l), "work stays live: {log}");
+    assert!(!log.contains("reason=plan-room"), "{log}");
+    let v = wait_view(&e);
+    assert!(!v.fresh_room(start), "{v:?}");
+    assert_ne!(v.live_room, Some(true), "{v:?}");
 }
 
 // --- (e) A cycle that did not read the live login records no room -------------

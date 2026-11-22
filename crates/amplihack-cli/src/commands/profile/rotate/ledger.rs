@@ -27,7 +27,7 @@ pub use super::spend_blocks::{
     spend_reset,
 };
 const VERSION: u32 = 1;
-const MAX_STATE: u64 = 64 * 1024;
+pub(super) const MAX_STATE: u64 = 64 * 1024;
 /// The longest account value accepted (an e-mail address is at most 320).
 pub const MAX_ACCOUNT: usize = 320;
 
@@ -349,7 +349,10 @@ impl RotateState {
         let older = self.foreign_rotator().is_some();
         let bytes = serde_json::to_vec_pretty(&for_older_readers(l, older))
             .map_err(|e| inconsistent(e.to_string()))?;
-        self.write("ledger.json", &bytes)
+        self.write("ledger.json", &bytes)?;
+        // #2909: so the watch loop does not take its own rename for an event.
+        super::daemon::wake::note_written(&bytes);
+        Ok(())
     }
 
     /// The pid of a running `profile rotate watch` whose executable is not

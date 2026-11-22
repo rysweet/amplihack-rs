@@ -16,8 +16,18 @@
 //! Moving *to* a login asks more (issue #2857): [`room_under`] adds that its
 //! session window is below the rotator's own `--session-at`, so the rotator
 //! does not swap onto a login a step would meet a limit on at once. That is
-//! the rule [`choose`] filters by, and the one the rotator records on the
-//! cycle as `live_room` for the usage-limit wait.
+//! the rule the rotator records on the cycle as `live_room` for the
+//! usage-limit wait, and it keeps that meaning exactly.
+//!
+//! Issue #2910 split the two apart. [`choose`] no longer filters by
+//! [`room_under`]: it filters by `overflow::plan_usable`, the one predicate
+//! for "may the rotator move onto this login", which adds that the week
+//! window is below `--week-at`. #1804 deliberately held the week bound at
+//! 100% here; on 21 November 2026 at 07:20:31Z that bound put candide on a
+//! login at 98% of its week with `reason=plan-room`, and the next request
+//! met the organisation's spend limit. The bound is now `--week-at` in
+//! every pass. [`room_under`] and [`has_room_under`] are unchanged, because
+//! the usage-limit wait of issue #2911 reads what they mean.
 
 use super::decide::{Measured, Reading};
 
@@ -43,9 +53,13 @@ pub fn has_room(r: &Reading) -> bool {
     }
 }
 
-/// Whether a login using `session`% and `week`% is one the rotator may move
-/// *to*: it has [`room`], and its session window is below the rotator's own
+/// Whether a login using `session`% and `week`% has room a waiting step can
+/// use: it has [`room`], and its session window is below the rotator's own
 /// `--session-at` (issue #2857).
+///
+/// This is `last_cycle.live_room`, which the usage-limit wait reads. It is
+/// not the test for a swap target: that is `overflow::plan_usable`, which
+/// since issue #2910 also holds the week below `--week-at`.
 ///
 /// [`room`] alone says the login can still be used; this says a step moved
 /// onto it would not meet its limit at once. On 19 November 2026 the
@@ -55,12 +69,10 @@ pub fn has_room(r: &Reading) -> bool {
 /// `--session-at` is at its threshold, not under it. An unreadable (NaN)
 /// session fails both comparisons, so it is never a target.
 ///
-/// The week bound stays at 100%, not `--week-at`: the evidence named the
-/// session window, and the two settings answer different questions.
-///
-/// One definition, shared by the chooser ([`choose`]) and by the rotator's
-/// own record of room on the login it made live (`last_cycle.live_room`), so
-/// the rotator cannot swap onto a login its ledger then reports as full.
+/// The week bound here stays at 100%: this answers whether a login has room
+/// at all, which is what a waiting step needs to know. Issue #2910 put the
+/// stricter `--week-at` bound on the target test instead, so one is not
+/// weakened to serve the other.
 pub fn room_under(session: f64, week: f64, session_at: u8) -> bool {
     room(session, week) && session < f64::from(session_at)
 }
@@ -75,9 +87,9 @@ pub fn has_room_under(r: &Reading, session_at: u8) -> bool {
 }
 
 /// The plan login to move to for room, if any: one pass over the live login
-/// and the plan logins, taking those with [`room_under`] (week below 100
-/// and session below `--session-at`). Ranked by week, then session, then
-/// name. `None` when nothing qualifies, or when the live login ranks first,
+/// and the plan logins, taking those `overflow::plan_usable` accepts
+/// (session below `--session-at` and week below `--week-at`, both strict,
+/// issue #2910). Ranked by week, then session, then name. `None` when nothing qualifies, or when the live login ranks first,
 /// so the rotator does not swap back and forth between two logins with the
 /// same week.
 ///
@@ -98,10 +110,9 @@ pub fn choose(s: &Settings, live: Option<&Measured>, plan: &[Measured]) -> Optio
     let pool = live
         .into_iter()
         .chain(plan)
+        .filter(|m| super::overflow::plan_usable(s, &m.reading))
         .filter_map(|m| match m.reading {
-            Reading::Measured { session, week } if room_under(session, week, s.session_at) => {
-                Some((&m.name, session, week))
-            }
+            Reading::Measured { session, week } => Some((&m.name, session, week)),
             _ => None,
         });
     let rank = |a: &(&ProfileName, f64, f64), b: &(&ProfileName, f64, f64)| -> Ordering {
@@ -115,3 +126,7 @@ pub fn choose(s: &Settings, live: Option<&Measured>, plan: &[Measured]) -> Optio
     }
     Some(winner.clone())
 }
+
+#[cfg(test)]
+#[path = "tests_issue_2910.rs"]
+mod tests_issue_2910;

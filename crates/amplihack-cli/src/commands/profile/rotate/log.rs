@@ -190,6 +190,9 @@ pub fn cut(s: &str, max: usize) -> String {
 
 #[path = "log_shown.rs"]
 mod shown;
+/// Issues #2909 and #2910: the wake and target-choice lines.
+#[path = "wake_msg.rs"]
+pub mod wake_msg;
 pub use shown::{Shown, shown, shown_of};
 
 /// The message grammar of docs/reference/profile-command.md, Rotate log.
@@ -328,6 +331,7 @@ pub mod msg {
     pub use super::super::revalidate::changed_line as changed;
     #[cfg(test)]
     pub use super::super::revalidate::reconsidered;
+    pub use super::wake_msg::*;
 
     /// A cycle stopped by the rotation pin (issue #1691).
     pub fn held(name: &ProfileName) -> String {

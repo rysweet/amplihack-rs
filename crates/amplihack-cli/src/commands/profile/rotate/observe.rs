@@ -368,13 +368,14 @@ pub(super) fn decide_measured(
         (Decision::Stay, Some(Tag::Out)) => Some(Tag::On),
         (_, tag) => tag,
     };
-    let others = probes.iter().map(|(n, p)| (n.clone(), p.reading)).collect();
     // `probed` is always `Some` here: `Room::of` treats `None` (test stubs
     // only) as clean.
     Ok(Measurement {
         live: probe.reading,
-        others,
+        others: probes.iter().map(|(n, p)| (n.clone(), p.reading)).collect(),
         probed: Some((probe, probes)),
+        // Issue #2910: why each candidate was passed over, when none had room.
+        fresh_lines: msg::rejections(&ctx.settings, &decision, &measured, live_name, &blocks, t),
         decision,
         note,
         failed,
@@ -384,7 +385,6 @@ pub(super) fn decide_measured(
         unknown_plan: verdict.unknown_plan,
         key_held: verdict.key_held,
         measured_at,
-        fresh_lines: Vec::new(),
     })
 }
 

@@ -15,6 +15,17 @@ pub fn stale(name: &ProfileName, old: &Shown, new: &Shown) -> String {
     )
 }
 
+/// Issue #2910: the chosen target was read again before the swap, whether
+/// or not its stored reading was stale. `confirm: <name> was s=<a>% w=<b>%;
+/// now s=<c>% w=<d>%`.
+pub fn confirmed(name: &ProfileName, old: &Shown, new: &Shown) -> String {
+    format!(
+        "confirm: {name} was {}; now {}",
+        usage(old, " "),
+        usage(new, " ")
+    )
+}
+
 /// Issue #2211: the live login's reading was frozen or old and is read
 /// again. Fixed text, with no figures.
 pub const STALE_LIVE: &str = "stale live reading; re-read";

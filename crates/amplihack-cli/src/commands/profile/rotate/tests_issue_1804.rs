@@ -7,14 +7,27 @@
 //!   week both below 100. `Failed` and `Exhausted` never have room.
 //! - `choose(&Settings, live: Option<&Measured>, plan: &[Measured]) ->
 //!   Option<ProfileName>`: one pass over the live login and the plan logins,
-//!   taking those with session < `session_at` and week < 100. Issue #2857:
+//!   taking those `overflow::plan_usable` accepts. Issue #2857:
 //!   the rotator does not plan-room swap onto a login already at or above its
 //!   session threshold, so the second pass that took any login with room
-//!   (session < 100) is gone. Ranked by week, then session, then name.
-//!   `None` when nothing qualifies or when the winner is the live login (the
-//!   flapping guard). `room()` and `has_room` keep the 100% rule: auto-switch
-//!   calls them, and the `no_room` ledger record is read by it.
+//!   (session < 100) is gone. Issue #2910: nor onto one at or above
+//!   `--week-at`, where this file used to bound the week at 100. Ranked by
+//!   week, then session, then name. `None` when nothing qualifies or when the
+//!   winner is the live login (the flapping guard). `room()` and `has_room`
+//!   keep the 100% rule: auto-switch calls them, and the `no_room` ledger
+//!   record is read by it.
 //! - `Reason::PlanRoom`, rendered `plan-room`.
+//!
+//! Issue #2910 moved much of this file's evidence. Its replay logins sit at
+//! 92% to 97% of their week, which the plan-room pass used to accept and now
+//! does not: `--week-at` defaults to 90. The replay therefore runs at
+//! `--week-at 95`, the figure #2910 itself names, so it keeps pinning
+//! #1804's ranking rule at the cycle's own readings, and
+//! [`at_the_default_week_at_the_1804_replay_has_no_target_at_all`] pins what
+//! the default now does to the same cycle. Where a login's week was only a
+//! device to reach the plan-room pass (a login with session room but no
+//! capacity), the device has moved under the bound instead, because #2910
+//! made `plan_usable` the admission rule for both passes.
 //!
 //! Contract (`overflow::decide_overflow`, live on a plan login), D1:
 //! 1. `decide`; a swap onto a plan login with capacity, or a stay, stands.
@@ -31,9 +44,9 @@
 //! credit profile (`OverflowOut`); off a blocked profile, the next usable
 //! per-token one only when no plan login has room.
 
-use super::decide::{Decision, Measured, Probed, Reading, Reason, Win, Windows};
+use super::decide::{Decision, Measured, Probed, Reading, Reason, Win, Windows, needs_swap};
 use super::ledger::OverflowBlock;
-use super::overflow::{OverflowInput, Tag, Verdict, decide_overflow};
+use super::overflow::{OverflowInput, Tag, Verdict, decide_overflow, plan_usable};
 use super::plan_room::{choose, has_room, has_room_under, room_under};
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
@@ -45,10 +58,20 @@ const HOUR: i64 = 3600;
 const FAR: Option<i64> = Some(NOW + 4 * HOUR);
 const NEAR: Option<i64> = Some(NOW + 600);
 
+/// The `--week-at` the #1804 replay runs at. Its logins sit at 92% of their
+/// week, which issue #2910 keeps out of every pass at the default of 90; 95
+/// is the figure #2910's own text names, and at it the replay still pins
+/// what #1804 settled.
+const REPLAY_WEEK_AT: u8 = 95;
+
 fn settings(session_at: u8) -> Settings {
+    settings_at(session_at, 90)
+}
+
+fn settings_at(session_at: u8, week_at: u8) -> Settings {
     Settings {
         session_at,
-        week_at: 90,
+        week_at,
         margin: 5,
         upgrade_margin: 30,
         hold: 3600,
@@ -142,8 +165,16 @@ impl Case {
         }
     }
 
+    /// Sets `--session-at`, leaving `--week-at` as it is: issue #2910 made
+    /// the week a bound on every pass, so a case that has chosen one must
+    /// keep it when its session threshold moves.
     fn at(mut self, session_at: u8) -> Self {
-        self.s = settings(session_at);
+        self.s.session_at = session_at;
+        self
+    }
+
+    fn week_at(mut self, week_at: u8) -> Self {
+        self.s.week_at = week_at;
         self
     }
 
@@ -211,8 +242,15 @@ impl Case {
 
 /// The 19:42:56Z cycle from issue #1804: live iivanovich at 87/61 and
 /// seven plan candidates. Every reset is four hours away.
+///
+/// Run at [`REPLAY_WEEK_AT`], not at the default 90. Five of its seven
+/// candidates sit at 92% to 97% of their week, which issue #2910 keeps out
+/// of every pass; at 95 the cycle still has ccapstone and ddrumpf to choose
+/// between, which is what #1804 was about. See
+/// [`at_the_default_week_at_the_1804_replay_has_no_target_at_all`].
 fn replay() -> Case {
     Case::new("iivanovich", measured(87.0, 61.0, FAR))
+        .week_at(REPLAY_WEEK_AT)
         .cand("aanderson", measured(25.0, 95.0, FAR))
         .cand("bbuck", measured(50.0, 97.0, FAR))
         .cand("ccapstone", measured(11.0, 92.0, FAR))
@@ -354,19 +392,25 @@ fn choose_follows_session_at_across_its_range_and_never_takes_a_nan() {
     }
 }
 
-/// The week bound is unchanged: `< 100`, not `--week-at`. A login under
-/// `--session-at` with its week at 99.9% is still a target.
+/// Issue #2910 reverses #1804's week bound of 100. On 21 November 2026 at
+/// 07:20:31Z the rotator moved candide onto a login at 98% of its week
+/// (`plan-room`), and its next request met the spend limit. The bound is
+/// now `--week-at` (90 by default), strictly, as the swap rules' is: a
+/// login with its week at 99.9% is never a target.
 #[test]
-fn choose_keeps_the_week_bound_at_100_not_week_at() {
+fn choose_bounds_the_week_at_week_at_not_100() {
     let s = settings(85);
     assert_eq!(
-        choose(&s, None, &[m("spare", &measured(10.0, 99.9, FAR))]),
+        choose(&s, None, &[m("spare", &measured(10.0, 89.9, FAR))]),
         Some(n("spare"))
     );
-    assert_eq!(
-        choose(&s, None, &[m("spare", &measured(10.0, 100.0, FAR))]),
-        None
-    );
+    for week in [90.0, 99.9, 100.0] {
+        assert_eq!(
+            choose(&s, None, &[m("spare", &measured(10.0, week, FAR))]),
+            None,
+            "week {week}"
+        );
+    }
 }
 
 #[test]
@@ -380,9 +424,15 @@ fn choose_ignores_failed_exhausted_and_full_logins() {
     assert_eq!(choose(&s, None, &plan), None);
 }
 
+/// The flapping guard, at the replay's own readings. Run at
+/// [`REPLAY_WEEK_AT`]: at the default 90 neither login is a target, so the
+/// `None` would say nothing about the guard. Issue #2910 left the guard
+/// where it is but put it out of a cycle's reach, which
+/// [`a_login_needs_a_swap_exactly_when_it_is_not_a_target`] records; this
+/// is now the only test that exercises it.
 #[test]
 fn choose_returns_none_when_the_live_login_ranks_first() {
-    let s = settings(85);
+    let s = settings_at(85, REPLAY_WEEK_AT);
     let live = m("ddrumpf", &measured(0.0, 92.0, FAR));
     let plan = vec![m("ccapstone", &measured(11.0, 92.0, FAR))];
     assert_eq!(choose(&s, Some(&live), &plan), None);
@@ -393,12 +443,40 @@ fn choose_counts_the_live_login_so_it_ranks_first_and_nothing_swaps() {
     let s = settings(85);
     // The live login is under --session-at and wins; spare, with a lower
     // week but past --session-at, is not a target at all (issue #2857).
-    let live = m("work", &measured(10.0, 95.0, FAR));
+    // Issue #2910 moved the live login's week from 95 under --week-at 90,
+    // because a login over that bound is no longer in the pool to rank.
+    let live = m("work", &measured(10.0, 85.0, FAR));
     let plan = vec![m("spare", &measured(92.0, 20.0, FAR))];
     assert_eq!(choose(&s, Some(&live), &plan), None);
 }
 
 // --- decide_overflow: T1 and T2 ------------------------------------------------------
+
+/// What issue #2910 costs issue #1804, stated rather than left implicit.
+///
+/// `--week-at` defaults to 90. Five of the replay's seven candidates are
+/// between 92% and 97% of their week, the sixth is at 98% of its session
+/// and the seventh is exhausted, so at the default no login in that cycle
+/// is one the rotator may move onto and it alerts. #1804's remedy for that
+/// cycle, a plan-room swap to ddrumpf on its fresh session window, needs
+/// `--week-at 95` or higher to fire at all.
+///
+/// Nothing here argues the default is wrong. The alert ends nothing: the
+/// rotator waits for the next limit event or the earliest recorded reset
+/// and tries again. But an operator who wants #1804's behaviour at 92% of
+/// a week has to say so with `--week-at`, and that is a change this run
+/// makes and does not hide.
+#[test]
+fn at_the_default_week_at_the_1804_replay_has_no_target_at_all() {
+    let v = replay().week_at(90).run();
+    assert_eq!(v.decision, Decision::Alert, "{v:?}");
+    let v = replay().run();
+    assert_eq!(
+        v.decision,
+        swap("ddrumpf", Reason::PlanRoom),
+        "at --week-at {REPLAY_WEEK_AT}: {v:?}"
+    );
+}
 
 #[test]
 fn t1_the_replay_with_no_mark_swaps_to_ddrumpf_for_plan_room() {
@@ -425,17 +503,38 @@ fn t2_the_replay_with_the_api_key_marked_and_the_gate_open_still_swaps_to_ddrump
 
 // --- decide_overflow: the plan-room swap -------------------------------------------
 
+/// The replay's two closest logins, with ddrumpf live. Issue #2910 made
+/// this cycle say the same thing for a different reason at each bound, and
+/// both are pinned, because the old single assertion would now pass at the
+/// default without the flapping guard playing any part.
+///
+/// At [`REPLAY_WEEK_AT`] ddrumpf's week of 92 is under the bound, so it
+/// does not need a swap at all and the cycle stays. At the default 90 it is
+/// over the bound, so it does need one, and ccapstone is over the same
+/// bound and cannot take it: the cycle alerts, and the rotator waits for a
+/// reset rather than moving work onto a login with no more room than the
+/// one it is leaving.
 #[test]
 fn the_flapping_guard_keeps_ddrumpf_live() {
-    let v = Case::new("ddrumpf", measured(0.0, 92.0, FAR))
-        .cand("ccapstone", measured(11.0, 92.0, FAR))
-        .run();
+    let case = || {
+        Case::new("ddrumpf", measured(0.0, 92.0, FAR)).cand("ccapstone", measured(11.0, 92.0, FAR))
+    };
+    let v = case().week_at(REPLAY_WEEK_AT).run();
+    assert_eq!(v.decision, Decision::Stay, "{v:?}");
+    let v = case().run();
     assert_eq!(v.decision, Decision::Alert, "{v:?}");
 }
 
 #[test]
 fn the_flapping_guard_still_lets_ccapstone_move_to_ddrumpf_once() {
-    let v = Case::new("ccapstone", measured(11.0, 92.0, FAR))
+    // Issue #2910: a cycle only reaches the plan-room pass when its live
+    // login needed a swap, which now means the live login is over a bound
+    // and so is never in the pool. ccapstone's week moved from 92 to 96, so
+    // it is over --week-at 95 and asks for a move, while ddrumpf at 92 is
+    // under it and can take one. The guard itself is pinned by
+    // `choose_returns_none_when_the_live_login_ranks_first`.
+    let v = Case::new("ccapstone", measured(11.0, 96.0, FAR))
+        .week_at(REPLAY_WEEK_AT)
         .cand("ddrumpf", measured(0.0, 92.0, FAR))
         .run();
     assert_eq!(v.decision, swap("ddrumpf", Reason::PlanRoom), "{v:?}");
@@ -478,14 +577,21 @@ fn d5_with_no_login_under_session_at_neither_cycle_swaps_in_either_direction() {
 /// `--week-at`), and the next cycle from there makes none.
 #[test]
 fn d5_a_swap_onto_a_login_under_session_at_happens_once_and_does_not_flap_back() {
+    // Issue #2910 moved spare's week from 95 to 89, under --week-at 90, so
+    // that it is still a target. Its headroom of 11 is one short of work's
+    // plus --margin, which is what keeps the first move a plan-room one.
     let first = Case::new("work", measured(90.0, 80.0, FAR))
-        .cand("spare", measured(80.0, 95.0, FAR))
+        .cand("spare", measured(80.0, 89.0, FAR))
         .run();
     assert_eq!(first.decision, swap("spare", Reason::PlanRoom), "{first:?}");
-    let second = Case::new("spare", measured(80.0, 95.0, FAR))
+    // The cycle after it used to reach the flapping guard. Under #2910 it
+    // does not get that far: spare is under both thresholds, so it needs no
+    // swap and the cycle stays. Nothing flaps back either way, and work, at
+    // 90% of its session, is no more a target now than it was then.
+    let second = Case::new("spare", measured(80.0, 89.0, FAR))
         .cand("work", measured(90.0, 80.0, FAR))
         .run();
-    assert_eq!(second.decision, Decision::Alert, "no flap back: {second:?}");
+    assert_eq!(second.decision, Decision::Stay, "no flap back: {second:?}");
 }
 
 /// Issue #2857 changed this test's expectation and kept it. An exhausted live
@@ -533,13 +639,28 @@ fn a_threshold_swap_that_meets_the_margin_is_not_replaced() {
 /// The issue's cycle with the live login further along. The most headroom is
 /// a tie that the name would give to ccapstone; the plan-room rank is not.
 #[test]
-fn a_threshold_swap_without_capacity_follows_the_plan_room_rank() {
-    let v = Case::new("iivanovich", measured(98.0, 61.0, FAR))
-        .cand("ccapstone", measured(11.0, 92.0, FAR))
-        .cand("ddrumpf", measured(0.0, 92.0, FAR))
-        .cand("eelsworth", measured(98.0, 17.0, FAR))
-        .run();
-    assert_eq!(v.decision, swap("ddrumpf", Reason::PlanRoom), "{v:?}");
+fn a_threshold_swap_now_names_only_a_login_with_capacity() {
+    // Issue #2910 made `plan_usable` the filter inside `decide::best`, so a
+    // threshold swap can no longer name a login without capacity and the
+    // plan-room fallback for one cannot fire. The arm is kept in
+    // `overflow::decide_restricted` as the statement of the rule; what is
+    // pinned here is that its input can no longer occur.
+    //
+    // This case used to assert that the threshold target ccapstone, at 92%
+    // of its week and so without capacity, gave way to the plan-room rank
+    // and ddrumpf. At --week-at 95 ccapstone has capacity and the threshold
+    // swap stands; at the default 90 neither login has capacity, nothing is
+    // a target, and the cycle alerts rather than moving onto either.
+    let case = || {
+        Case::new("iivanovich", measured(98.0, 61.0, FAR))
+            .cand("ccapstone", measured(11.0, 92.0, FAR))
+            .cand("ddrumpf", measured(0.0, 92.0, FAR))
+            .cand("eelsworth", measured(98.0, 17.0, FAR))
+    };
+    let v = case().week_at(REPLAY_WEEK_AT).run();
+    assert_eq!(v.decision, swap("ccapstone", Reason::Threshold), "{v:?}");
+    let v = case().run();
+    assert_eq!(v.decision, Decision::Alert, "{v:?}");
 }
 
 #[test]
@@ -563,15 +684,22 @@ fn plan_room_does_not_fire_for_an_exhausted_live_login_onto_a_login_at_97_percen
     assert_eq!(v.decision, Decision::Alert, "{v:?}");
 }
 
-/// The old intent, on a login the new rule allows: under `--session-at`, with
-/// a gain over the live login short of `--margin`, so it is a plan-room move and
-/// not a threshold swap.
+/// Issue #2910 changed the reason this cycle records, not where it goes. It
+/// used to be the old #1804 intent on a login the #2857 rule allowed: under
+/// `--session-at`, with a gain over the live login short of `--margin`, so
+/// a plan-room move rather than a threshold swap. That gain can no longer
+/// be short.
+/// An exhausted live login has no headroom, and every login the rotator may
+/// now move onto has at least eleven points of it, so the threshold pass
+/// clears `--margin` and names spare before the plan-room pass is reached.
+/// Spare's week moved from 97 to 80 because at 97 it is not a target at
+/// all.
 #[test]
-fn plan_room_fires_for_an_exhausted_live_login_onto_a_login_under_session_at() {
+fn an_exhausted_live_login_swaps_onto_a_login_under_both_thresholds() {
     let v = Case::new("work", exhausted(FAR))
-        .cand("spare", measured(50.0, 97.0, FAR))
+        .cand("spare", measured(50.0, 80.0, FAR))
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
 }
 
 #[test]
@@ -593,16 +721,23 @@ fn a_failed_live_probe_never_moves_onto_the_api_key() {
 }
 
 #[test]
-fn plan_room_comes_before_a_usable_credit_profile() {
+fn a_plan_login_with_room_comes_before_a_usable_credit_profile() {
     // D1: credit profiles are billed per token too, so a plan login with
     // room wins over them. Issue #2857: that login must be under
-    // --session-at (85); its 3 points of headroom over the live login are
-    // short of --margin 5, so the move is a plan-room one.
+    // --session-at (85); issue #2910: and under --week-at (90), so spare's
+    // week moved from 97 to 85.
+    //
+    // The reason moved with it. The live login is spent, so it has no
+    // headroom, and every login the rotator may now move onto has at least
+    // eleven points of it; the gain therefore clears --margin and the
+    // threshold pass names spare before the plan-room pass is reached. What
+    // this test is about is unchanged: the rotator goes to the plan login
+    // and spends nothing, which `tag: None` is the record of.
     let v = Case::new("work", measured(100.0, 40.0, FAR))
-        .cand("spare", measured(60.0, 97.0, FAR))
+        .cand("spare", measured(60.0, 85.0, FAR))
         .credits(measured(10.0, 10.0, FAR))
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
     assert_eq!(v.tag, None, "not an overflow move");
 }
 
@@ -689,13 +824,17 @@ fn credit_tiers_are_tried_in_tier_order_before_the_api_key() {
 }
 
 #[test]
-fn plan_room_comes_before_the_api_key() {
-    // Issue #2857: the plan login must be under --session-at (85).
+fn a_plan_login_with_room_comes_before_the_api_key() {
+    // Issue #2857: the plan login must be under --session-at (85). Issue
+    // #2910: and under --week-at (90), so its week moved from 97 to 85, and
+    // the reason from plan-room to threshold for the reason given in
+    // `a_plan_login_with_room_comes_before_a_usable_credit_profile`. The
+    // API key is still never chosen while a plan login has room.
     let v = Case::new("work", measured(100.0, 40.0, FAR))
-        .cand("spare", measured(60.0, 97.0, FAR))
+        .cand("spare", measured(60.0, 85.0, FAR))
         .marked_key()
         .run();
-    assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+    assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
     assert_eq!(v.tag, None);
 }
 
@@ -848,10 +987,11 @@ fn credits_still_come_before_the_api_key() {
 
 #[test]
 fn on_the_api_key_a_plan_login_with_room_is_a_way_off() {
-    // Issue #2857: "room" for a move is now under --session-at (85); work is
-    // at 60% session and short of capacity (its week is past --week-at).
+    // Issue #2857: "room" for a move is now under --session-at (85). Issue
+    // #2910 made --week-at a bound on every pass, so work's week moved from
+    // 95 to 85: a login short of capacity is no longer a way off the key.
     let mut c = Case::new("api-key", Probed::platform())
-        .cand("work", measured(60.0, 95.0, FAR))
+        .cand("work", measured(60.0, 85.0, FAR))
         .cand("spare", exhausted(FAR));
     c.overflow.push(OverflowEntry::platform(n("api-key")));
     let v = c.run();
@@ -875,8 +1015,9 @@ fn on_the_api_key_a_plan_login_past_session_at_is_not_a_way_off() {
 
 #[test]
 fn on_the_api_key_plan_room_comes_before_a_usable_credit_profile() {
+    // Issue #2910 moved work's week from 95 under --week-at 90.
     let mut c = Case::new("api-key", Probed::platform())
-        .cand("work", measured(60.0, 95.0, FAR))
+        .cand("work", measured(60.0, 85.0, FAR))
         .credits(measured(10.0, 10.0, FAR));
     c.overflow.push(OverflowEntry::platform(n("api-key")));
     let v = c.run();
@@ -911,12 +1052,13 @@ fn on_the_api_key_with_no_plan_room_a_usable_credit_profile_is_the_way_off() {
 
 #[test]
 fn on_a_credit_profile_a_plan_login_with_room_is_a_way_off() {
-    // 60/95 at --session-at 85: no capacity (the week is past --week-at), but
-    // room under the session threshold. Credits cost money, so the rotator
-    // returns to the plan login. Issue #2857: the fixture was 92/40, which is
-    // past --session-at; see the next test.
+    // 60/85 at --session-at 85 and --week-at 90: room under both. Credits
+    // cost money, so the rotator returns to the plan login. Issue #2857:
+    // the fixture was 92/40, which is past --session-at; see the next test.
+    // Issue #2910 then moved its week from 95 to 85, because a login past
+    // --week-at is not a target in any pass.
     let mut c = Case::new("credits", measured(10.0, 10.0, FAR))
-        .cand("work", measured(60.0, 95.0, FAR))
+        .cand("work", measured(60.0, 85.0, FAR))
         .cand("spare", exhausted(FAR));
     c.overflow.push(OverflowEntry::new(n("credits"), 1));
     let v = c.run();
@@ -973,10 +1115,10 @@ fn on_the_api_key_with_no_plan_room_it_stays() {
 
 #[test]
 fn blocked_credits_move_to_a_plan_login_with_room_not_to_the_api_key() {
-    // Issue #2857: the plan login must be under --session-at (85); work is
-    // at 60% session with no capacity (its week is past --week-at).
+    // Issue #2857: the plan login must be under --session-at (85). Issue
+    // #2910: and under --week-at (90), so work's week moved from 95 to 85.
     let mut c = Case::new("credits", measured(10.0, 10.0, FAR))
-        .cand("work", measured(60.0, 95.0, FAR))
+        .cand("work", measured(60.0, 85.0, FAR))
         .marked_key()
         .spend_blocked("credits");
     c.overflow.push(OverflowEntry::new(n("credits"), 1));
@@ -1072,13 +1214,18 @@ fn a_refused_overflow_profile_holds_nothing() {
 }
 
 #[test]
-fn neither_hold_stops_the_plan_room_swap_which_costs_nothing() {
+fn neither_hold_stops_the_swap_to_a_plan_login_which_costs_nothing() {
     for c in [
         Case::new("work", exhausted(FAR)).cand("timedout", Probed::failed()),
         Case::new("work", exhausted(FAR)).refused("locked"),
     ] {
-        let v = c.cand("spare", measured(50.0, 97.0, FAR)).run();
-        assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+        // Issue #2910: spare's week moved from 97 to 80, and the reason
+        // with it. An exhausted live login has no headroom, so any login
+        // the rotator may now move onto clears --margin and the threshold
+        // pass names it first. Neither hold stops the move, which is the
+        // point; it still costs nothing, because spare is a plan login.
+        let v = c.cand("spare", measured(50.0, 80.0, FAR)).run();
+        assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
     }
 }
 
@@ -1126,31 +1273,101 @@ fn has_room_under_needs_a_measured_reading() {
     assert!(!has_room_under(&exhausted(FAR).reading, 85));
 }
 
-/// SEC-1: the chooser only narrows. Over a grid of readings and thresholds, a
-/// lone plan login is chosen exactly when `has_room_under` says so, and
-/// whatever is chosen also has the room `has_room` asks for. A second pass
-/// that took any login with room would fail the first equality for every
-/// login between `--session-at` and 100%.
+/// SEC-1: the chooser only narrows. Over a grid of readings and both
+/// thresholds, a lone plan login is chosen exactly when `plan_usable` says
+/// the rotator may move onto it, and whatever is chosen also has the room
+/// `has_room` asks for and the session room `has_room_under` asks for.
+///
+/// Issue #2910 changed the first equality's right-hand side from
+/// `has_room_under`, which bounded the week at 100. On 21 November 2026 at
+/// 07:20:31Z that bound put candide on a login at 98% of its week, and the
+/// next request met the organisation's spend limit. The two weaker rules
+/// are still asserted, as implications rather than equalities, so the
+/// chooser cannot be loosened past either of them without this failing.
 #[test]
-fn choose_picks_a_lone_login_exactly_when_it_has_room_under_and_never_otherwise() {
-    let values = [0.0, 50.0, 84.9, 85.0, 90.0, 98.0, 99.9, 100.0, f64::NAN];
+fn choose_picks_a_lone_login_exactly_when_plan_usable_and_never_otherwise() {
+    let values = [
+        0.0,
+        50.0,
+        84.9,
+        85.0,
+        89.9,
+        90.0,
+        98.0,
+        99.9,
+        100.0,
+        f64::NAN,
+    ];
     for session_at in [1u8, 50, 85, 100] {
-        let s = settings(session_at);
-        for session in values {
-            for week in values {
-                let probed = measured(session, week, FAR);
-                let picked = choose(&s, None, &[m("spare", &probed)]);
-                assert_eq!(
-                    picked.is_some(),
-                    has_room_under(&probed.reading, session_at),
-                    "session_at {session_at}, {session}/{week}"
-                );
-                if picked.is_some() {
-                    assert!(has_room(&probed.reading), "{session}/{week}");
+        for week_at in [1u8, 50, 90, 95, 100] {
+            let s = settings_at(session_at, week_at);
+            for session in values {
+                for week in values {
+                    let probed = measured(session, week, FAR);
+                    let picked = choose(&s, None, &[m("spare", &probed)]);
+                    assert_eq!(
+                        picked.is_some(),
+                        plan_usable(&s, &probed.reading),
+                        "session_at {session_at}, week_at {week_at}, {session}/{week}"
+                    );
+                    if picked.is_some() {
+                        assert!(has_room(&probed.reading), "{session}/{week}");
+                        assert!(
+                            has_room_under(&probed.reading, session_at),
+                            "{session}/{week}"
+                        );
+                    }
                 }
             }
         }
     }
+}
+
+/// Issue #2910 gave `needs_swap` and the target test the same two bounds,
+/// so a measured login needs a swap exactly when the rotator may not move
+/// onto it. Two consequences follow, and both are stated here rather than
+/// left to be rediscovered.
+///
+/// The first is the point of #2910: the rotator cannot answer a login that
+/// is over a threshold by moving to another login that is over the same
+/// one. On 21 November 2026 at 18:00Z, on calypso, it did, and nnorth was
+/// spent within minutes.
+///
+/// The second is a cost. [`plan_room::choose`] is only ever called for a
+/// cycle whose live login needed a swap, so that login now fails
+/// `plan_usable` and never reaches the ranking. The flapping guard inside
+/// `choose` is therefore unreachable from a cycle; it is kept, and pinned
+/// by [`choose_returns_none_when_the_live_login_ranks_first`], because the
+/// rule it states is still the right one.
+///
+/// An unreadable (NaN) window is the one reading that is neither: it fails
+/// every comparison, so it needs no swap and is no target.
+#[test]
+fn a_login_needs_a_swap_exactly_when_it_is_not_a_target() {
+    let s = settings(85);
+    for session in [0.0, 50.0, 84.9, 85.0, 89.9, 90.0, 99.9, 100.0] {
+        for week in [0.0, 50.0, 84.9, 85.0, 89.9, 90.0, 99.9, 100.0] {
+            let r = Reading::Measured { session, week };
+            assert_ne!(
+                needs_swap(&s, &r),
+                plan_usable(&s, &r),
+                "{session}/{week} is both or neither"
+            );
+        }
+    }
+    for r in [Reading::Failed, Reading::EXHAUSTED] {
+        assert!(needs_swap(&s, &r), "{r:?}");
+        assert!(!plan_usable(&s, &r), "{r:?}");
+    }
+    let nan = Reading::Measured {
+        session: f64::NAN,
+        week: 10.0,
+    };
+    assert!(
+        !needs_swap(&s, &nan),
+        "an unreadable window asks for nothing"
+    );
+    assert!(!plan_usable(&s, &nan), "and is never a target");
 }
 
 /// The incident's own ledger line, and the cost the design accepts: where every

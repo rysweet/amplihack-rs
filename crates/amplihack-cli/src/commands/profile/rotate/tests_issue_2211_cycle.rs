@@ -772,6 +772,16 @@ fn e2b_a_stale_reading_after_95_percent_is_decided_on_95_not_the_threshold() {
 
 lane!(lsg);
 
+/// Issue #2910 moved `spare` from 75% to 68%. The fixture needed a login whose
+/// headroom separates a decision made on the held 90% from one made on the 70%
+/// threshold, and 75% did that while sitting above `--session-at` (70 in this
+/// lane). Issue #2857 had already stopped the plan-room pass moving onto such a
+/// login; #2910 applies the bound in every pass, the threshold one included, so
+/// a login at 75% is no longer a target at all and the cycle would be an ALERT.
+/// At 68% it is a target, and it still separates the two readings: 32 points of
+/// headroom is 22 more than the live login has at 90%, above `--margin` 5, and
+/// 2 more than it has at 70%, below it. That is `spare_at_68`, the same table
+/// `e2b` uses.
 #[test]
 fn e2c_a_failed_probe_after_90_percent_is_decided_on_90_not_the_threshold() {
     let e = env();
@@ -781,15 +791,9 @@ fn e2c_a_failed_probe_after_90_percent_is_decided_on_90_not_the_threshold() {
     set(&lsg::OTHERS, &spare_full());
     let mut c = ctx(&e, lsg::clock, lsg::measure, Some(lsg::reread));
     assert_ne!(step(&mut c, &lsg::CLOCK), CycleOutcome::Swapped);
-    // `spare` at 75%: 15 more headroom than 90%, none more than 70%.
+    // `spare` at 68%: 22 more headroom than 90%, 2 more than 70%.
     set(&lsg::LIVE, &[Live::Failed]);
-    set(
-        &lsg::OTHERS,
-        &[
-            ("spare", rd(75.0, 40.0, None)),
-            ("work", rd(0.0, 40.0, None)),
-        ],
-    );
+    set(&lsg::OTHERS, &spare_at_68());
     lsg::STEP.store(0, std::sync::atomic::Ordering::SeqCst);
     let got = step(&mut c, &lsg::CLOCK);
     let log = log_of(&e);

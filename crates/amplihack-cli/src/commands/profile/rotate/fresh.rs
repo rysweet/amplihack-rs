@@ -29,6 +29,16 @@ use std::time::{Duration, Instant};
 #[path = "live_fresh.rs"]
 pub(super) mod live;
 
+/// Issue #2910: the fresh reading taken of a chosen target before the swap.
+#[path = "fresh_confirm.rs"]
+mod confirm;
+pub use confirm::must_confirm;
+
+/// Issue #2910, rule 3, through the gate itself.
+#[cfg(test)]
+#[path = "tests_issue_2910_confirm.rs"]
+mod tests_issue_2910_confirm;
+
 /// The oldest a target's reading may be. It equals the default passive
 /// age (`DEFAULT_PASSIVE_MAX_AGE_SECS`) and the usage history's limit, so a
 /// passive reading accepted by default is never too old on age alone.
@@ -193,6 +203,9 @@ pub(super) fn settle(
     // so the log does not read as if the re-read had been accepted.
     let mut accepted: Vec<ProfileName> = Vec::new();
     let mut reads = 0;
+    // Issue #2910: names already confirmed by a reading taken in this pass.
+    let mut confirmed: Vec<ProfileName> = Vec::new();
+    let can_read = mode == Reread::Allowed && ctx.reread.is_some();
     let started = Instant::now();
     // Each name is handled at most twice: read (or made unknown), then made
     // unknown. One more pass finds the settled decision.
@@ -210,7 +223,37 @@ pub(super) fn settle(
         let t = (ctx.now)();
         let after = damped_at.max(left_at);
         if !stale(read_at(&probes[i].1, m.measured_at), live_at, after, t) {
-            break;
+            // Issue #2910, rule 3: the chosen target is confirmed by a
+            // reading taken for this swap. A reading this cycle took
+            // directly is already that confirmation, so only a stored one
+            // (passive, or carried from an earlier cycle) is read again.
+            // Issue #1870 fixed that a fresh target is not re-read, and
+            // #2029 wants fewer probes, not two per swap; the readings that
+            // went stale under the rotator are the ones #2910 names.
+            let stored = probes[i].1.passive || probes[i].1.carried;
+            if !must_confirm(stored && !confirmed.contains(&to), can_read) {
+                break;
+            }
+            confirmed.push(to.clone());
+            let new = confirm::read(
+                ctx,
+                &to,
+                &probes[i].1,
+                &mut reads,
+                budget,
+                started,
+                &mut lines,
+            );
+            let Some(new) = new else {
+                break;
+            };
+            if ctx.stopping() {
+                m.decision = Decision::Stay;
+                break;
+            }
+            probes[i].1 = new;
+            m = decide(live.clone(), probes.clone(), m.measured_at)?;
+            continue;
         }
         if handled >= max_handled {
             return Err(ProfileError::GateUnsettled);
@@ -240,7 +283,8 @@ pub(super) fn settle(
             } else {
                 reads += 1;
                 let p = reread(ctx, &to, left);
-                let p = fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines);
+                let damped = damped_at.is_some();
+                let p = fresh_probe(ctx, &to, &probes[i].1, p, damped, false, &mut lines);
                 if p != Probed::failed() {
                     accepted.push(to.clone());
                 }
@@ -261,18 +305,28 @@ pub(super) fn settle(
         );
         m = again;
     }
+    // Issue #2910: the decision the gate settled on brings rejection lines
+    // of its own, and they are the ones that matter. `msg::rejections`
+    // writes only for the ALERT, so a cycle that becomes an ALERT because
+    // the gate re-read its target, which is exactly the cycle that found no
+    // login with room, would otherwise say nothing about why. Appended
+    // after the gate's own lines, because they explain what those reads led
+    // to. Only the settled decision's lines are kept: each pass round the
+    // loop replaced `m`, so an ALERT the gate then moved off never speaks.
+    lines.append(&mut m.fresh_lines);
     m.fresh_lines = lines;
     Ok(m)
 }
 
 /// The probe that replaces `old` after a re-read returned `p`, and its log
 /// lines. A failed read is unknown; a successful one is read now.
-fn fresh_probe(
+pub(super) fn fresh_probe(
     ctx: &Ctx,
     to: &ProfileName,
     old: &Probed,
     mut p: Probed,
     damped: bool,
+    confirming: bool,
     lines: &mut Vec<String>,
 ) -> Probed {
     if p.reading == Reading::Failed || p.unknown || p.still_running || p.carried {
@@ -286,7 +340,12 @@ fn fresh_probe(
     // Issue #1970: a re-read is made with passive readings off, so it is a
     // direct reading and never checked as a stale cached one.
     p.passive = false;
-    lines.push(fresh_msg::stale(to, &Shown::of(old), &Shown::of(&p)));
+    let (old, new) = (Shown::of(old), Shown::of(&p));
+    lines.push(if confirming {
+        fresh_msg::confirmed(to, &old, &new)
+    } else {
+        fresh_msg::stale(to, &old, &new)
+    });
     if damped && !swap_back::room(&p.reading, &ctx.settings) {
         lines.push(fresh_msg::still_damped(to));
     }

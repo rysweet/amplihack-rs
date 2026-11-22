@@ -181,9 +181,8 @@ mod linux {
         ) -> io::Result<Self> {
             // SAFETY: fcntl with F_DUPFD_CLOEXEC on a borrowed descriptor
             // returns a new descriptor or -1; it reads no memory.
-            let raw = check(unsafe {
-                libc::fcntl(interrupt.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0)
-            })?;
+            let raw =
+                check(unsafe { libc::fcntl(interrupt.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) })?;
             // SAFETY: `raw` is a new descriptor that nothing else owns.
             let owned = unsafe { OwnedFd::from_raw_fd(raw) };
             Self::build(watches, pid, Some(owned))
@@ -275,19 +274,14 @@ mod linux {
                     events: libc::POLLIN,
                     revents: 0,
                 };
-                let mut fds = vec![
-                    poll(self.pidfd.as_raw_fd()),
-                    poll(self.inotify.as_raw_fd()),
-                ];
+                let mut fds = vec![poll(self.pidfd.as_raw_fd()), poll(self.inotify.as_raw_fd())];
                 if let Some(i) = &self.interrupt {
                     fds.push(poll(i.as_raw_fd()));
                 }
                 let n = fds.len();
                 let timeout = timeout_ms(Instant::now(), deadline);
                 // SAFETY: `n` valid pollfds; the timeout is 0..=i32::MAX.
-                let rc = unsafe {
-                    libc::poll(fds.as_mut_ptr(), n as libc::nfds_t, timeout)
-                };
+                let rc = unsafe { libc::poll(fds.as_mut_ptr(), n as libc::nfds_t, timeout) };
                 if rc < 0 {
                     let e = io::Error::last_os_error();
                     if e.kind() == io::ErrorKind::Interrupted {

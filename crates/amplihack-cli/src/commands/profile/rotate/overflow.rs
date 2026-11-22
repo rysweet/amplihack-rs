@@ -289,6 +289,12 @@ pub fn decide_restricted(
         // threshold (an ALERT, or a threshold swap onto a plan login that is
         // itself without capacity), and never for a login whose state is
         // unknown. A threshold swap onto a plan login with capacity stands.
+        // Issue #2910 made `plan_usable` the filter inside `decide::best`,
+        // so a threshold swap can no longer name a login without capacity
+        // and that arm cannot now be taken. It stays as the statement of
+        // the rule: were `best` ever loosened again, a threshold swap onto
+        // a login without capacity would still fall to the plan-room pass
+        // rather than move work onto a login with no room.
         let moving_without_capacity = match &d {
             Decision::Alert => true,
             Decision::Swap {
@@ -343,7 +349,7 @@ pub fn decide_restricted(
         .filter(|c| plan_usable(s, &c.reading))
         .cloned()
         .collect();
-    if let Some((to, _)) = best(&with_capacity) {
+    if let Some((to, _)) = best(s, &with_capacity) {
         return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
     }
     // A plan login below 100% costs nothing (issue #1804).
@@ -359,7 +365,7 @@ pub fn decide_restricted(
             return verdict(swap(to, Reason::OverflowOut), Some(Tag::Out), None);
         }
         if platform_blocked {
-            if let Some((to, _)) = best(&same_targets) {
+            if let Some((to, _)) = best(s, &same_targets) {
                 return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
             }
             return verdict(Decision::Alert, Some(Tag::On), None);
@@ -375,7 +381,7 @@ pub fn decide_restricted(
         {
             return verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest);
         }
-        if let Some((to, _)) = best(&same_targets) {
+        if let Some((to, _)) = best(s, &same_targets) {
             return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
         }
         return no_move(Decision::Alert, earliest);

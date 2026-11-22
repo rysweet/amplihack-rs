@@ -576,6 +576,13 @@ fn auto_switch_returns(threshold: u8, g: Gate, session: f64, week: f64) -> bool 
 /// rotator's rule is the narrower one. The residual (auto-switch may move onto
 /// a login at 85-99% session) is the one named for `other_capacity`, not
 /// changed here.
+///
+/// Issue #2910 narrowed the rotator's rule again, in the same direction: the
+/// week bound on a move back is now `--week-at` (90 here) rather than 100%,
+/// so a plan login at 90% of its week no longer brings the rotator off
+/// overflow. Auto-switch is untouched, and because the rotator only grew
+/// stricter, "the rotator moves back only where auto-switch does" still
+/// holds. The row that moved is 0% session with the week at exactly 90%.
 #[test]
 fn the_rotator_moves_back_only_where_auto_switch_does_for_any_auto_switch_threshold() {
     let s = settings(1800, false);
@@ -609,8 +616,9 @@ fn the_rotator_moves_back_only_where_auto_switch_does_for_any_auto_switch_thresh
             );
             assert_eq!(
                 r,
-                session < f64::from(s.session_at) && week < 100.0,
-                "threshold {threshold}, plan {session}/{week}: the rotator needs --session-at too"
+                session < f64::from(s.session_at) && week < f64::from(s.week_at),
+                "threshold {threshold}, plan {session}/{week}: \
+                 the rotator needs --session-at and --week-at too"
             );
         }
     }
