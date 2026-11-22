@@ -19,7 +19,8 @@
 //! sleep and no polling loop: the answer comes when `security` ends. A
 //! `security` that waits on a Keychain dialog holds the caller until the
 //! dialog is answered, and supervising the whole command is the caller's
-//! business, not this module's.
+//! business, not this module's. So that a held lookup can be seen, a debug
+//! line is logged before `security` is started; see [`probe`].
 //!
 //! This file reads no environment variable. The home directory is a
 //! parameter, and the few variables handed on to the child are read by
@@ -47,6 +48,11 @@ const PROGRAM: &str = "security";
 /// The variables the child is given besides `HOME`, where the process has
 /// them. Everything else, API-key variables included, is withheld.
 pub(super) const PASSED: [&str; 4] = ["PATH", "TMPDIR", "USER", "LOGNAME"];
+
+/// The debug line [`probe`] logs before it starts `security`, so that a
+/// lookup held by a Keychain dialog leaves evidence of where it is.
+pub(super) const WAIT_NOTE: &str =
+    "starting security; the lookup waits for it to end, with no time limit";
 
 /// What the Keychain said about one profile directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +226,12 @@ fn nfc_bytes(dir: &Path) -> Cow<'_, [u8]> {
 /// dialog holds the caller until the dialog is answered, and the answer is
 /// then whatever its exit status says.
 ///
+/// Before `security` is started, one debug line, `WAIT_NOTE`, is logged
+/// with `op="keychain lookup"`. It is written before the child exists, so a
+/// command held by a Keychain dialog and run with `RUST_LOG=debug` shows it
+/// as its last line about the lookup. It names neither the service nor the
+/// home. Bounding the wait is left to whatever started the command.
+///
 /// The lookup is never retried: the exit status is the answer, and a second
 /// start could raise a second dialog. The rotator's stop flag is not read
 /// either, so a stop waits for a lookup in progress to end.
@@ -227,6 +239,7 @@ pub fn probe(env: &Env, service: &str) -> Keychain {
     let Some(home) = env.home.as_deref().filter(|h| h.is_absolute()) else {
         return Keychain::Unreadable(Cause::NoHome);
     };
+    tracing::debug!(op = "keychain lookup", "{WAIT_NOTE}");
     let started = Command::new(PROGRAM)
         .args(["find-generic-password", "-s", service])
         .env_clear()

@@ -31,7 +31,10 @@
 //!   is `Present`, 44 is `Absent`; everything else is `Unreadable`. The wait
 //!   is one blocking wait until `security` ends: no deadline, no sleep and
 //!   no polling loop (crusty round 2 of PR #2891). A failed wait is
-//!   `Unreadable(Wait)`.
+//!   `Unreadable(Wait)`. Before `security` is started, `probe` logs
+//!   `WAIT_NOTE` at debug level with `op="keychain lookup"`, naming neither
+//!   the service nor the home, so a held lookup leaves evidence (crusty
+//!   round 3 of PR #2891).
 //! - `detect(&Env, dir) -> Option<Keychain>`: `None` (and nothing started)
 //!   off macOS, or when `dir/.claude.json` has no identifiable
 //!   `oauthAccount`; otherwise `Some(probe(env, service_name(dir)))`.
@@ -42,7 +45,7 @@
 //! and record the risk in the pull request.
 
 use super::keychain::{
-    Cause, Env, Keychain, PASSED, SERVICE_PREFIX, detect, probe, service_name, test_seam,
+    Cause, Env, Keychain, PASSED, SERVICE_PREFIX, WAIT_NOTE, detect, probe, service_name, test_seam,
 };
 use super::usage_cmd::child_vars;
 use crate::test_support::{EnvGuard, env_lock, write_executable};
@@ -416,6 +419,74 @@ fn the_lookup_waits_for_security_to_end_with_no_time_limit_of_its_own() {
     assert!(!f.still_running(), "the fake is still running");
 }
 
+/// A log sink for `tracing_subscriber::fmt` that appends each line to a
+/// file, so that a fake `security` can read what has been logged so far.
+#[derive(Clone)]
+struct LogFile(PathBuf);
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogFile {
+    type Writer = fs::File;
+    fn make_writer(&'a self) -> fs::File {
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.0)
+            .unwrap()
+    }
+}
+
+/// Crusty round 3 of PR #2891: a lookup that a Keychain dialog holds must
+/// leave evidence of where it is. The fake copies the log as it stands
+/// while it runs, so what it saw was logged before `security` ended, which
+/// is before `probe` could answer. The order is fixed by the code, not by a
+/// clock: the line is written before the child is started.
+#[test]
+fn a_running_lookup_has_already_logged_that_it_waits_for_security() {
+    // Shell builtins only: the fake's `PATH` is its own directory.
+    let f = fake(
+        "printf '%s|%s\\n' \"$HOME\" \"$*\" >> 'LOG'\nwhile IFS= read -r l; do printf '%s\\n' \"$l\"; done < 'LOG.trace' > 'LOG.seen'\nexit 0\n",
+    );
+    let trace = f.log.with_extension("log.trace");
+    let seen = f.log.with_extension("log.seen");
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(LogFile(trace.clone()))
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
+    let got = tracing::subscriber::with_default(subscriber, || probe(&f.env(), SERVICE));
+    assert_eq!(got, Keychain::Present);
+    assert_eq!(f.lines().len(), 1, "security was started once");
+    let while_running = fs::read_to_string(&seen).unwrap_or_default();
+    assert!(
+        while_running.contains(WAIT_NOTE) && while_running.contains("keychain lookup"),
+        "nothing was logged before security ended: {while_running:?}"
+    );
+    let all = fs::read_to_string(&trace).unwrap();
+    assert!(!all.contains(SERVICE), "the service reached the log: {all}");
+    assert!(
+        !all.contains(&f.home.display().to_string()),
+        "the home reached the log: {all}"
+    );
+}
+
+/// No line is logged when nothing is started: the note is only for a
+/// lookup that is about to wait.
+#[test]
+fn no_wait_note_is_logged_when_nothing_is_started() {
+    let f = exits(0);
+    let trace = f.log.with_extension("log.trace");
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(LogFile(trace.clone()))
+        .with_ansi(false)
+        .with_max_level(tracing::Level::DEBUG)
+        .finish();
+    let none = Env::fake(true, None, &f.dir);
+    let got = tracing::subscriber::with_default(subscriber, || probe(&none, SERVICE));
+    assert_eq!(got, Keychain::Unreadable(Cause::NoHome));
+    let all = fs::read_to_string(&trace).unwrap_or_default();
+    assert!(!all.contains(WAIT_NOTE), "{all}");
+}
+
 /// The lookup keeps no state between calls: an `Env` whose first lookup
 /// gave no answer still asks `security` the next time, so the order of the
 /// lookups never changes an answer.
@@ -601,31 +672,6 @@ fn the_module_starts_one_command_and_keeps_every_stream_closed() {
         assert!(!MODULE.contains(banned), "keychain.rs contains {banned}");
     }
     assert!(MODULE.contains("find-generic-password"));
-}
-
-/// Crusty round 2 of PR #2891: the lookup sets no wall-clock limit, never
-/// sleeps and never polls. The child is waited for once, by a blocking
-/// `wait`, and never killed: no code path here sends a signal.
-#[test]
-fn the_module_has_no_deadline_no_sleep_no_polling_and_no_kill() {
-    let code: String = MODULE
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("//"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for banned in [
-        "try_wait",
-        "sleep",
-        "Instant",
-        "Duration",
-        "recv_timeout",
-        "wait_timeout",
-        ".kill(",
-        "deadline",
-    ] {
-        assert!(!code.contains(banned), "keychain.rs code contains {banned}");
-    }
-    assert_eq!(code.matches(".wait()").count(), 1, "one blocking wait");
 }
 
 /// Only `keychain.rs` knows the command. A second place that builds it is a

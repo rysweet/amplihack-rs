@@ -14009,10 +14009,16 @@ Limits:
   is the exit status `security` ends with. A `security` that is held by a
   Keychain dialog holds the command that asked, the rotator's cycle
   included, until the dialog is answered. A command that must not wait is
-  supervised from outside. Each lookup is answered by its own `security`,
-  so one profile's answer never decides another's. The lookup is not
-  retried, and a stop request to the rotator is noticed only when a lookup
-  in progress has ended.
+  supervised from outside, by whatever started it. Before `security` is
+  started, amplihack logs the debug line
+  `starting security; the lookup waits for it to end, with no time limit`
+  with `op="keychain lookup"`, so a command run with `RUST_LOG=debug` that
+  is held by a dialog shows that line as its last one about the lookup. The
+  line names neither the profile directory nor the service. Where nobody
+  can answer a Keychain dialog, unlock the login Keychain before the run.
+  Each lookup is answered by its own `security`, so one profile's answer
+  never decides another's. The lookup is not retried, and a stop request to
+  the rotator is noticed only when a lookup in progress has ended.
 - One lookup was measured at 18 to 23 ms for an absent item in an unlocked
   login Keychain. Each kind resolution that reaches rule 3 starts one. The
   check made at a usage limit and `profile auto-switch status` each start up
