@@ -91,15 +91,10 @@ pub fn note_limit_block(
     if !exists(&rs.ledger) {
         return;
     }
-    let Some(until) = resolved_until(until, at, kind) else {
-        report(
-            &rs,
-            at,
-            &msg::step_limit_block_not_written(login, kind, NO_RESET),
-        );
-        return;
-    };
-    match store(&rs, login, at, until) {
+    let stored = resolved_until(until, at, kind)
+        .ok_or(NO_RESET)
+        .and_then(|until| store(&rs, login, at, until));
+    match stored {
         Ok(Some(until)) => report(&rs, at, &msg::alert_step_limit_block(login, kind, until)),
         Ok(None) => {}
         Err(why) => report(

@@ -640,8 +640,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             // at all and learns of a window limit only on its own cycle, so
             // without this record it keeps the login live while every step
             // on it fails. It is data the rotator reads: it ends no run, and
-            // the wait below is planned whatever happens to it. The emitter
-            // returns `()`, so there is nothing here to branch on.
+            // the wait below is planned whatever happens to it.
             //
             // Recorded *before* the wait is planned, so the wake conditions
             // and the rotator's own target choice already leave the blocked
@@ -662,15 +661,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             if profile.is_none() {
                 // This attempt ran under the inherited profile: its limit is
                 // the freshest word on that profile, and `plan` has already
-                // decided which wait it earns (issue #2911). There is no
-                // promotion left here: a reset too far away, a reset already
-                // behind the clock, a message with no readable reset and a
-                // spend limit are each a wait in their own right, and none of
-                // them is gated on another login being free *now*. A login
-                // can gain room during a wait, and the wait's own wake
-                // conditions see that; refusing to start the wait because
-                // none has room yet is exactly the `reset_too_far` ending
-                // #2911 reports.
+                // decided which wait it earns (issue #2911). None is gated on
+                // another login being free now: a login can gain room during
+                // a wait, and the wait's own wake conditions see that.
                 inherited_wait = Some(lim.wait);
             }
             if let Some(sw) = &switch {

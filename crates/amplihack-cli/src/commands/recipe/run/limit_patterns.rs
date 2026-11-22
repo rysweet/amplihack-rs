@@ -82,15 +82,12 @@ struct Patterns {
 pub(crate) const SPEND_LIMIT: &str = "spend limit";
 
 /// The seven-day window's phrase, named once for the same reason.
-pub(crate) const WEEKLY_LIMIT: &str = "weekly limit";
+const WEEKLY_LIMIT: &str = "weekly limit";
 
 /// Codex's own words when a workspace has no credits left (issue #2911). It
 /// states no reset, so a step that meets it waits for capacity rather than
 /// for a time.
-pub(crate) const CODEX_CREDITS: &str = "your workspace is out of credits";
-
-/// The line prefix of Claude Code's epoch form.
-const EPOCH_MARKER: &str = "Claude AI usage limit reached";
+const CODEX_CREDITS: &str = "your workspace is out of credits";
 
 /// The anchor the text form of a reset follows, in any case.
 const RESETS: &str = "resets ";
@@ -129,14 +126,9 @@ impl LimitKind {
         }
     }
 
-    /// The kind `line` states. `whole` is the harness's whole-line shape,
-    /// which names its own kind outright. Otherwise the words decide, and a
-    /// spend limit wins over any window the same line names, because no
-    /// window reset lifts one.
-    fn of(line: &str, whole: Option<&str>) -> Self {
-        if whole.is_some() {
-            return LimitKind::Credits;
-        }
+    /// The kind a prefix-shaped `line` states. A spend limit wins over any
+    /// window the same line names, because no window reset lifts one.
+    fn of(line: &str) -> Self {
         let lower = line.to_ascii_lowercase();
         if lower.contains(SPEND_LIMIT) {
             LimitKind::Spend
@@ -189,7 +181,7 @@ const CLAUDE: Patterns = Patterns {
         "hit your fable limit",
         SPEND_LIMIT,
     ],
-    epoch_marker: Some(EPOCH_MARKER),
+    epoch_marker: Some("Claude AI usage limit reached"),
     anchor: Some(RESETS),
     message_prefix: Some("You've hit your "),
     whole_line: None,
@@ -311,12 +303,8 @@ pub(crate) fn limit_message(stderr: &[u8], stdout: &[u8], now: i64) -> Option<Li
     Harness::ALL.iter().find_map(|&h| {
         let p = h.patterns();
         let line = positioned(&err, &out, |l| shaped(p, l))?;
-        let epoch = p
-            .epoch_marker
-            .and_then(|m| line.strip_prefix(m))
-            .and_then(|rest| epoch_digits(rest.as_bytes()));
-        let reset = match epoch {
-            Some(r) => Some(r),
+        let reset = match p.epoch_marker.and_then(|m| line.strip_prefix(m)) {
+            Some(rest) => epoch_digits(rest.as_bytes()),
             None => p.anchor.and_then(|anchor| {
                 line.to_ascii_lowercase()
                     .find(anchor)
@@ -325,7 +313,11 @@ pub(crate) fn limit_message(stderr: &[u8], stdout: &[u8], now: i64) -> Option<Li
         };
         Some(LimitMessage {
             harness: h,
-            kind: LimitKind::of(line, p.whole_line),
+            // A whole-line message names its own kind outright.
+            kind: match p.whole_line {
+                Some(_) => LimitKind::Credits,
+                None => LimitKind::of(line),
+            },
             reset,
         })
     })

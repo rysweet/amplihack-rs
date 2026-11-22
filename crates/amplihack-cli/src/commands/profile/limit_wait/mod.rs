@@ -495,12 +495,9 @@ impl Waiter {
         let max = settings.max_wait_secs;
         // Issue #2857: a wait had just ended claiming this login was usable
         // and the limit now being judged contradicts it. Reported once,
-        // below; it refuses nothing.
-        // Reported only when this step has waited on this login before, so
-        // the line says what it has always said: the step is going *back*
-        // into a wait on a login a signal had just claimed was usable. A
+        // below, and only when this step has waited on this login before: a
         // retry that merely landed on a login this step has never waited on
-        // is that login's first wait and reads as one.
+        // is that login's first wait and reads as one. It refuses nothing.
         let reentry = match resumed {
             Resumed::AfterASignal(met) if self.marks.waited_on(&mark) => Some(met),
             Resumed::AfterASignal(_) | Resumed::Ordinarily => None,

@@ -274,11 +274,9 @@ pub(crate) struct Limited {
     /// Whether, and until when, the usage-limit wait may wait.
     pub(crate) wait: WaitFor,
     /// What the limit says for the rotator's ledger (issues #2911, #2909):
-    /// the kind of limit, and the reset the message stated. Set for every
-    /// limit of every kind, which is the whole of the generalisation #2893
-    /// started: one field, read by one caller, which hands it to
-    /// `rotate::step_block::note_limit_block` and does nothing else with it.
-    /// `None` only when the output carried no limit message at all.
+    /// the kind of limit, and the reset the message stated, handed to
+    /// `rotate::step_block::note_limit_block`. `None` only when the output
+    /// carried no limit message at all.
     pub(crate) block: Option<(LimitKind, Option<i64>)>,
 }
 

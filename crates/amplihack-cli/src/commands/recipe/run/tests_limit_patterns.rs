@@ -205,6 +205,25 @@ fn the_epoch_form_states_its_reset_and_a_message_with_no_reset_says_so() {
 }
 
 #[test]
+fn issue_2911_an_epoch_line_takes_its_reset_from_the_epoch_digits_only() {
+    // A line in the epoch form states its reset as the digits after `|`.
+    // When they do not parse, the line states no reset, even if a text-form
+    // `resets …` follows: one line carries one form, and the wait for a
+    // line with no reset is the bounded capacity wait.
+    for rest in [
+        "soon · resets 1pm (America/Los_Angeles)",
+        "99999999999999999999 · resets 1pm (America/Los_Angeles)",
+    ] {
+        let line = epoch_line(rest);
+        assert_eq!(
+            limit_message(line.as_bytes(), b"", NOW).map(|m| m.reset),
+            Some(None),
+            "{line}"
+        );
+    }
+}
+
+#[test]
 fn limit_message_survives_invalid_utf8_and_huge_input() {
     let mut junk = vec![0xffu8; 70 * 1024];
     junk.extend_from_slice(b"\nYou've hit your limit \xc2\xb7 resets \xe2\x82");

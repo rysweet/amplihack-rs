@@ -55,10 +55,10 @@ or forged message cannot hold a login out of rotation for long.
 Every limit the supervisor sees is written to the rotator's ledger, for the
 login the attempt ran under, before the wait is planned. One function does
 this for every kind, `note_limit_block` in
-`crates/amplihack-cli/src/commands/profile/rotate/step_block.rs`. It replaces
-`note_spend_block` and returns nothing: it reports a failure on standard error
-and in the rotate log, and no caller branches on the outcome, so the record
-can never delay, refuse or end a step.
+`crates/amplihack-cli/src/commands/profile/rotate/step_block.rs`. It returns
+nothing: it reports a failure on standard error and in the rotate log, and no
+caller branches on the outcome, so the record can never delay, refuse or end a
+step.
 
 The record is an entry in the ledger's `overflow_blocked` object, keyed by
 login name:

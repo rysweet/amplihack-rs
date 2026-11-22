@@ -41,10 +41,10 @@ impl Shape {
     ///
     /// `reason` names the limit and `wait` names what the step is waiting
     /// for; the two answer different questions and both are written. A
-    /// login-change wait is started by an organisation spend limit and by
-    /// nothing else (`plan::upgrade_spend`), so a reader grepping the recipe
-    /// log for `spend_limit` finds the wait as well as the step's closing
-    /// line (issue #2731).
+    /// login-change wait is started by a spend limit that states no reset
+    /// and by nothing else (`plan::wait_for_message`), so a reader grepping
+    /// the recipe log for `spend_limit` finds the wait's `start` line beside
+    /// its `waiting_for_capacity` line (issues #2731, #2911).
     fn reason(self) -> &'static str {
         match self {
             Shape::Reset | Shape::Capacity => "usage_limit",
@@ -131,9 +131,7 @@ impl FailReason {
     }
 }
 
-/// Why no wait was made at all. Neither remaining limit-shaped reason ends
-/// a step: `Cannot` now carries only the two readings that are not limits
-/// ([`NoWait`]).
+/// Why no wait was made at all.
 #[derive(Clone, Copy)]
 pub(super) enum Skip {
     Disabled,
@@ -180,17 +178,19 @@ where
 
 /// The line a wait appends to the run's recipe log, or `None` for an event
 /// that does not belong there (issue #2731). Only a wait's `start` and `end`,
-/// and the `reentered` between two of them (issue #2857), do: the recipe log
-/// says that the step is waiting, on which login, until when, how the wait
-/// ended and whether the step went back into one, and the step's stderr keeps
-/// the rest.
+/// the `reentered` between two of them (issue #2857) and the
+/// `waiting_for_capacity` before a `start` (issue #2911) do: the recipe log
+/// says that the step is waiting, on which login, until when and why, how the
+/// wait ended and whether the step went back into one, and the step's stderr
+/// keeps the rest.
 ///
-/// The `end` and `reentered` lines are the stderr ones. The `start` line is
-/// the stderr one with `harness=` dropped and `account=` put in its place, so
-/// one `grep` over both sinks reads as one stream. `account` is re-validated
-/// here, at the one point where a login name can reach a file: a name outside
-/// the rotator's own form is written as `unknown` whole rather than trimmed
-/// to fit, so two logins can never collapse onto one identity in the log.
+/// The `end` and `reentered` lines are the stderr ones. The `start` and
+/// `waiting_for_capacity` lines are the stderr ones with `harness=` dropped
+/// and `account=` put in its place, so one `grep` over both sinks reads as
+/// one stream. `account` is re-validated here ([`account_field`]), at the one
+/// point where a login name can reach a file: a name outside the rotator's
+/// own form is written as `unknown` whole rather than trimmed to fit, so two
+/// logins can never collapse onto one identity in the log.
 pub(super) fn recipe_line<Z: TimeZone>(e: &Event, account: Option<&str>, tz: &Z) -> Option<String>
 where
     Z::Offset: Display,
@@ -202,29 +202,24 @@ where
             bound,
             shape,
             ..
-        } => {
-            let name = account.filter(|n| amplihack_utils::rotator_status::valid_live_name(n));
-            let who = format!("account={}", name.unwrap_or(UNKNOWN));
-            Some(format!(
-                "{PREFIX} {}",
-                start_body(*shape, &who, *reset, *until, *bound, tz)
-            ))
-        }
-        Event::WaitingForCapacity { why, until, .. } => {
-            let name = account.filter(|n| amplihack_utils::rotator_status::valid_live_name(n));
-            Some(format!(
-                "{PREFIX} {}",
-                capacity_body(
-                    *why,
-                    &format!("account={}", name.unwrap_or(UNKNOWN)),
-                    *until,
-                    tz
-                )
-            ))
-        }
+        } => Some(format!(
+            "{PREFIX} {}",
+            start_body(*shape, &account_field(account), *reset, *until, *bound, tz)
+        )),
+        Event::WaitingForCapacity { why, until, .. } => Some(format!(
+            "{PREFIX} {}",
+            capacity_body(*why, &account_field(account), *until, tz)
+        )),
         Event::End(_) | Event::Reentered { .. } => Some(line(e, tz)),
         _ => None,
     }
+}
+
+/// The `account=` field of a recipe-log line, re-validated as
+/// [`recipe_line`] describes.
+fn account_field(account: Option<&str>) -> String {
+    let name = account.filter(|n| amplihack_utils::rotator_status::valid_live_name(n));
+    format!("account={}", name.unwrap_or(UNKNOWN))
 }
 
 /// A `waiting_for_capacity` line's body, with `who` naming the harness or
