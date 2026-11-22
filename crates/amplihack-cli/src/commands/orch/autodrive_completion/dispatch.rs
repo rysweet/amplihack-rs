@@ -75,9 +75,21 @@ pub fn run(args: Dispatch) -> Result<i32> {
                 &args.private_state.with_extension("dispatched"),
                 state.run_id.as_bytes(),
             )?;
+            // #2333: GitHub's PR head is read once, over REST, and reported
+            // with the result. It is evidence for the agents that follow, not
+            // a condition of completion: the recording step reads it, the
+            // merge-ready assessment and its criterion 3 judge whether the
+            // review covers GitHub's head, and the merge itself is made with
+            // `--match-head-commit`. See `evidence::RemoteHead`.
+            let head = record["head_sha"].as_str().unwrap_or_default();
+            let pr_head = evidence::remote_head(&state.repo, head);
+            if let Some(fault) = pr_head.fault(head) {
+                eprintln!("completion granted; PR head read for the next agent: {fault}");
+            }
             (
                 serde_json::json!({"loop":"crusty","loop_result":"DONE","round_label":state.round_label,
-                "round_verdict":record["crusty_verdict"],"source":"objective-completion","evaluator_invoked":false}),
+                "round_verdict":record["crusty_verdict"],"source":"objective-completion","evaluator_invoked":false,
+                "pr_head":pr_head.evidence(head)}),
                 0,
             )
         }

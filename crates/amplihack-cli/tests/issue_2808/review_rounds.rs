@@ -10,8 +10,8 @@ use recipe_runner_rs::parser::RecipeParser;
 use recipe_runner_rs::runner::{ExecutionListener, RecipeRunner};
 use serde_json::json;
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -332,17 +332,26 @@ pub(super) fn run(
     )
 }
 
-fn dirty(f: &Fixture) {
+/// The name of the untracked binary file when the name must be valid UTF-8:
+/// it still holds a newline and a tab, which a line-based reader would split
+/// on. Every file system can hold it.
+const HOSTILE_NAME: &str = "binary\n\t\u{e9}";
+
+/// The same name ending in a byte that is not UTF-8. APFS refuses it, so the
+/// tests that use it are ignored on Apple targets (issue #2931).
+fn non_utf8_name() -> OsString {
+    crate::support::non_utf8_name::non_utf8(b"binary\n\t\xff")
+}
+
+/// Leaves prior work of every kind in the PR worktree; `binary_name` is the
+/// name of the untracked binary file.
+fn dirty(f: &Fixture, binary_name: &OsStr) {
     fs::write(f.pr.join("tracked"), STAGED).unwrap();
     f.git(&f.pr, &["add", "tracked"]);
     fs::write(f.pr.join("tracked"), WORKING).unwrap();
     fs::set_permissions(f.pr.join("tracked"), fs::Permissions::from_mode(0o751)).unwrap();
     fs::write(f.pr.join("prior untracked"), UNTRACKED).unwrap();
-    fs::write(
-        f.pr.join(std::ffi::OsString::from_vec(b"binary\n\t\xff".to_vec())),
-        BINARY,
-    )
-    .unwrap();
+    fs::write(f.pr.join(binary_name), BINARY).unwrap();
     fs::write(f.temp.path().join("outside"), OUTSIDE).unwrap();
     symlink("../../../outside", f.pr.join("external-link")).unwrap();
     f.git(&f.pr, &["update-index", "--split-index"]);
@@ -350,11 +359,24 @@ fn dirty(f: &Fixture) {
 
 #[test]
 fn unchanged_reviews_in_both_rounds_use_pr_worktree_and_preserve_git_state() {
+    unchanged_reviews_preserve_git_state(OsStr::new(HOSTILE_NAME));
+}
+
+#[test]
+#[cfg_attr(
+    target_vendor = "apple",
+    ignore = "APFS refuses a file name that is not valid UTF-8 (EILSEQ), so the input cannot be made"
+)]
+fn unchanged_reviews_preserve_git_state_beside_a_non_utf8_file_name() {
+    unchanged_reviews_preserve_git_state(&non_utf8_name());
+}
+
+fn unchanged_reviews_preserve_git_state(binary_name: &OsStr) {
     for spec in ROUNDS {
         for has_prior_work in [false, true] {
             let f = Fixture::new();
             if has_prior_work {
-                dirty(&f);
+                dirty(&f, binary_name);
             }
             let before_status = f.git(
                 &f.pr,
@@ -392,6 +414,19 @@ fn unchanged_reviews_in_both_rounds_use_pr_worktree_and_preserve_git_state() {
 
 #[test]
 fn reviewer_changes_are_assessed_without_diff_failure_and_prior_layers_remain_recoverable() {
+    reviewer_changes_keep_prior_layers(OsStr::new(HOSTILE_NAME));
+}
+
+#[test]
+#[cfg_attr(
+    target_vendor = "apple",
+    ignore = "APFS refuses a file name that is not valid UTF-8 (EILSEQ), so the input cannot be made"
+)]
+fn reviewer_changes_keep_prior_layers_beside_a_non_utf8_file_name() {
+    reviewer_changes_keep_prior_layers(&non_utf8_name());
+}
+
+fn reviewer_changes_keep_prior_layers(binary_name: &OsStr) {
     for spec in ROUNDS {
         for mutation in [
             Mutation::Unstaged,
@@ -401,7 +436,7 @@ fn reviewer_changes_are_assessed_without_diff_failure_and_prior_layers_remain_re
             Mutation::Head,
         ] {
             let f = Fixture::new();
-            dirty(&f);
+            dirty(&f, binary_name);
             let before_status = f.git(
                 &f.pr,
                 &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -482,11 +517,7 @@ fn reviewer_changes_are_assessed_without_diff_failure_and_prior_layers_remain_re
                     & 0o777,
                 0o751
             );
-            assert_eq!(
-                fs::read(f.pr.join(std::ffi::OsString::from_vec(b"binary\n\t\xff".to_vec())))
-                    .unwrap(),
-                BINARY
-            );
+            assert_eq!(fs::read(f.pr.join(binary_name)).unwrap(), BINARY);
             assert_eq!(
                 fs::read(f.repo.join("tracked")).unwrap(),
                 b"committed baseline\n"
@@ -497,9 +528,22 @@ fn reviewer_changes_are_assessed_without_diff_failure_and_prior_layers_remain_re
 
 #[test]
 fn interrupted_reviewer_resume_keeps_the_original_baseline() {
+    interrupted_resume_keeps_the_baseline(OsStr::new(HOSTILE_NAME));
+}
+
+#[test]
+#[cfg_attr(
+    target_vendor = "apple",
+    ignore = "APFS refuses a file name that is not valid UTF-8 (EILSEQ), so the input cannot be made"
+)]
+fn interrupted_resume_keeps_the_baseline_beside_a_non_utf8_file_name() {
+    interrupted_resume_keeps_the_baseline(&non_utf8_name());
+}
+
+fn interrupted_resume_keeps_the_baseline(binary_name: &OsStr) {
     for spec in ROUNDS {
         let f = Fixture::new();
-        dirty(&f);
+        dirty(&f, binary_name);
         let (first, first_calls) = run(&f, spec, Mutation::Interrupted, None);
         assert!(!first.success, "fixture interruption must be visible");
         let original = first_calls.lock().unwrap().baseline.clone();

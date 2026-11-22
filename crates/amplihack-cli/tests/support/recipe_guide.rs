@@ -129,7 +129,8 @@ steps:
 "#;
 
 pub struct GuideFixture {
-    _tmp: tempfile::TempDir,
+    /// The fixture root and the child environment that points inside it.
+    env: crate::isolated_amplihack::PrivateEnv,
     pub root: PathBuf,
     pub home: PathBuf,
     pub state: PathBuf,
@@ -240,10 +241,10 @@ fn executable(path: &Path, body: &str) {
 
 impl GuideFixture {
     pub fn new() -> Self {
-        let tmp = tempfile::tempdir_in(crate::support::scratch_base::scratch_base()).unwrap();
-        let root = tmp.path().canonicalize().unwrap();
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        let home = root.join("home");
+        let env =
+            crate::isolated_amplihack::private_env_in(crate::support::scratch_base::scratch_base());
+        let root = env.root().to_path_buf();
+        let home = env.home().to_path_buf();
         let state = root.join("state");
         let work = home.join(".amplihack").join("work");
         let alt_work = root.join("elsewhere").join("work");
@@ -251,8 +252,8 @@ impl GuideFixture {
         let records = root.join("records");
         let tools = root.join("tools");
         let publish = root.join("publish");
-        let profiles = root.join("profiles");
-        let claude_config = root.join("claude-config");
+        let profiles = env.profile_root();
+        let claude_config = env.claude_config_dir();
         let codex_home = home.join(".codex");
         // `$HOME/.amplihack` private before amplihack creates it: under a
         // umask of 002 it would be 0775, and the runner's recovery store
@@ -283,7 +284,7 @@ impl GuideFixture {
         let recipe = root.join("recipe.yaml");
         fs::write(&recipe, RECIPE).unwrap();
         let f = Self {
-            _tmp: tmp,
+            env,
             root,
             home,
             state,
@@ -352,12 +353,13 @@ impl GuideFixture {
 
     /// An isolated `amplihack` command with the fixture's environment.
     pub fn amplihack(&self, args: &[&str]) -> Command {
-        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
+        // `HOME`, `TMPDIR`, the profile root and the process table come from
+        // the private environment, so the child's temp dir is the fixture
+        // root whatever this process's own `TMPDIR` is (issue #2931).
+        let mut c = self.env.command(amplihack_bin());
         c.args(args)
             .current_dir(&self.root)
             .env("PATH", self.path_var())
-            .env("HOME", &self.home)
-            .env("TMPDIR", std::env::temp_dir())
             .env("AMPLIHACK_STATE_DIR", &self.state)
             .env("AMPLIHACK_HOME", self.home.join(".amplihack"))
             .env("RECORD_DIR", &self.records)

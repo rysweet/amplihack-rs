@@ -31,7 +31,6 @@ use super::shared_dirs::{
 use super::store::{self, ProfileStore};
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
@@ -1088,9 +1087,6 @@ fn credential_named_files_at_any_depth_stay_in_the_backup() {
     f.legacy("A", "projects/.credentials.json", b"SECRET-1");
     f.legacy("A", "projects/-w/.credentials.json.bak", b"SECRET-2");
     f.legacy("A", "projects/-w/deep/.claude.json", b"SECRET-3");
-    let raw = OsStr::from_bytes(b".credentials\xff\xfe");
-    let non_utf8 = f.dir("A").join("projects/-w").join(raw);
-    fs::write(&non_utf8, b"SECRET-4").unwrap();
 
     let r = f.ensure("A", Mode::Migrate);
 
@@ -1109,7 +1105,6 @@ fn credential_named_files_at_any_depth_stay_in_the_backup() {
         fs::read(backup.join("-w/deep/.claude.json")).unwrap(),
         b"SECRET-3"
     );
-    assert_eq!(fs::read(backup.join("-w").join(raw)).unwrap(), b"SECRET-4");
     // Top-level logins are never touched.
     assert_eq!(fs::metadata(&top_login).unwrap().ino(), top_ino);
     assert_eq!(fs::read(&top_login).unwrap(), b"TOP-LOGIN");
@@ -1120,7 +1115,38 @@ fn credential_named_files_at_any_depth_stay_in_the_backup() {
         .iter()
         .filter(|l| l.starts_with("amplihack: profile A: projects: skipped credential file "))
         .collect();
-    assert_eq!(skipped.len(), 4, "{lines:#?}");
+    assert_eq!(skipped.len(), 3, "{lines:#?}");
+    for l in lines {
+        assert!(!l.contains("SECRET"), "file contents printed: {l}");
+    }
+}
+
+/// The same rule for a credential-named file whose name is not UTF-8: it
+/// stays in the backup, is counted as skipped and is never printed. It is a
+/// test of its own because APFS cannot hold such a name (issue #2931).
+#[test]
+#[cfg_attr(
+    target_vendor = "apple",
+    ignore = "APFS refuses a file name that is not valid UTF-8 (EILSEQ), so the input cannot be made"
+)]
+fn a_credential_named_file_whose_name_is_not_utf8_stays_in_the_backup() {
+    let f = Fx::new();
+    f.legacy("A", "projects/-w/s1.jsonl", b"ok");
+    let raw = crate::test_support::non_utf8_name::non_utf8(b".credentials\xff\xfe");
+    fs::write(f.dir("A").join("projects/-w").join(&raw), b"SECRET-4").unwrap();
+
+    let r = f.ensure("A", Mode::Migrate);
+
+    assert_no_credentials_under(&f.canon);
+    assert!(f.canon.join("projects/-w/s1.jsonl").is_file());
+    let backup = f.only_backup("A", "projects");
+    assert_eq!(fs::read(backup.join("-w").join(&raw)).unwrap(), b"SECRET-4");
+    let lines = f.lines("A", &r);
+    let skipped: Vec<_> = lines
+        .iter()
+        .filter(|l| l.starts_with("amplihack: profile A: projects: skipped credential file "))
+        .collect();
+    assert_eq!(skipped.len(), 1, "{lines:#?}");
     for l in lines {
         assert!(!l.contains("SECRET"), "file contents printed: {l}");
     }

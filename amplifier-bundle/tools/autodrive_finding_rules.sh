@@ -84,10 +84,22 @@ def minor_finding($kw; $tkw):
   and (([(.summary | summary_text), (.evidence | clean)] | join(" ") | ascii_downcase | test($tkw)) | not);
 '
 
+# The sed expressions use nothing beyond POSIX extended syntax, so GNU and BSD
+# (macOS) sed give the same text (#2931): letter case is spelled out in
+# brackets where GNU has the `I` flag, and "GH starts a word" is "the line
+# starts here, or the character before is not a letter, a digit or an
+# underscore" where GNU has `\b`. BSD sed reads `\b` as a backspace and
+# rejects `I`. LC_ALL=C makes sed work on bytes: BSD sed refuses input that is
+# not valid UTF-8 otherwise, and a byte of a non-ASCII character then counts as
+# "not a word character", so a GH-N beside one is broken too, which is the safe
+# side. The output is printed only when sed succeeded: text that was not
+# broken must not leave this function.
 break_refs() {
-  local s="${1//@/@$ZW}"
-  printf '%s' "$s" | sed -E -e "s/#([0-9])/#${ZW}\\1/g" -e "s#(github\\.com)/#\\1/${ZW}#Ig" \
-    -e "s/\\b(GH)-([0-9])/\\1-${ZW}\\2/Ig"
+  local s="${1//@/@$ZW}" out
+  out="$(printf '%s' "$s" | LC_ALL=C sed -E -e "s/#([0-9])/#${ZW}\\1/g" \
+    -e "s#([Gg][Ii][Tt][Hh][Uu][Bb]\\.[Cc][Oo][Mm])/#\\1/${ZW}#g" \
+    -e "s/(^|[^A-Za-z0-9_])([Gg][Hh])-([0-9])/\\1\\2-${ZW}\\3/g")" || return 1
+  printf '%s' "$out"
 }
 
 issue_title() {
@@ -105,7 +117,7 @@ cell() {
   local s
   s="$(sanitize_cli_output "$1")"
   s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"
-  s="$(break_refs "$s")"
+  s="$(break_refs "$s")" || return 1
   s="${s//|/&#x7C;}"; s="${s//\`/&#x60;}"
   printf '%s' "$s"
 }
