@@ -169,7 +169,7 @@ _finalization_decision_unowned() {
 # closes it.
 _finalization_unowned_or_handoff() {
   local reason next
-  reason="assess-finalization reported $1, which ends the run and hands it to a person, but gave $2"
+  reason="assess-finalization reported $1, which names a cause the run cannot fix, but gave $2"
   next="Run finalization again so assess-finalization reports the failing check, the cause the run cannot fix and the step its owner must take, or the state the facts do support; re-running this step alone reads the same recorded answer."
   if declare -F finalization_try_handoff_open_pr >/dev/null 2>&1; then
     finalization_try_handoff_open_pr "$1" "$reason" "$next" "$3" || :
