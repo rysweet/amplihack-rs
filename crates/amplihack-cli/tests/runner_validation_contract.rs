@@ -234,45 +234,43 @@ fn repository_prefix_and_wrong_receipt_binary_cannot_establish_provenance() {
 
 #[test]
 fn exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group() {
+    use crate::support::exit_witness::{ExitWitness, Outcome};
     let f = Fixture::new(REPORT, 0);
+    // The descendant holds the witness pipe open until it dies, so the end of
+    // file on that pipe is the event "the process group is gone": no read of
+    // `/proc`, no poll of the clock (issue #2931, TIMING).
+    let witness = ExitWitness::new(f.path());
     fs::write(
         f.binary(),
         format!(
-            "#!/bin/sh\n/bin/sleep 60 &\necho $! > '{}/descendant'\n/bin/cat '{}/report'\n",
-            f.path().display(),
+            "#!/bin/sh\n{}\n/bin/sleep 60 &\n/bin/cat '{}/report'\n",
+            witness.stub_lines(),
             f.path().display()
         ),
     )
     .unwrap();
     let started = std::time::Instant::now();
     failure(f.run("codex", false, &f.binary()), "RUNNER_PROBE_FAILED");
-    assert!(started.elapsed() < std::time::Duration::from_secs(13));
-    // The group SIGKILL is delivered asynchronously, so under load the
-    // descendant can still read as sleeping just after the probe returns
-    // (#1748). Poll for a bounded period well under the descendant's 60 s.
-    #[cfg(target_os = "linux")]
-    {
-        // Read the pid here: `/proc` is its only reader (#2210).
-        let pid = fs::read_to_string(f.path().join("descendant")).unwrap();
-        let stat_path = format!("/proc/{}/stat", pid.trim());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while let Ok(stat) = fs::read_to_string(&stat_path) {
-            let state = stat
-                .rsplit_once(") ")
-                .unwrap()
-                .1
-                .split_whitespace()
-                .next()
-                .unwrap()
-                .to_owned();
-            if state == "Z" || state == "X" {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "probe descendant still running (state {state}) 5 s after the probe returned"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
+    // A ceiling, not a measurement: the probe gives up at its own 10 s
+    // deadline, and what this must tell apart is a probe that waited for the
+    // descendant, which holds the pipes for 60 s. The old 13 s left three
+    // seconds for the binary to start, which a loaded host exceeds (issue
+    // #2931, TIMING).
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(45),
+        "the probe waited {elapsed:?}: it must give up at its deadline, not at the descendant's exit"
+    );
+    // The group SIGKILL is delivered asynchronously (#1748), so the pipe may
+    // close a moment after the probe returns. The ceiling only bounds a
+    // failure: a descendant that survives holds the pipe for 60 s.
+    match witness.wait_released(std::time::Duration::from_secs(10)) {
+        Outcome::Released { held, .. } => assert!(
+            held,
+            "the descendant never held the witness pipe, so its end proves nothing"
+        ),
+        Outcome::StillHeld => {
+            panic!("probe descendant still running 10 s after the probe returned")
         }
     }
 }

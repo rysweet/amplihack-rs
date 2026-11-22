@@ -1505,12 +1505,19 @@ mod tests {
     }
 
     /// Issue #1765: the fake outlives the bound by far and the bound is loose,
-    /// so only a timeout that never fires can fail it. The orphan writes its
-    /// marker 5 s after it starts, long after the 250 ms timeout, so a
-    /// surviving descendant has time to show itself before the check.
+    /// so only a timeout that never fires can fail it. The orphan holds the
+    /// witness pipe for 60 s, so the end of file on that pipe is the event
+    /// "the orphan is gone" (issue #2931, TIMING), and the ceiling on that
+    /// wait only bounds a failure.
+    ///
+    /// The limit is the input under test and so a clock by nature. It is two
+    /// seconds, not 250 ms: the test also requires what the fake printed
+    /// before the limit, and on a loaded machine `sh` had not started inside
+    /// 250 ms, so the captured output was empty.
     #[cfg(unix)]
     #[test]
     fn bounded_git_times_out_and_reaps_child() {
+        use crate::test_support::exit_witness::{ExitWitness, Outcome};
         let temp = crate::test_support::tempdir_outside_framework_roots();
         let marker = temp.path().join("orphan-marker");
         let marker_text = marker.to_str().expect("temporary paths are UTF-8");
@@ -1518,10 +1525,12 @@ mod tests {
             !marker_text.contains(['\'', '\n']),
             "cannot single-quote {marker_text:?} for /bin/sh"
         );
+        let witness = ExitWitness::new(temp.path());
         let fake = fake_git(
             temp.path(),
             &format!(
-                "(/bin/sleep 5; echo orphan > '{marker_text}') & echo started; exec /bin/sleep 60"
+                "{}; (/bin/sleep 60; echo orphan > '{marker_text}') & echo started; exec /bin/sleep 60",
+                witness.stub_lines()
             ),
         );
         let start = Instant::now();
@@ -1530,7 +1539,7 @@ mod tests {
             &fake,
             &["fetch"],
             temp.path(),
-            Duration::from_millis(250),
+            Duration::from_secs(2),
             &|command: &mut Command| {
                 command.env("HOME", temp.path()).env_remove(ROOT_ENV);
             },
@@ -1547,12 +1556,15 @@ mod tests {
             output.stdout.contains("started"),
             "a timeout must still return the captured output: {output:?}"
         );
-        if let Some(remaining) = Duration::from_secs(6).checked_sub(start.elapsed()) {
-            thread::sleep(remaining);
+        match witness.wait_released(Duration::from_secs(10)) {
+            Outcome::Released { held, .. } => assert!(
+                held,
+                "the fake never held the witness pipe, so its end proves nothing"
+            ),
+            Outcome::StillHeld => panic!(
+                "timeout cleanup must terminate git's descendants (the call took {elapsed:?})"
+            ),
         }
-        assert!(
-            !marker.exists(),
-            "timeout cleanup must terminate git's descendants (the call took {elapsed:?})"
-        );
+        assert!(!marker.exists(), "the orphan wrote its marker");
     }
 }

@@ -103,6 +103,13 @@ pub(crate) mod proc;
 #[allow(dead_code)]
 mod scratch_base;
 
+/// Issue #2931: the end of file on a pipe that a process group holds, as the
+/// event "the group is gone".
+#[cfg(unix)]
+#[path = "../tests/support/exit_witness.rs"]
+#[allow(dead_code)]
+pub(crate) mod exit_witness;
+
 /// Issue #2931: `ls -ldn` parsing for stubs that inspect a file the test
 /// removes afterwards; one copy, shared with `cli_integration`.
 #[cfg(unix)]
