@@ -216,6 +216,10 @@ steps:
         exit 0
       }
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-qa-inputs; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-qa-inputs: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-qa-inputs: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+        echo "[skip] not a git repo; the QA measurement needs a worktree" >&2
+        unavailable "the worktree under review is not a git repository"
+      }
       T="$QC_TOOLS/autodrive_qa_evidence.sh"
       [ -f "$T" ] || unavailable "the QA measurement tool is unavailable"
       ( umask 077 && mkdir -p "$QUICK_CHANGE_STATE_DIR/qa" ) || unavailable "cannot create private QA storage"
