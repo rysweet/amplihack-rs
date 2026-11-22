@@ -6,10 +6,11 @@ description: >
   ended indeterminate. The scenario (via
   tests/gadugi/run-issue-2857-wait-wakes-on-room-scenario.sh) drives the real
   binary's supervised launch against a stub agent and a stub rotate ledger.
-  Case A: a limit on the retry a wait earned is waited for again, once
-  reported with one `reentered met=usage_limit` line before the second wait's
-  `start`, and the third attempt succeeds instead of the step ending
-  `already_waited`. Issue #2911 extends case A: each wait announces itself as
+  Case A: a limit on the retry a wait earned is waited for again, and the
+  third attempt succeeds instead of the step ending `already_waited`. No
+  `reentered` line is written for it: that line reports a wait ended by
+  something saying the login had room, and case A's waits run out instead, so
+  nothing claimed room. Issue #2911 extends case A: each wait announces itself as
   `waiting_for_capacity reason=passed_reset`, because a reset the clock has
   already passed is a wait for capacity, and no `failed` or `skipped` line is
   written at all, because a limit may now only delay a step and never end it.
@@ -72,11 +73,11 @@ assertions:
     params:
       target: stdout
       expected: "PASS: second_wait_started_not_refused - "
-  - name: reentry-reported-once-before-the-second-start
+  - name: no-reentered-line-when-a-wait-ran-out
     type: output_contains
     params:
       target: stdout
-      expected: "PASS: reentry_reported_once_before_the_second_start - "
+      expected: "PASS: no_reentered_line_when_a_wait_ran_out - "
   - name: each-wait-says-it-is-waiting-for-capacity
     type: output_contains
     params:

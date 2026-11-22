@@ -264,8 +264,16 @@ cd -- "$RUNDIR" || { echo "FAIL: cannot enter the working folder"; echo "SCENARI
 # `skipped reason=already_waited`, because it had already waited on this login.
 # #2857 made it wait again but left the refusal in place for a third, and
 # #2911 removed the refusal and the per-step budget entirely: two waits start,
-# one `reentered` line is written before the second `start`, nothing is ever
-# refused, no `failed` line is written, and the third attempt succeeds.
+# nothing is ever refused, no `failed` line is written, and the third attempt
+# succeeds.
+#
+# No `reentered` line belongs here. That line reports a wait that ended
+# because something said this login had room, contradicted by the limit the
+# retry then met (`Resumed::AfterASignal`, from `End::said_try_now`). Both of
+# this case's waits run out instead, so nothing claimed room and there is
+# nothing to contradict. The Rust test
+# `a_usage_limit_after_a_wait_that_ran_out_waits_again_and_never_refuses`
+# pins the same sequence, and case B below holds the waits a signal does end.
 #
 # Each wait runs for MAX_WAIT_SECS, so this case takes about two minutes.
 reset_records
@@ -273,7 +281,9 @@ LIMIT_CALLS=2 LEDGER_BODY="" scenario_env config-dir "$BIN" claude --subprocess-
   >"$WORK/a.out" 2>"$WORK/a.err" </dev/null && A_RC=0 || A_RC=$?
 A_CALLS="$(cat "$RECORDS/count.0" 2>/dev/null || echo 0)"
 A_STARTS="$(count_in 'amplihack.recipe.usage_limit_wait start reason=usage_limit' "$WORK/a.err")"
-A_REENTERED="$(count_in 'amplihack.recipe.usage_limit_wait reentered met=usage_limit$' "$WORK/a.err")"
+# Any `reentered` line at all, not just one `met=` value: this case must write
+# none, so the widest pattern is the strict one.
+A_REENTERED="$(count_in 'amplihack.recipe.usage_limit_wait reentered ' "$WORK/a.err")"
 A_REFUSED="$(count_in 'already_waited' "$WORK/a.err")"
 # Issue #2911: the operator-visible line a wait with no reset to end on
 # writes, with its reason from the closed set. Two waits, so two lines.
@@ -297,10 +307,10 @@ if [ "$A_STARTS" = 2 ] && [ "$A_REFUSED" = 0 ]; then
 else
   fl second_wait_started_not_refused "starts=$A_STARTS already_waited=$A_REFUSED, want 2/0; $A_DIAG"
 fi
-if [ "$A_REENTERED" = 1 ] && [ "$A_ORDER" = "start resume reentered start " ]; then
-  pass reentry_reported_once_before_the_second_start "one reentered met=usage_limit line, between the first resume and the second start"
+if [ "$A_REENTERED" = 0 ] && [ "$A_ORDER" = "start resume start " ]; then
+  pass no_reentered_line_when_a_wait_ran_out "two waits in order, and no reentered line: nothing said this login had room"
 else
-  fl reentry_reported_once_before_the_second_start "reentered=$A_REENTERED order='${A_ORDER}', want 1 and 'start resume reentered start '; $A_DIAG"
+  fl no_reentered_line_when_a_wait_ran_out "reentered=$A_REENTERED order='${A_ORDER}', want 0 and 'start resume start '; $A_DIAG"
 fi
 if [ "$A_WAITING" = 2 ]; then
   pass each_wait_says_it_is_waiting_for_capacity "two waiting_for_capacity reason=passed_reset lines, one per wait"
