@@ -14,6 +14,9 @@
 #   18c-C   the #2839 report is dirty and the remote does not touch it: the
 #           merge succeeds, the report's bytes and refs/stash are unchanged
 #   18c-D   pre-push refuses: one pull, one push, the hook's message on stderr
+#   18c-E   the #2839 report is dirty and the merge conflicts elsewhere: the
+#           abort brings the report back with its bytes, refs/stash and
+#           MERGE_AUTOSTASH are left empty and the branch stays checked out
 #   20b, 16b, step9, step12: a moved remote merges and pushes; a conflict
 #           reports git's message, is not reported as pushed and leaves the
 #           branch checked out; step9 and step12 redact credentials in git's
@@ -397,6 +400,33 @@ rg -C "${CASE_WT}" show -s HEAD >/dev/null
 if rg -C "${CASE_WT}" ls-tree -r --name-only HEAD | grep -qx "${REPORT}"; then pass; else fail "18c-C the tracked report is missing from HEAD"; fi
 if [[ "$(rg -C "${CASE_WT}" show "HEAD:${REPORT}")" == "${REPORT_BYTES}" ]]; then
     fail "18c-C the rewritten report was committed (#2839)"; else pass; fi
+
+# --- 18c-E: a conflict while the #2839 report is dirty -----------------------
+# The report lives in the autostash while the merge runs. `git merge --abort`
+# has to bring it back: were it left in MERGE_AUTOSTASH, the recovery agent
+# would find the committed bytes on disk and the run's own report nowhere.
+new_case e
+prep_local 18c "${CASE_WT}" shared.txt mine
+move_remote e shared.txt theirs
+printf '{"report":"v3 rewritten by the run"}\n' > "${CASE_WT}/${REPORT}"
+REPORT_BYTES="$(cat "${CASE_WT}/${REPORT}")"
+STASH_BEFORE="$(stash_ref "${CASE_WT}")"
+E_PRE="$(wt_head "${CASE_WT}")"
+E_TIP="$(remote_head "${CASE_BRANCH}")"
+run_site 18c "${CASE_WT}" "report-conflict-18c"
+if [[ "${RC}" -ne 0 ]]; then pass; else fail "18c-E expected a non-zero exit"; fi
+expect_lacks "18c-E no completion marker" "${OUT}" "=== Changes Pushed ==="
+expect_has "18c-E git's CONFLICT text reaches stderr" "${ERR}" "CONFLICT"
+branch_checked_out "18c-E" "${CASE_WT}" "${CASE_BRANCH}"
+no_merge_in_progress "18c-E" "${CASE_WT}"
+expect_eq "18c-E HEAD is the run's own commit" "$(wt_head "${CASE_WT}")" "${E_PRE}"
+expect_eq "18c-E nothing was pushed" "$(remote_head "${CASE_BRANCH}")" "${E_TIP}"
+expect_eq "18c-E the report's bytes came back from the autostash" "$(cat "${CASE_WT}/${REPORT}")" "${REPORT_BYTES}"
+expect_eq "18c-E the report is an unstaged modification again" \
+    "$(rg -C "${CASE_WT}" status --porcelain --untracked-files=no -- "${REPORT}")" " M ${REPORT}"
+expect_eq "18c-E refs/stash is unchanged" "$(stash_ref "${CASE_WT}")" "${STASH_BEFORE}"
+expect_eq "18c-E no autostash is left behind" \
+    "$(rg -C "${CASE_WT}" rev-parse -q --verify MERGE_AUTOSTASH || echo none)" "none"
 
 # --- conflicts and refusals at every site ------------------------------------
 for site in 20b 16b s9 s12; do conflict_case "${site}" "x-${site}"; done

@@ -701,7 +701,11 @@ If the pull fails and has left a merge in progress that was not there before,
 the helper runs `git merge --abort`, with git's output visible, and returns
 the pull's exit status. The branch is then checked out with no `MERGE_HEAD`,
 which is the state [`push-failure-recovery`](recipe-push-failure-recovery.md)
-accepts. A merge that was already in progress, such as an agent's earlier
+accepts. The abort also restores the autostash, so a report the run rewrote is
+back on disk with its own bytes, as an unstaged modification, and neither
+`refs/stash` nor `MERGE_AUTOSTASH` holds anything afterwards. Without that, the
+recovery agent would open the report and read the committed bytes while the
+run's own version sat in a ref it has no reason to look at. A merge that was already in progress, such as an agent's earlier
 attempt at a resolution, is never aborted: git refuses the pull and the helper
 leaves that merge as it found it. Git's output goes to stderr. The helper has
 no exit codes of its own and prints nothing of its own, except one line if
@@ -1001,6 +1005,7 @@ has its own case in the shell test:
 | `workflow-pr-review` step 18c, run whole, commits and pushes the reviewed source with no `run/reports/` path in the commit | [Staging rules](#staging-rules) |
 | step 18c on a branch that already tracks a rewritten report, with origin ahead: the pull autostashes, the merge and push land, the report keeps its new bytes on disk and its committed bytes in `HEAD`, and the stash stack is left empty | [Pulling after staging](#pulling-after-staging) |
 | `workflow_pull_merge` on its own, against a repository in that state: a commit with two parents, the report's bytes kept, `refs/stash` unchanged and no `.git/rebase-*` directory, with a plain `git pull --rebase` refusing the same fixture as a control | [Pulling after staging](#pulling-after-staging) |
+| step 18c with that same rewritten report, where the merge conflicts in another file: the abort brings the report back with its own bytes as an unstaged modification, `refs/stash` and `MERGE_AUTOSTASH` are empty, nothing is pushed and the branch is still checked out | [Pulling after staging](#pulling-after-staging) |
 | step-15's commit hook never sees `PRE_COMMIT_ALLOW_NO_CONFIG`; a checkpoint's does without a config | [Where it applies](#where-it-applies) |
 | a kept `HR_DIR` holds no unredacted agent or evaluator log | [Evidence](#evidence) |
 
