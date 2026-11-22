@@ -59,8 +59,10 @@ pub struct LogEntry {
     /// taken (issue #2912). Evidence for an operator reading this file;
     /// nothing branches on it.
     pub resumes: Option<u32>,
-    /// Why a step failed: an `io::ErrorKind` name, `session-gone`, or, for
-    /// `pane-unverified`, one of [`super::keys::UNVERIFIED_REASONS`].
+    /// Why a step failed, or why no key was sent: an `io::ErrorKind` name,
+    /// `session-gone`, `no-tmux-pane`, one of
+    /// [`super::keys::UNVERIFIED_REASONS`] for `pane-unverified`, or one of
+    /// [`super::keys::UNRECOGNISED_REASONS`] for `screen-unrecognised`.
     pub detail: Option<String>,
 }
 

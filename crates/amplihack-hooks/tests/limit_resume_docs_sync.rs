@@ -8,7 +8,7 @@
 //! because the CLI does not depend on this crate.
 
 use amplihack_hooks::limit_resume::Outcome;
-use amplihack_hooks::limit_resume::keys::RESUME_KEYS;
+use amplihack_hooks::limit_resume::keys::{RESUME_KEYS, UNRECOGNISED_REASONS, UNVERIFIED_REASONS};
 use amplihack_utils::rotator_status::swap_record::MAX_SWAP_BYTES;
 use amplihack_utils::rotator_status::{
     LIMIT_RESUME_TIMEOUT_MARGIN, LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT,
@@ -84,6 +84,7 @@ fn every_outcome_the_hook_logs_is_documented() {
         Outcome::ResumeKeysFailed,
         Outcome::PaneUnverified,
         Outcome::PaneNotReading,
+        Outcome::ScreenUnrecognised,
         Outcome::WatchLost,
         Outcome::SwapStale,
         Outcome::SwapNoRoom,
@@ -119,5 +120,17 @@ fn the_swap_record_schema_is_documented() {
             REFERENCE.contains(&format!("`{field}`")),
             "profile-command.md lacks `{field}`"
         );
+    }
+}
+
+/// Issue #2695: the `detail` vocabulary is a closed set, so the reference
+/// must name every word the log can carry. #2905 records that the earlier
+/// test pinned the outcome names but no `detail` value, which let the two
+/// drift apart unnoticed.
+#[test]
+fn every_detail_the_hook_logs_is_documented() {
+    for reason in UNVERIFIED_REASONS.iter().chain(UNRECOGNISED_REASONS.iter()) {
+        let name = format!("`{reason}`");
+        assert!(REFERENCE.contains(&name), "profile-command.md lacks {name}");
     }
 }

@@ -29,10 +29,12 @@ use amplihack_hooks::limit_resume::decide::{
     Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key,
 };
 use amplihack_hooks::limit_resume::guard::{CommitError, GuardStore, Resumes};
-use amplihack_hooks::limit_resume::keys::{Key, Pane, PaneCheck, RESUME_KEYS};
+use amplihack_hooks::limit_resume::keys::{
+    Key, Pane, PaneCheck, RESUME_KEYS, ScreenCheck, UNRECOGNISED_REASONS,
+};
 use amplihack_hooks::limit_resume::log::LogEntry;
 use amplihack_hooks::limit_resume::{
-    Deps, Event, Outcome, RESUME_MSG, run_with, run_with_io, send_resume,
+    Deps, Event, Outcome, RESUME_MSG, UNRECOGNISED_MSG, run_with, run_with_io, send_resume,
 };
 use amplihack_types::HookInput;
 use amplihack_utils::rotator_status::swap_record::{SwapReading, SwapRecord};
@@ -192,6 +194,10 @@ struct Fake {
     /// `$TMUX_PANE` of a verified pane, or none.
     pane_id: Option<&'static str>,
     pane_calls: u32,
+    /// What a proved pane is showing. The screen this file's scenarios
+    /// describe is the usage-limit menu unless a test says otherwise.
+    screen: ScreenCheck,
+    screen_calls: u32,
     /// Keys sent successfully, in order.
     keys: Vec<Key>,
     key_attempts: usize,
@@ -226,6 +232,8 @@ impl Fake {
             waits: Vec::new(),
             pane_id: None,
             pane_calls: 0,
+            screen: ScreenCheck::Held,
+            screen_calls: 0,
             keys: Vec::new(),
             key_attempts: 0,
             fail_key: None,
@@ -351,6 +359,10 @@ impl Deps for Fake {
         self.stop_calls
             .push((transcript.map(Path::to_path_buf), start));
         self.stop
+    }
+    fn screen_check(&mut self, _pane: &Pane) -> ScreenCheck {
+        self.screen_calls += 1;
+        self.screen.clone()
     }
     fn pane_check(&mut self) -> PaneCheck {
         self.pane_calls += 1;
@@ -919,6 +931,50 @@ fn the_pane_is_checked_before_the_commit() {
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
     assert_eq!(out, Outcome::Duplicate);
     assert_eq!(d.key_attempts, 0, "a lost commit sends nothing");
+}
+
+// ── #2695: the screen is read before anything is typed ──────────────────────
+
+#[test]
+fn a_screen_the_hook_cannot_recognise_takes_the_exit_2_path_and_types_nothing() {
+    for reason in UNRECOGNISED_REASONS {
+        let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+        d.screen = ScreenCheck::Unrecognised(reason);
+        let mut stderr = Vec::new();
+        let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+        assert_eq!(code, 2, "{reason}");
+        assert_eq!(d.key_attempts, 0, "{reason}: nothing is typed");
+        let text = String::from_utf8(stderr).unwrap();
+        assert_eq!(
+            text,
+            format!("{UNRECOGNISED_MSG}\n{RESUME_MSG}\n"),
+            "{reason}: the wake says the screen was not recognised, loudly"
+        );
+        let e = d.last_log();
+        assert_eq!(e.outcome, Outcome::ScreenUnrecognised, "{reason}");
+        assert_eq!(e.detail.as_deref(), Some(reason), "{reason}");
+        assert_eq!(e.keys_sent, None, "{reason}");
+        assert_eq!(d.guard.events.len(), 1, "{reason}: the resume still counts");
+    }
+}
+
+#[test]
+fn the_screen_is_read_only_for_a_pane_that_was_proved() {
+    // No pane: there is nothing to capture, so nothing is captured.
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    assert_eq!(
+        run_with(&limit_input("s", "hit your limit"), &mut d),
+        Outcome::Resumed
+    );
+    assert_eq!(d.screen_calls, 0, "no pane, so no capture");
+
+    // A proved pane: read once, before the keys.
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    assert_eq!(
+        run_with(&limit_input("s", "hit your limit"), &mut d),
+        Outcome::ResumedKeys
+    );
+    assert_eq!(d.screen_calls, 1, "the screen is read once");
 }
 
 // ── D8: a failure part-way through the keys stops the rest ──────────────────

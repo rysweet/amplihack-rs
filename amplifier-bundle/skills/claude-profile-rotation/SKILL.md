@@ -417,31 +417,41 @@ room it answers its own session's pane (`$TMUX_PANE`) and no other. It walks
 up its own ancestry to the nearest process whose standard input is a
 terminal, and uses the pane only if tmux reports that terminal as the pane's
 `#{pane_tty}`, that process holds the terminal's foreground process group,
-and Claude Code is reading it. It then sends Esc, Ctrl+U, `continue` and
-Enter as four separate `tmux send-keys` runs. Esc is the key that dismisses
-the usage-limit menu and the timed wait. If the swap carries an
-organisation-affinity warning, the hook includes it in the continuation
-text. `resumed-keys` records key delivery; confirm continuation in the
-session. The hook's own run against a live usage limit is not confirmed;
-what is tested, against a stand-in `tmux`, is that a session with room and a
-proved pane receives exactly these four inputs for that pane and no other,
-and that a session with no room or no proved pane receives none.
+and Claude Code is reading it. It then reads that pane once, with `tmux
+capture-pane -p`, and types nothing unless the visible screen holds one of
+six fixed phrases: `what do you want to do?`, `usage limit`, `continuing
+automatically`, `session limit`, `5-hour limit` or `weekly limit`. Only
+then does it send Esc, Ctrl+U, `continue` and Enter as four separate `tmux
+send-keys` runs. Esc is the key that dismisses the usage-limit menu and the
+timed wait. If the swap carries an organisation-affinity warning, the hook
+includes it in the continuation text. `resumed-keys` records key delivery;
+confirm continuation in the session. The hook's own run against a live
+usage limit is not confirmed; what is tested, against a stand-in `tmux`, is
+that a session with room, a proved pane and a recognised screen receives
+one `capture-pane` and exactly these four inputs for that pane and no
+other, and that a session with no room, no proved pane or an unrecognised
+screen receives none.
 
-The proof shows that the keys go to the session's own terminal. It does not
-show that the screen is the usage-limit menu, and the hook reads no screen
-text. A session that had already recovered receives one extra `continue`
-turn, and Ctrl+U clears any draft in its input box.
+The proof shows that the keys go to the session's own terminal; the screen
+check shows that the terminal is on a prompt they answer. Neither is a
+parser: the screen check is a substring match, so a screen that merely
+mentions a usage limit still gets the keys. A session that had already
+recovered can receive one extra `continue` turn, and Ctrl+U clears any
+draft in its input box.
 
-When the pane cannot be proved, or the session is not in tmux, the hook
-sends nothing to any terminal and exits `2` with a continue message. The
-outcome says why: `resumed` with `detail=no-tmux-pane` (the session is not
-in tmux, so there is no pane to check and nothing new is done),
-`pane-unverified` (a pane was named but not proved to be the session's
-terminal; `detail=` names the check) or `pane-not-reading` (it is the
-terminal, but Claude Code is not reading it). The wake cleared the menu in
-a Claude Code 2.1.307 check, but standing sessions have stayed on the
-usage-limit menu after a wake and a swap, so these three outcomes can leave
-a session stopped.
+When the pane cannot be proved, the screen cannot be recognised, or the
+session is not in tmux, the hook sends nothing to any terminal and exits
+`2` with a continue message. The outcome says why: `resumed` with
+`detail=no-tmux-pane` (the session is not in tmux, so there is no pane to
+check and nothing new is done), `pane-unverified` (a pane was named but not
+proved to be the session's terminal; `detail=` names the check),
+`pane-not-reading` (it is the terminal, but Claude Code is not reading it)
+or `screen-unrecognised` (the pane is the terminal, but its screen matched
+no phrase, `detail=screen-unknown`, or could not be read,
+`detail=screen-unreadable`). The wake cleared the menu in a Claude Code
+2.1.307 check, but standing sessions have stayed on the usage-limit menu
+after a wake and a swap, so these four outcomes can leave a session
+stopped.
 
 For a session left stopped, and when the hook logs `resume-keys-failed`,
 direct the owner to the
@@ -490,6 +500,7 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 | `resumed` | Logged with `detail=no-tmux-pane`. The session had no tmux pane to check, so the hook exited `2` with a continue message. A session held on the menu stays there. |
 | `pane-unverified` | A pane was named but not proved to be the terminal of the hook's own Claude Code (`detail=` is `bad-pane-id`, `no-tty-ancestor`, `walk-limit`, `unreadable-proc`, `tty-mismatch` or `not-foreground`; `tty-mismatch` also covers `tmux` failing or printing nothing). Nothing was typed and the hook exited `2`. If the session is still on the menu, its owner should follow [Continue a session yourself](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#continue-a-session-yourself). |
 | `pane-not-reading` | The pane is the session's terminal, but Claude Code is not the process reading it. Nothing was typed and the hook exited `2`. Same follow-up as `pane-unverified`. |
+| `screen-unrecognised` | The pane is the session's terminal, but what it was showing is not a screen the keys answer (`detail=screen-unknown`) or could not be read (`detail=screen-unreadable`). Nothing was typed and the hook exited `2`, naming the refusal in the wake message. Same follow-up as `pane-unverified`. |
 | `resume-keys-failed` | A key failed or the session exited part way (`keys_sent=` says how many went). If the session is still open, its owner should follow [Continue a session yourself](https://rysweet.github.io/amplihack-rs/howto/claude-profile-rotation/#continue-a-session-yourself). |
 | `swap-no-room` / `swap-stale` | A swap record was at 100% or swapped before the stop; the hook kept waiting. |
 | `watch-lost` | The hook could not watch for swaps (not Linux, old kernel, unsafe or deleted directory; see `detail=`). It never resumes. |
