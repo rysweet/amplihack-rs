@@ -23,10 +23,11 @@
 # What is stood in for, and nothing else:
 #   gh      answers `auth status`, `pr view` and `pr list`, accepts the one
 #           write a shipped step makes here (`pr comment`, the "Ready for Final
-#           Review" note of step-21-pr-ready, recorded in $CASE/gh-comments.log),
-#           and exits 96 on anything else (merge, any api call, secret,
-#           variable, workflow), recording that call in
-#           $CASE/gh-unexpected. The pull request is #7,
+#           Review" note of step-21-pr-ready, recorded in $CASE/gh-comments.log;
+#           every case fails on more than one comment or on any other), and
+#           exits 96 on anything else (merge, any api call, secret, variable,
+#           workflow), recording that call in $CASE/gh-unexpected. The pull
+#           request is #7,
 #           open and not a draft, at the tip the bare remote holds for the run
 #           branch. Its checks are read from that tip, not from a flag the
 #           driver flips: the `smoke` check fails until the tip holds the file
@@ -206,11 +207,18 @@ case "$RUNNER" in /*) ;; *) RUNNER="$PWD/$RUNNER" ;; esac
 BUNDLE_HOME="$REPO_ROOT"
 BASELINE_REF="${AMPLIHACK_2966_BASELINE_REF:-}"
 if [ -n "$BASELINE_REF" ]; then
+  # The ref reaches git as an argument, so a value shaped like an option is
+  # refused, and the ref is resolved to one commit before anything reads it.
+  case "$BASELINE_REF" in
+    -*) die "AMPLIHACK_2966_BASELINE_REF must name a commit, not an option: $BASELINE_REF" ;;
+  esac
+  BASELINE_SHA="$(cd "$REPO_ROOT" && git rev-parse --verify --quiet "${BASELINE_REF}^{commit}")" \
+    || die "AMPLIHACK_2966_BASELINE_REF does not name a commit: $BASELINE_REF"
   BUNDLE_HOME="$WORK/baseline-bundle"
   mkdir -p -- "$BUNDLE_HOME" || die "cannot create the baseline folder"
-  ( cd "$REPO_ROOT" && git archive --format=tar "$BASELINE_REF" amplifier-bundle ) \
-    | tar -x -C "$BUNDLE_HOME" || die "cannot extract amplifier-bundle from $BASELINE_REF"
-  echo "baseline bundle: $BASELINE_REF extracted to $BUNDLE_HOME"
+  ( cd "$REPO_ROOT" && git archive --format=tar "$BASELINE_SHA" amplifier-bundle ) \
+    | tar -x -C "$BUNDLE_HOME" || die "cannot extract amplifier-bundle from $BASELINE_REF ($BASELINE_SHA)"
+  echo "baseline bundle: $BASELINE_REF ($BASELINE_SHA) extracted to $BUNDLE_HOME"
 fi
 RECIPE="$BUNDLE_HOME/amplifier-bundle/recipes/workflow-finalize.yaml"
 [ -f "$RECIPE" ] || die "missing $RECIPE"
@@ -520,6 +528,15 @@ check_common() {
   [ ! -e "$dir/stub-errors" ] || problems+=("stand-in error: $(head -n 1 "$dir/stub-errors")")
   n="$(calls_of "$dir" unmatched)"
   [ "${n:-0}" -eq 0 ] || problems+=("$n agent prompt(s) matched no stand-in key")
+  # The one write a shipped step may make: step-21's "Ready for Final Review"
+  # note, at most once. Any other comment is a write the case did not allow.
+  if [ -e "$dir/gh-comments.log" ]; then
+    n="$(wc -l < "$dir/gh-comments.log" | tr -d ' ')"
+    [ "$n" -le 1 ] || problems+=("$n pull request comments were written, want at most one")
+    if grep -qv 'Ready for Final Review' "$dir/gh-comments.log"; then
+      problems+=("a pull request comment other than the Ready for Final Review note: $(grep -v 'Ready for Final Review' "$dir/gh-comments.log" | head -n 1)")
+    fi
+  fi
 }
 
 # expect_exit <dir> <want>
