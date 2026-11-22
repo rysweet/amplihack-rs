@@ -202,3 +202,58 @@ fn stop_finishes_while_the_rotator_waits_out_a_long_interval() {
     );
     wait_until("the rotator to exit", || !alive(pid));
 }
+
+/// Any limit kind is an event and a block (#2909), in a running rotator:
+/// a `credit_limit` record for the live login moves it at once, and a
+/// candidate held by a kind this binary does not know is passed over until
+/// its reset. The log names that kind by fixed text and never quotes the
+/// stored token, which a newer writer chose.
+#[test]
+fn a_running_rotator_honours_a_credit_limit_and_an_unknown_limit_kind() {
+    let f = Fixture::new();
+    f.usage("work", 10, 10);
+    fs::create_dir_all(f.rotate_dir()).unwrap();
+    fs::set_permissions(f.rotate_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    let spare_until = now() + 3 * 3600;
+    record_block(&f, "spare", "org_monthly_cap", now() - 60, spare_until);
+    let (_r, pid) = start_long(&f);
+    wait_until("the first cycle", || cycles(&f) >= 1);
+    assert!(!f.log().contains(" swap "), "work has room: {}", f.log());
+    // The live login meets its credit limit and a step records it.
+    f.usage("work", 100, 40);
+    record_block(&f, "work", "credit_limit", now(), now() + 3 * 3600);
+    wait_until("a swap off work caused by the credit-limit record", || {
+        f.log()
+            .lines()
+            .any(|l| l.contains(" swap ") && l.contains("work->"))
+    });
+    let (out, refused) = f.stop_until_gone(pid);
+    f.assert_stopped(&out, refused, pid);
+    let log = f.log();
+    // spare (10/20) has the most room but is held; extra (50/50) is chosen.
+    assert!(log.contains(" swap work->extra live "), "{log}");
+    let woke = first(&log, "wake: ledger changed").expect("the record woke the rotator");
+    assert!(Some(woke) < first(&log, " swap work->"), "{log}");
+    assert!(!log.contains("wake: interval"), "no interval tick: {log}");
+    let stamp = chrono::DateTime::from_timestamp(spare_until, 0)
+        .unwrap()
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let want = format!("reject: spare a recorded limit recorded until {stamp}");
+    assert!(log.contains(&want), "want {want:?} in:\n{log}");
+    assert!(
+        !log.contains("org_monthly_cap"),
+        "a stored kind is never quoted: {log}"
+    );
+    // Both records are kept until their resets.
+    let ledger = f.ledger().expect("the ledger");
+    assert_eq!(
+        ledger["overflow_blocked"]["spare"]["reason"],
+        "org_monthly_cap"
+    );
+    assert_eq!(ledger["overflow_blocked"]["work"]["reason"], "credit_limit");
+    println!("[#2909 kinds] {}", log.replace('\n', "\n[#2909 kinds] "));
+    for l in log.lines() {
+        assert_log_grammar(l, true);
+    }
+}

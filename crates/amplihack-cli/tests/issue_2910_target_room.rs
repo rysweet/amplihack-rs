@@ -4,14 +4,16 @@
 //! fixture answering `/usage`, and reads the result where an operator
 //! would: which login is in `~/.claude` afterwards, and the rotate log.
 //!
-//! The confirming read before a swap (rule 3) is not driven from here: it
-//! is taken only for a target whose reading was stored by an earlier cycle,
-//! which a single cycle cannot arrange. `rotate/tests_issue_2910_confirm.rs`
-//! covers it with stand-in readings.
+//! The confirming read before a swap (rule 3) is taken only for a target
+//! whose reading was stored, not taken by the cycle itself. A status-line
+//! (passive) reading is stored, so one cycle with passive readings on
+//! drives it; `rotate/tests_issue_2910_confirm.rs` covers the rest of the
+//! rule with stand-in readings.
 
 #![cfg(unix)]
 
 use crate::support::profile_rotate::*;
+use crate::support::wait::output_within;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
@@ -156,6 +158,54 @@ fn a_blocked_login_is_chosen_after_its_reset() {
     println!(
         "[#2910 released] {}",
         log.replace('\n', "\n[#2910 released] ")
+    );
+    f.assert_each_login_once();
+    check_grammar(&f);
+}
+
+/// Rule 3: the chosen target is read once more before the swap. spare's
+/// stored (status-line) reading says 10/20, so it ranks first, but it has
+/// been spent since; its confirming read shows 100/40, the log says so,
+/// and the rotator moves onto the next candidate, whose own confirming
+/// read shows room.
+#[test]
+fn a_target_whose_fresh_reading_shows_no_room_is_skipped_for_the_next() {
+    let f = Fixture::new();
+    f.usage("work", 100, 40);
+    f.usage("spare", 100, 40);
+    f.usage("extra", 50, 50);
+    // Planted immediately before the command, as `passive` requires.
+    f.passive(&[("spare", 10, 20), ("extra", 50, 50)]);
+    let out = output_within(
+        "`profile rotate` with passive readings on",
+        f.cmd(&["profile", "rotate"])
+            .env("AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS", "3600"),
+    );
+    assert_no_secrets(&out);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let log = f.log();
+    assert_eq!(
+        ino(&f.home_login()),
+        Some(f.extra_ino),
+        "spare's fresh reading has no room, so extra is the target:\n{log}"
+    );
+    let confirm = log
+        .find("confirm: spare was s=10% w=20%; now s=100% w=40%")
+        .unwrap_or_else(|| panic!("spare was read again before the swap:\n{log}"));
+    let dropped = log
+        .find("reject: spare fresh reading shows no room")
+        .unwrap_or_else(|| panic!("the log says why spare was dropped:\n{log}"));
+    let swap = log
+        .find(" swap work->extra live ")
+        .unwrap_or_else(|| panic!("{log}"));
+    assert!(confirm < dropped && dropped < swap, "{log}");
+    assert!(
+        log.contains("confirm: extra was s=50% w=50%; now s=50% w=50%"),
+        "the next target is confirmed too:\n{log}"
+    );
+    println!(
+        "[#2910 confirm] {}",
+        log.replace('\n', "\n[#2910 confirm] ")
     );
     f.assert_each_login_once();
     check_grammar(&f);
