@@ -366,7 +366,7 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: bash amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh
-      - name: Recipes — a round pushes its own fix before review (issue #2923)
+      - name: "Recipes: a round pushes its own fix before review (issue #2923)"
         shell: bash
         env:
           TMPDIR: ${{ runner.temp }}

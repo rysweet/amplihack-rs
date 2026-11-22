@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-issue-2923-round-push-before-review.sh — a crusty round's own fix commit
+# test-issue-2923-round-push-before-review.sh: a crusty round's own fix commit
 # reaches the PR's head branch before the next review, and step recovery pushes
 # a commit the same run made instead of handing off (issue #2923).
 #
