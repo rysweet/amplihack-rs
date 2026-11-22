@@ -932,9 +932,20 @@ fn mirror_is_current(source: &Path, target: &Path) -> Result<bool> {
         }
     };
     if metadata.file_type().is_symlink() {
-        return Ok(fs::read_link(target)
-            .with_context(|| format!("failed to read symlink {}", target.display()))?
-            == source);
+        return match fs::read_link(target) {
+            Ok(current) => Ok(current == source),
+            // Another launch replaced the mirror between the two calls. On
+            // macOS the link read then fails with "invalid argument", and it
+            // may also find nothing. Neither is a fault of this launch: the
+            // mirror is not known to be current, and `replace_mirror`
+            // publishes over whatever is there now (issue #2931).
+            Err(error) if matches!(error.kind(), ErrorKind::InvalidInput | ErrorKind::NotFound) => {
+                Ok(false)
+            }
+            Err(error) => {
+                Err(error).with_context(|| format!("failed to read symlink {}", target.display()))
+            }
+        };
     }
     if !metadata.is_dir() {
         return Ok(false);
