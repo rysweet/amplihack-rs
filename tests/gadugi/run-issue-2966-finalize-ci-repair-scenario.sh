@@ -312,7 +312,7 @@ case "${1-} ${2-}" in
   "pr list") emit "[$(pr_json)]" "$@"; exit 0 ;;
   # The one write a shipped step makes here: step-21-pr-ready's "Ready for Final
   # Review" comment. It is accepted and recorded; nothing else is.
-  "pr comment") printf '%s\n' "$*" | head -n 1 >> "$dir/gh-comments.log"; exit 0 ;;
+  "pr comment") note="$*"; printf '%s\n' "${note%%$'\n'*}" >> "$dir/gh-comments.log"; exit 0 ;;
   # Waiting on the checks: it returns once nothing is pending, so here it
   # settles the pending check. Without --watch it is not in the table.
   "pr checks")
@@ -377,10 +377,12 @@ fix_and_push() {
 
 case "$role" in
   recover)
-    ev="$(printf '%s' "$input" | grep -o '/[^[:space:]`"]*evidence-[^[:space:]`"]*\.json' | head -n 1)"
+    ev="$(printf '%s' "$input" | awk -v re='/[^[:space:]`"]*evidence-[^[:space:]`"]*\\.json' \
+      'n == 0 && match($0, re) { print substr($0, RSTART, RLENGTH); n = 1 }')"
     excerpt=""; owner="run-requester"
     if [ -n "$ev" ] && [ -f "$ev" ]; then
-      excerpt="$(jq -r '.failure.output_excerpt // ""' "$ev" | grep 'failed closed' | tail -n 1)"
+      excerpt="$(jq -r '.failure.output_excerpt // ""' "$ev" \
+        | awk 'index($0, "failed closed") { last = $0 } END { if (last != "") print last }')"
       owner="$(jq -r '.default_owner // "run-requester"' "$ev")"
     fi
     needs="${excerpt#*next action: }"
@@ -561,7 +563,7 @@ check_common() {
     n="$(wc -l < "$dir/gh-comments.log" | tr -d ' ')"
     [ "$n" -le 1 ] || problems+=("$n pull request comments were written, want at most one")
     if grep -qv 'Ready for Final Review' "$dir/gh-comments.log"; then
-      problems+=("a pull request comment other than the Ready for Final Review note: $(grep -v 'Ready for Final Review' "$dir/gh-comments.log" | head -n 1)")
+      problems+=("a pull request comment other than the Ready for Final Review note: $(awk 'n == 0 && index($0, "Ready for Final Review") == 0 { print; n = 1 }' "$dir/gh-comments.log")")
     fi
   fi
 }
