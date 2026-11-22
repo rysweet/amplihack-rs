@@ -51,13 +51,14 @@ const AUTODRIVE_RECIPES: [&str; 8] = [
     "autodrive-finalize",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 32] = [
+const AUTODRIVE_TOOLS: [&str; 33] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
     "autodrive_escalate.sh",
     "autodrive_finding_rules.sh",
     "autodrive_followups.sh",
+    "autodrive_followups_file.sh",
     "autodrive_followups_check.sh",
     "autodrive_last_round.sh",
     "autodrive_loop.sh",

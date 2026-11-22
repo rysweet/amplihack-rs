@@ -28,6 +28,11 @@ context:
   autodrive_state_dir: ""
   autodrive_dry_run: "false"
   no_merge: "false"
+  # #1888: the merge method this drive is to use (merge, squash or rebase).
+  # Empty leaves the choice to the repository's own allowed methods, which is
+  # squash wherever squash is allowed. A method the repository does not allow
+  # is never used; the drive hands the PR off instead.
+  merge_method: ""
   autodrive_pr_input: ""
   autodrive_budget_loop_rounds: "12"
   autodrive_budget_total_rounds: "20"
@@ -139,6 +144,7 @@ steps:
       autodrive_budget_total_rounds: "{{autodrive_budget_total_rounds}}"
       autodrive_budget_wall_seconds: "{{autodrive_budget_wall_seconds}}"
       no_merge: "{{no_merge}}"
+      merge_method: "{{merge_method}}"
       build_result: "{{build_result}}"
       step_recovery_dir: "{{step_recovery_dir}}"
     condition: "build_result and build_result.merged_before_run != 'true'"

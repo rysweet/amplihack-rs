@@ -32,6 +32,7 @@ the drive.
 - [Round files](#round-files)
 - [How the loop ends](#how-the-loop-ends)
 - [Finalisation and merge conditions](#finalisation-and-merge-conditions)
+  - [Merge method](#merge-method)
 - [Base sync](#base-sync)
 - [Hand-off](#hand-off)
 - [Run report](#run-report)
@@ -438,7 +439,9 @@ written by `autodrive_crusty_record.sh`.
 An optional first argument asks for that many further rounds; it must
 match `^[0-9]+$` and be at least `1`, and the tool turns it into a budget of
 the rounds already used plus that number (see
-[`autodrive_merge_loop_run.sh`](#autodrive_merge_loop_runsh)). The step keeps its default `fatal`
+[`autodrive_merge_loop_run.sh`](#autodrive_merge_loop_runsh)). A
+`merge_method` the merge tool would not take stops the tool with exit `2`
+before the driver starts (see [Merge method](#merge-method)). The step keeps its default `fatal`
 handling and the tool maps the driver's exit status itself, so that exit `79`
 is never hidden by `continue_on_error` (#2490).
 
@@ -746,8 +749,10 @@ this order:
    `HEAD` still equals it. A different head means the PR changed after the
    assessment; the step returns `refused` without calling `gh`.
 4. `autodrive_merge` finds the PR open, its checks green or absent (see
-   [Checks](#checks)) and its `mergeStateStatus` not `DIRTY`, then GitHub
-   accepts `gh pr merge --squash --match-head-commit <expected sha>`.
+   [Checks](#checks)) and its `mergeStateStatus` not `DIRTY`, settles on a
+   merge method the repository allows (see [Merge method](#merge-method)),
+   then GitHub accepts
+   `gh pr merge --<method> --match-head-commit <expected sha>`.
 
 GitHub's acceptance covers required reviews, branch protection and a head
 that moved on the server. No agent-written text is a merge condition: an
@@ -795,19 +800,97 @@ statements whose default arm is the safe result.
 | After GitHub refuses the merge, read once more | `BEHIND` or `DIRTY` | `base-behind` (tool exit `8`). |
 | After GitHub refuses the merge | anything else, including empty or unknown | `refused` (tool exit `4`). |
 
-`--squash --match-head-commit` is always used, so the merge can only land the
-assessed head. A `gh` exit `79` stays terminal.
+`--match-head-commit` accompanies every merge method, so the merge can only
+land the assessed head. A `gh` exit `79` stays terminal.
+
+### Merge method
+
+Some repositories require merge commits, so the method is chosen rather than
+fixed (#1888). `autodrive_merge` settles it immediately before the merge
+request, after every condition above:
+
+1. The method the run was given, in the `merge_method` context value: `merge`,
+   `squash` or `rebase`. It is used only where the repository allows it.
+2. Otherwise the first the repository allows, of squash, a merge commit, then
+   rebase.
+
+The repository's own settings are read once, with
+
+```bash
+gh api "repos/{owner}/{repo}" --jq '[.allow_merge_commit,.allow_squash_merge,.allow_rebase_merge]|@tsv'
+```
+
+A method the repository does not allow is never used, and no other method
+takes its place. Where the method cannot be settled, the result is `refused`
+(tool exit `4`) with a reason that begins `the merge method could not be
+settled:` and names what was found. That is the ordinary hand-off path: an
+agent step states the outcome and the PR is handed off, so there is no new
+exit code and no new way for a run to end. Three readings reach it:
+
+- the run was given a method the repository does not allow, or a word that is
+  not `merge`, `squash` or `rebase`;
+- the repository's settings could not be read, or did not read as three
+  `true` or `false` values. For a failed read the reason names `gh`'s exit
+  status and then the first line of its error output that is not blank, with
+  every byte outside printable ASCII replaced and cut at 200 bytes, so the
+  hand-off says why the read failed (a `403`, a missing scope). The whole
+  error output still goes to the step's log;
+- the repository allows no merge method at all.
+
+The caller's string never reaches the argv: it selects a branch in the tool,
+and the flag put on the command line is a literal of the tool. Where the
+reason echoes the string it was given, the string is cut to 32 characters and
+every non-printable or non-ASCII byte is replaced first. The finalisation
+statement and the hand-off comment treat that reason as a record of what the
+step found, never as an instruction.
+
+Paths that end before a merge request, such as a closed PR, failing or
+pending checks, a `DIRTY` branch or an unavailable merge message, make no
+repository call at all.
+
+Branch protection and rulesets, such as a required linear history, are not
+read here. GitHub applies them to the merge request itself, and a merge it
+refuses ends `refused` and is handed off, as set out under
+[Merge state](#merge-state).
+
+The merge loop also passes `merge_method` to every merge-ready round. Where
+the task text states how the PR is to be merged, or a condition only one
+method can keep, such as a commit that must stay an ancestor of the base, the
+assessment treats it as a stated merge condition: it holds only when the run
+was given that method, and otherwise the round concludes hand-off, naming the
+method the task asks for and the method the run was given.
+
+Because the round prompt names the method, `autodrive_merge_loop_run.sh`
+checks it before any round starts, with `autodrive_merge_method_known` from
+`autodrive_merge.sh`, the one list both tools use. A value that is not empty,
+`merge`, `squash` or `rebase` stops the step with exit `2` and an error that
+names the value, cut and made printable as above. No round runs, the state
+folder is not written, and the value is never replaced with an empty one,
+which would let the repository choose a method nobody asked for. The tool is
+the only way a round receives `merge_method`: `autodrive-merge-round.yaml` is
+run only by the loop driver this tool starts, never directly by a recipe.
+
+Every result line carries `merge_method` and `merge_method_reason`, empty
+where the method was never settled. `autodrive-finalize.yaml` passes both on
+in `finalize_merge`, and the `state-outcome` agent step states the method and
+the reason.
 
 ### Merge message
 
-The squash subject and body come from the trusted
+The merge subject and body come from the trusted
 `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh`, as before
 (#2056; see [the squash commit message](auto-drive-to-merge.md#the-squash-commit-message-2056)).
 The helper is sourced only after the absolute-path and non-symlink checks, and
-the body reaches `gh` on standard input:
+is called on every path, whichever method is settled on, so
+`message-unavailable` stays reachable as it was. A squash and a merge commit
+both take the composed subject and body; a rebase writes no commit of its own
+and takes neither, and no body is piped to it. The body reaches `gh` on
+standard input:
 
 ```bash
 printf '%s' "$MERGE_BODY" | gh pr merge "$pr" --squash --match-head-commit "$sha" --subject "$subject" --body-file -
+printf '%s' "$MERGE_BODY" | gh pr merge "$pr" --merge --match-head-commit "$sha" --subject "$subject" --body-file -
+printf '' | gh pr merge "$pr" --rebase --match-head-commit "$sha"
 ```
 
 ### `finalize_merge` values
@@ -1350,13 +1433,18 @@ at a round file's name is replaced, not followed.
 ```bash
 source "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge.sh"
 autodrive_merge 2575 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605
-# {"result":"merged","pr":2575,"expected_head":"15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605","reason":"merged at the expected head; ..."}
+# {"result":"merged","pr":2575,"expected_head":"15a7f6f...","reason":"merged at the expected head; ...","merge_method":"squash","merge_method_reason":"no merge method was given to the run, so 'squash' was taken: ..."}
+
+# A third argument is the merge method the run was given (#1888); an empty
+# one, or none, leaves the choice to the repository's allowed methods.
+autodrive_merge 1170 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605 merge
 ```
 
 The function prints one JSON line built with `jq -cn`. It calls `gh` once for
 each of these, in order: PR state with title, body and `mergeStateStatus` (one
 read), `checks --required` (and `checks` when no required checks are
-reported), merge, PR state after the merge. It adds no retries or waits.
+reported), the repository's allowed merge methods, merge, PR state after the
+merge. It adds no retries or waits.
 
 ```bash
 autodrive_merge 2575 15a7f6f47c1e2d0b9a8f7e6d5c4b3a2918070605
@@ -1368,9 +1456,9 @@ echo $?
 | Exit | Meaning |
 | --- | --- |
 | `0` | `merged`: GitHub reads the PR `MERGED` with `headRefOid` equal to the expected head. This holds whether the PR already read so before the request (no request is made), after the request, or after `gh pr merge` exited non-zero. |
-| `2` | Bad arguments, or the merge-message helper failed its path checks. |
+| `2` | Bad arguments (fewer than two or more than three, a malformed PR number or head), or the merge-message helper failed its path checks. |
 | `3` | `checks-not-green`; no merge attempted. |
-| `4` | `refused`: GitHub declined the merge, for example on a moved head, a missing review or branch protection, and the read-back `mergeStateStatus` is not `BEHIND` or `DIRTY`. |
+| `4` | `refused`: GitHub declined the merge, for example on a moved head, a missing review or branch protection, and the read-back `mergeStateStatus` is not `BEHIND` or `DIRTY`; or the merge method could not be settled (#1888), in which case no merge was requested. |
 | `5` | `not-open`: the PR was closed, or merged at a head other than the expected one, before the merge. |
 | `6` | `message-unavailable`: the merge-message helper refused the title or body. |
 | `7` | `checks-pending`: a required check is still running at the head; no merge attempted. |
@@ -1420,6 +1508,12 @@ passes `autodrive_budget_loop_rounds=<used + N>`, never more than the
 operator's own `autodrive_budget_loop_rounds` when one is set. When the
 operator's budget leaves no room, the round stops as `BUDGET_EXHAUSTED` and
 the PR is handed off. `autodrive_budget_total_rounds` applies unchanged.
+
+Before it reads the preflight or touches the state directory, the tool loads
+`autodrive_merge.sh` from beside itself and checks `RECIPE_VAR_merge_method`
+with `autodrive_merge_method_known`. Anything other than empty, `merge`,
+`squash` or `rebase` exits `2` with an error naming the value, made printable
+and cut at 32 bytes, and no round runs (see [Merge method](#merge-method)).
 
 ### `amplihack orch helper autodrive authorization`
 

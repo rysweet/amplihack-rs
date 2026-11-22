@@ -379,7 +379,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Workflow Runtime Isolation](features/workflow-runtime-isolation.md) - Runtime-root isolation and narrow cleanup for generated workflow artifacts
 - [How to Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Set `AMPLIHACK_RUNTIME_ROOT`, inspect runtime files, and troubleshoot guard failures
 - [Tutorial: Workflow Runtime Isolation](tutorials/workflow-runtime-isolation.md) - Practice the runtime isolation and strict Artifact Guard contract
-- [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md) - Environment variables, shell helper API, lifecycle hooks, and regression contract
+- [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md) - Environment variables, shell helper API, lifecycle hooks, the single excluded-runtime-paths list (including `/index.scip`) and the dirty-worktree message, and regression contract
 - [Workflow Commit Identity Reference](reference/workflow-commit-identity.md) - Explicit author/committer identity contract for workflow-created commits
 - [Workflow Identity Preflight Reference](reference/identity-preflight.md) - One-call check, before any step does real work, that the acting `gh` account can write to the target repository (issue #1290)
 - [How to Configure Workflow Commit Identity](howto/configure-workflow-commit-identity.md) - Setup for `AMPLIHACK_GIT_*`, repo-local Git identity, and provider-safe fallbacks

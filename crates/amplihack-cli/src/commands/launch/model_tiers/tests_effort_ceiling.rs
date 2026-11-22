@@ -353,19 +353,58 @@ fn a_cap_is_claimed_only_when_both_efforts_are_known() {
 }
 
 #[test]
-fn a_column_with_no_effort_control_reports_no_cap() {
-    // Claude Code has no launch control for reasoning effort, so a declared
-    // effort there is recorded and documented as not a launch control. A
-    // ceiling must not invent one, nor claim to have lowered one.
+fn a_claude_ceiling_now_caps_the_effort_it_writes() {
+    // Claude Code takes `--effort`, so a declared ceiling has an effect and
+    // the resolution reports the lowered value.
     let (table, _) = with_override(
         "version = 1\n[claude]\nmax_effort = \"low\"\n[claude.strong]\n\
          model = \"claude-opus-5[1m]\"\neffort = \"xhigh\"\n",
     );
     let args = argv(&["--model", "strong", "-p"]);
     let out = resolve(&request("claude", &args, &table));
+    assert_eq!(out.effort, Some(Effort::Low), "{:?}", out.argv);
+    let record = out.record.as_ref().expect("a tier launch is recorded");
+    assert_eq!(record.requested_effort, Some(Effort::Xhigh));
+    assert_eq!(record.effective_effort, Some(Effort::Low));
+    // The `Applied` line is the caller's, not the resolver's, so it is asked
+    // for the same way the Codex cases above ask for it.
+    let notice = super::applied_notice("claude", record, super::EffortOutcome::Added(Effort::Low))
+        .expect("a launch that got an effort says so");
+    assert!(
+        matches!(
+            notice,
+            Notice::Applied {
+                effort: Some(Effort::Low),
+                capped_from: Some(Effort::Xhigh),
+                ..
+            }
+        ),
+        "the capped clause of the Applied line prints: {notice:?}"
+    );
+    assert!(
+        notice.render().contains("--effort low"),
+        "the line names Claude's own flag: {}",
+        notice.render()
+    );
+}
+
+#[test]
+fn a_claude_ceiling_never_raises_an_effort() {
+    let (table, _) = with_override("version = 1\n[claude]\nmax_effort = \"max\"\n");
+    let args = argv(&["--model", "strong", "-p"]);
+    let out = resolve(&request("claude", &args, &table));
+    assert_eq!(out.effort, Some(Effort::Xhigh));
+}
+
+#[test]
+fn a_claude_ceiling_above_the_request_is_validated_against_claudes_words() {
+    let (table, notices) = with_override("version = 1\n[claude]\nmax_effort = \"minimal\"\n");
+    assert!(!notices.is_empty(), "minimal is not a Claude word");
+    let args = argv(&["--model", "strong", "-p"]);
+    let out = resolve(&request("claude", &args, &table));
     assert_eq!(
-        out.effort, None,
-        "nothing is written, so nothing is capped: {:?}",
-        out.argv
+        out.effort,
+        Some(Effort::Xhigh),
+        "a refused ceiling caps nothing"
     );
 }

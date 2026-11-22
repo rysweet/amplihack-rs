@@ -1,7 +1,7 @@
 //! Integration tests for the session start hook process() method.
 
 use super::*;
-use crate::test_support::{EnvVarGuard, env_lock};
+use crate::test_support::env_lock;
 use std::fs;
 
 fn generate_session_id() -> String {
@@ -288,9 +288,7 @@ fn session_start_process_surfaces_blarify_setup_failure_notice() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // An ambient `AMPLIHACK_DISABLE_BLARIFY=1` would skip the setup attempt
-    // entirely, so the test owns the variable rather than inherit it.
-    let _disable_blarify = EnvVarGuard::unset("AMPLIHACK_DISABLE_BLARIFY");
+    let _blarify = crate::test_support::blarify_not_disabled();
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/app.py"), "print('hi')\n").unwrap();

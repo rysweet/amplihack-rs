@@ -13,9 +13,27 @@
 //! recipe runner builds. For those harnesses `--model` is recognised wherever
 //! it appears before `--`, as `model_args` has always detected one.
 //!
+//! It also holds [`Injection`], the outcome both effort injectors report.
+//! The pair each of them writes differs, and so does the caller-set scan each
+//! reads, but the two possible outcomes are the same two, so they are one
+//! type here rather than one apiece.
+//!
 //! Pure: it reads the argv and a compiled-in table, nothing else.
 
 use amplihack_launcher::prompt_delivery::codex_options;
+
+/// What an effort injection did to a command line.
+///
+/// Shared by [`super::codex_effort`] and [`super::claude_effort`], so the
+/// dispatch in [`super`] reads either injector's answer through one match
+/// rather than normalising two identical enums into a common shape.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Injection {
+    /// The command line with the pair prepended.
+    Added(Vec<String>),
+    /// The command line already sets the effort; amplihack adds nothing.
+    CallerChose,
+}
 
 /// One `--model` on a command line, in either spelling.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +103,24 @@ pub(crate) fn find_model_options(args: &[String], arity_aware: bool) -> Vec<Mode
         i += 1 + usize::from(arity_aware && consumes_next(arg));
     }
     out
+}
+
+/// Whether the caller already wrote `flag` before the end-of-options marker,
+/// in either the `--flag value`, `--flag=value` or bare-trailing spelling.
+///
+/// Not arity-aware: on a Claude command line there is no option table to walk
+/// (see the module header), so an option whose *value* happens to be the word
+/// `--effort` reads as caller-set. The consequence is that amplihack writes
+/// nothing, which is the direction this must fail in: it can never add a
+/// flag the caller did not expect.
+///
+/// Shares [`options_end`] with the insertion, so text after a bare `--` is
+/// prompt text that neither suppresses nor triggers an injection.
+pub(crate) fn caller_set_flag(args: &[String], flag: &str) -> bool {
+    let attached = format!("{flag}=");
+    args[..options_end(args)]
+        .iter()
+        .any(|arg| arg == flag || arg.starts_with(&attached))
 }
 
 /// Whether `-c`/`--config` already sets `key` before the end-of-options
