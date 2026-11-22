@@ -1284,7 +1284,14 @@ fi
                     write_exe(&tools.path().join("amplihack-hooks"), "#!/bin/sh\nexit 0\n");
                 }
                 let before = fs::read(&owned_runtime).ok();
-                let out = Command::new("/bin/sh")
+                let mut command = Command::new("/bin/sh");
+                // Issue #2922: this one does not go through `script_command`,
+                // which clears the environment, and the script places and runs
+                // the real CLI. An inherited `CLAUDE_CONFIG_DIR` would reach it
+                // beside the temporary HOME below. The script itself derives
+                // its data root from `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`.
+                crate::support::claude_profile_isolation::remove_from_command(&mut command);
+                let out = command
                     .arg(repo_root().join("claude-plugin/bin/install-runtime"))
                     .env("HOME", home.path())
                     .env("CAPABILITY_TEST_REPORT", report)
@@ -1450,7 +1457,13 @@ fi
     fn install_runtime_does_not_stamp_when_the_release_is_unknown() {
         let run = install_runtime("1.0.0", true, true, "");
         let log = run.log();
-        assert!(run.out.status.success(), "{log}");
+        // With stderr: the runner check's own error, and its cause, are
+        // written there and not to the log (issue #2931).
+        assert!(
+            run.out.status.success(),
+            "{log}\nstderr: {}",
+            String::from_utf8_lossy(&run.out.stderr)
+        );
         assert!(!run.data.path().join("runtime.stamp").exists(), "{log}");
     }
 

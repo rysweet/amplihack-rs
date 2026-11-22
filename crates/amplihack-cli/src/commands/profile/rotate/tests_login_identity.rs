@@ -9,7 +9,7 @@ use super::ledger::{Phase, RotateLedger};
 use super::settings;
 use super::switch::{Switched, switch_in};
 use super::tests_swap::{Env, env, ino_at, n, private};
-use crate::commands::profile::auto_switch::kit::{Liveness, State, now};
+use crate::commands::profile::auto_switch::kit::{FakeExchange, Liveness, State, now};
 use crate::commands::profile::expected;
 use std::fs;
 use std::path::Path;
@@ -67,6 +67,7 @@ fn context(e: &Env) -> Ctx {
     let settings = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), settings);
     ctx.scan = |_| Liveness::Known(Default::default());
+    ctx.exchange = FakeExchange::working();
     ctx.identity = read_fake;
     ctx
 }

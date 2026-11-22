@@ -35,7 +35,9 @@
 //!   pub(super) fn ensure_mermaid_cli() -> anyhow::Result<Outcome>;  // always Ok
 //!   pub(super) fn ensure_mermaid_cli_with(
 //!       configure: &dyn Fn(&mut Command),
+//!       probe_limit: Duration,
 //!   ) -> anyhow::Result<Outcome>;  // the same, with a hook on every child
+//!                                  // and the limit on each version probe
 //!
 //! All tests are hermetic without changing the process environment (issue
 //! #1765): every child the flow starts gets PATH set to a single controlled
@@ -44,6 +46,16 @@
 //! the developer/CI host can be reached, and stubs use an absolute `/bin/sh`
 //! shebang so they exec regardless of the pinned PATH. The only `npm install
 //! -g` any test runs is the stub's. No test contacts the network.
+//!
+//! No test here depends on how soon a stub starts (issue #2931). The flow
+//! takes the limit on its version probes as an argument, and every test but
+//! one passes [`NO_PROBE_LIMIT`], so its result is what the stubs answer. On
+//! macOS the first start of a newly written executable takes 0.5 to 6.4 s
+//! while the suite runs (issue #2970), which is longer than the 500 ms the
+//! product allows; with that limit these tests returned `SkippedNoNpm` for a
+//! stub that had not yet started. The one test of the limit itself,
+//! `a_probe_that_outlasts_its_limit_counts_as_absent`, uses a stub that never
+//! answers, so a slow start cannot change its result either.
 
 use super::super::mermaid_cli::{Outcome, ensure_mermaid_cli_with};
 use crate::commands::profile::ROOT_ENV;
@@ -51,10 +63,18 @@ use std::cell::Cell;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Hermetic test scaffolding
 // ---------------------------------------------------------------------------
+
+/// The probe limit for a test whose subject is not the limit: ten minutes,
+/// which no stub on a loaded host reaches. A stub that is absent fails at
+/// the spawn and one that is present answers at once, so no test waits for
+/// it. The product's own limit is pinned by
+/// `the_production_version_probe_bound_is_unchanged` in `mermaid_cli.rs`.
+const NO_PROBE_LIMIT: Duration = Duration::from_secs(600);
 
 /// Create an executable shell-script stub at `dir/name` with `body`.
 ///
@@ -177,7 +197,7 @@ fn ensure_mermaid_cli_skips_when_opt_out_env_set() {
             std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
         }
 
-        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home))
+        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home), NO_PROBE_LIMIT)
             .expect("issue #828: ensure_mermaid_cli must never return Err (best-effort)");
 
         assert!(
@@ -201,7 +221,7 @@ fn ensure_mermaid_cli_opt_out_is_any_nonempty_value() {
             std::env::set_var("AMPLIHACK_SKIP_MMDC", "yes");
         }
 
-        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home))
+        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home), NO_PROBE_LIMIT)
             .expect("issue #828: must never return Err (best-effort)");
 
         assert!(
@@ -231,7 +251,7 @@ fn ensure_mermaid_cli_skips_when_mmdc_already_present() {
     with_mermaid_env(|bin_dir, home| {
         stub_mmdc_present(bin_dir);
 
-        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home))
+        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home), NO_PROBE_LIMIT)
             .expect("issue #828: ensure_mermaid_cli must never return Err (best-effort)");
 
         assert!(
@@ -253,7 +273,7 @@ fn ensure_mermaid_cli_skips_when_npm_absent() {
     // neither npm nor mmdc exists.
     with_mermaid_env(|bin_dir, home| {
         // No mmdc stub, no npm stub: both absent on the pinned PATH.
-        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home))
+        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home), NO_PROBE_LIMIT)
             .expect("issue #828: a missing npm must be handled gracefully, not error");
 
         assert!(
@@ -282,7 +302,7 @@ fn ensure_mermaid_cli_install_failure_does_not_propagate() {
     with_mermaid_env(|bin_dir, home| {
         stub_npm_present_install_fails(bin_dir);
 
-        let result = ensure_mermaid_cli_with(&hermetic(bin_dir, home));
+        let result = ensure_mermaid_cli_with(&hermetic(bin_dir, home), NO_PROBE_LIMIT);
 
         assert!(
             result.is_ok(),
@@ -319,7 +339,7 @@ fn ensure_mermaid_cli_never_returns_err() {
             std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
         }
         assert!(
-            ensure_mermaid_cli_with(&hermetic(bin_dir, home)).is_ok(),
+            ensure_mermaid_cli_with(&hermetic(bin_dir, home), NO_PROBE_LIMIT).is_ok(),
             "issue #828: env-skip branch must return Ok"
         );
         unsafe {
@@ -331,7 +351,7 @@ fn ensure_mermaid_cli_never_returns_err() {
     with_mermaid_env(|bin_dir, home| {
         stub_mmdc_present(bin_dir);
         assert!(
-            ensure_mermaid_cli_with(&hermetic(bin_dir, home)).is_ok(),
+            ensure_mermaid_cli_with(&hermetic(bin_dir, home), NO_PROBE_LIMIT).is_ok(),
             "issue #828: already-present branch must return Ok"
         );
     });
@@ -339,7 +359,7 @@ fn ensure_mermaid_cli_never_returns_err() {
     // npm-absent branch
     with_mermaid_env(|bin_dir, home| {
         assert!(
-            ensure_mermaid_cli_with(&hermetic(bin_dir, home)).is_ok(),
+            ensure_mermaid_cli_with(&hermetic(bin_dir, home), NO_PROBE_LIMIT).is_ok(),
             "issue #828: npm-absent branch must return Ok"
         );
     });
@@ -348,7 +368,7 @@ fn ensure_mermaid_cli_never_returns_err() {
     with_mermaid_env(|bin_dir, home| {
         stub_npm_present_install_fails(bin_dir);
         assert!(
-            ensure_mermaid_cli_with(&hermetic(bin_dir, home)).is_ok(),
+            ensure_mermaid_cli_with(&hermetic(bin_dir, home), NO_PROBE_LIMIT).is_ok(),
             "issue #828: install-failure branch must return Ok"
         );
     });
@@ -370,10 +390,13 @@ fn ensure_mermaid_cli_with_hooks_every_child_through_install_and_reprobe() {
         let isolate = hermetic(bin_dir, home);
         let hooked = Cell::new(0);
 
-        let outcome = ensure_mermaid_cli_with(&|cmd: &mut Command| {
-            hooked.set(hooked.get() + 1);
-            isolate(cmd);
-        })
+        let outcome = ensure_mermaid_cli_with(
+            &|cmd: &mut Command| {
+                hooked.set(hooked.get() + 1);
+                isolate(cmd);
+            },
+            NO_PROBE_LIMIT,
+        )
         .expect("issue #828: ensure_mermaid_cli must never return Err (best-effort)");
 
         assert!(
@@ -386,6 +409,40 @@ fn ensure_mermaid_cli_with_hooks_every_child_through_install_and_reprobe() {
             4,
             "issue #1765: the hook must be applied to the mmdc probe, the npm \
              probe, npm install -g and the re-probe"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// (7) The limit reaches the probes (issue #2931)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_probe_that_outlasts_its_limit_counts_as_absent() {
+    // The limit is an argument of the flow, so this is the test that it is
+    // applied. `mmdc` never answers: it sleeps for a minute. With a limit of
+    // 200 ms the flow must give it up, find no `npm`, and say so. A flow that
+    // dropped the limit would wait out the sleep and return `AlreadyPresent`.
+    //
+    // A slow start cannot fail this: a stub that has not started inside the
+    // limit is given up exactly as one that is asleep. The bound on the
+    // elapsed time is far above the limit and far below the sleep.
+    with_mermaid_env(|bin_dir, home| {
+        create_script_stub(bin_dir, "mmdc", "#!/bin/sh\nexec /bin/sleep 60\n");
+
+        let started = std::time::Instant::now();
+        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home), Duration::from_millis(200))
+            .expect("issue #828: ensure_mermaid_cli must never return Err (best-effort)");
+        let elapsed = started.elapsed();
+
+        assert!(
+            matches!(outcome, Outcome::SkippedNoNpm),
+            "an mmdc that outlasts the probe limit is not present, and there \
+             is no npm: expected SkippedNoNpm, got {outcome:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "the probe waited {elapsed:?} for a stub that sleeps 60 s"
         );
     });
 }

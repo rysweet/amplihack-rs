@@ -1221,6 +1221,9 @@ fn a_request_past_the_deadline_is_timeout_and_usage_never_runs() {
     let f = Fixture::new(false);
     f.answers("a", &answer(42.0, 17.0, false));
     fs::write(f.canned.join("a.wait"), "30").unwrap();
+    // Resolved before the clock starts: the first lookup in a process may
+    // build the binary, and that time is not the command's (issue #2931).
+    let _ = amplihack_bin();
     let start = Instant::now();
     let out = f.ok(&["profile", "usage", "--table", "--timeout-secs", "1", "a"]);
     assert!(start.elapsed() < Duration::from_secs(15));

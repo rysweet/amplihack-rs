@@ -59,6 +59,11 @@ pub(crate) enum RuntimeRemoval {
     /// Another process still uses the folder, so it was left in place for a
     /// later sweep (issue #2486).
     KeptInUse,
+    /// Running processes cannot be seen on this system (no `/proc`), so
+    /// whether the folder is in use is not known, and it was left in place
+    /// (issue #2935). A sweep cannot judge it either: it stays until it is
+    /// removed by hand.
+    KeptUseUnknown,
     /// A Git work tree in the folder holds changes that were never
     /// committed, or commits that are on no remote, or could not be checked,
     /// so the folder was left in place (issue #2785). Deleting it would
@@ -71,11 +76,14 @@ pub(crate) enum RuntimeRemoval {
 /// another process still uses it (issue #2486): a child that outlives the run
 /// and still has its working folder, an open file or TMPDIR/TMP/TEMP there
 /// keeps the folder, and the end-of-run sweep removes it once no process
-/// holds it.
-#[derive(Debug)]
+/// holds it. Where running processes cannot be seen at all, the folder is
+/// kept as well (issue #2935).
 pub(crate) struct RuntimeGuard {
     path: Option<PathBuf>,
     identity: (u64, u64),
+    /// Where the release asks what running processes hold: the host's
+    /// process table, or the table a test wrote.
+    view: std::sync::Arc<dyn super::procs::ProcessView>,
     /// The folder held open for the guard's life, so its inode cannot be
     /// freed and handed to a folder made again at the same path: on ext4 a
     /// freed inode number is reused at once, and `(dev, ino)` alone would
@@ -98,9 +106,27 @@ fn open_anchor(path: &Path) -> Result<(fs::File, (u64, u64))> {
     Ok((anchor, (meta.dev(), meta.ino())))
 }
 
+impl std::fmt::Debug for RuntimeGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeGuard")
+            .field("path", &self.path)
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+
 impl RuntimeGuard {
     pub(crate) fn new(path: PathBuf) -> Result<Self> {
-        let metadata = fs::symlink_metadata(&path)?;
+        Self::seen_by(path, std::sync::Arc::new(super::procs::HostProcesses))
+    }
+
+    /// [`Self::new`] with the view of running processes given.
+    pub(crate) fn seen_by(
+        path: PathBuf,
+        view: std::sync::Arc<dyn super::procs::ProcessView>,
+    ) -> Result<Self> {
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("cannot inspect runtime folder {}", path.display()))?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             bail!("runtime resource is not a private directory");
         }
@@ -114,6 +140,7 @@ impl RuntimeGuard {
         Ok(Self {
             path: Some(path),
             identity,
+            view,
             _anchor: anchor,
         })
     }
@@ -137,7 +164,12 @@ impl RuntimeGuard {
             Ok(_) => bail!("{path:?} is no longer this run's runtime folder"),
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 create_private_dir_all(path.parent().context("runtime parent")?)?;
-                fs::DirBuilder::new().mode(0o700).create(path)?;
+                fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(path)
+                    .with_context(|| {
+                        format!("cannot re-create runtime folder {}", path.display())
+                    })?;
                 let (anchor, identity) = open_anchor(path)?;
                 self._anchor = anchor;
                 self.identity = identity;
@@ -172,18 +204,31 @@ impl RuntimeGuard {
             );
         }
         // One fresh scan: a child started by the last step may still run.
-        // Without `/proc` `found_user` is false and the folder is removed as
-        // before; the sweep still fails closed on its own scan.
-        if super::procs::ProcScan::take().found_user(&path) {
-            tracing::warn!(
-                path = ?path,
-                "runtime folder is still in use by a running process; leaving it in place"
-            );
-            eprintln!(
-                "amplihack: runtime folder {path:?} is still in use by a running process; \
-                 leaving it in place \u{2014} the end-of-run cleanup sweep will remove it later"
-            );
-            return Ok(RuntimeRemoval::KeptInUse);
+        match super::procs::ProcScan::of(self.view.as_ref()).judge(&path) {
+            super::procs::Use::Free => {}
+            super::procs::Use::Held => {
+                tracing::warn!(
+                    path = ?path,
+                    "runtime folder is still in use by a running process; leaving it in place"
+                );
+                eprintln!(
+                    "amplihack: runtime folder {path:?} is still in use by a running process; \
+                     leaving it in place \u{2014} the end-of-run cleanup sweep will remove it later"
+                );
+                return Ok(RuntimeRemoval::KeptInUse);
+            }
+            // Issue #2935: no view of the processes (a system without
+            // `/proc`). Removing the folder could take it from under a
+            // process that still uses it, so it is kept, and the line says
+            // that no sweep will judge it either.
+            super::procs::Use::Unknown => {
+                tracing::warn!(
+                    path = ?path,
+                    "running processes cannot be seen; leaving the runtime folder in place"
+                );
+                eprintln!("{}", use_unknown_line(&path));
+                return Ok(RuntimeRemoval::KeptUseUnknown);
+            }
         }
         // No process uses the folder: give the owner back access to folders
         // a step left locked, so removal is not stopped by them.
@@ -203,6 +248,16 @@ impl RuntimeGuard {
             Err(error) => Err(error).context("release owned runtime directory"),
         }
     }
+}
+
+/// The one line for a runtime folder kept because running processes cannot
+/// be seen. The cleanup guide quotes it.
+pub(crate) fn use_unknown_line(path: &Path) -> String {
+    format!(
+        "amplihack: running processes cannot be seen on this system, so whether runtime folder \
+         {path:?} is still in use is not known; leaving it in place. Cleanup will not remove it \
+         either: delete it by hand once nothing started by the run is still running"
+    )
 }
 
 impl Drop for RuntimeGuard {
@@ -662,6 +717,45 @@ pub(crate) struct RunScope {
     report: RunReport,
 }
 
+/// Opens the work root the way a durable run needs it: created if missing,
+/// every component opened without following links, and private.
+///
+/// A work root that passes through a symbolic link is refused, as it always
+/// was. The error now says which folder could not be opened and, when a
+/// component of it is a link, which one (issue #2931): before, the caller saw
+/// a bare "Not a directory". The link is found with `symlink_metadata` on
+/// this error path only; where it points is never read or printed, and no
+/// decision depends on it.
+pub(crate) fn open_work_root(
+    root: &Path,
+) -> Result<recipe_runner_rs::recovery::private_fs::Directory> {
+    recipe_runner_rs::recovery::private_fs::Directory::open(root, true).map_err(|error| {
+        let mut message = format!("cannot open work root {}", root.display());
+        if let Some(link) = first_symlink_component(root) {
+            message.push_str(&format!(
+                ": {} is a symbolic link, and a work root is opened without following links; \
+                 name the work root by its canonical path",
+                link.display()
+            ));
+        }
+        error.context(message)
+    })
+}
+
+/// The shortest prefix of `path` that is a symbolic link, if any.
+fn first_symlink_component(path: &Path) -> Option<PathBuf> {
+    let mut prefix = PathBuf::new();
+    for part in path.components() {
+        prefix.push(part);
+        match fs::symlink_metadata(&prefix) {
+            Ok(meta) if meta.file_type().is_symlink() => return Some(prefix),
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
 impl RunScope {
     /// Creates the run folder, writes the first `run.json` and creates
     /// `runtime/tmp` and `runtime/artifacts`. The returned guard removes
@@ -707,7 +801,10 @@ impl RunScope {
         };
         scope.write_report()?;
         create_private_dir_all(runtime_dir.parent().context("runtime parent")?)?;
-        fs::DirBuilder::new().mode(0o700).create(&runtime_dir)?;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&runtime_dir)
+            .with_context(|| format!("cannot create runtime folder {}", runtime_dir.display()))?;
         let guard = RuntimeGuard::new(runtime_dir.clone())?;
         create_private_dir_all(&runtime_dir.join("tmp"))?;
         create_private_dir_all(&runtime_dir.join("artifacts"))?;
@@ -801,7 +898,7 @@ impl RunWorkspace {
     /// Recovery never silently executes without durable admission.
     pub(crate) fn begin_durable(recipe: &str, cwd: &Path) -> Result<Self> {
         let root = super::work_root::resolve_from_env()?;
-        recipe_runner_rs::recovery::private_fs::Directory::open(&root.path, true)?;
+        open_work_root(&root.path)?;
         let (scope, guard) = RunScope::begin(root, recipe, cwd)?;
         Ok(Self::Scoped {
             scope: Box::new(scope),

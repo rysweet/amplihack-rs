@@ -33,11 +33,12 @@ pub const WEEKLY_TEXT: &str =
 /// - `--version` answers like Claude Code;
 /// - counts its calls per `$STEP` in `$RECORD_DIR/count.<step>`;
 /// - records argv, `pwd -P`, `HOME`, `CLAUDE_CONFIG_DIR`, the inherited
-///   profile and the SHA-256 of all of stdin (not read with `$SKIP_STDIN`)
-///   in `call.<step>.<n>`;
-/// - with `$CHANGE_LOGIN_AFTER`, on its first call, starts a detached
-///   process that creates `$CLAUDE_CONFIG_DIR/.credentials.json` after that
-///   many seconds (a login moved into place during the wait);
+///   profile and whether it read stdin in `call.<step>.<n>`, and copies all
+///   of stdin to `stdin.<step>.<n>` (not read with `$SKIP_STDIN`). The stub
+///   calls no digest tool: `sha256sum` is not on this `PATH` on every host,
+///   and a "command not found" line on its stderr reads to amplihack as an
+///   environmental failure, not a usage limit (issue #2931).
+///   [`Fixture::call`] hashes the copy and reports it under `STDIN`;
 /// - prints `attempt <n> output` on stdout, then `$STDOUT_TEXT` if set;
 /// - for its first `$LIMIT_CALLS` calls (default 0) in step `$LIMIT_STEP`
 ///   (any step when unset), and only under profile `$LIMIT_PROFILE` when that
@@ -51,7 +52,7 @@ esac
 step="${STEP:-0}"
 n=$(( $(cat "$RECORD_DIR/count.$step" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$RECORD_DIR/count.$step"
-if [ -n "$SKIP_STDIN" ]; then sum=skipped; else sum=$(sha256sum | cut -d' ' -f1); fi
+if [ -n "$SKIP_STDIN" ]; then sum=skipped; else cat > "$RECORD_DIR/stdin.$step.$n"; sum=recorded; fi
 {
   printf 'ARGV='
   for a in "$@"; do printf '%s|' "$a"; done
@@ -62,9 +63,6 @@ if [ -n "$SKIP_STDIN" ]; then sum=skipped; else sum=$(sha256sum | cut -d' ' -f1)
   printf 'PROFILE=%s\n' "${AMPLIHACK_CLAUDE_PROFILE-<unset>}"
   printf 'STDIN=%s\n' "$sum"
 } > "$RECORD_DIR/call.$step.$n"
-if [ -n "$CHANGE_LOGIN_AFTER" ] && [ "$n" = 1 ]; then
-  ( sleep "$CHANGE_LOGIN_AFTER"; : > "$CLAUDE_CONFIG_DIR/.credentials.json" ) </dev/null >/dev/null 2>&1 &
-fi
 limit="${LIMIT_CALLS:-0}"
 if [ -n "$LIMIT_STEP" ] && [ "$LIMIT_STEP" != "$step" ]; then limit=0; fi
 if [ -n "$LIMIT_PROFILE" ] && [ "$LIMIT_PROFILE" != "${AMPLIHACK_CLAUDE_PROFILE-}" ]; then limit=0; fi
@@ -265,14 +263,25 @@ impl Fixture {
             .unwrap_or(0)
     }
 
-    /// The `KEY=value` record of call `n` of `step`.
+    /// The `KEY=value` record of call `n` of `step`. `STDIN` is the SHA-256
+    /// of the bytes the stub read from stdin, computed here from the stub's
+    /// copy, or `skipped` when the stub did not read stdin.
     pub fn call(&self, step: &str, n: u32) -> std::collections::BTreeMap<String, String> {
         let raw = fs::read_to_string(self.records.join(format!("call.{step}.{n}")))
             .unwrap_or_else(|e| panic!("call {n} of step {step} was not recorded: {e}"));
-        raw.lines()
+        let mut call: std::collections::BTreeMap<String, String> = raw
+            .lines()
             .filter_map(|l| l.split_once('='))
             .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+            .collect();
+        if call.get("STDIN").map(String::as_str) == Some("recorded") {
+            let copy = self.records.join(format!("stdin.{step}.{n}"));
+            let bytes = fs::read(&copy).unwrap_or_else(|e| {
+                panic!("call {n} of step {step} recorded no stdin copy at {copy:?}: {e}")
+            });
+            call.insert("STDIN".to_string(), sha256_hex(&bytes));
+        }
+        call
     }
 
     /// Writes the user `config.toml`.

@@ -1,0 +1,33 @@
+name: inherited-claude-profile
+description: >
+  Issue #2922. Runs the test suite from a shell that exports an agent launch's
+  login profile (CLAUDE_CONFIG_DIR, AMPLIHACK_CLAUDE_PROFILE,
+  AMPLIHACK_CLAUDE_PROFILE_ROOT, AMPLIHACK_CLAUDE_AUTO_SWITCH and
+  AMPLIHACK_HOME), each pointing at a stand-in under a temporary folder, with
+  HOME at a temporary folder too. Every stand-in must be byte-for-byte
+  unchanged afterwards and the tests must pass.
+version: "1.0"
+config:
+  timeout: 3600000
+  retries: 0
+  parallel: false
+agents:
+  - name: cli-agent
+    type: cli
+steps:
+  - name: install tests leave an inherited profile unchanged
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/inherited-claude-profile.sh install
+    timeout: 1200000
+  # Also checks the invoking HOME's .amplihack, which fails until issue #2986
+  # (HOME-derived session-tree and bundle-cache writes) is fixed.
+  - name: workspace tests leave an inherited profile unchanged
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/inherited-claude-profile.sh workspace
+    timeout: 3600000
+assertions: []
+metadata:
+  tags: [cli, tests, claude-profile, isolation]
+  priority: critical

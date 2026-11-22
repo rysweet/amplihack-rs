@@ -39,13 +39,32 @@ use std::path::{Path, PathBuf};
 pub const FRAMEWORK_MARKERS: [&str; 3] = ["amplifier-bundle", ".claude", "src/amplihack/.claude"];
 
 /// Why `base` may not hold test fixtures, or `None` when it may.
+///
+/// The rule is applied to the path as written and to its canonical form
+/// (issue #2931): a base whose text looks clean but which is reached through
+/// a link into `$HOME/.claude`, or below a framework install, is as exposed
+/// as one written out in full.
 pub fn scratch_base_rejection(base: &Path, home: Option<&Path>) -> Option<String> {
     if !base.is_dir() {
         return Some("is not a directory".to_string());
     }
+    if let Some(reason) = form_rejection(base, home) {
+        return Some(reason);
+    }
+    match base.canonicalize() {
+        Ok(canonical) if canonical != base => form_rejection(&canonical, home)
+            .map(|reason| format!("resolves to {}, which {reason}", canonical.display())),
+        Ok(_) => None,
+        Err(e) => Some(format!("cannot be resolved: {e}")),
+    }
+}
+
+/// [`scratch_base_rejection`] for one spelling of the base.
+fn form_rejection(base: &Path, home: Option<&Path>) -> Option<String> {
     if let Some(home) = home {
         for real in [home.join(".claude"), home.join(".amplihack")] {
-            if base.starts_with(&real) {
+            let resolved = real.canonicalize().unwrap_or_else(|_| real.clone());
+            if base.starts_with(&real) || base.starts_with(&resolved) {
                 return Some(format!("lies under the real {}", real.display()));
             }
         }
@@ -62,8 +81,12 @@ pub fn scratch_base_rejection(base: &Path, home: Option<&Path>) -> Option<String
 }
 
 /// The first of `TMPDIR`, `/var/tmp` and `/tmp` that no framework lookup can
-/// see past (module documentation). Panics, naming each candidate's fault,
-/// when none qualifies.
+/// see past (module documentation), in canonical form. Panics, naming each
+/// candidate's fault, when none qualifies.
+///
+/// Canonical because the run directory opens every component of a work root
+/// without following links, and macOS reaches `/var/tmp`, `/tmp` and its
+/// per-user temporary folder through one (issue #2931).
 pub fn scratch_base() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let candidates = [
@@ -74,7 +97,10 @@ pub fn scratch_base() -> PathBuf {
     let mut faults = Vec::new();
     for base in candidates {
         match scratch_base_rejection(&base, home.as_deref()) {
-            None => return base,
+            None => match base.canonicalize() {
+                Ok(canonical) => return canonical,
+                Err(e) => faults.push(format!("{} cannot be resolved: {e}", base.display())),
+            },
             Some(reason) => faults.push(format!("{} {reason}", base.display())),
         }
     }
