@@ -7,15 +7,19 @@ use std::collections::BTreeMap;
 
 /// Every block the ledger records, as a cycle could have read them.
 ///
+/// These are the whole of what the watch loop compares. A ledger write
+/// starts a cycle only when the blocks it leaves in force differ from the
+/// ones the last cycle began with, so the rotator's own saves, which keep
+/// the blocks as they were, start nothing, and no record of what the
+/// rotator itself wrote is needed.
+///
 /// A step that meets a limit records it under the rotate lock, and a cycle
 /// holds that lock only from revalidation to its last save, not while it
 /// measures. A record written while a cycle measures is therefore kept by
 /// that cycle's own save, under the lock, but the cycle decided without
-/// it. The file then holds, byte for byte, what this process wrote, so
-/// `is_self_write` alone would take the record for the rotator's own write
-/// and the limit would wait for `--interval`. Comparing these with the
-/// blocks the cycle began with catches it. A block the cycle added itself
-/// differs too, and costs one extra cycle: the cheaper error.
+/// it. Comparing with the blocks the cycle began with, not with the blocks
+/// it saved, catches it. A block the cycle added itself differs too, and
+/// costs one extra cycle: the cheaper error.
 pub struct Blocks {
     overflow: BTreeMap<String, OverflowBlock>,
     platform: Option<OverflowBlock>,

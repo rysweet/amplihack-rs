@@ -1271,7 +1271,7 @@ these, then runs a cycle:
 
 | Wake | When | Log line |
 |------|------|----------|
-| Limit event | `ledger.json` in the [state directory](#rotate-state-directory) is replaced by a writer other than this rotator. A [step](#a-spend-limit-blocks-the-login-the-step-ran-under) or hook that meets a limit records it there, so the rotator acts within one cycle of the record | `wake: ledger changed` |
+| Limit event | The blocks recorded in `ledger.json` in the [state directory](#rotate-state-directory) differ from those the last cycle began with. A [step](#a-spend-limit-blocks-the-login-the-step-ran-under) or hook that meets a limit records a block there, so the rotator acts within one cycle of the record. `profile overflow clear` removing a block counts too | `wake: ledger changed` |
 | Reset | The earliest `until` among the `overflow_blocked` and platform block records falls due, so the login comes back when its reset passes | `wake: reset due` |
 | Interval | `--interval` seconds have passed with neither of the above | `wake: interval` |
 | Signal | `SIGTERM` or `SIGINT` ends the wait at once, so `rotate stop` returns inside its 10 seconds however long the wait was; both signals are handled as in [Rotate signals](#rotate-signals) | none; the rotator stops |
@@ -1292,32 +1292,41 @@ clock jump cannot
 lengthen a wait either. With `--interval 1` the rotator still ticks every
 second.
 
-The rotator's own ledger writes do not wake it. It keeps the bytes it last
-wrote to each ledger it has written and, on a ledger change, reads the file
-once; identical bytes for that path mean its own write, and it waits on
-unchanged. Any other content runs a cycle, as does a write to a ledger the
-process has not written. A failed save, and a file that is missing or over the
-size limit, count as changed content and cost one extra cycle.
+A ledger write wakes the rotator only when it changes the blocks in force:
+the `overflow_blocked` records and the platform block that have not reached
+their `until`. On each change to the file the rotator loads the ledger and
+compares those blocks with the ones the last cycle began with. Who wrote the
+file does not matter, and nor do its bytes. The rotator's own saves of its
+cycle records keep the blocks as they were, so they do not wake it, and it
+keeps no record of what it wrote. A block removed by a prune has reached its
+`until`, so it is in force in neither and is not a change. A ledger that
+cannot be loaded runs a cycle, which reports why; no writer saves over a
+ledger it cannot load, so this costs one cycle.
 
 A writer records a block under the rotate lock, and a cycle holds that lock
 only from its check before a swap to its last save, not while it measures. A
 block recorded while a cycle measures is therefore kept by that cycle's own
-save, although the cycle decided without it, and the file is then byte for
-byte the rotator's own write. So the rotator also keeps the blocks as they
-stood when each cycle began, and when it starts to wait it compares them with
-the blocks now in force. If they differ, the next cycle runs as for any other
-ledger change, logged as `wake: ledger changed`. A block the cycle recorded
-itself differs too, and costs one extra cycle. A writer that does not take the
-lock can still lose its record to a cycle's save; the step and hook writers
-take it.
+save, although the cycle decided without it. Because the rotator compares
+with the blocks the cycle began with, not with the blocks it saved, the next
+cycle runs at once, logged as `wake: ledger changed`. A block the cycle
+recorded itself differs too, and costs one extra cycle. A writer that does
+not take the lock can still lose its record to a cycle's save; the step and
+hook writers take it.
 
-A ledger change runs a cycle at once, unless the previous cycle ended less
-than 5 seconds ago (or `--interval`, when that is shorter). Then the cycle
-runs when those 5 seconds have passed, and further changes in that time join
-it. A change is never dropped, so a burst of records costs at most two cycles.
+No timer coalesces a burst of records. The number of cycles events can cause
+is bounded by the blocks instead. Every writer keeps a block that is in force
+as it is: a step's record, the API-key block and the rotator's own spend
+block are each written once and never extended. A login therefore adds at
+most one block per reset window, and so starts at most one cycle when its
+block is recorded and one when the block falls due. Every block written while
+a cycle runs is taken by the one cycle after it. Twenty-five runs that meet
+one login's limit together cost one cycle: the first record adds the block,
+and the other twenty-four find it in force and write nothing.
+
 If the ledger watch is lost or its queue overflows, the rotator rebuilds it,
-logs `wake: watch rebuilt` and runs a cycle, because the lost events may have
-held a limit record. Where no watch can be made it logs
+logs `wake: watch rebuilt`, and then loads the ledger and compares its blocks
+as for any other change, so a record that arrived while events were lost
+still runs a cycle. Where no watch can be made it logs
 `wake: unavailable (<cause>), using --interval` once, and where one stops
 working it logs `wake: lost (<cause>), using --interval` once. Either way it
 waits by interval as before, and neither ends the rotator. `<cause>` is fixed
@@ -1333,13 +1342,30 @@ text:
 A paused rotator still wakes, takes the `paused` branch and logs through the
 same `idle` latch as before, so repeated wakes do not fill the log.
 
-A cycle woken by an event costs exactly what a cycle woken by the interval
-costs: it measures every login, as every cycle does, so a quiet rotator still
-reads every login once per `--interval` and a busy one reads them once per
-event. Reading only what a decision needs is
-[#2029](https://github.com/rysweet/amplihack-rs/issues/2029), and the target
-rules that would let a cycle read only its chosen target are
-[#2910](https://github.com/rysweet/amplihack-rs/issues/2910).
+A cycle woken by an event costs what a cycle woken by the interval costs:
+it measures every login, as every cycle does. This change alters when a
+cycle runs, not which logins it reads, so a quiet rotator still reads every
+login once per `--interval`, and each login can add a full read when a limit
+on it is recorded and another when its reset passes. Reading only the live
+login after an event and only the chosen target before a swap, which issue
+[#2909](https://github.com/rysweet/amplihack-rs/issues/2909) also asks for,
+is not done here. It is
+[#3063](https://github.com/rysweet/amplihack-rs/issues/3063); the target
+read depends on the target rules of
+[#2910](https://github.com/rysweet/amplihack-rs/issues/2910), and the cost
+of each read is [#2029](https://github.com/rysweet/amplihack-rs/issues/2029).
+
+The step and hook that record a limit of every kind are not part of this
+change either. Today the writers of a block are the rotator itself, the
+API-key block and a step that meets a spend limit
+([#2893](https://github.com/rysweet/amplihack-rs/pull/2893)). The one
+function that records any usage, spend or credit limit for the login a step
+ran under belongs to
+[#2911](https://github.com/rysweet/amplihack-rs/issues/2911), and the
+`limit-resume` hook calls it under
+[#2912](https://github.com/rysweet/amplihack-rs/issues/2912). The rotator
+wakes on their records as soon as they write them, whatever `reason` they
+carry.
 
 #### What is read
 

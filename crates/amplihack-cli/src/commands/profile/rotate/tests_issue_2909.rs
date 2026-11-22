@@ -9,28 +9,25 @@
 //!   &RotateLedger) -> Instant`: the earlier of `now + interval` and the
 //!   earliest future reset among `overflow_blocked` and `platform_block`.
 //!   A lapsed reset does not contribute; a far reset never lengthens a wait.
-//! - `wake::coalesce_floor(interval: Duration) -> Duration`:
-//!   `min(interval, 5s)`.
-//! - `wake::event_due(started, now, floor) -> Instant`: a ledger write runs
-//!   a cycle at once, unless the last cycle ended less than `floor` ago.
 //! - `wake::Blocks::fell_due(since, now_unix) -> bool`: a reset that passed
 //!   while the last cycle ran makes the next one run at once. Asked of the
 //!   blocks that cycle began with as well, because its own save prunes them.
-//! - `wake::note_written(&Path, &[u8])` and `wake::is_self_write(&Path) ->
-//!   bool`: identical bytes to the last write *of that ledger* are this
-//!   rotator's own; anything else, a missing file included, is not.
 //! - `wake::Blocks::of(&RotateLedger)` and `Blocks::differ_at(&other, now)`:
-//!   a block recorded while a cycle ran, and kept by that cycle's own save,
-//!   differs from the blocks the cycle began with, so it still wakes the
-//!   rotator although the file is byte for byte its own write.
+//!   the blocks in force at `now` differ.
+//! - `wake::moved(&Blocks, Option<&RotateLedger>, now_unix) -> bool`: a
+//!   ledger write runs a cycle when, and only when, the blocks in force
+//!   differ from those the last cycle began with, or the ledger could not
+//!   be loaded (`None`). Who wrote the file does not matter: a save that
+//!   keeps the blocks, whatever its bytes, is not a change, and a block a
+//!   cycle's own save kept for another writer is.
 
-use super::super::daemon::wake::{
-    Blocks, coalesce_floor, deadline, event_due, is_self_write, note_written,
-};
+use super::super::daemon::wake::{Blocks, deadline, moved};
 use super::super::ledger::{
     MAX_BLOCK_SECS, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState, for_older_readers,
 };
+use super::super::step_block::note_spend_block;
 use super::{active_blocks, prune_blocks, valid_kind};
+use crate::commands::profile::name::ProfileName;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
@@ -213,22 +210,6 @@ fn an_interval_of_one_second_still_ticks_at_one_second() {
 }
 
 #[test]
-fn the_coalescing_floor_is_the_smaller_of_the_interval_and_five_seconds() {
-    assert_eq!(
-        coalesce_floor(Duration::from_secs(1)),
-        Duration::from_secs(1)
-    );
-    assert_eq!(
-        coalesce_floor(Duration::from_secs(5)),
-        Duration::from_secs(5)
-    );
-    assert_eq!(
-        coalesce_floor(Duration::from_secs(600)),
-        Duration::from_secs(5)
-    );
-}
-
-#[test]
 fn a_reset_that_fell_due_during_the_last_cycle_runs_the_next_at_once() {
     // The last cycle began 30 seconds ago; spare's reset passed 10 seconds
     // ago, while it ran, so that cycle still held spare out.
@@ -281,91 +262,10 @@ fn a_reset_that_fell_due_during_the_last_cycle_counts_after_its_save_pruned_it()
     );
 }
 
-#[test]
-fn a_ledger_write_long_after_the_last_cycle_runs_a_cycle_at_once() {
-    let started = Instant::now();
-    let floor = coalesce_floor(Duration::from_secs(600));
-    let seen = started + Duration::from_secs(300);
-    assert_eq!(event_due(started, seen, floor), seen);
-}
-
-#[test]
-fn a_ledger_write_straight_after_a_cycle_waits_out_the_rest_of_the_floor() {
-    let started = Instant::now();
-    let floor = coalesce_floor(Duration::from_secs(600));
-    let seen = started + Duration::from_secs(2);
-    assert_eq!(
-        event_due(started, seen, floor),
-        started + Duration::from_secs(5)
-    );
-}
-
-#[test]
-fn identical_bytes_are_a_self_write_and_any_difference_is_not() {
-    let (_t, rs) = root();
-    fs::write(&rs.ledger, b"{\"version\":1}").unwrap();
-    note_written(&rs.ledger, b"{\"version\":1}");
-    assert!(is_self_write(&rs.ledger));
-    fs::write(&rs.ledger, b"{\"version\":1} ").unwrap();
-    assert!(!is_self_write(&rs.ledger), "one byte differs");
-}
-
-/// The record is per ledger: a write to another root, which every other
-/// test in this binary makes in parallel, never answers for this one.
-#[test]
-fn a_write_to_another_ledger_is_not_this_ledgers_self_write() {
-    let (_t, mine) = root();
-    let (_o, other) = root();
-    fs::write(&mine.ledger, b"{\"version\":1}").unwrap();
-    note_written(&mine.ledger, b"{\"version\":1}");
-    fs::write(&other.ledger, b"{\"version\":1}").unwrap();
-    note_written(&other.ledger, b"{\"version\":1}");
-    assert!(
-        is_self_write(&mine.ledger),
-        "the other root did not displace it"
-    );
-    fs::write(&other.ledger, b"{}").unwrap();
-    note_written(&other.ledger, b"{}");
-    assert!(
-        is_self_write(&mine.ledger),
-        "nor did changing the other root"
-    );
-    assert!(
-        !is_self_write(&root().1.ledger),
-        "a root never written has no record"
-    );
-}
-
-#[test]
-fn a_missing_or_oversized_file_reads_as_changed() {
-    let (_t, rs) = root();
-    note_written(&rs.ledger, b"x");
-    assert!(!is_self_write(&rs.ledger), "missing");
-    fs::write(&rs.ledger, vec![b'x'; 1024 * 1024]).unwrap();
-    assert!(!is_self_write(&rs.ledger), "oversized");
-}
-
-#[test]
-fn a_ledger_this_process_did_not_write_is_not_a_self_write() {
-    let (_t, rs) = root();
-    rs.save_ledger(&RotateLedger::default()).unwrap();
-    assert!(
-        is_self_write(&rs.ledger),
-        "save_ledger records what it wrote"
-    );
-    let l = ledger_with("spare", block("session_limit", NOW, NOW + 60));
-    fs::write(&rs.ledger, serde_json::to_vec(&l).unwrap()).unwrap();
-    assert!(
-        !is_self_write(&rs.ledger),
-        "an external writer is not suppressed"
-    );
-}
-
 /// The race the daemon-level test met: a step records a limit while a cycle
 /// measures, under the lock, and the cycle's own save keeps it. The file is
-/// then this process's own write, byte for byte, yet the cycle decided
-/// without the block, so the blocks it began with must differ from the
-/// blocks in force.
+/// then the rotator's own write, yet the cycle decided without the block,
+/// so the blocks it began with must differ from the blocks in force.
 #[test]
 fn a_block_kept_by_the_rotators_own_save_still_counts_as_a_change() {
     let (_t, rs) = root();
@@ -373,13 +273,99 @@ fn a_block_kept_by_the_rotators_own_save_still_counts_as_a_change() {
     // The cycle's save, made after the step's record, carries the block.
     let saved = ledger_with("work", block("session_limit", NOW, NOW + 3 * 3600));
     rs.save_ledger(&saved).unwrap();
+    let read = rs.load_ledger().unwrap().expect("a ledger");
     assert!(
-        is_self_write(&rs.ledger),
-        "the file is this process's own write"
+        moved(&began, Some(&read), NOW),
+        "the block was not there when the cycle began"
     );
+}
+
+/// What replaces a record of the rotator's own bytes: every save it makes
+/// for its own records keeps the blocks, so none starts a cycle, whatever
+/// bytes it wrote and whoever wrote them.
+#[test]
+fn a_save_that_keeps_the_blocks_is_not_a_change_whatever_its_bytes() {
+    let (_t, rs) = root();
+    let l = ledger_with("spare", block("week_limit", NOW - 60, NOW + 3600));
+    let began = Blocks::of(&l);
+    // The rotator's own save of a cycle's records: other fields change.
+    let mut after = l.clone();
+    after.live = Some("work".into());
+    after.swapped_at = Some(NOW);
+    rs.save_ledger(&after).unwrap();
+    let read = rs.load_ledger().unwrap().expect("a ledger");
+    assert!(!moved(&began, Some(&read), NOW), "the rotator's own save");
+    // The same ledger written by another process, compact rather than
+    // pretty: every byte may differ, and it is still not a change.
+    write_raw(&rs, serde_json::to_value(&after).unwrap());
+    let read = rs.load_ledger().unwrap().expect("a ledger");
     assert!(
-        began.differ_at(&Blocks::of(&saved), NOW),
-        "but the block was not there when the cycle began"
+        !moved(&began, Some(&read), NOW),
+        "another writer, same blocks"
+    );
+}
+
+#[test]
+fn a_new_block_from_another_writer_is_a_change() {
+    let (_t, rs) = root();
+    let began = Blocks::of(&RotateLedger::default());
+    let l = ledger_with("work", block("credit_limit", NOW, NOW + 3600));
+    write_raw(&rs, serde_json::to_value(&l).unwrap());
+    let read = rs.load_ledger().unwrap().expect("a ledger");
+    assert!(moved(&began, Some(&read), NOW + 1));
+}
+
+/// The bound that replaces a wall-clock floor. A writer keeps a block in
+/// force as it is, so the second step to meet the same limit changes no
+/// block and starts no cycle; twenty-five runs on one login cost one
+/// cycle, not twenty-five.
+#[test]
+fn the_same_limit_recorded_again_starts_no_second_cycle() {
+    let (t, rs) = root();
+    rs.save_ledger(&RotateLedger::default()).unwrap();
+    let work = ProfileName::parse("work").unwrap();
+    let began = Blocks::of(&rs.load_ledger().unwrap().expect("a ledger"));
+    note_spend_block(t.path(), &work, NOW, NOW + 3600);
+    let first = rs.load_ledger().unwrap().expect("a ledger");
+    assert!(
+        moved(&began, Some(&first), NOW + 1),
+        "the first record is a change"
+    );
+    let next = Blocks::of(&first);
+    note_spend_block(t.path(), &work, NOW + 60, NOW + 7200);
+    let second = rs.load_ledger().unwrap().expect("a ledger");
+    assert_eq!(first.overflow_blocked, second.overflow_blocked);
+    assert!(
+        !moved(&next, Some(&second), NOW + 61),
+        "the second record of the same limit is not"
+    );
+}
+
+/// The ledger as the watch loop reads it on a file event: one that does
+/// not load is `None`, a missing one is an empty ledger.
+fn as_read(rs: &RotateState) -> Option<RotateLedger> {
+    rs.load_ledger().ok().map(Option::unwrap_or_default)
+}
+
+#[test]
+fn an_unloadable_ledger_runs_a_cycle_and_a_missing_one_reads_as_empty() {
+    let empty = Blocks::of(&RotateLedger::default());
+    let (_t, rs) = root();
+    let missing = as_read(&rs);
+    assert_eq!(missing.as_ref(), Some(&RotateLedger::default()));
+    assert!(!moved(&empty, missing.as_ref(), NOW), "nothing was blocked");
+    let held = Blocks::of(&ledger_with("spare", block("week_limit", NOW, NOW + 60)));
+    assert!(
+        moved(&held, missing.as_ref(), NOW),
+        "a block in force is gone"
+    );
+    let bad = ledger_with("spare", block("Not A Token", NOW, NOW + 60));
+    write_raw(&rs, serde_json::to_value(bad).unwrap());
+    let unloadable = as_read(&rs);
+    assert!(unloadable.is_none(), "this ledger cannot be loaded");
+    assert!(
+        moved(&empty, unloadable.as_ref(), NOW),
+        "the cycle reports why"
     );
 }
 

@@ -263,3 +263,66 @@ fn a_running_rotator_honours_a_credit_limit_and_an_unknown_limit_kind() {
         assert_log_grammar(l, true);
     }
 }
+
+/// A ledger write that leaves the recorded blocks as they were starts no
+/// cycle, whoever wrote it and whatever its bytes. Only a change in the
+/// blocks does, which is what bounds the extra cycles events can cause
+/// without a wall-clock floor: a second record of a limit already in force
+/// changes nothing.
+///
+/// A stand-in writer records spare's block again three times, compact
+/// where the rotator writes pretty JSON, so every byte may differ from the
+/// rotator's own save; only then does work run out and its limit get
+/// recorded. Exactly one wake and one cycle follow the first, and they are
+/// the new block's.
+#[test]
+fn a_ledger_write_that_changes_no_block_starts_no_cycle() {
+    let f = Fixture::new();
+    f.usage("work", 10, 10);
+    fs::create_dir_all(f.rotate_dir()).unwrap();
+    fs::set_permissions(f.rotate_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    let (at, until) = (now() - 60, now() + 3 * 3600);
+    record_block(&f, "spare", "org_monthly_cap", at, until);
+    let (_r, pid) = start_long(&f);
+    let measured = |f: &Fixture| {
+        f.log()
+            .lines()
+            .filter(|l| l.contains(" cycle live="))
+            .count()
+    };
+    wait_until("the first cycle", || measured(&f) >= 1);
+    // The first cycle's own save, so the rewrites below meet a rotator that
+    // has finished its cycle and is waiting, or about to.
+    wait_until("the first cycle's save", || {
+        f.ledger().is_some_and(|l| l.get("last_cycle").is_some())
+    });
+    for _ in 0..3 {
+        record_block(&f, "spare", "org_monthly_cap", at, until);
+    }
+    f.usage("work", 100, 40);
+    record_block(&f, "work", "session_limit", now(), now() + 3 * 3600);
+    wait_until("a swap off work caused by the new block", || {
+        f.log()
+            .lines()
+            .any(|l| l.contains(" swap ") && l.contains("work->"))
+    });
+    let (out, refused) = f.stop_until_gone(pid);
+    f.assert_stopped(&out, refused, pid);
+    let log = f.log();
+    assert_eq!(
+        log.matches("wake: ledger changed").count(),
+        1,
+        "only the new block woke the rotator:\n{log}"
+    );
+    assert_eq!(
+        measured(&f),
+        2,
+        "the first cycle and the new block's, and no other:\n{log}"
+    );
+    assert!(log.contains(" swap work->extra live "), "{log}");
+    assert!(!log.contains("wake: interval"), "no interval tick: {log}");
+    println!("[#2909 same] {}", log.replace('\n', "\n[#2909 same] "));
+    for l in log.lines() {
+        assert_log_grammar(l, true);
+    }
+}

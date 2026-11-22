@@ -11,8 +11,9 @@
 /// Why the watch loop stopped waiting. [`Reason::line`] is what it logs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
-    /// `ledger.json` was replaced by a writer other than this rotator: a
-    /// step or hook recorded a limit.
+    /// The blocks recorded in `ledger.json` differ from those the last
+    /// cycle began with: a step or hook recorded a limit, `profile overflow
+    /// clear` removed one, or the last cycle recorded one itself.
     Ledger,
     /// The earliest recorded reset fell due, so a blocked login is back.
     Reset,

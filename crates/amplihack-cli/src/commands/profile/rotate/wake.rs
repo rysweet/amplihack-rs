@@ -12,10 +12,12 @@
 //! which polls an inotify watch on `ledger.json`, this process's pidfd and
 //! a stop pipe together. It wakes when:
 //!
-//! - the ledger changes, unless this process wrote exactly those bytes
-//!   ([`is_self_write`]), or the blocks in force differ from those the last
-//!   cycle began with ([`Blocks`]), which catches a record written while
-//!   that cycle ran and kept by its own save;
+//! - the blocks the ledger records differ from those the last cycle began
+//!   with ([`moved`], [`Blocks::differ_at`]): a step or hook recorded a
+//!   limit, `profile overflow clear` removed one, or the last cycle
+//!   recorded one itself. A write that leaves the blocks as they were, which
+//!   is every save the rotator makes for its own records, gives the next
+//!   cycle nothing new to decide on and does not wake it;
 //! - the earliest recorded reset passes ([`deadline`]), or passed while the
 //!   last cycle ran ([`Blocks::fell_due`]), so a login comes back the
 //!   moment its block ends;
@@ -25,20 +27,35 @@
 //!   wait. No timer, retry or polling loop is added here; the one-second
 //!   sleep loop the watch used to run is gone.
 //!
+//! How many cycles events can cause. Every writer of a block keeps a block
+//! in force as it is: `step_block::store`, `platform_block::record` and the
+//! rotator's own `overflow_record::block_with` all leave an active block
+//! unchanged (pinned by `an_active_block_is_neither_extended_nor_alerted_twice`
+//! and `the_first_record_creates_the_block_and_the_second_does_not`). A login
+//! therefore gains at most one block per reset window, and so starts at most
+//! one cycle when the block is recorded and one when it falls due. Blocks
+//! written while a cycle runs are all taken by the one cycle after it, so a
+//! burst coalesces without a wall-clock floor. A block the rotator records
+//! itself costs one extra cycle, once: the cycle after it begins with that
+//! block, and the rotator does not record it again while it is in force.
+//!
+//! What this does not change. A cycle woken here measures every login, as
+//! an interval cycle does. Reading only the live login after an event and
+//! only the chosen target before a swap (#2909, "Wanted" item 3) is not in
+//! this module or in this change; it is #3063, and its target read depends on
+//! the target rule of #2910.
+//!
 //! Nothing in this module returns an error to the loop. An intake that
 //! cannot be built or that fails later logs one fixed line and leaves the
 //! rotator running on `--interval` alone, because a rotator that stops is
 //! worse than a rotator that is slow.
 
-use super::super::ledger::{MAX_STATE, RotateLedger, RotateState, trusted};
+use super::super::ledger::{RotateLedger, RotateState};
 use super::super::log::wake_msg::{self, Reason};
-use crate::commands::profile::auto_switch::kit::{now, read_bounded_nofollow};
+use crate::commands::profile::auto_switch::kit::now;
 use amplihack_utils::file_event::{SWAP_MASK, Waiter, Watch, Woke};
-use std::collections::BTreeMap;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -46,61 +63,6 @@ use std::time::{Duration, Instant};
 #[path = "wake_blocks.rs"]
 mod blocks;
 pub use blocks::Blocks;
-
-/// The longest a burst of ledger writes may make the rotator run cycles:
-/// one per this many seconds, or per `--interval` when that is shorter.
-const COALESCE_SECS: u64 = 5;
-
-/// The bytes this process wrote last into each ledger it has written, so a
-/// wake raised by the rotator's own atomic write is not taken for a limit
-/// event. Held in memory only: the bytes carry profile names and account
-/// fields, so they are never logged, printed or written anywhere, and this
-/// has no `Debug`.
-///
-/// Keyed by the ledger's path, not kept as one slot, so a save to another
-/// root cannot stand in for the watched one. A rotator writes a single
-/// root, so this holds one entry; a process that writes several holds one
-/// each, which is also what keeps the entries of the test binary's
-/// temporary roots apart.
-static LAST_WRITTEN: Mutex<BTreeMap<PathBuf, Vec<u8>>> = Mutex::new(BTreeMap::new());
-
-/// Records the bytes `save_ledger` has just put in `ledger`.
-///
-/// Called *after* the rename succeeds, never before. An external write made
-/// between the rename and this call is then read as this process's own on
-/// the next wake, costing one extra cycle; inverting the order would
-/// instead suppress real external changes, which is the failure that
-/// matters. Do not invert it.
-pub fn note_written(ledger: &Path, bytes: &[u8]) {
-    if let Ok(mut last) = LAST_WRITTEN.lock() {
-        last.insert(ledger.to_path_buf(), bytes.to_vec());
-    }
-}
-
-/// Whether `ledger` holds, byte for byte, what this process wrote into
-/// *that* ledger last.
-///
-/// `save_ledger` renames over the watched name on nearly every cycle, so a
-/// long-lived waiter wakes on its own write. Comparing content, not the
-/// modification time or the length, because an atomic write is a rename and
-/// changes the inode and the timestamps whatever the content.
-///
-/// Fails open in every direction that costs only a cycle: a missing file, a
-/// file over [`MAX_STATE`], one owned by another user, or nothing recorded
-/// for that path all read as changed. Suppression is the only path that
-/// skips a cycle, and it takes an exact match of path and content.
-pub fn is_self_write(ledger: &Path) -> bool {
-    let Ok(last) = LAST_WRITTEN.lock() else {
-        return false;
-    };
-    let Some(last) = last.get(ledger) else {
-        return false;
-    };
-    matches!(
-        read_bounded_nofollow(ledger, MAX_STATE),
-        Ok(Some((raw, m))) if trusted(&m) && raw == last.as_slice()
-    )
-}
 
 /// The earliest recorded reset after `now_unix`, over every block in the
 /// ledger: the per-login `overflow_blocked` entries and the API-key
@@ -135,27 +97,23 @@ pub fn deadline(now: Instant, now_unix: i64, interval: Duration, l: &RotateLedge
     }
 }
 
-/// The least time between the end of one cycle and a cycle started by a
-/// ledger write: five seconds, or `--interval` when that is shorter, so
-/// `--interval 1` is not slowed.
+/// Whether a change to the ledger file runs a cycle: the blocks in force
+/// at `now_unix` in `read` differ from `seen`, the blocks the last cycle
+/// began with.
 ///
-/// Any process that may write `ledger.json` can start a cycle, and a cycle
-/// probes every login. Writes inside the floor are not dropped: each one
-/// shortens the wait to the floor rather than being lost, so a burst
-/// collapses into one cycle instead of one cycle each.
-pub fn coalesce_floor(interval: Duration) -> Duration {
-    interval.min(Duration::from_secs(COALESCE_SECS))
-}
-
-/// When a cycle runs for a ledger write seen at `now`, in a wait that began
-/// at `started` (the end of the previous cycle): at once, unless the last
-/// cycle ended less than `floor` ago, and then when the floor has passed.
+/// `read` is the ledger as loaded now: `Some` for a ledger that loaded
+/// (a missing one is an empty ledger), `None` for one that could not be
+/// loaded. An unloadable ledger runs a cycle, so the cycle reports why
+/// rather than the rotator going quiet until `--interval`. Neither the
+/// cycle's prelude nor a step's writer saves over a ledger it cannot load,
+/// so this costs one cycle per change to the file, and nothing writes one.
 ///
-/// A limit recorded minutes after the last cycle is acted on with no delay
-/// at all; only a write arriving straight after a cycle, typically the
-/// second of a burst, waits out what is left of the floor.
-pub fn event_due(started: Instant, now: Instant, floor: Duration) -> Instant {
-    now.max(started + floor)
+/// Who wrote the file does not matter, only what it now says. The rotator's
+/// own saves keep the blocks as they were and so start nothing; a block
+/// recorded while a cycle measured, which that cycle's own save then kept,
+/// still differs from what the cycle began with and so still starts one.
+pub fn moved(seen: &Blocks, read: Option<&RotateLedger>, now_unix: i64) -> bool {
+    read.is_none_or(|l| seen.differ_at(&Blocks::of(l), now_unix))
 }
 
 /// The watch loop's intake: the waiter, the stop pipe behind it, and the
@@ -206,9 +164,9 @@ impl Waker {
         w
     }
 
-    /// Waits until the next cycle is due: a ledger change or a block the
-    /// last cycle did not act on, the earliest recorded reset, a stop
-    /// signal, or `--interval`. Returns having changed nothing.
+    /// Waits until the next cycle is due: a change in the recorded blocks,
+    /// the earliest recorded reset, a stop signal, or `--interval`. Returns
+    /// having changed nothing.
     pub fn wait(&mut self, rs: &RotateState, interval: u64, stop: &AtomicBool) {
         let interval = Duration::from_secs(interval);
         let ledger = current(rs);
@@ -222,12 +180,10 @@ impl Waker {
         } else {
             Reason::Interval
         };
-        let floor = coalesce_floor(interval);
         let blocks = Blocks::of(&ledger);
         // A block recorded while the last cycle ran, and kept by its save.
         if self.seen.differ_at(&blocks, now_unix) {
-            why = Reason::Ledger;
-            until = until.min(event_due(start, start, floor));
+            (until, why) = (start, Reason::Ledger);
         }
         // A reset that passed while the last cycle ran. Asked of the blocks
         // that cycle began with too, because its own save pruned the block.
@@ -251,17 +207,22 @@ impl Waker {
                 // happen; were it ever returned, a cycle is the safe answer.
                 Ok(Woke::Deadline | Woke::ProcessGone) => break,
                 Ok(Woke::File(_)) => {
-                    if !is_self_write(&rs.ledger) {
+                    if self.moved(rs) {
                         why = Reason::Ledger;
-                        until = until.min(event_due(start, Instant::now(), floor));
+                        break;
                     }
                 }
                 // A lost watch or a dropped event may have hidden a limit
-                // record, so a cycle runs as for one.
+                // record. The ledger still holds every block in force, so
+                // reading it once the new watch is in place finds any such
+                // record, and a write made in between raises an event on
+                // the new watch.
                 Ok(Woke::Lost(_) | Woke::Overflow) => {
                     self.rebuild(rs);
-                    why = Reason::Ledger;
-                    until = until.min(event_due(start, Instant::now(), floor));
+                    if self.moved(rs) {
+                        why = Reason::Ledger;
+                        break;
+                    }
                 }
                 Err(e) => {
                     self.waiter = None;
@@ -272,6 +233,13 @@ impl Waker {
         self.said_why(rs, why, stop);
         self.cycle_from = now();
         self.seen = Blocks::of(&current(rs));
+    }
+
+    /// [`moved`] for the ledger as it is now, against the blocks the last
+    /// cycle began with.
+    fn moved(&self, rs: &RotateState) -> bool {
+        let read = rs.load_ledger().ok().map(Option::unwrap_or_default);
+        moved(&self.seen, read.as_ref(), now())
     }
 
     /// Writes why the wait ended. A limit event and a reset are always
