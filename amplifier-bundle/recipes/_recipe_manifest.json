@@ -1,5 +1,5 @@
 {
-  "auto-drive-light": "f67627feccdf59c8",
+  "auto-drive-light": "51f7de51c25fdb34",
   "auto-drive-to-merge": "c80a743e606ed564",
   "auto-workflow": "3baaee4ed35b2381",
   "autodrive-build": "69e44017be163430",
@@ -7,9 +7,9 @@
   "autodrive-crusty-round": "faa3ff1da9825b68",
   "autodrive-finalize": "16fde48a63e2881b",
   "autodrive-handoff": "873d6eaa1efca139",
-  "autodrive-merge-evidence": "9dc8f2847c152cc3",
+  "autodrive-merge-evidence": "8d646478184f58e7",
   "autodrive-merge-loop": "6ba9c0849c4cb4eb",
-  "autodrive-merge-round": "6f15ca1319e704e7",
+  "autodrive-merge-round": "60e63a81e57a0efc",
   "cascade-workflow": "266feb6cbc942143",
   "code-atlas": "98ce40fec6e8f7ce",
   "code-philosophy-audit": "879c2ccd865a8fa6",

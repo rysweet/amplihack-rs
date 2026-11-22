@@ -38,7 +38,7 @@ recursion:
   max_depth: 6
   max_total_steps: 200
 context:
-  base_branch: ""  # target for a new PR; existing PRs use their observed target
+  base_branch: ""  # base for the pull request, passed on to default-workflow; empty: the PR's own base (docs/reference/workflow-delivery-inputs.md)
   task_description: ""
   repo_path: "."
   issue_number: ""
@@ -141,12 +141,13 @@ steps:
     output: "light_task_id"
 
   # Build, steps 3 to 9: only for a new change.
-  # The worktree setup selects the branch target for both QA and publication.
+  # The quick/ branch starts from origin/HEAD, the base light-open-pr targets; inherited targets and
+  # base_branch are cleared, strict_delivery is not (docs/reference/workflow-delivery-inputs.md).
   - id: "light-worktree"
     type: "recipe"
     condition: "not pr_number and not existing_branch"
     recipe: "workflow-worktree"
-    context: { branch_prefix: "quick", existing_branch: "", pr_number: "", forbidden_base_branches: "" }
+    context: { branch_prefix: "quick", existing_branch: "", pr_number: "", base_branch: "", forbidden_base_branches: "" }
 
   # Before the agent: check the branch and identity, pin the base, snapshot git config.
   - id: "light-base-pin"
@@ -228,19 +229,12 @@ steps:
       case "$G" in "$QC_WT"/*) unavailable "the pinned QA guidance resolves inside the worktree" ;; esac
       [ -f "$G" ] && [ ! -L "$G" ] || unavailable "the pinned criterion-1 guidance is unavailable"
       ( umask 077 && mkdir -p "$QUICK_CHANGE_STATE_DIR/qa" ) || unavailable "cannot create private QA storage"
-      # Before a PR exists the target is the one worktree setup selected, which
-      # is also the branch light-open-pr publishes against. Where the run named
-      # none, the clone's observed default stands in only while it is that same
-      # branch. A target this clone cannot resolve is measured against nothing,
-      # never against a guess.
-      TARGET="$(bash "$QC_TOOLS/recipe_context_value.sh" worktree_setup.base_branch - 2>/dev/null)" || TARGET=""
-      if [ -z "${RECIPE_VAR_base_branch:-}" ]; then
-        DEFAULT="$(git -C "$QC_WT" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null)" || DEFAULT=""
-        [ "$DEFAULT" = "refs/remotes/origin/$TARGET" ] || TARGET=""
-      fi
-      if [ "${#TARGET}" -gt 200 ] || ! git -C "$QC_WT" rev-parse --verify --quiet "refs/remotes/origin/${TARGET}^{commit}" >/dev/null 2>&1; then
-        TARGET=""
-      fi
+      # Before a PR exists its target is the branch origin/HEAD names: light-worktree
+      # cut the quick/ branch from it and light-open-pr publishes against it, as
+      # before #2569. This step selects no other target. Where origin/HEAD names nothing,
+      # the change set is measured against nothing rather than a guess.
+      TARGET="$(git -C "$QC_WT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || TARGET=""
+      TARGET="${TARGET#origin/}"
       REC="$(REPO_PATH="$QC_WT" AUTODRIVE_QA_EVIDENCE="$QUICK_CHANGE_STATE_DIR/qa/qa-evidence.json" \
         AUTODRIVE_QA_BASE="$TARGET" AUTODRIVE_QA_GUIDANCE="$G" \
         AUTODRIVE_ROUND_LABEL="light-qa" bash "$T" || echo "ERROR: QA measurement tool failed" >&2; printf x)"
@@ -346,7 +340,6 @@ steps:
     parse_json: true
     prompt: |
       Complete responsibility light-open-pr. Evaluate and adapt these optional command examples; do not run unsupported flags blindly:
-      Publish against the target selected by worktree setup ({{worktree_setup.base_branch}}). Use the requested target, or verify that the setup target is the repository default when none was requested. If the default cannot be observed locally, verify it through authenticated hosting data and confirm it is the target the worktree started from. If target resolution remains incomplete, record the cause, owner and action needed through step-failure recovery. Preserve the worktree and leave publication incomplete. Use the pinned starting SHA for the change summary.
       ```bash
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-open-pr; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-open-pr: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-open-pr: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"; cd "$QC_WT"
@@ -355,13 +348,8 @@ steps:
       BASE="$(qc_base)"
       [ -f "$QC_TOOLS/workflow_gh_retry.sh" ] || qc_die "workflow_gh_retry.sh is missing from $QC_TOOLS"
       . "$QC_TOOLS/workflow_gh_retry.sh"
-      TARGET="$(bash "$QC_TOOLS/recipe_context_value.sh" worktree_setup.base_branch -)" || qc_die "publication target unavailable"
-      git check-ref-format "refs/heads/$TARGET" && git rev-parse --verify --quiet "refs/remotes/origin/${TARGET}^{commit}" >/dev/null \
-        || qc_die "publication target has no valid remote-tracking branch"
-      if [ -z "${RECIPE_VAR_base_branch:-}" ]; then
-        [ "$(git symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null)" = "refs/remotes/origin/$TARGET" ] \
-          || qc_die "clone default is unresolved; observe the repository default before publishing"
-      fi
+      DEFAULT="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+      DEFAULT="${DEFAULT#origin/}"; [ -n "$DEFAULT" ] || DEFAULT=main
       ISSUE="$(qc_issue)"
       {
         printf '## Request\n\n%s\n' "$(qc_request)"
@@ -370,7 +358,7 @@ steps:
         printf '\nOpened by auto-drive-light (#1802). It is measured for eligibility, reviewed by the crusty loop and merged only after authorized agent finalization.\n'
       } | qc_write pr-body.md
       set +e
-      URL="$(GH_RETRY_TMPDIR="$QUICK_CHANGE_STATE_DIR" _gh_retry_core "pr create" pr create --base "$TARGET" --head "$BRANCH" \
+      URL="$(GH_RETRY_TMPDIR="$QUICK_CHANGE_STATE_DIR" _gh_retry_core "pr create" pr create --base "$DEFAULT" --head "$BRANCH" \
         --title "$(qc_title)" --body-file "$QUICK_CHANGE_STATE_DIR/pr-body.md")"
       rc=$?
       set -e

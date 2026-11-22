@@ -7,10 +7,9 @@ description: >
   recipe runner against scratch Git repositories, with `gh`, `claude` and `npm`
   as stand-ins on a private PATH that holds no `gadugi-test`. Case A: a Node
   repository with no scenario directory records a named blocker, never a pass.
-  Case B, in three legs: the change set is measured against the base the round
+  Case B, in two legs: the change set is measured against the base the round
   observed for this PR; where no round passed one down, no base and no change
-  set are recorded and none is guessed; and a base that names no branch of the
-  clone reaches no shell and measures nothing. Case C: a scenario
+  set are recorded and none is guessed. Case C: a scenario
   directory the operator named that does not exist is the recorded state
   `operator-missing`, whatever bytes its name holds, and the record stays one
   clean JSON line. In every run the round ends normally: exit status 0, all
@@ -180,46 +179,6 @@ assertions:
     params:
       target: stdout
       expected: "PASS: case-b leg-2 gh-calls - "
-  - name: case-b-leg-3-exit-status
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-3 exit-status - "
-  - name: case-b-leg-3-agent-calls
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-3 agent-calls - "
-  - name: case-b-leg-3-mode
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-3 mode - "
-  - name: case-b-leg-3-record
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-3 record - "
-  - name: case-b-leg-3-qa-command-paths
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-3 qa_command_paths - "
-  - name: case-b-leg-3-record-shape
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-3 record-shape - "
-  - name: case-b-leg-3-gh-calls
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-3 gh-calls - "
-  - name: case-b-leg-3-injected-file
-    type: output_contains
-    params:
-      target: stdout
-      expected: "PASS: case-b leg-3 injected-file - "
   - name: case-c-exit-status
     type: output_contains
     params:

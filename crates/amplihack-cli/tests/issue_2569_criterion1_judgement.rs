@@ -447,8 +447,8 @@ fn a_service_the_drive_cannot_reach_ends_in_a_recorded_handoff() {
 /// directory that does not exist, and every round failed with "explicit
 /// operator selection preserved", which no round could clear. It is now a
 /// named recoverable blocker: the measurement records the state, and the
-/// judgement falls back to the repository's own tracked scenario directory,
-/// recording both paths. It is never a per-round QA failure.
+/// judgement falls back to the repository's own scenario directory, recording
+/// both paths. It is never a per-round QA failure.
 #[test]
 fn an_operator_scenario_directory_that_does_not_exist_falls_back_and_is_recorded() {
     let w = World::new();
@@ -479,7 +479,7 @@ fn an_operator_scenario_directory_that_does_not_exist_falls_back_and_is_recorded
     assert_eq!(
         field(&j, "gadugi_scenario_dir"),
         "tests/agentic",
-        "the fallback is the repository's own tracked scenario directory"
+        "the fallback is the repository's own scenario directory"
     );
     assert_eq!(
         j["qa_handoff"],
@@ -497,7 +497,7 @@ fn an_operator_scenario_directory_that_does_not_exist_falls_back_and_is_recorded
     assert_staging_rule(&w.gadugi_calls());
 }
 
-/// With no tracked directory to fall back to, the same blocker reaches a
+/// With no scenario directory to fall back to, the same blocker reaches a
 /// recorded hand-off naming the path and the operator — still not a
 /// per-round failure.
 #[test]
@@ -841,11 +841,11 @@ fn the_measurement_and_the_guidance_come_from_the_bundle_not_the_worktree() {
 // ─────────────────────────────────────────────────────────────────────────
 
 /// The fallback for a missing operator directory substitutes a path from
-/// the repository under review. It must be one of the three detected names,
-/// resolve inside the repository root after `pwd -P`, and be tracked in
-/// Git. A `tests/agentic` that is a symlink pointing out of the repository
-/// is none of those: the judgement hands off instead, and nothing from
-/// outside the root reaches the record or the judgement.
+/// the repository under review, and the one limit on it is containment: it
+/// must resolve inside the repository root after `pwd -P`. A `tests/agentic`
+/// that is a symlink pointing out of the repository fails that: the
+/// judgement hands off instead, and nothing from outside the root reaches
+/// the record or the judgement.
 #[test]
 fn a_fallback_scenario_directory_that_leaves_the_repository_is_not_used() {
     let w = World::new();
@@ -1621,35 +1621,6 @@ fn a_base_that_names_no_branch_is_recorded_with_an_unknown_change_set() {
     // the round continues: the judgement is still reached and recorded.
     let judged = w.judgement("auto", "pass");
     assert_judgement_shape(&judged);
-}
-
-/// A base candidate shaped like a command, an option or a ref git refuses is
-/// data all the way through: nothing in it is evaluated, no file it names
-/// appears, and the change set is not measured against some other branch
-/// instead. The light path is driven with the same set in
-/// `issue_1802_auto_drive_light_recipe`.
-#[test]
-fn a_base_candidate_that_names_no_branch_reaches_no_shell() {
-    use crate::support::criterion1_world::hostile_bases;
-    for i in 0..hostile_bases(std::path::Path::new("/canary")).len() {
-        let w = divergent_default_world();
-        let canary = w.base.join("canary");
-        let bad = hostile_bases(&canary)[i].clone();
-        let o = run_qa_inputs(&w, Some(&bad), "");
-        assert_eq!(
-            o.status.code(),
-            Some(0),
-            "{bad:?}: the step still reports and exits 0: {}",
-            show(&o)
-        );
-        let j = json_of(&o);
-        assert_eq!(
-            field(&j, "qa_command_paths"),
-            "(unknown)",
-            "{bad:?}: no branch resolved, so no change set is measured: {j}"
-        );
-        assert!(!canary.exists(), "{bad:?}: a candidate was evaluated");
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────

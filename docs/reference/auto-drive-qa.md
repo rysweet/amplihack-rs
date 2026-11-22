@@ -74,11 +74,21 @@ it resolves nothing itself.
 
 On the merge path, `step-02a-qa-inputs` passes down the base the round's own
 preflight observed for this PR (`autodrive_base_branch`) and nothing else.
-Before a PR exists, `light-qa-inputs` passes the target worktree setup
-selected, which is also the branch `light-open-pr` publishes against; where
-the run named no `base_branch`, the clone's observed default stands in only
-while it is that same branch. A direct caller supplies its own
-`AUTODRIVE_QA_BASE`.
+This is not a new base lookup. The round already had that value before
+#2569 (`autodrive_merge_loop_run.sh` passes `autodrive_base_branch=<the
+PR's base>`), and step-02 told its agent to run the measurement with
+`AUTODRIVE_QA_BASE` set to the PR's base. #2569 moves the measurement into a
+bash step, which can only take the base it is handed, so the round hands it
+down: one context key, with no lookup, no source enum and no rejection list.
+Without it the step would measure every PR against the clone's default
+branch, which an earlier review of this change found wrong for any PR into
+another branch.
+
+Before a PR exists, `light-qa-inputs` passes the branch `origin/HEAD` names.
+`light-worktree` cut the `quick/` branch from it and `light-open-pr`
+publishes against it, as they did before #2569, which changes neither. A
+direct caller
+supplies its own `AUTODRIVE_QA_BASE`.
 
 No step guesses a base. Where none is passed, or where
 `autodrive_qa_scope.sh` cannot resolve the one that was, the changed-path
@@ -103,20 +113,20 @@ file intact.
 
 If this invocation produces no measurement, a record left on disk can
 belong to an earlier round. Check the current step output before using the
-file. Readiness and expected checks use a declaration only from the current
-invocation's measurement for the assessed head, round, and actual PR
-target. An unavailable, unreadable, or stale measurement leaves the
-declaration inapplicable. The [record hash](#the-record-hash) checks file
+file. Readiness and expected checks use a declaration only from a record
+that describes this PR's change at the head being assessed. The record names
+the head, the round and the base it measured, so the reader can judge
+whether it does. An unavailable or unreadable measurement supplies no
+declaration. The [record hash](#the-record-hash) checks file
 integrity. An unchanged hash can also describe an earlier round's file.
 
 ### Light drives
 
 A light run with an existing PR uses the shared merge-round QA path. For a
-new change, `light-qa-inputs` measures the selected publication target and
-`light-qa` records a pre-publication judgement as `light_checks`. A single
-validated branch target applies to worktree setup, QA measurement, and
-`gh pr create --base`. Failure to establish a publication target goes
-through the existing delivery recovery path.
+new change, `light-qa-inputs` measures against the branch `origin/HEAD`
+names, which is where the `quick/` branch started and what the PR will
+target, and `light-qa` records a pre-publication judgement as
+`light_checks`.
 
 `light_base` is the pinned starting commit. The QA agent uses
 `git diff <starting-sha>` and `git status --porcelain --untracked-files=all`
@@ -147,7 +157,7 @@ shared diagnostics.
 | Evidence | How the agent responds |
 | --- | --- |
 | Silent measurement, unavailable trusted tooling, or unusable record data | Names `qa-measurement-unavailable` or the specific missing facts and judges from the actual diff and other available evidence. |
-| Missing operator-selected scenario directory | Names `qa-scenario-dir-missing:<path>` locally. Falls back to a suitable tracked repository directory, records the fallback, or requests action from the operator. |
+| Missing operator-selected scenario directory | Names `qa-scenario-dir-missing:<path>` locally. Falls back to the repository's own scenario directory, which must resolve inside the repository, records the fallback, or requests action from the operator. |
 | No scenario covers the change | Selects, writes, or extends repository coverage for the changed behavior and runs the affected scenarios. |
 | Unavailable runner or suite executable | Names `qa-tool-not-installed:<tool>`. Uses suitable repository evidence where available or hands off to the tool's owner. Installation requires an operator. |
 | Suite command or scenario failure | Records the failure and its cause. Diagnoses product, scenario, or environment failures, repairs the product or scenario when possible, and reruns the affected coverage. |
@@ -210,17 +220,17 @@ check failed by name and the measurement is still incomplete, the tool
 prints an `ERROR:` line saying the measurement is incomplete and records
 `qa-command-missing` with `BLOCKED` rather than `PASS`.
 
+Each status is set where the tool finds the fact that gives it, so the tool
+has no table that maps a token to a status and no set of tokens it checks a
+value against. The table above describes what the tool writes; it is not a
+closed set a reader enforces. A reader that meets a value it does not
+recognise treats it as a fact it was not given, never as a pass and never
+as a blocker on that ground alone.
+
 `gadugi-validate-failed`, `gadugi-run-failed` and `gadugi-scenario-unnamed`
 are gone: the tool runs no scenario, so it cannot observe a validation or a
-run failing, and no path reaches them. The unknown-reason safety net at the
-end of the status mapping now records `BLOCKED` with `qa-command-missing`,
-the same incomplete measurement as above, rather than inventing a failure it
-did not observe. Every token the tool picks is a literal from the list, so
-the net is unreachable in practice; it is not removed, because it is what
-keeps an unrecognised token from being read as a pass. A reader that meets
-one of the three retired tokens is reading a record an older tool wrote:
-treat it as any failing measurement — an input to the judgement, never an
-outcome.
+run failing. A reader that meets one of them is reading a record an older
+tool wrote, and treats it as an input to the judgement, never an outcome.
 
 The QA agent receives every measured status, including a failed declared
 command. A measured `PASS` describes the suite and inventory. Readiness
@@ -402,12 +412,11 @@ summary. The named check must pass at the assessed head for the declaration to c
 
 #### How merge-ready agents use the declaration
 
-Readiness and expected checks use only the declaration measured by the
-current invocation for the assessed head, round, and actual PR target.
-Direct preflight, an unknown target, a retargeted PR, or a changed head
-requires applicable measurement before a declaration can count. A PR
-description, agent summary, or `qa.toml` read from the PR head cannot supply
-the declaration.
+Readiness and expected checks use a declaration only from a record that
+describes this PR's change at the head being assessed; whether it does is
+the reader's judgement, made from the head, round and base the record names.
+A PR description, agent summary, or `qa.toml` read from the PR head cannot
+supply the declaration.
 
 An applicable declaration requires a passing declared command and, for
 `ci-job:<name>`, the named check at the assessed head. The usual expected
@@ -491,13 +500,13 @@ outside-in test entry points.
 | Node | `npm test` | Exercises a user-facing change through the scenario directory's scenarios, writing or extending the ones this PR needs. |
 | Unknown | No detected command | Judges from the diff and the scenarios what exercises the change. `qa-command-missing` here says only that no suite is declared, not that the measurement failed. |
 | Unresolved candidates | No detected command | The same, naming the candidates from `qa_candidates`. |
-| Any, explicit scenario directory | Selected suite still runs | Looks there first. A directory that does not exist is `qa-scenario-dir-missing:<path>` with a constrained fallback or a hand-off. |
+| Any, explicit scenario directory | Selected suite still runs | Looks there first. A directory that does not exist is `qa-scenario-dir-missing:<path>`, with a fallback inside the repository or a hand-off. |
 | Unknown merge base | Cannot establish trusted selection | `qa-measurement-unavailable`, recognised by `qa_command_paths` `(unknown)` with `docs_only` `unknown`: takes the change set from the diff and judges from it. |
 
 Reuse, write, or extend scenarios that exercise the changed behavior.
 Keep new or revised scenarios in the PR. Run only Gadugi scenarios the PR
 adds or changes. Verify each selected scenario resolves to a regular file inside
-the approved directory, including when falling back to a tracked repository
+the repository, including when falling back from a missing operator
 directory. With `gadugi-test`, stage each selected file alone outside the
 repository, validate the staging directory, then run by the scenario's YAML
 `name:`. The scenario selector matches a substring of that name.

@@ -592,10 +592,10 @@ to `default-workflow` when it calls it in-process. What happens then:
 | `base_branch` | Taken as the base. It must still pass `delivery_base_ref`, and step-04's receipt records it, but nothing can tell it apart from a value meant for this run. |
 | `forbidden_base_branches` | Taken as the deny list. A list in the wrong syntax fails the run when `base_branch` is set. |
 
-`quick-change` clears `base_branch` and `forbidden_base_branches`.
-`smart-classify-route` declares `strict_delivery` so that it can read it.
-See [where the inputs apply](#where-the-inputs-apply) for the
-shared target in `auto-drive-light`.
+No bundled recipe gives any of these keys a value of its own. `quick-change`
+and `auto-drive-light` clear `base_branch` and `forbidden_base_branches`, and
+`smart-classify-route` declares `strict_delivery` so that it can read it; see
+[Where the inputs apply](#where-the-inputs-apply).
 
 Every bundled recipe on a path to `default-workflow` declares
 `base_branch: ""` and passes `base_branch: "{{base_branch}}"` in the
@@ -701,19 +701,23 @@ request without `default-workflow`'s publish phase, and one route runs
 
 | Path | `base_branch`, `forbidden_base_branches` | `strict_delivery` |
 | ---- | ---------------------------------------- | ----------------- |
-| `quick-change` | Cleared in the call to `workflow-worktree`. The `quick/` branch starts from `origin/HEAD`, and the pull request targets the branch `origin/HEAD` names, so the two agree. A `base_branch` from the caller is not used. | Left as inherited. Step-04 refuses to create a branch when it is `"true"`, so a strict run stops before any agent runs. |
-| `auto-drive-light` for a new change | A validated `base_branch` applies to branch creation, QA measurement, and PR creation. An empty input uses the verified clone default when that is the publication target. See [Auto-Drive-Light configuration](auto-drive-light.md#configuration). | Inherited by `workflow-worktree`. Strict delivery requires an existing branch. |
+| `quick-change`, and `auto-drive-light` for a new change | Cleared in the call to `workflow-worktree`. The `quick/` branch starts from `origin/HEAD`, and the pull request targets the branch `origin/HEAD` names, so the two agree. A `base_branch` from the caller is not used. | Left as inherited. Step-04 refuses to create a branch when it is `"true"`, so a strict run stops before any agent runs. |
 | `smart-orchestrator`, task split into parallel workstreams | Not forwarded. `launch-parallel-round-1` passes only `create_issue` to `amplihack orch run`. Each development workstream runs `default-workflow` in its own process, whose declared defaults replace any inherited value, so each branch starts from, and each pull request targets, the remote default branch. | Never split. `activate-workflow` keeps the run on one workstream when `strict_delivery` is anything but empty or `"false"`, and says so on stderr. |
 
 The runner merges a sub-recipe's context back into its caller's. Once
-`quick-change` calls `workflow-worktree`, `base_branch` and
-`forbidden_base_branches` are empty in the recipe and its callers. A
-`quick-change` hand-over to `default-workflow` continues the `quick/`
-branch with an empty `base_branch` and targets the remote default branch.
+`quick-change` or `auto-drive-light` has called `workflow-worktree`,
+`base_branch` and `forbidden_base_branches` are empty for the rest of the run,
+in that recipe and in the recipes that called it. A `quick-change` hand-over
+to `default-workflow` therefore continues the `quick/` branch with no
+`base_branch`, and its pull request also targets the remote default branch.
 
-An `auto-drive-light` run with `existing_branch` or `pr_number` reuses the
-PR and its worktree and uses the observed PR target for shared merge QA.
-See [light-drive QA](auto-drive-qa.md#light-drives).
+`auto-drive-light` continuing an existing branch or pull request
+(`existing_branch` or `pr_number` set) does not call `workflow-worktree` and
+opens no pull request. On that path `light-escalate` passes the caller's
+`base_branch` to `auto-drive-to-merge`. After a new change, `light-worktree`
+has cleared it, so escalation sees an empty base, which is correct: the
+`quick/` branch was cut from `origin/HEAD`, and finalize takes the base from
+the pull request itself ([How finalize finds the base](#how-finalize-finds-the-base)).
 
 A strict development task that `smart-orchestrator` keeps on one workstream
 goes to `default-workflow` in-process, which applies the contract above. `quick-change`

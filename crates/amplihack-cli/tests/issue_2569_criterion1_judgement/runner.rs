@@ -431,7 +431,7 @@ fn an_unreachable_service_persists_the_qa_handoff_and_skips_round_repair() {
 }
 
 #[test]
-fn a_missing_operator_directory_reaches_qa_and_uses_the_tracked_fallback() {
+fn a_missing_operator_directory_reaches_qa_and_uses_the_repository_fallback() {
     let w = World::new();
     w.node_repo(&[("scenarios/other.yaml", "name: unrelated\n")]);
     w.feature_pr();
@@ -451,18 +451,24 @@ fn a_missing_operator_directory_reaches_qa_and_uses_the_tracked_fallback() {
     assert_staging_rule(&w.gadugi_calls());
 }
 
+/// A new light change is cut from, measured against and published to the
+/// branch `origin/HEAD` names, as on main. #2569 adds the measurement and
+/// changes none of the three: a `base_branch` the caller passes is cleared by
+/// `light-worktree`, so `release` here is never the target, and the
+/// measurement's base is the branch the PR is opened against.
 #[test]
-fn a_new_light_pr_starts_measures_and_opens_against_the_requested_target() {
+fn a_new_light_pr_starts_measures_and_opens_against_the_clone_default() {
     let w = World::new();
     w.node_repo(&[]);
     w.git(&["config", "--local", "user.name", "QA Fixture"]);
     w.git(&["config", "--local", "user.email", "qa@example.test"]);
+    let main = w.git(&["rev-parse", "HEAD"]);
     w.git(&["checkout", "-q", "-b", "release"]);
     w.write(
         "release.txt",
         "Only the release branch starts with this file.\n",
     );
-    let release = w.commit("release starting point");
+    w.commit("release starting point");
     w.git(&["checkout", "-q", "main"]);
     let origin = w.base.join("origin.git");
     w.git(&[
@@ -515,7 +521,7 @@ printf '%s\n' 'https://github.com/example/shop/pull/7'
     run(
         &w,
         &path,
-        "release",
+        "main",
         "pass",
         &json!({
             "repo_path": w.repo,
@@ -541,11 +547,11 @@ printf '%s\n' 'https://github.com/example/shop/pull/7'
             measurement["head_sha"].as_str()
         ),
         (
-            Some("release"),
-            release.as_str(),
-            Some("release"),
-            Some(release.as_str())
+            Some("main"),
+            main.as_str(),
+            Some("main"),
+            Some(main.as_str())
         ),
-        "the published target, starting commit, and measured target and head must agree"
+        "the published target, starting commit, and measured target and head are all the clone default"
     );
 }

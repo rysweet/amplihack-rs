@@ -61,23 +61,25 @@ directory at all:
 
 | State | What you do |
 | --- | --- |
-| `not-consulted` | The usual value: `gadugi_required` is `false`, so the measurement looked for no directory and `gadugi_scenario_dir` is empty. Find the directory yourself — the measurement looks for `tests/agentic`, `tests/gadugi/scenarios` and `scenarios`, in that order — and write a new one there if none exists. This is not a blocker. |
+| `not-consulted` | The usual value: `gadugi_required` is `false`, so the measurement looked for no directory and `gadugi_scenario_dir` is empty. Find the repository's scenario directory yourself, wherever it keeps one, and write a new scenario there; where it keeps none, choose a directory inside the repository. This is not a blocker. |
 | `detected` | Use `gadugi_scenario_dir`. |
 | `operator` | Use `gadugi_scenario_dir`; an operator named it. |
 | `operator-missing` | The blocker `qa-scenario-dir-missing:<path>`, below. |
-| `absent` | Gadugi is required and none of the three directories exists. Write the first scenario in the reported default. Not a blocker. |
+| `absent` | Gadugi is required and the measurement found none of the directories it looks in by default. Use the repository's own scenario directory if it keeps one elsewhere; otherwise write the first scenario in the reported default. Not a blocker. |
 
 An absent or unparseable record, or one that is not an object carrying at
 least one field, is the blocker `qa-measurement-unavailable`. So is a
-resolved tools directory inside the worktree under review. A single field
-you do not recognise is not that blocker: read the fields you do, and treat
-the rest as facts you were not given. Never read a value as a pass because
-you do not recognise it.
-So is a record whose `qa_reason` is `qa-command-missing` **and** whose
+resolved tools directory inside the worktree under review, and so is a
+record whose `qa_reason` is `qa-command-missing` **and** whose
 `qa_command_paths` is `(unknown)`, `docs_only` is `unknown` and
 `qa_repo_type` is `unknown`: nothing about the change was measured. Judge
-from the diff and the scenarios instead; never read an unknown value as a
-pass.
+from the diff and the scenarios instead.
+
+A field or value you do not recognise is not that blocker, and the lists of
+values in this file and in the record contract are descriptions, not a
+closed set you must enforce. Read the fields you do recognise, treat the
+rest as facts you were not given, and judge. Never read a value as a pass
+because you do not recognise it.
 
 `gadugi_required` is not a health signal. It is `true` for every Node
 repository and whenever an operator set a scenario directory, and `false`
@@ -173,14 +175,12 @@ Each of these is a fact about the inputs. Name it, then carry on and judge.
 
 In this order:
 
-1. **Fall back.** Use the repository's own tracked scenario directory when
-   one exists, and record the fallback and the operator path it replaced.
-   Which directory that is, you judge from the repository: the measurement
-   looks for `tests/agentic`, `tests/gadugi/scenarios` and `scenarios` in
-   that order, and a repository that keeps its scenarios elsewhere is not
-   thereby without one. The limit is containment, not the name: the
-   directory must resolve inside the repository root after `pwd -P` and be
-   tracked in Git.
+1. **Fall back.** Use the repository's own scenario directory when one
+   exists, and record the fallback and the operator path it replaced.
+   Which directory that is, you judge from the repository; no list of names
+   decides it. The one limit is containment: the directory must resolve
+   inside the repository root after `pwd -P`, so nothing you write or run
+   lands outside the repository.
 2. **Hand off** when the change is user-facing and no fallback exists,
    naming the path and the operator.
 3. Otherwise record `not_user_facing` with its cited diff files.

@@ -52,8 +52,8 @@ Expect the chosen target in `qa_base` and the tested commit in `head_sha`.
 A declared command that passes has `qa_exit_code` `"0"`. If the command
 fails, record the cause and repair or follow up on it. If the tool produces
 no output, diagnose why and use the actual diff and other available
-evidence. For a drive's saved record, check that it belongs to the assessed
-head, round, and target before using a QA declaration. See
+evidence. Use a QA declaration from a drive's saved record only when that
+record describes this PR's change at the head you are assessing. See
 [how measurement is stored](../reference/auto-drive-qa.md#the-record-file).
 
 ## 2. Decide what the change requires
@@ -87,8 +87,9 @@ private socket. The full Gadugi suite belongs in CI. In amplihack-rs,
 `tests/gadugi/` runs in CI. See
 [scenario judgement](../reference/auto-drive-qa.md#scenario-judgement).
 
-If the operator-selected scenario directory is missing, use a suitable
-tracked repository directory and record the fallback. Diagnose failures as
+If the operator-selected scenario directory is missing, use the
+repository's own scenario directory, inside the repository, and record the
+fallback. Diagnose failures as
 product, scenario, or environment failures. Fix the product or test as
 needed and rerun the affected coverage. Record which scenario ran, the
 tested commit, the result, and any repair. For an applicable repository

@@ -27,7 +27,11 @@ context:
   # The base the round's own preflight observed for this PR, passed down by
   # autodrive-merge-round.yaml. step-02a-qa-inputs measures the change set
   # against it (#2569). Empty when no round passed one, and the change set is
-  # then unknown rather than measured against a guessed base.
+  # then unknown rather than measured against a guessed base. This key is the
+  # whole of #2569's base plumbing on the merge path: before #2569 the step-02
+  # agent set AUTODRIVE_QA_BASE to the PR's base itself, and a bash step can
+  # only take the base it is handed. No lookup, source enum or rejection list
+  # sits behind it; autodrive_qa_scope.sh, unchanged here, checks the value.
   autodrive_base_branch: ""
   # step-02a-qa-inputs' measured record; step-02 judges criterion 1 from it.
   qa_inputs: ""

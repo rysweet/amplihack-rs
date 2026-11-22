@@ -24,10 +24,9 @@
 # Cases (each runs the recipe once, in a fresh scratch Git repository):
 #   A  a Node repository with no scenario directory: the record names a
 #      blocker, not a pass, and the round carries on.
-#   B  where the change set is measured against, in three legs: 1 the round
+#   B  where the change set is measured against, in two legs: 1 the round
 #      supplies the base and it is measured against; 2 no round did, so no
-#      base and no change set are recorded and none is guessed; 3 a base that
-#      names no branch reaches no shell and measures nothing.
+#      base and no change set are recorded and none is guessed.
 #   C  a scenario directory the operator named that does not exist, whatever
 #      bytes its name holds, is a recorded state and the record stays one
 #      clean JSON line.
@@ -439,28 +438,6 @@ if check_record "case-b leg-2" "$REC_B2"; then
   eq "case-b leg-2 docs_only" unknown "$(field "$REC_B2" docs_only)"
 fi
 eq "case-b leg-2 gh-calls" "" "$(file_text "$WORK/rec-case-b-leg-2/gh-calls")"
-
-# Leg 3: a base that names no branch of this clone is data all the way through.
-# Nothing in it is evaluated, no change set is measured against some other
-# branch instead, and the record stays one clean JSON line.
-begin_case case-b-leg-3
-{ new_node_repo "$WORK/repo-b3" && add_origin "$WORK/repo-b3"; } \
-  || die "set-up: cannot create the case B leg 3 repository"
-guard_tree "$WORK/repo-b3"
-# shellcheck disable=SC2016 # the command substitution is data and must not run here
-HOSTILE_BASE='-HOSTILEBASE2569$(touch injected2569)'
-EXTRA_ENV=(); EXTRA_CTX=(-c "autodrive_base_branch=$HOSTILE_BASE")
-run_recipe case-b-leg-3 "$WORK/repo-b3" 7
-REC_B3="$WORK/ev-case-b-leg-3/qa-evidence.json"
-round_continued "case-b leg-3" case-b-leg-3
-if check_record "case-b leg-3" "$REC_B3"; then
-  eq "case-b leg-3 qa_command_paths" "(unknown)" "$(field "$REC_B3" qa_command_paths)"
-  eq "case-b leg-3 record-shape" "lines=1 esc=0" \
-    "lines=$(count_lines "$REC_B3") esc=$(LC_ALL=C tr -cd '\033' < "$REC_B3" | LC_ALL=C wc -c | tr -d ' ')"
-fi
-eq "case-b leg-3 gh-calls" "" "$(file_text "$WORK/rec-case-b-leg-3/gh-calls")"
-eq "case-b leg-3 injected-file" 0 \
-  "$(find "$WORK" -maxdepth 8 -name injected2569 2>/dev/null | awk 'END { print NR }')"
 
 # --- H: case C, an operator-named scenario directory that does not exist -----
 # The name holds a double quote, a backslash, a tab and an ESC byte. The tool

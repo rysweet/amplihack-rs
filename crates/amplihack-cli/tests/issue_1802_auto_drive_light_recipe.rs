@@ -1080,11 +1080,7 @@ fn light_qa_record(e: &StepEnv, vars: &[(&str, &str)]) -> (Output, serde_json::V
         .wt
         .canonicalize()
         .expect("the worktree path is the one worktree_setup_path.sh accepts");
-    let target = vars
-        .iter()
-        .find_map(|(key, value)| (*key == "RECIPE_VAR_base_branch").then_some(*value))
-        .unwrap_or("main");
-    let setup = serde_json::json!({"worktree_path": wt, "base_branch": target}).to_string();
+    let setup = serde_json::json!({"worktree_path": wt, "base_branch": "main"}).to_string();
     let path = format!("{}:/usr/bin:/bin", e.fakes.bin.display());
     let mut env: Vec<(&str, &str)> = vec![
         ("RECIPE_VAR_worktree_setup", setup.as_str()),
@@ -1107,15 +1103,14 @@ fn rec_field(rec: &serde_json::Value, k: &str) -> String {
     rec[k].as_str().unwrap_or_default().to_string()
 }
 
-/// #2569: a `base_branch` the run was given outranks the clone's default on
-/// the light path. It is the branch the PR will be opened against, so the
-/// change set is measured against it. An `AUTODRIVE_QA_BASE` inherited from
-/// the environment is not this step's to use: the step resolves the base and
-/// sets that variable itself. Both name `trunk` here and the clone's default
-/// is `main`, so taking the wrong one shows in the recorded base and in the
-/// measured paths alike.
+/// #2569: before the PR exists its target is the branch `origin/HEAD` names.
+/// `light-worktree` cut the `quick/` branch from it and `light-open-pr`
+/// publishes against it, as on main, so the change set is measured against
+/// it and against nothing else. A `base_branch` and an inherited
+/// `AUTODRIVE_QA_BASE` both naming `trunk` are not consulted: taking either
+/// would show in the recorded base and in the measured paths alike.
 #[test]
-fn light_qa_inputs_measures_against_the_named_base_branch_first() {
+fn light_qa_inputs_measures_against_the_branch_origin_head_names() {
     if skip() {
         return;
     }
@@ -1124,22 +1119,18 @@ fn light_qa_inputs_measures_against_the_named_base_branch_first() {
         &e,
         &[
             ("RECIPE_VAR_base_branch", "trunk"),
-            ("AUTODRIVE_QA_BASE", "main"),
+            ("AUTODRIVE_QA_BASE", "trunk"),
         ],
     );
     assert_eq!(
         rec_field(&rec, "qa_base"),
-        "trunk",
-        "the named base is the base the record was measured against: {rec}"
+        "main",
+        "the branch origin/HEAD names is the base the record was measured against: {rec}"
     );
-    assert_eq!(
-        rec_field(&rec, "docs_only"),
-        "false",
-        "against trunk the change set carries the source file: {rec}"
-    );
+    assert_eq!(rec_field(&rec, "docs_only"), "true", "{rec}");
     assert!(
-        rec_field(&rec, "qa_command_paths").contains("added.rs"),
-        "the measured paths are against trunk: {rec}"
+        !rec_field(&rec, "qa_command_paths").contains("added.rs"),
+        "taking trunk instead would carry the source file: {rec}"
     );
     assert!(
         rec_field(&rec, "qa_guidance").ends_with("skills/merge-ready/criterion-1-qa-judgement.md"),
@@ -1153,61 +1144,23 @@ fn light_qa_inputs_measures_against_the_named_base_branch_first() {
     );
 }
 
-/// #2569: where no `base_branch` is named, the clone's own default is the
-/// answer, and the record says that is what it is. There is no PR yet, so
-/// there is no PR base for it to be wrong against.
+/// #2569: where `origin/HEAD` names no branch, the change set is not
+/// measured, rather than measured against a branch nobody chose. The record
+/// says so, and the judgement carries on from that fact.
 #[test]
-fn light_qa_inputs_falls_back_to_the_clone_default_when_no_base_is_named() {
+fn light_qa_inputs_measures_nothing_when_origin_head_names_no_branch() {
     if skip() {
         return;
     }
     let e = light_world_with_trunk();
-    let (_, rec) = light_qa_record(&e, &[("AUTODRIVE_QA_BASE", "trunk")]);
-    assert_eq!(rec_field(&rec, "qa_base"), "main", "{rec}");
-    assert_eq!(rec_field(&rec, "docs_only"), "true", "{rec}");
-    assert!(
-        !rec_field(&rec, "qa_command_paths").contains("added.rs"),
-        "taking trunk instead would carry the source file: {rec}"
+    git(
+        &e.repo.wt,
+        &["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
     );
-    assert!(
-        e.fakes.gh_calls().is_empty(),
-        "no PR exists, so no base is asked of the hosting interface: {:?}",
-        e.fakes.gh_calls()
-    );
-}
-
-/// #2569: a `base_branch` that names no branch of this clone leaves the
-/// change set unmeasured. It does not fall through to the clone default,
-/// which would measure against a branch nobody named. The value is not
-/// echoed and nothing in it runs.
-#[test]
-fn light_qa_inputs_measures_nothing_when_the_target_names_no_branch() {
-    if skip() {
-        return;
-    }
-    use crate::support::criterion1_world::hostile_bases;
-    for i in 0..hostile_bases(Path::new("/canary")).len() {
-        let e = light_world_with_trunk();
-        let canary = e.repo.tmp.path().join("canary");
-        let bad = hostile_bases(&canary)[i].clone();
-        let (o, rec) = light_qa_record(&e, &[("RECIPE_VAR_base_branch", bad.as_str())]);
-        assert_eq!(
-            rec_field(&rec, "qa_base"),
-            "",
-            "{bad:?}: no base resolved, and the clone default is not measured against instead: {rec}"
-        );
-        assert_eq!(
-            rec_field(&rec, "qa_command_paths"),
-            "(unknown)",
-            "{bad:?}: {rec}"
-        );
-        assert!(
-            !stdout(&o).contains(&bad) && !stderr(&o).contains(&bad),
-            "{bad:?}: the refused value is never echoed: {}",
-            show(&o)
-        );
-        assert!(!canary.exists(), "{bad:?}: a candidate was evaluated");
-    }
+    let (_, rec) = light_qa_record(&e, &[("RECIPE_VAR_base_branch", "trunk")]);
+    assert_eq!(rec_field(&rec, "qa_base"), "", "{rec}");
+    assert_eq!(rec_field(&rec, "qa_command_paths"), "(unknown)", "{rec}");
+    assert_eq!(rec_field(&rec, "docs_only"), "unknown", "{rec}");
 }
 
 #[test]

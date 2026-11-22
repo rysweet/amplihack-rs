@@ -325,39 +325,30 @@ fi
 [ -n "$SYMLINKED" ] && cause "symlinked scenario named and not runnable: ${SYMLINKED}"
 [ -n "$NONREG" ] && cause "non-regular scenario entry named and not runnable: ${NONREG}"
 # --- qa_status and qa_reason -----------------------------------------
-# qa_reason is the first token that applies; FAIL tokens come first.
-REASON=""
-pick() { [ -n "$REASON" ] || REASON="$1"; }
+# qa_reason is the first token that applies; FAIL tokens come first. Each
+# status is set beside the fact that gives it, so no later step maps a token
+# to a status and there is no set of tokens to check a value against. None
+# of these words is a criterion-1 verdict: the judgement reads them as facts.
+REASON=""; STATUS="PASS"
+pick() { [ -n "$REASON" ] || { REASON="$1"; STATUS="$2"; }; }
 # A missing helper, QA_UNRESOLVED and an invalid qa.toml come first: no suite
 # ran and an operator must act, so gadugi is named in qa_summary only.
-[ -n "$NOSCOPE" ] && pick "qa-command-missing"
-[ -n "$QUNRES" ] && pick "qa-unresolved"
-[ -n "$CFGBAD" ] && pick "qa-config-invalid"
-[ "$S_FAILED" = "true" ] && pick "qa-command-failed"
-[ "$G_STATUS" = "NO_SCENARIOS" ] && pick "no-scenarios"
-[ "$S_MISSING" = "true" ] && pick "qa-command-missing"
-[ "$S_NOTINST" = "true" ] && pick "qa-command-not-installed"
-[ "$G_STATUS" = "NOT_INSTALLED" ] && pick "gadugi-test-missing"
+[ -n "$NOSCOPE" ] && pick "qa-command-missing" BLOCKED
+[ -n "$QUNRES" ] && pick "qa-unresolved" QA_UNRESOLVED
+[ -n "$CFGBAD" ] && pick "qa-config-invalid" BLOCKED
+[ "$S_FAILED" = "true" ] && pick "qa-command-failed" FAIL
+[ "$G_STATUS" = "NO_SCENARIOS" ] && pick "no-scenarios" FAIL
+[ "$S_MISSING" = "true" ] && pick "qa-command-missing" BLOCKED
+[ "$S_NOTINST" = "true" ] && pick "qa-command-not-installed" BLOCKED
+[ "$G_STATUS" = "NOT_INSTALLED" ] && pick "gadugi-test-missing" BLOCKED
 # The gadugi half is complete in exactly two states: not required, so nothing
 # was consulted; or scenarios found and listed. The other two named a reason.
 G_DONE="false"
 { [ "$G_STATUS" = "NOT_REQUIRED" ] || [ "$G_STATUS" = "FOUND" ]; } && G_DONE="true"
 if [ -z "$REASON" ] && { [ "$RAN" -eq 0 ] || [ "$G_DONE" != "true" ]; }; then
   echo "ERROR: nothing failed by name, yet the measurement is incomplete (suite commands run=${RAN}, gadugi=${G_STATUS}); recording it as incomplete so the judgement sees a fact rather than a pass." >&2
-  REASON="qa-command-missing"
+  pick "qa-command-missing" BLOCKED
 fi
-# The four words this file writes. Each is a fact the judgement reads and acts
-# on; none is a criterion-1 verdict. REASON only holds a token `pick` was
-# called with above, so the last branch is a safety net: a token added later
-# and never classified here is recorded as incomplete.
-case "$REASON" in
-  '') STATUS="PASS" ;;
-  qa-command-failed|no-scenarios) STATUS="FAIL" ;;
-  qa-config-invalid|qa-command-missing|qa-command-not-installed|gadugi-test-missing) STATUS="BLOCKED" ;;
-  qa-unresolved) STATUS="QA_UNRESOLVED" ;;
-  *) echo "ERROR: unknown qa_reason '${REASON}'; recording an incomplete measurement rather than inventing a verdict." >&2
-     STATUS="BLOCKED"; REASON="qa-command-missing" ;;
-esac
 SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san | ascii)"
 # The evidence format: every field a string, so a reader never has to guess a type.
 F='{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_dir":"%s","qa_command":"%s",'

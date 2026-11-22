@@ -72,26 +72,6 @@ pub fn step_command(recipe: &str, id: &str) -> String {
         .to_string()
 }
 
-/// Base-branch candidates a caller must treat as data. None of them names a
-/// branch this clone has, so each one leaves the change set unmeasured
-/// rather than measured against a guess, and none of them may reach a
-/// shell. `canary` is a path the command-substitution candidate would create
-/// if it were ever evaluated; no case may find it afterwards.
-pub fn hostile_bases(canary: &Path) -> Vec<String> {
-    vec![
-        "-x".to_string(),
-        format!("$(touch {})", canary.display()),
-        format!("`touch {}`", canary.display()),
-        "a;b".to_string(),
-        "@{-1}".to_string(),
-        "a..b".to_string(),
-        "a//b".to_string(),
-        "main/".to_string(),
-        "a\nb".to_string(),
-        "a".repeat(300),
-    ]
-}
-
 pub fn private_dir(dir: &Path) {
     fs::create_dir_all(dir).expect("mkdir");
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).expect("chmod 0700");
@@ -411,7 +391,6 @@ fi
 
 # --- the scenario directory ------------------------------------------------
 cd -- "$REPO_PATH" || exit 1
-tracked_dir() {{ git ls-files --error-unmatch -- "$1" >/dev/null 2>&1; }}
 inside_root() {{
   local r p
   r="$(pwd -P)"; p="$(cd -- "$1" 2>/dev/null && pwd -P)" || return 1
@@ -423,7 +402,6 @@ if [ "$SSTATE" = "operator-missing" ]; then
   for d in tests/agentic tests/gadugi/scenarios scenarios; do
     [ -d "$d" ] || continue
     inside_root "$d" || continue
-    tracked_dir "$d" || continue
     FALLBACK="$d"; break
   done
   if [ -n "$FALLBACK" ]; then
