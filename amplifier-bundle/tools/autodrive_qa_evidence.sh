@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# autodrive_qa_evidence.sh — measure the facts merge-ready criterion 1 is
+# autodrive_qa_evidence.sh: measure the facts merge-ready criterion 1 is
 # judged from, for one round of the auto-drive-to-merge merge loop.
 # step-02a-qa-inputs of autodrive-merge-evidence.yaml runs this file.
 #
