@@ -47,7 +47,6 @@ struct Fixture {
     workdir: PathBuf,
     n: PathBuf,
     n1: PathBuf,
-    runner: PathBuf,
 }
 
 /// Home with releases `1.0.0` (N) and `1.0.1` (N+1), the link on N, and a stub
@@ -119,13 +118,11 @@ fn fixture(swap: bool) -> Fixture {
         workdir,
         n,
         n1,
-        runner,
     }
 }
 
 /// One run; returns the pin the stub runner saw (empty when unset).
 fn run_once(f: &Fixture) -> String {
-    let _ = &f.runner;
     let recipe = f.home.parent().unwrap().join("pin-probe.yaml");
     let result = execute_recipe_via_rust_for_test(
         &recipe,

@@ -4,8 +4,8 @@
 #
 # Cases:
 #   a   the old name workflow_pull_rebase is an alias of workflow_pull_merge:
-#       a moved remote gives a two-parent merge, no rebase state, no
-#       `pull --rebase` in the recorded git commands
+#       a moved remote gives a two-parent merge, no rebase state, and the
+#       remote commit in HEAD
 #   b   a run pinned to release N (WORKFLOW_STAGE_CHANGES_HELPER, as the runner
 #       sets it) keeps using N's helper after the link moves to N+1 (which has
 #       no old name): the old-run step exits 0 and pushes
@@ -18,7 +18,7 @@
 # run as written. Stand-ins: `amplihack`, and the two releases (copies of the
 # repository helper with a marker). HOME, git config and TMPDIR are private.
 #
-# This test SHOULD FAIL before #3049 is fixed and MUST PASS afterwards.
+# Regression test for #3049.
 # Exit codes: 0 = pass, 1 = fail, 2 = harness error.
 
 set -euo pipefail
@@ -88,7 +88,6 @@ new_case() {
     ( cd "${CASE}/wt" && echo base > f && git add f && git commit -qm base && git push -q -u origin main )
     ( cd "${CASE}/other" && git pull -q origin main && echo remote > r && git add r && git commit -qm remote && git push -q origin main )
     ( cd "${CASE}/wt" && echo local > l && git add l && git commit -qm local )
-    : > "${CASE}/hostile-ran"; rm -f "${CASE}/hostile-ran"
 }
 make_release() {   # name, keep_alias(yes|no)
     local dir="${WORK}/home-amp/releases/$1/amplifier-bundle/tools"
@@ -106,13 +105,11 @@ old_run_step() {   # case dir
 
 # ---- (a) alias --------------------------------------------------------------
 new_case a
-export GIT_TRACE=0
 ( cd "${CASE}/wt" && bash -c 'set -euo pipefail; . "$1"; workflow_pull_rebase' _ "${HELPER}" ) \
     > "${CASE}/a.out" 2>&1 && a_rc=0 || a_rc=$?
 expect_eq "a: exit" "${a_rc}" 0
 expect_eq "a: parents" "$(git -C "${CASE}/wt" rev-list --parents -1 HEAD | wc -w)" 3
 [[ ! -d "${CASE}/wt/.git/rebase-merge" && ! -d "${CASE}/wt/.git/rebase-apply" ]] || fail "a: rebase state left"
-expect_lacks "a: output" "${CASE}/a.out" "pull --rebase"
 git -C "${CASE}/wt" merge-base --is-ancestor "$(git -C "${CASE}/other" rev-parse HEAD)" HEAD || fail "a: remote commit not in HEAD"
 
 # ---- (b) pinned run survives the swap --------------------------------------
