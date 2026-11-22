@@ -901,7 +901,7 @@ printf '' | gh pr merge "$pr" --rebase --match-head-commit "$sha"
 | --- | --- | --- | --- |
 | `merged` | `0` | `0` | `false` |
 | `not-authorised` | not called | `0` | `false` |
-| `authorization-unreadable` | not called | `0` | `true` |
+| `authorization-unreadable` | not called | `1`; goes to [recovery](#an-unreadable-invocation-record-goes-to-recovery) | `false` |
 | `checks-not-green` | `3` | `0` | `true` |
 | `refused` | `4`, or head moved before the call | `0` | `true` |
 | `not-open` | `5` | `0` | `true` |
@@ -916,8 +916,52 @@ A `not-authorised` result is the expected outcome of a verify-only run
 authorization helper is called, or of a captured invocation that does not
 allow a merge. The PR stays open and is not drafted. On a merge run, a helper
 that exits non-zero or prints no object with a boolean `allows_merge` gives
-`authorization-unreadable`, and the PR is handed off. Its reason names only
-the helper's exit status. A helper exit `79` passes through as `79`.
+`authorization-unreadable`. The step fails with exit `1` before any merge
+command, and the PR is not drafted. A helper exit `79` passes through as `79`
+and is terminal.
+
+### An unreadable invocation record goes to recovery
+
+When the record is missing, unreadable or bound to another state folder, the
+`merge` step prints one `ERROR:` line to standard error and exits `1`. The
+line names the result (`authorization-unreadable`), the expected
+`invocation.json` path and whether it is present or missing, the state folder
+the step was given, and the helper's exit status. It holds paths and exit
+codes only, never the record's contents. The helper's own message goes to the
+same standard error and names both the folder it was given and the folder the
+runner bound.
+
+The merge loop's `step-03-finalize` continues on error, so
+`step-03r-finalize-recovery` runs. It carries the condition
+`not autodrive_finalization`, because `continue_on_error` lets the loop go on
+after the failed step and recovery must still be entered.
+
+The pinned runner captures a bash step's standard error and keeps it only in
+that step's error result; it does not stream it to the drive log, whose
+progress lines show the step's status and duration only. The first attempt's
+`ERROR:` line and the helper's message therefore stay in the parent run's
+result for `step-03-finalize`. Recovery starts with `--already-failed`, so the
+recovery agent does not receive that first attempt's standard error either.
+What it can read is `finalize-merge.json`, if one exists. When a re-run made
+by recovery fails, its `ERROR:` line does reach the recovery agent, because
+`step-recovery` passes on and keeps the tail of each attempt's standard error.
+It reaches the drive log only if `step-03r-finalize-recovery` itself fails and
+the runner reports that failure.
+
+Recovery runs `autodrive-finalize` again as a separate process. Capturing the
+invocation again uses only the operator's original inputs (`no_merge`, the dry
+run flag and the PR), and `step-03r-finalize-recovery` defaults `no_merge` to
+`true`, so a recovery re-run cannot allow a merge the operator did not ask
+for. A verify-only or dry run stays verify-only. The recipe tests in
+`crates/amplihack-cli/tests/issue_2539_step_recovery_recipes.rs` and
+`issue_2539_step_recovery_loop.rs` cover the recipe wiring.
+
+If recovery succeeds, the run report shows the re-run's result, read from
+`finalize-merge.json`. If it fails too, finalisation produced no readable
+result and the report shows `merge` as `null` with `stop_reason`
+`unreadable`.
+
+An explicit refusal (exit `79`) never reaches recovery.
 
 `autodrive-finalize.yaml` emits `base-behind` with `handoff false`: the
 merge loop syncs the base instead, except after a recovery re-run (below). It emits `checks-pending` with
@@ -950,6 +994,16 @@ The runner writes `invocation.json` again once it has bound the state folder
 to the invocation, so the authorization read below finds the bound folder.
 Before this, the record held no state folder and every merge run's
 finalisation returned `authorization-unreadable`.
+
+The `autodrive-merge-loop` step of `auto-drive-to-merge.yaml` is given the
+runner-bound `autodrive_state_dir`, the same value the build step receives, so
+a recovery re-run normally writes `finalize-merge.json` to the folder the
+report reads.
+
+One limitation remains. `step-03r-finalize-recovery` still passes the state
+folder from preflight. If the recovery agent chooses a different folder, the
+re-run can merge, but it writes `finalize-merge.json` where the report does
+not look, and the report shows `merge` as `null`.
 
 ## Base sync
 
@@ -1081,7 +1135,7 @@ The first matching row applies.
 | `DONE` or `WAITING` | `not-authorised`, `requested_action` `merge` | `not_merged` |
 | `DONE` or `WAITING` | `checks-pending` | `waiting_for_checks` |
 | `DONE` or `WAITING` | `base-behind` | `not_merged` |
-| `DONE` or `WAITING` | any other result, including `authorization-unreadable` and unknown values | `handoff` |
+| `DONE` or `WAITING` | any other result, including unknown values | `handoff`. `authorization-unreadable` (`handoff false`) reaches this row only if recovery also fails and still leaves that result readable; normally a failed recovery gives `merge` `null` and the `unreadable` row below |
 | `DONE` or `WAITING` | `null`: finalisation did not run, or its output is missing or unreadable, with no exit `79` | `unreadable`, with a `note` naming the error kind and path |
 | `HANDOFF`, `STUCK` | | `handoff` |
 | `BUDGET_EXHAUSTED` | | `budget_exhausted` |
@@ -1479,12 +1533,24 @@ the invocation allows a merge. With `--pr`, `pr_selected` says whether that PR
 is the one selected at launch (always `true` when none was selected). The
 head branch selection (`existing_branch`) is not checked here. Any error exits `2` and prints nothing on
 standard output; on a merge run the merge step reports that as
-`authorization-unreadable` and hands the PR off.
+`authorization-unreadable`, fails with exit `1` and leaves the rest to
+[recovery](#an-unreadable-invocation-record-goes-to-recovery). A mismatch error
+names both the `--directory` value and the bound state folder.
 
 The launcher writes the invocation to `invocation.json` inside a fresh
-`autodrive-invocation-*` folder. It creates the folder with mode `0700` and
-the file with mode `0600` (`create_new`), whatever the caller's umask. The
-private read requires a folder outside the auto-drive state root to have no
+`autodrive-invocation-*` folder. The folder lives in the run's own durable
+folder, `runs/<id>/autodrive-invocation-*/`, which cleanup never sweeps while
+the run is live, so nested recipe runs that end and clean up cannot remove it.
+It goes with the run folder, or when the launching process ends.
+
+A dry run has no durable folder and keeps the record under `TMPDIR`. That is
+safe because a dry run never merges.
+
+The launcher creates the folder with mode `0700` and the file with mode `0600`,
+whatever the caller's umask. The file is first made with `create_new`, and
+the bound state directory is later written to it only by an atomic rename from
+a private file in the same folder, as before the move. The private read
+requires a folder outside the auto-drive state root to have no
 group or other permission bits (mode `0700`). The default folder mode under
 `umask 022` (`0755`) or `umask 002` (`0775`) would make this check fail and
 leave the drive `STUCK` (#2656). The tests

@@ -413,6 +413,8 @@ mod issue_815_804_local_tracking_extract;
 #[path = "issue_815_804_local_tracking_scope_args_test.rs"]
 mod issue_815_804_local_tracking_scope_args;
 
+#[path = "issue_2538_terminal_state_cross_repo.rs"]
+mod issue_2538_terminal_state_cross_repo;
 // Issue #1017: PR-scope must match on the (head,base,same-repo) primary key so
 // the recipe adopts its own unique-by-branch PR (stale --issue/--head-sha), and
 // publish must be collision-tolerant (adopt an existing OPEN PR on create fail).
