@@ -2049,6 +2049,49 @@ fn progress_helper_counts_a_ci_change_as_progress_and_never_stops_on_pending_ci(
     );
 }
 
+/// #2966: a crusty round whose CI signal is `fail@<head>` and unchanged is
+/// not stopped in code. Whether the red CI can be repaired is the
+/// loop-health evaluator's judgement, so the helper exits 0 and writes no
+/// stuck reason. The code stop still applies to an unchanged round with green
+/// CI.
+#[test]
+fn progress_helper_leaves_an_unchanged_red_ci_to_the_evaluator() {
+    for (ci, want, why) in [
+        (
+            format!("fail@{SHA}"),
+            0,
+            "an unchanged red CI goes to the evaluator",
+        ),
+        (
+            format!("pass@{SHA}"),
+            10,
+            "an unchanged round with green CI is still no progress",
+        ),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let st = tmp.path().join("state");
+        private_dir(&st);
+        let s = st.display().to_string();
+        let f = findings(tmp.path(), "f", "concern-a\n");
+        let o = helper(
+            "autodrive_progress.sh",
+            &["record", &s, "crusty", "round-1", SHA, "0", &f, &ci],
+        );
+        assert_eq!(o.status.code(), Some(0), "{why}\n{}", show(&o));
+        let o = helper(
+            "autodrive_progress.sh",
+            &["check", &s, "crusty", "round-2", SHA, &f, &ci],
+        );
+        assert_eq!(o.status.code(), Some(want), "{why}\n{}", show(&o));
+        assert_eq!(
+            st.join("crusty-stuck-reason.txt").exists(),
+            want == 10,
+            "{why}: a stuck reason is written only for a code stop\n{}",
+            show(&o)
+        );
+    }
+}
+
 #[test]
 fn progress_helper_never_matches_an_empty_sha_or_a_clean_row() {
     let tmp = tempfile::tempdir().unwrap();

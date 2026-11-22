@@ -519,7 +519,8 @@ Missing or unreadable evaluator output is never success. See
 ### No-progress stop and usage budget
 
 For a non-clean crusty round, unchanged head, sorted open-item set, and CI
-signal, with CI no longer pending, produces `STUCK`. For the merge-ready
+signal produce `STUCK` when the CI signal is green or absent. A pending or
+failing signal is not stopped in code. For the merge-ready
 loop, a round whose only open item is a required check still running at the
 head ends the loop `WAITING` and goes to finalisation; it is never counted as
 no progress. A pending CI signal at an unchanged head is `CONTINUE`, never
@@ -528,14 +529,15 @@ judged `STUCK` and the PR is handed off. Budget exhaustion is separate,
 checked before starting more work. Budgets limit cost, not convergence.
 A completed crusty objective is exempt; it does not reach these checks.
 
-A red CI is not a stop on its own (#2966). When the evaluator judges a round,
-`fail@<head>` is `CONTINUE` with CI repair named in `recommended_action`, and
-it is `STUCK` only when the evidence names a cause the run cannot fix, with that
-cause and the human step. A crusty round that changes nothing at all (head,
-open items and CI signal) is still a code-decided no-progress stop, because a
-repair always moves the head. `BUDGET_EXHAUSTED` is the operator's own usage
-budget for the whole drive, and the drive can be resumed with a larger one; it
-is not a verdict on CI.
+A red CI is not a stop on its own (#2966). A crusty round whose head, open
+items and `fail@<head>` signal are all unchanged goes to the evaluator, not to
+the code stop: `autodrive_progress.sh` exempts a failing signal as it exempts a
+pending one. The evaluator judges `fail@<head>` as `CONTINUE` with CI repair
+named in `recommended_action`, and as `STUCK` only when the evidence names a
+cause the run cannot fix, with that cause and the human step. The code stop
+still applies to unchanged rounds whose CI signal is green or absent.
+`BUDGET_EXHAUSTED` is the operator's own usage budget for the whole drive, and
+the drive can be resumed with a larger one; it is not a verdict on CI.
 
 ### Budget keys and defaults
 

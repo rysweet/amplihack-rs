@@ -5,7 +5,8 @@
 # There is no iteration cap in this file — not a `max_rounds`, not a backstop integer. `ROUND` below is a LABEL for reports and file names; it is never
 # compared against a limit. It starts after this loop's earlier rounds in the state dir, so a second loop there or a resumed run overwrites nothing.
 # Two stops are decided in code (#1743): a non-clean round that left the PR
-# head, open items and CI signal unchanged (autodrive_progress.sh, STUCK), and the
+# head, open items and a green or absent CI signal unchanged (autodrive_progress.sh,
+# STUCK; a pending or failing signal goes to the evaluator, #2966), and the
 # operator's resumable usage budget (autodrive_budget.sh, BUDGET_EXHAUSTED),
 # a cost ceiling and never the convergence terminator; budget keys arrive as
 # --context autodrive_budget_*=N and never reach a round recipe.
