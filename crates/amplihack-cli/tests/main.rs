@@ -29,6 +29,9 @@ mod isolated_amplihack;
 mod pinned_runner;
 mod support;
 
+#[path = "issue_2922_quiet_child_purge.rs"]
+mod issue_2922_quiet_child_purge;
+
 #[path = "issue_2808_named_checkout.rs"]
 mod issue_2808_named_checkout;
 
