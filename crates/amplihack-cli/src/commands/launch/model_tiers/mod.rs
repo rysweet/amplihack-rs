@@ -177,23 +177,17 @@ fn reasoning_effort(
     let Some(effort) = effort.filter(|_| table::Effort::has_effort_control(&column)) else {
         return (args, EffortOutcome::NotApplicable);
     };
-    let injected = match column.as_str() {
-        "codex" => match codex_effort::inject(&args, effort) {
-            codex_effort::Injection::Added(injected) => Some(injected),
-            codex_effort::Injection::CallerChose => None,
-        },
+    let injection = match column.as_str() {
+        "codex" => codex_effort::inject(&args, effort),
         // `has_effort_control` admits two columns and Codex is the other, so
         // this is the Claude one. Written as the fall-through rather than a
         // second name test, so the two readers of `has_effort_control` cannot
         // disagree about which columns it admits.
-        _ => match claude_effort::inject(&args, effort) {
-            claude_effort::Injection::Added(injected) => Some(injected),
-            claude_effort::Injection::CallerChose => None,
-        },
+        _ => claude_effort::inject(&args, effort),
     };
-    match injected {
-        Some(injected) => (injected, EffortOutcome::Added(effort)),
-        None => (args, EffortOutcome::CallerChose),
+    match injection {
+        argv_scan::Injection::Added(injected) => (injected, EffortOutcome::Added(effort)),
+        argv_scan::Injection::CallerChose => (args, EffortOutcome::CallerChose),
     }
 }
 

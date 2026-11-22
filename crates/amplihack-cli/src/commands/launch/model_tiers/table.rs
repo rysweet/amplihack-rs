@@ -82,7 +82,7 @@ pub(crate) enum Effort {
     Max,
 }
 
-/// Claude Code's own vocabulary, as `claude --help` states it on 2.1.330.
+/// Claude Code's own vocabulary, as `claude --help` states it on 2.1.329.
 /// It has no `minimal`.
 const CLAUDE_EFFORTS: [Effort; 5] = [
     Effort::Low,
@@ -141,8 +141,8 @@ impl Effort {
     /// The effort `raw` names exactly, ignoring ASCII case, or `None`.
     ///
     /// Exact: no trimming, no prefix matching. The value becomes an argv
-    /// token, and a word carrying a newline or a trailing space is a typo
-    /// worth reporting rather than one worth guessing at.
+    /// token, so a word carrying a newline or a trailing space is reported
+    /// as a typo, not corrected.
     pub(crate) fn parse(raw: &str) -> Option<Effort> {
         Effort::ALL
             .into_iter()

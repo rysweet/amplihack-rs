@@ -223,15 +223,35 @@ fn hostile_cell_values_are_reported_and_the_model_still_applies() {
         let (table, notices) = read(&text);
         let entry = table.entry("claude", Tier::Strong).expect("cell");
         assert_eq!(entry.model.as_deref(), Some("claude-x"), "{hostile:?}");
-        // `Effort::parse` trims and ignores case, so "MAX " is the one word
-        // here that is legitimately accepted; everything else is refused.
-        if Effort::parse(hostile).is_some() {
-            assert_eq!(entry.effort, Some(Effort::Max), "{hostile:?}");
-        } else {
-            assert_eq!(entry.effort, None, "{hostile:?}");
-            assert_eq!(bad_efforts(&notices).len(), 1, "{hostile:?}: {notices:?}");
-        }
+        assert_eq!(entry.effort, None, "{hostile:?}");
+        assert_eq!(bad_efforts(&notices).len(), 1, "{hostile:?}: {notices:?}");
     }
+}
+
+/// `Effort::parse` does not trim. A padded Codex word was accepted before
+/// issue #2916 and is now refused, with the padding visible in the notice so
+/// the operator can see what to fix.
+#[test]
+fn a_padded_codex_effort_is_refused_not_trimmed() {
+    let (table, notices) = read("version = 1\n[codex.strong]\nmodel = \"m\"\neffort = \" high\"\n");
+    assert_eq!(
+        bad_efforts(&notices),
+        [("codex", "strong", " high")],
+        "{notices:?}"
+    );
+    let entry = table.entry("codex", Tier::Strong).expect("cell");
+    assert_eq!(entry.model.as_deref(), Some("m"), "the model still applies");
+    assert_eq!(entry.effort, None);
+
+    let rendered = notices
+        .iter()
+        .find(|n| matches!(n, Notice::BadEffort { .. }))
+        .expect("a BadEffort notice")
+        .render();
+    assert!(
+        rendered.contains(" high"),
+        "padding must stay visible: {rendered}"
+    );
 }
 
 #[test]

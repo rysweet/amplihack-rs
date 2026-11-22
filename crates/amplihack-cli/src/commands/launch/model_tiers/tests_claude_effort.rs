@@ -8,7 +8,8 @@
 //!
 //! Pure: it reads only the argv tail, like `codex_effort`.
 
-use super::claude_effort::{FLAG, Injection, inject};
+use super::argv_scan::Injection;
+use super::claude_effort::{FLAG, inject};
 use super::table::Effort;
 
 fn argv(words: &[&str]) -> Vec<String> {

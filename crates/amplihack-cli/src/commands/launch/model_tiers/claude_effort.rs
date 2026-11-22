@@ -1,7 +1,7 @@
 //! Issue #2916: putting the tier's reasoning effort on Claude Code's own
 //! command line.
 //!
-//! Claude Code 2.1.330 takes `--effort <level>`, so a recipe step on the
+//! Claude Code 2.1.329 takes `--effort <level>`, so a recipe step on the
 //! Claude harness can carry the tier's effort the way a Codex step already
 //! carries it through `-c model_reasoning_effort=…`. Before this, a tier's
 //! effort in the Claude column was recorded and never written, and the
@@ -30,20 +30,11 @@
 //!
 //! Pure: it reads only the argv tail, like `codex_effort`.
 
-use super::argv_scan::caller_set_flag;
+use super::argv_scan::{Injection, caller_set_flag};
 use super::table::Effort;
 
 /// Claude Code's own name for the option.
 pub(crate) const FLAG: &str = "--effort";
-
-/// What the injection did.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Injection {
-    /// The command line with the pair prepended.
-    Added(Vec<String>),
-    /// The command line already sets the effort; amplihack adds nothing.
-    CallerChose,
-}
 
 /// Add `--effort <effort>` to `args`.
 ///

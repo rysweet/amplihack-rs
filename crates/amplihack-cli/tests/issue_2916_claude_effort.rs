@@ -189,7 +189,9 @@ fn a_hostile_effort_value_never_reaches_the_command_line() {
     // No token of the refused value reaches the command line: not the word
     // it tried to pass off as an effort, and not the option it carried
     // behind it. The cell replaced the shipped one whole, so the shipped
-    // `xhigh` is gone too.
+    // `xhigh` is gone too. amplihack adds a bare
+    // `--dangerously-skip-permissions` to every Claude launch itself, so the
+    // check looks for the `=` form a smuggled value would have to take.
     assert!(
         !launch
             .argv

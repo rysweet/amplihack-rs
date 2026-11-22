@@ -201,7 +201,9 @@ Those lists are amplihack's allowlists, not ones read from the CLIs: the value
 becomes part of a command-line argument, so only listed words are ever written.
 Matching is exact apart from ASCII case, so `XHIGH` is the same word as
 `xhigh`: there is no trimming and no prefix matching, and a value carrying a
-stray space or newline is reported rather than guessed at.
+stray space or newline is reported rather than guessed at. Before issue #2916
+an effort value was trimmed, so a Codex cell with `effort = " high"` was
+accepted; it is now reported, and the cell's model still applies.
 `minimal` is a Codex word, so it is refused for Claude, and `max` is a Claude
 word, so it is refused for Codex. A column amplihack writes nothing onto accepts
 the union, because no word there can be wrong on a command line. A value from an

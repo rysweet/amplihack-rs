@@ -178,12 +178,14 @@ impl Notice {
                     tier.as_str()
                 )
             }
-            Notice::EffortCallerChose { harness, tier } => format!(
-                "amplihack: model tier `{}` on `{harness}`: leaving the `{}` already on the \
-                 command line alone.",
-                tier.as_str(),
-                effort_flag(harness)
-            ),
+            Notice::EffortCallerChose { harness, tier } => {
+                let (flag, _) = effort_flag(harness);
+                format!(
+                    "amplihack: model tier `{}` on `{harness}`: leaving the `{flag}` already on \
+                     the command line alone.",
+                    tier.as_str()
+                )
+            }
             Notice::NoColumn {
                 harness,
                 column,
@@ -331,28 +333,25 @@ impl Notice {
     }
 }
 
-/// The reasoning-effort argument `harness` is given, spelled as it reaches
-/// that harness: Claude Code's `--effort <level>` or Codex's
-/// `-c model_reasoning_effort=<level>`.
+/// How `harness` is handed a reasoning effort: the flag spelled as it reaches
+/// that harness, and the separator that joins it to the value. Claude Code
+/// takes `--effort <level>`; Codex takes `-c model_reasoning_effort=<level>`.
 ///
 /// Derived from the harness's own column, the same way the injection decides
-/// which of the two to write, so the line cannot name a flag the launch did
-/// not use.
-fn effort_argument(harness: &str, effort: Effort) -> String {
+/// which of the two to write, so no line can name a flag the launch did not
+/// use. The one place either name is written, so the two lines of one launch
+/// cannot disagree about the flag or about how its value attaches.
+fn effort_flag(harness: &str) -> (String, &'static str) {
     match column_for(harness).as_str() {
-        "codex" => format!("-c {}={}", codex_effort::KEY, effort.as_str()),
-        _ => format!("{} {}", claude_effort::FLAG, effort.as_str()),
+        "codex" => (format!("-c {}", codex_effort::KEY), "="),
+        _ => (claude_effort::FLAG.to_string(), " "),
     }
 }
 
-/// Just the flag, for the line that reports a caller's own. Built from the
-/// same two names [`effort_argument`] writes, so the two lines of one launch
-/// cannot name different flags.
-fn effort_flag(harness: &str) -> String {
-    match column_for(harness).as_str() {
-        "codex" => format!("-c {}", codex_effort::KEY),
-        _ => claude_effort::FLAG.to_string(),
-    }
+/// The whole argument, flag and value, as it reaches `harness`.
+fn effort_argument(harness: &str, effort: Effort) -> String {
+    let (flag, separator) = effort_flag(harness);
+    format!("{flag}{separator}{}", effort.as_str())
 }
 
 /// The reasoning efforts `column` accepts, for the line that reports one it

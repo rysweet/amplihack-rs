@@ -13,9 +13,27 @@
 //! recipe runner builds. For those harnesses `--model` is recognised wherever
 //! it appears before `--`, as `model_args` has always detected one.
 //!
+//! It also holds [`Injection`], the outcome both effort injectors report.
+//! The pair each of them writes differs, and so does the caller-set scan each
+//! reads, but the two possible outcomes are the same two, so they are one
+//! type here rather than one apiece.
+//!
 //! Pure: it reads the argv and a compiled-in table, nothing else.
 
 use amplihack_launcher::prompt_delivery::codex_options;
+
+/// What an effort injection did to a command line.
+///
+/// Shared by [`super::codex_effort`] and [`super::claude_effort`], so the
+/// dispatch in [`super`] reads either injector's answer through one match
+/// rather than normalising two identical enums into a common shape.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Injection {
+    /// The command line with the pair prepended.
+    Added(Vec<String>),
+    /// The command line already sets the effort; amplihack adds nothing.
+    CallerChose,
+}
 
 /// One `--model` on a command line, in either spelling.
 #[derive(Debug, Clone, PartialEq, Eq)]
