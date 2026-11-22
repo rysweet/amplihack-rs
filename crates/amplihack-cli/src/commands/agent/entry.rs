@@ -3,9 +3,6 @@
 //! marking it ended, reading whether its owner ended it, and taking it
 //! again for a relaunch (issue #2912).
 //!
-//! Split out of `wrapper.rs`, which now holds only the checks before the
-//! launch and the loop around it.
-//!
 //! Nothing here widens a permission or removes a file: the ended markers
 //! are only read, and every write happens under the registry's own lock,
 //! and only while the entry is still this launch's.

@@ -110,11 +110,12 @@ impl Standing {
     /// and `false`, so a file nobody can make sense of never starts agents
     /// unattended.
     pub(super) fn resolve(flag: Option<bool>, name: &str, home: &Path) -> Self {
-        let on = flag.unwrap_or_else(|| match crate::user_config::agent_standing(home) {
+        use crate::user_config::{AGENT_STANDING, agent_standing};
+        let on = flag.unwrap_or_else(|| match agent_standing(home) {
             Ok(on) => on,
             Err(why) => {
                 eprintln!(
-                    "warning: agent.standing could not be read ({why}); \
+                    "warning: {AGENT_STANDING} could not be read ({why}); \
                      agent {name} is not standing"
                 );
                 false
@@ -130,9 +131,10 @@ impl Standing {
     /// The next launch of a standing session, or `None` to stop.
     ///
     /// `Some((launch_id, entry))` means start Claude Code again under that
-    /// launch id, with the arguments rebuilt from that entry. Every answer
-    /// but a plain owner-ended exit is logged, so an operator always has a
-    /// line saying why a pane went quiet. `stopped` is the wrapper's flag
+    /// launch id, with the arguments rebuilt from that entry. Every
+    /// relaunch, wait and refusal is logged; an owner-ended exit, a
+    /// signalled wrapper and a session that is not standing are not, since
+    /// each of those is a stop someone chose. `stopped` is the wrapper's flag
     /// for SIGHUP and SIGTERM, read again during and after a wait for room.
     pub(super) fn next(
         &self,

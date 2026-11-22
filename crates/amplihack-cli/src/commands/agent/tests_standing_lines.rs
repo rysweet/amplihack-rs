@@ -1,12 +1,5 @@
-//! Issue #2912: what a relaunch runs, and what it writes.
-//!
-//! - `launch::continue_args(&Entry) -> Vec<String>`: the Claude arguments of
-//!   a relaunch, rebuilt from the registry record, `--continue` first, each
-//!   value-taking flag in `--flag=value` form.
-//! - `standing::relaunch_line(now, name, reason, waited: bool)`,
-//!   `standing::refused_line(now, name, reason)` and
-//!   `standing::waiting_line(now, name)`, in the documented form
-//!   (docs/howto/keep-sessions-running.md).
+//! Issue #2912: what a relaunch runs, and the lines it writes in the form
+//! documented in docs/howto/keep-sessions-running.md.
 //!
 //! The decision and its room gate are in `tests_standing.rs`.
 

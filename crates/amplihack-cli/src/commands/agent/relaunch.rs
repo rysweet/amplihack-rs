@@ -11,11 +11,6 @@
 //! A user with no rotator is never delayed: a missing record, one the
 //! reader refuses and one that cannot be parsed all mean "no rotator", and
 //! the session is started again at once.
-//!
-//! This lives beside `limit_resume/` rather than in it: the hook's source
-//! scan owns that directory, and the two answer different questions. The
-//! hook answers the usage-limit menu of a session that is still running;
-//! this covers the case where the process has gone.
 
 use amplihack_utils::file_event::{SWAP_MASK, Waiter, Watch, Woke};
 use amplihack_utils::rotator_status::MAX_WAIT;
@@ -163,7 +158,7 @@ impl DefaultSignals {
         for sig in [libc::SIGHUP, libc::SIGTERM, libc::SIGINT] {
             // SAFETY: `sigaction` with a valid signal number and two owned,
             // correctly sized `struct sigaction` values. `SIG_DFL` is a
-            // valid handler for both signals.
+            // valid handler for each of them.
             unsafe {
                 let mut old: libc::sigaction = std::mem::zeroed();
                 let mut new: libc::sigaction = std::mem::zeroed();

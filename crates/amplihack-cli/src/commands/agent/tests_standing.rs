@@ -1,16 +1,5 @@
 //! Issue #2912: the standing-session decision and its room gate.
 //!
-//! - `standing::after_exit(standing: bool, ok: bool, signalled: bool,
-//!   ended_marker: bool, saw_claude: bool) -> AfterExit`, with
-//!   `AfterExit::{OwnerEnded, GoingAway, Relaunch, NeverStarted}`. Pure.
-//!   Order: not standing or signalled first, then a clean return, then the
-//!   ended marker, then whether Claude ever started. There is no count.
-//! - `SwapRecord::has_room() -> bool`: the rule of `swap_record::judge_at`,
-//!   a login whose session and week are both under 100 percent.
-//! - `relaunch::wait_for_room_until(root, stopped, on_wait) -> Room`,
-//!   `Room::{Now, Waited, Gone}`. A missing, refused or unparseable swap
-//!   record is `Now`: a user with no rotator is never delayed.
-//!
 //! The relaunch argv and the log lines are in `tests_standing_lines.rs`,
 //! and the loop itself, with a stand-in session in its pane, is in
 //! `tests/issue_2912_standing_relaunch.rs`.

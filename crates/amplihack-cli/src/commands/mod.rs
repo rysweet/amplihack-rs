@@ -109,21 +109,6 @@ fn run_supervised(
     }
 }
 
-/// Issue #2912: what `--standing` and `--no-standing` say about this
-/// launch. `None` leaves the decision to the `agent.standing` user key.
-/// Clap already refuses both flags together, so the pair is never
-/// contradictory here; `--no-standing` is read first all the same, so that
-/// a build without that refusal still fails safe.
-fn standing_choice(standing: bool, no_standing: bool) -> Option<bool> {
-    if no_standing {
-        Some(false)
-    } else if standing {
-        Some(true)
-    } else {
-        None
-    }
-}
-
 /// Dispatch a parsed CLI command to the appropriate handler.
 pub fn dispatch(command: Commands) -> Result<()> {
     match command {
@@ -293,7 +278,10 @@ pub fn dispatch(command: Commands) -> Result<()> {
                         subprocess_safe,
                         no_reflection,
                         claude_args: &args_copy,
-                        standing: standing_choice(standing, no_standing),
+                        // Issue #2912: `None` defers to `agent.standing`.
+                        // Clap refuses both flags together; `--no-standing`
+                        // would win if it did not.
+                        standing: (standing || no_standing).then_some(!no_standing),
                     },
                     launch,
                 ),

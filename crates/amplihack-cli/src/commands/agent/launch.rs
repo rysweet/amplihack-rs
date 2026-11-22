@@ -107,22 +107,19 @@ pub fn pane_command(name: &str, e: &Entry, exe: &Path, msg: &str) -> Vec<String>
 /// launch. No message is added, because the conversation carries on rather
 /// than being resumed after a loss.
 ///
-/// Each value-taking flag is parsed by Claude Code in the `--flag=value`
-/// form exactly as in the `--flag value` form (checked against Claude Code
-/// 2.1.330), and the `=` form also stops the variadic `--add-dir` from
-/// taking any argument that follows it.
-///
 /// Rebuilt from the registry record rather than filtered out of the
 /// original argv, so no flag parser is involved and the relaunch can carry
 /// no option the launch did not record. A permission mode wins over
 /// `--dangerously-skip-permissions` (I4), as it does at registration, so
 /// the relaunch never has more privilege than the launch.
 ///
-/// Every value-taking flag is emitted as `--flag=value`, and a recorded
-/// value that begins with `-` is dropped with a debug line rather than
-/// passed on: it could otherwise be read as another flag (V1). The record
-/// is re-read from disk before this runs, so it is validated at the moment
-/// it becomes a command line.
+/// Every value-taking flag is emitted as `--flag=value`, which Claude Code
+/// parses exactly as `--flag value` (checked against 2.1.330) and which
+/// also stops the variadic `--add-dir` from taking the argument after it.
+/// A recorded value that begins with `-` is dropped with a debug line
+/// rather than passed on, because it could be read as another flag (V1).
+/// The record is re-read from disk before this runs, so it is validated at
+/// the moment it becomes a command line.
 pub fn continue_args(e: &Entry) -> Vec<String> {
     let mut argv = vec!["--continue".to_string()];
     if let Some(m) = &e.model {

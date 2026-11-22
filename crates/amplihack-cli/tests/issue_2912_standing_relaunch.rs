@@ -19,6 +19,7 @@
 use crate::issue_1760_fake_proc::Proc;
 use crate::issue_1760_fixture::*;
 use crate::support::exec_stub::write_executable;
+use crate::support::wait::spawn_once;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -125,15 +126,9 @@ struct Running<'a> {
 
 impl<'a> Running<'a> {
     fn spawn(fx: &'a Fx, mut c: Command) -> Self {
-        let child = loop {
-            match c.spawn() {
-                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {}
-                r => break r.expect("spawn amplihack"),
-            }
-        };
         Self {
             fx,
-            child: Some(child),
+            child: Some(spawn_once("amplihack", &mut c)),
         }
     }
     fn alive(&mut self) -> bool {

@@ -534,7 +534,6 @@ standing session. When its Claude Code process exits for any reason other
 than you ending it, the wrapper relaunches it in the same pane with
 `claude --continue`. See
 [Keep a session running after its process exits](../howto/keep-sessions-running.md).
-Off by default.
 
 The value is `true` or `false`, and the default is `false`.
 
