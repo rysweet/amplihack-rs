@@ -1351,46 +1351,57 @@ fn moving_back_off_overflow_ignores_a_recent_swap() {
 /// Issue #2910 changed what this cycle does. The fallback used to take a
 /// login at 95/95 when it was in the pool, which is the decision the 21
 /// November 2026 evidence condemns; now no pass will move onto it, so the
-/// cycle alerts whichever pool it is in. The pool is still what the first
-/// pass ranks over, and that pass is gated by the `allowed` list rather than
-/// the plan-room one, so the second half below swaps either way.
+/// cycle alerts whichever pool it is in. A login under both thresholds in
+/// the `allowed` pool is taken by the first pass, before the fallback, so
+/// the pool restriction is pinned last with the login outside `allowed`:
+/// the fallback then moves onto it only when the plan-room pool holds it.
 #[test]
 fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
+    let live = n("credits");
+    let overflow = vec![OverflowEntry::new(live.clone(), 1)];
+    let plan = [n("plan")];
+    let decide = |reading: Probed, allowed: &[ProfileName], same: &[ProfileName]| {
+        let case = Case::new("credits", spend_limited())
+            .overflow(&["credits"])
+            .cand("plan", reading);
+        super::overflow::decide_restricted(
+            &OverflowInput {
+                settings: &case.s,
+                live_name: Some(&live),
+                live: &case.live,
+                candidates: &case.candidates,
+                refused: &[],
+                overflow: &overflow,
+                blocks: &case.blocks,
+                platform_block: None,
+                unmeasured_plan: &[],
+                swapped_at: None,
+                now: NOW,
+            },
+            Some((allowed, same)),
+        )
+    };
     for same_org in [false, true] {
-        let live = n("credits");
-        let overflow = vec![OverflowEntry::new(live.clone(), 1)];
-        let allowed = vec![n("plan")];
-        let same = if same_org { allowed.clone() } else { vec![] };
-        let decide = |plan: Probed| {
-            let case = Case::new("credits", spend_limited())
-                .overflow(&["credits"])
-                .cand("plan", plan);
-            super::overflow::decide_restricted(
-                &OverflowInput {
-                    settings: &case.s,
-                    live_name: Some(&live),
-                    live: &case.live,
-                    candidates: &case.candidates,
-                    refused: &[],
-                    overflow: &overflow,
-                    blocks: &case.blocks,
-                    platform_block: None,
-                    unmeasured_plan: &[],
-                    swapped_at: None,
-                    now: NOW,
-                },
-                Some((&allowed, &same)),
-            )
-        };
-        let result = decide(measured(95.0, 95.0, FAR, FAR));
+        let same: &[ProfileName] = if same_org { &plan } else { &[] };
+        let result = decide(measured(95.0, 95.0, FAR, FAR), &plan, same);
         assert!(
             !matches!(result.decision, Decision::Swap { .. }),
             "95/95 is no target in any pool: {result:?}"
         );
-        // The same cycle with the plan login under both thresholds. The
-        // first pass ranks the `allowed` pool, not the plan-room one, so the
-        // swap happens whether or not the login is a same-organisation one.
-        let result = decide(measured(50.0, 50.0, FAR, FAR));
+        // Under both thresholds and in `allowed`: the first pass takes it,
+        // whether or not the login is a same-organisation one.
+        let result = decide(measured(50.0, 50.0, FAR, FAR), &plan, same);
         assert_eq!(result.decision, swap("plan", Reason::OverflowOut));
+        // Under both thresholds but outside `allowed`: only the room
+        // fallback can reach it, and only through its own pool.
+        let result = decide(measured(50.0, 50.0, FAR, FAR), &[], same);
+        if same_org {
+            assert_eq!(result.decision, swap("plan", Reason::OverflowOut));
+        } else {
+            assert!(
+                !matches!(result.decision, Decision::Swap { .. }),
+                "outside the room pool: {result:?}"
+            );
+        }
     }
 }

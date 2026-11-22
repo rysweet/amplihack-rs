@@ -75,7 +75,7 @@ pub(in super::super) fn decide(
             let capacity =
                 eligible && picks(decide_restricted(input, Some((&permitted, &[]))).decision);
             // Whether the plan-room fallback, offered only this target,
-            // picks it: room without strict capacity counts here.
+            // picks it. Since #2910 it takes only a login with capacity.
             let room =
                 eligible && picks(decide_restricted(input, Some((&[], &permitted))).decision);
             Candidate {

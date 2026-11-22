@@ -637,14 +637,16 @@ fn a_threshold_swap_that_meets_the_margin_is_not_replaced() {
 }
 
 /// The issue's cycle with the live login further along. The most headroom is
-/// a tie that the name would give to ccapstone; the plan-room rank is not.
+/// a tie that the name gives to ccapstone, and since issue #2910 the
+/// threshold swap that names it stands.
 #[test]
 fn a_threshold_swap_now_names_only_a_login_with_capacity() {
     // Issue #2910 made `plan_usable` the filter inside `decide::best`, so a
-    // threshold swap can no longer name a login without capacity and the
-    // plan-room fallback for one cannot fire. The arm is kept in
-    // `overflow::decide_restricted` as the statement of the rule; what is
-    // pinned here is that its input can no longer occur.
+    // threshold swap can no longer name a login without capacity. The arm
+    // in `overflow::decide_restricted` that handed such a swap to the
+    // plan-room rank could not be taken, and was removed; only an ALERT now
+    // reaches the plan-room pass. What is pinned here is that a threshold
+    // swap's target always has capacity.
     //
     // This case used to assert that the threshold target ccapstone, at 92%
     // of its week and so without capacity, gave way to the plan-room rank

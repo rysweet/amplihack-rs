@@ -6,7 +6,10 @@
 //! which cycles write it: a cycle that looked for a target, whether it
 //! swapped or found none, and not a cycle that stayed.
 
-use super::{CONFIRM_SKIPPED, Reject, blocked, no_room, reject, rejections};
+use super::{
+    CONFIRM_SKIPPED, Reject, WAKE_REARMED, blocked, cause, no_room, reject, rejections,
+    wake_failed, wake_unavailable,
+};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate::decide::{Decision, Measured, Reading, Reason, Windows};
 use crate::commands::profile::rotate::ledger::OverflowBlock;
@@ -284,4 +287,43 @@ fn every_line_is_fixed_text_with_no_fractions() {
     }
     assert!(lines[0].contains("w=98%"), "{:?}", lines[0]);
     assert!(lines[1].contains("s=88%"), "{:?}", lines[1]);
+}
+
+/// Issue #2909: the lines that say the event intake could not be made, or
+/// was lost and rebuilt. The cause is fixed words chosen from the error's
+/// kind and number, never the operating system's message, so the line is
+/// evidence an operator can act on and carries no text a path or a peer
+/// chose. The two inotify limits are named, because they are the likely
+/// causes on a busy host.
+#[test]
+fn a_wake_failure_names_a_fixed_cause_and_never_the_os_message() {
+    use std::io::{Error, ErrorKind};
+    let cases = [
+        (Error::from(ErrorKind::Unsupported), "not supported here"),
+        (
+            Error::from_raw_os_error(libc::ENOSPC),
+            "inotify watch limit reached",
+        ),
+        (
+            Error::from_raw_os_error(libc::EMFILE),
+            "descriptor or inotify instance limit reached",
+        ),
+        (
+            Error::from(ErrorKind::PermissionDenied),
+            "permission denied",
+        ),
+        (Error::other("/home/someone/.claude/x"), "I/O error"),
+    ];
+    for (e, want) in &cases {
+        assert_eq!(cause(e), *want, "{e:?}");
+        assert_eq!(
+            wake_unavailable(e),
+            format!("wake: unavailable ({want}), using --interval")
+        );
+        assert_eq!(
+            wake_failed(e),
+            format!("wake: lost ({want}), using --interval")
+        );
+    }
+    assert_eq!(WAKE_REARMED, "wake: watch rebuilt");
 }

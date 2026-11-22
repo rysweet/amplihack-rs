@@ -6216,8 +6216,12 @@ refused`), is *unknown*, not exhausted: it is not counted or recorded as
 exhausted, does not [have capacity](#plan-pool), blocks a move onto
 [overflow](#overflow-decision), and is probed again on the next cycle. See
 [Failed and exhausted results](#failed-and-exhausted-results).
+Nor is a candidate at or above `--session-at` or `--week-at`, or one with an
+active recorded block: the [target rules](#rotate-target-choice) of issue
+#2910 apply to every swap this table makes.
 The *best* candidate has the
-highest headroom; ties go to the name that sorts first by byte value.
+highest headroom among the candidates the target rules allow; ties go to the
+name that sorts first by byte value.
 Failed probes on some candidates do not stop a swap to another candidate
 whose probe succeeded: with live `work` exhausted, `a` and `b` failed and
 `c` at `s=0%,w=43%`, the cycle swaps to `c`, in `watch` and in the one-shot
@@ -7299,14 +7303,16 @@ Ranking by week keeps the login with the most weekly room, which lasts
 longest. The session window needs no key of its own: every target is already
 below `--session-at`.
 
-The live login is ranked with the targets when it is one itself, which it can
-be when it reached `--week-at` with its session below `--session-at`. A live
-login that is exhausted, whose probe failed, or whose session use is at or
-above `--session-at` is not in the ranking, so the best target is chosen over
-it. The rotator swaps only when the best target ranks strictly ahead of the
-live login; otherwise there is no swap. This stops two logins from swapping
-back and forth: live `ddrumpf` at `s=0%,w=92%` stays put rather than moving
-to `ccapstone` at `s=11%,w=92%`, and `ccapstone` would not move back either.
+The live login is ranked with the targets only when it is one itself. Since
+issue #2910 that does not happen in a cycle: the plan-room swap is considered
+only when the live login has reached `--session-at` or `--week-at`, and a
+login at either threshold is not a target, so the live login is never in the
+ranking and the best target is chosen over it. The rule that the rotator
+swaps only when the best target ranks strictly ahead of the live login is
+kept, as a guard against two logins with the same week swapping back and
+forth, but no cycle reaches it now; issue
+[#2930](https://github.com/rysweet/amplihack-rs/issues/2930) asks whether to
+keep it.
 
 When no plan login is a target, or when the live login ranks first, there is
 no plan-room swap. The cycle then takes the path it takes when no candidate
@@ -7331,22 +7337,31 @@ reading of `s=74%` reads it again before the swap:
 
 `hharkness` is then session-exhausted and is not chosen.
 
-**Example.** With the default `--session-at 85`, this cycle has a live
-login past its session threshold and no candidate that beats it by
-`--margin 5` (the best headroom is 8 against the live login's 13):
+**Example.** With `--session-at 85` (the default) and `--week-at 95`, this
+cycle has a live login past its session threshold and no candidate that
+beats it by `--margin 5` (the best headroom is 8 against the live login's
+13):
 
 ```
 2026-10-30T19:42:56Z cycle live=iivanovich iivanovich:s=87%,w=61% aanderson:s=25%,w=95% bbuck:s=50%,w=97% ccapstone:s=11%,w=92% ddrumpf:s=0%,w=92% eelsworth:s=98%,w=17% ggrant:s=100%,w=100% ryan-mistt-personal:s=0%,w=96%
 2026-10-30T19:42:56Z swap iivanovich->ddrumpf live s=87% w=61% target s=0% w=92% reason=plan-room
 ```
 
-`aanderson`, `bbuck`, `ccapstone`, `ddrumpf` and `ryan-mistt-personal` have
-session use below 85%, so they are the targets. `eelsworth` has the lowest
-week use but is not a target because its session (98%) is at `--session-at`;
-the live `iivanovich` (87%) is out of the ranking for the same reason, and
-`ggrant` has no room. `ccapstone` and `ddrumpf` tie on week at 92%, and
-`ddrumpf` wins on session. A marked credit or API-key profile is never chosen
-here, and is not used while any of these logins has room.
+`ccapstone` and `ddrumpf` are the targets: session use below 85% and week
+use below 95%. `aanderson` (95%), `bbuck` (97%) and `ryan-mistt-personal`
+(96%) have session room but are at or above `--week-at`. `eelsworth` has the
+lowest week use but is not a target because its session (98%) is at
+`--session-at`; the live `iivanovich` (87%) is out of the ranking for the
+same reason, and `ggrant` has no room. `ccapstone` and `ddrumpf` tie on week
+at 92%, and `ddrumpf` wins on session. A marked credit or API-key profile is
+never chosen here, and is not used while any of these logins has room.
+
+At the default `--week-at 90` the same cycle has no target, because every
+login with session room is at 92% of its week or more. It writes a
+`reject:` line for each candidate and `ALERT: no profile has capacity`, and
+waits for the next limit event or recorded reset. Issue
+[#2929](https://github.com/rysweet/amplihack-rs/issues/2929) asks whether
+that default is right.
 
 **Unmeasured plan logins.** A plan login skipped as `session running`,
 `leased`, `hosting`, `parked`, `no account` or `directory refused`, or whose
@@ -7376,17 +7391,22 @@ with the same readings write no second ALERT line, and credits and the API key
 stay unused, because both logins have room.
 
 **Example with weekly room used up.** A plan login whose session is fresh but
-whose week is nearly spent is still a target. With the live `aanderson` at
-`s=95%,w=60%` and `ccapstone` at `s=20%,w=93%`, `ccapstone` is past the default
-`--week-at 90` and so has no capacity, but it has room:
+whose week is at or above `--week-at` is not a target. With the live
+`aanderson` at `s=95%,w=60%` and `ccapstone` at `s=20%,w=93%`, `ccapstone` is
+past the default `--week-at 90`. It has room, so credits and the API key stay
+unused, but the rotator does not move onto it: the cycle writes
+`reject: ccapstone week w=93% at or above --week-at 90` and
+`ALERT: no profile has capacity`, and waits for the next limit event or
+recorded reset. Before issue #2910 this cycle swapped:
 
 ```
 2026-10-31T08:20:05Z swap aanderson->ccapstone live s=95% w=60% target s=20% w=93% reason=plan-room
 ```
 
-`ccapstone` has both windows below 100% and session use below 85%, so it is
-the only target. The live `aanderson`, at 95% of its session, is not in the
-ranking.
+On 21 November 2026 a swap of this kind moved a host onto a login at 98% of
+its week, and its next request met the organisation's spend limit. With
+`--week-at 94` or higher, `ccapstone` is a target again and the cycle makes
+the swap above.
 
 #### Rotate decision order
 
@@ -7400,11 +7420,12 @@ first step that gives a swap ends the decision:
    re-read where one was made, and the projected session use where a
    projection applies. A swap onto a plan
    login with room, or a stay, stands.
-2. When step 1 gives `ALERT no-capacity`, or a threshold swap onto a plan
-   login without capacity: the [plan-room swap](#rotate-plan-room-swap), which
-   ranks the live login with the other targets. When the live login ranks
-   first, or no plan login is a target because every one is at or above
-   `--session-at`, it is `ALERT no-capacity`.
+2. When step 1 gives `ALERT no-capacity`: the
+   [plan-room swap](#rotate-plan-room-swap). Since issue #2910 step 1 never
+   swaps onto a plan login without capacity, so only the ALERT reaches this
+   step. When no plan login is a target because every one is at or above
+   `--session-at` or `--week-at`, or has an active block, it is
+   `ALERT no-capacity`.
 3. Only when no measured plan login, the live one included, has room, and the
    [overflow gate](#earliest-plan-reset) allows it: the first usable marked
    per-token profile in tier order. That is a credit
@@ -7578,11 +7599,11 @@ login, the live one included, has room does it consider overflow:
 |-----------|---------|
 | Live probe failed | As without overflow. A failed live probe never moves work onto credits. |
 | A plan login, the live one included, has room below 100% on both windows | No overflow. The [plan-room swap](#rotate-plan-room-swap) moves to the best-ranked plan-room target, or the cycle stays with `ALERT no-capacity` when the live login ranks first or every login with room is at or above `--session-at` or `--week-at`. Neither credits nor the API key are used while a plan login has room. |
-| A plan candidate's probe in this cycle ended in `timeout` or `error` (`claude` could not be started, written to, read or waited for, or the profile directory was refused just before the spawn) | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity. That login might have capacity, so such a probe never moves work onto credits or the API key. It is probed again on the next cycle. The [plan-room swap](#rotate-plan-room-swap) is not held: it costs nothing. |
+| A plan candidate's probe in this cycle ended in `timeout` or `error` (`claude` could not be started, written to, read or waited for, or the profile directory was refused just before the spawn) | As without overflow: the ALERT. That login might have capacity, so such a probe never moves work onto credits or the API key. It is probed again on the next cycle. The [plan-room swap](#rotate-plan-room-swap) is not held: it costs nothing. |
 | A plan profile is skipped as [`directory refused`](#rotate-candidates) | As without overflow. Its login cannot be checked and might have capacity. The skip, and so the hold, comes back on every cycle until the directory is fixed. |
 | An [unmeasured plan login](#rotate-plan-room-swap), and the only usable overflow profile is the API key | No move onto the key. `ALERT: API key not used` names the logins. |
 | No plan login has room, `earliest plan reset - now > overflow-wait`, and an overflow candidate is eligible | Swap to the first eligible one by tier, `reason=overflow-in`: credit tiers 1 to 9, then the marked API-key profile at tier 10 if its [login check](#api-key-login-check) passes. The `--hold` does not apply. |
-| `earliest plan reset - now <= overflow-wait` | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity, which costs nothing. |
+| `earliest plan reset - now <= overflow-wait` | As without overflow: the ALERT. |
 | Earliest plan reset unknown | As without overflow. With `--overflow-unknown-reset 1`, as for a reset beyond the wait. |
 | No overflow candidate is eligible | As without overflow: `ALERT no-capacity`. |
 
@@ -7631,7 +7652,7 @@ While the live login is an overflow profile, these rules apply in order:
 |-----------|---------|
 | A plan candidate has capacity | Swap to the plan candidate that has capacity with the most headroom, `reason=overflow-out`. `--margin`, `--hold` and `--upgrade-margin` do not apply. |
 | A plan candidate is a [plan-room target](#rotate-plan-room-swap) | Swap to the plan login the [plan-room ranking](#rotate-plan-room-swap) puts first, `reason=overflow-out`. A plan login with room but session use at or above `--session-at`, or week use at or above `--week-at`, is not a target, and the rotator stays on credits. |
-| The live reading is `spend_limit` | [Block](#overflow-spend-limit-block) the live profile, then swap to the next eligible overflow candidate if the wait rule above still holds, else to the plan candidate with the most headroom that is not exhausted and whose probe did not fail, else ALERT `no-capacity`. |
+| The live reading is `spend_limit` | [Block](#overflow-spend-limit-block) the live profile, then swap to the next eligible overflow candidate if the wait rule above still holds, else to the [plan-room target](#rotate-plan-room-swap) with the most headroom, else ALERT `no-capacity`. Before issue #2910 this fallback took any plan candidate that was not exhausted and whose probe did not fail, whatever its session and week use. |
 | Live probe failed | [Failed-probe rules](#rotate-failed-live-probes), with plan candidates as the only targets; otherwise stay on credits. |
 | Otherwise | Stay on credits. |
 
@@ -12335,7 +12356,8 @@ record says room, so a step waiting on the login that was in `~/.claude`
 before the switch ends its wait, as it did before this rule. A `switched`
 record that states `live_room: false` does not.
 
-An example. A threshold swap puts `bbuck` live, with its session at 92%, and
+An example, from a rotator older than issue #2910, which could make this
+swap. A threshold swap puts `bbuck` live, with its session at 92%, and
 three steps are waiting on `aanderson`'s limit. The default `--session-at` is
 85, so `bbuck` has no room to run a step:
 
@@ -12353,12 +12375,12 @@ amplihack.recipe.usage_limit_wait end reason=rotator capacity
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
-A rotator that makes plan-room swaps no longer swaps onto a login like `bbuck`
-(see [Rotate plan-room swap](#rotate-plan-room-swap)), so a run of those
-swaps between exhausted logins, which used to wake every wait at each swap,
-does not happen. The room rule covers the swaps that still can: a threshold
-swap onto a login without capacity, an upgrade swap, a failed-probe swap and
-a swap made by an older rotator.
+Since issue #2910 this rotator makes no swap onto a login like `bbuck` in any
+pass: every target is below `--session-at` and `--week-at` (see
+[Rotate target choice](#rotate-target-choice)), so it has room for a step.
+A run of swaps between exhausted logins, which used to wake every wait at
+each swap, does not happen. The room rule still covers a swap made by an
+older rotator.
 
 **Cost.** The gate fails closed, and a wake it cannot confirm is a wake it does
 not make:
