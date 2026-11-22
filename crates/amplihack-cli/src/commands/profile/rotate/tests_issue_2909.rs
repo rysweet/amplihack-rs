@@ -15,10 +15,9 @@
 //!   `min(interval, 5s)`.
 //! - `wake::event_due(started, now, floor) -> Instant`: a ledger write runs
 //!   a cycle at once, unless the last cycle ended less than `floor` ago.
-//! - `wake::reset_fell_due(&RotateLedger, since, now_unix) -> bool`: a reset
-//!   that passed while the last cycle ran makes the next one run at once.
-//! - `wake::Blocks::fell_due(since, now_unix)`: the same over the blocks the
-//!   last cycle began with, which its own save may have pruned.
+//! - `wake::Blocks::fell_due(since, now_unix) -> bool`: a reset that passed
+//!   while the last cycle ran makes the next one run at once. Asked of the
+//!   blocks that cycle began with as well, because its own save prunes them.
 //! - `wake::note_written(&[u8])` and `wake::is_self_write(&Path) -> bool`:
 //!   identical bytes to the last write are this rotator's own; anything
 //!   else, a missing file included, is not.
@@ -28,7 +27,7 @@
 //!   rotator although the file is byte for byte its own write.
 
 use super::super::daemon::wake::{
-    Blocks, coalesce_floor, deadline, event_due, is_self_write, note_written, reset_fell_due,
+    Blocks, coalesce_floor, deadline, event_due, is_self_write, note_written,
 };
 use super::super::ledger::{
     MAX_BLOCK_SECS, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState, for_older_readers,
@@ -250,7 +249,7 @@ fn a_reset_that_fell_due_during_the_last_cycle_runs_the_next_at_once() {
     // The last cycle began 30 seconds ago; spare's reset passed 10 seconds
     // ago, while it ran, so that cycle still held spare out.
     let l = ledger_with("spare", block("session_limit", NOW - 3600, NOW - 10));
-    assert!(reset_fell_due(&l, NOW - 30, NOW));
+    assert!(Blocks::of(&l).fell_due(NOW - 30, NOW));
     // `deadline` looks only forward, which is why this check exists.
     let now = Instant::now();
     let iv = Duration::from_secs(3600);
@@ -260,12 +259,12 @@ fn a_reset_that_fell_due_during_the_last_cycle_runs_the_next_at_once() {
 #[test]
 fn a_reset_already_past_when_the_last_cycle_began_does_not_cause_another() {
     let l = ledger_with("spare", block("session_limit", NOW - 3600, NOW - 60));
-    assert!(!reset_fell_due(&l, NOW - 30, NOW));
+    assert!(!Blocks::of(&l).fell_due(NOW - 30, NOW));
     // Nor does one still ahead, and a platform block counts like any other.
     let mut l = ledger_with("spare", block("session_limit", NOW - 3600, NOW + 60));
-    assert!(!reset_fell_due(&l, NOW - 30, NOW));
+    assert!(!Blocks::of(&l).fell_due(NOW - 30, NOW));
     l.platform_block = Some(OverflowBlock::key("key_exhausted", NOW - 3600, NOW - 5));
-    assert!(reset_fell_due(&l, NOW - 30, NOW));
+    assert!(Blocks::of(&l).fell_due(NOW - 30, NOW));
 }
 
 /// What a running rotator meets: the cycle that held spare out saves the
@@ -279,7 +278,7 @@ fn a_reset_that_fell_due_during_the_last_cycle_counts_after_its_save_pruned_it()
     prune_blocks(&mut saved, NOW - 2);
     assert!(saved.overflow_blocked.is_empty(), "the save pruned it");
     assert!(
-        !reset_fell_due(&saved, NOW - 30, NOW),
+        !Blocks::of(&saved).fell_due(NOW - 30, NOW),
         "the ledger cannot say"
     );
     assert!(Blocks::of(&began).fell_due(NOW - 30, NOW));

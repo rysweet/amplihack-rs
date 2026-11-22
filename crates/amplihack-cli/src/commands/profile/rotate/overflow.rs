@@ -285,36 +285,18 @@ pub fn decide_restricted(
 
     if !live_over {
         let d = decide(s, &live.reading, &targets, i.swapped_at, i.now);
-        // Everything below replaces only a move off a live login at a
-        // threshold (an ALERT, or a threshold swap onto a plan login that is
-        // itself without capacity), and never for a login whose state is
-        // unknown. A threshold swap onto a plan login with capacity stands.
-        // Issue #2910 made `plan_usable` the filter inside `decide::best`,
-        // so a threshold swap can no longer name a login without capacity
-        // and that arm cannot now be taken. It stays as the statement of
-        // the rule: were `best` ever loosened again, a threshold swap onto
-        // a login without capacity would still fall to the plan-room pass
-        // rather than move work onto a login with no room.
-        let moving_without_capacity = match &d {
-            Decision::Alert => true,
-            Decision::Swap {
-                to,
-                reason: Reason::Threshold,
-            } => !plan
-                .iter()
-                .any(|c| &c.name == to && plan_usable(s, &c.reading)),
-            _ => false,
-        };
-        if !moving_without_capacity || live.reading == Reading::Failed {
+        // Everything below replaces only an ALERT off a live login at a
+        // threshold, and never for a login whose state is unknown. A
+        // threshold swap stands: since issue #2910 `decide::best` filters by
+        // `plan_usable`, so such a swap always names a login with capacity.
+        if d != Decision::Alert || live.reading == Reading::Failed {
             return verdict(d, None, None);
         }
         // The plan login with the most room costs nothing.
         let live_measured = i.live_name.map(|n| Measured::new(n.clone(), &live));
         let choice = plan_room::choose(s, live_measured.as_ref(), &same_targets);
         if let Some(to) = choice {
-            let same = matches!(&d, Decision::Swap { to: t, .. } if *t == to);
-            let d = if same { d } else { swap(to, Reason::PlanRoom) };
-            return verdict(d, None, None);
+            return verdict(swap(to, Reason::PlanRoom), None, None);
         }
         // Per-token profiles only when no measured plan login, live
         // included, has room. The API key also needs every one measured.

@@ -12,6 +12,14 @@
 //! probe path of its own: the reading is taken by the same re-read hook,
 //! out of the same per-cycle budget, and the gate's own re-decision picks
 //! the next candidate.
+//!
+//! Where no read is allowed at all, under the lock (`Reread::Never`) or with
+//! no re-read hook, which only tests build, the swap is not refused for want
+//! of a confirmation: refusing every swap whenever a read cannot be made
+//! would turn a safety check into an outage. Under the lock the target has
+//! normally been confirmed already by the cycle's own gate; a target the
+//! revalidation chose in its place is swapped to on the reading the cycle
+//! had, after the `revalidate:` line.
 
 use super::super::cycle::Ctx;
 use super::super::decide::Probed;
@@ -19,25 +27,6 @@ use super::super::log::msg;
 use super::super::overflow::plan_usable;
 use crate::commands::profile::name::ProfileName;
 use std::time::{Duration, Instant};
-
-/// Whether the chosen target must be read once more before the swap
-/// (issue #2910, rule 3).
-///
-/// `first_visit` is false once this cycle has already confirmed that name,
-/// so the confirmation happens once per cycle and the gate cannot loop on
-/// it. `can_read` is false where no read is allowed at all: under the lock
-/// (`Reread::Never`), or with no re-read hook, which only tests build; the
-/// watch and the one-shot command always install one. There the swap is
-/// not refused for want of a confirmation, because refusing every swap
-/// whenever a read cannot be made would turn a safety check into an
-/// outage. Under the lock the target has normally been confirmed already
-/// by the cycle's own gate; a target the revalidation chose in its place
-/// is swapped to on the reading the cycle had, after the `revalidate:`
-/// line. A confirmation skipped because the budget is spent is logged
-/// ([`msg::CONFIRM_SKIPPED`]) by [`read`].
-pub fn must_confirm(first_visit: bool, can_read: bool) -> bool {
-    first_visit && can_read
-}
 
 /// The confirming read of `to` before a swap (issue #2910): one reading,
 /// taken now, out of the same per-cycle budget as the freshness gate's

@@ -32,7 +32,6 @@ pub(super) mod live;
 /// Issue #2910: the fresh reading taken of a chosen target before the swap.
 #[path = "fresh_confirm.rs"]
 mod confirm;
-pub use confirm::must_confirm;
 
 /// Issue #2910, rule 3, through the gate itself.
 #[cfg(test)]
@@ -203,8 +202,6 @@ pub(super) fn settle(
     // so the log does not read as if the re-read had been accepted.
     let mut accepted: Vec<ProfileName> = Vec::new();
     let mut reads = 0;
-    // Issue #2910: names already confirmed by a reading taken in this pass.
-    let mut confirmed: Vec<ProfileName> = Vec::new();
     let can_read = mode == Reread::Allowed && ctx.reread.is_some();
     let started = Instant::now();
     // Each name is handled at most twice: read (or made unknown), then made
@@ -227,14 +224,15 @@ pub(super) fn settle(
             // reading taken for this swap. A reading this cycle took
             // directly is already that confirmation, so only a stored one
             // (passive, or carried from an earlier cycle) is read again.
-            // Issue #1870 fixed that a fresh target is not re-read, and
-            // #2029 wants fewer probes, not two per swap; the readings that
-            // went stale under the rotator are the ones #2910 names.
+            // The reading that replaces it is direct, so no target is
+            // confirmed twice. Issue #1870 fixed that a fresh target is not
+            // re-read, and #2029 wants fewer probes, not two per swap; the
+            // readings that went stale under the rotator are the ones #2910
+            // names. Where no read is allowed, see `fresh_confirm.rs`.
             let stored = probes[i].1.passive || probes[i].1.carried;
-            if !must_confirm(stored && !confirmed.contains(&to), can_read) {
+            if !(can_read && stored) {
                 break;
             }
-            confirmed.push(to.clone());
             let new = confirm::read(
                 ctx,
                 &to,

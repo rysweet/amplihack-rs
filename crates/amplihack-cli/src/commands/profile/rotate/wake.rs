@@ -44,7 +44,7 @@ use std::time::{Duration, Instant};
 /// The blocks a cycle began with, and the resets that passed since.
 #[path = "wake_blocks.rs"]
 mod blocks;
-pub use blocks::{Blocks, reset_fell_due};
+pub use blocks::Blocks;
 
 /// The longest a burst of ledger writes may make the rotator run cycles:
 /// one per this many seconds, or per `--interval` when that is shorter.
@@ -165,7 +165,7 @@ pub struct Waker {
     /// intake is doing its work.
     last: Option<Reason>,
     /// When the cycle before this wait began, in unix seconds, for
-    /// [`Blocks::fell_due`] and [`reset_fell_due`].
+    /// [`Blocks::fell_due`].
     cycle_from: i64,
     /// The blocks when the cycle before this wait began, for [`Blocks`].
     seen: Blocks,
@@ -214,15 +214,16 @@ impl Waker {
             Reason::Interval
         };
         let floor = coalesce_floor(interval);
+        let blocks = Blocks::of(&ledger);
         // A block recorded while the last cycle ran, and kept by its save.
-        if self.seen.differ_at(&Blocks::of(&ledger), now_unix) {
+        if self.seen.differ_at(&blocks, now_unix) {
             why = Reason::Ledger;
             until = until.min(event_due(start, start, floor));
         }
         // A reset that passed while the last cycle ran. Asked of the blocks
         // that cycle began with too, because its own save pruned the block.
         if self.seen.fell_due(self.cycle_from, now_unix)
-            || reset_fell_due(&ledger, self.cycle_from, now_unix)
+            || blocks.fell_due(self.cycle_from, now_unix)
         {
             (until, why) = (start, Reason::Reset);
         }

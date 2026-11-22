@@ -8,14 +8,9 @@
 //! - `Probed::no_room()`: a reading that fails `plan_usable` and carries no
 //!   spend limit, substituted when a target's fresh reading shows no room,
 //!   so the existing re-decision picks the next candidate.
-//! - `fresh::must_confirm(first_visit: bool, can_read: bool) -> bool`: the
-//!   chosen target is re-read once per cycle, unless no read is possible.
-//!   The caller passes `first_visit` false for a reading this cycle took
-//!   directly, which is already the confirmation rule 3 asks for.
 //! - `Reading::headroom()` order is kept for ranking among logins with room.
 
 use super::super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, decide};
-use super::super::fresh::must_confirm;
 use super::super::ledger::OverflowBlock;
 use super::super::overflow::{OverflowInput, decide_overflow, plan_usable};
 use super::super::settings::Settings;
@@ -157,17 +152,6 @@ fn a_no_room_probe_is_never_usable_and_leaves_no_trace_of_a_spend_limit() {
     assert!(!plan_usable(&settings(), &p.reading));
     assert!(!p.spend_limit);
     assert_eq!(p.windows, Windows::default());
-}
-
-#[test]
-fn the_chosen_target_is_confirmed_once_per_cycle_and_only_when_a_read_is_possible() {
-    assert!(must_confirm(true, true), "first visit, can read");
-    assert!(!must_confirm(false, true), "already confirmed this cycle");
-    assert!(
-        !must_confirm(true, false),
-        "no read possible: the swap is not refused for it"
-    );
-    assert!(!must_confirm(false, false));
 }
 
 /// A probe of a plan login reading `session`% and `week`%.

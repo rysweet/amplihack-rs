@@ -89,9 +89,9 @@ pub fn has_room_under(r: &Reading, session_at: u8) -> bool {
 /// The plan login to move to for room, if any: one pass over the live login
 /// and the plan logins, taking those `overflow::plan_usable` accepts
 /// (session below `--session-at` and week below `--week-at`, both strict,
-/// issue #2910). Ranked by week, then session, then name. `None` when nothing qualifies, or when the live login ranks first,
-/// so the rotator does not swap back and forth between two logins with the
-/// same week.
+/// issue #2910). Ranked by week, then session, then name. `None` when
+/// nothing qualifies, or when the live login ranks first, so the rotator
+/// does not swap back and forth between two logins with the same week.
 ///
 /// Issue #2857 removed the second pass, which took any login with room when
 /// no login was under the threshold. That pass is what moved steps onto
