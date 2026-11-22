@@ -802,6 +802,7 @@ fn prereqs_check_the_follow_up_tools_and_hold_no_task_id_rule() {
         "autodrive_light_eligibility.sh",
         "autodrive_finding_rules.sh",
         "autodrive_followups.sh",
+        "autodrive_followups_file.sh",
         "autodrive_followups_check.sh",
         "workflow_issue_tracking.sh",
         "autodrive_state.sh",

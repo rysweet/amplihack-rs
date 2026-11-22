@@ -190,6 +190,32 @@ check U2-a "main checkout resolves to the canonical common dir" eq "$cgd_main" "
 check U2-b "linked worktree resolves to the same path" eq "$cgd_wt" "$want"
 check U2-c "a non-repository returns non-zero" not eq "$cgd_bad_rc" 0
 
+echo "== Unit: GIT_DIR for another repository does not redirect the sweep (#2335 R5) =="
+OTHER="$SCRATCH/unit-other"
+git init -q "$OTHER"
+other_exclude="$OTHER/.git/info/exclude"
+mkdir -p "$(dirname "$other_exclude")"
+printf '# other\n' >"$other_exclude"
+other_before="$(cat "$other_exclude")"
+want_other="$(cd "$OTHER/.git" && pwd -P)"
+# The variables are set for the one call only; bash exports a function's
+# prefix assignments to the commands it runs.
+# shellcheck source=/dev/null
+cgd_env="$( . "$SWEEP" 2>/dev/null
+    GIT_DIR="$OTHER/.git" GIT_WORK_TREE="$OTHER" GIT_COMMON_DIR="$OTHER/.git" \
+        common_git_dir "$R" 2>/dev/null || true)"
+check U2-d "common_git_dir ignores GIT_DIR, GIT_WORK_TREE and GIT_COMMON_DIR" eq "$cgd_env" "$want"
+check U2-e "common_git_dir does not resolve to the other repository" not eq "$cgd_env" "$want_other"
+r5_rc=0
+# shellcheck source=/dev/null
+( . "$SWEEP"; GIT_DIR="$OTHER/.git" GIT_WORK_TREE="$OTHER" \
+    exclude_worktrees_dir "$R" ) 2>"$SCRATCH/unit-r5.err" 9>&- || r5_rc=$?
+check U2-f "exclude_worktrees_dir returns 0 with GIT_DIR exported" eq "$r5_rc" 0
+check U2-g "the other repository's info/exclude is unchanged" eq "$(cat "$other_exclude")" "$other_before"
+check U2-h "the repository's own exclude gains /worktrees/" grep -qxF '/worktrees/' "$want/info/exclude"
+check U2-i "the repository's own exclude gains the runtime patterns" \
+    grep -qxF '/.claude/runtime/' "$want/info/exclude"
+
 echo "== Unit: archive_branch rejects malformed object names (S3) =="
 wt_sha="$(ref_sha "$R" refs/heads/feat/a)"
 for bad in "abc" "$(printf '%s' "$wt_sha" | tr 'a-f' 'A-F')" "${wt_sha}0" "-d" ""; do

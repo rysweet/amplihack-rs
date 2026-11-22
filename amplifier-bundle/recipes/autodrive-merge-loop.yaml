@@ -38,6 +38,9 @@ context:
   autodrive_authorization: ""
   autodrive_finalization: ""
   build_result: ""
+  # #1888: the merge method this run was given (merge, squash or rebase), or
+  # empty to leave the choice to the repository's allowed methods.
+  merge_method: ""
 steps:
   - id: "step-01-merge-loop-preflight"
     type: "agent"
@@ -150,6 +153,7 @@ steps:
       no_merge: "{{no_merge}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
       build_result: "{{build_result}}"
+      merge_method: "{{merge_method}}"
     output: "autodrive_finalization"
   # Issue #2539: the runner drops a failed sub-recipe's output and status, so
   # recovery starts with --already-failed; a retry runs the same finalization.
@@ -173,6 +177,7 @@ steps:
         -c "autodrive_state_dir=$(g state_dir)" -c "merge_loop_result=${RECIPE_VAR_merge_loop_result:-}" \
         -c "no_merge=${RECIPE_VAR_no_merge:-true}" -c "autodrive_dry_run=${RECIPE_VAR_autodrive_dry_run:-false}" \
         -c "build_result=${RECIPE_VAR_build_result:-}" \
+        -c "merge_method=${RECIPE_VAR_merge_method:-}" \
         -c "autodrive_parent_run_id=$(printf '%s\n' "${RECIPE_VAR_autodrive_authorization:-}" | jq -R -r 'fromjson? | select(type == "object") | .run_id // empty | strings' 2>/dev/null | tail -n 1)"
       STEP_RECOVERY_BODY
       [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || { echo "ERROR: step-03-finalize failed and this run has no step_recovery_dir" >&2; exit 1; }
@@ -258,6 +263,7 @@ steps:
       no_merge: "{{no_merge}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
       build_result: "{{build_result}}"
+      merge_method: "{{merge_method}}"
     output: "autodrive_finalization"
   - id: "step-03f-sync-handoff"
     condition: "(finalize_merge.result == 'base-behind' and base_sync.synced != 'true') or sync_loop_outcome.outcome == 'handoff' or (sync_loop_outcome.finalise == 'true' and finalize_merge.result == 'base-behind')"

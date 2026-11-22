@@ -42,6 +42,8 @@ mod issue_2556_autodrive_evidence;
 #[path = "issue_2575_agentic_merge_ready.rs"]
 mod issue_2575_agentic_merge_ready;
 mod issue_2575_finalize_recovery_runner;
+// #1888: the merge method, through `amplihack recipe run` and the real runner.
+mod issue_1888_merge_method_recipe_run;
 #[path = "issue_2582_context_off_argv.rs"]
 mod issue_2582_context_off_argv;
 #[path = "issue_2582_degraded_runner_no_set.rs"]
@@ -540,6 +542,9 @@ mod issue_1619_step_tier_diagnostics;
 mod issue_1619_effort_ceiling;
 #[path = "issue_1619_operator_default_model.rs"]
 mod issue_1619_operator_default_model;
+// Issue #2916: a tier's reasoning effort reaches Claude Code as `--effort`.
+#[path = "issue_2916_claude_effort.rs"]
+mod issue_2916_claude_effort;
 
 // Issue #1619: a step whose shell body was extracted into
 // amplifier-bundle/tools/ for the brick budget still has to be readable by
@@ -574,3 +579,9 @@ mod issue_2886_build_output_cleanup;
 // `autodrive-*` sub-recipe's.
 #[path = "issue_2769_autodrive_outcome_scope.rs"]
 mod issue_2769_autodrive_outcome_scope;
+
+// Issue #2885: a macOS profile signed in through the login Keychain has no
+// login file; the guard asks the Keychain (a fake `security`, never the real
+// one) instead of refusing it.
+#[path = "profile_issue_2885.rs"]
+mod profile_issue_2885;
