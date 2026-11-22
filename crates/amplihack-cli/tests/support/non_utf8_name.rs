@@ -18,6 +18,8 @@
 //!
 //! This file uses only `std`.
 
+#![cfg(unix)]
+
 use std::ffi::OsString;
 use std::os::unix::ffi::OsStringExt;
 

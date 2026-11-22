@@ -6,15 +6,12 @@ pub mod events;
 pub mod exec_stub;
 /// Issue #2931 — the end of file on a pipe that a process group holds, as
 /// the event "the group is gone".
-#[cfg(unix)]
 pub mod exit_witness;
 pub mod fake_proc;
 /// Issue #2582 — hold a process tree live on a FIFO while a test walks it.
 pub mod fifo_release;
 pub mod git_fixture;
-#[cfg(unix)]
 pub mod ls_mode;
-#[cfg(unix)]
 pub mod non_utf8_name;
 pub mod proc_root_scan;
 pub mod proc_tree;

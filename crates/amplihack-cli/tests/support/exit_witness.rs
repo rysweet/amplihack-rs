@@ -22,6 +22,8 @@
 //! test's own, and its name is fixed: making a second witness in one folder
 //! fails on purpose. This file uses only `std` and `libc`.
 
+#![cfg(unix)]
+
 use std::ffi::CString;
 use std::fs::File;
 use std::io::{ErrorKind, Read};
