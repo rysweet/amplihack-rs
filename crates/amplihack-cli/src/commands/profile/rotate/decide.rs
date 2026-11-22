@@ -132,11 +132,15 @@ pub struct Probed {
     /// for it. Read only by the log (`log::Shown`); always with `unknown`.
     pub still_running: bool,
     /// Issue #1797: when a passive reading was taken, if before the read
-    /// (`UsageReport::observed_at`), or when the #1870 re-read
-    /// finished (`fresh::fresh_probe`); `None` for every other probe.
+    /// (`UsageReport::observed_at`), when the #1870 re-read finished
+    /// (`fresh::fresh_probe`), or, issue #2909, when an earlier cycle took a
+    /// stored reading (`cycle::event_read::Stored::usable`); `None` for every
+    /// other probe.
     pub observed_at: Option<i64>,
     /// Issue #1870: the result of a read started in an earlier cycle, so it
-    /// has no reading time (`fresh::read_at`).
+    /// has no reading time (`fresh::read_at`). Issue #2909: also a reading an
+    /// earlier cycle took, which an event cycle decides on in place of a read
+    /// (`cycle::event_read`); the freshness gate reads it again before a swap.
     pub carried: bool,
     /// Issue #1970: the figure Claude's status line stored (a passive
     /// reading, `usage_passive`), not one read by this cycle. Set from the

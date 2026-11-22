@@ -42,16 +42,21 @@ fn now() -> i64 {
 
 /// Starts a rotator that waits up to an hour between ticks.
 fn start_long(f: &Fixture) -> (Reaper, i32) {
+    start_every(f, "3600")
+}
+
+/// Starts a rotator that waits up to `interval` seconds between ticks.
+fn start_every(f: &Fixture, interval: &str) -> (Reaper, i32) {
     let reaper = Reaper(f.rotate_dir().join("rotate.pid"), FakeProc::new());
     f.with_proc(&reaper.1);
     let out = output_within(
-        "`profile rotate start --interval 3600`",
+        "`profile rotate start --interval <n>`",
         &mut f.cmd(&[
             "profile",
             "rotate",
             "start",
             "--interval",
-            "3600",
+            interval,
             "--hold",
             "0",
         ]),
@@ -284,12 +289,6 @@ fn a_ledger_write_that_changes_no_block_starts_no_cycle() {
     let (at, until) = (now() - 60, now() + 3 * 3600);
     record_block(&f, "spare", "org_monthly_cap", at, until);
     let (_r, pid) = start_long(&f);
-    let measured = |f: &Fixture| {
-        f.log()
-            .lines()
-            .filter(|l| l.contains(" cycle live="))
-            .count()
-    };
     wait_until("the first cycle", || measured(&f) >= 1);
     // The first cycle's own save, so the rewrites below meet a rotator that
     // has finished its cycle and is waiting, or about to.
@@ -322,6 +321,114 @@ fn a_ledger_write_that_changes_no_block_starts_no_cycle() {
     assert!(log.contains(" swap work->extra live "), "{log}");
     assert!(!log.contains("wake: interval"), "no interval tick: {log}");
     println!("[#2909 same] {}", log.replace('\n', "\n[#2909 same] "));
+    for l in log.lines() {
+        assert_log_grammar(l, true);
+    }
+}
+
+/// The cycles that measured, by their `cycle live=` lines.
+fn measured(f: &Fixture) -> usize {
+    f.log()
+        .lines()
+        .filter(|l| l.contains(" cycle live="))
+        .count()
+}
+
+/// The `/usage` reads made so far of work, spare and extra.
+fn reads(f: &Fixture) -> [usize; 3] {
+    ["work", "spare", "extra"].map(|p| f.usage_probes(p))
+}
+
+/// Every login reports when its windows reset, which a kept reading needs
+/// before it can stand for its login (`cycle::event_read`).
+fn readings_with_resets(f: &Fixture) {
+    f.usage_resetting("work", 10, 10, 3);
+    f.usage_resetting("spare", 10, 20, 3);
+    f.usage_resetting("extra", 50, 50, 3);
+}
+
+/// Issue #2909, "Wanted" item 3: fewer probes. A cycle woken by a limit
+/// record reads the live login, takes the other logins' figures from the
+/// readings the first cycle kept, and reads the target it chose once before
+/// the swap. extra, which it did not choose, is not read again.
+#[test]
+fn an_event_cycle_reads_the_live_login_and_the_chosen_target_only() {
+    let f = Fixture::new();
+    readings_with_resets(&f);
+    let (_r, pid) = start_long(&f);
+    wait_until("the first cycle's save", || {
+        f.ledger().is_some_and(|l| l.get("last_cycle").is_some())
+    });
+    let before = reads(&f);
+    assert!(
+        before.iter().all(|n| *n >= 1),
+        "the first cycle reads every login: {before:?}\n{}",
+        f.log()
+    );
+    assert!(!f.log().contains(" swap "), "work has room: {}", f.log());
+    // The login runs out and a step records the limit.
+    f.usage_resetting("work", 100, 40, 3);
+    record_block(&f, "work", "session_limit", now(), now() + 3 * 3600);
+    wait_until("a swap off work caused by the record", || {
+        f.log()
+            .lines()
+            .any(|l| l.contains(" swap ") && l.contains("work->"))
+    });
+    let (out, refused) = f.stop_until_gone(pid);
+    f.assert_stopped(&out, refused, pid);
+    let after = reads(&f);
+    let log = f.log();
+    assert!(log.contains(" swap work->spare live "), "{log}");
+    assert_eq!(after[0], before[0] + 1, "work, live, is read once:\n{log}");
+    assert_eq!(
+        after[1],
+        before[1] + 1,
+        "spare, the target, is read once before the swap:\n{log}"
+    );
+    assert_eq!(after[2], before[2], "extra is not read again:\n{log}");
+    // The record woke the rotator, the cycle said what it read, the target
+    // was read, and only then did the swap happen.
+    let at = |needle: &str| first(&log, needle).unwrap_or_else(|| panic!("{needle}:\n{log}"));
+    let woke = at("wake: ledger changed");
+    let narrowed = at("wake: read 1 of 3 logins, the others from their last reading");
+    let confirmed = at("reread: spare reading stale");
+    let swap = at(" swap work->spare ");
+    assert!(
+        woke < narrowed && narrowed < confirmed && confirmed < swap,
+        "{log}"
+    );
+    assert_eq!(measured(&f), 2, "the first cycle and the record's:\n{log}");
+    println!("[#2909 reads] {}", log.replace('\n', "\n[#2909 reads] "));
+    for l in log.lines() {
+        assert_log_grammar(l, true);
+    }
+}
+
+/// Issue #2909, item 3, the other side: a cycle woken by `--interval` reads
+/// every login, as before, and writes no `wake: read` line. With no record
+/// at all, every cycle after the first is an interval cycle.
+#[test]
+fn an_interval_cycle_reads_every_login() {
+    let f = Fixture::new();
+    readings_with_resets(&f);
+    let (_r, pid) = start_every(&f, "3");
+    wait_until("three cycles", || measured(&f) >= 3);
+    let (out, refused) = f.stop_until_gone(pid);
+    f.assert_stopped(&out, refused, pid);
+    let log = f.log();
+    assert!(log.contains("wake: interval"), "{log}");
+    assert!(
+        !log.contains("wake: read "),
+        "an interval cycle takes no kept reading:\n{log}"
+    );
+    // A read still running when a cycle stops waiting is not started again
+    // by the next, so three cycles start at least two reads of each login.
+    let got = reads(&f);
+    assert!(got.iter().all(|n| *n >= 2), "{got:?}\n{log}");
+    println!(
+        "[#2909 interval] {}",
+        log.replace('\n', "\n[#2909 interval] ")
+    );
     for l in log.lines() {
         assert_log_grammar(l, true);
     }

@@ -72,6 +72,12 @@ pub struct Ctx {
     pub(in crate::commands::profile::rotate) live_series: live::Series,
     /// Issue #2211: this cycle's projected or substituted live figures.
     pub(in crate::commands::profile::rotate) live_outlook: Option<live::Outlook>,
+    /// Issue #2909: the next cycle follows a limit record or a recorded
+    /// reset, so it reads the live login and takes the other logins' figures
+    /// from `stored` where it can (`event_read`). Only the watch loop sets it.
+    pub(in crate::commands::profile::rotate) event: bool,
+    /// Issue #2909: the last reading this process took of each login.
+    pub(in crate::commands::profile::rotate) stored: super::event_read::Stored,
     /// The clock of the decision; tests set a synthetic one.
     pub(in crate::commands::profile::rotate) now: fn() -> i64,
 }
@@ -106,6 +112,8 @@ impl Ctx {
             keychain_notes: Vec::new(),
             live_series: live::Series::default(),
             live_outlook: None,
+            event: false,
+            stored: super::event_read::Stored::default(),
             now: crate::commands::profile::auto_switch::kit::now,
         }
     }

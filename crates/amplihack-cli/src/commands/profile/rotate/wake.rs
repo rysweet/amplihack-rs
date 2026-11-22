@@ -39,11 +39,13 @@
 //! itself costs one extra cycle, once: the cycle after it begins with that
 //! block, and the rotator does not record it again while it is in force.
 //!
-//! What this does not change. A cycle woken here measures every login, as
-//! an interval cycle does. Reading only the live login after an event and
-//! only the chosen target before a swap (#2909, "Wanted" item 3) is not in
-//! this module or in this change; it is #3063, and its target read depends on
-//! the target rule of #2910.
+//! What a woken cycle reads. [`Waker::wait`] returns why it stopped
+//! waiting, and the cycle after a limit event or a reset reads the live
+//! login and takes the other logins' figures from their last reading
+//! (#2909, "Wanted" item 3; `cycle::event_read` says when a reading can
+//! stand). The freshness gate reads the chosen target before a swap, as in
+//! every cycle. The cycle after an interval wake reads every login, so a
+//! quiet rotator still reads each login once per `--interval`.
 //!
 //! Nothing in this module returns an error to the loop. An intake that
 //! cannot be built or that fails later logs one fixed line and leaves the
@@ -166,8 +168,9 @@ impl Waker {
 
     /// Waits until the next cycle is due: a change in the recorded blocks,
     /// the earliest recorded reset, a stop signal, or `--interval`. Returns
-    /// having changed nothing.
-    pub fn wait(&mut self, rs: &RotateState, interval: u64, stop: &AtomicBool) {
+    /// why the wait ended, having changed nothing; a wait a stop signal ended
+    /// returns the reason it would have logged.
+    pub fn wait(&mut self, rs: &RotateState, interval: u64, stop: &AtomicBool) -> Reason {
         let interval = Duration::from_secs(interval);
         let ledger = current(rs);
         // One clock for both, so the comparison below is exact.
@@ -233,6 +236,7 @@ impl Waker {
         self.said_why(rs, why, stop);
         self.cycle_from = now();
         self.seen = Blocks::of(&current(rs));
+        why
     }
 
     /// [`moved`] for the ledger as it is now, against the blocks the last

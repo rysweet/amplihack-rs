@@ -335,7 +335,7 @@ pub fn watch(
             log_line(&rs, &line);
         }
         super::sessions_daily::tick(&rs, &archive_home, now(), &stop);
-        waker.wait(&rs, s.interval, &stop);
+        ctx.event = waker.wait(&rs, s.interval, &stop).event();
     }
     // SR-9: `stop` is `PROBE_CANCEL`, already set here. A refresh counts
     // itself before it reads that flag and backs out if it is set, so once

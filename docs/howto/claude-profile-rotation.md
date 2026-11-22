@@ -1096,8 +1096,11 @@ behind.
 Cycles do not overlap: the next one starts after the previous one ends,
 when a new limit is recorded in the ledger, a recorded reset falls due or
 `--interval` seconds have passed, whichever comes first. A ledger write that
-leaves the recorded limits as they were does not start one. Every cycle still
-reads every login; see [Rotate wake](../reference/profile-command.md#rotate-wake).
+leaves the recorded limits as they were does not start one. A cycle after a
+limit record or a reset reads the live login, takes the other logins' figures
+from their last reading while it can still stand, and reads the login it
+chooses before it swaps; a cycle after `--interval` reads every login. See
+[Rotate wake](../reference/profile-command.md#rotate-wake).
 
 Each cycle stores the readings it took, and later cycles use a stored
 reading while it is younger than `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`

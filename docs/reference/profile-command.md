@@ -1342,30 +1342,57 @@ text:
 A paused rotator still wakes, takes the `paused` branch and logs through the
 same `idle` latch as before, so repeated wakes do not fill the log.
 
-A cycle woken by an event costs what a cycle woken by the interval costs:
-it measures every login, as every cycle does. This change alters when a
-cycle runs, not which logins it reads, so a quiet rotator still reads every
-login once per `--interval`, and each login can add a full read when a limit
-on it is recorded and another when its reset passes. Reading only the live
-login after an event and only the chosen target before a swap, which issue
-[#2909](https://github.com/rysweet/amplihack-rs/issues/2909) also asks for,
-is not done here. It is
-[#3063](https://github.com/rysweet/amplihack-rs/issues/3063); the target
-read depends on the target rules of
-[#2910](https://github.com/rysweet/amplihack-rs/issues/2910), and the cost
-of each read is [#2029](https://github.com/rysweet/amplihack-rs/issues/2029).
+A cycle that follows a limit event or a reset reads less than an interval
+cycle. It reads the live login, and takes each other login's figures from the
+last reading this rotator took of it, while that reading can still stand for
+the login:
 
-The step and hook that record a limit of every kind are not part of this
-change either. Today the writers of a block are the rotator itself, the
-API-key block and a step that meets a spend limit
+- it was taken no more than `--interval` seconds ago, so the cycle never
+  decides on figures older than an interval cycle would have used; and
+- every window it reports has a known reset that is still to come, so a
+  login whose window has reset since, which is how a login comes back, is
+  read again.
+
+A login with no such reading is read, as in every cycle. A login skipped as
+`no account` is read in a cycle only for the token refresh the read can make,
+since its reading never enters a decision, so it is left to the next interval
+cycle. When the cycle took any figures from a kept reading, it writes
+`wake: read <r> of <t> logins, the others from their last reading` after its
+`cycle` line. `<t>` counts the live login, when it is probed, and every
+candidate; `<r>` counts the ones it read.
+
+This is safe because a login's use within one window only rises until that
+window resets. While every window a kept reading reports is still open, the
+reading never shows less use than the login has now. A login it shows full is
+still full, and the cycle decides on it as it stands. A login it shows with
+room may have less room now, so the cycle never swaps to it on that figure: a
+kept reading has no reading time in the cycle that takes it, and the
+[freshness gate](#rotate-reading-freshness-and-swap-back-damping) reads the
+chosen target again before the swap, logged as
+`reread: <name> reading stale ...; fresh ...`, and decides again on what that
+read finds. A target that has filled up is replaced by the next, read the same
+way, within the gate's limits of three re-reads and one probe deadline a
+cycle. The check under the lock before a swap takes no reading, so a target it
+chooses again, because a login changed while the cycle measured, is never one
+that stands on a kept reading.
+
+Each login is therefore read for its figures at most once per `--interval`,
+however many events arrive, as well as once when a window it reported resets
+and once before it becomes the target. The live login is read in every cycle.
+A cycle after an interval wake reads every login, so a quiet rotator still
+reads each login once per `--interval`. The kept readings are held in the
+rotator's memory only: a rotator that starts reads every login in its first
+cycle, and the one-shot `rotate` and `--dry-run` read every login.
+
+The rotator wakes on a block whoever records it, whatever `reason` the block
+carries. Today the writers of a block are the rotator itself, the API-key
+block and a step that meets a spend limit
 ([#2893](https://github.com/rysweet/amplihack-rs/pull/2893)). The one
 function that records any usage, spend or credit limit for the login a step
 ran under belongs to
 [#2911](https://github.com/rysweet/amplihack-rs/issues/2911), and the
 `limit-resume` hook calls it under
-[#2912](https://github.com/rysweet/amplihack-rs/issues/2912). The rotator
-wakes on their records as soon as they write them, whatever `reason` they
-carry.
+[#2912](https://github.com/rysweet/amplihack-rs/issues/2912).
 
 #### What is read
 
@@ -9825,6 +9852,7 @@ run and prints their `reread:` lines; see
 | `skip: the external rotator is running` / `skip: <error>` | `watch` only: the cycle failed with that error and the rotator carries on. |
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `wake: ledger changed` / `wake: reset due` / `wake: interval` | `watch` only: why the wait after the last cycle ended, written before the next cycle; see [Rotate wake](#rotate-wake). `wake: interval` is written only when the previous wake had another reason. |
+| `wake: read <r> of <t> logins, the others from their last reading` | `watch` only: a cycle after a limit event or a reset read `<r>` of the `<t>` logins it decides on and took the others' figures from their last reading; written after the `cycle` line. See [Rotate wake](#rotate-wake). |
 | `wake: watch rebuilt` / `wake: unavailable (<cause>), using --interval` / `wake: lost (<cause>), using --interval` | `watch` only: the ledger watch was lost and rebuilt, could not be made, or stopped working. `<cause>` is fixed text; see [Rotate wake](#rotate-wake). Each is written at most once per process, and none ends the rotator. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
