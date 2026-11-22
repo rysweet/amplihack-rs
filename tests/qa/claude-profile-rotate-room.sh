@@ -88,7 +88,10 @@ count=0
 while IFS= read -r -t 10 -n 4096 header; do
   header=${header%$'\r'}
   [[ -n "$header" ]] || break
-  case "${header,,}" in authorization:*) auth=${header#*: } ;; esac
+  # The header name, lower-cased with `tr`. Bash's own case-modifying
+  # expansion is bash 4 only and macOS /bin/bash is 3.2 (issue #1423).
+  lower=$(printf '%s' "${header%%:*}" | tr '[:upper:]' '[:lower:]')
+  case "$lower" in authorization) auth=${header#*: } ;; esac
   count=$((count + 1))
   [[ $count -lt 64 ]] || exit 0
 done
