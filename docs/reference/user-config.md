@@ -23,6 +23,7 @@ files.
   - [model.tier_map](#modeltier_map)
   - [Review keys](#review-keys)
   - [Governor keys](#governor-keys)
+  - [agent.standing](#agentstanding)
   - [sessions.daily_archive](#sessionsdaily_archive)
   - [sessions.archive_days and sessions.archive_dest](#sessionsarchive_days-and-sessionsarchive_dest)
   - [policy.deny_commands](#policydeny_commands)
@@ -183,6 +184,7 @@ command, so it never prints `flag`.
 | `governor.eval_interval_secs` | integer seconds, 1 to 3600 | `60` | — | — | user only |
 | `governor.wait_secs` | integer seconds, 0 to 86400 | `600` | — | — | user only |
 | `governor.max_reading_age_secs` | integer seconds, 60 to 86400 | `3600` | — | — | user only |
+| `agent.standing` | bool | `false` | — | `--standing`, `--no-standing` | user only |
 | `sessions.daily_archive` | bool | `true` | — | — | user only |
 | `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | — | `--days` | user only |
 | `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | — | `--dest` | user only |
@@ -524,6 +526,32 @@ amplihack config set governor.enabled true
 amplihack config set governor.max_concurrency 2
 amplihack config set governor.wait_secs 1800
 ```
+
+### agent.standing
+
+Whether a session started with `amplihack claude --supervise NAME` is a
+standing session. When its Claude Code process exits for any reason other
+than you ending it, the wrapper relaunches it in the same pane with
+`claude --continue`. See
+[Keep a session running after its process exits](../howto/keep-sessions-running.md).
+Off by default.
+
+The value kind is `Bool` (`true` or `false`), not `SessionPattern`, and the
+default is `false`.
+
+```sh
+amplihack config set agent.standing true
+```
+
+`--standing` and `--no-standing` on `amplihack claude --supervise` override the
+key for one launch. The key applies to every supervised session of the user
+account; to mark one session and not another, use the flag.
+
+The key is user-only, because it makes amplihack start agents without anyone
+at the keyboard: a project-scoped `agent.standing` is reported and ignored, so
+a cloned repository cannot make your sessions standing. A user file that
+cannot give the key a value (unreadable, not `true` or `false`) is read as
+`false`, with a warning on stderr.
 
 ### sessions.daily_archive
 

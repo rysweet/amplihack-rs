@@ -98,6 +98,53 @@ pub fn pane_command(name: &str, e: &Entry, exe: &Path, msg: &str) -> Vec<String>
     argv
 }
 
+/// The Claude arguments of a standing session's relaunch (issue #2912):
+/// `--continue`, then the options recorded for the session, in the order
+/// [`pane_command`] uses. The conversation is never named: `--continue`
+/// picks the most recent one in the config directory, which is the
+/// behaviour the issue asks for, and no message is added, because the
+/// conversation carries on rather than being resumed after a loss.
+///
+/// Rebuilt from the registry record rather than filtered out of the
+/// original argv, so no flag parser is involved and the relaunch can carry
+/// no option the launch did not record. A permission mode wins over
+/// `--dangerously-skip-permissions` (I4), as it does at registration, so
+/// the relaunch never has more privilege than the launch.
+///
+/// Every value-taking flag is emitted as `--flag=value`, and a recorded
+/// value that begins with `-` is dropped with a debug line rather than
+/// passed on: it could otherwise be read as another flag (V1). The record
+/// is re-read from disk before this runs, so it is validated at the moment
+/// it becomes a command line.
+pub fn continue_args(e: &Entry) -> Vec<String> {
+    let mut argv = vec!["--continue".to_string()];
+    if let Some(m) = &e.model {
+        push_opt(&mut argv, "--model", m);
+    }
+    if let Some(eff) = &e.effort {
+        push_opt(&mut argv, "--effort", eff);
+    }
+    for d in &e.add_dirs {
+        push_opt(&mut argv, "--add-dir", d);
+    }
+    if let Some(mode) = &e.permission_mode {
+        push_opt(&mut argv, "--permission-mode", mode);
+    } else if e.skip_permissions {
+        argv.push("--dangerously-skip-permissions".into());
+    }
+    argv
+}
+
+/// One `--flag=value` for [`continue_args`], or nothing at all when the
+/// recorded value begins with `-` and could be read as another flag.
+fn push_opt(argv: &mut Vec<String>, flag: &str, value: &str) {
+    if value.starts_with('-') {
+        tracing::debug!("agent: {flag} is left out of the relaunch: its value begins with -");
+        return;
+    }
+    argv.push(format!("{flag}={value}"));
+}
+
 /// The binary path must be absolute, UTF-8 and free of `=` and control
 /// characters: `env` would read a path holding `=` as an assignment (S16).
 pub fn check_exe(p: &Path) -> Result<(), String> {

@@ -779,6 +779,8 @@ processes are left alone. Earlier lines in the log are kept.
 
 ## Related
 
+- [Keep a Session Running After Its Process Exits](./keep-sessions-running.md) -
+  Relaunch a standing session in its pane with `claude --continue`
 - [`amplihack agent` reference](../reference/agent-command.md) - Every flag,
   the registry fields, the result texts, the status formats and the unit
 - [Rotate Claude Logins](claude-profile-rotation.md) - Keep `~/.claude` on

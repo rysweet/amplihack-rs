@@ -382,6 +382,23 @@ pub(crate) static KEYS: &[KeyDef] = &[
     super::schema_governor::GOVERNOR_WAIT_SECS,
     super::schema_governor::GOVERNOR_MAX_READING_AGE_SECS,
     KeyDef {
+        name: "agent.standing",
+        // Issue #2912: whether a session started with `amplihack claude
+        // --supervise NAME` is relaunched in its pane with `claude
+        // --continue` when its process exits other than by its owner.
+        //
+        // User-only: it makes amplihack start an agent with nobody at the
+        // keyboard, so a cloned repository must not be able to set it. No
+        // variable: the wrapper is started by a person in a pane, and a
+        // stray variable inherited from a parent run would mark a session
+        // standing that nobody asked to be standing.
+        scope: Scope::UserOnly,
+        kind: ValueKind::Bool,
+        env: None,
+        default: Some("false"),
+        lower_only: false,
+    },
+    KeyDef {
         name: "sessions.daily_archive",
         // Turns on a job that removes files from ~/.claude/projects; a
         // cloned repository must not decide that, and the rotator that

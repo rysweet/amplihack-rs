@@ -170,6 +170,19 @@ MODEL SELECTION (issues #1421, #1527)
             conflicts_with_all = ["auto", "append", "docker", "checkout_repo"]
         )]
         supervise: Option<String>,
+        /// Keep this supervised session running: relaunch it in the same
+        /// pane with 'claude --continue' when its process exits other than
+        /// by you ending it. Overrides the agent.standing user key.
+        #[arg(
+            long = "standing",
+            requires = "supervise",
+            conflicts_with = "no_standing"
+        )]
+        standing: bool,
+        /// Do not keep this supervised session running, whatever the
+        /// agent.standing user key says.
+        #[arg(long = "no-standing", requires = "supervise")]
+        no_standing: bool,
         #[command(flatten)]
         governor: crate::commands::governor::GovernorArgs,
         /// Extra args passed to claude
