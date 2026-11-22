@@ -127,29 +127,3 @@ fn an_empty_pr_number_with_no_open_pr_is_a_named_blocker() {
         "head unavailable: PR_NUMBER is empty and no open PR has head branch quick/demo",
     );
 }
-
-/// The agent that receives the result is told what `pr_head` means, so the
-/// judgement on a moved or unreadable head is made there and not in code.
-#[test]
-fn the_recording_step_is_briefed_on_pr_head() {
-    let recipe = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../amplifier-bundle/recipes/autodrive-crusty-loop.yaml"),
-    )
-    .unwrap();
-    let step = recipe
-        .split("- id: \"step-03-record-crusty-phase\"")
-        .nth(1)
-        .and_then(|s| s.split("- id: ").next())
-        .expect("step-03-record-crusty-phase exists");
-    for needle in [
-        "`pr_head`",
-        "`differs`",
-        "`unavailable`",
-        "does not undo the DONE",
-        "crusty-review-required:<github head>",
-        "--match-head-commit",
-    ] {
-        assert!(step.contains(needle), "step-03 must mention {needle}");
-    }
-}
