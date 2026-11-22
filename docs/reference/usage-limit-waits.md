@@ -2,8 +2,13 @@
 
 A recipe agent step that meets a usage, spend or credit limit does not end
 because of it. It records the limit for the login it ran under, waits, and
-runs the step again. This page owns the tables for limit kinds, the limit
-record, which wait a limit starts and the `waiting_for_capacity` line. The
+runs the step again. Two bounds that are not the limit can still end a step
+that has met one - the step's own timeout, and a prompt no retry can be
+given - and neither is a limit being refused; both are set out
+[below](#what-ends-a-step-and-what-does-not), with the open question each
+carries and what the step hands the run in its place. This page owns the
+tables for limit kinds, the limit record, which wait a limit starts and the
+`waiting_for_capacity` line. The
 wait mechanics (reset time, wake conditions, the log grammar) are in the
 [usage-limit wait reference](./profile-command.md#usage-limit-wait), which
 links here rather than repeating these tables, and task-oriented guidance is in
@@ -12,6 +17,7 @@ the [how-to](../howto/claude-profiles.md#waiting-for-a-usage-limit-reset).
 ## Contents
 
 - [What ends a step and what does not](#what-ends-a-step-and-what-does-not)
+    - [Both endings resume, and say when](#both-endings-resume-and-say-when)
     - [The step timeout cuts a wait](#the-step-timeout-cuts-a-wait)
     - [A prompt that cannot be replayed](#a-prompt-that-cannot-be-replayed)
 - [Limit kinds](#limit-kinds)
@@ -36,8 +42,12 @@ them can end a step that has met one, for reasons that are not the limit:
 | `skipped reason=no_limit_message` | The output carried no message in a harness's limit shape, so it is not a limit. |
 | `skipped reason=piped_prompt` | The prompt came from a pipe and cannot be replayed, so a retry is impossible ([below](#a-prompt-that-cannot-be-replayed)). |
 
-There is no retry count and no wall-clock budget that ends a run. A step that
-meets a second, third or tenth limit waits for each.
+There is no retry count and no wall-clock budget *for limits*. A step that
+meets a second, third or tenth limit waits for each, and nothing counts the
+waits or totals their time. The step timeout is a wall-clock bound, but it
+is the recipe runner's bound on the step as a whole and applies to every
+step whether or not a limit is in play; what it costs a limit wait is the
+[next section](#the-step-timeout-cuts-a-wait).
 
 Without a step timeout, nothing bounds those waits. A step on a single login
 with no rotator, whose harness keeps reporting a limit, waits for one
@@ -49,6 +59,40 @@ Unattended runs should therefore set a step timeout, with `--step-timeout`,
 The [waiting_for_capacity line](#the-waiting_for_capacity-line) at the start
 of each wait is how an operator tells such a step from a hung one.
 
+### Both endings resume, and say when
+
+Neither ending is a limit being refused, and neither is work that failed.
+Each writes its own sentence, and between that sentence and the event line
+the step hands the recipe runner three things:
+
+| What | How |
+|------|-----|
+| the failure class | the sentence contains the words *usage limit*, so the classifier answers `usage_limit`: "temporary and NOT a work failure" |
+| when the limit lifts | a line of its own, `amplihack: the limit resets <time>`, in the one form the runner's reset reader takes a time from, so the verdict reads "Wait for the reset and resume" with the time in it |
+| the attempt's own result | the exit code and output of the attempt that met the limit, unchanged |
+
+The step gives one of three answers there, never a guess:
+
+| What the step knows | What it writes | Reset hint |
+|---------------------|----------------|------------|
+| a reset still ahead of the clock | `amplihack: the limit resets <time>` | the time |
+| a reset already behind it, because the wait ran to it or the message was stale | `amplihack: the reset this limit stated, <time>, has already passed, so it does not say when to start this step again; a reading of the account does.` | none |
+| no reset at all: a capacity or login-change wait, a message that stated none, or an inherited login that never ran | `amplihack: no reset is known for this limit, so nothing here can say when it lifts; a reading of the account is what says so.` | none |
+
+A past reset is deliberately not written where the reset reader would find
+it. "Wait for the reset and resume", quoting a time that has been and gone,
+would have a supervising loop schedule a resume for a moment already passed.
+The step does not claim the limit has lifted either - it never re-ran - so
+the sentence says only that the stated reset no longer answers the question.
+
+The event lines alone (`skipped reason=piped_prompt`,
+`end reason=step timeout`) carry no limit marker, so the sentence beside each
+is what keeps the ending out of `indeterminate` - "nothing in the evidence
+identifies the failure" - which a supervising loop reads as terminal. That is
+pinned by `limit_wait::tests_ending_evidence`, which classifies each ending
+exactly as the runner would, so a reword that dropped the words cannot pass
+review silently.
+
 ### The step timeout cuts a wait
 
 Taking that advice has a price, and it is the one thing on this page that
@@ -59,7 +103,8 @@ to the timeout less 60 seconds, the `start` line then reads
 
 ```
 amplihack.recipe.usage_limit_wait end reason=step timeout
-amplihack: this step's own timeout ($AMPLIHACK_STEP_TIMEOUT) ended a usage-limit wait before the limit lifted, so the step ends here with the limit's result. The timeout is the step's bound and not a budget for limits: raise it, or leave it unset, to let a limit wait run longer. See docs/reference/usage-limit-waits.md
+amplihack: this step's own timeout ($AMPLIHACK_STEP_TIMEOUT) ended a usage-limit wait before the limit lifted, so the step ends here with the limit's result. The timeout is the step's bound and not a budget for limits: raise it, or leave it unset, to let a limit wait run longer, or start this step again once the limit has lifted. See docs/reference/usage-limit-waits.md
+amplihack: the limit resets 2026-10-18 08:30:00 -07:00
 amplihack.recipe.usage_limit_wait failed reason=step_timeout: usage limit not lifted
 ```
 
@@ -78,6 +123,13 @@ limit does. Which of the two an unattended run wants is
 settled, a run that must not fail on a limit leaves the step timeout unset,
 and a run that must not sit for hours sets one and accepts
 `failed reason=step_timeout`.
+
+Setting one does not mean losing the run. Raising the number is the
+operator's remedy, and it is the weaker of the two: the step's own is the
+reset line above, which is what lets the layer that still holds the work
+start the step again at the time the limit clears rather than guessing a
+larger timeout. A step timeout shorter than a limit wait therefore ends the
+*step*, and ends it with everything the run needs to resume it.
 
 ### A prompt that cannot be replayed
 
@@ -98,15 +150,25 @@ words beside the event, naming which shape it is and that the step has to be
 sent again:
 
 ```
-amplihack.recipe.usage_limit_wait skipped reason=piped_prompt
 amplihack: this step met a usage limit and cannot be run again: its prompt arrives on an --input-format stream channel, which its caller holds open for the session, so there is no end of it to copy and no prompt to replay. The limit is not lifted, and no wait can lift it for this step, because a retry would have no prompt to read; the attempt's own result is this step's result, and this step has to be sent again. See docs/reference/usage-limit-waits.md
+amplihack: the limit resets 2026-10-18 08:30:00 -07:00
+amplihack.recipe.usage_limit_wait skipped reason=piped_prompt
 ```
 
-The attempt's own output is still printed, limit message and all, so the
-recipe runner classes the failure `usage_limit`, which its own reasoning
-calls "temporary and NOT a work failure", and a supervising loop resumes the
-run rather than treating it as work that failed. Whether such a step should wait first anyway is
-[#3036](https://github.com/rysweet/amplihack-rs/issues/3036).
+The step cannot send itself the prompt again. The caller that holds it can,
+and the reset line is the one thing it still needs after being told to: a
+caller that re-sends at once walks straight back into the same limit. The
+attempt's own output is printed too, limit message and all, so the classifier
+has the harness's words as well when they are still in the evidence tail.
+
+Whether such a step should wait first anyway is
+[#3036](https://github.com/rysweet/amplihack-rs/issues/3036). Waiting would
+change nothing about this step - there is still no prompt for a retry to read
+when the wait ends - so what that issue decides is whether the supervisor
+should buffer a stream channel so that a retry becomes possible at all. Until
+it does, this ending stands, and it is listed under
+[limits of this behaviour](#limits-of-this-behaviour) rather than counted as
+a terminal path removed.
 
 ## Limit kinds
 
@@ -336,8 +398,14 @@ them, and the closing-line reasons are no longer written.
 
 An operator who greps for `reset_too_far`, `no_reset` or `spend_limit` still
 finds them as the `reason=` of a `waiting_for_capacity` line.
-`failed reason=step_timeout` and `skipped reason=piped_prompt` are unchanged;
-both are described above, with the open question each one carries.
+
+`failed reason=step_timeout` and `skipped reason=piped_prompt` are **not** in
+that table. Both still end a step that met a limit, and neither is claimed as
+removed. What changed for them is what the step says on the way out: which
+bound ended it, that the bound is not the limit, and
+[when the limit lifts](#both-endings-resume-and-say-when). The open questions
+are [#3037](https://github.com/rysweet/amplihack-rs/issues/3037) and
+[#3036](https://github.com/rysweet/amplihack-rs/issues/3036).
 
 ## Limits of this behaviour
 
@@ -349,9 +417,14 @@ both are described above, with the open question each one carries.
   ([#3005](https://github.com/rysweet/amplihack-rs/issues/3005)).
 - No line reports how long a step has waited in total
   ([#3003](https://github.com/rysweet/amplihack-rs/issues/3003)).
-- A step timeout cuts a limit wait and the step then fails
+- A step timeout cuts a limit wait and the step then fails, so a step timeout
+  set shorter than a limit wait is a wall-clock bound that ends a step while
+  the limit still stands. The run is handed the reset and may resume; the
+  step does not
   ([#3037](https://github.com/rysweet/amplihack-rs/issues/3037)).
-- A step whose prompt cannot be replayed ends on a limit without waiting
+- A step whose prompt cannot be replayed ends on a limit without waiting. The
+  stream-channel shape cannot gain a copy however long it waits, so the
+  question is whether to buffer such a channel at all
   ([#3036](https://github.com/rysweet/amplihack-rs/issues/3036)).
 - Output carrying both an authentication failure and the credits phrase classes
   `environmental` first, and does not wait. That fails closed.

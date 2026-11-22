@@ -114,6 +114,21 @@ fn ac4_a_step_timeout_of_sixty_seconds_or_less_ends_the_step_without_a_retry() {
     ] {
         assert!(err.contains(words), "{words:?} missing from\n{err}");
     }
+    // Review of PR #2992, round 2: raising the timeout is the operator's
+    // remedy and the weaker one. The step's own is to hand the run the time
+    // the limit lifts, on a line of its own and in the form the recipe
+    // runner's reset reader takes a time from, so the layer that still
+    // holds the work can start this step again rather than guess a bigger
+    // number. Pinned end to end here; the classification those lines earn
+    // is pinned in `limit_wait::tests_ending_evidence`.
+    assert!(
+        err.contains("\namplihack: the limit resets 2026-10-18 08:30:00 -07:00\n"),
+        "the reset is stated on a line of its own\n{err}"
+    );
+    assert!(
+        err.contains("start this step again once the limit has lifted"),
+        "and the remedy that uses it\n{err}"
+    );
 }
 
 #[test]

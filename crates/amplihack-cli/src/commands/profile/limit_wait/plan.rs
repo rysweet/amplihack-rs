@@ -1,12 +1,16 @@
 //! What a usage limit allows, and the wait's deadline (issues #1618, #2911).
 //!
-//! A limit never ends a step. A reset the step can use within five hours is
-//! waited for directly. Every other limit becomes a wait for *capacity* (a
-//! login with room, the rotator's next cycle, or the login in
-//! `$HOME/.claude` changing) and says why it has no reset to end on
-//! ([`Waiting`]). Only two readings are left that no wait can help, and
-//! neither is a limit: output with no limit message in it at all, and a
-//! prompt that arrived on a pipe and cannot be replayed ([`NoWait`]).
+//! No limit this module reads is refused a wait, and no count or budget here
+//! ends a step that keeps meeting limits. That is not the same as "a limit
+//! never ends a step": two bounds that are not limits can still end a step
+//! that has met one, and the deadline table below carries one of them. A
+//! reset the step can use within five hours is waited for directly. Every
+//! other limit becomes a wait for *capacity* (a login with room, the
+//! rotator's next cycle, or the login in `$HOME/.claude` changing) and says
+//! why it has no reset to end on ([`Waiting`]). Only two readings are left
+//! that no wait can help, and neither is a limit: output with no limit
+//! message in it at all, and a prompt that arrived on a pipe and cannot be
+//! replayed ([`NoWait`]).
 //!
 //! The deadline is the earliest row of the deadline table that applies, a
 //! tie named by the earlier row. All arithmetic saturates. A reset wait's
@@ -15,21 +19,26 @@
 //! at the failed login's own reset plus the margin when that is sooner.
 //!
 //! **Every plan a limit produces ends strictly after `now`**, unless the
-//! step's own timeout forces otherwise. That is the whole of the pacing
-//! rule, and it replaces the per-step budget #2731 used: a chain of limits
-//! is paced by each wait costing time, not by a counter that eventually
-//! refuses one. The invariant holds because a reset row is only built from a
-//! reset in the future, and because [`MIN_WAIT_SECS`] floors the configured
-//! wait length where it is read (`settings`), so no `max` row can land on
-//! `now` either.
+//! step's own timeout forces otherwise - and that exception is the reason
+//! the claim is written with it rather than as "a limit never ends a step".
+//! The rest is the whole of the pacing rule, and it replaces the per-step
+//! budget #2731 used: a chain of limits is paced by each wait costing time,
+//! not by a counter that eventually refuses one. The invariant holds
+//! because a reset row is only built from a reset in the future, and
+//! because [`MIN_WAIT_SECS`] floors the configured wait length where it is
+//! read (`settings`), so no `max` row can land on `now` either.
 //!
 //! The step timeout is the one exception and the only row that can end a
 //! step while a limit still stands. It is not a budget this module keeps:
 //! the recipe runner kills the step at that time whatever this code does,
 //! and [`STEP_TIMEOUT_LEAD`] exists so the step reports instead of being
-//! killed mid-sleep. Whether an unattended run should carry such a bound at
-//! all is issue #3037; `docs/reference/usage-limit-waits.md` states the
-//! interaction for operators.
+//! killed mid-sleep. It is still, in effect, a wall-clock bound that ends a
+//! step on a limit, which is why the step says so in words and hands the
+//! run the reset it was waiting for ([`WaitFor::reset`],
+//! `ending::resumes_at`) rather than only the bound's name. Whether an
+//! unattended run should carry such a bound at all is issue #3037;
+//! `docs/reference/usage-limit-waits.md` states the interaction for
+//! operators.
 
 use crate::commands::recipe::run::limit_patterns::{Harness, LimitKind, LimitMessage};
 
@@ -80,7 +89,7 @@ pub(crate) enum NoWait {
     /// three a retry has no bytes to read, so there is no retry for a wait
     /// to earn, which is why this is a reading of the step and not a limit
     /// refused. The supervisor names which shape it is in words beside the
-    /// event (`mod.rs::no_retry_is_possible`), because the reason alone does
+    /// event (`ending::no_retry_note`), because the reason alone does
     /// not say. Whether such a step should wait first anyway is issue #3036.
     PipedPrompt,
 }
@@ -158,6 +167,22 @@ pub(crate) enum WaitFor {
 }
 
 impl WaitFor {
+    /// The reset the limit stated, as read, whatever the wait does with it;
+    /// `None` when it stated none and for a skip (review of PR #2992).
+    ///
+    /// Read by the two endings that can end a step while the limit still
+    /// stands, so each can say when the limit lifts rather than only that
+    /// it has not. A `Capacity` wait keeps its limit's reset even when it
+    /// is too far away to sleep to, and that is still the honest answer to
+    /// *when does this clear*.
+    pub(crate) fn reset(self) -> Option<i64> {
+        match self {
+            WaitFor::Reset { reset, .. } => Some(reset),
+            WaitFor::Capacity { reset, .. } => reset,
+            WaitFor::LoginChange { .. } | WaitFor::Skip(_) => None,
+        }
+    }
+
     /// Why this wait has no reset to end on, for the `waiting_for_capacity`
     /// line; `None` for a wait that has one and for a skip.
     pub(crate) fn waiting_for_capacity(self) -> Option<Waiting> {

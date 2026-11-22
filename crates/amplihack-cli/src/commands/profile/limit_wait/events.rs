@@ -121,7 +121,7 @@ pub(crate) enum Met {
 /// that time regardless, and the wait ends just before it so that this line
 /// is written at all. It does mean a step with a timeout set can fail while
 /// a limit still stands; the step says so in words beside this event
-/// (`mod.rs::the_step_timeout_cut_the_wait`), and issue #3037 carries the
+/// (`ending::step_timeout_note`), and issue #3037 carries the
 /// question of whether an unattended run should carry such a bound.
 #[derive(Clone, Copy)]
 pub(super) enum FailReason {
@@ -148,7 +148,11 @@ pub(super) enum Skip {
 }
 
 /// `t` in zone `tz`, as every line writes an instant.
-fn fmt_time<Z: TimeZone>(t: i64, tz: &Z) -> String
+///
+/// `pub(super)` because the two sentences the supervisor prints beside an
+/// ending also name an instant, and an instant must read the same in every
+/// line a step writes (review of PR #2992).
+pub(super) fn fmt_time<Z: TimeZone>(t: i64, tz: &Z) -> String
 where
     Z::Offset: Display,
 {

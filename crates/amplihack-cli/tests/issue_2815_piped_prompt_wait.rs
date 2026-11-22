@@ -471,6 +471,24 @@ fn a_held_open_captured_pipe_with_a_limit_ends_with_the_limit_result() {
         "and the remedy, which this step cannot carry out itself\n{}",
         describe(&out)
     );
+    // Review of PR #2992, round 2: this wait ran to its own reset, so by
+    // the time the retry was refused the limit had lifted and only the
+    // missing prompt was left. The step says that rather than naming a time
+    // to come back at, and does not write the reset where the recipe
+    // runner's reset reader would quote it back as one.
+    assert!(
+        err.contains(
+            "the reset this limit stated, 2026-10-18 08:30:00 -07:00, has already passed, \
+             so it does not say when to start this step again"
+        ),
+        "a reset the wait has already reached is stated as past\n{}",
+        describe(&out)
+    );
+    assert!(
+        !err.contains("amplihack: the limit resets "),
+        "and never as a time still to come\n{}",
+        describe(&out)
+    );
     assert!(
         text(&out.stdout).contains("attempt 1 output"),
         "the attempt's held-back output is still printed\n{}",
@@ -555,6 +573,15 @@ fn an_input_format_channel_on_stdin_is_not_captured() {
     assert!(
         err.contains("this step has to be sent again"),
         "and the remedy\n{}",
+        describe(&out)
+    );
+    // Review of PR #2992, round 2: the caller that holds the prompt is the
+    // one that can send it again, and the one thing it still needs is when
+    // doing so is worth anything. Sending it at once walks back into the
+    // same limit.
+    assert!(
+        err.contains("\namplihack: the limit resets 2026-10-18 08:30:00 -07:00"),
+        "the reset is stated for the caller that must re-send\n{}",
         describe(&out)
     );
     // The attempt's own output still carries the harness's limit line, so
