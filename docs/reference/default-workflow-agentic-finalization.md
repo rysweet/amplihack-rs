@@ -631,15 +631,19 @@ leave a trace.
 
 Two checks stay in the validator, and neither reads CI:
 
-- **Dirty-worktree probe after a write.** When `action_taken` is anything other
-  than `none` and the worktree path is recorded, the validator runs its live
-  `git status --porcelain` probe whatever the record says. A key, `.env` or log
-  file left behind by a repair ends the run `FAILED_DIRTY_WORKTREE`. The probe
-  never runs against an implicit `.`.
+- **Live dirty-worktree probe.** Whenever the worktree path is recorded, the
+  validator runs `git status --porcelain` there, whatever the collected record
+  says and whatever `action_taken` reports. The record was collected before the
+  assessment, which may write, and a write that left a file behind need not be
+  reported, so the probe does not depend on the assessment's own account. A key,
+  `.env` or log file left behind ends the run `FAILED_DIRTY_WORKTREE`. So does a
+  recorded worktree that is missing or not a work tree, and a `git status` that
+  fails there, because neither shows a clean worktree. Without a recorded path
+  the probe runs against `.` only when the record does not say exactly `false`.
 - **Action vocabulary.** `action_taken` must be `none`, `pushed_branch`,
-  `opened_pull_request` or `repaired_ci`. An empty value becomes `none`.
-  Anything else is quoted in `evidence_used` as `unrecognised`, so it cannot
-  forge fields in that record.
+  `opened_pull_request` or `repaired_ci`. An empty value becomes `none`; it
+  labels the record and decides nothing. Anything else is quoted in
+  `evidence_used` as `unrecognised`, so it cannot forge fields in that record.
 
 ### Prerequisites and limits
 
@@ -907,10 +911,11 @@ terminal state.
    Evidence with no usable `outcome` is not invalid: the outcome is read live.
 2. A dirty worktree and missing `git` or `jq` still end the run. A missing `gh`
    does not; it routes to the assessment. A collected `dirty_worktree` that is
-   neither `true` nor `false` is not a negative: the worktree is probed. After an
-   assessment that wrote anything (`action_taken` other than `none`), the
-   worktree is probed live whatever the record says, so a file a repair left
-   behind is caught (#2966).
+   neither `true` nor `false` is not a negative: the worktree is probed. A
+   recorded worktree is probed live on every run, whatever the record and
+   `action_taken` say, so a file a repair left behind is caught, and a recorded
+   worktree that is missing, is not a work tree, or whose `git status` fails is
+   not taken for a clean one (#2966).
 3. No terminal state is derived from empty or generic agent output.
 4. Reporting failure (`finalizer_step_status.reporting_failure=true`) is a
    typed fact passed to `assess-finalization` and carried into the result; it

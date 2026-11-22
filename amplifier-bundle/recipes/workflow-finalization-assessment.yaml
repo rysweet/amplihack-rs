@@ -315,7 +315,7 @@ steps:
       of green, failing, pending and unknown checks you read after your last
       write. Report a success only for a pull request you have seen open with
       a green head. Leave the worktree clean when you finish: finalization
-      checks it again after any write, and a file left behind ends the run.
+      checks it again whatever you report, and a file left behind ends the run.
 
       Name secrets by name only. Do not run anything that prints the
       environment, an authentication token, or the repository's stored

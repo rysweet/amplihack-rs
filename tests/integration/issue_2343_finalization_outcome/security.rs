@@ -302,13 +302,11 @@ fn userinfo_stays_out_of_a_failing_result_too() {
 // SEC-01 (#2966). The assessment may write: push the branch, open the pull
 // request, or repair CI. Whatever it writes, it can leave a file behind that
 // no commit holds (a `.env`, a key, a log), and the collected record, read
-// before it acted, says the worktree is clean. So after any write the worktree
-// is looked at again, live, whatever the record says. This is a fact check on
-// the checkout the run recorded, not a judgement about the repair: a dirty
-// worktree is a blocker no decision can mask.
-//
-// An action outside the vocabulary counts as a write too, because the
-// validator cannot tell what such a value did.
+// before it acted, says the worktree is clean. So the recorded worktree is
+// looked at again, live, on every run, whatever the record says and whatever
+// the assessment reports it did. This is a fact check on the checkout the run
+// recorded, not a judgement about the repair: a dirty worktree is a blocker no
+// decision can mask.
 #[test]
 fn a_write_the_assessment_made_cannot_leave_untracked_files_behind() {
     for action in [
@@ -350,13 +348,14 @@ fn a_write_the_assessment_made_cannot_leave_untracked_files_behind() {
     }
 }
 
-// SEC-01, the other edge. The post-write probe runs only against a checkout the
-// run recorded. With no worktree or repository path in the run's context there
-// is only the current directory, which is whatever the process happened to be
-// started in -- on a developer's machine, their own checkout -- and a verdict
-// about that would be about the wrong tree. It is never probed.
+// SEC-01, the other edge. When the record says the worktree is clean, the live
+// probe runs only against a checkout the run recorded. With no worktree or
+// repository path in the run's context there is only the current directory,
+// which is whatever the process happened to be started in -- on a developer's
+// machine, their own checkout -- and a verdict about that would be about the
+// wrong tree. It is never probed.
 #[test]
-fn the_post_write_probe_never_runs_against_the_current_directory() {
+fn the_live_probe_never_runs_against_the_current_directory() {
     let fx = Fixture::new();
     fx.with_remote();
     fx.push();
@@ -379,6 +378,131 @@ fn the_post_write_probe_never_runs_against_the_current_directory() {
         "FAILED_DIRTY_WORKTREE",
         "a directory the run never recorded is not the run's worktree\n{}",
         outcome.describe()
+    );
+}
+
+// SEC-01, the agent's own report. The probe does not rest on `action_taken`:
+// an assessment steered by injected log text can write a file and then report
+// `none`, or leave the field out. The record still says `false`, and the file
+// would stay in the worktree for a later `git add -A` to commit. So an omitted
+// action and `none` are probed exactly as a reported write is.
+#[test]
+fn a_file_left_behind_is_found_whatever_the_assessment_says_it_did() {
+    for (label, answer) in [
+        (
+            "action omitted",
+            json!({
+                "terminal_state": "EXISTING_OPEN_PR",
+                "pr_number": "7",
+                "reason": "assess-finalization decided EXISTING_OPEN_PR",
+                "next_action": "See pull request #7.",
+            }),
+        ),
+        (
+            "action none",
+            json!({
+                "terminal_state": "EXISTING_OPEN_PR",
+                "action_taken": "none",
+                "pr_number": "7",
+                "reason": "assess-finalization decided EXISTING_OPEN_PR",
+                "next_action": "See pull request #7.",
+            }),
+        ),
+    ] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.push();
+        fx.gh_pr_at(&fx.head(), green_rollup());
+        std::fs::write(fx.repo.join("notes.log"), "written-and-not-reported\n").expect("write");
+        let mut envs = finished_env(&fx.repo_path());
+        envs.push(recorded_evidence(&fx, "green", ""));
+        envs.push(assessment_raw(answer));
+
+        let outcome = fx.validate(&as_refs(&envs));
+
+        assert_eq!(
+            outcome.output.status.code(),
+            Some(1),
+            "{label}\n{}",
+            outcome.describe()
+        );
+        assert_eq!(
+            outcome.field("terminal_state"),
+            "FAILED_DIRTY_WORKTREE",
+            "{label}: the recorded worktree is probed whatever the action says\n{}",
+            outcome.describe()
+        );
+        assert_eq!(outcome.field("terminal_success"), "false", "{label}");
+        assert_absent(&outcome, "written-and-not-reported", "the file's content");
+    }
+}
+
+// SEC-01, a probe that cannot answer. `git status` that fails in the recorded
+// worktree has not shown it clean, and an empty output from a failed command is
+// not an empty worktree. A corrupt index makes `git rev-parse` succeed and
+// `git status` fail, which is exactly that case.
+#[test]
+fn a_git_status_that_fails_in_the_recorded_worktree_is_not_a_clean_worktree() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+    std::fs::write(fx.repo.join(".git/index"), "x").expect("corrupt the index");
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(recorded_evidence(&fx, "green", ""));
+    envs.push(assessment("EXISTING_OPEN_PR", "none", "7"));
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert_eq!(
+        outcome.output.status.code(),
+        Some(1),
+        "{}",
+        outcome.describe()
+    );
+    assert_eq!(
+        outcome.field("terminal_state"),
+        "FAILED_DIRTY_WORKTREE",
+        "{}",
+        outcome.describe()
+    );
+    assert!(
+        outcome
+            .field("terminal_reason")
+            .starts_with("git status failed in the recorded worktree"),
+        "the reason names the failed git status: {}",
+        outcome.field("terminal_reason")
+    );
+}
+
+// SEC-01, a recorded worktree that is gone. The run names the checkout it
+// worked in; when that checkout is missing, nothing has shown it clean, so the
+// run fails rather than skipping the probe.
+#[test]
+fn a_recorded_worktree_that_cannot_be_read_is_not_a_clean_worktree() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+    let gone = fx.tmp.path().join("worktree-that-was-removed");
+    let mut envs = finished_env(&gone.display().to_string());
+    envs.push(recorded_evidence(&fx, "green", ""));
+    envs.push(assessment("EXISTING_OPEN_PR", "none", "7"));
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert_eq!(
+        outcome.field("terminal_state"),
+        "FAILED_DIRTY_WORKTREE",
+        "{}",
+        outcome.describe()
+    );
+    assert!(
+        outcome
+            .field("terminal_reason")
+            .starts_with("the recorded worktree could not be read"),
+        "the reason says the worktree could not be read: {}",
+        outcome.field("terminal_reason")
     );
 }
 

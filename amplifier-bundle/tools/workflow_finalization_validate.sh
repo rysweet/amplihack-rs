@@ -56,6 +56,7 @@ validate_finalization() {
   local outcome_remote_head="" outcome_pr_number="" outcome_pr_url="" outcome_pr_state=""
   local outcome_pr_head="" outcome_checks="" outcome_unread=""
   local assessment_state="" assessment_action="" assessment_pr="" assessment_pr_raw="" assessment_reason="" assessment_next=""
+  local probe_where="" probe_status=0 probe_output="" probe_unreadable=""
   finalization_evidence="$(workflow_context_read finalization_evidence || :)"
   # A selected field that is present but corrupt is not absence. It is not a
   # terminal state of its own and it never ends the run; it is reported beside
@@ -150,9 +151,10 @@ FIELDS
   [ -n "$prior_terminal_state" ] || prior_terminal_state="$evidence_prior_terminal_state"
   [ "$evidence_hollow_success" != "true" ] || hollow_success_detected="true"
 
-  # What assess-finalization says it did, read before the checkout blockers
-  # because a write can contradict the record collected before it (SEC-01).
-  # Outside the vocabulary it is quoted as `unrecognised` (SEC-12, #2966).
+  # What assess-finalization says it did. It labels the record and decides
+  # nothing: the worktree probe below runs whatever it says (SEC-01), so an
+  # empty value is simply `none`. Outside the vocabulary it is quoted as
+  # `unrecognised` (SEC-12, #2966).
   assessment_action="$(workflow_finalization_field finalization_assessment action_taken || :)"
   [ -n "$assessment_action" ] || assessment_action="none"
   _finalization_action_allowed "$assessment_action" || assessment_action="unrecognised"
@@ -175,14 +177,38 @@ FIELDS
   # with uncommitted changes whose record read "1" published EXISTING_OPEN_PR
   # -- so a record that does not say true or false sends the question to the
   # worktree, which can always answer it.
-  # SEC-01 (#2966): after any write the assessment made, the worktree is asked
-  # again whatever the record says, so a file a repair left behind is a dirty
-  # worktree. Only a recorded checkout is asked, never an implicit ".".
-  if [ "$evidence_dirty_worktree" != "false" ] || { [ "$assessment_action" != "none" ] && [ "$target_dir_explicit" = "true" ]; }; then
-    if command -v git >/dev/null 2>&1 && [ -d "$target_dir" ] && git -C "$target_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-      if [ -n "$(git -C "$target_dir" status --porcelain)" ]; then
+  # SEC-01 (#2966): a recorded checkout is always asked, whatever the record
+  # says. The record was collected before assess-finalization, which may write,
+  # and a file a write left behind need not be reported: the assessment's own
+  # `action_taken` decides nothing here. A recorded checkout that is missing or
+  # not a work tree, or whose `git status` fails, has not been shown clean, so
+  # it fails too. An implicit "." is asked only when the record did not answer,
+  # and is never failed for being unreadable: it is whatever directory the
+  # process started in, not the run's worktree.
+  # `rev-parse --is-inside-work-tree` exits 0 inside a `.git` directory and
+  # prints "false" there, so its answer is read, not only its exit code.
+  if [ "$evidence_dirty_worktree" != "false" ] || [ "$target_dir_explicit" = "true" ]; then
+    probe_unreadable=""
+    if ! command -v git >/dev/null 2>&1; then
+      probe_unreadable="git is not available"
+    elif [ ! -d "$target_dir" ]; then
+      probe_unreadable="no such directory"
+    elif [ "$(git -C "$target_dir" rev-parse --is-inside-work-tree 2>/dev/null)" != "true" ]; then
+      probe_unreadable="not a git worktree"
+    fi
+    if [ -z "$probe_unreadable" ]; then
+      probe_where="the recorded worktree"
+      [ "$target_dir_explicit" = "true" ] || probe_where="the current directory"
+      probe_status=0
+      probe_output="$(git -C "$target_dir" status --porcelain)" || probe_status=$?
+      if [ "$probe_status" != 0 ]; then
+        fail_result "FAILED_DIRTY_WORKTREE" "git status failed in $probe_where (exit $probe_status), so a clean worktree has not been shown" "Repair the worktree's git state, then re-run finalization." "git.status_exit=$probe_status"
+      fi
+      if [ -n "$probe_output" ]; then
         fail_result "FAILED_DIRTY_WORKTREE" "dirty worktree prevents terminal success" "Commit, stash, or remove uncommitted changes before finalization." "git.dirty_worktree=true"
       fi
+    elif [ "$target_dir_explicit" = "true" ]; then
+      fail_result "FAILED_DIRTY_WORKTREE" "the recorded worktree could not be read ($probe_unreadable), so a clean worktree has not been shown" "Restore the worktree, then re-run finalization." "git.worktree_readable=false"
     fi
   fi
   case ",$evidence_tooling_missing," in
