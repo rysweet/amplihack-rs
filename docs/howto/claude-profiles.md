@@ -2083,8 +2083,10 @@ On macOS, Claude Code keeps a profile's login in the login Keychain and
 writes no `.credentials.json`. amplihack recognises such a profile when its
 `.claude.json` has an `oauthAccount` block and the Keychain holds an item
 for the profile's directory (service `Claude Code-credentials-<h>`, with
-`<h>` the first eight hex digits of the SHA-256 of the directory path). It
-only asks whether the item exists; it never reads the secret.
+`<h>` the first eight hex digits of the SHA-256 of the directory path in
+Unicode Normalization Form C, as Claude Code computes it). It only asks
+whether the item exists; it never reads the secret, and it waits for the
+answer with no time limit of its own.
 
 ```
 $ amplihack profile kind list

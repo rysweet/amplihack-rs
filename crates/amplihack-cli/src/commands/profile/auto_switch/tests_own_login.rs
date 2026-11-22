@@ -34,9 +34,11 @@
 //!   is true for `File`, `Keychain` and `KeyProfile` (plus the existing
 //!   `check_note`), false for `KeychainUnreadable` and `None`.
 //! - `overflow_inputs::login_gap(root, name) -> Option<LoginGap>`,
-//!   `refuse_no_login(root)` and `takeover::could_take_over_at(store, own,
-//!   home)` use the same rule. `could_take_over_at` hands its `home` to the
-//!   lookup; the others use the process home.
+//!   `refuse_no_login(root, home)` and `takeover::could_take_over_at(store,
+//!   own, home)` use the same rule. `refuse_no_login` and
+//!   `could_take_over_at` hand their `home` to the lookup, so
+//!   `capacity::refresh_from_rotation` asks the Keychain with the rotator's
+//!   home (crusty round 2 of PR #2891); `login_gap` uses the process home.
 //! - The reason is never dropped on the way (crusty round 1 of PR #2891).
 //!   `LoginGap::{NoLogin, KeychainUnreadable(Cause)}` keeps a Keychain that
 //!   could not be read apart from no login. `LoginGap::overflow_warning`
@@ -353,7 +355,7 @@ fn the_unreadable_note_is_one_line_naming_the_profile_and_no_account_value() {
         Cause::NotStarted,
         Cause::Exit(51),
         Cause::Signal,
-        Cause::Timeout,
+        Cause::Wait,
     ] {
         let note = unreadable_note(&n("work"), cause);
         assert!(note.starts_with("auto-switch: "), "{note}");
@@ -496,7 +498,7 @@ fn login_gap_and_refuse_no_login_follow_the_same_rule() {
         no_login: Vec::new(),
         kinds_unknown: false,
     };
-    let unreadable = inputs.refuse_no_login(&f.root);
+    let unreadable = inputs.refuse_no_login(&f.root, Some(&f.home));
     let mut blocked = inputs.blocked.clone();
     blocked.sort();
     assert_eq!(blocked, ["absent", "bare", "locked"]);
@@ -549,8 +551,61 @@ fn the_rotators_live_profile_still_holds_its_login_in_home() {
         no_login: Vec::new(),
         kinds_unknown: false,
     };
-    assert!(inputs.refuse_no_login(&f.root).is_empty());
+    assert!(inputs.refuse_no_login(&f.root, Some(&f.home)).is_empty());
     assert!(inputs.blocked.is_empty());
+}
+
+/// Crusty round 2 of PR #2891: `refuse_no_login` asks the Keychain with the
+/// home it is given, not with `$HOME`, so the rotator's capacity write and
+/// the rotator's own checks ask the same Keychain.
+#[test]
+fn refuse_no_login_hands_its_home_to_the_lookup() {
+    let _l = lock();
+    let f = fx(&[("locked", P::Acct(51)), ("present", P::Acct(0))]);
+    // The process home is somewhere else: only the argument may reach the
+    // lookup.
+    let elsewhere = f.home.parent().unwrap().join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let _env = EnvGuard::set([("HOME", elsewhere.to_str().unwrap())]);
+    let _seam = test_seam(&f.bin);
+    let mut inputs = OverflowInputs {
+        order: f.profiles.clone(),
+        blocked: Vec::new(),
+        gate: Some(GATE),
+        platform: None,
+        not_plan: Vec::new(),
+        no_login: Vec::new(),
+        kinds_unknown: false,
+    };
+    assert_eq!(
+        inputs.refuse_no_login(&f.root, Some(&f.home)),
+        vec![(n("locked"), Cause::Exit(51))]
+    );
+    assert_eq!(inputs.blocked, ["locked"]);
+    assert!(f.starts() >= 1, "the Keychain was asked");
+    for line in f.lines() {
+        assert!(
+            line.starts_with(&format!("{}|", f.home.display())),
+            "HOME was not the argument: {line}"
+        );
+    }
+    // No home at all is no home, never `$HOME`: the lookup is not started
+    // and the cause says why.
+    let before = f.starts();
+    let mut inputs = OverflowInputs {
+        order: vec![n("locked")],
+        blocked: Vec::new(),
+        gate: Some(GATE),
+        platform: None,
+        not_plan: Vec::new(),
+        no_login: Vec::new(),
+        kinds_unknown: false,
+    };
+    assert_eq!(
+        inputs.refuse_no_login(&f.root, None),
+        vec![(n("locked"), Cause::NoHome)]
+    );
+    assert_eq!(f.starts(), before, "nothing was started without a home");
 }
 
 // --- the Keychain cause reaches the user (crusty round 1) -----------------------------------
@@ -566,7 +621,7 @@ fn overflow_add_has_one_warning_for_no_login_and_another_for_the_keychain() {
         Cause::NotStarted,
         Cause::Exit(51),
         Cause::Signal,
-        Cause::Timeout,
+        Cause::Wait,
     ] {
         let text = LoginGap::KeychainUnreadable(cause).overflow_warning(&n("work"));
         assert!(
@@ -636,6 +691,38 @@ fn both_capacity_writers_name_an_overflow_profile_whose_keychain_is_unreadable()
     let want = vec![unreadable_note(&n("locked"), Cause::Exit(51))];
     for (writer, notes) in ["rotate", "usage"].into_iter().zip(capacity_notes(&f)) {
         assert_eq!(notes, want, "{writer}");
+    }
+}
+
+/// Crusty round 2 of PR #2891: the rotator's capacity write asks the
+/// Keychain with the home the rotator gave it. Before, the kinds used that
+/// home and the Keychain lookups of `refuse_no_login` used `$HOME`, so the
+/// two could disagree about one profile.
+#[test]
+fn the_rotators_capacity_write_asks_the_keychain_with_the_rotators_home() {
+    let _l = lock();
+    let f = capacity_fx(
+        &[
+            ("work", P::File),
+            ("locked", P::Acct(51)),
+            ("present", P::Acct(0)),
+        ],
+        "",
+    );
+    let elsewhere = f.home.parent().unwrap().join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let _env = EnvGuard::set([("HOME", elsewhere.to_str().unwrap())]);
+    let _seam = test_seam(&f.bin);
+    let readings = [(n("work"), Rotated::Exhausted)];
+    let notes =
+        capacity::refresh_from_rotation(&f.root, &readings, fsx::now(), false, true, Some(&f.home));
+    assert_eq!(notes, vec![unreadable_note(&n("locked"), Cause::Exit(51))]);
+    assert!(f.starts() >= 1, "the Keychain was asked");
+    for line in f.lines() {
+        assert!(
+            line.starts_with(&format!("{}|", f.home.display())),
+            "HOME was not the rotator's: {line}"
+        );
     }
 }
 

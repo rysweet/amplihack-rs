@@ -29,7 +29,7 @@
 //!   is missing and `<dir>/.claude.json` has an identifiable `oauthAccount`.
 
 use super::ProfileError;
-use super::keychain::{Cause, Keychain, service_name, test_seam, test_seam_deadline};
+use super::keychain::{Cause, Keychain, service_name, test_seam};
 use super::kind::{
     Ctx, Evidence, Kind, KindSource, Resolved, guard, kind_of, launch_guard, platform_profiles,
     resolve, resolve_from, resolve_with,
@@ -42,7 +42,6 @@ use std::cell::Cell;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
 
 const PRESENT: &str = "detected: oauth login in the macOS Keychain";
 const UNREADABLE: &str = "detected: macOS Keychain unreadable";
@@ -205,7 +204,7 @@ fn rule_3_an_unreadable_keychain_is_a_subscription_with_no_login_even_with_a_key
         Cause::NotStarted,
         Cause::Exit(51),
         Cause::Signal,
-        Cause::Timeout,
+        Cause::Wait,
     ] {
         for key in [false, true] {
             let mut e = ev(LoginKind::Missing);
@@ -264,7 +263,7 @@ fn nothing_but_a_present_item_makes_a_keychain_login() {
         None,
         Some(Keychain::Absent),
         Some(Keychain::Unreadable(Cause::Exit(51))),
-        Some(Keychain::Unreadable(Cause::Timeout)),
+        Some(Keychain::Unreadable(Cause::Wait)),
     ] {
         assert!(
             !resolve_with(&ev(LoginKind::Missing), k).keychain_login(),
@@ -313,7 +312,7 @@ fn a_held_login_passes_whatever_the_keychain_said() {
         None,
         Some(Keychain::Absent),
         Some(Keychain::Present),
-        Some(Keychain::Unreadable(Cause::Timeout)),
+        Some(Keychain::Unreadable(Cause::Wait)),
     ] {
         assert!(guard(&resolved(k), &name, true).is_ok(), "{k:?}");
     }
@@ -349,7 +348,7 @@ fn the_unreadable_refusal_names_the_profile_the_cause_and_the_remedy() {
         Cause::NotStarted,
         Cause::Exit(1),
         Cause::Signal,
-        Cause::Timeout,
+        Cause::Wait,
     ] {
         let text = ProfileError::KeychainUnreadable {
             name: name.clone(),
@@ -650,41 +649,26 @@ fn a_keychain_login_with_a_key_setting_warns_like_a_login_file_does() {
     assert!(!resolve(&f.store, &n("work"), &f.home).warn_key_setting());
 }
 
+/// Crusty round 2 of PR #2891: the lookup keeps no state between profiles,
+/// so one profile's unreadable answer is not passed on to the next. Each
+/// profile with an account and no file is asked once, and gets its own
+/// answer, in whichever order the resolution takes them.
 #[test]
-fn a_hanging_keychain_costs_one_wait_for_the_whole_command() {
-    let f = fx(0);
-    let hang = "#!/bin/sh\nprintf 'x\\n' >> 'LOG'\nwhile :; do :; done\n"
-        .replace("LOG", &f.log.display().to_string());
-    write_executable(&f.bin.join("security"), &hang);
-    let _seam = test_seam_deadline(&f.bin, Duration::from_millis(4000));
-    // `work` and `keyed` both have an account and no file; `bare` and
-    // `filed` are never asked.
+fn each_profile_gets_the_answer_of_its_own_lookup() {
+    let f = fx_rules(&[("work", 51), ("keyed", 0)]);
+    let _seam = test_seam(&f.bin);
     let ctx = Ctx::load(&f.store, Some(&f.home));
-    let start = Instant::now();
     let all = ctx.try_resolve_all(&f.store).unwrap();
-    let took = start.elapsed();
-    for p in ["work", "keyed"] {
-        let (_, r) = all.iter().find(|(q, _)| q.as_str() == p).unwrap();
-        assert_eq!(
-            (r.kind, r.source.to_string()),
-            (Kind::Subscription, UNREADABLE.into()),
-            "{p}"
-        );
-        assert_eq!(
-            r.keychain,
-            Some(Keychain::Unreadable(Cause::Timeout)),
-            "{p}"
-        );
-    }
-    assert!(
-        f.starts() <= 1,
-        "one start at most, then the latch: {}",
-        f.starts()
-    );
-    assert!(
-        took < Duration::from_millis(7500),
-        "two waits would be 8 s: {took:?}"
-    );
+    let answer = |p: &str| {
+        all.iter()
+            .find(|(q, _)| q.as_str() == p)
+            .unwrap()
+            .1
+            .keychain
+    };
+    assert_eq!(answer("work"), Some(Keychain::Unreadable(Cause::Exit(51))));
+    assert_eq!(answer("keyed"), Some(Keychain::Present));
+    assert_eq!(f.starts(), 2, "one start for each of work and keyed");
 }
 
 // --- the reference says what the code does --------------------------------------
@@ -717,7 +701,7 @@ fn the_reference_lists_every_cause_text() {
         Cause::NotStarted,
         Cause::Exit(7),
         Cause::Signal,
-        Cause::Timeout,
+        Cause::Wait,
     ] {
         let text = cause.to_string().replace('7', "<n>");
         assert!(REFERENCE.contains(&text), "{text}");

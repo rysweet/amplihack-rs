@@ -15,6 +15,12 @@
 //! or "present", so a caller can never read a locked or unreachable Keychain
 //! as proof of anything.
 //!
+//! The lookup is one blocking wait on the child. There is no deadline, no
+//! sleep and no polling loop: the answer comes when `security` ends. A
+//! `security` that waits on a Keychain dialog holds the caller until the
+//! dialog is answered, and supervising the whole command is the caller's
+//! business, not this module's.
+//!
 //! This file reads no environment variable. The home directory is a
 //! parameter, and the few variables handed on to the child are read by
 //! `usage_cmd::child_vars`. No variable can change the platform or the
@@ -22,14 +28,14 @@
 //! exists in test builds alone.
 
 use super::rotate::identify::Account;
+use icu_normalizer::ComposingNormalizerBorrowed;
 use sha2::{Digest, Sha256};
-use std::cell::Cell;
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
 
 /// Claude Code's service name for a config directory is this prefix and
 /// eight hex digits; see [`service_name`].
@@ -37,12 +43,6 @@ pub const SERVICE_PREFIX: &str = "Claude Code-credentials-";
 
 /// Found by bare name on the search path, as `claude` itself is.
 const PROGRAM: &str = "security";
-
-/// How long one lookup may take before it is abandoned.
-const DEADLINE: Duration = Duration::from_secs(5);
-
-/// How often a running lookup is checked.
-const POLL: Duration = Duration::from_millis(10);
 
 /// The variables the child is given besides `HOME`, where the process has
 /// them. Everything else, API-key variables included, is withheld.
@@ -84,8 +84,10 @@ pub enum Cause {
     Exit(i32),
     /// `security` was ended by a signal.
     Signal,
-    /// `security` was still running at the deadline and was stopped.
-    Timeout,
+    /// `security` was started, but waiting for it failed, so it gave no
+    /// exit status. It is not killed: a child that cannot be waited for is
+    /// no longer this process's to signal.
+    Wait,
 }
 
 impl std::fmt::Display for Cause {
@@ -95,15 +97,17 @@ impl std::fmt::Display for Cause {
             Self::NotStarted => f.write_str("`security` could not be started"),
             Self::Exit(n) => write!(f, "`security` exit status {n}"),
             Self::Signal => f.write_str("`security` was ended by a signal"),
-            Self::Timeout => f.write_str("`security` did not answer in time"),
+            Self::Wait => f.write_str("`security` could not be waited for"),
         }
     }
 }
 
-/// What a lookup runs in: the platform, the child's home and environment,
-/// and the deadline. One `Env` belongs to one `kind::Ctx`, so to one
-/// resolution of the kinds. A command that loads `kind::Ctx` more than once
-/// has one `Env` for each.
+/// What a lookup runs in: the platform and the child's home and
+/// environment. One `Env` belongs to one `kind::Ctx`, so to one resolution
+/// of the kinds. A command that loads `kind::Ctx` more than once has one
+/// `Env` for each. An `Env` keeps no state between lookups, so each lookup
+/// is answered by its own `security` and the order of lookups never changes
+/// an answer.
 ///
 /// `Debug` is left out on purpose: the home and the search path are private
 /// paths and have no place in a log.
@@ -112,19 +116,11 @@ pub struct Env {
     home: Option<PathBuf>,
     /// The child's environment besides `HOME`.
     vars: Vec<(&'static str, OsString)>,
-    deadline: Duration,
-    /// Set by the first lookup that ran out of time. Every later lookup in
-    /// this `Env` then answers [`Cause::Timeout`] without starting
-    /// `security`, so a hanging Keychain costs one deadline per `Env` and
-    /// not one per profile. A command with several pays once for each. It
-    /// only ever moves towards a refusal.
-    timed_out: Cell<bool>,
 }
 
 impl Env {
-    /// The value for this process: macOS only on macOS, the process's own
-    /// search path, and a five second deadline. `home` becomes the child's
-    /// `HOME`.
+    /// The value for this process: macOS only on macOS, and the process's
+    /// own search path. `home` becomes the child's `HOME`.
     ///
     /// In a test build the platform reads as not macOS unless the calling
     /// thread holds a [`test_seam`], so no unit test starts the system
@@ -133,8 +129,8 @@ impl Env {
         #[cfg(test)]
         {
             match seam::held() {
-                Some((path, deadline)) => Self::fake(true, home, &path, deadline),
-                None => Self::new(false, home, Vec::new(), DEADLINE),
+                Some(path) => Self::fake(true, home, &path),
+                None => Self::new(false, home, Vec::new()),
             }
         }
         #[cfg(not(test))]
@@ -146,34 +142,22 @@ impl Env {
             } else {
                 Vec::new()
             };
-            Self::new(macos, home, vars, DEADLINE)
+            Self::new(macos, home, vars)
         }
     }
 
-    fn new(
-        macos: bool,
-        home: Option<&Path>,
-        vars: Vec<(&'static str, OsString)>,
-        deadline: Duration,
-    ) -> Self {
+    fn new(macos: bool, home: Option<&Path>, vars: Vec<(&'static str, OsString)>) -> Self {
         Self {
             macos,
             home: home.map(Path::to_path_buf),
             vars,
-            deadline,
-            timed_out: Cell::new(false),
         }
     }
 
     /// Any value a test needs: `path` is the child's whole search path.
     #[cfg(test)]
-    pub fn fake(macos: bool, home: Option<&Path>, path: &Path, deadline: Duration) -> Self {
-        Self::new(
-            macos,
-            home,
-            vec![("PATH", path.as_os_str().to_os_string())],
-            deadline,
-        )
+    pub fn fake(macos: bool, home: Option<&Path>, path: &Path) -> Self {
+        Self::new(macos, home, vec![("PATH", path.as_os_str().to_os_string())])
     }
 
     /// Whether Keychain lookups are made at all.
@@ -184,14 +168,21 @@ impl Env {
 
 /// The Keychain service Claude Code uses for the config directory `dir`:
 /// [`SERVICE_PREFIX`] and the first eight lower-case hex digits of the
-/// SHA-256 of the path's raw bytes. The path is not normalised in any way,
-/// so the caller passes exactly the path it exports as `CLAUDE_CONFIG_DIR`.
+/// SHA-256 of the UTF-8 bytes of the path in Unicode Normalization Form C
+/// (see `nfc_bytes`). Nothing else is done to the path: no trailing slash is
+/// removed and no component is resolved, so the caller passes exactly the
+/// path it exports as `CLAUDE_CONFIG_DIR`.
 ///
 /// The rule is Claude Code's, not amplihack's, and may change between its
-/// versions. It lives in this one function, pinned by two vectors in
-/// `tests_keychain.rs` that were computed with `shasum`.
+/// versions. In the bundle of Claude Code 2.1.330 the config directory is
+/// `(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"))
+/// .normalize("NFC")`, and the service suffix is
+/// `createHash("sha256").update(dir).digest("hex").substring(0, 8)` over
+/// that value; `update` encodes a string as UTF-8. The rule lives in this
+/// one function, pinned by vectors in `tests_keychain.rs` that were
+/// computed with `shasum` and checked with Node's `normalize("NFC")`.
 pub fn service_name(dir: &Path) -> String {
-    let digest = Sha256::digest(dir.as_os_str().as_bytes());
+    let digest = Sha256::digest(nfc_bytes(dir));
     let mut name = String::from(SERVICE_PREFIX);
     for byte in &digest[..4] {
         // Writing to a `String` cannot fail.
@@ -200,24 +191,42 @@ pub fn service_name(dir: &Path) -> String {
     name
 }
 
+/// The bytes [`service_name`] hashes: the path in Normalization Form C, as
+/// UTF-8. A path already in NFC, which includes every ASCII path, is its own
+/// bytes unchanged. A decomposed name, such as `cafe` followed by U+0301
+/// where Claude Code sees `café`, becomes the composed form, so both
+/// spellings of one directory name one item.
+///
+/// A path that is not valid UTF-8 is hashed as its raw bytes. That case does
+/// not arise where the lookup runs: the macOS file systems store names as
+/// UTF-8 only.
+fn nfc_bytes(dir: &Path) -> Cow<'_, [u8]> {
+    let raw = dir.as_os_str().as_bytes();
+    let Ok(text) = std::str::from_utf8(raw) else {
+        return Cow::Borrowed(raw);
+    };
+    match ComposingNormalizerBorrowed::new_nfc().normalize(text) {
+        Cow::Borrowed(_) => Cow::Borrowed(raw),
+        Cow::Owned(composed) => Cow::Owned(composed.into_bytes()),
+    }
+}
+
 /// Asks the Keychain whether an item named `service` exists.
 ///
 /// Nothing is started, and the answer is [`Keychain::Unreadable`], when the
-/// home is unknown or not absolute, or when an earlier lookup in `env` ran
-/// out of time. Otherwise `security` is started once and waited for until
-/// the deadline; at the deadline that one child is killed through its own
-/// handle and reaped.
+/// home is unknown or not absolute. Otherwise `security` is started once
+/// and waited for with one blocking wait until it ends. No deadline is set,
+/// nothing sleeps and nothing polls: a `security` that waits on a Keychain
+/// dialog holds the caller until the dialog is answered, and the answer is
+/// then whatever its exit status says.
 ///
 /// The lookup is never retried: the exit status is the answer, and a second
 /// start could raise a second dialog. The rotator's stop flag is not read
-/// either, so a stop waits for a lookup in progress, one deadline at most.
+/// either, so a stop waits for a lookup in progress to end.
 pub fn probe(env: &Env, service: &str) -> Keychain {
     let Some(home) = env.home.as_deref().filter(|h| h.is_absolute()) else {
         return Keychain::Unreadable(Cause::NoHome);
     };
-    if env.timed_out.get() {
-        return Keychain::Unreadable(Cause::Timeout);
-    }
     let started = Command::new(PROGRAM)
         .args(["find-generic-password", "-s", service])
         .env_clear()
@@ -234,29 +243,16 @@ pub fn probe(env: &Env, service: &str) -> Keychain {
             return Keychain::Unreadable(Cause::NotStarted);
         }
     };
-    let end = Instant::now() + env.deadline;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return answer(status),
-            Ok(None) if Instant::now() < end => std::thread::sleep(POLL),
-            Ok(None) => break,
-            Err(error) => {
-                tracing::debug!(op = "keychain lookup", error = %error.kind(), "wait failed");
-                break;
-            }
+    // One blocking wait, which also reaps the child. It fails only when
+    // the child is not this process's to wait for (`ECHILD`); a kill then
+    // could reach another process that has taken the pid, so none is sent.
+    match child.wait() {
+        Ok(status) => answer(status),
+        Err(error) => {
+            tracing::debug!(op = "keychain lookup", error = %error.kind(), "wait failed");
+            Keychain::Unreadable(Cause::Wait)
         }
     }
-    // Out of time, or the child could not be waited for: stop this child
-    // and nothing else. A child that has just ended refuses the kill, which
-    // is harmless; the wait below reaps it either way.
-    if let Err(error) = child.kill() {
-        tracing::debug!(op = "keychain lookup", error = %error.kind(), "kill failed");
-    }
-    if let Err(error) = child.wait() {
-        tracing::debug!(op = "keychain lookup", error = %error.kind(), "not reaped");
-    }
-    env.timed_out.set(true);
-    Keychain::Unreadable(Cause::Timeout)
 }
 
 /// The exit status is the whole answer: 0 is an item, 44 is no item, and
@@ -289,7 +285,7 @@ pub fn detect(env: &Env, dir: &Path) -> Option<Keychain> {
 }
 
 #[cfg(test)]
-pub use seam::{test_seam, test_seam_deadline};
+pub use seam::test_seam;
 
 /// The test seam. It exists in test builds only, belongs to one thread, and
 /// is undone when its guard is dropped.
@@ -297,9 +293,8 @@ pub use seam::{test_seam, test_seam_deadline};
 mod seam {
     use std::cell::RefCell;
     use std::path::{Path, PathBuf};
-    use std::time::Duration;
 
-    type Held = Option<(PathBuf, Duration)>;
+    type Held = Option<PathBuf>;
 
     thread_local! {
         static SEAM: RefCell<Held> = const { RefCell::new(None) };
@@ -317,21 +312,10 @@ mod seam {
         }
     }
 
-    /// A test's fake `security` is a script written a moment before, and
-    /// macOS checks a new script on its first run, which takes seconds on a
-    /// busy host. The seam therefore waits far longer than the real
-    /// deadline; a test of the deadline itself names its own.
-    const PATIENT: Duration = Duration::from_secs(120);
-
     /// While the guard lives, `Env::ambient` on this thread reads as macOS
     /// and finds `security` in `path` alone.
     pub fn test_seam(path: &Path) -> Seam {
-        test_seam_deadline(path, PATIENT)
-    }
-
-    /// [`test_seam`] with a deadline short enough to test a hanging lookup.
-    pub fn test_seam_deadline(path: &Path, deadline: Duration) -> Seam {
-        let before = SEAM.with(|s| s.borrow_mut().replace((path.to_path_buf(), deadline)));
+        let before = SEAM.with(|s| s.borrow_mut().replace(path.to_path_buf()));
         Seam { before }
     }
 

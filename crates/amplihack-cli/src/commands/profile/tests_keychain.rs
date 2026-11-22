@@ -8,33 +8,30 @@
 //! fake appends `<HOME>|<arguments>` to a log, so a test can say exactly what
 //! was run, and how often.
 //!
-//! A fake is a script written a moment before it is run, and macOS checks a
-//! new script on its first run, which takes seconds on a busy host. A test
-//! that expects an answer therefore waits with `PATIENT`; only the tests of
-//! the deadline itself use a short one, and they accept a fake that was
-//! stopped before its first line.
-//!
 //! Contract (`profile::keychain`):
 //! - `SERVICE_PREFIX` is `Claude Code-credentials-`; `service_name(&Path)` is
 //!   that prefix and the first eight lower-case hex digits of the SHA-256 of
-//!   the raw bytes of the path, with no normalisation.
+//!   the path's UTF-8 bytes in Unicode Normalization Form C, as Claude Code
+//!   computes it (crusty round 2 of PR #2891). Nothing else is done to the
+//!   path: a trailing slash is kept. A path that is not UTF-8 is hashed as
+//!   its raw bytes.
 //! - `Keychain::{Present, Absent, Unreadable(Cause)}` and
-//!   `Cause::{NoHome, NotStarted, Exit(i32), Signal, Timeout}` derive
-//!   `Debug`, `Clone`, `Copy`, `PartialEq` and `Eq`. `Cause`'s `Display`
-//!   texts are fixed (see `cause_texts_are_fixed`).
-//! - `Env` holds the platform, the home, the search path and the deadline.
-//!   `Env::ambient(home)` is the production value: macOS only on macOS, the
-//!   process `PATH`, a 5 s deadline. In test builds it reads as not macOS
-//!   unless a scoped `test_seam(path)` (or `test_seam_deadline(path,
-//!   deadline)`) is held on the thread; `Env::fake(macos, home, path,
-//!   deadline)` builds any other value. `Env` does not implement `Debug`.
+//!   `Cause::{NoHome, NotStarted, Exit(i32), Signal, Wait}` derive `Debug`,
+//!   `Clone`, `Copy`, `PartialEq` and `Eq`. `Cause`'s `Display` texts are
+//!   fixed (see `cause_texts_are_fixed`).
+//! - `Env` holds the platform, the home and the search path, and no state
+//!   between lookups. `Env::ambient(home)` is the production value: macOS
+//!   only on macOS, the process `PATH`. In test builds it reads as not macOS
+//!   unless a scoped `test_seam(path)` is held on the thread;
+//!   `Env::fake(macos, home, path)` builds any other value. `Env` does not
+//!   implement `Debug`.
 //! - `probe(&Env, service) -> Keychain` runs `security find-generic-password
 //!   -s <service>`, found by bare name on the env's search path, with `HOME`
 //!   set to the env's home and the three standard streams discarded. Exit 0
 //!   is `Present`, 44 is `Absent`; everything else is `Unreadable`. The wait
-//!   is bounded: on the deadline the child is killed and the answer is
-//!   `Unreadable(Timeout)`, and the same `Env` then answers `Timeout`
-//!   without starting `security` again.
+//!   is one blocking wait until `security` ends: no deadline, no sleep and
+//!   no polling loop (crusty round 2 of PR #2891). A failed wait is
+//!   `Unreadable(Wait)`.
 //! - `detect(&Env, dir) -> Option<Keychain>`: `None` (and nothing started)
 //!   off macOS, or when `dir/.claude.json` has no identifiable
 //!   `oauthAccount`; otherwise `Some(probe(env, service_name(dir)))`.
@@ -49,11 +46,13 @@ use super::keychain::{
 };
 use super::usage_cmd::child_vars;
 use crate::test_support::{EnvGuard, env_lock, write_executable};
+use std::ffi::OsStr;
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::sync::mpsc::{TryRecvError, channel};
 
 /// A fake `security`: its directory (the child's whole `PATH`) and its log.
 struct Fake {
@@ -99,7 +98,7 @@ fn exits(code: i32) -> Fake {
 
 impl Fake {
     fn env(&self) -> Env {
-        Env::fake(true, Some(&self.home), &self.dir, PATIENT)
+        Env::fake(true, Some(&self.home), &self.dir)
     }
 
     /// Whether any process still runs this fake, by its unique path.
@@ -127,9 +126,6 @@ impl Fake {
 
 const SERVICE: &str = "Claude Code-credentials-d8cc6731";
 
-/// Long enough for a busy host to start a fresh script; see the module text.
-const PATIENT: Duration = Duration::from_secs(120);
-
 // --- the service name ---------------------------------------------------------
 
 /// The vectors were computed with `shasum -a 256` over invented literal
@@ -142,17 +138,55 @@ fn the_service_name_is_pinned_by_independent_vectors() {
         service_name(Path::new("/Users/example/.amplihack/claude-profiles/work")),
         SERVICE
     );
-    // Raw bytes: a path that is not ASCII is hashed as its bytes.
-    let raw = Path::new(std::ffi::OsStr::from_bytes(
+    // A path that is not ASCII and already in NFC is hashed as its UTF-8
+    // bytes, unchanged.
+    let composed = Path::new(OsStr::from_bytes(
         b"/home/example/.amplihack/claude-profiles/caf\xc3\xa9",
     ));
-    assert_eq!(service_name(raw), "Claude Code-credentials-4b2e2204");
+    assert_eq!(service_name(composed), "Claude Code-credentials-4b2e2204");
+}
+
+/// Crusty round 2 of PR #2891. Claude Code 2.1.330 takes
+/// `CLAUDE_CONFIG_DIR`, applies `.normalize("NFC")` and hashes the UTF-8
+/// result, so a directory whose name reaches amplihack decomposed must be
+/// hashed in its composed form, or a valid login reads as absent.
+///
+/// The vectors were computed with `shasum -a 256` over the composed bytes,
+/// and checked with
+/// `node -e 'crypto.createHash("sha256").update(p.normalize("NFC"))'` over
+/// the decomposed text. The raw decomposed bytes hash to `1eed5f3c` and
+/// `d5919c9e`, which is the wrong name.
+#[test]
+fn a_decomposed_path_names_the_same_item_as_its_composed_form() {
+    // `cafe` and U+0301 COMBINING ACUTE ACCENT, in place of U+00E9.
+    let decomposed = Path::new(OsStr::from_bytes(
+        b"/home/example/.amplihack/claude-profiles/cafe\xcc\x81",
+    ));
+    assert_eq!(service_name(decomposed), "Claude Code-credentials-4b2e2204");
+    // `A` and U+030A, then `o` and U+0308: two composed letters in one name.
+    let two = Path::new(OsStr::from_bytes(
+        b"/Users/example/.amplihack/claude-profiles/A\xcc\x8angstro\xcc\x88m",
+    ));
+    assert_eq!(service_name(two), "Claude Code-credentials-ecfd2b88");
+    let composed = Path::new(OsStr::from_bytes(
+        b"/Users/example/.amplihack/claude-profiles/\xc3\x85ngstr\xc3\xb6m",
+    ));
+    assert_eq!(service_name(composed), service_name(two));
 }
 
 #[test]
-fn the_service_name_does_not_normalise_the_path() {
+fn a_path_that_is_not_utf_8_is_hashed_as_its_raw_bytes() {
+    // `printf '/tmp/x\xff' | shasum -a 256` starts f927dbd0. No such name
+    // exists on a macOS file system; the rule only has to be defined.
+    let raw = Path::new(OsStr::from_bytes(b"/tmp/x\xff"));
+    assert_eq!(service_name(raw), "Claude Code-credentials-f927dbd0");
+}
+
+#[test]
+fn the_service_name_keeps_a_trailing_slash() {
     // `printf '%s' <path>/ | shasum -a 256` starts 1a8e0b44: a trailing slash
     // is a different name, so the caller must pass the path it exports.
+    // Normalization Form C changes no ASCII byte.
     assert_eq!(
         service_name(Path::new("/Users/example/.amplihack/claude-profiles/work/")),
         "Claude Code-credentials-1a8e0b44"
@@ -215,17 +249,12 @@ fn a_missing_security_could_not_be_started() {
     private_dir(&empty);
     let home = t.path().join("home");
     private_dir(&home);
-    let env = Env::fake(true, Some(&home), &empty, Duration::from_secs(10));
+    let env = Env::fake(true, Some(&home), &empty);
     assert_eq!(
         probe(&env, SERVICE),
         Keychain::Unreadable(Cause::NotStarted)
     );
-    let env = Env::fake(
-        true,
-        Some(&home),
-        &t.path().join("no-such-dir"),
-        Duration::from_secs(10),
-    );
+    let env = Env::fake(true, Some(&home), &t.path().join("no-such-dir"));
     assert_eq!(
         probe(&env, SERVICE),
         Keychain::Unreadable(Cause::NotStarted)
@@ -331,73 +360,77 @@ fn nothing_the_child_prints_reaches_the_answer_or_the_test_output() {
 #[test]
 fn no_absolute_home_means_unreadable_and_nothing_is_started() {
     let f = exits(0);
-    let none = Env::fake(true, None, &f.dir, Duration::from_secs(10));
+    let none = Env::fake(true, None, &f.dir);
     assert_eq!(probe(&none, SERVICE), Keychain::Unreadable(Cause::NoHome));
-    let relative = Env::fake(
-        true,
-        Some(Path::new("home")),
-        &f.dir,
-        Duration::from_secs(10),
-    );
+    let relative = Env::fake(true, Some(Path::new("home")), &f.dir);
     assert_eq!(
         probe(&relative, SERVICE),
         Keychain::Unreadable(Cause::NoHome)
     );
-    let empty = Env::fake(true, Some(Path::new("")), &f.dir, Duration::from_secs(10));
+    let empty = Env::fake(true, Some(Path::new("")), &f.dir);
     assert_eq!(probe(&empty, SERVICE), Keychain::Unreadable(Cause::NoHome));
     assert!(f.lines().is_empty(), "security was never started");
 }
 
-// --- probe: a bounded wait ---------------------------------------------------------
+// --- probe: one blocking wait, no deadline (crusty round 2 of PR #2891) ------------
 
+/// The lookup holds until `security` ends, however long that takes, and
+/// answers from its exit status then. The test needs no clock: the fake
+/// blocks reading a FIFO, so it cannot end before the test writes to it.
+///
+/// The test opens the FIFO for writing, which returns only once a reader has
+/// it open. In the passing case that reader is the fake, which then waits
+/// for the line, so `probe` cannot have answered yet. If `probe` answers
+/// without waiting (the fake was not started, say), the thread that ran it
+/// sends that answer and then opens the FIFO read-write, so the test's open
+/// returns and finds the early answer, rather than blocking forever.
 #[test]
-fn a_hanging_security_is_killed_at_the_deadline_and_is_unreadable() {
-    let f = fake("printf '%s|%s\\n' \"$HOME\" \"$*\" >> 'LOG'\nwhile :; do :; done\n");
-    let env = Env::fake(true, Some(&f.home), &f.dir, Duration::from_millis(3000));
-    let start = Instant::now();
-    assert_eq!(probe(&env, SERVICE), Keychain::Unreadable(Cause::Timeout));
-    let took = start.elapsed();
-    assert!(took >= Duration::from_millis(3000), "{took:?}");
-    // Not forever: the fake never ends by itself.
-    assert!(took < Duration::from_secs(60), "{took:?}");
-    // The child was killed through its own handle and reaped. This holds
-    // whether or not a busy host let the fake reach its first line.
+fn the_lookup_waits_for_security_to_end_with_no_time_limit_of_its_own() {
+    let f = fake("printf '%s|%s\\n' \"$HOME\" \"$*\" >> 'LOG'\nread line < 'LOG.fifo'\nexit 0\n");
+    let fifo = f.log.with_extension("log.fifo");
+    let made = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo");
+    assert!(made.success(), "mkfifo failed: {made}");
+    let (tx, rx) = channel();
+    let (home, dir, unblock) = (f.home.clone(), f.dir.clone(), fifo.clone());
+    let lookup = std::thread::spawn(move || {
+        let got = probe(&Env::fake(true, Some(&home), &dir), SERVICE);
+        tx.send(got).unwrap();
+        // Lets the test's open return if no fake ever opened the FIFO.
+        let _ = fs::OpenOptions::new().read(true).write(true).open(&unblock);
+    });
+    let mut writer = fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+    assert_eq!(
+        rx.try_recv(),
+        Err(TryRecvError::Empty),
+        "the lookup answered while security was still running"
+    );
+    assert_eq!(f.lines().len(), 1, "security was started once");
+    writer.write_all(b"go\n").unwrap();
+    drop(writer);
+    assert_eq!(rx.recv().unwrap(), Keychain::Present);
+    lookup.join().unwrap();
+    // The one wait also reaped the child.
     assert!(!f.still_running(), "the fake is still running");
 }
 
+/// The lookup keeps no state between calls: an `Env` whose first lookup
+/// gave no answer still asks `security` the next time, so the order of the
+/// lookups never changes an answer.
 #[test]
-fn after_one_timeout_the_same_env_starts_nothing_more() {
-    let f = fake("printf '%s|%s\\n' \"$HOME\" \"$*\" >> 'LOG'\nwhile :; do :; done\n");
-    let env = Env::fake(true, Some(&f.home), &f.dir, Duration::from_millis(3000));
-    assert_eq!(probe(&env, SERVICE), Keychain::Unreadable(Cause::Timeout));
-    // A loaded host may kill the child before its first line, so the count
-    // is taken here and must not change.
-    let before = f.lines().len();
-    assert!(before <= 1, "one start at most: {before}");
-    let start = Instant::now();
+fn an_unreadable_answer_does_not_change_the_next_lookup() {
+    let f = fake(
+        "printf '%s|%s\\n' \"$HOME\" \"$*\" >> 'LOG'\ncase \"$3\" in\n  'Claude Code-credentials-00000000') exit 51 ;;\n  *) exit 0 ;;\nesac\n",
+    );
+    let env = f.env();
     assert_eq!(
         probe(&env, "Claude Code-credentials-00000000"),
-        Keychain::Unreadable(Cause::Timeout)
+        Keychain::Unreadable(Cause::Exit(51))
     );
-    assert!(
-        start.elapsed() < Duration::from_millis(150),
-        "no second wait"
-    );
-    assert_eq!(f.lines().len(), before, "a hanging Keychain costs one wait");
-}
-
-#[test]
-fn a_timeout_in_one_env_does_not_leak_into_another() {
-    let f = exits(0);
-    let slow = fake("while :; do :; done\n");
-    let a = Env::fake(
-        true,
-        Some(&slow.home),
-        &slow.dir,
-        Duration::from_millis(150),
-    );
-    assert_eq!(probe(&a, SERVICE), Keychain::Unreadable(Cause::Timeout));
-    assert_eq!(probe(&f.env(), SERVICE), Keychain::Present);
+    assert_eq!(probe(&env, SERVICE), Keychain::Present);
+    assert_eq!(f.lines().len(), 2, "each lookup started its own security");
 }
 
 // --- detect --------------------------------------------------------------------------
@@ -444,7 +477,7 @@ fn detect_asks_for_the_directorys_own_service_when_there_is_an_account() {
 fn detect_asks_nothing_off_macos() {
     let f = exits(0);
     let dir = profile_dir(f.home.parent().unwrap(), Some(ACCOUNT));
-    let env = Env::fake(false, Some(&f.home), &f.dir, Duration::from_secs(10));
+    let env = Env::fake(false, Some(&f.home), &f.dir);
     assert_eq!(detect(&env, &dir), None);
     assert!(f.lines().is_empty(), "a recording fake was never started");
 }
@@ -477,7 +510,7 @@ fn detect_asks_nothing_without_an_identifiable_account() {
 fn detect_fails_loudly_when_no_home_is_known() {
     let f = exits(0);
     let dir = profile_dir(f.home.parent().unwrap(), Some(ACCOUNT));
-    let env = Env::fake(true, None, &f.dir, Duration::from_secs(10));
+    let env = Env::fake(true, None, &f.dir);
     assert_eq!(
         detect(&env, &dir),
         Some(Keychain::Unreadable(Cause::NoHome))
@@ -501,8 +534,8 @@ fn cause_texts_are_fixed() {
         "`security` was ended by a signal"
     );
     assert_eq!(
-        Cause::Timeout.to_string(),
-        "`security` did not answer in time"
+        Cause::Wait.to_string(),
+        "`security` could not be waited for"
     );
 }
 
@@ -568,6 +601,31 @@ fn the_module_starts_one_command_and_keeps_every_stream_closed() {
         assert!(!MODULE.contains(banned), "keychain.rs contains {banned}");
     }
     assert!(MODULE.contains("find-generic-password"));
+}
+
+/// Crusty round 2 of PR #2891: the lookup sets no wall-clock limit, never
+/// sleeps and never polls. The child is waited for once, by a blocking
+/// `wait`, and never killed: no code path here sends a signal.
+#[test]
+fn the_module_has_no_deadline_no_sleep_no_polling_and_no_kill() {
+    let code: String = MODULE
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for banned in [
+        "try_wait",
+        "sleep",
+        "Instant",
+        "Duration",
+        "recv_timeout",
+        "wait_timeout",
+        ".kill(",
+        "deadline",
+    ] {
+        assert!(!code.contains(banned), "keychain.rs code contains {banned}");
+    }
+    assert_eq!(code.matches(".wait()").count(), 1, "one blocking wait");
 }
 
 /// Only `keychain.rs` knows the command. A second place that builds it is a

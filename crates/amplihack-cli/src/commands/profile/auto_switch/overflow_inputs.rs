@@ -398,16 +398,25 @@ impl OverflowInputs {
     /// for a profile selection would pass over. Only the capacity writers
     /// call this.
     ///
+    /// `home` is the home directory the Keychain lookups are given: the
+    /// one the writer loaded these inputs with (`OverflowInputs::load_at`),
+    /// so that the rotator's capacity write asks the Keychain with the
+    /// rotator's home, as its kinds and the takeover check do, and not with
+    /// `$HOME`.
+    ///
     /// Returns the profiles taken out because their Keychain could not be
     /// read, each with the cause (issue #2885). Such a profile may well hold
     /// a login, and the launch guard and `auto-switch status` say so, so the
     /// writer hands the cause to its caller (`capacity::keychain_notes`)
     /// rather than leave the profile looking like one with no login.
     #[must_use]
-    pub fn refuse_no_login(&mut self, root: &Path) -> Vec<(ProfileName, Cause)> {
+    pub fn refuse_no_login(
+        &mut self,
+        root: &Path,
+        home: Option<&Path>,
+    ) -> Vec<(ProfileName, Cause)> {
         let store = ProfileStore::new(root.to_path_buf());
-        let home = usage_cmd::home_dir();
-        let own = OwnLogins::new(&store, home.as_deref());
+        let own = OwnLogins::new(&store, home);
         let mut unreadable = Vec::new();
         for name in &self.order {
             let Some(gap) = gap_of(root, &own, name) else {

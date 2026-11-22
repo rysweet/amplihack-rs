@@ -9,10 +9,9 @@
 //! Keychain in any case. The fake `claude` records the config directory it
 //! was started with, so "never started" is "no `claude.*` record".
 //!
-//! macOS checks a new script on its first run, which takes seconds on a busy
-//! host, and the lookup under test has a five second deadline. The fixture
-//! therefore runs each fake `security` once itself and forgets that run, so
-//! the run the test is about starts at once.
+//! The lookup has no deadline of its own (crusty round 2 of PR #2891): it
+//! waits for `security` to end, so a fake that macOS takes seconds to check
+//! on its first run is slow, never misread.
 //!
 //! Contract (docs/reference/profile-command.md, "Keychain logins"):
 //! - macOS, no login file, an identifiable `oauthAccount` in `.claude.json`,
@@ -40,7 +39,7 @@ use crate::support::exec_stub::write_executable;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 
 const ACCOUNT: &str = r#"{"oauthAccount":{"accountUuid":"uuid-SENTINEL-KEYCHAIN","emailAddress":"user-SENTINEL-KEYCHAIN@example.com"}}"#;
 const SENTINEL: &str = "user-SENTINEL-KEYCHAIN";
@@ -110,25 +109,7 @@ impl Fixture {
             "#!/bin/sh\nprintf '%s|%s\\n' \"$HOME\" \"$*\" >> '{}'\n{tail}\n",
             log.display()
         );
-        let fake = self.tools.join("security");
-        write_executable(&fake, &body, 0o755);
-        // The first run of a new script; see the module text. Its result is
-        // the fake's own business (it may exit 51 or end itself by a
-        // signal), so only a failure to start it at all is an error.
-        Command::new(&fake)
-            .arg("first-run")
-            .env_clear()
-            .env("HOME", &self.home)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap_or_else(|e| panic!("cannot run the fake security: {e}"));
-        match fs::remove_file(&log) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => panic!("cannot forget the first run of the fake security: {e}"),
-        }
+        write_executable(&self.tools.join("security"), &body, 0o755);
     }
 
     fn security_exits(&self, code: i32) {
@@ -230,6 +211,7 @@ mod macos {
     use super::*;
     use std::io::Write;
     use std::path::Path;
+    use std::process::Stdio;
 
     impl Fixture {
         fn claude_config_dir(&self) -> String {

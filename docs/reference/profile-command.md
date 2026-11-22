@@ -13944,11 +13944,17 @@ Rule 3 applies only when all of these hold:
 The Keychain is then asked whether an item exists for the profile's
 configuration directory. The service name is
 `Claude Code-credentials-<h>`, where `<h>` is the first eight lower-case hex
-digits of the SHA-256 of the absolute directory path, taken over the raw
-bytes of the path, with no trailing slash and no normalisation. This is the
-name Claude Code gives the item when `CLAUDE_CONFIG_DIR` is set; amplihack
-reproduces it in one function and pins it with a test vector. The unsuffixed
-service that `~/.claude` uses is not looked up, because every profile has a
+digits of the SHA-256 of the absolute directory path, with no trailing
+slash, in Unicode Normalization Form C (NFC) and encoded as UTF-8. Claude
+Code normalises the directory to NFC before it hashes it, so a directory
+name whose accented letters reach amplihack decomposed, for example `e`
+followed by U+0301 in place of `é`, still names the item Claude Code wrote.
+A path that is already in NFC, which includes every ASCII path, is hashed as
+its bytes unchanged. Nothing else is done to the path, so it must be the
+path exported as `CLAUDE_CONFIG_DIR`. This is the name Claude Code gives the
+item when `CLAUDE_CONFIG_DIR` is set; amplihack reproduces it in one
+function and pins it with test vectors. The unsuffixed service that
+`~/.claude` uses is not looked up, because every profile has a
 configuration directory of its own.
 
 The question is one command, `security find-generic-password -s <service>`,
@@ -13963,7 +13969,7 @@ exit status gives the answer:
 |-------------------|--------|-----------------|
 | Exit status 0 | An item exists | `subscription`, with its own login: `detected: oauth login in the macOS Keychain` |
 | Exit status 44 (item not found) | No item | Rule 3 does not apply; rules 4 to 6 follow |
-| Any other exit status, ended by a signal, could not be started, no answer within 5 s, or no absolute home directory known | The Keychain could not be read | `subscription`, with no login: `detected: macOS Keychain unreadable` |
+| Any other exit status, ended by a signal, could not be started, could not be waited for, or no absolute home directory known | The Keychain could not be read | `subscription`, with no login: `detected: macOS Keychain unreadable` |
 
 <a id="keychain-unreadable"></a>An unreadable Keychain, for example a locked
 one, is never taken as proof of an API key, and it is never guessed at in a
@@ -13998,14 +14004,15 @@ Limits:
 - An answer of "no item" with an API-key setting named still resolves as
   `api-key`, as before. The guard cannot tell a profile that never logged in
   from one whose item Claude Code stored under a different name.
-- The lookup is abandoned after 5 s: only the `security` process amplihack
-  started is ended, and the answer is unreadable. After one timeout the same
-  kind resolution makes no further lookup, so a hanging Keychain costs one
-  wait per resolution, not one per profile. A command that resolves the
-  kinds more than once waits once for each: `profile auto-switch status` and
-  the check made at a usage limit resolve them twice, so each can wait 10 s.
-  The lookup is not retried, and a stop request to the rotator is noticed
-  only when a lookup in progress has ended.
+- The lookup is one blocking wait for `security` to end. amplihack sets no
+  time limit on it, and never sleeps, polls or kills `security`; the answer
+  is the exit status `security` ends with. A `security` that is held by a
+  Keychain dialog holds the command that asked, the rotator's cycle
+  included, until the dialog is answered. A command that must not wait is
+  supervised from outside. Each lookup is answered by its own `security`,
+  so one profile's answer never decides another's. The lookup is not
+  retried, and a stop request to the rotator is noticed only when a lookup
+  in progress has ended.
 - One lookup was measured at 18 to 23 ms for an absent item in an unlocked
   login Keychain. Each kind resolution that reaches rule 3 starts one. The
   check made at a usage limit and `profile auto-switch status` each start up
@@ -14028,7 +14035,8 @@ Limits:
   Keychain profile is refused with `SubscriptionNoLogin` after a Claude Code
   upgrade, check the service name first:
   `printf '%s' "<profile directory>" | shasum -a 256 | cut -c1-8` prints
-  `<h>`, and `security find-generic-password -s "Claude Code-credentials-<h>" >/dev/null 2>&1; echo $?`
+  `<h>` for a path in NFC (for a name with accented letters, type them
+  composed, as `printf` hashes the bytes it is given), and `security find-generic-password -s "Claude Code-credentials-<h>" >/dev/null 2>&1; echo $?`
   prints 0 when the item exists and 44 when it does not. Searching the login
   Keychain for `Claude Code-credentials` in Keychain Access shows the names
   Claude Code now uses.
@@ -14204,7 +14212,7 @@ The error is `KeychainUnreadable`. The cause is one of:
 | `` `security` exit status <n> `` | `security` answered with a status other than 0 or 44. Which status a locked Keychain gives was not measured. |
 | `` `security` was ended by a signal `` | The process was killed. |
 | `` `security` could not be started `` | No `security` was found on `PATH`, or it is not executable. |
-| `` `security` did not answer in time `` | No answer within 5 s. |
+| `` `security` could not be waited for `` | `security` was started, but waiting for it failed, so it gave no exit status. It is not killed. |
 | `no home directory is known` | No absolute home directory was available, so nothing was started. |
 
 The refusal exists only on Unix; see

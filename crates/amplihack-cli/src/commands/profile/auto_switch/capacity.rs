@@ -333,7 +333,9 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
             })
             .collect();
         let now = fsx::now();
-        let mut overflow = OverflowInputs::load(&state.root, &eff.config, now);
+        // One home for the kinds, the Keychain lookups and the key check.
+        let home = usage_cmd::home_dir();
+        let mut overflow = OverflowInputs::load_at(&state.root, &eff.config, now, home.as_deref());
         // Kinds unknown: write nothing, and leave any existing file as it is.
         if overflow.kinds_unknown {
             return Vec::new();
@@ -344,9 +346,10 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
                 rotate::GateSource::Rotator(_)
             )
         };
-        let notes = keychain_notes(&overflow.refuse_no_login(&state.root), &eff.config);
+        let unreadable = overflow.refuse_no_login(&state.root, home.as_deref());
+        let notes = keychain_notes(&unreadable, &eff.config);
         if overflow.platform.is_some()
-            && !overflow.key_counts(&state.root, usage_cmd::home_dir().as_deref(), rotator())
+            && !overflow.key_counts(&state.root, home.as_deref(), rotator())
         {
             overflow.refuse_key();
         }
@@ -378,8 +381,10 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
 /// `key_usable`: the rotator's login check for the API-key profile passes,
 /// so it could move onto it, and the file agrees with the move (issue #1804).
 ///
-/// `home`: the rotator's home directory, for the kinds, so that this reads
-/// the same `~/.claude` as the cycle that called it and not `$HOME`.
+/// `home`: the rotator's home directory, for the kinds and for the Keychain
+/// lookups of [`OverflowInputs::refuse_no_login`], so that this reads the
+/// same `~/.claude` and asks the same Keychain as the cycle that called it,
+/// and not `$HOME`.
 ///
 /// Returns [`keychain_notes`] for the rotator to log
 /// (`rotate::overflow_record::note_keychain`); empty when nothing was
@@ -429,7 +434,7 @@ pub fn refresh_from_rotation(
         if overflow.kinds_unknown {
             return Vec::new();
         }
-        let notes = keychain_notes(&overflow.refuse_no_login(&state.root), &eff.config);
+        let notes = keychain_notes(&overflow.refuse_no_login(&state.root, home), &eff.config);
         if !key_usable {
             overflow.refuse_key();
         }

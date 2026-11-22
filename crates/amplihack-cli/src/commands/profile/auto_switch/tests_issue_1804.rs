@@ -301,7 +301,7 @@ fn capacity_counts_no_overflow_profile_without_a_login_file() {
     let blocked = |f: &Fx| {
         let mut inputs = f.inputs(&c, Some(GATE), now);
         // No Keychain is asked in this test, so none is unreadable.
-        assert!(inputs.refuse_no_login(&f.root).is_empty());
+        assert!(inputs.refuse_no_login(&f.root, Some(&f.home)).is_empty());
         inputs.blocked.contains(&"console".to_string())
     };
     assert!(!blocked(&f), "its login file is there");
