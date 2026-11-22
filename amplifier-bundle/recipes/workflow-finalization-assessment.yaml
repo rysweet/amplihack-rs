@@ -151,11 +151,14 @@ steps:
       3. Decide only on what you read after the last write.
 
       If you must stop before the head is green and before you can name a
-      cause the run cannot fix, still return a terminal state, never nothing:
-      report what you read, with the head commit and the count of green,
-      failing, pending and unknown checks, and say in `next_action` what the
-      next attempt should try. An empty or unparseable answer is the one
-      ending that names no cause and no owner, and finalization can only
+      cause the run cannot fix, the state is `FAILED_IMPLEMENTATION`: the
+      verification the run needs is not complete and the work is unfinished.
+      It is never a success and never `BLOCKED_CI`, which asserts a cause the
+      run cannot fix. Name the pull request in `pr_number` so the next loop is
+      handed it, report in `reason` the head commit and the count of green,
+      failing, pending and unknown checks you read, and say in `next_action`
+      what the next attempt should try. An empty or unparseable answer is the
+      one ending that names no cause and no owner, and finalization can only
       report it as missing evidence.
 
       After a push, GitHub moves the pull request to the new commit shortly
@@ -241,10 +244,17 @@ steps:
         does not define`; and `next_action` as `<owner>: <exact step>`, for
         example `repository administrator: add DEPLOY_TOKEN under Settings,
         Secrets and variables, Actions, then re-run deploy`. A cause the run
-        can fix is never `BLOCKED_CI`: repair it instead.
+        can fix is never `BLOCKED_CI`: repair it instead, and a repair you
+        left unfinished is `FAILED_IMPLEMENTATION`. Reporting it without both
+        sentences names no owner and no step, so finalization refuses to
+        publish it, reports that it has no decision, and the run goes to the
+        recovery agent.
       - `FAILED_IMPLEMENTATION` — nothing was published, there is no pull
         request, or the only pull request is at a commit unrelated to the local
-        head, and `task.description` did ask for a change.
+        head, and `task.description` did ask for a change. It is also the state
+        for a pull request whose head you left not green, with the repair
+        unfinished and no cause named that the run cannot fix: give its
+        `pr_number`, with `reason` and `next_action` as above.
       - `FAILED_REPORTING` — the work is published as above but the reporting
         step failed (`reporting_failure` is `true`). Durable implementation and
         verification evidence survives; only the narrative is missing.

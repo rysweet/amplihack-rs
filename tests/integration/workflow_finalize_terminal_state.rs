@@ -628,3 +628,38 @@ fn the_ci_repair_never_edits_github_and_names_the_same_protected_paths_everywher
         }
     }
 }
+
+// #2966, from the step-17b review. The prompt tells the agent to return a
+// terminal state when it must stop before the head is green and before it can
+// name a cause the run cannot fix. It has to say which state: with none named,
+// the nearest reading is `EXISTING_OPEN_PR`, which finalization publishes as a
+// success over a red head. It is `FAILED_IMPLEMENTATION` -- the verification
+// the run needs is not complete -- and never a success.
+#[test]
+fn the_assessment_names_the_state_for_a_stop_before_green() {
+    let path =
+        workspace_root().join("amplifier-bundle/recipes/workflow-finalization-assessment.yaml");
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let paragraph = flat(between(
+        &text,
+        "If you must stop before the head is green",
+        "An empty or unparseable answer",
+        "assessment prompt",
+    ));
+
+    assert!(
+        paragraph.contains("`FAILED_IMPLEMENTATION`"),
+        "the stop-before-green paragraph must name the state to return: {paragraph}"
+    );
+    for success in [
+        "EXISTING_OPEN_PR",
+        "IMPLEMENTED_VERIFIED",
+        "ALLOW_NO_OP",
+        "NO_DIFF_SUCCESS",
+    ] {
+        assert!(
+            !paragraph.contains(success),
+            "a stop before green is never {success}: {paragraph}"
+        );
+    }
+}

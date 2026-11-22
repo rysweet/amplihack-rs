@@ -31,6 +31,8 @@ mod ancestor_fetch_ssh;
 mod ancestor_handoff;
 #[path = "issue_1714_finalization_handoff/assessed_ci.rs"]
 mod assessed_ci;
+#[path = "issue_1714_finalization_handoff/assessed_ci_owner.rs"]
+mod assessed_ci_owner;
 #[path = "issue_1714_finalization_handoff/brick.rs"]
 mod brick;
 #[path = "issue_1714_finalization_handoff/fixture.rs"]

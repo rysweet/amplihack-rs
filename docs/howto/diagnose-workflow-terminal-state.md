@@ -188,6 +188,13 @@ required_next_action=Re-run the reporting step; the implementation is intact.
 Retry the reporting step for `FAILED_REPORTING`; do not re-run the
 implementation. Resume from implementation only for `FAILED_IMPLEMENTATION`.
 
+Since #2966 `FAILED_IMPLEMENTATION` also covers a published pull request whose
+head the run left not green, with the repair unfinished and no cause named
+that the run cannot fix. It then carries the pull request number, and `reason`
+names the head commit with the count of green, failing, pending and unknown
+checks read last. Resume the CI repair from that head rather than from
+implementation.
+
 The finalizer narrative is never parsed, so its text cannot cause either state.
 Read it as diagnostics only:
 

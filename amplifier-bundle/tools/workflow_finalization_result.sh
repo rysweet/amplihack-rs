@@ -131,3 +131,24 @@ _finalization_state_names_pr() {
     *) return 1 ;;
   esac
 }
+
+# #2966. The same rule for the one state whose published definition IS a person's
+# next move. BLOCKED_CI asserts a cause the run cannot fix, so it carries the
+# cause (`reason`) and the step its owner must take (`next_action`); reported
+# with neither it ends the run naming nobody, and the validator's placeholder
+# sentences would hide that behind a pointer back at the assessment. As with a
+# pull-request state that names no pull request, the decision contradicts its
+# own definition, which is no decision for the recovery agent to close. This
+# asks only whether the decision named what it asserts: it re-judges no fact
+# and reads no check.
+#
+# _finalization_decision_unowned <state> <reason> <next> -> prints what is
+# missing and returns 0 when the state needs an owner and was given none.
+_finalization_decision_unowned() {
+  local reason="${2-}" next="${3-}" missing=""
+  case "${1-}" in BLOCKED_CI) ;; *) return 1 ;; esac
+  [ -n "${reason//[[:space:]]/}" ] || missing="no cause"
+  [ -n "${next//[[:space:]]/}" ] || missing="${missing:+$missing and }no step for its owner"
+  [ -n "$missing" ] || return 1
+  printf '%s\n' "$missing"
+}

@@ -525,8 +525,31 @@ The assessment reports it with two sentences:
 | `reason` | `<check>: <cause>` | `deploy-preview: the workflow reads secrets.PREVIEW_TOKEN, which the repository does not define` |
 | `next_action` | `<owner>: <exact step>` | `repository administrator: add PREVIEW_TOKEN under Settings, Secrets and variables, Actions, then re-run deploy-preview` |
 
+Both sentences are required, and the validator checks for them. A `BLOCKED_CI`
+with no `reason`, no `next_action`, or neither names no owner and no step, so
+the placeholder sentences the validator would otherwise substitute would end
+the run at exit `81` pointing back at the assessment. It is therefore read the
+same way as a pull-request state that names no pull request: no decision,
+reported as `FAILED_MISSING_TERMINAL_EVIDENCE` for the recovery agent, and
+never handed to the auto-drive loops. The rule is
+`_finalization_decision_unowned` in `workflow_finalization_result.sh`; it
+re-judges no fact and reads no check.
+
 `pr_number` is required with it. Without a pull request number the state
 cannot be handed on, and finalization fails closed with no hand-off.
+
+### Stopping before the head is green
+
+The repair has no round or time cap, but a run can still stop before green: a
+usage limit, an operator, or an attempt the agent cannot carry further. The
+state for that is `FAILED_IMPLEMENTATION`, not a success and not `BLOCKED_CI`,
+which asserts a cause the run cannot fix. The assessment names the pull
+request in `pr_number`, puts the head commit and the per-class check counts in
+`reason`, and says in `next_action` what the next attempt should try. Inside
+auto-drive that state carries the pull request to the crusty and merge-ready
+loops, which continue the repair; standalone it fails closed with the counts a
+person needs. Without a state named for this case the nearest reading was
+`EXISTING_OPEN_PR`, which finalization publishes as a success over a red head.
 
 ### What "green" means for the loop
 
@@ -629,7 +652,7 @@ leave a trace.
 | A repeated failure | Before another attempt at a check that failed again, the agent states why the attempt differs. If it cannot say yet, that means it does not understand the failure, not that the run cannot fix it: it reads the check's log further back and reproduces the check's command until it can name the cause. A cause in the always-fixable list stays fixable however many attempts it has survived, so a stubborn test, lint, build, format or smoke failure is never `BLOCKED_CI` (#2966). |
 | Approval | `step-22` merges only when `no_merge` is `"false"`; with any other value, including an empty one, it stops at merge-ready and the calling workflow decides. It merges only on an approval that covers the head it would merge, and stops at merge-ready without one. A stale approval of an earlier commit does not authorise a merge, so after a push that follows an approval the agent stops at merge-ready and asks for a new one. The mechanics of reading that approval (`reviews` against `headRefOid`) are in the `ci-diagnostic-workflow` agent file, which the step delegates to. The assessment has no merge action. |
 
-Two checks stay in the validator, and neither reads CI:
+Three checks stay in the validator, and none reads CI:
 
 - **Live dirty-worktree probe.** Whenever the worktree path is recorded, the
   validator runs `git status --porcelain` there, whatever the collected record
@@ -640,6 +663,12 @@ Two checks stay in the validator, and neither reads CI:
   recorded worktree that is missing or not a work tree, and a `git status` that
   fails there, because neither shows a clean worktree. Without a recorded path
   the probe runs against `.` only when the record does not say exactly `false`.
+- **A decision that names what it asserts.** A state whose definition is an
+  open pull request has to name one, and `BLOCKED_CI`, which ends the run for a
+  person, has to carry the cause and that person's step. Either reported
+  without them is no decision, not a verdict: the run goes to the recovery
+  agent as `FAILED_MISSING_TERMINAL_EVIDENCE`. This asks only whether the
+  decision named the thing it asserts; it re-judges no fact.
 - **Quoted vocabulary.** `action_taken` must be `none`, `pushed_branch`,
   `opened_pull_request` or `repaired_ci`. An empty value becomes `none`; it
   labels the record and decides nothing. The terminal state is quoted as
@@ -824,7 +853,9 @@ Tests assert on those SHAs and identifiers, never on wording.
 | A check is failing for a cause the run cannot fix | `BLOCKED_CI` | `outcome.pr`, `outcome.checks=failing`, and a `reason` naming the check and the cause. |
 | PR open at the run's head, CI pending | Not a terminal state: the assessment waits, then decides | `outcome.checks=pending` when the evidence was collected. |
 | PR open at the run's head, every check green or none reported | `EXISTING_OPEN_PR` (a success) | `outcome.pr`, `outcome.pr_state=OPEN` and `outcome.checks=green` or `none`. |
+| The repair was left unfinished, with no cause named that the run cannot fix | `FAILED_IMPLEMENTATION` | `outcome.pr`, and a `reason` naming the head commit and the per-class check counts. |
 | `EXISTING_OPEN_PR` decided with no pull request named | `FAILED_MISSING_TERMINAL_EVIDENCE` (no decision) | The facts, and a reason quoting the `pr_number` that came back. |
+| `BLOCKED_CI` decided with no cause or no owner's step | `FAILED_MISSING_TERMINAL_EVIDENCE` (no decision) | The facts, and a reason naming which of the two sentences was missing. |
 
 A real failure ends the run as before and exits `1`. The change removes the
 failures that were not real.
@@ -851,7 +882,7 @@ failures that were not real.
 | `FAILED_PR_METADATA_UNAVAILABLE` | No | Provider change-request proof is required but metadata or auth is missing, stale, or ambiguous. |
 | `FAILED_MISSING_TOOLING` | No | Required deterministic tooling such as `git`, `jq`, or provider CLI support is missing for the selected path. |
 | `FAILED_INVALID_EVIDENCE` | No | Retired as an outcome of finalization (#2343). Still recognised in the vocabulary so older runs and other producers read correctly. |
-| `FAILED_IMPLEMENTATION` | No | Durable implementation or verification evidence is absent or failed while meaningful work remains. |
+| `FAILED_IMPLEMENTATION` | No | Durable implementation or verification evidence is absent or failed while meaningful work remains. Since #2966 it is also the state for a published pull request whose head the run left not green, with the repair unfinished and no cause named that the run cannot fix. See [Stopping before the head is green](#stopping-before-the-head-is-green). |
 | `FAILED_REPORTING` | No | The work is published but a reporting/finalization step failed. Durable evidence (`pr_url`, `pr_number`) is preserved and reported. Since #2809 `assess-finalization` returns it, judging the typed `finalizer_step_status` beside the published outcome rather than ahead of it. |
 | `FAILED_MISSING_TERMINAL_EVIDENCE` | No | Finalization reached no decision: the facts of the run's outcome could not be gathered, or `assess-finalization` named no state finalization publishes. It is a gap in finalization rather than a verdict about the run, and it leaves the step failing for its recovery agent (#2343, #2809). |
 | `HOLLOW_SUCCESS` | No | Empty or inaccessible agent output: the run may have produced nothing at all. Since #2809 the signal is a fact handed to `assess-finalization`, which returns this state when nothing published contradicts it, rather than an exit taken ahead of the outcome read. |

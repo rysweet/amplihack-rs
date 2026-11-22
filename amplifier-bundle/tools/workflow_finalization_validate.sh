@@ -248,6 +248,14 @@ FIELDS
   open_pr_confirmed_facts="$evidence_used"
 
   if _finalization_state_allowed "$assessment_state"; then
+    # #2966: BLOCKED_CI ends the run for a person, so _finalization_decision_unowned
+    # asks before the placeholders below stand in for the owner it never named.
+    if no_decision="$(_finalization_decision_unowned "$assessment_state" "$assessment_reason" "$assessment_next")"; then
+      fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" \
+        "assess-finalization reported $assessment_state, which ends the run and hands it to a person, but gave $no_decision" \
+        "Run finalization again so assess-finalization reports the failing check, the cause the run cannot fix and the step its owner must take, or the state the facts do support; re-running this step alone reads the same recorded answer." \
+        "$evidence_used"
+    fi
     [ -n "$assessment_reason" ] || assessment_reason="assess-finalization reported $assessment_state on the run's outcome"
     [ -n "$assessment_next" ] || assessment_next="See the finalization assessment."
     # #2819 R1: a state whose definition is an open pull request, reported
