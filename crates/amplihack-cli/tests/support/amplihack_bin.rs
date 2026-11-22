@@ -131,6 +131,7 @@ pub(crate) fn run_copy(
     let dir = base.join(format!("{RUN_DIR_PREFIX}{id}"));
     let bin = dir.join("amplihack");
     if is_regular_file(&bin) {
+        check_private_dir(&dir)?;
         return Ok(bin);
     }
     fs::create_dir_all(base)?;
@@ -143,6 +144,7 @@ pub(crate) fn run_copy(
         .open(base.join(format!("{RUN_DIR_PREFIX}{id}.lock")))?;
     fs2::FileExt::lock_exclusive(&lock)?;
     if is_regular_file(&bin) {
+        check_private_dir(&dir)?;
         return Ok(bin);
     }
     remove_stale_run_dirs(base, id, now);
@@ -161,7 +163,9 @@ fn is_regular_file(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file())
 }
 
-/// Creates `dir` if it is absent and makes it private to the owner.
+/// Creates `dir` if it is absent and makes it private to the owner. A
+/// directory left half-made by a process that was stopped is reused; one
+/// that is not this user's own directory is refused.
 fn make_private_dir(dir: &Path) -> io::Result<()> {
     match fs::create_dir(dir) {
         Ok(()) => {}
@@ -171,7 +175,51 @@ fn make_private_dir(dir: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        check_own_dir(dir)?;
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// A run directory found already made is used only if it is a real
+/// directory (not a link) that this user owns and nobody else can enter.
+/// The per-process copy got this from `tempfile`; a directory with a known
+/// name has to be checked.
+fn check_private_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        check_own_dir(dir)?;
+        let mode = fs::symlink_metadata(dir)?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            return Err(io::Error::other(format!(
+                "{} is open to other users (mode {mode:o})",
+                dir.display()
+            )));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn check_own_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::symlink_metadata(dir)?;
+    if !meta.file_type().is_dir() {
+        return Err(io::Error::other(format!(
+            "{} is not a directory",
+            dir.display()
+        )));
+    }
+    // SAFETY: `geteuid` takes no arguments and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    if meta.uid() != euid {
+        return Err(io::Error::other(format!(
+            "{} belongs to another user",
+            dir.display()
+        )));
     }
     Ok(())
 }

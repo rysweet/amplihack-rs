@@ -307,3 +307,63 @@ fn under_a_test_run_with_an_id_the_binary_is_that_runs_copy() {
         format!("amplihack-bin-run-{id}")
     );
 }
+
+#[test]
+fn a_run_directory_open_to_other_users_or_replaced_by_a_link_is_not_used() {
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().join("tmp");
+    let built = fake_built_dir(root.path(), false);
+    let now = SystemTime::now();
+    // A complete copy whose directory has since been opened to others.
+    let bin = run_copy(&base, "run-f", now, || built.clone()).unwrap();
+    let dir = bin.parent().unwrap().to_path_buf();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let err = run_copy(&base, "run-f", now, || built.clone()).unwrap_err();
+    assert!(err.to_string().contains("open to other users"), "{err}");
+    // A link where the run directory should be, pointing at a directory
+    // that holds an `amplihack`.
+    let elsewhere = root.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::write(elsewhere.join("amplihack"), b"not the build").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, base.join("amplihack-bin-run-run-g")).unwrap();
+    let err = run_copy(&base, "run-g", now, || built.clone()).unwrap_err();
+    assert!(err.to_string().contains("is not a directory"), "{err}");
+}
+
+#[test]
+fn a_run_directory_left_half_made_is_finished_by_the_next_process() {
+    let root = tempfile::tempdir().unwrap();
+    let base = root.path().join("tmp");
+    let built = fake_built_dir(root.path(), true);
+    // What a first process stopped part-way leaves: the directory, the
+    // hooks binary and a temporary file, but no `amplihack`.
+    let dir = base.join("amplihack-bin-run-run-h");
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(dir.join("amplihack-hooks"), b"old").unwrap();
+    fs::write(dir.join(".amplihack.tmp"), b"partial").unwrap();
+    let builds = AtomicUsize::new(0);
+    let bin = run_copy(&base, "run-h", SystemTime::now(), || {
+        builds.fetch_add(1, Ordering::SeqCst);
+        built.clone()
+    })
+    .unwrap();
+    assert_eq!(
+        builds.load(Ordering::SeqCst),
+        1,
+        "the next process builds, since no copy was complete"
+    );
+    assert_eq!(
+        fs::read(&bin).unwrap(),
+        fs::read(built.join("amplihack")).unwrap()
+    );
+    assert_eq!(
+        fs::read(dir.join("amplihack-hooks")).unwrap(),
+        fs::read(built.join("amplihack-hooks")).unwrap(),
+        "the hooks binary is the one built with it"
+    );
+    assert!(
+        fs::symlink_metadata(dir.join(".amplihack.tmp")).is_err(),
+        "no temporary file is left"
+    );
+}
