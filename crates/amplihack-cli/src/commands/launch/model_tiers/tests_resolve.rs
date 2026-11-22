@@ -614,3 +614,72 @@ fn no_emitted_token_after_model_can_act_as_another_argument() {
         }
     }
 }
+
+// -------------------------------------------------------------------------
+// Issue #2916: the Claude column's reasoning effort
+// -------------------------------------------------------------------------
+
+#[test]
+fn claude_strong_on_the_shipped_table_resolves_to_xhigh() {
+    let table = Table::shipped();
+    let args = argv(&["--model", "strong", "-p"]);
+    let out = resolve(&request("claude", &args, table));
+    assert_eq!(out.effort, Some(Effort::Xhigh));
+    let record = out.record.as_ref().expect("recorded");
+    assert_eq!(record.requested_effort, Some(Effort::Xhigh));
+    assert_eq!(record.effective_effort, Some(Effort::Xhigh));
+}
+
+#[test]
+fn claude_standard_and_fast_ask_for_no_effort() {
+    let table = Table::shipped();
+    for tier in ["standard", "fast"] {
+        let args = argv(&["--model", tier, "-p"]);
+        let out = resolve(&request("claude", &args, table));
+        assert_eq!(out.effort, None, "{tier}");
+    }
+}
+
+#[test]
+fn a_concrete_claude_model_gets_no_tier_and_no_effort() {
+    let table = Table::shipped();
+    let args = argv(&["--model", "claude-opus-5[1m]", "-p"]);
+    let out = resolve(&request("claude", &args, table));
+    assert_eq!(out.effort, None);
+    assert!(out.record.is_none());
+}
+
+#[test]
+fn a_gateway_claude_launch_keeps_the_effort_and_still_says_why() {
+    let table = Table::shipped();
+    let args = argv(&["--model", "strong", "-p"]);
+    let out = resolve(&Request {
+        harness: "claude",
+        argv: &args,
+        table,
+        force: None,
+        default_model: None,
+        through_gateway: true,
+    });
+    assert_eq!(out.argv, argv(&["-p"]), "the model pair is still deleted");
+    assert_eq!(
+        out.effort,
+        Some(Effort::Xhigh),
+        "an effort is a session setting, not a routing key"
+    );
+    assert!(
+        out.notices
+            .iter()
+            .any(|n| matches!(n, Notice::Gateway { .. })),
+        "the gateway line must keep printing: {:?}",
+        out.notices
+    );
+}
+
+#[test]
+fn a_column_with_no_effort_control_still_gets_no_effort() {
+    let table = Table::shipped();
+    let args = argv(&["--model", "strong"]);
+    let out = resolve(&request("copilot", &args, table));
+    assert_eq!(out.effort, None);
+}

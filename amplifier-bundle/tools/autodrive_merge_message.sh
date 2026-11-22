@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# autodrive_merge_message.sh — the squash commit message for an auto-drive merge.
+# autodrive_merge_message.sh — the commit message for an auto-drive merge.
 #
 # `main` squashes with `squash_merge_commit_message: COMMIT_MESSAGES`, so a
 # merge that supplies no message gets every commit on the branch concatenated
@@ -11,12 +11,20 @@
 # from the pull request's title and the description part of its body, without
 # the merge-ready report; what GitHub adds to it is not seen here (issue #2056).
 #
-# The caller is autodrive-finalize's `finalize-observed-action` agent step
-# (#2329 retired the shell merge gate). It sources this file from the trusted
-# launch bundle, never from the pull request's tree, in the same shell call
-# that merges. This file only DEFINES functions; sourcing it has no side
-# effects. It reads nothing a pull request could write except the `gh pr view`
-# JSON it is handed, and runs no command that could merge.
+# A merge commit (`--merge`, #1888) takes the same composed subject and body.
+# Given neither, GitHub writes the merge commit from the repository's
+# `merge_commit_title` and `merge_commit_message` settings, and under
+# `PR_BODY` the body is the whole pull request body, the merge-ready report
+# included. Given these, the subject becomes the merge commit's headline and
+# the body its message, as for a squash. A rebase writes no commit of its own
+# and takes nothing.
+#
+# The caller is autodrive_merge, the merge request made by autodrive-finalize's
+# `merge` step (#2575; #2819 left finalisation one agent step). It sources this
+# file from the trusted launch bundle, never from the pull request's tree, in
+# the same shell call that merges. This file only DEFINES functions; sourcing
+# it has no side effects. It reads nothing a pull request could write except
+# the `gh pr view` JSON it is handed, and runs no command that could merge.
 #
 # The body reaches `gh` on standard input, from the caller's own memory: the
 # merge argv ends `--body-file -`, and the caller pipes MERGE_BODY into it. It
