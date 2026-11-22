@@ -54,7 +54,7 @@ AUTODRIVE_EXIT_POLICY_REFUSAL=79
 LOOP_NAME=""; AD_RECOVERY_DIR=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; ALSO_CLEAN=""; VERDICT_FIELD=""
 REPO="."; STATE_DIR=""; TASK_FILE_IN=""; ROUND_CTX=(); BEFORE_ROUND=""; CTX_REFUSED=""; BUDGET_CTX=(); BEFORE_CTX=(); AD_PR=""
 
-# shellcheck disable=SC2034 # AD_PR is read by the sourced autodrive_escalate.sh
+# AD_PR is read by the sourced autodrive_escalate.sh and passed to completion dispatch as PR_NUMBER (#2333).
 while [ $# -gt 0 ]; do
   case "$1" in
     --loop-name)     LOOP_NAME="${2:-}"; shift 2 ;;
@@ -287,7 +287,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
     # #2814: a dispatch refusal ends the drive, so keep the text naming what
     # the helper refused; the generic reason alone left the operator guessing.
     DISPATCH_ERR="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-dispatch.err"
-    DISPATCH="$(umask 077; AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger evaluator)" \
+    DISPATCH="$(umask 077; AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger evaluator)" PR_NUMBER="$AD_PR" \
       "$AMPLIHACK_BIN" orch helper autodrive-completion-dispatch \
       --private-state "$AUTODRIVE_COMPLETION_STATE" --child-exit-code "$ROUND_RC" \
       2>"$DISPATCH_ERR")"

@@ -35,7 +35,7 @@ steps:
         echo "ERROR: step12-push-updates requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
         exit 1
       fi
-      S=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_stage_changes.sh" ] && { S="$c/amplifier-bundle/tools/workflow_stage_changes.sh"; break; }; done
+      S=""; case "${WORKFLOW_STAGE_CHANGES_HELPER:-}" in /*) if [ -f "$WORKFLOW_STAGE_CHANGES_HELPER" ]; then S="$WORKFLOW_STAGE_CHANGES_HELPER"; fi;; esac; [ -n "$S" ] || for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_stage_changes.sh" ] && { S="$c/amplifier-bundle/tools/workflow_stage_changes.sh"; break; }; done
       [ -n "$S" ] || { echo "ERROR: amplifier-bundle/tools/workflow_stage_changes.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
       . "$S"  # #2839: private root run/reports/ stays on disk and out of the index
       amplihack hygiene artifact-guard --repo . --mode pre-publish
