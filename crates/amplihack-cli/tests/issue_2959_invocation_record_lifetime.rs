@@ -134,15 +134,15 @@ fn drive() -> Run {
     .unwrap();
     fs::set_permissions(&ctx, fs::Permissions::from_mode(0o600)).unwrap();
 
-    let out = Command::new(amplihack_bin())
+    // `isolated` clears the environment, so no inherited session tree, depth,
+    // login or profile variable reaches the stand-in drive: it is a root run
+    // with only the isolation defaults and what is set below.
+    let out = crate::isolated_amplihack::isolated(amplihack_bin())
         .args(["recipe", "run", "auto-drive-to-merge", "--context-file"])
         .arg(&ctx)
         .arg("-w")
         .arg(&repo)
         .current_dir(&repo)
-        // No inherited session tree, depth, login or profile variable: the
-        // stand-in drive is a root run with only what is set below.
-        .env_clear()
         .env(
             "PATH",
             format!(

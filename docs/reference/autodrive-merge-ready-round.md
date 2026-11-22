@@ -849,11 +849,19 @@ runner bound.
 The merge loop's `step-03-finalize` continues on error, so
 `step-03r-finalize-recovery` runs. It carries the condition
 `not autodrive_finalization`, because `continue_on_error` lets the loop go on
-after the failed step and recovery must still be entered. The evidence the
-recovery agent has is the `ERROR:` line and `finalize-merge.json`, if one
-exists. Whether the helper's own message reaches the drive log depends on the
-runner keeping the finalize step's standard error, which is not guaranteed, so
-do not rely on it.
+after the failed step and recovery must still be entered.
+
+The pinned runner captures a bash step's standard error and keeps it only in
+that step's error result; it does not stream it to the drive log, whose
+progress lines show the step's status and duration only. The first attempt's
+`ERROR:` line and the helper's message therefore stay in the parent run's
+result for `step-03-finalize`. Recovery starts with `--already-failed`, so the
+recovery agent does not receive that first attempt's standard error either.
+What it can read is `finalize-merge.json`, if one exists. When a re-run made
+by recovery fails, its `ERROR:` line does reach the recovery agent, because
+`step-recovery` passes on and keeps the tail of each attempt's standard error.
+It reaches the drive log only if `step-03r-finalize-recovery` itself fails and
+the runner reports that failure.
 
 Recovery runs `autodrive-finalize` again as a separate process. Capturing the
 invocation again uses only the operator's original inputs (`no_merge`, the dry
