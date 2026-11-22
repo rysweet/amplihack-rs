@@ -111,17 +111,27 @@ macro_rules! lane {
                 decided
             }
 
-            pub fn reread(ctx: &Ctx, name: &ProfileName, _: Duration) -> Probed {
-                READ_ONLY.store(ctx.read_only, Ordering::SeqCst);
-                let mut calls = CALLS.lock().unwrap();
-                calls.push(name.to_string());
-                let nth = calls.len() - 1;
-                let queue = REREAD.lock().unwrap();
-                queue
-                    .get(nth)
-                    .or(queue.last())
-                    .cloned()
-                    .unwrap_or_else(Probed::failed)
+            pub fn reread(
+                c: &Ctx,
+                who: &ProfileName,
+                left: Duration,
+            ) -> (
+                Probed,
+                Option<crate::commands::profile::rotate::measure::ProbeLabel>,
+            ) {
+                fn hook_body(ctx: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+                    READ_ONLY.store(ctx.read_only, Ordering::SeqCst);
+                    let mut calls = CALLS.lock().unwrap();
+                    calls.push(name.to_string());
+                    let nth = calls.len() - 1;
+                    let queue = REREAD.lock().unwrap();
+                    queue
+                        .get(nth)
+                        .or(queue.last())
+                        .cloned()
+                        .unwrap_or_else(Probed::failed)
+                }
+                (hook_body(c, who, left), None)
             }
 
             pub fn calls() -> Vec<String> {
@@ -944,13 +954,13 @@ fn rising_with_no_candidate_alerts_at_63_and_rereads_the_third_identical_reading
 lane!(lpr);
 
 /// The decision on the projected 73.3% runs under the overflow-aware rules
-/// (`affinity::outlook`). `spare` at 72% has room but only 2 points more
-/// headroom: on 73.3% those rules would make a plan-room move, which never
-/// runs on a projection. No login has capacity on it, so the cycle ALERTs,
-/// as it does with no candidate at all: the projection is never a silent
-/// stay because plan room exists.
+/// (`affinity::outlook`). `spare` at 72% has room 28 against the 26 the
+/// projection leaves `work`, short of the 31 a move needs. Issue #2910
+/// changed this expectation (ruling D10): the live login still has room and
+/// a login is eligible, so the cycle is a stay with its note, not the
+/// no-capacity ALERT; it is never a silent stay, and never a move.
 #[test]
-fn rising_with_only_plan_room_alerts_at_63_and_never_moves_for_room() {
+fn rising_with_only_plan_room_stays_with_a_note_at_63_and_never_moves_for_room() {
     let e = env();
     seed(&lpr::CLOCK);
     set(&lpr::LIVE, &rising());
@@ -969,8 +979,8 @@ fn rising_with_only_plan_room_alerts_at_63_and_never_moves_for_room() {
     let log = log_of(&e);
     assert_eq!(basis(&c), Some(Basis::Projected), "{log}");
     assert!(
-        log.contains("ALERT: no profile has capacity live=work s=63% w=41%"),
-        "cycle 5 alerts on the projection: {log}"
+        log.contains("stay: live room 26, best other login has room 28, a move needs 31"),
+        "cycle 5 says why it stays on the projection: {log}"
     );
     assert_eq!(swaps(&log), 0, "no plan-room move on a projection: {log}");
     assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
@@ -1505,15 +1515,58 @@ fn o1_a_projected_swap_takes_the_same_organisation_login_over_more_headroom() {
     });
 }
 
+lane!(lo5);
+
+/// Issue #2910 (D3): the hold on a move off a login that still has room onto
+/// one at or above `--session-at` does not apply to a projected swap, which
+/// relieves a login about to run out. `work` at 63% is projected to 76%,
+/// which leaves it 24 points; `spare` (org A) at 70/10 has 30, the margin
+/// more, and is at `--session-at` (70). The rotator swapped a minute ago, and
+/// the projected swap is made all the same.
+#[cfg(target_os = "linux")]
+#[test]
+fn o5_a_projected_swap_onto_a_login_past_session_at_is_not_held() {
+    in_two_orgs(|e| {
+        let wanted = stored(e, "spare");
+        seed(&lo5::CLOCK);
+        let mut l = e.rs.load_ledger().unwrap().unwrap();
+        l.swapped_at = Some(lo5::clock() - 60);
+        e.rs.save_ledger(&l).unwrap();
+        set(
+            &lo5::LIVE,
+            &[Live::Direct(50.0, 41.0), Live::Direct(63.0, 41.0)],
+        );
+        set(
+            &lo5::OTHERS,
+            &[
+                ("spare", rd(70.0, 10.0, None)),
+                ("third", exh(100.0, 100.0)),
+            ],
+        );
+        let mut c = ctx(e, lo5::clock, lo5::measure, Some(lo5::reread));
+        assert_eq!(step(&mut c, &lo5::CLOCK), CycleOutcome::Stayed);
+        let got = step(&mut c, &lo5::CLOCK);
+        let log = log_of(e);
+        assert_eq!(basis(&c), Some(Basis::Projected), "{log}");
+        assert_eq!(got, CycleOutcome::Swapped, "{log}");
+        assert_eq!(ino_at(&e.live()), wanted, "spare's login is live: {log}");
+        assert!(log.contains(" swap work->spare "), "{log}");
+        assert!(log.contains("reason=projected"), "{log}");
+        assert!(!log.contains("held after last swap"), "{log}");
+    });
+}
+
 lane!(lo2);
 
 /// Only `third` (org B) has capacity. The projection to 76% does not
 /// cross, and is not the no-capacity ALERT either: there is capacity, in
-/// another organisation. The measured 76% next cycle needs relief, and
-/// that threshold swap crosses, with the crossing warning.
+/// another organisation. Issue #2910 changed the third cycle (ruling S1):
+/// the measured 76% still leaves `work` room, and a login with room never
+/// crosses, so it stays with a note. At 100% it has none, and that threshold
+/// swap crosses, with the crossing warning.
 #[cfg(target_os = "linux")]
 #[test]
-fn o2_a_projection_never_crosses_and_the_measured_threshold_does() {
+fn o2_a_projection_never_crosses_and_a_login_with_no_room_does() {
     in_two_orgs(|e| {
         let third = stored(e, "third");
         seed(&lo2::CLOCK);
@@ -1523,6 +1576,7 @@ fn o2_a_projection_never_crosses_and_the_measured_threshold_does() {
                 Live::Direct(50.0, 41.0),
                 Live::Direct(63.0, 41.0),
                 Live::Direct(76.0, 41.0),
+                Live::Direct(100.0, 41.0),
             ],
         );
         set(
@@ -1543,10 +1597,20 @@ fn o2_a_projection_never_crosses_and_the_measured_threshold_does() {
         assert!(!log.contains("ALERT"), "capacity exists, across: {log}");
         let got = step(&mut c, &lo2::CLOCK);
         let log = log_of(e);
+        assert_eq!(
+            got,
+            CycleOutcome::Stayed,
+            "a login with room never crosses: {log}"
+        );
+        assert_eq!(swaps(&log), 0, "{log}");
+        assert!(log.contains("stay: live room 24"), "{log}");
+        assert!(!log.contains("ALERT"), "{log}");
+        let got = step(&mut c, &lo2::CLOCK);
+        let log = log_of(e);
         assert_eq!(got, CycleOutcome::Swapped, "{log}");
         assert_eq!(ino_at(&e.live()), third, "{log}");
         assert!(
-            log.contains("swap work->third live s=76% w=41% target s=0% w=0% reason=threshold"),
+            log.contains("swap work->third live s=100% w=41% target s=0% w=0% reason=threshold"),
             "{log}"
         );
         assert!(log.contains("affinity: crossing work->third"), "{log}");
@@ -1602,13 +1666,14 @@ fn o3_a_substitution_tests_the_failed_probe_swaps_own_target() {
 
 lane!(lo4);
 
-/// A failed probe after 66% with only `third` (org B) to go to: the
-/// failed-probe rules may cross, since a dead login needs relief, but the
-/// substitution never makes that crossing sooner, though `third` beats
-/// 70% easily. The crossing is the failed-probe swap on failure 3.
+/// A failed probe after 66% with only `third` (org B) to go to. Issue #2910
+/// changed this expectation (ruling S1, R3): a live login whose probe failed
+/// is not known to have no room, so it never crosses, on the substitution or
+/// on the failed-probe swap after three failures. Each cycle is the
+/// no-target ALERT, so a person sees that only a crossing would help.
 #[cfg(target_os = "linux")]
 #[test]
-fn o4_a_substitution_never_makes_a_crossing_sooner() {
+fn o4_a_failed_live_probe_never_crosses() {
     in_two_orgs(|e| {
         take_key_from_home(e);
         let third = stored(e, "third");
@@ -1620,22 +1685,22 @@ fn o4_a_substitution_never_makes_a_crossing_sooner() {
         );
         let mut c = ctx(e, lo4::clock, lo4::measure, Some(lo4::reread));
         assert_eq!(step(&mut c, &lo4::CLOCK), CycleOutcome::Stayed);
-        for nth in 1..=2 {
+        let before = ino_at(&e.live());
+        for nth in 1..=3 {
             let got = step(&mut c, &lo4::CLOCK);
             let log = log_of(e);
             assert_eq!(basis(&c), Some(Basis::Substituted), "failure {nth}");
-            assert_eq!(got, CycleOutcome::StayedUnread, "failure {nth}: {log}");
+            assert_eq!(got, CycleOutcome::Alerted, "failure {nth}: {log}");
             assert_eq!(swaps(&log), 0, "failure {nth}: {log}");
         }
-        let got = step(&mut c, &lo4::CLOCK);
         let log = log_of(e);
-        assert_eq!(got, CycleOutcome::Swapped, "{log}");
-        assert_eq!(ino_at(&e.live()), third, "{log}");
+        assert_ne!(ino_at(&e.live()), third, "{log}");
+        assert_eq!(ino_at(&e.live()), before, "{log}");
         assert!(
-            log.contains("swap work->third live failed target s=0% w=0% reason=failed-probe"),
+            log.contains("ALERT: no capacity known live=work failed"),
             "{log}"
         );
-        assert!(log.contains("affinity: crossing work->third"), "{log}");
+        assert!(!log.contains("affinity: crossing"), "{log}");
         assert!(!log.contains("reason=projected"), "{log}");
     });
 }

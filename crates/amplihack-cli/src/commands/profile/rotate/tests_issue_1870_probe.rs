@@ -273,7 +273,9 @@ fn under_direct_a_failed_reread_is_an_error_and_starts_no_claude() {
 #[test]
 fn the_production_reread_resolves_the_mode_from_the_environment() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/rotate");
-    let text = fs::read_to_string(dir.join("fresh.rs")).unwrap();
+    // Issue #2910: the production re-reads moved to `fresh_reread.rs` (the
+    // line budget), still re-exported as `fresh::reread_as_configured`.
+    let text = fs::read_to_string(dir.join("fresh_reread.rs")).unwrap();
     let body = text
         .split("pub fn reread_as_configured(")
         .nth(1)

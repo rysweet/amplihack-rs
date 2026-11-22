@@ -61,9 +61,12 @@ pub struct TuneFlags {
     /// Points of headroom that justify a swap below the thresholds (default 30)
     #[arg(long, value_name = "N")]
     pub upgrade_margin: Option<String>,
-    /// Seconds after a swap during which no upgrade happens; 0 disables (default 3600)
+    /// Seconds after a rotator swap during which no upgrade happens, and no move from a live login that still has room to one at or above --session-at; 0 disables (default 3600)
     #[arg(long, value_name = "SECS")]
     pub hold: Option<String>,
+    /// Never swap to a login whose weekly usage is above N%; a login at exactly N% may be chosen (default 95)
+    #[arg(long, value_name = "N")]
+    pub target_week_max: Option<String>,
     /// Move onto an overflow profile only when the earliest plan reset is more than SECS away; 0 means at once (default 1800)
     #[arg(long, value_name = "SECS")]
     pub overflow_wait: Option<String>,

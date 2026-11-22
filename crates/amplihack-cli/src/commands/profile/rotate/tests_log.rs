@@ -111,15 +111,19 @@ fn message_grammar() {
         ),
         "cycle live=key key:per-token work:s=0%,w=?"
     );
+    // Issue #2910 (D9): the no-target line always ends with its counts,
+    // `none` when there is nothing to count.
+    let (_, line) = super::decide::target_msg::summary(
+        "work",
+        &Reading::Measured {
+            session: 99.0,
+            week: 50.0,
+        },
+        &super::decide::target_seen::Seen::default(),
+    );
     assert_eq!(
-        msg::alert_no_capacity(
-            &name("work"),
-            &Reading::Measured {
-                session: 99.0,
-                week: 50.0
-            }
-        ),
-        "ALERT: no profile has capacity live=work s=99% w=50%"
+        line,
+        "ALERT: no profile has capacity live=work s=99% w=50% (candidates: none)"
     );
 }
 

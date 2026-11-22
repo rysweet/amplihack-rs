@@ -1,8 +1,10 @@
-//! The rotator's reading of one probe: the `Probed` value and the fixed
-//! warning lines it writes to the daemon's `rotate.err`.
+//! The rotator's reading of one probe: the `Probed` value, the fixed
+//! warning lines it writes to the daemon's `rotate.err`, and (issue #2910)
+//! the label of a probe that said nothing about its login's room.
 
 use super::super::decide::Probed;
 use crate::commands::profile::usage_cmd::{self, ErrorReason, Probe};
+use crate::commands::profile::usage_direct::reason;
 use crate::commands::profile::usage_parse::UsageState;
 use crate::commands::profile::usage_source;
 use std::io::Write;
@@ -46,3 +48,101 @@ pub(super) fn reading_to(who: &str, p: &Probe, err: &mut dyn Write) -> Probed {
     }
     Probed::from_report(&p.report)
 }
+
+/// Issue #2910 (F7): why a probe said nothing about its login's room. Such a
+/// login is *unknown*, never exhausted, so the rotator may use its last good
+/// reading. The declaration order is the order the no-target line prints the
+/// labels in (D9). Each label is fixed text, never a server's or a
+/// credentials file's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ProbeLabel {
+    /// The usage endpoint answered HTTP 429.
+    Http429,
+    /// The request failed in transport.
+    Transport,
+    /// The login's trusted identity could not be read, so it was not probed.
+    IdentityUnavailable,
+    /// The read ran out of time.
+    Timeout,
+    /// The read had not finished when the cycle stopped waiting for it.
+    StillRunning,
+    /// Another failure of the probe itself that says nothing about the
+    /// login: a server error, an unreadable answer, `claude` not starting.
+    ProbeError,
+}
+
+impl ProbeLabel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Http429 => "HTTP 429",
+            Self::Transport => "transport",
+            Self::IdentityUnavailable => "identity unavailable",
+            Self::Timeout => "timeout",
+            Self::StillRunning => "still running",
+            Self::ProbeError => "probe error",
+        }
+    }
+}
+
+/// The label of a direct read's failure reason, from a closed table that
+/// fails closed (issue #2910, S2). A reason about the login's account (an
+/// expired or refused token, a refresh that failed, no credentials, a plain
+/// 4xx, credits billing) and any reason the table does not name give `None`,
+/// so such a login is never chosen on an old reading.
+fn direct_label(why: &str) -> Option<ProbeLabel> {
+    match why {
+        reason::HTTP_429 => Some(ProbeLabel::Http429),
+        reason::TRANSPORT => Some(ProbeLabel::Transport),
+        reason::TIMEOUT => Some(ProbeLabel::Timeout),
+        reason::HTTP_3XX | reason::HTTP_5XX | reason::UNPARSEABLE | reason::REFRESH_BUSY => {
+            Some(ProbeLabel::ProbeError)
+        }
+        _ => None,
+    }
+}
+
+/// The label of a failed probe; `None` for a probe that read its login, for
+/// a login that is not signed in, excluded or whose directory was refused,
+/// and for a failure that says something about the login's account (issue
+/// #2910, F7, S2).
+///
+/// A direct read's reason decides, whether it is the probe's own error or
+/// the cause of a fallback (`direct_failure`) that then failed too: the
+/// fallback's own error (`claude not found`) hides the cause, and a cause
+/// about the login's account gives no label whatever followed it. A fallback
+/// that then timed out is a timeout. Without a direct reason, a probe that
+/// could not start, read or wait for `claude` is a probe error, and one that
+/// timed out is a timeout.
+pub fn label_of(p: &Probe) -> Option<ProbeLabel> {
+    let read = !matches!(p.report.state, UsageState::Error | UsageState::Timeout);
+    if read && p.error.is_none() {
+        return None;
+    }
+    if let Some(why) = p.direct_failure {
+        let cause = direct_label(why)?;
+        let timed_out = p.error.is_none() && p.report.state == UsageState::Timeout;
+        return Some(if timed_out {
+            ProbeLabel::Timeout
+        } else {
+            cause
+        });
+    }
+    match p.error {
+        Some(ErrorReason::Direct(why)) => direct_label(why),
+        Some(
+            ErrorReason::StartFailed
+            | ErrorReason::ReadFailed
+            | ErrorReason::WaitFailed
+            | ErrorReason::NoClaude,
+        ) => Some(ProbeLabel::ProbeError),
+        Some(ErrorReason::NotSignedIn(_) | ErrorReason::Excluded | ErrorReason::ProfileRefused) => {
+            None
+        }
+        None if p.report.state == UsageState::Timeout => Some(ProbeLabel::Timeout),
+        None => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "tests_issue_2910_label.rs"]
+mod tests_issue_2910_label;

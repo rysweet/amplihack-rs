@@ -73,6 +73,20 @@ fn plan_room(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     );
     decide_measured(ctx, snap, ok(85.0, 90.0), probes, at())
 }
+/// Issue #2910: the plan-room cycle with the live login at 100% of its
+/// session, so it has no room and every eligible login qualifies (D2).
+fn plan_room_full(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let probes = probes_for(
+        snap,
+        &[("spare", ok(84.0, 89.0)), ("third", ok(84.0, 89.0))],
+    );
+    decide_measured(ctx, snap, ok(100.0, 90.0), probes, at())
+}
+/// Issue #2910: the threshold cycle with the live login at 100%, so a
+/// crossing is necessary relief (S1).
+fn threshold_full(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    measured(ctx, snap, 100.0)
+}
 
 #[test]
 fn threshold_prefers_same_organisation_before_headroom() {
@@ -120,11 +134,14 @@ fn upgrade_onto_an_unknown_organisation_goes_ahead_with_a_risk_warning() {
     assert!(log.contains("unresolved"), "{log}");
 }
 
+/// Issue #2910 changed this test's fixture (ruling D1): with room 10 on the
+/// live login a move to room 11 is not made at all, so the live login is at
+/// 100% here, and the same-organisation login is taken first (D12).
 #[test]
 fn same_organisation_plan_room_survives_an_empty_capacity_pool() {
     let e = fixture(json!("org-a"), json!("org-a"), json!("org-b"));
     let wanted = ino_at(&e.root.join("spare").join(CREDS));
-    run(&e, plan_room);
+    run(&e, plan_room_full);
     assert_eq!(
         ino_at(&e.home.join(".claude").join(CREDS)),
         wanted,
@@ -133,6 +150,8 @@ fn same_organisation_plan_room_survives_an_empty_capacity_pool() {
     );
 }
 
+/// A live login that still has room never crosses (S1); with no room it
+/// does, once nothing in its organisation or unresolved qualifies.
 #[test]
 fn plan_room_and_its_fallback_never_cross() {
     let e = fixture(json!("org-a"), json!("org-b"), json!("org-b"));
@@ -146,11 +165,12 @@ fn plan_room_and_its_fallback_never_cross() {
     );
 }
 
+/// Issue #2910 changed this test's fixture (ruling D1), as above.
 #[test]
 fn plan_room_onto_an_unknown_organisation_is_not_a_crossing() {
     let e = fixture(json!("org-a"), Value::Null, Value::Null);
     let before = ino_at(&e.home.join(".claude").join(CREDS));
-    run(&e, plan_room);
+    run(&e, plan_room_full);
     assert_ne!(
         ino_at(&e.home.join(".claude").join(CREDS)),
         before,
@@ -289,10 +309,12 @@ fn blocked_overflow_crosses_to_a_plan_login_with_room() {
     }
 }
 
+/// Issue #2910 changed this test's fixture (ruling S1): a crossing is
+/// necessary only when the live login has no room, so it is at 100% here.
 #[test]
 fn necessary_crossing_records_both_organisations_and_warns() {
     let e = fixture(json!("org-a"), json!("org-b"), json!("org-b"));
-    run(&e, threshold);
+    run(&e, threshold_full);
     let v: Value = serde_json::from_slice(&fs::read(e.rs.dir.join("swap.json")).unwrap()).unwrap();
     assert_eq!(v["from_org"], "org-a");
     assert_eq!(v["to_org"], "org-b");
@@ -362,10 +384,13 @@ fn threshold_boundary(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
     decide_measured(ctx, snap, ok(100.0, 100.0), probes, at())
 }
 
+/// Issue #2910 changed this expectation (ruling D12): logins in the live
+/// login's organisation come first, whatever their tier, so spare (95/95,
+/// at the week ceiling, room 5) is taken before the crossing to third.
 #[test]
-fn issue_2136_same_org_room_above_threshold_does_not_hide_relief() {
+fn issue_2136_same_org_room_above_threshold_comes_before_a_crossing() {
     let e = fixture(json!("org-a"), json!("org-a"), json!("org-b"));
-    let wanted = ino_at(&e.root.join("third").join(CREDS));
+    let wanted = ino_at(&e.root.join("spare").join(CREDS));
     run(&e, threshold_boundary);
     assert_eq!(
         ino_at(&e.home.join(".claude").join(CREDS)),

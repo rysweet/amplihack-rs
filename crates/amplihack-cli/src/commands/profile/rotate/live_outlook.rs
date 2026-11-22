@@ -1,7 +1,7 @@
 //! Issue #2211: the figures that stand in for the live reading in the
 //! decision, and how they reach it. Pure functions of their arguments: no
 //! file, process or clock. The live step (`step` in `live_fresh.rs`) builds
-//! the [`Outlook`]; `observe::decide_measured` decides on it under
+//! the [`Outlook`]; `observe::decide_with` decides on it under
 //! organisation affinity (`observe::affinity::outlook`) and puts that
 //! through [`with_outlook`]. See "Rotate live reading freshness" in
 //! docs/reference/profile-command.md.

@@ -50,6 +50,7 @@ fn settings(overflow_wait: u64, unknown_reset: bool) -> Settings {
         interval: 600,
         overflow_wait,
         overflow_unknown_reset: unknown_reset,
+        target_week_max: 95,
     }
 }
 
@@ -565,10 +566,10 @@ fn auto_switch_returns(threshold: u8, g: Gate, session: f64, week: f64) -> bool 
 /// with room (issue #1804: both windows below 100%) brings both back,
 /// whatever the auto-switch threshold.
 ///
-/// Issue #2857 changed this test's expectation and kept it. The rotator's move
-/// back now needs the plan login to be under the rotator's own `--session-at`
-/// (85 here) as well as below 100% on both windows, because it no longer swaps
-/// onto a login at or above its threshold. Auto-switch's rule is the
+/// Issue #2857 changed this test's expectation, and issue #2910 changed it
+/// again (ruling D2 and F1): the rotator's move back off an overflow profile
+/// takes any eligible plan login, one below 100% on both windows with its
+/// week at or below `--target-week-max` (95 here), whatever its session. Auto-switch's rule is the
 /// unchanged 100% rule (`plan_room::room`, which it calls), so the two no
 /// longer agree on a login between the rotator's threshold and 100%. What must
 /// still hold is that the rotator never moves back where auto-switch would
@@ -609,8 +610,8 @@ fn the_rotator_moves_back_only_where_auto_switch_does_for_any_auto_switch_thresh
             );
             assert_eq!(
                 r,
-                session < f64::from(s.session_at) && week < 100.0,
-                "threshold {threshold}, plan {session}/{week}: the rotator needs --session-at too"
+                session < 100.0 && week <= f64::from(s.target_week_max),
+                "threshold {threshold}, plan {session}/{week}: the rotator needs the week ceiling too"
             );
         }
     }

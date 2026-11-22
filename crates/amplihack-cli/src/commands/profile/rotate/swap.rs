@@ -104,10 +104,12 @@ pub fn swap(
             budget: &budget,
         },
         None,
+        None,
     )
 }
 
-/// Shared swap checked against the accepted snapshot (None in legacy unit primitives).
+/// Shared swap checked against the accepted snapshot (None in legacy unit
+/// primitives) and, for a rotator swap, the decision's `may_cross` (S4).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn swap_with(
     store: &ProfileStore,
@@ -118,6 +120,7 @@ pub(super) fn swap_with(
     now: i64,
     reader: Reader<'_>,
     basis: Option<&super::observe::Snap>,
+    may_cross: Option<bool>,
 ) -> Result<ProfileName, ProfileError> {
     check_root_private(store.root()).map_err(|e| refused(format!("profile root {e}")))?;
     let dot = check_home(home)?;
@@ -176,6 +179,7 @@ pub(super) fn swap_with(
         Proof::Live,
     )?;
     super::swap_authorize::check_snapshot(&first, basis, to)?;
+    super::swap_authorize::check_org(&first, may_cross)?;
     // Persist owned locks before final identity requests can block or terminate.
     let mut j = prepare::begin(store, rs, home, &from, to, now, &l, &t)?;
     let checked = authorize(

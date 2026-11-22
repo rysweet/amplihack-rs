@@ -81,6 +81,34 @@ pub fn check_snapshot(
     Ok(())
 }
 
+/// The refusal of a crossing the rotator's decision did not allow (S4).
+pub const CROSS_REFUSED: &str =
+    "the incoming login is in a different organisation from the live login";
+
+/// Issue #2910 (S4): after authorisation, a rotator swap (`may_cross` is
+/// `Some`) compares the organisations of the two logins authorisation read,
+/// with no further read. A confirmed crossing the decision did not allow is
+/// refused; one it allowed goes ahead with the crossing warning the cycle
+/// writes, and an unknown organisation on either side goes ahead as before.
+/// A hand switch passes `None` and is not checked.
+pub fn check_org(authorized: &Authorized, may_cross: Option<bool>) -> Result<(), ProfileError> {
+    use super::observe::affinity::affinity_pool::{OrgCheck, org_check};
+    let Some(may_cross) = may_cross else {
+        return Ok(());
+    };
+    fn org(b: &Bound) -> Option<&str> {
+        b.account().and_then(Account::org)
+    }
+    match org_check(
+        org(&authorized.outgoing),
+        org(&authorized.incoming),
+        may_cross,
+    ) {
+        OrgCheck::Same | OrgCheck::Cross => Ok(()),
+        OrgCheck::Refuse => Err(refused(CROSS_REFUSED)),
+    }
+}
+
 /// Trusted accounts and ownership dependencies accepted for one swap.
 pub struct Authorized {
     /// The login being filed under the outgoing profile.

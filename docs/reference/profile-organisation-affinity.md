@@ -88,8 +88,12 @@ failed-probe crossing sooner. A crossing waits for the reading as measured.
 | Any, with a known source and an eligible Same target that has capacity | Same targets only |
 | Any, otherwise | Same and Unresolved targets |
 | Capacity relief or leave overflow, with no eligible Same target that has capacity | Crossing targets as well |
-| Upgrade, or plan-room from a plan login | Never a Crossing target |
+| Upgrade | Never a Crossing target |
 | Leaving overflow through its room fallback, with no eligible Same target that has room | Crossing targets as well |
+
+The table is the policy of auto-switch and nested rerun selection. The
+rotator applies [its own rule](#rotator-rule), described below, to the same
+inputs.
 
 Leaving a paid overflow login counts as cost relief whether or not the
 overflow login is blocked. Staying keeps spending money until the login is
@@ -100,20 +104,46 @@ own organisation has capacity, and the swap carries the confirmed-crossing
 warning. A same-organisation plan login with capacity is always taken
 first.
 
-The plan-room pool applies the same rules with room in place of strict
-capacity. For the rotator, room here means a
-[plan-room target](./profile-command.md#rotate-plan-room-swap): both windows
-below 100% and session use below `--session-at`. Auto-switch keeps its own
-test, both windows below 100%. A Same target restricts the pool only when the
-plan-room fallback, offered that target alone, would pick it. A Same login
-that is not a target therefore never excludes an Unresolved login that is
-one. From a plan login the plan-room pool
-never crosses. From an overflow login it is the way off paid spend, including
-the best-headroom fallback used when the overflow login is blocked, so it may
-cross on the same terms as the selection pool. A blocked overflow login
-therefore moves to a plan login with room in another organisation (for the
-rotator, one that is a plan-room target) rather than raising an alert and
-staying.
+In auto-switch, the plan-room pool applies the same rules with room in place
+of strict capacity. Auto-switch's room test is both windows below 100%. A Same
+target restricts the pool only when the plan-room fallback, offered that
+target alone, would pick it. A Same login that has no room therefore never
+excludes an Unresolved login that has some. From a plan login the plan-room
+pool never crosses. From an overflow login it is the way off paid spend,
+including the best-headroom fallback used when the overflow login is blocked,
+so it may cross on the same terms as the selection pool. A blocked overflow
+login therefore moves to a plan login with room in another organisation
+rather than raising an alert and staying.
+
+### Rotator rule
+
+The rotator does not use the capacity and plan-room pools. It chooses its
+target by the [target rule](./profile-command.md#rotate-target-choice), which
+finds the eligible logins that qualify against the live login, and it
+applies organisation affinity to those logins in this order, taking the
+first group that has a qualifying login:
+
+1. logins in the live login's organisation, whatever their tier or room;
+2. logins whose organisation is unresolved;
+3. logins in another organisation, a confirmed crossing.
+
+The third group is available only when the live login has no room now (a
+window at 100%, a spend limit or an active recorded block) or is an overflow
+profile. A live login that still has room never crosses, a live login whose
+probe failed never crosses, and an upgrade never crosses. A live login with no
+room is a login that cannot run work, and staying on it stops work for
+certain, whereas a crossing costs earlier thinking and leaves the visible
+conversation in place. So a login at 100% moves to a login in another
+organisation when nothing in its own organisation, and nothing unresolved,
+qualifies, and the move carries the confirmed-crossing warning.
+
+After the swap is authorised, the rotator compares the two organisations
+that authorisation already read, with no further read, and refuses a crossing
+the rule did not allow, so an unresolved login that turns out to be in another
+organisation cannot make a silent crossing. A swap
+with an unknown organisation on either side goes ahead and carries the
+Unresolved warning. `organisation_affinity` is not changed by this rule, so
+auto-switch is unaffected.
 
 A better headroom score in another organisation does not override available
 same-organisation capacity. Missing metadata never keeps a session where it
@@ -151,10 +181,13 @@ These are policy examples, using profile names from the rotation guide:
 | `work` is a paid overflow login with no recorded organisation; plan login `spare` recovers | Back to `spare`, with a risk warning |
 | `work` is a paid overflow login in organisation B; plan login `spare` (A) recovers and nothing in B has capacity | Back to `spare`, with a confirmed-crossing warning |
 | `work` is a paid overflow login in B; `spare` (B) and `personal` (A) both have capacity, `personal` with more headroom | Back to `spare` |
-| `work` is a blocked overflow login in B; no plan login has capacity; `personal` (A) has room (for the rotator, a plan-room target, so its session is below `--session-at`) | Moves to `personal`, with a confirmed-crossing warning |
-| Plan-room fallback from a plan login finds only Crossing targets | No plan-room swap |
-| `work` (A) reads 63%, projected to 76%; `spare` (A) has capacity on the projection; `third` (B) has more headroom | Projected swap to `spare` |
-| `work` (A) reads 63%, projected to 76%; only `third` (B) has capacity | No swap and no ALERT on the projection; the measured threshold crosses to `third` |
+| `work` is a blocked overflow login in B; no plan login has capacity; `personal` (A) has room (for the rotator, an eligible login) | Moves to `personal`, with a confirmed-crossing warning |
+| Auto-switch's plan-room fallback from a plan login finds only Crossing targets | No plan-room swap |
+| Rotator: `work` (A) has room and is past `--session-at`; only `third` (B) qualifies | Stay, with a stay note; a login with room never crosses |
+| Rotator: `work` (A) is at 100% of its session; `spare` (A) and `third` (B) are eligible | Move to `spare`, even if `third` has more room; no crossing |
+| Rotator: `work` (A) is at 100% of its session; `spare` (A) is above its week ceiling and `third` (B) is eligible | Move to `third`, with a confirmed-crossing warning |
+| Rotator: `work` (A) reads 63%, projected to 76%; `spare` (A) has room on the projection; `third` (B) has more room | Projected swap to `spare` |
+| Rotator: `work` (A) reads 63%, projected to 76%; only `third` (B) has room | Stay: a projected move never crosses. The move to `third` is made in the cycle in which `work` has no room |
 
 ## Configuration and operator commands
 
@@ -298,12 +331,19 @@ thinking and measuring the quality of later work are outside this feature.
 
 ### Selection rationale
 
-Strict capacity relief and plan-room fallback use separate candidate pools.
-The existing selectors define capacity using the configured thresholds; affinity
-does not introduce a second percentage limit. Same-organisation room above a
-threshold cannot hide a different organisation's eligible capacity relief.
-When no strict relief target is selected, existing plan-room policy can still
-choose an eligible, confirmed same-organisation target with room. For the
-rotator that target must also have session use below `--session-at`, as the
-[plan-room swap](./profile-command.md#rotate-plan-room-swap) requires of every
-target.
+In auto-switch, strict capacity relief and plan-room fallback use separate
+candidate pools. The existing selectors define capacity using the configured
+thresholds; affinity does not introduce a second percentage limit.
+Same-organisation room above a threshold cannot hide a different
+organisation's eligible capacity relief. When no strict relief target is
+selected, existing plan-room policy can still choose an eligible, confirmed
+same-organisation target with room.
+
+The rotator has one pool. Every eligible login that qualifies is in it, and
+organisation decides only the order in which the groups are tried, with
+crossings last and only when the live login cannot run work. This replaces a
+rule under which the rotator's
+[plan-room swap](./profile-command.md#rotate-plan-room-swap) never crossed
+organisations and never moved to a login at or above `--session-at`. Under
+that rule a login at 100% stayed where it was whenever every login with room
+was in another organisation or at or above `--session-at`.

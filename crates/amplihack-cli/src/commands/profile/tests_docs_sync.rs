@@ -168,6 +168,8 @@ fn rotate_has_the_documented_flags_and_hides_spawned() {
         "--upgrade-margin",
         "--hold",
         "--interval",
+        // Issue #2910: the ceiling on a login's week use for it to be a target.
+        "--target-week-max",
     ] {
         assert!(flags.iter().any(|f| f == want), "missing {want}: {flags:?}");
     }
@@ -198,6 +200,7 @@ fn reference_and_howto_document_profile_rotate() {
         "AMPLIHACK_ROTATE_UPGRADE_MARGIN",
         "AMPLIHACK_ROTATE_HOLD",
         "AMPLIHACK_ROTATE_INTERVAL",
+        "AMPLIHACK_ROTATE_TARGET_WEEK_MAX",
     ] {
         assert!(REFERENCE.contains(var), "reference is missing {var}");
     }
@@ -248,6 +251,20 @@ fn rotate_log_grammar_is_documented() {
         "reason=threshold",
         "ALERT: no profile has capacity",
         "ALERT: no login in ~/.claude; no swap",
+        // Issue #2910: the target rule, its notes and its lines.
+        "ALERT: no capacity known live=<name> s=<n>% w=<n>% (candidates: <counts>)",
+        "reason=plan-room",
+        " unconfirmed (<label>)",
+        "reject: <name> <reason>",
+        "stay: live room <R>, best other login has room <M>, a move needs <N>",
+        "stay: held after last swap (<S>s of <H>s): <name> is at s=<n>%, at or above --session-at",
+        "stay: no candidate confirmed by a fresh reading",
+        "#### Rotate target choice",
+        "#### Rotate hold",
+        "#### Rotate unknown readings",
+        "##### Last good reading",
+        "#### Rotate confirmation",
+        "#### Rotate no target",
         "idle: auto-switch is off",
         "skip: state lock busy",
         "stop: signal received; cycle abandoned",
@@ -279,7 +296,7 @@ fn rotate_revalidation_log_rows_are_documented() {
         "| `skip: state changed during measurement (<labels>)` |",
         "| `revalidate: target <name> no longer eligible (<reason>); reconsidered` |",
         "| `revalidate: ~/.claude.json held no account; read again` |",
-        "`ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`",
+        "`ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)`",
         "#### Rotate revalidation",
     ] {
         assert!(REFERENCE.contains(row), "reference is missing `{row}`");

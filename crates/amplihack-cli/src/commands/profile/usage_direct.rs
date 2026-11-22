@@ -105,6 +105,32 @@ pub(super) mod reason {
     pub const HTTP_3XX: &str = "http 3xx";
     pub const HTTP_4XX: &str = "http 4xx";
     pub const HTTP_5XX: &str = "http 5xx";
+    /// Every reason above, so a test can check that each one is classified
+    /// by the rotator's label table (issue #2910, `probe_reading::label_of`).
+    /// A reason added without a row there fails that test.
+    #[cfg(test)]
+    pub const ALL: &[&str] = &[
+        NO_FILE,
+        REFUSED,
+        NO_TOKEN,
+        EXPIRED,
+        TIMEOUT,
+        TRANSPORT,
+        UNPARSEABLE,
+        CREDITS_ON,
+        REFRESH_BUSY,
+        REFRESH_REFUSED,
+        REFRESH_FAILED,
+        REFRESH_NOT_SAVED,
+        NO_REFRESH_TOKEN,
+        UNREADABLE_CREDS,
+        HTTP_401,
+        HTTP_403,
+        HTTP_429,
+        HTTP_3XX,
+        HTTP_4XX,
+        HTTP_5XX,
+    ];
 }
 
 /// Refreshes holding a lock right now, in this process.

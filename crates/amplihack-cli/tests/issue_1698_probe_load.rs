@@ -67,7 +67,8 @@ fn a_timed_out_candidate_is_failed_never_chosen_and_probed_again() {
         let out = rotate(&f, &["profile", "rotate"], &[(TIMEOUT_ENV, "3")]);
         let line = cycle_line(&out);
         assert_log_grammar(&line, true);
-        assert!(line.contains(" spare:failed"), "{line}");
+        // Issue #2910 (D11): an unknown probe shows its label.
+        assert!(line.contains(" spare:unknown, timeout"), "{line}");
         assert!(!line.contains("spare:s="), "never a percentage: {line}");
         assert!(
             !text(&out.stdout).contains("->spare"),
@@ -138,12 +139,18 @@ fn a_timed_out_plan_probe_holds_the_move_onto_overflow() {
     f.usage("extra", 100, 100);
     let out = rotate(&f, &["profile", "rotate"], &[(TIMEOUT_ENV, "5")]);
     let stdout = text(&out.stdout);
-    assert!(cycle_line(&out).contains(" spare:failed"), "{stdout}");
+    assert!(
+        cycle_line(&out).contains(" spare:unknown, timeout"),
+        "{stdout}"
+    );
     assert!(!stdout.contains("reason=overflow-in"), "{stdout}");
     // The ALERT counts spare among the candidates that could not be read.
+    // Issue #2910 (D9): an unknown login means capacity is not known to be
+    // gone, and the overflow profile is not a plan candidate, so it is not
+    // counted.
     assert!(
-        stdout.contains("ALERT: no profile has capacity live=work")
-            && stdout.contains("(candidates: 1 failed, 1 exhausted)"),
+        stdout.contains("ALERT: no capacity known live=work")
+            && stdout.contains("(candidates: 1 unknown (timeout))"),
         "{stdout}"
     );
     assert_eq!(ino(&f.home_login()), Some(f.live_ino));

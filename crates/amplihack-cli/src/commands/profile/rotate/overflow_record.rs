@@ -12,7 +12,7 @@ use super::ledger::{
     active_blocks, prune_blocks,
 };
 use super::log::{RotateLog, Sink, msg};
-use super::observe::{Snap, live_name};
+use super::observe::Snap;
 use super::overflow::Tag;
 use super::overflow_msg::CheckNote;
 use crate::commands::profile::ProfileError;
@@ -338,45 +338,6 @@ pub fn log_ignored(out: &mut Sink, snap: &Snap, t: i64) {
         if !seen.contains(&line) {
             out.emit(t, &line);
             seen.push(line);
-        }
-    }
-}
-
-/// The ALERT key kind and line for an alerted cycle: plan logins of unknown
-/// state in `key_held` keeping work off the API key (issue #1804), the
-/// blocked API key with nowhere to go (issue #1700; it stays, with no swap),
-/// else no capacity, which counts the failed and exhausted readings in
-/// `others`.
-/// `reason` gives the block's reason, read only when needed.
-pub fn alert_line(
-    snap: &Snap,
-    tag: Option<Tag>,
-    live: &Reading,
-    others: &[(ProfileName, Reading)],
-    key_held: &[ProfileName],
-    reason: impl FnOnce() -> String,
-) -> (&'static str, String) {
-    // Issue #2218: an excluded live login with no profile to move to. It
-    // was not measured, so the reason is the exclusion, not its room.
-    if snap.live_excluded
-        && let LiveId::Known(n) = &snap.live
-    {
-        return ("excluded-live", msg::alert_excluded_live(n));
-    }
-    if !key_held.is_empty() {
-        let name = live_name(&snap.live).map_or("-", ProfileName::as_str);
-        return ("key-held", msg::alert_key_held(name, key_held));
-    }
-    match &snap.live {
-        LiveId::Known(n) if tag == Some(Tag::On) && snap.platform_live() => {
-            ("platform-blocked", msg::alert_platform_stuck(&reason(), n))
-        }
-        id => {
-            let name = live_name(id).map_or("-", ProfileName::as_str);
-            (
-                super::alert::NO_CAPACITY,
-                msg::alert_no_capacity_for(name, live, others),
-            )
         }
     }
 }

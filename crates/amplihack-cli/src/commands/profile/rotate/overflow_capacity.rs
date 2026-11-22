@@ -5,15 +5,6 @@ use super::super::decide::{Reading, Windows};
 use super::super::settings::Settings;
 use crate::commands::profile::overflow::Gate;
 
-/// A plan login with capacity: an `ok` probe that passes
-/// [`Gate::plan_capacity`], the test auto-switch also applies.
-pub fn plan_usable(s: &Settings, r: &Reading) -> bool {
-    match r {
-        Reading::Measured { session, week } => gate(s).plan_capacity(*session, *week),
-        Reading::Exhausted { .. } | Reading::Failed => false,
-    }
-}
-
 /// When a plan login without capacity has it again: the reset of the window
 /// at its threshold, or the later of the two when both are. `None` when
 /// unknown, including every failed probe.
