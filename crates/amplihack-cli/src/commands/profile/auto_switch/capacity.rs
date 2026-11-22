@@ -4,7 +4,11 @@
 //! warnings `amplihack claude` and `amplihack recipe run` print.
 //!
 //! Nothing here makes a request or changes a caller's output or exit code:
-//! write problems go to the debug log only. The file holds profile names,
+//! write problems go to the debug log only. The one thing a writer hands
+//! back is [`keychain_notes`]: a line for each overflow profile left out of
+//! the count because its macOS Keychain could not be read (issue #2885),
+//! which the caller prints or logs, so that the profile is not taken for one
+//! with no login. The file holds profile names,
 //! never account keys, e-mail addresses, tokens or paths. The reader is
 //! `amplihack_utils::claude_capacity`. See "When no account has capacity" in
 //! docs/reference/profile-command.md.
@@ -15,8 +19,10 @@ use super::candidate::{
 use super::config::{self, Config};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
+use super::own_login::unreadable_note;
 use super::state::{Ledger, State, UsageFile};
 use super::usage::{Reading, ReadingSource, Window};
+use crate::commands::profile::keychain::Cause;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::Gate;
 use crate::commands::profile::rotate::plan_room::room;
@@ -285,18 +291,36 @@ pub fn refresh_due(root: &Path, reading: &Reading, threshold: u8, now: i64) -> b
             .is_some_and(|f| f.state != Cap::Ok)
 }
 
+/// The lines for the overflow profiles [`OverflowInputs::refuse_no_login`]
+/// took out because their Keychain could not be read (issue #2885), one
+/// each, in the words selection uses ([`unreadable_note`]). An excluded
+/// profile gets none: it never counts, whatever the Keychain says.
+///
+/// Without these, a profile left out only because the Keychain was locked
+/// is indistinguishable from one with no login, while the launch guard and
+/// `auto-switch status` name the Keychain.
+fn keychain_notes(unreadable: &[(ProfileName, Cause)], cfg: &Config) -> Vec<String> {
+    unreadable
+        .iter()
+        .filter(|(name, _)| !cfg.exclude.contains(name))
+        .map(|(name, cause)| unreadable_note(name, *cause))
+        .collect()
+}
+
 /// Recomputes and writes the capacity file from `usage` (status line and
-/// `profile usage`). Never fails, never prints.
-pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) {
+/// `profile usage`). Never fails, never prints. Returns [`keychain_notes`]
+/// for the caller to print; empty when nothing was computed. Both callers
+/// print them, and a new caller must too.
+pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) -> Vec<String> {
     // catch_unwind works only because the workspace builds with
     // `panic = "unwind"` (Cargo.toml): a bug here must not end the caller.
-    let _ = catch_unwind(AssertUnwindSafe(|| {
+    catch_unwind(AssertUnwindSafe(|| {
         let eff = config::effective(&state.root);
         if !eff.on {
-            return;
+            return Vec::new();
         }
         let Some(profiles) = profiles(&state.root) else {
-            return;
+            return Vec::new();
         };
         let evidence = profiles
             .iter()
@@ -309,10 +333,12 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
             })
             .collect();
         let now = fsx::now();
-        let mut overflow = OverflowInputs::load(&state.root, &eff.config, now);
+        // One home for the kinds, the Keychain lookups and the key check.
+        let home = usage_cmd::home_dir();
+        let mut overflow = OverflowInputs::load_at(&state.root, &eff.config, now, home.as_deref());
         // Kinds unknown: write nothing, and leave any existing file as it is.
         if overflow.kinds_unknown {
-            return;
+            return Vec::new();
         }
         let rotator = || {
             matches!(
@@ -320,9 +346,10 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
                 rotate::GateSource::Rotator(_)
             )
         };
-        overflow.refuse_no_login(&state.root);
+        let unreadable = overflow.refuse_no_login(&state.root, home.as_deref());
+        let notes = keychain_notes(&unreadable, &eff.config);
         if overflow.platform.is_some()
-            && !overflow.key_counts(&state.root, usage_cmd::home_dir().as_deref(), rotator())
+            && !overflow.key_counts(&state.root, home.as_deref(), rotator())
         {
             overflow.refuse_key();
         }
@@ -338,7 +365,9 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
             ),
             now,
         );
-    }));
+        notes
+    }))
+    .unwrap_or_default()
 }
 
 /// Recomputes and writes the capacity file from the rotator's readings.
@@ -352,8 +381,14 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
 /// `key_usable`: the rotator's login check for the API-key profile passes,
 /// so it could move onto it, and the file agrees with the move (issue #1804).
 ///
-/// `home`: the rotator's home directory, for the kinds, so that this reads
-/// the same `~/.claude` as the cycle that called it and not `$HOME`.
+/// `home`: the rotator's home directory, for the kinds and for the Keychain
+/// lookups of [`OverflowInputs::refuse_no_login`], so that this reads the
+/// same `~/.claude` and asks the same Keychain as the cycle that called it,
+/// and not `$HOME`.
+///
+/// Returns [`keychain_notes`] for the rotator to log
+/// (`rotate::overflow_record::note_keychain`); empty when nothing was
+/// computed.
 pub fn refresh_from_rotation(
     root: &Path,
     readings: &[(ProfileName, Rotated)],
@@ -361,22 +396,22 @@ pub fn refresh_from_rotation(
     on_overflow: bool,
     key_usable: bool,
     home: Option<&Path>,
-) {
+) -> Vec<String> {
     // See `refresh` on catch_unwind.
-    let _ = catch_unwind(AssertUnwindSafe(|| {
+    catch_unwind(AssertUnwindSafe(|| {
         let eff = config::effective(root);
         if !eff.on {
-            return;
+            return Vec::new();
         }
         let state = match State::new(root) {
             Ok(s) => s,
             Err(e) => {
                 tracing::debug!(op = "capacity open state", error = %e);
-                return;
+                return Vec::new();
             }
         };
         let Some(profiles) = profiles(&state.root) else {
-            return;
+            return Vec::new();
         };
         let usage = state.load_usage();
         let ledger = state.load_ledger();
@@ -397,9 +432,9 @@ pub fn refresh_from_rotation(
             .collect();
         let mut overflow = OverflowInputs::load_at(&state.root, &eff.config, now, home);
         if overflow.kinds_unknown {
-            return;
+            return Vec::new();
         }
-        overflow.refuse_no_login(&state.root);
+        let notes = keychain_notes(&overflow.refuse_no_login(&state.root, home), &eff.config);
         if !key_usable {
             overflow.refuse_key();
         }
@@ -417,7 +452,9 @@ pub fn refresh_from_rotation(
             file.earliest_reset = None;
         }
         write_if_changed(&state, &file, now);
-    }));
+        notes
+    }))
+    .unwrap_or_default()
 }
 
 /// Writes `new` unless the file already says the same thing. An `Ok` state

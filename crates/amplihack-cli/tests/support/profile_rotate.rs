@@ -448,6 +448,11 @@ impl Fixture {
             // `env_clear` dropped the probe knob `isolated` set (issue #2019).
             .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env(crate::isolated_amplihack::PROC_ROOT_ENV, self.proc_root())
+            // Issue #2935: the exchange is the stand-in on every system.
+            .env(
+                crate::isolated_amplihack::LOGIN_EXCHANGE_ENV,
+                crate::isolated_amplihack::LOGIN_EXCHANGE_STAND_IN,
+            )
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",

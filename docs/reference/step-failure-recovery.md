@@ -117,7 +117,8 @@ sub-recipe instead:
 
 `step-20b-push-cleanup` also pushes, but it belongs to this driver (see the
 table above), not to push failure recovery. The recovery call steps
-themselves (`step-15-push-recovery`, `step-18c-push-recovery`) are not
+themselves (`step-15-push-recovery`, `step-18c-push-recovery`, `step9-push-recovery`,
+`step12-push-recovery`) are not
 wrapped by this driver either. See
 [Recipe Push Failure Recovery](./recipe-push-failure-recovery.md).
 
@@ -126,7 +127,9 @@ To check that no step has two owners:
 ```bash
 grep -l STEP_BODY amplifier-bundle/recipes/*.yaml       # no workflow-publish or workflow-pr-review
 grep -n 'recipe: "push-failure-recovery"' amplifier-bundle/recipes/*.yaml
-# expected: one line in workflow-publish.yaml (step 15) and one in workflow-pr-review.yaml (step 18c)
+# expected: one line each in workflow-publish.yaml (step 15), workflow-pr-review.yaml (step 18c),
+# consensus-publish.yaml (step 9) and consensus-pr-feedback.yaml (step 12)
+grep -rn 'workflow_pull_rebase' amplifier-bundle/ docs/   # expected: no call; only comments and prose that record the history (#2839, #2994)
 ```
 
 ## The four choices

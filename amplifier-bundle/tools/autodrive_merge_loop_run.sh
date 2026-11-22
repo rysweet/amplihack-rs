@@ -8,7 +8,8 @@
 # The body of the former step-02 command, moved here so the base sync can run
 # the same loop once more. The step's values arrive as RECIPE_VAR_* environment
 # variables (merge_loop_preflight, task_description, plan_task_id, no_merge,
-# autodrive_dry_run, autodrive_budget_*), never by templating into a command.
+# autodrive_dry_run, merge_method, autodrive_budget_*), never by templating
+# into a command.
 # The loop driver, the crusty re-review and the round recipe are taken from
 # beside this tool, never from the PR worktree.
 #
@@ -29,7 +30,8 @@
 #   0   DONE or WAITING (driver exit 0), or STUCK/BUDGET_EXHAUSTED/HANDOFF
 #       (driver exit 1), or UNREADABLE when the result file does not match
 #   1   USAGE_LIMIT, or a setup failure (named on standard error)
-#   2   a bad <rounds> argument or a missing context helper
+#   2   a bad <rounds> argument, a missing context helper, or a merge_method
+#       that is not empty, merge, squash or rebase (#1888); no round runs
 #   75  ORPHANED
 #   79  terminal refusal, with a TERMINAL_REFUSAL line; never retried
 #   *   any other driver exit, passed through
@@ -53,6 +55,21 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" \
 cd "${REPO_PATH:-.}" 2>/dev/null || true
 LOOP_HELPER="${HERE}/autodrive_loop.sh"
 [ -f "$LOOP_HELPER" ] || { echo "ERROR: trusted autodrive loop helper unavailable" >&2; exit 1; }
+# #1888: every merge-ready round's prompt names the run's merge method, so the
+# method is checked here, before any round starts and before the state folder
+# is touched, against the one list autodrive_merge.sh keeps. A method outside
+# it stops the run. It is never emptied instead: an empty method lets the
+# repository choose, and the PR could then be merged with a method nobody
+# asked for.
+MERGE_TOOL="${HERE}/autodrive_merge.sh"
+[ -f "$MERGE_TOOL" ] || { echo "ERROR: autodrive-tools-not-found: ${MERGE_TOOL} [autodrive-merge-loop]" >&2; exit 1; }
+# shellcheck source=autodrive_merge.sh
+. "$MERGE_TOOL" || { echo "ERROR: cannot load ${MERGE_TOOL} [autodrive-merge-loop]" >&2; exit 1; }
+if ! autodrive_merge_method_known "${RECIPE_VAR_merge_method:-}"; then
+  printf "ERROR: the run's merge_method '%s' is not merge, squash or rebase, so no merge-ready round was started (#1888) [autodrive-merge-loop]\n" \
+    "$(autodrive_merge_printable "${RECIPE_VAR_merge_method:-}" 32)" >&2
+  exit 2
+fi
 g() { printf '%s' "${RECIPE_VAR_merge_loop_preflight:-}" | amplihack orch helper extract-json --require-field "$1" \
         | amplihack orch helper extract-field --field "$1" --default ''; }
 DIR="$(g state_dir)"; PR="$(g pr)"; REPO="$(g repo)"
@@ -225,6 +242,7 @@ keep_and_log() {
   --context "pr_url=${PR_URL:-}" \
   --context "no_merge=${RECIPE_VAR_no_merge:-true}" \
   --context "autodrive_dry_run=${RECIPE_VAR_autodrive_dry_run:-false}" \
+  --context "merge_method=${RECIPE_VAR_merge_method:-}" \
   --context "autodrive_base_branch=$(g base_branch)" \
   --context "autodrive_qa_evidence=${DIR}/qa-evidence.json" \
   --context "autodrive_state_dir=${DIR}" \

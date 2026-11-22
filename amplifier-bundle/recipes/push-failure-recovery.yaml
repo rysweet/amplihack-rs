@@ -11,17 +11,19 @@ author: "Amplihack Team"
 tags: ["git", "push", "recovery", "issue-2471"]
 # Contract: docs/reference/recipe-push-failure-recovery.md
 #
-# Called by step-15-push-recovery (workflow-publish) and step-18c-push-recovery
-# (workflow-pr-review). step-20b belongs to #2570's general recovery. Each
-# call step resets push_recovery_snapshot, push_recovery and
-# push_recovery_result to "", so a value left by an earlier call never reaches
-# this one.
+# Called by step-15-push-recovery (workflow-publish), step-18c-push-recovery
+# (workflow-pr-review), step9-push-recovery (consensus-publish) and
+# step12-push-recovery (consensus-pr-feedback). Step-20b belongs to #2570's
+# general recovery. Each call step resets push_recovery_snapshot,
+# push_recovery and push_recovery_result to "", so a value left by an earlier
+# call never reaches this one.
 #
 # push_recovery_snapshot is the gate's own record of the worktree (HEAD,
 # tracked status, local branch, the remote branch's commit, the origin URL
 # hashes), written before the agent runs. The gate compares the worktree and
 # the remote with it. The agent's `evidence`, the snapshot's `untracked` and
-# the record's `new_untracked_count` are information only: no rule branches on them.
+# the record's `new_untracked_count` are information only: no rule branches
+# on them.
 # The failed step's own `reason` is not available here: the runner keeps no
 # output from a step that exits non-zero, and step-15 exits non-zero on every
 # path that leads to this recovery.

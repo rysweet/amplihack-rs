@@ -734,21 +734,24 @@ section_a2() {
         >/dev/null 2>&1; then pass; else fail "A2(i): second run failed"; fi
     expect_eq "A2(i): idempotent" "$(git -C "${repo}" write-tree)" "${before}"
 
-    # (j) workflow_pull_rebase: what a publishing step calls after its commit
-    # (#2839). The corrections above leave a rewritten, tracked report on disk
-    # as an unstaged modification, and a plain `git pull --rebase` refuses to
-    # run with one. The plain pull is run first as a control, so a fixture that
-    # had stopped reproducing the refusing state could not let this pass
+    # (j) workflow_pull_merge: what a publishing step calls after its commit
+    # (#2839, #2994). The corrections above leave a rewritten, tracked report
+    # on disk as an unstaged modification. A plain `git pull --rebase` refuses
+    # to run with one, and a rebase is never wanted on a published branch
+    # anyway (#2994): the function merges instead and must keep the report.
+    # The plain rebasing pull is run first as a control, so a fixture that had
+    # stopped reproducing the refusing state could not let this pass
     # vacuously. H1e runs the whole of step 18c; this covers the function for
-    # the four call sites that have no step-level behaviour test of their own.
-    local pull_branch upstream_head
+    # the call sites that have no step-level behaviour test in this file.
+    local pull_branch upstream_head local_head rebase_dirs d
     dir="${WORK}/a2-pull"; reports_repo "${dir}"; repo="${dir}/repo"
     pull_branch="feat/issue-1671-${dir##*/}"
     write_reports "${repo}"
     git -C "${repo}" add -f run/reports/step17e-fixture
     git -C "${repo}" commit -qm "tracked pollution"
     git -C "${repo}" push -q origin "HEAD:${pull_branch}" 2>/dev/null
-    # Origin moves ahead, so the pull must really rebase, not report up to date.
+    # Origin moves ahead, and the branch has a commit of its own, so the pull
+    # must really merge: neither "up to date" nor a fast-forward.
     git clone -q "${dir}/origin.git" "${dir}/other" 2>/dev/null
     configure_identity "${dir}/other"
     git -C "${dir}/other" checkout -q "${pull_branch}"
@@ -757,20 +760,27 @@ section_a2() {
     git -C "${dir}/other" commit -qm "a commit only origin has"
     git -C "${dir}/other" push -q 2>/dev/null
     upstream_head="$(git -C "${dir}/other" rev-parse HEAD)"
+    printf 'pub fn local() {}\n' >> "${repo}/src/lib.rs"
+    git -C "${repo}" commit -qam "a commit only this branch has"
+    local_head="$(git -C "${repo}" rev-parse HEAD)"
     # The state stage_workflow_changes leaves: report rewritten on disk, index at HEAD.
     printf '{"synthetic": true, "ci": "fresh"}\n' > "${repo}/run/reports/step17e-fixture/results.json"
     expect_eq "A2(j): the fixture leaves exactly one unstaged tracked change" \
         "$(git -C "${repo}" status --porcelain --untracked-files=no)" \
         " M run/reports/step17e-fixture/results.json"
     if ( cd "${repo}" && git pull --rebase ) >/dev/null 2>&1; then
-        fail "A2(j): control — a plain git pull --rebase must refuse this state"
+        fail "A2(j): control: a plain git pull --rebase must refuse this state"
     else pass; fi
-    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; workflow_pull_rebase' _ "${STAGE_HELPER}" ) \
+    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; workflow_pull_merge' _ "${STAGE_HELPER}" ) \
         >"${dir}/pull.out" 2>"${dir}/pull.err"; then pass; else
-        fail "A2(j): workflow_pull_rebase must survive it"; sed 's/^/    | /' "${dir}/pull.err" >&2
+        fail "A2(j): workflow_pull_merge must survive it"; sed 's/^/    | /' "${dir}/pull.err" >&2
     fi
-    expect_eq "A2(j): the commit only origin had is now an ancestor" \
-        "$(git -C "${repo}" merge-base --is-ancestor "${upstream_head}" HEAD && echo yes || echo no)" "yes"
+    expect_eq "A2(j): HEAD is a merge commit with two parents" \
+        "$(git -C "${repo}" rev-list --parents -n1 HEAD | wc -w | tr -d " ")" "3"
+    expect_eq "A2(j): the first parent is the branch's own commit" \
+        "$(git -C "${repo}" rev-parse HEAD^1)" "${local_head}"
+    expect_eq "A2(j): the second parent is the commit only origin had" \
+        "$(git -C "${repo}" rev-parse HEAD^2)" "${upstream_head}"
     expect_eq "A2(j): the report keeps its rewritten bytes" \
         "$(cat "${repo}/run/reports/step17e-fixture/results.json")" '{"synthetic": true, "ci": "fresh"}'
     expect_eq "A2(j): the report is still the only unstaged tracked change" \
@@ -782,10 +792,15 @@ section_a2() {
     # clean autostash must leave no entry on it.
     expect_eq "A2(j): a clean autostash leaves the stash stack empty" \
         "$(git -C "${repo}" stash list)" ""
+    rebase_dirs=0
+    for d in rebase-merge rebase-apply; do
+        [ ! -e "$(git -C "${repo}" rev-parse --path-format=absolute --git-path "${d}")" ] || rebase_dirs=$((rebase_dirs + 1))
+    done
+    expect_eq "A2(j): no rebase is in progress" "${rebase_dirs}" "0"
     # Step 20b passes --no-pager; it must reach git as a git option, before `pull`.
-    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; workflow_pull_rebase --no-pager' _ "${STAGE_HELPER}" ) \
+    if ( cd "${repo}" && bash -c 'set -euo pipefail; . "$1"; workflow_pull_merge --no-pager' _ "${STAGE_HELPER}" ) \
         >/dev/null 2>"${dir}/pull2.err"; then pass; else
-        fail "A2(j): workflow_pull_rebase --no-pager must work"; sed 's/^/    | /' "${dir}/pull2.err" >&2
+        fail "A2(j): workflow_pull_merge --no-pager must work"; sed 's/^/    | /' "${dir}/pull2.err" >&2
     fi
 }
 
@@ -2023,14 +2038,15 @@ section_h_dynamic() {
     # H1e step-18c on a branch that already tracks a run/reports file -- the
     # shape a repository polluted before #2839 is in. The helper resets the
     # rewritten report in the index and leaves the new bytes on disk, so the
-    # step reaches its `git pull --rebase` with an unstaged tracked change. A
-    # plain pull refuses that ("cannot pull with rebase: You have unstaged
-    # changes") and the step dead-ends: step 18c continues on error into
+    # step reaches its pull with an unstaged tracked change. A plain rebasing
+    # pull refuses that ("cannot pull with rebase: You have unstaged changes")
+    # and the step dead-ends: step 18c continues on error into
     # push-failure-recovery, which is forbidden to stage, commit or reset and
     # whose gate fails on a dirty tracked file, so nothing downstream can clear
-    # it. The step pulls through workflow_pull_rebase instead, which stashes the
-    # report, rebases and puts it back. Origin is moved ahead first, so the pull
-    # must really rebase rather than report the branch up to date.
+    # it. The step pulls through workflow_pull_merge instead, which stashes the
+    # report, merges (never rebases, #2994) and puts it back. Origin is moved
+    # ahead first, so the pull must really merge rather than report the branch
+    # up to date.
     local branch upstream_commit tracked_blob
     dir="${WORK}/h1e-pr-review-tracked-report"
     new_repo "${dir}"
@@ -2055,14 +2071,20 @@ section_h_dynamic() {
     run_step "${dir}" "${STEP_18C}"
     expect_eq "H1e: exit 0" "$(rc_of "${dir}")" "0"
     expect_file_contains "H1e: the step reports the push" "${dir}/step.out" "=== Changes Pushed ==="
-    expect_eq "H1e: the reviewed file is committed" "$(git -C "${dir}/repo" show HEAD:src.txt 2>/dev/null)" "reviewed"
+    expect_eq "H1e: HEAD is a merge commit with two parents" \
+        "$(git -C "${dir}/repo" rev-list --parents -n1 HEAD | wc -w | tr -d " ")" "3"
+    expect_eq "H1e: the second parent is the commit only origin had" \
+        "$(git -C "${dir}/repo" rev-parse HEAD^2)" "${upstream_commit}"
+    expect_eq "H1e: no rebase is in progress" \
+        "$(find "$(git -C "${dir}/repo" rev-parse --absolute-git-dir)" -maxdepth 1 -name 'rebase-*' | wc -l | tr -d " ")" "0"
+    expect_eq "H1e: the reviewed file is committed" "$(git -C "${dir}/repo" show HEAD^1:src.txt 2>/dev/null)" "reviewed"
     expect_eq "H1e: no report in the review-feedback commit" \
-        "$(git -C "${dir}/repo" show --name-only --no-renames --format= HEAD | grep -c '^run/reports/' || true)" "0"
+        "$(git -C "${dir}/repo" show --name-only --no-renames --format= HEAD^1 | grep -c '^run/reports/' || true)" "0"
     expect_eq "H1e: the tracked report keeps its committed bytes" \
         "$(git -C "${dir}/repo" rev-parse "HEAD:run/reports/results.json")" "${tracked_blob}"
     expect_eq "H1e: the rewritten report bytes survive the autostash" \
         "$(cat "${dir}/repo/run/reports/results.json")" '{"round":2}'
-    expect_eq "H1e: the rebase integrated the commit only origin had" \
+    expect_eq "H1e: the merge integrated the commit only origin had" \
         "$(git -C "${dir}/repo" merge-base --is-ancestor "${upstream_commit}" HEAD && echo yes || echo no)" "yes"
     expect_eq "H1e: the push landed" \
         "$(git -C "${dir}/origin.git" rev-parse "refs/heads/${branch}")" \

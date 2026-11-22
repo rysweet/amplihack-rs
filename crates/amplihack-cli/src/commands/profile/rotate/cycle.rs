@@ -277,6 +277,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 ctx.identity_reader(),
                 Some(&first),
                 Some(saw.may_cross),
+                ctx.exchange.as_ref(),
             ) {
                 Ok(from) => from,
                 // A refusal repeats each cycle: one ALERT per reason.

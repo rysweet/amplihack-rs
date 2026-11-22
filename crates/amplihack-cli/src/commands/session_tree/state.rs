@@ -195,19 +195,62 @@ pub struct SessionEntry {
 /// Conservative: a session with no recorded pid, or on a platform where we cannot
 /// check, counts as live. Wrongly reaping a live holder would over-admit, which is
 /// the failure this budget exists to prevent.
+///
+/// On every Unix the check is `kill(pid, 0)`, which sends nothing and reports
+/// whether the process exists (issue #2931). It replaces a look at `/proc/<pid>`,
+/// which only Linux has, so that a dead holder frees its slot on macOS too. One
+/// difference on Linux: a process hidden by a `hidepid` mount of `/proc` used to
+/// read as dead and now reads as live.
 fn holder_is_live(entry: &SessionEntry) -> bool {
-    let Some(pid) = entry.pid else {
+    let Some(recorded) = entry.pid else {
         return true;
     };
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
-        std::path::Path::new(&format!("/proc/{pid}")).exists()
+        let Some(pid) = pid_for_signal(recorded) else {
+            // Not a pid any process can have, so nothing holds the slot.
+            return false;
+        };
+        // SAFETY: `kill` with signal 0 delivers no signal; it only checks that
+        // `pid` exists and may be signalled. `pid` is positive, so it names
+        // one process and never a process group.
+        let outcome = if unsafe { libc::kill(pid, 0) } == 0 {
+            None
+        } else {
+            Some(
+                std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or_default(),
+            )
+        };
+        live_from_kill(outcome)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(unix))]
     {
-        let _ = pid;
+        let _ = recorded;
         true
     }
+}
+
+/// The recorded pid as one that may be handed to `kill(2)`, or `None`.
+///
+/// Zero addresses the caller's own process group, and a value above
+/// `i32::MAX` wraps to a negative `pid_t`, which addresses a group as well
+/// (`u32::MAX - 1` becomes -2). Neither is the pid of a process.
+#[cfg(unix)]
+fn pid_for_signal(recorded: u32) -> Option<libc::pid_t> {
+    libc::pid_t::try_from(recorded).ok().filter(|pid| *pid > 0)
+}
+
+/// Whether the outcome of `kill(pid, 0)` says the process is running: `None`
+/// for success, `Some(errno)` for a failure.
+///
+/// Only `ESRCH` (no such process) is proof of death. `EPERM` means the
+/// process exists under another user, and any other error proves nothing, so
+/// both read as live.
+#[cfg(unix)]
+fn live_from_kill(outcome: Option<i32>) -> bool {
+    outcome != Some(libc::ESRCH)
 }
 
 /// Full on-disk shape of a tree's state file.
@@ -727,6 +770,9 @@ where
     let _ = FileExt::unlock(&lock_file);
     result
 }
+
+#[cfg(all(test, unix))]
+mod tests_liveness;
 
 #[cfg(test)]
 mod tests {

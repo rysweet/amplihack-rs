@@ -907,7 +907,12 @@ When the knob is set to exactly `exit`:
 
 The candidate limit, the byte cap, the rejection reasons and the candidate
 order all still apply. The knob replaces the deadline with the candidate's
-exit; it does not set a longer deadline. Any other value, including
+exit; it does not set a longer deadline. The same value also makes the
+`tmux show-environment` query behind the agent-binary notice wait for `tmux`
+to exit in place of its two-second limit, through
+`amplihack_utils::launch_target::test_waits_for_exit()` (#2931): on a loaded
+host a stub `tmux` had not answered in time, and the resolver read that as a
+server that does not hold the marker. Any other value, including
 `Exit`, `exit ` and `1`, leaves the 3 s and 10 s limits in place. The value is
 never logged.
 
@@ -925,8 +930,8 @@ because the fold changes the release capture path that every launch uses.
 
 `AMPLIHACK_TEST_PROBE_WAIT` is a test-only knob and exists only in debug
 builds. Do not set it in a shell: with it set, a debug `amplihack` has no
-bound on the `--version` probe, and a candidate that hangs on `--version`
-hangs the launch.
+bound on the `--version` probe or on the `tmux` query, and a candidate that
+hangs on `--version` hangs the launch.
 
 `isolated(..)` sets the knob on every child after `env_clear`, in both
 `tests/support/isolated_amplihack.rs` and the `amplihack-cli` test support,

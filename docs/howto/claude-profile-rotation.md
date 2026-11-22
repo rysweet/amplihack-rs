@@ -139,13 +139,18 @@ real run. Run a dry run first, and again whenever you change a threshold.
 a temporary `HOME`, a fake `claude` and a loopback stand-in for the usage
 service, with no real login and no `CLAUDE_CONFIG_DIR`. It needs `socat`. It
 replays a day on which the live login filled while several others had room, and
-checks five cases: a dry run that reports the swap to the login below
+checks eight cases: a dry run that reports the swap to the login below
 `--session-at`; a one-shot cycle that moves `~/.claude` to it with
 `reason=plan-room`; the usage service answering HTTP 429 with a last good
 reading in the history, which gives an `unconfirmed (HTTP 429)` swap; HTTP 429
 with no history, which gives one `no capacity known` ALERT and leaves
-`~/.claude` unchanged; and HTTP 429 with an identity read that fails, which
-moves nothing:
+`~/.claude` unchanged; HTTP 429 with an identity read that fails, which moves
+nothing; readings on which the live login still has room and nothing it may
+move to qualifies, which says it would stay with the note; the stand-in's own
+guards, where a bad, missing or oversized request is refused and serves no
+fixture; and a login carrying a recorded spend block, which is passed over for
+the next login the ranking gives until the block's reset and chosen again
+after it:
 
 ```bash
 AMPLIHACK_QA_BINARY=target/debug/amplihack bash tests/qa/claude-profile-rotate-room.sh

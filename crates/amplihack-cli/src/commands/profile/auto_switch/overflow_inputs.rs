@@ -21,8 +21,8 @@
 
 use super::candidate::OverflowPool;
 use super::config::Config;
-use super::fsx;
-use super::state::CREDS;
+use super::own_login::OwnLogins;
+use crate::commands::profile::keychain::Cause;
 use crate::commands::profile::kind::{self, Ctx, Resolved};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{self, Gate};
@@ -32,18 +32,67 @@ use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd;
 use std::path::Path;
 
-/// Whether a move onto `name` can find a login: its login file is in its
-/// directory, or the rotator has already moved it into `~/.claude`. Selection
-/// asks the first half (`rerun::nested_candidate`) and a swap needs it too.
-/// macOS keeps logins in the Keychain, so there is no file to look for.
-pub fn can_take_login(root: &Path, name: &ProfileName) -> bool {
-    cfg!(target_os = "macos")
-        || fsx::exists(&root.join(name.as_str()).join(CREDS))
+/// Why a move onto a profile can find no login ([`login_gap`]). The two are
+/// kept apart because the remedies differ: a profile with no login is logged
+/// in, whereas a Keychain that could not be read is unlocked (issue #2885).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginGap {
+    /// The profile holds no login of its own.
+    NoLogin,
+    /// macOS: no login file, and the Keychain could not be read, so whether
+    /// the profile holds a login is not known. It is passed over all the
+    /// same, and never reported as [`LoginGap::NoLogin`].
+    KeychainUnreadable(Cause),
+}
+
+impl LoginGap {
+    /// What `profile overflow add` says, after `warning: `, about a marked
+    /// profile nothing can move onto. The Keychain text names the cause and
+    /// the fixed remedy, and nothing about the account.
+    pub fn overflow_warning(self, name: &ProfileName) -> String {
+        match self {
+            Self::NoLogin => format!(
+                "{name} has no login file, so it cannot be used as overflow until it has one: neither the rotator nor auto-switch can move onto it, and the capacity file does not count it"
+            ),
+            Self::KeychainUnreadable(cause) => format!(
+                "{name} has no login file and the macOS Keychain could not be read ({cause}), so it cannot be used as overflow until the Keychain can be read: auto-switch passes it over, and the capacity file does not count it. Unlock the login Keychain; 'amplihack profile auto-switch status' then shows where its login is"
+            ),
+        }
+    }
+}
+
+/// Why a move onto `name` can find no login, or `None` when it can find one:
+/// the profile holds one of its own, or the rotator has already moved it
+/// into `~/.claude`. Selection asks the first half
+/// (`rerun::nested_candidate`) and a swap needs it too.
+///
+/// A login of its own is a login file. On macOS, where the login is in the
+/// Keychain, it is what the launch guard counts (issue #2885): an item in
+/// the Keychain for a profile with an identifiable account, or an API-key
+/// profile. A Keychain that cannot be read is no login, and is named as the
+/// reason. The Keychain is asked once, with the process's own home.
+pub fn login_gap(root: &Path, name: &ProfileName) -> Option<LoginGap> {
+    let store = ProfileStore::new(root.to_path_buf());
+    let home = usage_cmd::home_dir();
+    gap_of(root, &OwnLogins::new(&store, home.as_deref()), name)
+}
+
+/// [`login_gap`] with the own-login answers shared between calls.
+fn gap_of(root: &Path, own: &OwnLogins<'_>, name: &ProfileName) -> Option<LoginGap> {
+    let takes = own.of(name).holds()
         || RotateState::new(root)
             .load_ledger()
             .ok()
             .flatten()
-            .is_some_and(|l| l.live.as_deref() == Some(name.as_str()))
+            .is_some_and(|l| l.live.as_deref() == Some(name.as_str()));
+    if takes {
+        return None;
+    }
+    // `of` is memoised, so this asks the Keychain nothing more.
+    Some(
+        own.unreadable(name)
+            .map_or(LoginGap::NoLogin, LoginGap::KeychainUnreadable),
+    )
 }
 
 pub struct OverflowInputs {
@@ -77,7 +126,8 @@ struct Order {
 ///   live profile stays out of that test: its login is in `~/.claude`, so
 ///   its own directory has none. macOS keeps logins in the Keychain, so a
 ///   missing file proves nothing there and that test lists nothing, which
-///   only holds the key back.
+///   only holds the key back. No Keychain question is asked for this list
+///   (issue #2885), so no Keychain answer can release the hold on the key.
 /// - Those the rotator's last measuring cycle found with no room, while that
 ///   record holds (`rotate::no_room`). Auto-switch cannot read the live
 ///   login itself: the status line records only a session's own
@@ -101,7 +151,7 @@ fn no_login_of(
     now: i64,
 ) -> Vec<ProfileName> {
     let live = kinds.ledger_live();
-    let mut skipped: Vec<ProfileName> = if cfg!(target_os = "macos") {
+    let mut skipped: Vec<ProfileName> = if kinds.macos() {
         Vec::new()
     } else {
         resolved
@@ -343,13 +393,41 @@ impl OverflowInputs {
         }
     }
 
-    /// Takes every overflow profile that [`can_take_login`] rejects out of
-    /// what the capacity file counts, so the file does not say `ok` for a
-    /// profile selection would pass over. Only the capacity writers call this.
-    pub fn refuse_no_login(&mut self, root: &Path) {
-        let missing = self.order.iter().filter(|o| !can_take_login(root, o));
-        let missing: Vec<String> = missing.map(ToString::to_string).collect();
-        self.blocked.extend(missing);
+    /// Takes every overflow profile for which [`login_gap`] names a reason
+    /// out of what the capacity file counts, so the file does not say `ok`
+    /// for a profile selection would pass over. Only the capacity writers
+    /// call this.
+    ///
+    /// `home` is the home directory the Keychain lookups are given: the
+    /// one the writer loaded these inputs with (`OverflowInputs::load_at`),
+    /// so that the rotator's capacity write asks the Keychain with the
+    /// rotator's home, as its kinds and the takeover check do, and not with
+    /// `$HOME`.
+    ///
+    /// Returns the profiles taken out because their Keychain could not be
+    /// read, each with the cause (issue #2885). Such a profile may well hold
+    /// a login, and the launch guard and `auto-switch status` say so, so the
+    /// writer hands the cause to its caller (`capacity::keychain_notes`)
+    /// rather than leave the profile looking like one with no login.
+    #[must_use]
+    pub fn refuse_no_login(
+        &mut self,
+        root: &Path,
+        home: Option<&Path>,
+    ) -> Vec<(ProfileName, Cause)> {
+        let store = ProfileStore::new(root.to_path_buf());
+        let own = OwnLogins::new(&store, home);
+        let mut unreadable = Vec::new();
+        for name in &self.order {
+            let Some(gap) = gap_of(root, &own, name) else {
+                continue;
+            };
+            if let LoginGap::KeychainUnreadable(cause) = gap {
+                unreadable.push((name.clone(), cause));
+            }
+            self.blocked.push(name.to_string());
+        }
+        unreadable
     }
 
     pub fn pool(&self) -> OverflowPool<'_> {

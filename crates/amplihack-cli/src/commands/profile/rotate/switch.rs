@@ -169,6 +169,7 @@ pub(super) fn switch_in(
                 Some(&first),
                 // A hand switch is the person's choice: no organisation rule.
                 None,
+                ctx.exchange.as_ref(),
             ) {
                 Ok(from) => from,
                 // A swap refusal changes nothing (see `swap::swap`).

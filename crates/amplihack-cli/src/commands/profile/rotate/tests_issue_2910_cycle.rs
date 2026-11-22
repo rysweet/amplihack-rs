@@ -865,10 +865,13 @@ fn s4_the_swap_step_calls_the_organisation_check() {
 #[test]
 fn s4_the_swap_refuses_a_crossing_the_decision_did_not_allow() {
     use crate::commands::profile::ProfileError;
+    use crate::commands::profile::auto_switch::kit::FakeExchange;
     use crate::commands::profile::rotate::login_identity::{Budget, Reader, default_read};
     use crate::commands::profile::rotate::swap::{Source, swap_with};
     use crate::commands::profile::rotate::swap_authorize::CROSS_REFUSED;
     use crate::commands::profile::rotate::tests_swap::ino_at;
+    // The exchange the test holds, as issue #2935 has every swap test do, so
+    // S4 is checked on every system and not only where `renameat2` exists.
     let attempt = |orgs: &[(&str, &str)], may_cross: Option<bool>| {
         let f = fleet(&[], orgs);
         let spare = ino_at(&f.e.slot("spare"));
@@ -886,6 +889,7 @@ fn s4_the_swap_refuses_a_crossing_the_decision_did_not_allow() {
             },
             None,
             may_cross,
+            FakeExchange::working().as_ref(),
         );
         (f, spare, got)
     };

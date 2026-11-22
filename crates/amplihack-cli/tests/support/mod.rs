@@ -2,12 +2,22 @@
 
 pub mod amplihack_bin;
 pub mod auto_drive_light;
+/// The five profile-redirecting variables and the guards that keep a
+/// test's settings writes inside its own temporary home (issue #2922).
+/// One definition, shared with every crate's `test_support`.
+#[path = "../../../../tests/support/claude_profile_isolation.rs"]
+pub mod claude_profile_isolation;
 pub mod events;
 pub mod exec_stub;
+/// Issue #2931 — the end of file on a pipe that a process group holds, as
+/// the event "the group is gone".
+pub mod exit_witness;
 pub mod fake_proc;
 /// Issue #2582 — hold a process tree live on a FIFO while a test walks it.
 pub mod fifo_release;
 pub mod git_fixture;
+pub mod ls_mode;
+pub mod non_utf8_name;
 pub mod proc_root_scan;
 pub mod proc_tree;
 pub mod profile_1962;

@@ -435,6 +435,23 @@ fn probe_wait_mode() -> ProbeWait {
     ProbeWait::Deadline
 }
 
+/// Whether a test asked that a helper's exit end a wait in place of a
+/// deadline: the debug-only knob set to exactly `exit`. Like every item of
+/// the seam it does not exist in a release build, so a caller reads it under
+/// `cfg(debug_assertions)`.
+///
+/// For a bounded query of a helper program outside this module whose deadline
+/// a busy host turns into a wrong answer. Its one caller is the `tmux
+/// show-environment` query in `amplihack-cli` (issue #2931): on a loaded host
+/// a stub `tmux` had not answered inside two seconds, and the resolver read
+/// that as "the server does not hold the marker". Like [`ProbeWait::Exit`],
+/// this replaces the deadline with the event it stood in for and goes when
+/// the knob goes (issue #2194).
+#[cfg(debug_assertions)]
+pub fn test_waits_for_exit() -> bool {
+    probe_wait_mode() == ProbeWait::Exit
+}
+
 /// The wait one probe gets: `None` means "until the candidate exits".
 pub(crate) fn probe_limit(mode: ProbeWait, budget: Duration) -> Option<Duration> {
     match mode {

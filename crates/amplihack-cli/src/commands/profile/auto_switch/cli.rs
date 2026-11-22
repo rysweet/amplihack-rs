@@ -4,6 +4,7 @@
 use super::config::{self, ReadMode};
 use super::fsx;
 use super::liveness::{self, Liveness};
+use super::own_login::{OwnLogin, OwnLogins};
 use super::state::{CREDS, Ledger, PHASE_INCONSISTENT, State};
 use super::statusline;
 use super::swap;
@@ -338,12 +339,15 @@ fn status(store: &ProfileStore) -> Result<String> {
     let ledger = state.load_ledger();
     let usage = state.load_usage_or_warn();
     let wrapper = |n: &ProfileName| statusline::wrapper_state(store, &state.root, n).to_string();
+    // The launch guard's own answer about each profile's login (issue #2885).
+    let home = usage_cmd::home_dir();
+    let own = OwnLogins::new(store, home.as_deref());
     let rows: Vec<Row> = names
         .iter()
         .map(|n| {
             let r = usage.accounts.get(n.as_str());
             let mut login = match &ledger {
-                Ok(l) => login_place(&state, l, n),
+                Ok(l) => login_place(l, &own, n),
                 Err(_) => "unknown".to_string(),
             };
             if swap::swaps_disabled(&state, n.as_str()) {
@@ -484,19 +488,27 @@ fn swaps_label(live: &Liveness) -> &'static str {
     }
 }
 
-fn login_place(state: &State, ledger: &Ledger, n: &ProfileName) -> String {
-    let n = n.as_str();
+/// The `login` column: where the profile's login is. A leased or parked
+/// profile is not asked about the Keychain. `home` says only that the login
+/// file exists; `keychain` and `keychain unreadable` are the launch guard's
+/// own answers on macOS. An API-key profile with no login file shows `none`:
+/// the column says where a login file or Keychain item is, and it has
+/// neither.
+pub(super) fn login_place(ledger: &Ledger, own: &OwnLogins<'_>, name: &ProfileName) -> String {
+    let n = name.as_str();
     if let Some(dir) = ledger.leased_to(n) {
         return format!("live in {dir}");
     }
     if ledger.hosts.contains_key(n) {
         return "parked".into();
     }
-    if fsx::exists(&state.live_creds(n)) {
-        "home".into()
-    } else {
-        "none".into()
+    match own.of(name) {
+        OwnLogin::File => "home",
+        OwnLogin::Keychain => "keychain",
+        OwnLogin::KeychainUnreadable(_) => "keychain unreadable",
+        OwnLogin::KeyProfile | OwnLogin::None => "none",
     }
+    .into()
 }
 
 fn invariant_problem(state: &State, ledger: &Ledger, names: &[ProfileName]) -> Option<String> {

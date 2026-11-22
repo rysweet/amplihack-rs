@@ -8,7 +8,7 @@
 # profile root.
 #
 # It replays 22 November 2026: the live login reached 100% of its session
-# while several logins had room, and the rotator only alerted. Seven cases:
+# while several logins had room, and the rotator only alerted. Eight cases:
 #
 #   1. dry run: reports the swap to the login with a fresh session (llarame);
 #   2. one-shot cycle: moves ~/.claude to it, reason=plan-room, no ALERT;
@@ -19,7 +19,9 @@
 #      nothing moves;
 #   6. dry run at the 05:48Z readings (live room 14): would stay, with the note;
 #   7. the stand-in's own guards: a bad bearer token, a missing one and an
-#      oversized request line are refused and serve no fixture.
+#      oversized request line are refused and serve no fixture;
+#   8. a recorded spend block on llarame: it is passed over for qquinn, the
+#      next login the ranking gives, and chosen again once the block ended.
 #
 # Usage: AMPLIHACK_QA_BINARY=target/debug/amplihack bash tests/qa/claude-profile-rotate-room.sh
 set -euo pipefail
@@ -256,6 +258,23 @@ write_history() { # name session week age
   chmod 600 "$ROOT/.auto-switch.d/usage-history.jsonl"
 }
 
+# A recorded block on $1, as a limit event leaves behind: in force from $2
+# seconds ago until $3 seconds from now, for the limit kind $4. A negative $3
+# is a block that has already ended. The ledger is the rotator's own
+# `.auto-switch.d/rotate/ledger.json`, written before the cycle starts.
+write_block() { # name from_ago until_in kind
+  local now at until dir
+  now=$(date +%s)
+  at=$((now - $2))
+  until=$((now + $3))
+  dir="$ROOT/.auto-switch.d/rotate"
+  mkdir -p "$dir"
+  chmod 700 "$ROOT/.auto-switch.d" "$dir"
+  printf '{"version":1,"overflow_blocked":{"%s":{"at":%s,"until":%s,"reason":"%s"}}}\n' \
+    "$1" "$at" "$until" "$4" > "$dir/ledger.json"
+  chmod 600 "$dir/ledger.json"
+}
+
 # The usage endpoint answers 429 for every login but the live one, as the
 # reporter's did from 23:58Z on 21 November.
 storm() { echo 429 > "$FX/usage-mode"; printf '%s\n' "$LIVE" > "$FX/usage-ok"; }
@@ -403,6 +422,47 @@ CASE7+=("oversized request line: ${line:-no answer}")
 [[ ! -s "$WORK/claude-calls" ]] || fail "case 7: claude was started"
 echo "PASS: case 7: a bad or missing token is refused and an oversized request serves no fixture"
 printf '  | %s\n' "${CASE7[@]}"
+
+# --- Case 8: a recorded block is kept out until its reset ----------------------------------
+# The first behaviour the issue asks for: never a login with a recorded block
+# before its reset. On 21 November at 07:20:31Z the rotator moved to a login
+# whose organisation had hit its spend limit until 26 November, and the next
+# request met it. Here llarame, which every case above chooses, carries a spend
+# block: the rotator must pass over it for the next login the ranking gives
+# (qquinn, which has more room now than yyandis at the same session and a lower
+# week), say why llarame was passed over, and choose llarame again once the
+# block has ended. Both halves run as dry runs, so the readings are the same
+# for each and nothing moves between them.
+new_home blocked
+before="$(live_token)"
+write_block llarame 3600 3600 spend_limit
+run_cli profile rotate --dry-run "${FLAGS[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; fail "case 8: the blocked dry run exited $STATUS"; }
+blocked_out="$(cat "$WORK/stdout")"
+! grep -q "would swap $LIVE->llarame " <<< "$blocked_out" \
+  || { echo "$blocked_out" >&2; fail "case 8: the rotator chose llarame while its block was in force"; }
+grep -q "would swap $LIVE->qquinn " <<< "$blocked_out" \
+  || { echo "$blocked_out" >&2; fail "case 8: the rotator did not choose qquinn, the next login the ranking gives"; }
+grep -q "llarame:.*blocked until .*(spend limit)" <<< "$blocked_out" \
+  || { echo "$blocked_out" >&2; fail "case 8: the cycle line does not say why llarame was passed over"; }
+! grep -q "no profile has capacity" <<< "$blocked_out" \
+  || fail "case 8: the dry run said no profile has capacity"
+[[ "$(live_token)" == "$before" ]] || fail "case 8: the blocked dry run moved ~/.claude"
+
+# The same readings with the block already ended: llarame is chosen again.
+write_block llarame 7200 -60 spend_limit
+run_cli profile rotate --dry-run "${FLAGS[@]}"
+[[ $STATUS -eq 0 ]] || { cat "$WORK/stderr" >&2; fail "case 8: the dry run after the reset exited $STATUS"; }
+after_out="$(cat "$WORK/stdout")"
+grep -q "would swap $LIVE->llarame " <<< "$after_out" \
+  || { echo "$after_out" >&2; fail "case 8: the rotator did not choose llarame once its block had ended"; }
+! grep -q "llarame:.*blocked until" <<< "$after_out" \
+  || { echo "$after_out" >&2; fail "case 8: the cycle line still calls llarame blocked after its reset"; }
+[[ "$(live_token)" == "$before" ]] || fail "case 8: the dry run after the reset moved ~/.claude"
+echo "PASS: case 8: a blocked login is passed over until its reset and chosen after it"
+evidence '^would (swap|stay|alert)' <<< "$blocked_out"
+evidence 'llarame:' <<< "$blocked_out"
+evidence '^would (swap|stay|alert)' <<< "$after_out"
 
 [[ ! -s "$WORK/claude-calls" ]] || fail "claude was started: $(cat "$WORK/claude-calls")"
 echo "ROTATE_ROOM_QA_PASSED"

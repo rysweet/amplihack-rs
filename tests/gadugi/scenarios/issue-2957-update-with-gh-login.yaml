@@ -1,0 +1,47 @@
+name: issue-2957-update-with-gh-login
+description: >
+  Outside-in QA for issue #2957. `amplihack update` looked releases up
+  anonymously, and hosts that share one address used up GitHub's anonymous
+  allowance, so the update failed with HTTP 403. The scenario (via
+  tests/gadugi/run-issue-2957-update-with-gh-login-scenario.sh) runs the real
+  binary's `update --skip-install` with a stand-in gh on PATH and GH_TOKEN
+  unset. Case A: a gh logged in through GH_CONFIG_DIR is used for the lookup
+  (`gh api -i repos/rysweet/amplihack-rs/releases/latest`). Case B: a newer
+  release is downloaded with `gh release download`, and a wrong .sha256 still
+  stops the update before anything is installed. Case C: a 403 rate-limit
+  answer is reported with GitHub's own message and the reset time in plain
+  words, and gh is asked once. Everything runs under `env -i` with a scratch
+  HOME and a copy of the binary, so no real gh, login, token or network is
+  used. CI's Install Smoke Test job runs the driver script directly; this file
+  is for running the same cases through gadugi-test by hand.
+version: "1.0"
+config:
+  timeout: 300000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, update, gh, regression]
+  priority: high
+  issues: ["2957"]
+steps:
+  - name: run-issue-2957-update-with-gh-login-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-2957-update-with-gh-login-scenario.sh
+    timeout: 280000
+  - name: all-update-with-gh-login-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED

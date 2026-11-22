@@ -145,6 +145,10 @@ mod workflow_publish_pr_metadata;
 #[path = "workflow_publish_resilience.rs"]
 mod workflow_publish_resilience;
 
+// Issue #2335: amplihack runtime files never make a worktree dirty.
+#[path = "issue_2335_runtime_paths_publish.rs"]
+mod issue_2335_runtime_paths_publish;
+
 // Issue #1976: step-16 publishes a local tracking reference as no linked issue.
 #[path = "issue_1976_publish_local_issue.rs"]
 mod issue_1976_publish_local_issue;
@@ -409,6 +413,8 @@ mod issue_815_804_local_tracking_extract;
 #[path = "issue_815_804_local_tracking_scope_args_test.rs"]
 mod issue_815_804_local_tracking_scope_args;
 
+#[path = "issue_2538_terminal_state_cross_repo.rs"]
+mod issue_2538_terminal_state_cross_repo;
 // Issue #1017: PR-scope must match on the (head,base,same-repo) primary key so
 // the recipe adopts its own unique-by-branch PR (stale --issue/--head-sha), and
 // publish must be collision-tolerant (adopt an existing OPEN PR on create fail).

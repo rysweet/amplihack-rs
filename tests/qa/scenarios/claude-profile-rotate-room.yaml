@@ -5,7 +5,7 @@ description: >
   executable and a loopback stand-in for the usage and profile endpoints
   (socat, 127.0.0.1 only), replaying 22 November 2026: the live login reached
   100% of its session while several logins had room, alone in its organisation.
-  Seven cases: a dry run that reports the swap to the login with a fresh session;
+  Eight cases: a dry run that reports the swap to the login with a fresh session;
   a one-shot cycle that moves ~/.claude to it with reason=plan-room and no ALERT;
   HTTP 429 from the usage endpoint with a last good reading in the history,
   which gives an unconfirmed (HTTP 429) swap; HTTP 429 with no history, which
@@ -13,8 +13,10 @@ description: >
   target whose identity read returns another account, which moves nothing;
   a dry run at the 05:48Z readings, where the live login still has room and
   nothing it may move to qualifies, which says it would stay, with the note;
-  and the stand-in's own guards, where a bad bearer token, a missing one and
-  an oversized request line are refused and serve no fixture.
+  the stand-in's own guards, where a bad bearer token, a missing one and
+  an oversized request line are refused and serve no fixture; and a login
+  carrying a recorded spend block, which is passed over for the next login
+  the ranking gives until the block's reset and chosen again after it.
   Needs socat; runs locally and is not part of CI.
 version: "1.0"
 environment:
