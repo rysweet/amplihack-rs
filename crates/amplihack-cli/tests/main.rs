@@ -59,6 +59,8 @@ mod issue_2582_real_runner_argv;
 mod issue_2585_launch_notices_stderr;
 #[path = "issue_2959_invocation_record_lifetime.rs"]
 mod issue_2959_invocation_record_lifetime;
+// #3053, #2996, #2997: every auto-drive step uses the runner-bound state folder.
+mod issue_3053_one_state_folder;
 
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;

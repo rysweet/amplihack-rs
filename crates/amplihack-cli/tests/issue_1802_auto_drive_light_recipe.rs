@@ -257,9 +257,10 @@ fn light_escalate_runs_only_on_escalate_and_passes_the_same_pr_and_state() {
     let ctx = &step(&r, "light-escalate")["context"];
     assert_eq!(ctx["pr_number"].as_str(), Some("{{build_result.pr}}"));
     assert_eq!(ctx["existing_branch"].as_str(), Some(""));
+    // #2997: the runner-bound folder; this assertion used to pin the defect.
     assert_eq!(
         ctx["autodrive_state_dir"].as_str(),
-        Some("{{build_result.state_dir}}")
+        Some("{{autodrive_state_dir}}")
     );
     for k in [
         "task_description",
@@ -303,14 +304,15 @@ fn loops_are_the_unchanged_shared_sub_recipes_on_the_build_result() {
         crusty["context"]["pr_number"].as_str(),
         Some("{{build_result.pr}}")
     );
+    // #2997: both loops get the runner-bound folder, never the build's.
     assert_eq!(
         crusty["context"]["autodrive_state_dir"].as_str(),
-        Some("{{build_result.state_dir}}")
+        Some("{{autodrive_state_dir}}")
     );
     let merge = step(&r, "light-merge-loop");
     assert_eq!(
         merge["context"]["autodrive_state_dir"].as_str(),
-        Some("{{build_result.state_dir}}")
+        Some("{{autodrive_state_dir}}")
     );
     assert_eq!(
         merge["context"]["autodrive_dry_run"].as_str(),

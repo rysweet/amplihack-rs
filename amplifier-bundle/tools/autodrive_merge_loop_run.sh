@@ -7,9 +7,12 @@
 #
 # The body of the former step-02 command, moved here so the base sync can run
 # the same loop once more. The step's values arrive as RECIPE_VAR_* environment
-# variables (merge_loop_preflight, task_description, plan_task_id, no_merge,
-# autodrive_dry_run, merge_method, autodrive_budget_*), never by templating
-# into a command.
+# variables (autodrive_state_dir, merge_loop_preflight, task_description,
+# plan_task_id, no_merge, autodrive_dry_run, merge_method, autodrive_budget_*),
+# never by templating into a command.
+# The state folder is the runner-bound autodrive_state_dir (#3053). The
+# preflight's state_dir is used only when the tool is run directly, outside
+# amplihack, with no bound folder.
 # The loop driver, the crusty re-review and the round recipe are taken from
 # beside this tool, never from the PR worktree.
 #
@@ -72,7 +75,8 @@ if ! autodrive_merge_method_known "${RECIPE_VAR_merge_method:-}"; then
 fi
 g() { printf '%s' "${RECIPE_VAR_merge_loop_preflight:-}" | amplihack orch helper extract-json --require-field "$1" \
         | amplihack orch helper extract-field --field "$1" --default ''; }
-DIR="$(g state_dir)"; PR="$(g pr)"; REPO="$(g repo)"
+DIR="${RECIPE_VAR_autodrive_state_dir:-}"; [ -n "$DIR" ] || DIR="$(g state_dir)"
+PR="$(g pr)"; REPO="$(g repo)"
 # Refuse an empty or unsafe state_dir before anything touches it.
 case "$DIR" in
   ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-02]" >&2; exit 1 ;;
