@@ -569,6 +569,7 @@ fn real_tools(e: &Env) -> PathBuf {
     for f in [
         "autodrive_crusty_record.sh",
         "autodrive_followups.sh",
+        "autodrive_followups_file.sh",
         "autodrive_followups_check.sh",
         "autodrive_finding_rules.sh",
         "autodrive_state.sh",
