@@ -472,9 +472,14 @@ fact; it is advisory only.
 
 ### Declared scenarios job
 
-When the measured QA evidence record (`{{autodrive_qa_evidence}}`, written by
-step-02) has `qa_criterion1_declaration` `ci-job:<name>`, step-03 passes
-`'<name>'`, in single quotes, as the third argument to the same command. The
+Step-03 uses a declaration only from this round's measurement, saved at
+`{{autodrive_qa_evidence}}`, and only if it describes this PR's change. An
+unavailable or unreadable measurement supplies no declaration, and neither do
+PR text, the QA agent's summary or configuration from the PR head. See
+[Auto-drive QA](auto-drive-qa.md).
+
+For an applicable `qa_criterion1_declaration` of `ci-job:<name>`, step-03
+passes the name as a single third argument to the same command. The
 named job must then be a check-run at the head with exactly that name, and
 every check-run of that name must be `success` or `neutral`; `skipped` is
 `RED`, a commit status of that name does not count, and an absent job is

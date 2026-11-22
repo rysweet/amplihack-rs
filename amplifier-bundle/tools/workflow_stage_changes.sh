@@ -36,6 +36,8 @@
 # commit: the index correction above leaves a rewritten, tracked report on disk
 # as an unstaged modification, and the pull that brings in a moved remote must
 # keep it. It lives here because this module creates that state.
+# workflow_pull_rebase is kept as an alias of it for runs started on an older
+# release, whose recipes still call that name (#3019, #3049).
 #
 # Contract: docs/reference/recipe-commit-hook-repair.md#staging-rules
 
@@ -212,6 +214,13 @@ workflow_pull_merge() {
   fi
   return "$rc"
 }
+
+# workflow_pull_rebase: the name before #3019 renamed it. A run started on an
+# older release read its recipes at start and still calls this name after an
+# upgrade replaces the helper under it (#3049). It forwards to
+# workflow_pull_merge, so it merges and never rebases. Remove it once no
+# supported release can start a run that calls the old name (#3062).
+workflow_pull_rebase() { workflow_pull_merge "$@"; }
 
 stage_workflow_changes() {
   local top scratch list add_help rc=0

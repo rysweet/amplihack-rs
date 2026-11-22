@@ -838,6 +838,10 @@ pub(super) fn execute_recipe_via_rust_fresh(
             .build()
             .remove("AMPLIHACK_HOME"),
     };
+    // Issue #3049: the stage-changes helper this run's shell steps source,
+    // resolved once from the release the bundle link names now, so an upgrade
+    // that moves the link mid-run (or before a retry) does not change it.
+    let stage_helper_pin = stage_helper_pin(run_settings.amplihack_home.as_deref());
 
     // Issue #1808: the run's folder under the work root holds run.json and
     // owned-paths; its runtime/ (TMPDIR, TMP, TEMP and artifacts) is removed
@@ -1184,7 +1188,10 @@ pub(super) fn execute_recipe_via_rust_fresh(
                     .set("AMPLIHACK_BIN", executable.to_string_lossy().into_owned())
                     .set("AMPLIHACK_HOME", launch.home.to_string_lossy().into_owned())
             }
-            None => env_builder,
+            None => match &stage_helper_pin {
+                Some(pin) => env_builder.set(STAGE_HELPER_PIN_ENV, pin.clone()),
+                None => env_builder,
+            },
         };
         // Issue #439: propagate --step-timeout as AMPLIHACK_STEP_TIMEOUT env var.
         // When Some(n), the child process sees AMPLIHACK_STEP_TIMEOUT=n (0 = disable).
@@ -2738,4 +2745,33 @@ fn stage_step_tier_overrides(
             None
         }
     }
+}
+
+/// Variable the recipes read first when looking for `workflow_stage_changes.sh`.
+const STAGE_HELPER_PIN_ENV: &str = "WORKFLOW_STAGE_CHANGES_HELPER";
+
+/// Issue #3049: the release copy of `workflow_stage_changes.sh` that the
+/// `amplifier-bundle` link under `home` names at run start, in the
+/// non-canonical `<home>/releases/<name>/...` form that release clean-up
+/// matches against a live process's environment.
+///
+/// `None` when the parent environment already sets the variable (a nested run
+/// keeps its parent's release), when the bundle is not reached through a
+/// release (a development checkout), when the release has no helper, or when
+/// the path is not UTF-8. Best effort: the steps' own search applies then.
+fn stage_helper_pin(home: Option<&str>) -> Option<String> {
+    if std::env::var_os(STAGE_HELPER_PIN_ENV).is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    let home = Path::new(home?);
+    let releases = crate::commands::install::release_layout::releases_dir(home);
+    let root = crate::commands::install::release_layout::release_root_of(
+        &releases,
+        &home.join("amplifier-bundle"),
+    )?;
+    let helper = root.join("amplifier-bundle/tools/workflow_stage_changes.sh");
+    if !helper.is_file() {
+        return None;
+    }
+    helper.to_str().map(str::to_owned)
 }

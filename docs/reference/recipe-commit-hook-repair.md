@@ -890,7 +890,7 @@ stops rather than continuing.
 |---|---|---|
 | `AMPLIHACK_BIN` | `amplihack` | binary used for nested `recipe run` calls |
 | `WORKFLOW_HOOK_REPAIR_HELPER` | `workflow_hook_repair.sh` in the directory of `RUNTIME_ARTIFACT_HELPER`, then under `amplifier-bundle/tools/` in `AMPLIHACK_HOME`, `REPO_PATH`, the worktree, `~/.copilot` and `~/.amplihack` | path to the driver |
-| `WORKFLOW_STAGE_CHANGES_HELPER` | `workflow_stage_changes.sh` in the same directory as the driver | path to the staging helper |
+| `WORKFLOW_STAGE_CHANGES_HELPER` | `workflow_stage_changes.sh` in the same directory as the driver | path to the staging helper; for a release-based run the recipe runner sets it at start to the helper in the run's release, so an upgrade during the run does not change it |
 | `HOOK_REPAIR_ROUND_RECIPE` | `<bundle>/recipes/hook-rejection-repair.yaml` | path to the fixing recipe |
 | `HOOK_REPAIR_HEALTH_RECIPE` | `<bundle>/recipes/loop-health-evaluator.yaml` | path to the evaluator |
 

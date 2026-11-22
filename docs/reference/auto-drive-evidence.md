@@ -33,7 +33,7 @@ demonstrate live agent recovery or cross-platform execution.
 The trusted [merge-ready skill](../../amplifier-bundle/skills/merge-ready/SKILL.md)
 and its [description template](../../amplifier-bundle/skills/merge-ready/pr-description-template.md)
 define the criteria. This reference preserves those definitions with
-auto-drive's repository-type and crusty interpretations. The runner selects a private launch bundle for recipes, skills, templates, evaluator and helpers. The retired shell gate and the retired parsed readiness record are replaced by an agentic assessment and GitHub's own merge conditions.
+auto-drive's QA and crusty interpretations. The runner selects a private launch bundle for recipes, skills, templates, evaluator and helpers. The retired shell gate and the retired parsed readiness record are replaced by an agentic assessment and GitHub's own merge conditions.
 
 
 For **auto-drive criterion 3**, accepted crusty convergence substitutes for
@@ -46,7 +46,7 @@ accepted completion dispatch, and required follow-ups; do not claim unperformed 
 
 | ID | Criterion | Supporting evidence |
 | --- | --- | --- |
-| 1 | QA | Selected suite, source and directory, validated and executed scenarios where required, commands and results, tested head, and log references. Follow [QA selection](auto-drive-qa.md). Scenario files alone are insufficient. |
+| 1 | QA | The recorded judgement: whether the change is user-facing with the diff files it cites, the scenarios covering this PR's change with their results and commits, each failure with its cause and what was done, the selected suite with its source, directory and result, the tested head, and any named blocker or hand-off. Follow [QA selection](auto-drive-qa.md). Scenario files alone are insufficient, and a measured status alone is not the judgement. |
 | 2 | Documentation | Changed external surfaces, corresponding documentation updates and discoverable links, or a supported explanation of why no update is needed. |
 | 3 | Audit convergence | Auto-drive substitutes accepted completed crusty convergence: `CLEAN` or permitted `MINOR_ONLY`, required follow-ups, reviewed-head binding, and accepted completion dispatch (no evaluator call for a completed objective; see [Crusty completion](autodrive-crusty-completion.md)). No minimum round count applies. Standalone `/merge-ready` retains its separate audit of at least three SEEK → VALIDATE → FIX cycles, continued until clean. |
 | 4 | Checks/build validation | Complete current-head check rollup, required checks, conclusions and policy interpretation. Pending, failing, cancelled, stale, unavailable, or zero reported checks do not pass. |
@@ -62,8 +62,12 @@ accepted completion dispatch, and required follow-ups; do not claim unperformed 
 
 Non-applicability requires an explanation permitted by the authoritative
 criterion. It cannot excuse missing tooling, access, approvals, policy, or
-evidence. The documentation-only exception narrows scenario obligations in
-criterion 1; suite tests and all other criteria still apply.
+evidence. For criterion 1, a file-backed `not_user_facing` judgement
+verifies changes that leave behavior unchanged, including documentation
+and behavior-neutral configuration. A `user_facing` judgement verifies
+passing outside-in coverage of the PR's change. The read-only assessment
+reviews the judgement alongside the current measurement, diff, and
+head-specific checks. See [Auto-drive QA](auto-drive-qa.md).
 
 ## The write-up
 
@@ -200,7 +204,17 @@ A GraphQL refusal can be recovered through another authenticated interface
 only if it supplies equivalent complete facts, including every page of
 conversations. A missing `gh` can be recovered through another available
 client. Neither authorizes incomplete evidence or removes a failed criterion.
-Required QA tooling remains required.
+For criterion 1, a QA tool only a person can install is the recoverable
+blocker `qa-tool-not-installed:<tool>`: the judgement meets criterion 1 by
+other evidence or hands off to the named owner, and installs nothing
+automatically.
+
+A complete criterion-1 hand-off records the step, failure,
+recovery choice, reason, owner and requested action. The round records
+`HANDOFF`, preserves the owner and requested action in the saved write-up
+for operator reporting, and leaves finalization unselected. A recoverable
+QA gap returns to repair and reassessment. See the
+[QA outcome contract](auto-drive-qa.md#how-the-merge-round-reads-the-judgement).
 
 Record what failed, the cause, the alternative, and what it proved. If no
 usable alternative exists, retain the named blocker and incomplete outcome.
