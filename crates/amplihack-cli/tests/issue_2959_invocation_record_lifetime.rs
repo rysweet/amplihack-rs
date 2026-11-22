@@ -180,12 +180,12 @@ fn drive() -> Run {
     }
 }
 
-/// The record sits in the run's durable folder, beside the state folder, and
-/// the finalize authorization read still succeeds after a nested recipe run
-/// has ended and run its cleanup. On main it sat in a loose `TMPDIR` folder,
-/// so the location assertion fails there.
+/// The record sits in the run's durable folder, beside the state folder; the
+/// finalize authorization read still succeeds after a nested recipe run has
+/// ended and run its cleanup; and the record goes when its owner ends. On main
+/// it sat in a loose `TMPDIR` folder, so the location assertion fails there.
 #[test]
-fn the_record_is_in_the_durable_run_folder_and_survives_a_nested_runs_cleanup() {
+fn the_record_lives_in_the_durable_run_folder_for_the_whole_drive() {
     let run = drive();
     let inv = PathBuf::from(run.record("inv.path"));
     let dir = PathBuf::from(run.record("dir.path"));
@@ -222,14 +222,6 @@ fn the_record_is_in_the_durable_run_folder_and_survives_a_nested_runs_cleanup() 
     let answer: serde_json::Value = serde_json::from_str(&run.record("helper.out")).unwrap();
     assert_eq!(answer["allows_merge"], serde_json::json!(true), "{answer}");
     assert_eq!(answer["pr_selected"], serde_json::json!(true), "{answer}");
-}
-
-/// The owner removes the record when it ends: nothing is left behind in the
-/// durable folder's `autodrive-invocation-*` entry once the run has returned.
-#[test]
-fn the_record_is_removed_when_its_owner_ends() {
-    let run = drive();
-    let inv = PathBuf::from(run.record("inv.path"));
     assert!(
         !inv.exists(),
         "the record must not outlive its run: {}",

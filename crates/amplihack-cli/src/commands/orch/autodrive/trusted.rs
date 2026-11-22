@@ -671,8 +671,8 @@ mod umask_tests {
         assert!(format!("{error:#}").contains("absolute"), "{error:#}");
     }
 
-    /// #2959: the record is written once. A second `record_state_dir` replaces
-    /// it by rename, and no `create_new` write ever opens the live record.
+    /// #2959: binding the state directory replaces the record by rename, so it
+    /// stays 0600 and no temporary file is left beside it.
     #[test]
     fn record_stays_private_after_the_state_directory_is_bound_in_a_given_parent() {
         let (temp, home) = fake_home();
