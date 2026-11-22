@@ -193,7 +193,10 @@ struct Fixture {
     bin: PathBuf,
     log: PathBuf,
     repo: PathBuf,
-    /// The folder every agent step reports.
+    /// The drive's work root (`AMPLIHACK_WORK_ROOT`).
+    work: PathBuf,
+    /// The folder every agent step reports: the work root's per-PR folder,
+    /// as #1516's build reported.
     reported: PathBuf,
     /// The folder the runner binds.
     bound: PathBuf,
@@ -213,11 +216,16 @@ impl Fixture {
         let bin = base.join("bin");
         let log = base.join("log");
         let clone = base.join("clone");
-        let reported = base.join("reported-A");
+        let work = base.join("work");
+        let reported = work
+            .join("autodrive")
+            .join(format!("github.com__owner__fixture__pr-{PR}"));
         let bound = base.join("bound-B");
         for d in [&home, &bin, &log, &clone] {
             fs::create_dir_all(d).unwrap();
         }
+        private_dir(&work);
+        private_dir(&work.join("autodrive"));
         private_dir(&reported);
         private_dir(&bound);
         stage_bundle(&trusted.join("amplifier-bundle"));
@@ -278,6 +286,7 @@ impl Fixture {
             bin,
             log,
             repo,
+            work,
             reported,
             bound,
             head,
@@ -390,6 +399,7 @@ steps:
             )
             .env("PATH", path)
             .env("FAKE_LOG", &self.log)
+            .env("AMPLIHACK_WORK_ROOT", &self.work)
             .env_remove("GH_TOKEN")
             .env_remove("GITHUB_TOKEN")
             .env("AMPLIHACK_AGENT_BINARY", "codex")
@@ -403,14 +413,18 @@ steps:
 
     /// Runs a drive recipe by name against the copy, with folder B bound.
     fn drive(&self, recipe: &str, extra: &[&str]) -> Output {
+        let bind = format!("autodrive_state_dir={}", self.bound.display());
+        self.drive_given(recipe, &[&[bind.as_str()], extra].concat())
+    }
+
+    /// Runs a drive recipe by name against the copy with only the `-c`
+    /// values given, so with no `autodrive_state_dir` the runner binds its
+    /// own folder, as on #1516.
+    fn drive_given(&self, recipe: &str, extra: &[&str]) -> Output {
         let mut c = self.command();
         c.args(["recipe", "run", recipe])
             .args(["-c", &format!("pr_number={PR}")])
             .args(["-c", "autodrive_dry_run=false"])
-            .args([
-                "-c",
-                &format!("autodrive_state_dir={}", self.bound.display()),
-            ])
             .args(["-c", "task_description=fixture task"]);
         for kv in extra {
             c.args(["-c", kv]);
@@ -423,12 +437,14 @@ steps:
     }
 
     /// A plain command with the real `amplihack` on PATH and no inherited
-    /// recipe variables or tokens.
+    /// recipe variables or tokens. Its scratch files go under the fixture,
+    /// never the shared /tmp.
     fn command_plain(&self, program: &str) -> Command {
         let mut c = Command::new(program);
         c.env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
             .env("HOME", &self.home)
+            .env("TMPDIR", &self.base)
             .env("AMPLIHACK_HOME", &self.trusted)
             .env("FAKE_LOG", &self.log)
             .env("REPO_PATH", &self.repo)
@@ -451,6 +467,7 @@ steps:
             .env_clear()
             .env("PATH", format!("{}:/usr/bin:/bin", standin.display()))
             .env("HOME", &self.home)
+            .env("TMPDIR", &self.base)
             .env("AMPLIHACK_HOME", &self.trusted)
             .env("FAKE_LOG", &self.log)
             .env("FAKE_REPORTED", &self.reported)
@@ -642,6 +659,63 @@ fn a_light_escalation_hands_the_bound_folder_to_the_full_drive() {
     let seen = fs::read_to_string(f.log.join("escalated-state-dir"))
         .unwrap_or_else(|_| panic!("light did not escalate: {}", show(&out)));
     assert_eq!(seen, f.bound.to_str().unwrap(), "{}", show(&out));
+}
+
+// ---------------------------------------------------------------------------
+// T5 (#3053, as on #1516): the operator gives no folder, so the runner binds
+// <work root>/runs/<id>/autodrive-state, and the build reports the work root's
+// per-PR folder. On main the crusty loop is handed the build's folder, which
+// then replaces the bound one, and finalisation ends authorization-unreadable.
+#[test]
+fn a_drive_given_no_folder_keeps_every_record_in_the_one_the_runner_bound() {
+    for recipe in ["auto-drive-to-merge", "auto-drive-light"] {
+        let f = Fixture::new();
+        f.stage_recipes();
+        let out = f.drive_given(recipe, &["no_merge=false"]);
+        assert_eq!(out.status.code(), Some(0), "{recipe}: {}", show(&out));
+        f.assert_reported_folder_untouched(&out);
+
+        let crusty = f.driver_args("crusty");
+        let merge = f.driver_args("merge-ready");
+        let bound = PathBuf::from(
+            flag_value(&crusty, "--state-dir")
+                .unwrap_or_else(|| panic!("{recipe}: no crusty review: {}", show(&out))),
+        );
+        assert_eq!(
+            flag_value(&merge, "--state-dir"),
+            bound.to_str(),
+            "{recipe}: {merge:?}"
+        );
+        assert!(
+            bound.starts_with(f.work.join("runs")) && bound.ends_with("autodrive-state"),
+            "{recipe}: not the runner's own folder: {}",
+            bound.display()
+        );
+        for record in ["crusty-round-2.verdict", "merge-ready-latest.head"] {
+            assert!(bound.join(record).exists(), "{recipe}: no {record}");
+        }
+
+        let argv: Vec<String> = fs::read_to_string(f.log.join("merge-argv"))
+            .unwrap_or_else(|_| panic!("{recipe}: the merge was not authorised: {}", show(&out)))
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            flag_value(&argv, "--match-head-commit"),
+            Some(f.head.as_str()),
+            "{recipe}: {argv:?}"
+        );
+        let raw = fs::read_to_string(bound.join("finalize-merge.json"))
+            .unwrap_or_else(|e| panic!("{recipe}: no merge record in the bound folder: {e}"));
+        let record: Value = serde_json::from_str(raw.trim()).unwrap();
+        assert_eq!(record["result"], json!("merged"), "{recipe}: {record}");
+        assert_eq!(
+            outcome(&out)["stop_reason"],
+            json!("completed"),
+            "{recipe}: {}",
+            show(&out)
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
