@@ -81,8 +81,11 @@ time.`
 
 ## Limitations
 
-- The `gh auth status` probe contacts GitHub and has no timeout of its own. On a
-  host with a poor connection the update can pause at that step.
+- The `gh auth status` probe contacts GitHub. On a host with a poor connection
+  the update can pause at that step for up to 20 seconds, after which the
+  anonymous request is used. `gh api` has the same 20-second limit and
+  `gh release download` a 15-minute limit; either timing out ends the update
+  with an error.
 - If `GH_HOST` names a GitHub Enterprise host, `gh` queries that host. The
   allowlist for asset URLs still applies, so a release whose asset URL is on a
   host outside the allowlist is refused.

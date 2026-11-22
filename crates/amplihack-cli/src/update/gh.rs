@@ -4,13 +4,32 @@
 //! inherited environment, so gh honours `GH_TOKEN`, `GH_CONFIG_DIR` and
 //! `GH_HOST` exactly as it does from a shell. The probe's output is discarded;
 //! only its exit status is read.
+//!
+//! Every gh call runs under a wall-clock timeout, so a stalled gh cannot hold
+//! up `amplihack update` or the launch-time update check. A timed-out probe
+//! counts as "gh is not usable", like any other probe failure; a timed-out
+//! `gh api` or `gh release download` is an error, with no anonymous fallback.
 
 use super::GITHUB_REPO;
 use super::network::sanitise_remote_text;
-use anyhow::{Result, bail};
+use crate::util::{run_output_with_timeout_limited, run_with_timeout_described};
+use anyhow::{Context, Result, bail};
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
+
+/// Wall-clock limit for `gh auth status` and `gh api`. gh may make one
+/// network round trip for each.
+const GH_QUERY_TIMEOUT: Duration = Duration::from_secs(20);
+/// Wall-clock limit for `gh release download`, sized for an archive at the
+/// 512 MiB limit over a slow link.
+const GH_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Most `gh api` stdout kept. The release JSON is far smaller; anything larger
+/// is refused rather than parsed.
+const MAX_GH_API_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+/// Most stderr kept from any gh call. Only its first line is ever shown.
+const MAX_GH_STDERR_BYTES: usize = 64 * 1024;
 
 /// How to run gh. Deliberately has no `Debug` or `Display`, so a value can
 /// never be formatted into a message or log.
@@ -20,6 +39,8 @@ pub(crate) struct GhCommand {
     /// it to point the child at private 0700 roots without changing the test
     /// process environment.
     env: Vec<(String, String)>,
+    query_timeout: Duration,
+    download_timeout: Duration,
 }
 
 impl Default for GhCommand {
@@ -27,6 +48,8 @@ impl Default for GhCommand {
         Self {
             program: OsString::from("gh"),
             env: Vec::new(),
+            query_timeout: GH_QUERY_TIMEOUT,
+            download_timeout: GH_DOWNLOAD_TIMEOUT,
         }
     }
 }
@@ -44,7 +67,15 @@ impl GhCommand {
         Self {
             program: program.into(),
             env,
+            ..Self::default()
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_timeouts(mut self, query: Duration, download: Duration) -> Self {
+        self.query_timeout = query;
+        self.download_timeout = download;
+        self
     }
 
     /// Every gh invocation is built here: argv only, no shell, the environment
@@ -58,15 +89,20 @@ impl GhCommand {
         command
     }
 
-    /// `true` only when `gh auth status` starts and exits 0. Its output is
-    /// discarded, so nothing it prints can reach amplihack.
+    /// `true` only when `gh auth status` starts and exits 0 within the query
+    /// timeout. Its output is discarded, so nothing it prints can reach
+    /// amplihack.
     pub(crate) fn usable(&self) -> bool {
-        let usable = self
-            .command(&["auth", "status"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
+        let mut command = self.command(&["auth", "status"]);
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let usable = match run_with_timeout_described(command, self.query_timeout, "gh auth status")
+        {
+            Ok(status) => status.success(),
+            Err(err) => {
+                tracing::debug!(error = %format!("{err:#}"), "gh auth status did not finish");
+                false
+            }
+        };
         if !usable {
             tracing::debug!("gh is not usable; using the anonymous request");
         }
@@ -77,10 +113,16 @@ impl GhCommand {
     /// header and body.
     pub(crate) fn latest_release_json(&self) -> Result<GhApiResponse> {
         let endpoint = format!("repos/{GITHUB_REPO}/releases/latest");
-        let output = self
-            .command(&["api", "-i", &endpoint])
-            .output()
-            .map_err(|err| anyhow::anyhow!("failed to run gh api: {err}"))?;
+        // One byte over the limit is kept, so an oversized answer is detected.
+        let output = run_output_with_timeout_limited(
+            self.command(&["api", "-i", &endpoint]),
+            self.query_timeout,
+            MAX_GH_API_OUTPUT_BYTES + 1,
+        )
+        .context("failed to run gh api")?;
+        if output.stdout.len() > MAX_GH_API_OUTPUT_BYTES {
+            bail!("gh api output exceeded the limit of {MAX_GH_API_OUTPUT_BYTES} bytes");
+        }
         parse_api_output(&output.stdout, &output.stderr, output.status.code())
     }
 
@@ -102,11 +144,12 @@ impl GhCommand {
         }
         args.push("--dir");
         args.push(dir_text);
-        let output = self
-            .command(&args)
-            .stdout(Stdio::null())
-            .output()
-            .map_err(|err| anyhow::anyhow!("failed to run gh release download: {err}"))?;
+        let output = run_output_with_timeout_limited(
+            self.command(&args),
+            self.download_timeout,
+            MAX_GH_STDERR_BYTES,
+        )
+        .context("failed to run gh release download")?;
         if !output.status.success() {
             bail!(
                 "gh release download {tag} failed ({}): {}",

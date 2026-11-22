@@ -28,7 +28,7 @@ update check that runs at launch. For the steps to sign in, see
 | Order | Step | Result |
 | ----- | ---- | ------ |
 | 1 | `AMPLIHACK_TEST_FAKE_LATEST_VERSION` | Handled before `gh` is run |
-| 2 | `gh auth status` | Exit 0 selects the `gh` path. Anything else, including `gh` missing, selects the anonymous path |
+| 2 | `gh auth status` | Exit 0 within 20 seconds selects the `gh` path. Anything else, including `gh` missing or the probe timing out, selects the anonymous path |
 | 3 | Lookup and download | On the `gh` path through `gh`. Otherwise an anonymous request |
 
 The probe runs with stdin, stdout and stderr discarded, so only the exit status
@@ -40,6 +40,21 @@ is read. The child inherits the whole environment, so `gh` applies
 
 After a successful probe, a failure on the `gh` path ends the operation with
 that error. There is no fallback to the anonymous request.
+
+### Timeouts
+
+| Command | Limit | On timeout |
+| ------- | ----- | ---------- |
+| `gh auth status` | 20 seconds | Treated as "not usable": the anonymous path is used |
+| `gh api` | 20 seconds | Error `failed to run gh api: ... timed out ...`, no fallback |
+| `gh release download` | 15 minutes | Error `failed to run gh release download: ... timed out ...`, no fallback |
+
+A timed-out `gh` is stopped together with its child processes. The launch
+check discards these errors and logs them at debug level.
+
+`gh api` output larger than 8 MiB is refused with
+`gh api output exceeded the limit of 8388608 bytes`. At most 64 KiB of
+`gh release download` stderr is kept, and only its first line is shown.
 
 `amplihack update` probes `gh` twice in one run, once for the lookup and once
 for the download. The call order is `auth status`, `api`, `auth status`,
@@ -153,12 +168,14 @@ at debug level and the launch continues. The check never blocks a launch.
 `AMPLIHACK_NO_UPDATE_CHECK` is handled in `classify_skip_reason` and skips this
 check only.
 
-The older `_fetch_latest_version` in `auto_update.rs` has no callers and is not
-part of this behaviour.
+`_fetch_latest_version` in `auto_update.rs` also goes through `gh`, but its
+only caller, `auto_update::check_for_updates`, has no callers in the workspace,
+as on `main`. The launch check uses the lookup described above.
 
 ## Limitations
 
-- The `gh auth status` probe contacts GitHub and has no timeout.
+- The `gh auth status` probe contacts GitHub, so a slow network can add up to
+  20 seconds before the anonymous path is chosen.
 - If `GH_HOST` names a GitHub Enterprise host, `gh` queries that host. The
   asset URL allowlist still applies.
 - The 512 MiB limit on the `gh` path is checked after download and has no
