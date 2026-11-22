@@ -1,13 +1,16 @@
 //! Issues #2890 and #2882: a step's spend-limit failure blocks the login it
 //! ran under, and the rotator reads that block as "no room".
 //!
-//! Contract (these tests fail until it exists):
+//! Contract:
 //! - `ledger::OverflowBlock::spend_limit_until(at, until) -> OverflowBlock`:
 //!   reason `spend_limit`, the stated end rather than the monthly assumption.
 //!   `OverflowBlock::spend_limit(at)` is unchanged.
-//! - `step_block::note_spend_block(root: &Path, login: &ProfileName, at: i64,
-//!   until: i64)` returns `()`. Under the rotate state lock it inserts
-//!   `overflow_blocked[login] = spend_limit_until(at, until)` and writes one
+//! - `step_block::note_limit_block(root: &Path, login: &ProfileName, at: i64,
+//!   until: Option<i64>, kind: LimitKind)` returns `()` (issue #2911, which
+//!   replaced #2890's `note_spend_block`). For `LimitKind::Spend` with a
+//!   stated reset, which is what this file exercises through the local
+//!   `note_spend_block` helper, it inserts `overflow_blocked[login] =
+//!   spend_limit_until(at, until)` under the rotate state lock and writes one
 //!   `ALERT: login <name> hit its spend limit; blocked until <time>` line to
 //!   the rotate log. Order: ledger exists, span valid, lock, load, prune and
 //!   active check, cardinality, save, log. It never creates a ledger, never
@@ -16,11 +19,11 @@
 //!   rotate log as `ALERT: login <name> spend limit not blocked (<why>)`
 //!   with `<why>` one of `stated reset already passed`, `stated reset out
 //!   of range`, `rotator busy`, `ledger unreadable`, `ledger not written`,
-//!   `too many blocks`.
-//! - `spend_alert(&ProfileName, until) -> String` and
-//!   `spend_not_blocked(&ProfileName, why: &str) -> String`
-//!   with the two texts above (without the `ALERT: ` prefix being optional:
-//!   the prefix is part of the returned string).
+//!   `too many blocks`. The other kinds are in `tests_step_block_kinds.rs`.
+//! - `msg::alert_step_limit_block(&ProfileName, LimitKind::Spend, until)` and
+//!   `msg::step_limit_block_not_written(&ProfileName, LimitKind::Spend, why)`
+//!   return the two texts above, `ALERT: ` prefix included; the local
+//!   `spend_alert` and `spend_not_blocked` helpers name them for this file.
 //! - `overflow::decide_restricted`: a plan login (not an overflow profile)
 //!   with an active block contributes `Reading::Exhausted { None, None }`
 //!   and no windows, as the live login and as a candidate.

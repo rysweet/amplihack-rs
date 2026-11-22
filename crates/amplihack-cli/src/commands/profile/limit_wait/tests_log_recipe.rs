@@ -283,8 +283,11 @@ fn the_end_line_is_identical_in_both_sinks() {
 
 // --- what never reaches the recipe log ------------------------------------
 
+/// The recipe log carries a wait's `start`, `end`, `reentered` (#2857) and
+/// `waiting_for_capacity` (#2911) lines and nothing else; the last two are
+/// tested in their own sections below.
 #[test]
-fn only_start_and_end_reach_the_recipe_log() {
+fn progress_resume_skipped_and_failed_lines_never_reach_the_recipe_log() {
     for e in [
         Event::Progress { remaining: 1740 },
         Event::Resume { attempt: 2 },
@@ -295,7 +298,8 @@ fn only_start_and_end_reach_the_recipe_log() {
         assert_eq!(
             recipe(&e, Some("work")),
             None,
-            "only the start and end of a wait belong in the recipe log"
+            "the recipe log carries a wait's start, end, reentered and \
+             waiting_for_capacity lines only"
         );
     }
 }
