@@ -99,8 +99,8 @@ pub(super) struct Exit<'a> {
 /// reads. Settled once, before the first launch.
 pub(super) struct Standing {
     on: bool,
-    /// `None` when there is no rotator to wait for, so a relaunch never
-    /// waits.
+    /// `None` when there is no rotator to wait for, or its root could not
+    /// be found (a warning), so a relaunch never waits.
     root: Option<PathBuf>,
 }
 
@@ -110,7 +110,9 @@ impl Standing {
     /// and `false`, so a file nobody can make sense of never starts agents
     /// unattended.
     pub(super) fn resolve(flag: Option<bool>, name: &str, home: &Path) -> Self {
+        use super::sessions::root_error;
         use crate::user_config::{AGENT_STANDING, agent_standing};
+        use amplihack_utils::rotator_status::locate_root;
         let on = flag.unwrap_or_else(|| match agent_standing(home) {
             Ok(on) => on,
             Err(why) => {
@@ -121,10 +123,22 @@ impl Standing {
                 false
             }
         });
-        let root =
-            amplihack_utils::rotator_status::locate_root(|k| std::env::var_os(k), Some(home))
-                .ok()
-                .map(|(root, _)| root);
+        // A root that cannot be found means no wait for room. That changes
+        // what a standing session does, so it is said, with the cause.
+        let root = match locate_root(|k| std::env::var_os(k), Some(home)) {
+            Ok((root, _)) => Some(root),
+            Err(why) => {
+                if on {
+                    eprintln!(
+                        "warning: the profile root could not be found ({}); \
+                         standing agent {name} will be started again without \
+                         waiting for a login with room",
+                        root_error(&why)
+                    );
+                }
+                None
+            }
+        };
         Self { on, root }
     }
 
