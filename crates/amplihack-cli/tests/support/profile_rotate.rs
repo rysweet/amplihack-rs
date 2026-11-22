@@ -712,6 +712,11 @@ pub fn assert_text_has_no_secrets(s: &str) {
 /// `confirm:` reports a pre-swap reading that could not be taken. Their text
 /// is fixed in `rotate/wake_msg.rs`; see "Rotate wake" and "Rotate target
 /// choice" in docs/reference/profile-command.md.
+///
+/// A `swap` line's `reason=` admits every reason the log grammar table in
+/// docs/reference/profile-command.md lists. It admitted only `threshold`,
+/// `projected` and `upgrade` until `issue_2910_target_room` checked the
+/// lines of a plan-room swap.
 pub fn assert_log_grammar(line: &str, timed: bool) {
     let msg = if timed {
         let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z (.+)$").unwrap();
@@ -723,7 +728,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)(,cached=\d+s)?|failed|per-token|unknown, still running))?( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)( cached=\d+s)?|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|projected|upgrade)|stale live reading; re-read|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|reread: \S+ (reading stale .+; fresh .+|(failed|limit reached|time limit reached); treated as unknown)|affinity: (crossing|unresolved) \S+->\S+: .+|wake: .+|reject: \S+ .+|confirm: .+|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)(,cached=\d+s)?|failed|per-token|unknown, still running))?( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)( cached=\d+s)?|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|projected|upgrade|failed-probe|plan-room|overflow-in|overflow-out)|stale live reading; re-read|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|reread: \S+ (reading stale .+; fresh .+|(failed|limit reached|time limit reached); treated as unknown)|affinity: (crossing|unresolved) \S+->\S+: .+|wake: .+|reject: \S+ .+|confirm: .+|would .+)$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");

@@ -140,6 +140,8 @@ fn a_limit_record_makes_the_rotator_swap_inside_its_interval() {
         "the wake comes before the swap it caused:\n{log}"
     );
     assert!(!log.contains("wake: interval"), "no interval tick: {log}");
+    // Under `--nocapture` the log is the evidence an operator would read.
+    println!("[#2909 record] {}", log.replace('\n', "\n[#2909 record] "));
     for l in log.lines() {
         assert_log_grammar(l, true);
     }
@@ -176,6 +178,7 @@ fn a_recorded_reset_wakes_the_rotator_and_frees_the_login() {
         first(&log, "reject: spare").is_some_and(|r| r < woke),
         "before its reset spare was passed over as blocked:\n{log}"
     );
+    println!("[#2909 reset] {}", log.replace('\n', "\n[#2909 reset] "));
     for l in log.lines() {
         assert_log_grammar(l, true);
     }
