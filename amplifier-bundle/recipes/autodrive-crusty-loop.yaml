@@ -146,7 +146,7 @@ steps:
       [ -n "${RECIPE_VAR_step_recovery_dir:-}" ] || exec bash -c "$STEP_BODY" step-02-crusty-loop
       exec amplihack orch helper step-recovery run --step-id step-02-crusty-loop --essential --stop-on-handoff \
         --dir "$RECIPE_VAR_step_recovery_dir" \
-        --goal "Run the crusty review loop to a clean review for PR ${RECIPE_VAR_pr_number:-unknown}" \
+        --goal "Run the crusty review loop to a clean review for PR ${RECIPE_VAR_pr_number:-unknown}, with that PR's head branch on GitHub carrying every commit this run made" \
         -- bash -c "$STEP_BODY" step-02-crusty-loop
     output: "crusty_loop_result"
   - id: "step-03-record-crusty-phase"
