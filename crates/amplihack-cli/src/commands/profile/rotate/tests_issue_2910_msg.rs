@@ -7,8 +7,8 @@
 //! swapped or found none, and not a cycle that stayed.
 
 use super::{
-    CONFIRM_SKIPPED, Reject, WAKE_REARMED, blocked, cause, no_room, reject, rejections,
-    wake_failed, wake_unavailable,
+    CONFIRM_LOCKED, CONFIRM_SKIPPED, Reject, WAKE_REARMED, blocked, cause, no_room, reject,
+    rejections, wake_failed, wake_unavailable,
 };
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate::decide::{Decision, Measured, Reading, Reason, Windows};
@@ -110,6 +110,10 @@ fn each_reason_has_its_own_line() {
     assert_eq!(
         CONFIRM_SKIPPED,
         "confirm: skipped, no reading could be taken in this cycle"
+    );
+    assert_eq!(
+        CONFIRM_LOCKED,
+        "confirm: skipped, no reading is taken under the lock"
     );
 }
 
@@ -277,6 +281,7 @@ fn every_line_is_fixed_text_with_no_fractions() {
     let mut lines = rejections(&s, &Decision::Alert, &measured, None, &b, NOW);
     lines.push(no_room(&n("ddrumpf")));
     lines.push(CONFIRM_SKIPPED.to_string());
+    lines.push(CONFIRM_LOCKED.to_string());
     for line in &lines {
         assert!(
             line.starts_with("reject: ") || line.starts_with("confirm: "),

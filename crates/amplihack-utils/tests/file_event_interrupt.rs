@@ -120,3 +120,40 @@ fn the_waiters_copy_of_the_interrupt_is_not_inherited_by_a_child() {
         "child inherited {socket}: {listing}"
     );
 }
+
+#[test]
+fn a_closed_interrupt_peer_is_dropped_rather_than_polled_for_ever() {
+    let d = private_dir();
+    let (mut tx, rx) = UnixStream::pair().unwrap();
+    let mut w = waiter(d.path(), &rx);
+    tx.write_all(&[1]).unwrap();
+    drop(tx);
+    // The byte written before the close is still reported once.
+    assert_eq!(w.wait(Instant::now()).unwrap(), Woke::Deadline);
+    // A stream socket whose peer has closed reports `POLLIN | POLLHUP` for
+    // ever, drained or not, so a waiter that kept the descriptor would
+    // return from every later wait at once. The deadline is the evidence:
+    // a `poll(2)` with nothing ready cannot return before it.
+    let short = Duration::from_millis(200);
+    let start = Instant::now();
+    assert_eq!(w.wait(start + short).unwrap(), Woke::Deadline);
+    assert!(
+        start.elapsed() >= short,
+        "the wait returned early: the closed peer is still polled"
+    );
+}
+
+#[test]
+fn a_closed_interrupt_peer_leaves_the_watches_working() {
+    let d = private_dir();
+    let (tx, rx) = UnixStream::pair().unwrap();
+    let mut w = waiter(d.path(), &rx);
+    drop(tx);
+    assert_eq!(w.wait(Instant::now()).unwrap(), Woke::Deadline);
+    write_private_atomic(d.path(), "ledger.json", b"{}").unwrap();
+    assert_eq!(
+        w.wait(Instant::now()).unwrap(),
+        Woke::File(0),
+        "the ledger watch still wakes after the interrupt went"
+    );
+}

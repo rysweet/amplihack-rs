@@ -229,7 +229,15 @@ pub(super) fn settle(
             // readings that went stale under the rotator are the ones #2910
             // names. Where no read is allowed, see `fresh_confirm.rs`.
             let stored = probes[i].1.passive || probes[i].1.carried;
-            if mode == Reread::Never || !stored {
+            if !stored {
+                break;
+            }
+            if mode == Reread::Never {
+                // Under the lock no reading is taken at all, so the swap
+                // goes ahead on the stored one. Said out loud, as the
+                // spent-budget skip is: rule 3's departures are in the log,
+                // never inferred from a missing line.
+                lines.push(super::log::msg::CONFIRM_LOCKED.to_string());
                 break;
             }
             if ctx.stopping() {

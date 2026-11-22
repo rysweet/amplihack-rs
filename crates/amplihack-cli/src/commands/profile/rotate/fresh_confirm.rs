@@ -20,6 +20,14 @@
 //! normally been confirmed already by the cycle's own gate; a target the
 //! revalidation chose in its place is swapped to on the reading the cycle
 //! had, after the `revalidate:` line.
+//!
+//! Every such departure from rule 3 is written. The gate itself logs
+//! `msg::CONFIRM_LOCKED` before it breaks under the lock, and [`read`] logs
+//! `msg::CONFIRM_SKIPPED` when the cycle's re-read or time budget is spent,
+//! so a swap made on a stored reading can be told from one confirmed, from
+//! the log alone. The one silent case is a context with no re-read hook,
+//! which only tests build: `Ctx::with_rereads` sets it on the one context
+//! the daemon runs.
 
 use super::super::cycle::Ctx;
 use super::super::decide::Probed;

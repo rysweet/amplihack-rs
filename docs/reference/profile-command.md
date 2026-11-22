@@ -7784,7 +7784,9 @@ every pass, the plan-room swap included:
    under the lock chose in place of one that stopped being eligible
    ([revalidation](#rotate-revalidation)): the swap onto it goes ahead on the
    reading the cycle already had, after the `revalidate: ... reconsidered`
-   line, as it did before this rule.
+   line, as it did before this rule. Where that reading is a stored one, the
+   lock's pass logs `confirm: skipped, no reading is taken under the lock`,
+   so every swap standing on an unconfirmed reading says so in the log.
 
 Candidates that pass these rules rank as they always have: by headroom for a
 threshold or upgrade swap, and by week, then session, then name for the
@@ -9886,6 +9888,7 @@ run and prints their `reread:` lines; see
 | `reread: <name> time limit reached; treated as unknown` | The chosen target was stale, but this cycle's target re-reads had already used their shared time limit of one [probe deadline](#probe-deadline). The live re-read has a separate budget. `<name>` is not read and is unknown for this cycle. |
 | `confirm: <name> was s=<n>% w=<n>%; now s=<n>% w=<n>%` | The chosen swap target's reading was a stored one (passive, or carried from an earlier cycle), so it was read once more before the swap; see [Rotate target choice](#rotate-target-choice). Figures as in the `swap` line. The decision was then made again on the new figures. |
 | `confirm: skipped, no reading could be taken in this cycle` | The chosen target's stored reading could not be confirmed, because this cycle's re-read limit or time limit was spent; the swap went ahead on it. |
+| `confirm: skipped, no reading is taken under the lock` | The chosen target's stored reading was not confirmed by the check made again under the lock, which never reads; the swap went ahead on it. Normally the cycle's own check confirmed the target already, so this line follows a `revalidate: ... reconsidered` line. |
 | `reject: <name> <reason>` | A login the cycle passed over as a swap target, with fixed text for why: `<kind> recorded until <time>` for an active [block](#rotate-target-choice), where `<kind>` is `spend limit`, `session limit`, `week limit`, `credit limit` or `a recorded limit`; `week w=<n>% at or above --week-at <N>`; `session s=<n>% at or above --session-at <N>`; `no room left` for an exhausted reading; `no usable reading` for a failed or unreadable one; or `fresh reading shows no room` when a [confirming read](#rotate-target-choice) dropped the chosen target. Written by a cycle that swaps or alerts, never by one that stays, and never for the live login or the chosen target. A stored block reason is never quoted. |
 | `damp: <name> swapped away exhausted; no later reading shows room` | `<name>` is in the ledger's `swapped_away`, and its re-read shows it still at or above `--session-at` or `--week-at`, or exhausted. It stays damped. See [Swap-back damping](#swap-back-damping). |
 | `damp: <name> later reading shows room; swap-back allowed` | A reading of `<name>` taken after the rotator swapped away from it shows room, so its `swapped_away` entry was removed. Written in the [record step](#rotate-cycle), after the cycle's `swap`, stay or ALERT line, and never by `--dry-run`. |

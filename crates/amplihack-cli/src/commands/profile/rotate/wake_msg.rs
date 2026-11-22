@@ -75,6 +75,14 @@ pub fn cause(e: &std::io::Error) -> &'static str {
 /// A weaker guarantee, said out loud rather than hidden.
 pub const CONFIRM_SKIPPED: &str = "confirm: skipped, no reading could be taken in this cycle";
 
+/// As [`CONFIRM_SKIPPED`], for the check made again under the lock
+/// ([`super::fresh::Reread::Never`]), which never reads. The target has
+/// normally been confirmed by the cycle's own check already; where
+/// revalidation chose another one in its place, the swap goes ahead on the
+/// reading the cycle had. Either way the skip is written, so rule 3's
+/// departure is in the log rather than inferred from its absence.
+pub const CONFIRM_LOCKED: &str = "confirm: skipped, no reading is taken under the lock";
+
 /// The confirming read showed the chosen target has no room after all, so
 /// the next-ranked candidate is tried.
 pub fn no_room(name: &ProfileName) -> String {

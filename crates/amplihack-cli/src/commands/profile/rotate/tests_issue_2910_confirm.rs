@@ -231,10 +231,11 @@ fn a_swap_made_without_a_confirming_read_says_so_rather_than_being_refused() {
 }
 
 #[test]
-fn under_the_lock_no_confirming_read_is_made_and_no_line_is_written() {
+fn under_the_lock_no_confirming_read_is_made_and_the_skip_is_logged() {
     // `Reread::Never` is the revalidation path: it may not read at all, and
     // `panics` proves none was made. The swap is not refused for it, and
-    // the gate writes no line of its own.
+    // the skip is written, as the spent-budget one is, so a swap made on a
+    // stored reading can be told from a confirmed one in the log.
     let (d, lines) = settled(
         Some(panics as fresh::RereadFn),
         BUDGET,
@@ -243,8 +244,77 @@ fn under_the_lock_no_confirming_read_is_made_and_no_line_is_written() {
     );
     assert_eq!(swapped_to(&d), Some("spare"), "{d:?}");
     assert!(
+        lines.iter().any(|l| l == msg::CONFIRM_LOCKED),
+        "the skipped confirmation is logged: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.starts_with("confirm: spare ")),
+        "no reading was taken, so no figures are reported: {lines:?}"
+    );
+}
+
+#[test]
+fn under_the_lock_a_reading_this_cycle_took_is_swapped_to_with_no_skip_line() {
+    // The target the cycle read directly needs no confirmation, so the
+    // lock's own pass has nothing to skip and says nothing. Only a swap
+    // standing on a stored reading writes `CONFIRM_LOCKED`.
+    let (d, lines) = settled(
+        Some(panics as fresh::RereadFn),
+        BUDGET,
+        fresh::Reread::Never,
+        &[("spare", read_now(5.0, 5.0))],
+    );
+    assert_eq!(swapped_to(&d), Some("spare"), "{d:?}");
+    assert!(
         !lines.iter().any(|l| l.starts_with("confirm:")),
-        "no read was possible, and none was attempted: {lines:?}"
+        "the reading is already the confirmation: {lines:?}"
+    );
+}
+
+#[test]
+fn the_check_under_the_lock_is_quiet_once_the_cycle_has_confirmed_the_target() {
+    // The usual order: the cycle's gate replaces the stored reading with
+    // one it took, and the lock's pass then has nothing to skip. This is
+    // what keeps `CONFIRM_LOCKED` evidence of a real departure rather than
+    // a line on every revalidation.
+    let _watch = watching();
+    let e = env();
+    let c = gate_ctx(&e, Some(spare_full as fresh::RereadFn));
+    let s = snap(&c);
+    let at = now();
+    let probes = vec![(n("extra"), stored(5.0, 5.0, at))];
+    let m = decide_measured(&c, &s, spent(), probes, at).unwrap();
+    let again = |live, probes, at| decide_measured(&c, &s, live, probes, at);
+    let cycle = fresh::settle(&c, m, fresh::Reread::Allowed, BUDGET, again).unwrap();
+    assert_eq!(
+        swapped_to(&cycle.decision),
+        Some("extra"),
+        "{:?}",
+        cycle.decision
+    );
+    assert_eq!(reads(), ["extra"], "the cycle's own gate read it");
+    assert!(
+        cycle
+            .fresh_lines
+            .iter()
+            .any(|l| l.starts_with("confirm: extra ")),
+        "the cycle logged its confirming read: {:?}",
+        cycle.fresh_lines
+    );
+    let mut locked = cycle;
+    locked.fresh_lines.clear();
+    let locked = fresh::settle(&c, locked, fresh::Reread::Never, BUDGET, again).unwrap();
+    assert_eq!(
+        swapped_to(&locked.decision),
+        Some("extra"),
+        "{:?}",
+        locked.decision
+    );
+    assert!(reads().is_empty(), "the lock reads nothing");
+    assert!(
+        locked.fresh_lines.is_empty(),
+        "a target the cycle confirmed needs no skip line: {:?}",
+        locked.fresh_lines
     );
 }
 
@@ -277,4 +347,10 @@ fn the_confirmation_lines_are_fixed_text_naming_only_the_login() {
         "reject: spare fresh reading shows no room"
     );
     assert!(!msg::CONFIRM_SKIPPED.contains('%'));
+    assert!(!msg::CONFIRM_LOCKED.contains('%'));
+    assert_ne!(
+        msg::CONFIRM_SKIPPED,
+        msg::CONFIRM_LOCKED,
+        "the two skips are told apart in the log"
+    );
 }

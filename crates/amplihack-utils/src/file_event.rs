@@ -313,11 +313,18 @@ mod linux {
         /// reports it. A hang-up or an error on it means the writer is gone
         /// for good, so the descriptor is dropped rather than polled for
         /// ever, and the waiter carries on with its watches alone.
+        ///
+        /// The two are tested in turn, not as alternatives: a socket whose
+        /// peer has closed reports `POLLIN | POLLHUP` and keeps reporting it
+        /// once drained, so treating readable as the only case would make
+        /// every later wait return at once. What is there is read and
+        /// reported once, and then the descriptor goes.
         fn take_interrupt(&mut self, revents: i16) {
             if revents & libc::POLLIN != 0 {
                 self.drain_interrupt();
                 self.interrupted = true;
-            } else if revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+            }
+            if revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
                 self.interrupt = None;
             }
         }
