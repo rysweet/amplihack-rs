@@ -1,23 +1,14 @@
 pub(crate) use super::archive::extract_archive;
 pub(super) use super::archive::{binary_filename, find_binary};
-use super::checksum::verify_sha256;
+use super::checksum::{verify_sha256, verify_sha256_bytes};
+use super::gh::GhCommand;
+use super::network::{MAX_BINARY_DOWNLOAD_BYTES, validate_download_url};
 use super::*;
 use std::process::Command;
 use std::time::Duration;
 
 pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
-    let archive_bytes = super::network::http_get_with_retry(&release.asset_url)?;
-
-    if let Some(checksum_url) = &release.checksum_url {
-        verify_sha256(&archive_bytes, checksum_url)
-            .context("binary download checksum verification failed")?;
-        println!("SHA-256 checksum verified.");
-    } else {
-        tracing::warn!(
-            "no checksum file found for release {}; skipping SHA-256 verification",
-            release.version
-        );
-    }
+    let archive_bytes = fetch_release_archive(&GhCommand::default(), release)?;
     let temp_dir = tempfile::tempdir().context("failed to create update temp directory")?;
     extract_archive(&archive_bytes, temp_dir.path())?;
 
@@ -102,6 +93,125 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     invalidate_update_cache();
 
     Ok(amplihack_dest)
+}
+
+/// Issue #2957: downloads the release archive and verifies it against its
+/// `.sha256` file. The download goes through the user's own gh when
+/// `gh auth status` succeeds, and through the anonymous request otherwise.
+/// Both paths keep the allowed-host check, the size limit and the checksum.
+pub(super) fn fetch_release_archive(gh: &GhCommand, release: &UpdateRelease) -> Result<Vec<u8>> {
+    validate_download_url(&release.asset_url)?;
+    if let Some(checksum_url) = &release.checksum_url {
+        validate_download_url(checksum_url)?;
+    }
+    let archive_bytes = if gh.usable() {
+        fetch_via_gh(gh, release)?
+    } else {
+        fetch_anonymously(release)?
+    };
+    if release.checksum_url.is_some() {
+        println!("SHA-256 checksum verified.");
+    }
+    Ok(archive_bytes)
+}
+
+fn fetch_anonymously(release: &UpdateRelease) -> Result<Vec<u8>> {
+    let archive_bytes = super::network::http_get_with_retry(&release.asset_url)?;
+    match &release.checksum_url {
+        Some(checksum_url) => verify_sha256(&archive_bytes, checksum_url)
+            .context("binary download checksum verification failed")?,
+        None => warn_no_checksum(release),
+    }
+    Ok(archive_bytes)
+}
+
+fn warn_no_checksum(release: &UpdateRelease) {
+    tracing::warn!(
+        "no checksum file found for release {}; skipping SHA-256 verification",
+        release.version
+    );
+}
+
+fn fetch_via_gh(gh: &GhCommand, release: &UpdateRelease) -> Result<Vec<u8>> {
+    let asset = release
+        .asset_url
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    check_gh_asset_name(&asset)?;
+    check_gh_tag(&release.tag)?;
+
+    let checksum_name = format!("{asset}.sha256");
+    let mut patterns = vec![asset.as_str()];
+    if release.checksum_url.is_some() {
+        patterns.push(checksum_name.as_str());
+    }
+
+    let dir = tempfile::tempdir().context("failed to create a private download directory")?;
+    gh.download_release_assets(&release.tag, &patterns, dir.path())?;
+
+    let archive_bytes = read_gh_download(dir.path(), &asset, &release.tag)?;
+    if release.checksum_url.is_some() {
+        let checksum_body = read_gh_download(dir.path(), &checksum_name, &release.tag)?;
+        let label = format!("{checksum_name} from release {}", release.tag);
+        verify_sha256_bytes(&archive_bytes, &checksum_body, &label)
+            .context("binary download checksum verification failed")?;
+    } else {
+        warn_no_checksum(release);
+    }
+    Ok(archive_bytes)
+}
+
+/// Reads one file that `gh release download` should have written, after
+/// checking that it exists, is a regular file (not a symlink) and is within the
+/// download size limit.
+fn read_gh_download(dir: &Path, name: &str, tag: &str) -> Result<Vec<u8>> {
+    let path = dir.join(name);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            bail!("gh release download {tag} did not produce {name}")
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("cannot inspect {name} from gh release download"));
+        }
+    };
+    if !metadata.file_type().is_file() {
+        bail!("gh release download {tag} produced {name}, but it is not a regular file");
+    }
+    if metadata.len() > MAX_BINARY_DOWNLOAD_BYTES as u64 {
+        bail!(
+            "{name} from gh release download {tag} exceeds the size limit of {MAX_BINARY_DOWNLOAD_BYTES} bytes"
+        );
+    }
+    fs::read(&path).with_context(|| format!("cannot read {name} from gh release download"))
+}
+
+/// The asset name becomes a `--pattern` glob, so it must be a plain file name.
+pub(super) fn check_gh_asset_name(name: &str) -> Result<()> {
+    let bad = name.is_empty()
+        || name.contains('/')
+        || name.contains("..")
+        || name
+            .chars()
+            .any(|c| matches!(c, '*' | '?' | '[') || c.is_control());
+    if bad {
+        bail!("release asset name is not a plain file name: {name:?}");
+    }
+    Ok(())
+}
+
+/// The tag is passed to gh as an argument, so it must not look like a flag.
+pub(super) fn check_gh_tag(tag: &str) -> Result<()> {
+    let bad = tag.is_empty()
+        || tag.starts_with('-')
+        || tag.chars().any(|c| c.is_whitespace() || c.is_control());
+    if bad {
+        bail!("release tag is not safe to pass to gh: {tag:?}");
+    }
+    Ok(())
 }
 
 /// Issue #1954: copies the downloaded binaries into a new release, checks

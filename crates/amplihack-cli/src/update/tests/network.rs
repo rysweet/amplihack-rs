@@ -12,7 +12,7 @@ fn is_retryable_error_classifies_status_codes() {
         assert!(is_retryable_error(&err), "{status} should be retryable");
     }
     let err = ureq::Error::Status(429, ureq::Response::new(429, "Rate Limited", "").unwrap());
-    assert!(is_retryable_error(&err), "429 should be retryable");
+    assert!(!is_retryable_error(&err), "429 must not be retried (#2957)");
     for status in [400u16, 401, 403, 404, 422] {
         let err = ureq::Error::Status(
             status,
@@ -33,6 +33,10 @@ fn github_error_message_contains_actionable_advice() {
 
     let msg_429 = github_error_message(429, "https://api.github.com/test");
     assert!(msg_429.contains("rate limit"));
+    for msg in [&msg_403, &msg_429] {
+        assert!(!msg.contains("wait ~60 minutes"), "{msg}");
+        assert!(!msg.contains("retried automatically"), "{msg}");
+    }
 }
 
 #[test]
@@ -135,6 +139,7 @@ fn parse_latest_release_selects_matching_asset() {
             version: "0.2.0".to_string(),
             asset_url: "https://example.invalid/right".to_string(),
             checksum_url: Some("https://example.invalid/right.sha256".to_string()),
+            tag: "v0.2.0".to_string(),
         }
     );
 }

@@ -167,7 +167,17 @@ pub fn run_update_command() -> i32 {
 // ---------------------------------------------------------------------------
 
 /// Fetch the latest release version tag from the GitHub API.
+///
+/// Issue #2957: when the user's gh is logged in (`gh auth status` exits 0),
+/// the lookup goes through `gh api`, so it uses gh's login and not the shared
+/// anonymous allowance. Otherwise the anonymous request runs as before. Any
+/// failure gives `None`, logged at debug level.
 fn _fetch_latest_version(timeout_secs: u64) -> Option<String> {
+    let gh = crate::update::gh::GhCommand::default();
+    if gh.usable() {
+        return latest_version_via_gh(&gh);
+    }
+
     let url = format!("https://api.github.com/repos/{GITHUB_REPO}/releases/latest");
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(timeout_secs))
@@ -185,6 +195,37 @@ fn _fetch_latest_version(timeout_secs: u64) -> Option<String> {
     let trimmed = tag.trim_start_matches('v');
     debug!(version = trimmed, "Fetched latest release");
     Some(trimmed.to_string())
+}
+
+fn latest_version_via_gh(gh: &crate::update::gh::GhCommand) -> Option<String> {
+    let response = match gh.latest_release_json() {
+        Ok(response) => response,
+        Err(err) => {
+            debug!(error = %format!("{err:#}"), "gh release lookup failed");
+            return None;
+        }
+    };
+    match response.status {
+        200..=299 => {
+            let body: serde_json::Value = serde_json::from_slice(&response.body).ok()?;
+            let tag = body.get("tag_name")?.as_str()?;
+            let trimmed = tag.trim_start_matches('v');
+            debug!(version = trimmed, "Fetched latest release through gh");
+            Some(trimmed.to_string())
+        }
+        status @ (403 | 429) => {
+            let github = serde_json::from_slice::<serde_json::Value>(&response.body)
+                .ok()
+                .and_then(|v| v.get("message")?.as_str().map(str::to_string));
+            let message = crate::update::refusal_message(status, github.as_deref(), response.reset);
+            debug!(message = %message, "gh release lookup refused");
+            None
+        }
+        status => {
+            debug!("gh release lookup failed: HTTP {status}");
+            None
+        }
+    }
 }
 
 /// Compare two semver strings, returning `true` if `latest > current`.
