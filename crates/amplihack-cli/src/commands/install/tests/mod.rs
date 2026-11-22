@@ -52,6 +52,11 @@ mod issue_2589_claude_deny;
 mod issue_2589_codex_rules;
 #[cfg(unix)]
 mod issue_2589_update_coverage;
+// Issue #2922: an inherited CLAUDE_CONFIG_DIR is never written by tests.
+#[cfg(unix)]
+mod issue_2922_helper_contract;
+#[cfg(unix)]
+mod issue_2922_inherited_config_dir;
 mod issue_527_tests;
 mod issue_911_durable_hooks_path;
 #[cfg(unix)]
