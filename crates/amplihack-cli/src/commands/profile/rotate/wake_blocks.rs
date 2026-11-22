@@ -16,7 +16,6 @@ use std::collections::BTreeMap;
 /// and the limit would wait for `--interval`. Comparing these with the
 /// blocks the cycle began with catches it. A block the cycle added itself
 /// differs too, and costs one extra cycle: the cheaper error.
-#[derive(Default)]
 pub struct Blocks {
     overflow: BTreeMap<String, OverflowBlock>,
     platform: Option<OverflowBlock>,

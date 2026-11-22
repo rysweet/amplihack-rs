@@ -211,22 +211,14 @@ impl Probed {
     /// gate, and `spend_limit` false so it blocks nothing and leaves no
     /// trace of a limit that was never reported.
     ///
-    /// Not [`Probed::failed`]: the read succeeded, so the login's state is
-    /// known, and treating it as unknown would hold the per-token tiers back
-    /// for a login that was read perfectly well.
+    /// [`Probed::excluded`], but known. Not [`Probed::failed`] either: the
+    /// read succeeded, so the login's state is known, and treating it as
+    /// unknown would hold the per-token tiers back for a login that was read
+    /// perfectly well.
     pub fn no_room() -> Self {
         Self {
-            reading: Reading::Exhausted {
-                session: None,
-                week: None,
-            },
-            windows: Windows::default(),
-            spend_limit: false,
             unknown: false,
-            still_running: false,
-            observed_at: None,
-            carried: false,
-            passive: false,
+            ..Self::excluded()
         }
     }
 

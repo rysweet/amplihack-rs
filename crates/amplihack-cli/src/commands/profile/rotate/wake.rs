@@ -98,7 +98,7 @@ pub fn is_self_write(ledger: &Path) -> bool {
 /// `platform_block`. A reset already passed does not contribute, so a
 /// ledger `prune_blocks` has not yet reached cannot pin the wait to the
 /// past.
-pub fn earliest_reset(l: &RotateLedger, now_unix: i64) -> Option<i64> {
+fn earliest_reset(l: &RotateLedger, now_unix: i64) -> Option<i64> {
     l.overflow_blocked
         .values()
         .chain(l.platform_block.iter())
