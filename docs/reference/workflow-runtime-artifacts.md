@@ -143,7 +143,7 @@ sweep does not source the helper. A parity test fails if the two differ.
 
 | Point | Mechanism |
 | --- | --- |
-| Worktree creation or adoption (step 04, `step-04-setup-worktree` in `workflow-worktree.yaml`) | `exclude_worktrees_dir` in `workflow_worktree_sweep.sh` writes `/worktrees/` and the runtime patterns while holding the sweep lock. Every worktree created or adopted afterwards is covered before the indexer or `git add -A` can see the files. |
+| Worktree creation or adoption (step 04, `step-04-setup-worktree` in `workflow-worktree.yaml`) | `exclude_worktrees_dir` in `workflow_worktree_sweep.sh` writes `/worktrees/` and the runtime patterns while holding the sweep lock. Every worktree created or adopted afterwards is covered before the indexer or `git add -A` can see the files. The common git dir is resolved with `GIT_DIR`, `GIT_WORK_TREE` and `GIT_COMMON_DIR` unset, so an inherited variable cannot redirect the write or the sweep lock to another repository. |
 | Checkpoints, step 15, step 16 and final status | `preflight_known_workflow_runtime_artifacts` calls `_amplihack_exclude_runtime_paths` first. This also covers worktrees created before the exclusion existed. |
 
 ### `_amplihack_exclude_runtime_paths`

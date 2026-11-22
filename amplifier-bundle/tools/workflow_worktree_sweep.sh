@@ -316,10 +316,13 @@ has_uncommitted_work() {
 
 # common_git_dir <repo> — print the absolute, symlink-resolved common git dir
 # of <repo>, so the main checkout and every linked worktree print the same
-# string. Prints nothing and returns 1 on failure.
+# string. Prints nothing and returns 1 on failure. GIT_DIR, GIT_WORK_TREE and
+# GIT_COMMON_DIR are cleared so an exported value (e.g. from a hook) cannot
+# point the exclude write or the sweep lock at another repository (#2335 R5).
 common_git_dir() {
     local repo="$1" common
-    common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
+    common="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+        git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
     [ -n "$common" ] || return 1
     case "$common" in /*) ;; *) common="${repo}/${common}" ;; esac
     (cd -- "$common" 2>/dev/null && pwd -P) || return 1

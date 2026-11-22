@@ -337,7 +337,6 @@ describe_dirty_entries() (
     if [ -n "$shown" ]; then shown="$shown; $entry"; else shown="$entry"; fi
     count=$((count + 1))
   done <"$raw"
-  case "$total" in ''|*[!0-9]*) total="$count" ;; esac
   if [ "$total" -gt "$count" ]; then
     shown="$shown (+$((total - count)) more)"
   fi

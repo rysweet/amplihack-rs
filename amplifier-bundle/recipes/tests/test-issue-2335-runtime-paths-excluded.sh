@@ -7,9 +7,6 @@
 # the shared info/exclude by the runtime-artifact preflight and by the step-04
 # worktree sweep. Tracked files are never hidden.
 #
-# Written first (TDD): every case fails until
-# _amplihack_exclude_runtime_paths exists and the sweep writes the same list.
-#
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-2335-runtime-paths-excluded.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = harness error.
 
