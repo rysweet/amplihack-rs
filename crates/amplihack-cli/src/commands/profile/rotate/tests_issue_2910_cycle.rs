@@ -1015,3 +1015,35 @@ fn d9_no_profile_has_capacity_is_never_written_while_a_login_is_unknown_or_faile
         assert!(f.log().contains("no capacity known"), "{}", f.log());
     }
 }
+
+/// Issue #2910, the deputy's third point: the line never says `no profile has
+/// capacity` when that was not shown. A plan login whose directory fails the
+/// ownership and mode check (issue #1698) is never probed, so its room was
+/// never read; the rotator already holds a move onto overflow for exactly that
+/// reason. The summary must not claim every login is known to have no room.
+#[test]
+fn ac6_a_plan_login_that_was_never_read_is_not_a_login_known_to_have_no_room() {
+    let f = fleet(&["aanderson", "bbuck", "ccapstone"], &[]);
+    // `ccapstone`'s directory is group- and world-writable: the scan refuses
+    // it and it is skipped, so it carries no reading at all.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = f.e.root.join("ccapstone");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let readings = vec![("aanderson", exh(0.0, 100.0)), ("bbuck", exh(100.0, 10.0))];
+    let out = run(&f, reporter(), exh(100.0, 67.0), &readings, &[]);
+    let log = f.log();
+    assert_eq!(out, CycleOutcome::Alerted, "{log}");
+    assert!(
+        !log.contains("no profile has capacity"),
+        "ccapstone's room was never read, so no login is known to have no room: {log}"
+    );
+    assert!(
+        log.contains(
+            "ALERT: no capacity known live=work s=100% w=67% \
+             (candidates: 1 not read (directory refused), 2 exhausted)"
+        ),
+        "the count says how many were not read and why: {log}"
+    );
+    // The cycle says the same thing twice: the skip line and the count agree.
+    assert!(log.contains("skip: ccapstone (directory refused)"), "{log}");
+}

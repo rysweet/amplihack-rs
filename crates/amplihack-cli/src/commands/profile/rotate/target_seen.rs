@@ -96,6 +96,12 @@ pub enum Basis {
     Failed,
     /// The login was not probed because its identity could not be read.
     IdentityUnavailable,
+    /// The cycle did not read this plan login at all, for the reason the
+    /// `skip:` line of the same cycle gives (issue #2910): a directory that
+    /// failed the ownership and mode check, a session running on it, a lease,
+    /// a host, or a parked login. Its room is not known, so the cycle cannot
+    /// say that no login has room.
+    NotRead(&'static str),
 }
 
 /// One plan login's standing in the cycle.
@@ -113,7 +119,8 @@ pub struct Standing {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Seen {
     pub extra: Extra,
-    /// Every plan login the cycle measured, or skipped as `no account`.
+    /// Every plan login the cycle measured, and every one it skipped without
+    /// reading (issue #2910), so a login whose room was never read is counted.
     pub logins: BTreeMap<ProfileName, Standing>,
     /// The live login has no room now, and is not an overflow profile.
     pub live_no_room: bool,
@@ -174,13 +181,26 @@ pub fn build(
         };
         logins.insert(name.clone(), Standing { basis, fit, block });
     }
-    for name in snap.unmeasured_plan().into_iter().filter(|n| {
-        snap.skips
-            .iter()
-            .any(|(s, k)| s == n && *k == Skip::NoAccount)
-    }) {
+    // Issue #2910: every plan login the cycle did not read, with the reason
+    // the cycle's own `skip:` line gives. Without these a cycle could log
+    // `skip: x (directory refused)` and then claim `no profile has capacity`
+    // in the same breath, which is the wording the deputy reported on 22
+    // November. `no account` keeps its own basis, which the line already
+    // reports as `unknown (identity unavailable)`.
+    let reason_of =
+        |name: &ProfileName| snap.skips.iter().find(|(s, _)| s == name).map(|(_, k)| *k);
+    let unread = snap
+        .unmeasured_plan()
+        .into_iter()
+        .chain(snap.refused_plan());
+    for name in unread {
+        let basis = match reason_of(&name) {
+            Some(Skip::NoAccount) => Basis::IdentityUnavailable,
+            Some(k) => Basis::NotRead(k.as_str()),
+            None => Basis::NotRead(Skip::Refused.as_str()),
+        };
         logins.entry(name).or_insert(Standing {
-            basis: Basis::IdentityUnavailable,
+            basis,
             fit: Err(Unfit::NoReading),
             block: None,
         });

@@ -187,9 +187,20 @@ fn a_refused_plan_profile_directory_holds_the_move_onto_overflow_until_fixed() {
             !stdout.contains("reason=overflow-in"),
             "cycle {cycle}: {stdout}"
         );
+        // Issue #2910: `spare` was never probed, so its room was never read
+        // and the cycle cannot say that no login has capacity. The line names
+        // how many were not read and why, in the wording of the `skip:` line
+        // above it.
         assert!(
-            stdout.contains("ALERT: no profile has capacity live=work"),
+            stdout.contains(
+                "ALERT: no capacity known live=work s=100% w=40% \
+                 (candidates: 1 not read (directory refused))"
+            ),
             "cycle {cycle}: {stdout}"
+        );
+        assert!(
+            !stdout.contains("no profile has capacity"),
+            "cycle {cycle}: the one plan login was never read: {stdout}"
         );
         assert_eq!(ino(&f.home_login()), Some(f.live_ino), "cycle {cycle}");
     }

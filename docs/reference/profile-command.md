@@ -6586,20 +6586,25 @@ ALERT: no capacity known live=<name> s=<n>% w=<n>% (candidates: <counts>)
 
 The first wording says that every other plan login is *known*, by a fresh or
 last good reading, to have a window at 100% or an active block. The second is
-used in every other case: when any login is unknown, failed, above the
-ceiling or not tried, the rotator has not seen that no login has room.
+used in every other case: when any login is unknown, not read, failed, above
+the ceiling or not tried, the rotator has not seen that no login has room.
 `<counts>` lists these parts in this order, leaving out any that is zero:
 
 1. `<N> unknown (<label>)`, one part for each [label](#rotate-unknown-readings)
    in the order `HTTP 429`, `transport`, `identity unavailable`, `timeout`,
    `still running`, `probe error`;
-2. `<N> failed`, which includes a login whose reading holds a figure that is
+2. `<N> not read (<reason>)`, one part for each reason a plan login was
+   skipped before any probe, in the wording of the cycle's own `skip:` line:
+   `directory refused`, `session running`, `leased`, `hosting` or `parked`.
+   The room of such a login was never read, so the stronger wording is never
+   written while one exists;
+3. `<N> failed`, which includes a login whose reading holds a figure that is
    not a finite number of zero or more (`NaN`, infinite or negative): it has
    no usable reading;
-3. `<N> blocked until <time>`, the earliest block end, UTC to the minute;
-4. `<N> exhausted`;
-5. `<N> above week ceiling <n>%`;
-6. `<N> not tried (re-read limit 3)`, the candidates that the re-read limit
+4. `<N> blocked until <time>`, the earliest block end, UTC to the minute;
+5. `<N> exhausted`;
+6. `<N> above week ceiling <n>%`;
+7. `<N> not tried (re-read limit 3)`, the candidates that the re-read limit
    or the shared re-read time limit left unread.
 
 With nothing to count, `<counts>` is `none`. The line holds no profile
@@ -10173,7 +10178,7 @@ run and prints their `reread:` lines; see
 | `reread: <name> time limit reached; treated as unknown` | The chosen target was stale, but this cycle's target re-reads had already used their shared time limit of one [probe deadline](#probe-deadline). The live re-read has a separate budget. `<name>` is not read and is unknown for this cycle, and is counted as `not tried (re-read limit 3)`. |
 | `damp: <name> swapped away exhausted; no later reading shows room` | `<name>` is in the ledger's `swapped_away`, and its re-read shows it still at or above `--session-at` or `--week-at`, or exhausted. It stays damped. See [Swap-back damping](#swap-back-damping). |
 | `damp: <name> later reading shows room; swap-back allowed` | A reading of `<name>` taken after the rotator swapped away from it shows room, so its `swapped_away` entry was removed. Written in the [record step](#rotate-cycle), after the cycle's `swap`, stay or ALERT line, and never by `--dry-run`. |
-| `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)` / `ALERT: no capacity known live=<name> s=<n>% w=<n>% (candidates: <counts>)` | No login is eligible and the live login is past a threshold or has no room. The first wording is written only when every other plan login is known, by a fresh or last good reading, to have a window at 100% or an active block. The second is written in every other case. `<counts>` lists, in this order and leaving out any zero count, `<N> unknown (<label>)` for each [label](#rotate-unknown-readings) in the order `HTTP 429`, `transport`, `identity unavailable`, `timeout`, `still running`, `probe error`; `<N> failed`; `<N> blocked until <time>`, the earliest block end as UTC to the minute; `<N> exhausted`; `<N> above week ceiling <n>%`; and `<N> not tried (re-read limit 3)`. With nothing to count it is `candidates: none`. The line holds no profile names. The ALERT kind stays `no-capacity`, and the key is `no-capacity` for the first wording and `no-capacity/known` for the second, so a change of wording writes a new line and a change in the counts does not. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)`, or `would alert: no capacity known ...`, without the `ALERT: ` prefix. See [Rotate no target](#rotate-no-target). |
+| `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)` / `ALERT: no capacity known live=<name> s=<n>% w=<n>% (candidates: <counts>)` | No login is eligible and the live login is past a threshold or has no room. The first wording is written only when every other plan login is known, by a fresh or last good reading, to have a window at 100% or an active block; a login the cycle skipped before probing it is never read, so it keeps the second wording. The second is written in every other case. `<counts>` lists, in this order and leaving out any zero count, `<N> unknown (<label>)` for each [label](#rotate-unknown-readings) in the order `HTTP 429`, `transport`, `identity unavailable`, `timeout`, `still running`, `probe error`; `<N> not read (<reason>)` for each plan login skipped before any probe, in the wording of the cycle's `skip:` line; `<N> failed`; `<N> blocked until <time>`, the earliest block end as UTC to the minute; `<N> exhausted`; `<N> above week ceiling <n>%`; and `<N> not tried (re-read limit 3)`. With nothing to count it is `candidates: none`. The line holds no profile names. The ALERT kind stays `no-capacity`, and the key is `no-capacity` for the first wording and `no-capacity/known` for the second, so a change of wording writes a new line and a change in the counts does not. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)`, or `would alert: no capacity known ...`, without the `ALERT: ` prefix. See [Rotate no target](#rotate-no-target). |
 | `stay: live room <R>, best other login has room <M>, a move needs <N>` | The live login has room, a login is eligible, and none has the `N = R + max(--margin, 1)` room that a move needs. Written once per key `no-capacity/stay`, advisory when the live reading qualifies (see [Rotate advisory alert](#rotate-advisory-alert)). It is not an ALERT. `--dry-run` prints `would stay (live room <R>, ...)`. |
 | `stay: held after last swap (<S>s of <H>s): <name> is at s=<n>%, at or above --session-at` | The [hold](#rotate-hold) kept the rotator on the live login, which has room, instead of moving to `<name>`. Written once per key `no-capacity/held`, advisory when the live reading qualifies. |
 | `stay: no candidate confirmed by a fresh reading` | Every qualifying login was rejected at [confirmation](#rotate-confirmation), a rejected login is still eligible (its re-read was unknown), and the live login has room. When every rejection showed no room, the no-target line is written instead. Written once per key `no-capacity/unconfirmed`, advisory or hard as the [advisory rule](#rotate-advisory-alert) says. |

@@ -112,6 +112,9 @@ pub fn stay_note(m: &NoMove, s: &Settings) -> Option<String> {
 /// known to have no room (a window at 100%, a spend limit or a block).
 fn counts(seen: &Seen) -> (String, bool) {
     let mut unknown: BTreeMap<ProbeLabel, usize> = BTreeMap::new();
+    // Issue #2910: plan logins the cycle did not read, by the reason its own
+    // `skip:` line gives. Any of these makes the stronger wording untrue.
+    let mut not_read: BTreeMap<&'static str, usize> = BTreeMap::new();
     let (mut failed, mut blocked, mut exhausted, mut above, mut not_tried) = (0, 0, 0, 0, 0);
     let mut earliest: Option<i64> = None;
     let mut other = 0;
@@ -130,6 +133,7 @@ fn counts(seen: &Seen) -> (String, bool) {
             (Basis::IdentityUnavailable, _) => {
                 *unknown.entry(ProbeLabel::IdentityUnavailable).or_insert(0) += 1;
             }
+            (Basis::NotRead(reason), _) => *not_read.entry(reason).or_insert(0) += 1,
             (Basis::Failed, _) | (_, Err(Unfit::NoReading)) => failed += 1,
             (_, Err(Unfit::Full | Unfit::SpendLimit)) => exhausted += 1,
             (_, Err(Unfit::AboveCeiling)) => above += 1,
@@ -140,6 +144,9 @@ fn counts(seen: &Seen) -> (String, bool) {
         .iter()
         .map(|(label, n)| format!("{n} unknown ({})", label.as_str()))
         .collect();
+    for (reason, n) in &not_read {
+        parts.push(format!("{n} not read ({reason})"));
+    }
     let mut push = |n: usize, text: String| {
         if n > 0 {
             parts.push(format!("{n} {text}"));
@@ -151,7 +158,8 @@ fn counts(seen: &Seen) -> (String, bool) {
     push(exhausted, "exhausted".to_string());
     push(above, format!("above week ceiling {}%", seen.week_max));
     push(not_tried, "not tried (re-read limit 3)".to_string());
-    let known = unknown.is_empty() && failed + above + not_tried + other == 0;
+    let known =
+        unknown.is_empty() && not_read.is_empty() && failed + above + not_tried + other == 0;
     let text = if parts.is_empty() {
         "none".to_string()
     } else {
@@ -256,6 +264,9 @@ pub fn annotate(seen: &Seen, name: &ProfileName, shown: &mut Shown) {
         }
         Basis::Unknown(label) => shown.label = Some(label.as_str()),
         Basis::IdentityUnavailable => shown.label = Some(ProbeLabel::IdentityUnavailable.as_str()),
+        // Not read at all: the cycle's own `skip:` line names it, and the
+        // cycle line carries the same reason rather than a probe label.
+        Basis::NotRead(reason) => shown.label = Some(reason),
         Basis::Failed => {}
         Basis::Probe => {
             if let Some((until, kind)) = st.block {
