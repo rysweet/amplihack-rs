@@ -1260,8 +1260,70 @@ the rotator is stopping, no new refresh starts: a read that needs one
 gives `refresh busy` and takes no lock. Reads still running after that
 are abandoned, and reads not yet started are not run.
 
-Cycles never overlap: the rotator waits for `--interval` seconds after a
-cycle ends before it starts the next one.
+Cycles never overlap: the rotator starts the next cycle only after the
+previous one ends, when a [wake](#rotate-wake) arrives or `--interval` seconds
+have passed, whichever is first.
+
+#### Rotate wake
+
+`rotate watch` does not poll. After a cycle it blocks until the first of
+these, then runs a cycle:
+
+| Wake | When | Log line |
+|------|------|----------|
+| Limit event | `ledger.json` in the [state directory](#rotate-state-directory) is replaced by a writer other than this rotator. A [step](#a-spend-limit-blocks-the-login-the-step-ran-under) or hook that meets a limit records it there, so the rotator acts within one cycle of the record | `wake: ledger changed` |
+| Reset | The earliest `until` among the `overflow_blocked` and platform block records falls due, so the login comes back when its reset passes | `wake: reset due` |
+| Interval | `--interval` seconds have passed with neither of the above | `wake: interval` |
+| Signal | `SIGTERM` or `SIGINT` ends the wait at once, so `rotate stop` returns inside its 10 seconds however long the wait was; both signals are handled as in [Rotate signals](#rotate-signals) | none; the rotator stops |
+
+These log lines are fixed text, defined once in the rotator's source.
+`wake: interval` is written only when the previous wake had a different
+reason, as the `idle` latch does, so a quiet rotator does not write one line
+per tick.
+
+The wait ends at the earlier of `now + --interval` and the earliest future
+reset. A reset beyond the interval never lengthens a wait, and one already
+past does not count: the next cycle removes it. The exception is a reset that
+fell due while the previous cycle ran: that cycle still held the login out, so
+the next one runs at once, logged as `wake: reset due`. A clock jump cannot
+lengthen a wait either. With `--interval 1` the rotator still ticks every
+second.
+
+The rotator's own ledger writes do not wake it. It keeps the bytes it last
+wrote and, on a ledger change, reads the file once; identical bytes mean its
+own write, and it waits on unchanged. Any other content runs a cycle. A
+failed save, and a file that is missing or over the size limit, count as
+changed content and cost one extra cycle.
+
+A ledger change runs a cycle at once, unless the previous cycle ended less
+than 5 seconds ago (or `--interval`, when that is shorter). Then the cycle
+runs when those 5 seconds have passed, and further changes in that time join
+it. A change is never dropped, so a burst of records costs at most two cycles.
+If the ledger watch is lost or its queue overflows, the rotator rebuilds it,
+logs `wake: watch rebuilt` and runs a cycle, because the lost events may have
+held a limit record. Where no watch can be made it logs
+`wake: unavailable (<cause>), using --interval` once, and where one stops
+working it logs `wake: lost (<cause>), using --interval` once. Either way it
+waits by interval as before, and neither ends the rotator. `<cause>` is fixed
+text:
+
+| `<cause>` | Meaning |
+|-----------|---------|
+| `not supported here` | Not Linux: there is no inotify or pidfd |
+| `inotify watch limit reached` | `fs.inotify.max_user_watches` is used up |
+| `descriptor or inotify instance limit reached` | The process's descriptor limit or `fs.inotify.max_user_instances` is used up |
+| `permission denied`, `not found`, `already exists`, `disk full`, `I/O error` | Any other failure, by its kind |
+
+A paused rotator still wakes, takes the `paused` branch and logs through the
+same `idle` latch as before, so repeated wakes do not fill the log.
+
+A cycle woken by an event costs the same as a cycle woken by the interval,
+plus at most one confirming read, taken only when the chosen target's reading
+was a stored one (see [Rotate target choice](#rotate-target-choice)). Every
+cycle measures every login, so a quiet rotator still reads every login once
+per `--interval`.
+Reading only what a decision needs is
+[#2029](https://github.com/rysweet/amplihack-rs/issues/2029).
 
 #### What is read
 
@@ -5653,7 +5715,7 @@ amplihack profile rotate owner [clear]
 | `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
 | `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no rotate state, moves nothing, and never refreshes a token or starts `claude`: every read is a direct read with refresh off, so an expired login shows as unmeasured with its [cause](#identity-read-causes), and the dry run can pick a different target than a real cycle that would have refreshed that login. It prints `would refresh: expired login in ~/.claude` when a real cycle would refresh the live login, and the `would` lines of [seeding](#seeding-a-record) for a live profile with no record. It skips both the [prototype check](#rotate-prototype-coexistence) and [journal recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. Makes the same [hand-change](#rotate-hand-change-recovery) identity reads as a real cycle, never writes `hand_suspect`, and reports the result as `would recover: <recovered line>`, `would note: <note>`, or `would alert: <ALERT line>` with its `fix` lines; see the dry-run table there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
 | `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Pins the child to its root and records that root; see [Rotate root record](#rotate-root-record). Prints `rotate: started (pid <pid>), checking every <interval>s`, `log: <path>` and `root: <path>`, and returns at once. |
-| `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log, apart from the [owner marker](#rotate-owner) when it runs supervised. |
+| `rotate watch` | Runs a cycle in the foreground until `SIGTERM` or `SIGINT`, and wakes for the next one on a [limit event](#rotate-wake): a change to the ledger, or the earliest recorded reset. `--interval` is only the outer bound of that wait. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log, apart from the [owner marker](#rotate-owner) when it runs supervised. |
 | `rotate watch --supervised[=UNIT]` | As `rotate watch`, and records itself as the [rotation owner](#rotate-owner) so that launches do not start a second rotator. `UNIT` names the service manager unit, for example `--supervised=amplihack-rotator.service`; the `=` is required. Without `UNIT` the name is found as described in [Owner unit name](#owner-unit-name). A `watch` that systemd runs as a service records itself without the flag: `INVOCATION_ID` is set and the unit is found in `/proc/self/cgroup` as in step 2 of [Owner unit name](#owner-unit-name). Like any `watch`, it refuses with status 1 when another verified rotator is running, and then writes no marker; stop that rotator with `rotate stop` before starting the unit. `rotate start --supervised` is refused with `RotateRefused` (`--supervised applies to rotate watch only`, status 1). |
 | `rotate stop` | Finds the rotator as described in [Rotate root record](#rotate-root-record). Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
 | `rotate status` | **Read-only.** Prints the [status lines](#rotate-status) and exits 0. |
@@ -5769,7 +5831,8 @@ do not move from a tier-2 profile to a tier-1 profile that becomes usable
 again; they move back to a plan profile as soon as one has capacity, or has
 [room](#rotate-plan-room-swap). For the rotator, room means a
 [plan-room target](#rotate-plan-room-swap): a login with session use at or
-above `--session-at` is not moved back to.
+above `--session-at`, or week use at or above `--week-at`, is not moved back
+to.
 
 `add` and `remove` change only the `overflow` key of `<root>/.auto-switch`,
 through the same locked write as the [auto-switch commands](#auto-switch-commands)
@@ -5797,6 +5860,11 @@ lines on failure. Output holds profile names, times and fixed text only.
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | `0`-`604800` (seconds); see [Rotate overflow](#rotate-overflow) |
 | `--overflow-unknown-reset 0\|1` | `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET` | `0` | `1` lets a plan reset that no reading reports count as further away than `--overflow-wait`, so it can move work onto an overflow profile and **spend money**; see [Overflow decision](#overflow-decision) |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | `1`-`86400` (seconds); `start` and `watch` only |
+
+`--interval` is the longest the rotator waits between cycles. A
+[limit event or a recorded reset](#rotate-wake) ends the wait sooner; with
+neither, a cycle still runs once per interval. It stays as that outer bound
+while limits arrive as events, and a later change may remove it.
 
 A flag beats its variable, and the variable beats the default. An empty
 variable counts as unset. Values are unsigned decimal integers: a sign,
@@ -7161,18 +7229,30 @@ session and week use are below 100%. A failed probe, a login that was not
 measured, an `exhausted` reading and every API-key profile have no room.
 
 The swap does not move onto every login that has room. A *plan-room target*
-is a plan login that has room and whose session use is below `--session-at`.
-A login at or above `--session-at` is not a target, however far below 100% it
-reads: its session window is nearly spent, and a swap onto it trades one
-exhausted login for another. The week is held to the room rule, below 100%,
-and not to `--week-at`.
+is a plan login that has room, whose session use is below `--session-at` and
+whose week use is below `--week-at` (90% unless configured), with no recorded
+block. A login at or above either threshold is not a target, however far below
+100% it reads: its window is nearly spent, and a swap onto it trades one
+exhausted login for another. The same rule applies in every pass: the
+threshold swap, the plan-room swap, and the move back from an overflow
+profile.
+
+The week bound here was 100% until the rotator moved a host onto a login at
+98% of its week and the next request met the organisation's spend limit.
+Holding the week to `--week-at` has a cost: at the default of 90 a login with
+a fresh session window but a nearly spent week is no longer a way out of a
+spent one, and a cycle where every login is above the bound alerts and waits
+for a reset instead of moving. Raise `--week-at` to allow those moves. Note
+also that a login needs a swap on exactly the condition that stops it being a
+target, so the two thresholds now decide both questions at once.
 
 Having room and being a target are different tests:
 
 | Test | Definition | Used by |
 |------|------------|---------|
 | Has room | `ok` probe, session and week below 100% | The [overflow](#overflow-decision) rules, which spend nothing while a plan login has room, and [auto-switch](#auto-switch-and-overflow-profiles) |
-| Plan-room target | Has room, and session below `--session-at` | The plan-room swap, and the [`live_room`](#plan-room-in-the-ledger) bit the rotator records for a [waiting step](#waking-only-on-room), which applies the same test to whichever login is live |
+| Room for a waiting step | Has room, and session below `--session-at` | The [`live_room`](#plan-room-in-the-ledger) bit the rotator records for a [waiting step](#waking-only-on-room), applied to whichever login is live |
+| Plan-room target | Has room, session below `--session-at`, week below `--week-at`, and no active block | Every swap target, in every pass, the plan-room swap included |
 
 While the live login is a plan profile, the rotator considers a plan-room
 swap only when both hold:
@@ -7189,6 +7269,10 @@ It never fires while the live login is below both thresholds, so it adds no
 upgrade swaps. `--margin`, `--hold` and `--upgrade-margin` do not apply.
 While the live login is an [overflow profile](#overflow-decision), the same
 ranking chooses the plan login to move back to.
+
+`live_room` and *has room* keep their meaning: they say whether a login has
+room at all, which the usage-limit wait reads. Only the target test is
+stricter.
 
 Plan-room targets are ranked by these keys, in order:
 
@@ -7219,6 +7303,7 @@ while it exists; the rotator neither moves onto it nor spends.
 The swap is logged with `reason=plan-room`.
 
 The chosen plan login passes the
+[pre-swap reading](#rotate-target-choice) and the
 [freshness gate](#rotate-reading-freshness-and-swap-back-damping) like any
 other target. A login whose stored reading shows room but whose re-read
 shows it full is not chosen; the ranking runs again on the new figures.
@@ -7325,8 +7410,9 @@ While the live login is a per-token profile (credit or API key), the order
 is:
 
 1. a plan login with [capacity](#plan-pool), `reason=overflow-out`;
-2. a plan-room target (a plan login with room and session use below
-   `--session-at`), chosen by the plan-room ranking, `reason=overflow-out`;
+2. a plan-room target (a plan login with room, session use below
+   `--session-at` and week use below `--week-at`), chosen by the plan-room
+   ranking, `reason=overflow-out`;
 3. a usable marked per-token profile in tier order, under the same gate,
    when either of these holds:
    - the live profile is the API key and no plan login has room: the first
@@ -7341,6 +7427,10 @@ is:
 Credit profiles are billed too, so they wait for the same condition as the
 API key: no plan login below 100% on both windows. A credit tier is never
 used ahead of a plan login with room, whatever its tier.
+
+Every step that moves onto a plan login applies the
+[target rules](#rotate-target-choice): no active block, session below
+`--session-at`, week below `--week-at`.
 
 In both orders, a step that chooses a target by its reading (`threshold`,
 `projected`, `upgrade`, `failed-probe`, `plan-room` or `overflow-out`) ends the decision
@@ -7400,14 +7490,13 @@ A plan candidate *has capacity* when all of these hold:
 
 `--margin`, `--hold` and `--upgrade-margin` play no part in this test. A
 plan login that has capacity is one the rotator would not swap away from
-for reaching a threshold. A plan login without capacity can still be a
-[plan-room target](#rotate-plan-room-swap): with `--week-at 85`, a plan login
-at `s=20%,w=88%` has no capacity but has room and session use below
-`--session-at`, so the rotator moves off credits onto it. It does not move
-back onto credits from there while that login, or any other, still has room.
-A plan login at or above `--session-at` is different: with `--session-at 80`,
-a login at `s=85%,w=40%` has room, so credits are not spent on its account,
-but it is not a target, so a rotator on credits does not move onto it either.
+for reaching a threshold. Since the [target rules](#rotate-target-choice) of
+issue #2910, a [plan-room target](#rotate-plan-room-swap) is held to the same
+two thresholds, so a plan login without capacity is never a target. A plan
+login that has room but no capacity still keeps credits unspent: with
+`--week-at 85`, a login at `s=20%,w=88%`, or with `--session-at 80`, a login
+at `s=85%,w=40%`, has room, so credits are not spent on its account; it is not
+a target, so a rotator on credits does not move onto it either.
 
 #### Overflow candidates
 
@@ -7473,7 +7562,7 @@ login, the live one included, has room does it consider overflow:
 | Condition | Outcome |
 |-----------|---------|
 | Live probe failed | As without overflow. A failed live probe never moves work onto credits. |
-| A plan login, the live one included, has room below 100% on both windows | No overflow. The [plan-room swap](#rotate-plan-room-swap) moves to the best-ranked plan-room target, or the cycle stays with `ALERT no-capacity` when the live login ranks first or every login with room is at or above `--session-at`. Neither credits nor the API key are used while a plan login has room. |
+| A plan login, the live one included, has room below 100% on both windows | No overflow. The [plan-room swap](#rotate-plan-room-swap) moves to the best-ranked plan-room target, or the cycle stays with `ALERT no-capacity` when the live login ranks first or every login with room is at or above `--session-at` or `--week-at`. Neither credits nor the API key are used while a plan login has room. |
 | A plan candidate's probe in this cycle ended in `timeout` or `error` (`claude` could not be started, written to, read or waited for, or the profile directory was refused just before the spawn) | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity. That login might have capacity, so such a probe never moves work onto credits or the API key. It is probed again on the next cycle. The [plan-room swap](#rotate-plan-room-swap) is not held: it costs nothing. |
 | A plan profile is skipped as [`directory refused`](#rotate-candidates) | As without overflow. Its login cannot be checked and might have capacity. The skip, and so the hold, comes back on every cycle until the directory is fixed. |
 | An [unmeasured plan login](#rotate-plan-room-swap), and the only usable overflow profile is the API key | No move onto the key. `ALERT: API key not used` names the logins. |
@@ -7483,12 +7572,11 @@ login, the live one included, has room does it consider overflow:
 | No overflow candidate is eligible | As without overflow: `ALERT no-capacity`. |
 
 For example, with the live login at `s=95%,w=60%` and a plan candidate at
-`s=20%,w=93%`, both have room, and the candidate is a plan-room target, so
-the rotator makes the free swap onto it whatever the plan reset, and no
-credits are spent. With the candidate at `s=87%,w=50%` instead, both still
-have room but neither is a target (`--session-at` is 85 by default), so the
-cycle makes no swap and writes `ALERT no-capacity`; no credits are spent
-then either. Only once every plan login reads 100% on one of its windows, and
+`s=20%,w=93%`, both have room, but the candidate's week is at or above
+`--week-at` (90 by default), so it is not a target: the cycle makes no swap
+and writes `ALERT no-capacity`, and no credits are spent. With the candidate
+at `s=87%,w=50%` instead, both still have room but neither is a target
+(`--session-at` is 85 by default), so the outcome is the same. Only once every plan login reads 100% on one of its windows, and
 the reset is beyond the wait, does the rotator move onto credits.
 Auto-switch makes the same spend decision on the same readings. The target
 rule changes the rotator's plan-room swap only; the moves auto-switch makes
@@ -7527,7 +7615,7 @@ While the live login is an overflow profile, these rules apply in order:
 | Condition | Outcome |
 |-----------|---------|
 | A plan candidate has capacity | Swap to the plan candidate that has capacity with the most headroom, `reason=overflow-out`. `--margin`, `--hold` and `--upgrade-margin` do not apply. |
-| A plan candidate is a [plan-room target](#rotate-plan-room-swap) | Swap to the plan login the [plan-room ranking](#rotate-plan-room-swap) puts first, `reason=overflow-out`. A plan login with room but session use at or above `--session-at` is not a target, and the rotator stays on credits. |
+| A plan candidate is a [plan-room target](#rotate-plan-room-swap) | Swap to the plan login the [plan-room ranking](#rotate-plan-room-swap) puts first, `reason=overflow-out`. A plan login with room but session use at or above `--session-at`, or week use at or above `--week-at`, is not a target, and the rotator stays on credits. |
 | The live reading is `spend_limit` | [Block](#overflow-spend-limit-block) the live profile, then swap to the next eligible overflow candidate if the wait rule above still holds, else to the plan candidate with the most headroom that is not exhausted and whose probe did not fail, else ALERT `no-capacity`. |
 | Live probe failed | [Failed-probe rules](#rotate-failed-live-probes), with plan candidates as the only targets; otherwise stay on credits. |
 | Otherwise | Stay on credits. |
@@ -7545,8 +7633,8 @@ If an overflow profile's login is live in `~/.claude` while a plan profile
 has capacity or is a [plan-room target](#rotate-plan-room-swap), for example
 after you put it there by hand, the next cycle moves it out with
 `reason=overflow-out`. A plan login with room that is at or above
-`--session-at` is not a target, so the rotator leaves the overflow profile
-where it is. To keep running on it, remove the
+`--session-at` or `--week-at` is not a target, so the rotator leaves the
+overflow profile where it is. To keep running on it, remove the
 mark, stop the rotator, or put it there with `amplihack profile switch <name>`,
 which [pins](#pin-and-overflow) it.
 
@@ -7604,6 +7692,65 @@ already has an active block (see [Rotate switch](#rotate-switch)).
 The `--hold` that `overflow-in` and `overflow-out` ignore is the minimum time
 after a rotator swap. It is not the pin.
 
+#### Rotate target choice
+
+The rotator swaps only to a login that has room now. Three rules hold in
+every pass, the plan-room swap included:
+
+1. **No recorded block.** A login with an active record in `overflow_blocked`,
+   of any limit kind (`spend_limit`, a session or weekly limit, or any other
+   short token), is never a candidate before its `until`. After `until` it is
+   an ordinary candidate again, on the same readings.
+2. **Below both thresholds.** A login at or above `--week-at`, or at or above
+   `--session-at`, is never chosen. `--week-at` defaults to 90.
+3. **Confirmed by a reading taken for the swap.** The chosen target's reading
+   must be one this cycle took directly. A cycle that measured the target
+   itself already has that reading and takes no second one; a stored reading
+   (a cached passive one, or one carried from an earlier cycle) is replaced by
+   a fresh read before the swap, logged as `confirm: <name> was ...; now ...`.
+   If the confirming reading shows no session or week room, or its state is
+   `Failed` or `Exhausted`, the target is dropped, `reject: <name> fresh
+   reading shows no room` is logged, and the next-ranked candidate goes
+   through the same steps.
+   When the confirming read cannot be made at all (the cycle holds the lock,
+   there is no read hook, or the cycle's re-read budget is spent) the swap
+   proceeds on the stored reading, and the rotator logs
+   `confirm: skipped, no reading could be taken in this cycle`. Refusing every
+   swap whenever a reading cannot be taken would turn this check into an
+   outage, so the weaker guarantee is said out loud instead.
+
+Candidates that pass these rules rank as they always have: by headroom for a
+threshold or upgrade swap, and by week, then session, then name for the
+[plan-room](#rotate-plan-room-swap) pass. Once the rules above have removed
+every login without room now, that order already puts the login with the most
+usable room first, so no second ranking was added.
+
+When no candidate has room the rotator does not swap. It writes its usual
+[`no-capacity` ALERT](#rotate-decision-rule) and, before it, one line per
+candidate it passed over with that candidate's reason. Nothing ends: later cycles run as
+usual, and the next limit event or recorded reset wakes one. A cycle that did
+find a target writes no `reject:` line, because the `swap` line already says
+what it chose.
+
+```
+reject: ccapstone spend limit recorded until 2026-11-26T00:00:00Z
+reject: ddrumpf week w=98% at or above --week-at 90
+reject: aanderson session s=88% at or above --session-at 85
+reject: nnorth no usable reading
+```
+
+A target dropped by its confirming read is logged as it is dropped, whatever
+the cycle then decides:
+
+```
+reject: nnorth fresh reading shows no room
+```
+
+Only fixed text appears in these lines: a profile name, a whole percentage, a
+threshold, a timestamp, and the limit kind as a label. A stored `reason` value
+is never quoted, so a process able to write the ledger cannot choose text in
+the rotate log.
+
 #### Overflow spend-limit block
 
 Claude's `You've hit your org's monthly spend limit …` message, and the
@@ -7633,6 +7780,18 @@ that profile:
    else.
 3. A blocked profile is not an overflow candidate. If it was live, the
    cycle moves away as in the table above.
+
+The ledger reader accepts any limit kind in `reason`: a short token of
+lower-case ASCII letters, digits and underscores, 1 to 32 characters. Every
+such record blocks its login until `until` and counts towards the earliest
+reset the rotator [wakes at](#rotate-wake). The other bounds are unchanged
+(a valid profile name, a span of at most 62 days, at most 256 records). The
+rotate log never shows a stored reason; an unrecognised token appears under the
+fixed label `a recorded limit`. A binary from before this change refuses a
+ledger holding any reason other than `spend_limit`. Widening the reader is not a schema
+change, so the ledger `version` stays `1` and this refusal is a stated
+compatibility trade-off: stop the rotator and upgrade every binary that uses
+the root before a limit of another kind can be recorded.
 
 A block ends at its `until` time or with
 [`profile overflow clear <name>`](#overflow-commands). Expired blocks are
@@ -9507,7 +9666,8 @@ A ledger with no overflow activity is byte-identical to one written before
 these fields existed. The rotator rejects the ledger as `RotateInconsistent`,
 with the message `rotate ledger: invalid overflow field` and without echoing
 the value, when a block key fails the [name rules](#name-rules), `reason` is
-not `spend_limit`, `at` is not above `0`, `until` is not later than `at`,
+not a [limit-kind token](#overflow-spend-limit-block), `at` is not above `0`,
+`until` is not later than `at`,
 `until` is more than 62 days after `at` (a sum that would overflow counts as
 more), there are more than 256 blocks, or `last_cycle.overflow` is not `in`,
 `out` or `on`. The rotator writes `until` as 00:00 UTC on the 1st of the
@@ -9552,8 +9712,10 @@ follow
 `last_cycle.live_room` answers one question for a waiting step: after this
 cycle, does the login live in `~/.claude` have room to run a step? It is true
 when the rotator holds a measured reading of that login from the cycle and the
-reading passes the test of a [plan-room target](#rotate-plan-room-swap):
-session use below `--session-at` and week use below 100%. The test is applied
+reading passes the test of [room for a waiting step](#rotate-plan-room-swap):
+session use below `--session-at` and week use below 100%. This is not the
+swap-target test, which also holds week use below `--week-at` (issue #2910);
+a waiting step needs only to know whether the login can run it. The test is applied
 to the reading of whichever login is live after the cycle, whatever its kind.
 For the live login that is the [freshest reading](#freshest-live-reading) the
 cycle holds, so a stale cached figure never records room that a fresher
