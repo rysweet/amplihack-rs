@@ -147,11 +147,13 @@ _finalization_state_names_pr() {
 # asks only whether the decision named what it asserts: it re-judges no fact
 # and reads no check.
 #
-# It is the last check, not the first. continue-ci-repair (#2966,
-# workflow_finalization_reentry.sh) applies this same rule to the assessment's
-# answer and asks a new session for the missing sentence first, so an unowned
-# BLOCKED_CI reaches the validator only when the pass asked again still named
-# none and changed nothing.
+# It is one rule applied in two places, not two gates. continue-ci-repair
+# (#2966, workflow_finalization_reentry.sh) applies it to the assessment's
+# answer first: it asks a new session for the missing sentence, and when that
+# session still names none the step fails for its recovery agent, which judges
+# whether to ask again. It never prints an unowned BLOCKED_CI, so the validator
+# meets one only from an answer that did not pass through that step, and this
+# check is what keeps the placeholder sentences off it then.
 #
 # _finalization_decision_unowned <state> <reason> <next> -> prints what is
 # missing and returns 0 when the state needs an owner and was given none.

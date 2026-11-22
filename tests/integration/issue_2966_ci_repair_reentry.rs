@@ -1,15 +1,21 @@
-//! Issue #2966, crusty round 1: the CI repair lives in one agent session, and
-//! anything that ended that session early used to end the run.
+//! Issue #2966, crusty rounds 1 and 2: the CI repair lives in one agent
+//! session, and anything that ended that session early used to end the run.
 //!
 //! `continue_ci_repair` (`workflow_finalization_reentry.sh`, the dispatcher's
 //! `reassess` mode, run by the `continue-ci-repair` step of
 //! `workflow-finalization-assessment.yaml`) starts the assessment again while
-//! its answer is not one finalization reports. These cases run the real
-//! dispatcher against the #1641 fixture repository with a stub `amplihack`
-//! first on PATH that stands for the nested `recipe run`. The stub records its
-//! arguments, the note it was handed and how many `RECIPE_VAR_*` it inherited,
-//! and answers each call from a scripted file. The outside-in cases, through
-//! the shipped recipes and the pinned runner, are in
+//! its answer is not one the validator would publish as a decision. Round 2
+//! removed its class vocabulary and its HEAD/status fingerprint: an unfinished
+//! repair is continued every time, any other gap is asked about once, and when
+//! the answer is still not a decision the step fails for its recovery agent,
+//! which judges whether another pass is useful. No such answer is printed for
+//! the validator to end the run over.
+//!
+//! These cases run the real dispatcher against the #1641 fixture repository
+//! with a stub `amplihack` first on PATH that stands for the nested `recipe
+//! run`. The stub records its arguments, the note it was handed and how many
+//! `RECIPE_VAR_*` it inherited, and answers each call from a scripted file. The
+//! outside-in cases, through the shipped recipes and the pinned runner, are in
 //! `tests/gadugi/run-issue-2966-finalize-ci-repair-scenario.sh`.
 
 use std::fs;
@@ -22,7 +28,7 @@ use crate::issue_1641_finalization_open_pr::fixture::{Fixture, Outcome, write_ex
 /// The nested `amplihack recipe run`. Call `n` answers `answer-<n>` (else
 /// `answer-last`) as the output of the nested `assess-finalization` step,
 /// exits `rc-<n>` (else 0), and first makes an empty commit in the repository
-/// when `commit-<n>` exists, so a pass can make progress.
+/// when `commit-<n>` exists, standing for a pass that moved HEAD.
 const AMPLIHACK_STUB: &str = r#"#!/usr/bin/env bash
 d="$GH_FIXTURE_DIR"
 n=$(( $(cat "$d/amp-count" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$d/amp-count"
@@ -153,6 +159,15 @@ fn printed(outcome: &Outcome) -> Value {
     })
 }
 
+/// The fixed sentences the note and the ERROR line carry (the brick's
+/// `_reentry_gap`). None of them quotes the agent.
+const NO_ANSWER: &str = "it returned no answer finalization can read";
+const UNFINISHED: &str = "it reported CI_REPAIR_UNFINISHED, so the CI repair goes on";
+
+fn unnamed() -> String {
+    json!({"terminal_state": "EXISTING_OPEN_PR", "action_taken": "none", "pr_number": "", "reason": "green", "next_action": ""}).to_string()
+}
+
 // A decision on the first pass is printed unchanged and starts nothing.
 #[test]
 fn a_first_pass_decision_is_printed_unchanged_and_nothing_is_started() {
@@ -188,9 +203,9 @@ fn a_pass_with_no_answer_is_started_again_from_the_bundle_recipe() {
         calls[0]
     );
     let note = r.note(1);
-    assert_eq!(note["reentry"], "no_decision");
+    assert_eq!(note["reentry"], NO_ANSWER);
     assert_eq!(note["previous_answer"], Value::Null);
-    assert_eq!(note["worktree_dirty"], false);
+    assert_eq!(note["worktree_status"], json!([]));
     let inherited = fs::read_to_string(r.dir().join("amp-recipe-vars-1")).unwrap();
     assert_eq!(
         inherited.trim(),
@@ -207,7 +222,24 @@ fn a_prose_answer_is_started_again() {
     let outcome = r.run(Some("I could not finish."), json!(false));
     assert!(outcome.success(), "{}", outcome.describe());
     assert_eq!(r.calls().len(), 1);
-    assert_eq!(r.note(1)["reentry"], "no_decision");
+    assert_eq!(r.note(1)["reentry"], NO_ANSWER);
+}
+
+// A terminal_state outside the published vocabulary is no decision either,
+// and the note names it without quoting the agent's text.
+#[test]
+fn an_unpublished_state_is_started_again_without_quoting_it() {
+    let r = Reentry::new();
+    r.answer(1, &decision());
+    let odd = json!({"terminal_state": "DONE_I_THINK", "action_taken": "none", "pr_number": "7", "reason": "r", "next_action": "n"}).to_string();
+    let outcome = r.run(Some(&odd), json!(false));
+    assert!(outcome.success(), "{}", outcome.describe());
+    let note = r.note(1);
+    assert_eq!(
+        note["reentry"],
+        "its terminal_state is not one finalization publishes"
+    );
+    assert_eq!(note["previous_answer"]["terminal_state"], "DONE_I_THINK");
 }
 
 // Concern 1: an unfinished repair is never a terminal state. It is continued
@@ -224,7 +256,7 @@ fn an_unfinished_repair_is_continued_until_a_pass_decides() {
     assert_eq!(r.calls().len(), 3, "{:?}", r.calls());
     for n in 1..=3 {
         let note = r.note(n);
-        assert_eq!(note["reentry"], "repair_unfinished", "pass {n}");
+        assert_eq!(note["reentry"], UNFINISHED, "pass {n}");
         assert_eq!(
             note["previous_answer"]["terminal_state"], "CI_REPAIR_UNFINISHED",
             "pass {n} is handed the last answer"
@@ -232,10 +264,11 @@ fn an_unfinished_repair_is_continued_until_a_pass_decides() {
     }
 }
 
-// A no-decision pass that changed nothing ends the asking: this step fails for
-// its recovery agent, with one line naming why.
+// Crusty round 2, concern 1: when the session started again for a missing
+// decision answers no decision either, the step fails for its recovery agent,
+// with one line naming both reasons, and prints nothing.
 #[test]
-fn a_second_pass_with_no_decision_and_no_change_goes_to_step_recovery() {
+fn a_second_pass_with_no_decision_goes_to_step_recovery() {
     let r = Reentry::new();
     r.answer(0, "still no answer");
     let outcome = r.run(None, json!(false));
@@ -247,30 +280,59 @@ fn a_second_pass_with_no_decision_and_no_change_goes_to_step_recovery() {
     );
     assert_eq!(r.calls().len(), 1, "{:?}", r.calls());
     assert!(
-        outcome.stderr.contains(
-            "ERROR: #2966: assess-finalization was started again and again returned no decision"
-        ),
+        outcome.stderr.contains(&format!(
+            "ERROR: #2966: assess-finalization was started again because {NO_ANSWER}, and the new session's answer is still not one finalization reports: {NO_ANSWER}; step recovery judges"
+        )),
         "{}",
         outcome.describe()
     );
     assert!(outcome.stdout.trim().is_empty(), "{}", outcome.describe());
 }
 
-// Progress keeps the asking going: a pass that answered nothing but committed
-// is asked again.
+// Crusty round 2, concerns 1 and 2: there is no progress fingerprint. Whether
+// a pass moved HEAD, pushed, or only waited, the step neither keeps asking nor
+// stops because of it: a second pass that again decided nothing goes to the
+// recovery agent, which judges whether another is useful.
 #[test]
-fn a_no_decision_pass_that_moved_head_is_asked_again() {
+fn the_end_of_asking_does_not_depend_on_what_a_pass_changed() {
     let r = Reentry::new();
-    r.answer(1, "");
+    r.answer(0, "");
     r.commit_during(1);
-    r.answer(2, &decision());
+    let head_before = r.fx.head();
     let outcome = r.run(None, json!(false));
-    assert!(outcome.success(), "{}", outcome.describe());
-    assert_eq!(r.calls().len(), 2, "{:?}", r.calls());
+    assert_ne!(r.fx.head(), head_before, "the stub moved HEAD");
+    assert_eq!(
+        outcome.output.status.code(),
+        Some(1),
+        "{}",
+        outcome.describe()
+    );
+    assert_eq!(r.calls().len(), 1, "{:?}", r.calls());
+    assert!(
+        outcome.stderr.contains("step recovery judges"),
+        "{}",
+        outcome.describe()
+    );
 }
 
-// Concern 3: a BLOCKED_CI that names no owner's step is asked again rather
-// than reported as no decision.
+// A pass that continues a repair is an answer in its own right, so a missing
+// decision after it is asked about again rather than sent to recovery.
+#[test]
+fn a_missing_decision_after_an_unfinished_repair_is_asked_about_again() {
+    let r = Reentry::new();
+    r.answer(1, &unfinished());
+    r.answer(2, "prose again");
+    r.answer(3, &decision());
+    let outcome = r.run(Some("prose"), json!(false));
+    assert!(outcome.success(), "{}", outcome.describe());
+    assert_eq!(r.calls().len(), 3, "{:?}", r.calls());
+    assert_eq!(r.note(1)["reentry"], NO_ANSWER);
+    assert_eq!(r.note(2)["reentry"], UNFINISHED);
+    assert_eq!(r.note(3)["reentry"], NO_ANSWER);
+}
+
+// Round 1, concern 3: a BLOCKED_CI that names no owner's step is asked again
+// rather than reported as no decision.
 #[test]
 fn a_blocked_ci_without_its_owners_step_is_asked_again() {
     let r = Reentry::new();
@@ -290,25 +352,37 @@ fn a_blocked_ci_without_its_owners_step_is_asked_again() {
         "repository administrator: add DEPLOY_TOKEN, then re-run deploy"
     );
     let note = r.note(1);
-    assert_eq!(note["reentry"], "blocked_ci_unowned");
+    assert_eq!(
+        note["reentry"],
+        "it reported BLOCKED_CI with no step for its owner"
+    );
     assert_eq!(note["previous_answer"]["terminal_state"], "BLOCKED_CI");
 }
 
-// When the pass asked again still names no step and changed nothing, its
-// answer goes to the validator, which reports it as before (no decision
-// outside auto-drive, the hand-off inside it).
+// Round 2, concern 1: when the session asked again still names no step, the
+// answer is not printed for the validator, whose only reading of it is a
+// terminal no decision. The step fails for its recovery agent instead.
 #[test]
-fn an_unowned_blocked_ci_asked_again_without_change_is_left_to_the_validator() {
+fn an_unowned_blocked_ci_asked_again_goes_to_step_recovery_not_the_validator() {
     let r = Reentry::new();
     r.answer(0, &unowned());
     let outcome = r.run(Some(&unowned()), json!(false));
-    assert!(outcome.success(), "{}", outcome.describe());
+    assert_eq!(
+        outcome.output.status.code(),
+        Some(1),
+        "{}",
+        outcome.describe()
+    );
     assert_eq!(r.calls().len(), 1, "{:?}", r.calls());
-    assert_eq!(printed(&outcome)["terminal_state"], "BLOCKED_CI");
     assert!(
-        outcome
-            .stderr
-            .contains("asked again (blocked_ci_unowned) and changed nothing"),
+        outcome.stdout.trim().is_empty(),
+        "nothing reaches the validator: {}",
+        outcome.describe()
+    );
+    assert!(
+        outcome.stderr.contains(
+            "still not one finalization reports: it reported BLOCKED_CI with no step for its owner; step recovery judges"
+        ),
         "{}",
         outcome.describe()
     );
@@ -319,14 +393,39 @@ fn an_unowned_blocked_ci_asked_again_without_change_is_left_to_the_validator() {
 fn an_existing_open_pr_without_a_number_is_asked_again() {
     let r = Reentry::new();
     r.answer(1, &decision());
-    let unnamed = json!({"terminal_state": "EXISTING_OPEN_PR", "action_taken": "none", "pr_number": "", "reason": "green", "next_action": ""}).to_string();
-    let outcome = r.run(Some(&unnamed), json!(false));
+    let outcome = r.run(Some(&unnamed()), json!(false));
     assert!(outcome.success(), "{}", outcome.describe());
-    assert_eq!(r.note(1)["reentry"], "pr_unnamed");
+    assert_eq!(
+        r.note(1)["reentry"],
+        "it reported EXISTING_OPEN_PR and named no pull request number"
+    );
 }
 
-// Concern 2: a file the repair left in a worktree the evidence recorded clean
-// sends a pass back to clean it, with the paths as data.
+// Round 2, concern 1: and when the session asked again still names none, the
+// step goes to its recovery agent rather than to the validator's refusal.
+#[test]
+fn an_existing_open_pr_still_unnamed_goes_to_step_recovery() {
+    let r = Reentry::new();
+    r.answer(0, &unnamed());
+    let outcome = r.run(Some(&unnamed()), json!(false));
+    assert_eq!(
+        outcome.output.status.code(),
+        Some(1),
+        "{}",
+        outcome.describe()
+    );
+    assert!(outcome.stdout.trim().is_empty(), "{}", outcome.describe());
+    assert!(
+        outcome
+            .stderr
+            .contains("named no pull request number; step recovery judges"),
+        "{}",
+        outcome.describe()
+    );
+}
+
+// Round 1, concern 2: a file the repair left in a worktree the evidence
+// recorded clean sends a pass back to clean it, with the paths as data.
 #[test]
 fn a_file_left_in_a_worktree_recorded_clean_is_handed_back_to_clean() {
     let r = Reentry::new();
@@ -344,8 +443,10 @@ fn a_file_left_in_a_worktree_recorded_clean_is_handed_back_to_clean() {
     assert!(outcome.success(), "{}", outcome.describe());
     assert_eq!(r.calls().len(), 1, "{:?}", r.calls());
     let note = r.note(1);
-    assert_eq!(note["reentry"], "worktree_dirty");
-    assert_eq!(note["worktree_dirty"], true);
+    assert_eq!(
+        note["reentry"],
+        "it left changes in the recorded worktree, which was clean before the assessment ran"
+    );
     let status: Vec<&str> = note["worktree_status"]
         .as_array()
         .expect("worktree_status")
@@ -355,34 +456,39 @@ fn a_file_left_in_a_worktree_recorded_clean_is_handed_back_to_clean() {
     assert_eq!(status, ["?? build.log"]);
 }
 
-// A file a pass cannot account for stays, and after a pass that changed
-// nothing the answer goes to the validator, whose live probe refuses the run
-// FAILED_DIRTY_WORKTREE: loud, and nothing was deleted.
+// A file a pass cannot account for stays: nothing is deleted, nothing is
+// printed, and the recovery agent judges whether another pass can clean it or
+// hands the run to its owner.
 #[test]
-fn a_file_no_pass_removes_is_left_for_the_validator_and_never_deleted() {
+fn a_file_no_pass_removes_goes_to_step_recovery_and_is_never_deleted() {
     let r = Reentry::new();
     r.answer(0, &decision());
-    let outcome = {
-        fs::write(r.fx.repo.join("notes.txt"), "someone's work\n").unwrap();
-        r.run(Some(&decision()), json!(false))
-    };
-    assert!(outcome.success(), "{}", outcome.describe());
+    fs::write(r.fx.repo.join("notes.txt"), "someone's work\n").unwrap();
+    let outcome = r.run(Some(&decision()), json!(false));
+    assert_eq!(
+        outcome.output.status.code(),
+        Some(1),
+        "{}",
+        outcome.describe()
+    );
     assert_eq!(r.calls().len(), 1, "{:?}", r.calls());
     assert!(
         r.fx.repo.join("notes.txt").exists(),
         "nothing may be deleted"
     );
+    assert!(outcome.stdout.trim().is_empty(), "{}", outcome.describe());
     assert!(
         outcome
             .stderr
-            .contains("asked again (worktree_dirty) and changed nothing"),
+            .contains("it left changes in the recorded worktree"),
         "{}",
         outcome.describe()
     );
 }
 
 // A tree the evidence already recorded dirty predates the assessment: no pass
-// is sent to clean what may be someone else's work.
+// is sent to clean what may be someone else's work, and the validator refuses
+// it (FAILED_DIRTY_WORKTREE).
 #[test]
 fn a_tree_recorded_dirty_before_the_assessment_is_not_sent_to_be_cleaned() {
     for record in [json!(true), json!("unknown"), Value::Null] {

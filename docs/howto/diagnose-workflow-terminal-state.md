@@ -192,16 +192,21 @@ A published pull request whose head the run left not green, with the repair
 unfinished and no cause named that the run cannot fix, is not
 `FAILED_IMPLEMENTATION` (#2966). The assessment answers `CI_REPAIR_UNFINISHED`,
 and `continue-ci-repair` starts it again in a new session until a session
-decides. A crash or a prose answer is started again the same way. Each new pass
+decides. A crash, a prose answer, a `BLOCKED_CI` without its owner's step and
+an `EXISTING_OPEN_PR` without a number are started again too. Each new pass
 logs one line on stderr naming why:
 
 ```text
-INFO: #2966: assess-finalization ended with repair_unfinished; starting it again to continue the CI repair
+INFO: #2966: assess-finalization's answer is not one finalization reports (it reported CI_REPAIR_UNFINISHED, so the CI repair goes on); starting it again
 ```
 
-Only two passes in a row that gave no decision and changed nothing end the
-asking. `continue-ci-repair` then goes to its recovery agent, and the recovery
-record names that step. See
+An unfinished repair is continued every time. Any other answer that is not a
+decision is asked about once; when the new session's answer is still not one,
+`continue-ci-repair` fails with a line beginning
+`ERROR: #2966: assess-finalization was started again because`, which names
+both reasons, and goes to its recovery agent. That agent judges whether another
+session is useful (a retry starts one) or hands off, and the recovery record
+names the step. See
 [When the assessment stops short](../reference/default-workflow-agentic-finalization.md#when-the-assessment-stops-short).
 
 The finalizer narrative is never parsed, so its text cannot cause either state.

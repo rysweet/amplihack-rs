@@ -181,10 +181,14 @@ would read the same bytes.
 
 `continue-ci-repair` is the opposite case and is not `--no-repair`. Its command
 runs the assessment again, which reads the pull request live and may repair it,
-so a retry can observe a repair. It fails only when two passes in a row
-returned no decision and changed nothing in the worktree, or when the nested
-run itself failed. Its recovery agent may then retry, which runs the re-entry
-again, or hand off with the reason. See
+so a retry can observe a repair. It fails when the session it started for an
+answer that was not a decision answers something that is still not one (no
+readable answer, a `BLOCKED_CI` without its cause or its owner's step, an
+`EXISTING_OPEN_PR` with no number, or changes left in a worktree recorded
+clean), or when the nested run itself failed. It keeps no progress fingerprint
+and counts no passes: whether another session is useful is its recovery
+agent's judgement. A retry starts one, told the reason; a handoff ends the run
+with the reason on record. See
 [When the assessment stops short](./default-workflow-agentic-finalization.md#when-the-assessment-stops-short).
 
 Making the step read live instead would not rescue the retry. The terminal

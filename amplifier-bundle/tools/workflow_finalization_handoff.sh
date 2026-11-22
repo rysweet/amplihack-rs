@@ -62,11 +62,14 @@
 #       restores the run's own PR evidence and returns 1, so a caller can
 #       emit its own failure (FAILED_REPORTING keeps finalizer_output_valid).
 #   finalization_fail_or_handoff <state> <reason> <next> <evidence>
-#       Deprecated alias for finalization_fail_or_handoff_open_pr, kept for
-#       one release under the live-install rule (#3049) and removed in the
-#       release after the one that ships #2966. Nothing in the bundle calls it.
-#       It used to hand off on the run's own PR number; it now hands off only
-#       a pull request the assessment named, like every other hand-off.
+#       Deprecated, kept unchanged for one release under the live-install rule
+#       (#3049) and removed in the release after the one that ships #2966.
+#       Nothing in the bundle calls it. It does exactly what it did before
+#       #2966: hands off with the validator's current pr_number (the run's own
+#       pull request), otherwise fails closed through fail_result. A script
+#       written against the earlier release therefore gets the behaviour it
+#       was written for; only the warning on stderr is new. New code calls
+#       finalization_fail_or_handoff_open_pr.
 #   autodrive_build_handoff <resolved_pr>
 #       autodrive-build step-03's decision. Call directly, not in $(...): it
 #       sets HANDOFF_TERMINAL_STATE and HANDOFF_HANDED_OFF. Returns 0 to
@@ -129,9 +132,11 @@ finalization_fail_or_handoff_open_pr() {
   fail_result "$@"
 }
 
+# The body before #2966, unchanged, behind a deprecation warning (header).
 finalization_fail_or_handoff() {
   echo "WARNING: #2966: finalization_fail_or_handoff is deprecated and will be removed; call finalization_fail_or_handoff_open_pr" >&2
-  finalization_fail_or_handoff_open_pr "$@"
+  _finalization_handoff_emit "$@" || :
+  fail_result "$@"
 }
 
 # The 20 terminal states default-workflow can report (the finaliser's

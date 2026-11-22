@@ -512,7 +512,10 @@ fn an_agent_that_answers_with_prose_leaves_the_run_with_no_decision() {
         "one second pass: {:?}",
         assessed.nested_runs()
     );
-    assert_eq!(assessed.nested_note()["reentry"], "no_decision");
+    assert_eq!(
+        assessed.nested_note()["reentry"],
+        "it returned no answer finalization can read"
+    );
     // The second pass decided nothing either, so the step failed and nothing
     // that reads like a decision was carried out of the sub-recipe.
     assert_eq!(
