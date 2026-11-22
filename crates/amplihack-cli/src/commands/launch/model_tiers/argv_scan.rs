@@ -111,7 +111,7 @@ pub(crate) fn find_model_options(args: &[String], arity_aware: bool) -> Vec<Mode
 /// Not arity-aware: on a Claude command line there is no option table to walk
 /// (see the module header), so an option whose *value* happens to be the word
 /// `--effort` reads as caller-set. The consequence is that amplihack writes
-/// nothing, which is the direction this must fail in — it can never add a
+/// nothing, which is the direction this must fail in: it can never add a
 /// flag the caller did not expect.
 ///
 /// Shares [`options_end`] with the insertion, so text after a bare `--` is

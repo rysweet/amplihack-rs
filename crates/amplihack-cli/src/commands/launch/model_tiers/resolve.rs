@@ -372,8 +372,8 @@ fn effective_effort(
 ///
 /// True only where the fall-back means the harness's own model runs: that is
 /// exactly what `Applied` says when it carries an effort and no model. A
-/// gateway launch is not one of those — another model is substituted
-/// downstream — so its line always prints.
+/// gateway launch is not one of those (another model is substituted
+/// downstream), so its line always prints.
 fn told_by_the_applied_line(decision: &Decision, effort: Option<Effort>) -> bool {
     effort.is_some()
         && matches!(

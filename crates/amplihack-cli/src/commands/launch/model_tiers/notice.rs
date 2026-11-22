@@ -27,7 +27,7 @@ pub(crate) enum Notice {
         /// `max_effort` stepped it down to the one above.
         capped_from: Option<Effort>,
         /// Whether the model was decided somewhere this line cannot speak
-        /// for — the LiteLLM gateway, which substitutes its own downstream.
+        /// for: the LiteLLM gateway, which substitutes its own downstream.
         /// The line then reports the effort alone and leaves the model to
         /// the gateway's own line.
         model_elsewhere: bool,
