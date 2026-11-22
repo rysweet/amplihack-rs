@@ -493,12 +493,11 @@ mod auto_drive_to_merge;
 mod issue_2458_qa_declaration;
 
 // Issue #1641: a resumed run whose branch already has an open, same-repo PR
-// with green checks (or pending/no CI plus this run's typed precommit evidence)
-// finalizes as EXISTING_OPEN_PR instead of FAILED_IMPLEMENTATION; a failing
-// check is repaired first (#2966; BLOCKED_CI only for a cause the run cannot
-// fix), and every fail-closed case (no PR, no verification
-// signal, hollow success, blockers) is kept. Runs the
-// real validator against a private git repo and a stub gh.
+// that the assessment reports as EXISTING_OPEN_PR finalizes as such instead of
+// FAILED_IMPLEMENTATION; failing checks are repaired first (#2966; BLOCKED_CI
+// only for a cause the run cannot fix), and every fail-closed case (no PR, no
+// verification signal, hollow success, blockers) is kept. Runs the real
+// validator against a private git repo and a stub gh.
 #[path = "issue_1641_finalization_open_pr.rs"]
 mod issue_1641_finalization_open_pr;
 
