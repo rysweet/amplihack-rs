@@ -84,8 +84,10 @@ fi
 . "$here/workflow_finalization_outcome.sh"
 . "$here/workflow_finalization_result.sh"
 . "$here/workflow_finalization_handoff.sh"
-# The validator's fact helpers, which it calls from inside validate_finalization.
+# The validator's fact helpers and its worktree probe, both called from
+# inside validate_finalization.
 . "$here/workflow_finalization_facts.sh"
+. "$here/workflow_finalization_worktree.sh"
 . "$here/workflow_finalization_validate.sh"
 . "$here/workflow_finalization_complete.sh"
 
