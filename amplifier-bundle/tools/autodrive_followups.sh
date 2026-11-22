@@ -37,8 +37,9 @@
 # Exit 2 is a usage error. Agent text reaches gh only through --body-file,
 # after cell(), and as one --title argument from issue_title() (both in
 # autodrive_finding_rules.sh): the finding in plain words, no task id, no
-# truncation marker, cut at a space only above GitHub's 256 characters. The
-# upstream clean() clips a summary to 200 first, so that cut rarely applies.
+# truncation marker, cut at a space only above GitHub's 256 characters. A
+# summary is stored by summary_text, which makes the same whole-word cut, so a
+# finding of up to 256 characters reaches the title whole.
 # Every issue carries the follow-up label, made once per run by gh label
 # create --force, which settles an existing label's colour and description on
 # the fixed pair below. A refused label is logged with gh's own message and
@@ -150,7 +151,7 @@ norm_set() {
   jq -sc "$AUTODRIVE_FINDING_JQ"'
     if all(.[]; type == "object" and (.id | type) == "string" and (.id | test("\\A[A-Za-z0-9._-]{1,64}\\z"))
                 and ((.summary // "") | type) == "string" and ((.evidence // "") | type) == "string")
-    then map({id, summary: (.summary // "" | clean), evidence: (.evidence // "" | clean)})
+    then map({id, summary: (.summary // "" | summary_text), evidence: (.evidence // "" | clean)})
     else error("bad follow-up line") end' "$1" 2>/dev/null
 }
 DEDUPE='reduce .[] as $x ([]; if any(.[]; .id == $x.id) then . else . + [$x] end)'
@@ -235,7 +236,7 @@ cmd_classify() {
     ($ret | split("\n") | map(select(length > 0))) as $r
     | if length == 1 and (.[0] | type == "array") then .[0]
         | if length > 0 and all(.[]; minor_finding($kw; $tkw) and (.id as $id | any($r[]; . == $id) | not))
-          then map({id, summary: (.summary | clean), evidence: (.evidence | clean)}) | '"$DEDUPE"'
+          then map({id, summary: (.summary | summary_text), evidence: (.evidence | clean)}) | '"$DEDUPE"'
           else empty end
       else empty end' 2>"$PRIV/jq.err")"; rc=$?
   if [ "$rc" -ne 0 ]; then

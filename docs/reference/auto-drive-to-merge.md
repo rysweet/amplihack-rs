@@ -274,8 +274,10 @@ maintainer. An issue is never filed without the label: if it cannot be created,
 the create step fails and `followup-create-failed` reports gh's message. The
 title is the finding's summary with no task id, sanitised with mentions and
 references broken. Only above 256 characters is it cut, to the longest run of
-whole words that fits. Because the summary is already clipped to 200 characters
-upstream, usually mid-word, that cut rarely applies. The body names the task,
+whole words that fits. The summary is stored with that same whole-word cut when
+the round is classified, and the minor-finding check reads the summary as
+stored, so every word that can reach a title has been checked. Evidence is
+still clipped to 200 characters. The body names the task,
 the PR and the last crusty round recorded at filing time (`not recorded` when
 none can be read).
 

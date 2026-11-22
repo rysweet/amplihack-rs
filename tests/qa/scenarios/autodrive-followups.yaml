@@ -1,0 +1,32 @@
+name: Auto-drive follow-up label and whole plain-words titles
+description: Drive autodrive_followups.sh through classify, collect and file against a stand-in gh, as the crusty round and the merge loop do (#2915).
+version: "1.0.0"
+config:
+  timeout: 300000
+  retries: 0
+  parallel: false
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+steps:
+  - name: A repository without the follow-up label gets it before the first issue, and the issue carries it with the finding as its title
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/autodrive-followups.sh label
+    timeout: 100000
+  - name: A finding longer than 256 characters is filed under its longest run of whole words, with no task id
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/autodrive-followups.sh long
+    timeout: 100000
+  - name: A label that cannot be made fails the step loudly with gh's own message and records nothing as filed
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/autodrive-followups.sh refused
+    timeout: 100000
+assertions: []
+metadata:
+  tags: [cli, auto-drive, follow-up, regression]
+  priority: high

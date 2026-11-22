@@ -789,8 +789,10 @@ fn classify_refuses_a_state_dir_that_is_not_private() {
     assert_not_minor(&d, &o, "world-writable state dir");
 }
 
+/// #2915: the summary becomes the issue title, so it is kept to GitHub's 256
+/// title characters; evidence stays at 200.
 #[test]
-fn classify_clips_summary_and_evidence_to_200_characters() {
+fn classify_clips_summary_to_256_and_evidence_to_200_characters() {
     if skip() {
         return;
     }
@@ -800,8 +802,50 @@ fn classify_clips_summary_and_evidence_to_200_characters() {
     let o = d.classify(1, &c.to_string());
     assert_eq!(stdout(&o).trim(), "MINOR_ONLY", "{}", show(&o));
     let row = &lines_of(&d.read("crusty-round-1.json.minor"))[0];
-    assert!(row["summary"].as_str().unwrap().chars().count() <= 200);
+    assert_eq!(row["summary"].as_str().unwrap().chars().count(), 256);
     assert!(row["evidence"].as_str().unwrap().chars().count() <= 200);
+}
+
+/// #2915: a summary over 256 characters is stored as its longest run of whole
+/// words, so the title made from it ends on a whole word.
+#[test]
+fn classify_keeps_a_long_summary_to_whole_words() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let long = "plain words ".repeat(30);
+    let long = long.trim_end();
+    let c = json!([{"id": "n-1", "severity": "minor", "summary": long, "evidence": "e"}]);
+    let o = d.classify(1, &c.to_string());
+    assert_eq!(stdout(&o).trim(), "MINOR_ONLY", "{}", show(&o));
+    let row = &lines_of(&d.read("crusty-round-1.json.minor"))[0];
+    let kept = row["summary"].as_str().unwrap();
+    assert!(
+        kept.chars().count() <= 256 && kept.chars().count() > 200,
+        "{kept:?}"
+    );
+    assert!(long.starts_with(kept), "{kept:?}");
+    assert_eq!(
+        &long[kept.len()..kept.len() + 1],
+        " ",
+        "cut at a space: {kept:?}"
+    );
+}
+
+/// #2915: the summary is filed up to 256 characters, so the minor check reads
+/// all of it; a security word past character 200 keeps the round CONCERNS.
+#[test]
+fn classify_scans_the_whole_summary_that_is_filed() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let summary = format!("{} and the token is printed", "word ".repeat(44));
+    assert!(summary.find("token").unwrap() > 200 && summary.chars().count() <= 256);
+    let c = json!([{"id": "n-1", "severity": "minor", "summary": summary, "evidence": "e"}]);
+    let o = d.classify(1, &c.to_string());
+    assert_not_minor(&d, &o, "a security word after character 200 of the summary");
 }
 
 #[test]
@@ -1493,9 +1537,9 @@ fn file_with_label_and_create_both_failing_reports_the_create_failure() {
     assert!(d.tsv_rows().is_empty(), "nothing recorded as filed");
 }
 
-/// Contrived on purpose: `clean` clips a summary to 200 characters, so a
-/// title only passes 256 when `break_refs` adds a zero-width space after each
-/// `#N`. Sixty-six `#1 ` tokens are 198 characters and become 264.
+/// Contrived on purpose: a summary is stored at no more than 256 characters,
+/// so a title only passes 256 when `break_refs` adds a zero-width space after
+/// each `#N`. Sixty-six `#1 ` tokens are 198 characters and become 264.
 #[test]
 fn file_title_keeps_whole_words_when_break_refs_inflates_it() {
     if skip() {
@@ -1569,6 +1613,36 @@ fn file_title_is_never_cut_at_eighty() {
     let o = d.file(&["--task-id", "1979"], &[]);
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert_eq!(arg_after(&d.creates()[0], "--title"), Some(summary));
+}
+
+/// #2915: a plain-words finding longer than 256 characters, from the crusty
+/// review through classify and collect, is filed under its longest run of
+/// whole words; the 200 clip that once cut it mid-word is gone.
+#[test]
+fn file_title_of_a_long_reviewed_finding_ends_on_a_whole_word() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let long = "The helper that reads the last crusty round from the manifest repeats the same file and link tests that the collect command already makes, so a reader has to look in both places to learn which rule applies when the record is missing or cannot be read at filing time";
+    assert!(long.chars().count() > 256);
+    let c = json!([{"id": "naming-1", "severity": "minor", "summary": long, "evidence": "e"}]);
+    assert_eq!(stdout(&d.classify(1, &c.to_string())).trim(), "MINOR_ONLY");
+    d.loop_writes_round(1, "MINOR_ONLY", 1);
+    assert_eq!(d.collect().status.code(), Some(0));
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let title = arg_after(&d.creates()[0], "--title").unwrap().to_string();
+    assert!(
+        title.chars().count() > 200 && title.chars().count() <= 256,
+        "{title}"
+    );
+    assert!(long.starts_with(&title), "{title}");
+    assert_eq!(
+        &long[title.len()..title.len() + 1],
+        " ",
+        "whole words: {title}"
+    );
 }
 
 #[test]
