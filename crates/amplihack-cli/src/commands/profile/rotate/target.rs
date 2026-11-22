@@ -267,15 +267,16 @@ pub fn no_move(
     let Some((to, _)) = ranked(s, candidates, needs).into_iter().next() else {
         return less;
     };
+    // The hold of `decide`, with the target's own session figure, which a
+    // login `ranked` names always has: `fit` accepts only a measured reading.
     if matches!(lr, LiveRoom::Room(_))
         && held_move(s.hold, swapped_at, now)
         && past_session_at(s, candidates, to)
-    {
-        let session = candidates
+        && let Some(session) = candidates
             .iter()
             .find(|c| &c.name == to)
             .and_then(session_of)
-            .unwrap_or(0.0);
+    {
         let since = swapped_at.map_or(0, |t| u64::try_from(now.saturating_sub(t)).unwrap_or(0));
         return NoMove::Held {
             to: to.clone(),

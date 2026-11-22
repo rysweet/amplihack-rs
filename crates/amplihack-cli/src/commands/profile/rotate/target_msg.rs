@@ -55,19 +55,6 @@ pub fn utc_minute(t: i64) -> String {
     )
 }
 
-/// `s=<n>%<sep>w=<n>%` for a measured reading.
-fn figures(r: &Reading, sep: &str) -> String {
-    match *r {
-        Reading::Measured { session, week } => format!("s={}%{sep}w={}%", pct(session), pct(week)),
-        Reading::Exhausted { session, week } => format!(
-            "s={}%{sep}w={}%",
-            pct(session.unwrap_or(0.0)),
-            pct(week.unwrap_or(0.0))
-        ),
-        Reading::Failed => "failed".to_string(),
-    }
-}
-
 fn minutes(age: u64) -> u64 {
     age / 60
 }
@@ -266,7 +253,7 @@ pub fn annotate(seen: &Seen, name: &ProfileName, shown: &mut Shown) {
             shown.label = Some(label.as_str());
             shown.note = Some(format!(
                 "last {} {}m ago",
-                figures(reading, ","),
+                msg::usage(&Shown::from_reading(*reading), ","),
                 minutes(*age)
             ));
         }
