@@ -108,7 +108,7 @@ pub(crate) enum Resumed {
     Ordinarily,
     /// The retry a wait that ended on a positive signal earned
     /// ([`wait::End::said_try_now`]), met by `.0`. The signal was wrong, so
-    /// the same-login refusal does not apply to the wait that follows.
+    /// the wait that follows is reported once, on a `reentered` line.
     AfterASignal(Met),
 }
 
@@ -226,7 +226,8 @@ impl RetryMove {
     }
 }
 
-/// The wait's state for one step: one wait per login, inside one budget.
+/// The wait's state for one step: the logins it has waited on, and the
+/// settings and clock its waits use. Nothing here counts or caps the waits.
 pub(crate) struct Waiter {
     /// `None` when `AMPLIHACK_NONINTERACTIVE` is not exactly `1`.
     settings: Option<WaitSettings>,
