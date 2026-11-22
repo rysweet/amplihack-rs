@@ -2326,7 +2326,7 @@ a `waiting_for_capacity` line that names why it has no reset to end on:
 ```
 amplihack.recipe.usage_limit_wait waiting_for_capacity reason=no_reset harness=claude until=2026-10-31 15:43:00 -07:00
 amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=2026-10-31 15:43:00 -07:00 bound=max_wait
-amplihack.recipe.usage_limit_wait end reason=max reached
+amplihack.recipe.usage_limit_wait end reason=capacity expired
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
@@ -2745,10 +2745,10 @@ cat    # echo the prompt it was given on stdin
 STUB
 chmod +x "$d/claude"
 echo "summarise CHANGELOG.md" > "$HOME/prompt"
-PATH="$d:$PATH" AMPLIHACK_NONINTERACTIVE=1 AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=5 \
+PATH="$d:$PATH" AMPLIHACK_NONINTERACTIVE=1 AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=60 \
   amplihack claude -p < "$HOME/prompt"
 ```
 
-The launch writes a `start` line with `bound=max_wait`, waits five seconds,
-writes `end reason=max reached` and `resume attempt=2`, and then prints
+The launch writes a `start` line with `bound=max_wait`, waits one minute (the
+shortest length a wait may be given), writes `end reason=max reached` and `resume attempt=2`, and then prints
 `summarise CHANGELOG.md`: the retry reads the file from the start again.

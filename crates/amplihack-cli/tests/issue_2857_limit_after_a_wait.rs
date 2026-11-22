@@ -446,7 +446,7 @@ fn a_reset_that_has_already_passed_with_no_login_to_take_over_still_waits_and_th
             "start reason=usage_limit wait=capacity harness=claude \
              reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 10:32:00 -07:00 \
              bound=max_wait",
-            "end reason=max reached",
+            "end reason=capacity expired",
             "resume attempt=3",
         ],
         "one `reentered` line, then the capacity wait's two opening lines: {ev:?}"
@@ -501,7 +501,7 @@ fn an_organisation_spend_limit_that_states_a_passed_session_reset_waits_for_capa
             "start reason=usage_limit wait=capacity harness=claude \
              reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 10:32:00 -07:00 \
              bound=max_wait",
-            "end reason=max reached",
+            "end reason=capacity expired",
             "resume attempt=3",
         ],
         "a spend limit with a passed session reset is a capacity wait: {ev:?}"
@@ -588,8 +588,9 @@ fn a_retry_on_a_login_the_step_has_never_waited_on_still_waits_for_a_passed_rese
 /// capacity wait; no rotator cycle is fresh and no login has room, so nothing
 /// ends any of them early. With `max_wait_secs` of 60, the floor, each wait
 /// runs its own full minute: the deadlines are 08:01:00, 08:02:00 and
-/// 08:03:00, each strictly after the wait's own start, and each `reached`,
-/// which a wait can only report once its clock has got there. Three waits of
+/// 08:03:00, each strictly after the wait's own start, and each ends
+/// `capacity expired`, which a wait can only report once its clock has got
+/// there. Three waits of
 /// 60 s out of a configured 60 is the whole of the change: a budget would have
 /// ended the step inside the first minute.
 ///
@@ -624,7 +625,7 @@ fn a_chain_of_limits_is_paced_by_each_wait_costing_time_and_nothing_counts_them(
             "start reason=usage_limit wait=capacity harness=claude \
              reset=2026-10-18 07:55:00 -07:00 until={until} bound=max_wait"
         ));
-        want.push("end reason=max reached".to_string());
+        want.push("end reason=capacity expired".to_string());
         want.push(format!("resume attempt={n}"));
     }
     assert_eq!(

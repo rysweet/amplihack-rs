@@ -11652,8 +11652,8 @@ capacity instead of from the clock, on the first attempt as on a retry:
   [Reasons a wait ends](#reasons-a-wait-ends)), and on a `$HOME/.claude` step
   only when [the login the retry will use has room](#waking-only-on-room). A
   swap onto a login with no room, or `rotator stop`, does not wake it.
-- When it reaches `max_wait` with no signal, it ends `end reason=max reached`
-  and the step retries. A limit on that retry starts another wait.
+- When it reaches `max_wait` with no signal, it ends
+  `end reason=capacity expired` and the step retries. A limit on that retry starts another wait.
 
 The wait does not depend on another login existing. With no running rotator
 and no second login nothing can end it early, so it runs one `max_wait_secs`
@@ -11812,7 +11812,8 @@ come first, then the deadline, then the 30 s probes in the order listed.
 | `signal` | all | `SIGINT`, `SIGTERM` or `SIGHUP` was received | no; exits `128` + signal |
 | `session ended` | all | the process that started the step exited (the supervisor's parent changed) | no |
 | `reset reached` | reset, capacity | the `reset+margin` deadline passed; on a capacity wait this is the failed login's own reset | yes |
-| `max reached` | reset, capacity, login change | the `max_wait` deadline passed with no signal | yes, on the same login. A limit on the retry starts another wait |
+| `max reached` | reset, login change | the `max_wait` deadline passed with no signal | yes, on the same login. A limit on the retry starts another wait |
+| `capacity expired` | capacity | the `max_wait` deadline passed with no signal and no login showed room | yes; the [retry login](#retry-login) rules choose where. A limit on the retry starts another wait |
 | `step timeout` | all | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no; [closing line](#closing-line) |
 | `login changed` | all | the login changed before the wait was planned, or two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline. On a reset or capacity wait for a `$HOME/.claude` step, the change counts only when the login that arrived [has room](#waking-only-on-room) | yes |
 | `rotator capacity` | reset, capacity | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle that meets the [rotator room rule](#rotator-room-rule): a cycle with capacity (`swapped`, `stayed` or `switched`, no alert; `stayed-unread` is not capacity) that says room (`live_room: true`, or a `switched` record that does not state `false`), whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
@@ -12070,7 +12071,7 @@ indefinitely without one, rather than overflowing.
 reads as 60 (see
 [What max_wait_secs means](./usage-limit-waits.md#what-max_wait_secs-means)).
 A capacity wait that reaches its `max_wait` deadline with no signal ends with
-`end reason=max reached` and the step retries. A limit on that retry starts
+`end reason=capacity expired` and the step retries. A limit on that retry starts
 another wait. When the step timeout comes first, the wait ends with
 `end reason=step timeout`, the [closing line](#closing-line) is written and
 the failed attempt's result is passed up.
@@ -12253,7 +12254,7 @@ the case that lost something is announced:
 | The wait ended | Second selection finds nothing | Announced |
 |----------------|-------------------------------|-----------|
 | `login capacity` — a reading showed room | the room was taken in between; the step gave up a wait it could have finished | yes |
-| a capacity wait ending any other way (`reset reached`, `max reached`, `login changed`, `rotator capacity`) | no login ever had room; the retry runs on the login that just recovered, which is the designed outcome | no |
+| a capacity wait ending any other way (`reset reached`, `capacity expired`, `login changed`, `rotator capacity`) | no login ever had room; the retry runs on the login that just recovered, which is the designed outcome | no |
 | a reset wait reaching its own deadline | no second selection is made at all; the retry runs under the inherited profile, as before | no |
 | a login-change wait ending on `login changed` | no second selection is made at all; the retry runs on the login the rotator has just made live | no |
 
@@ -12493,7 +12494,7 @@ the step retries:
 amplihack.recipe.usage_limit_wait waiting_for_capacity reason=no_reset harness=claude until=2026-10-31 15:43:00 -07:00
 amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=2026-10-31 15:43:00 -07:00 bound=max_wait
 amplihack.recipe.usage_limit_wait progress remaining=60s
-amplihack.recipe.usage_limit_wait end reason=max reached
+amplihack.recipe.usage_limit_wait end reason=capacity expired
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
@@ -12579,7 +12580,7 @@ wait is announced:
 amplihack.recipe.usage_limit_wait waiting_for_capacity reason=passed_reset harness=claude until=2026-11-19 14:00:09 -08:00
 amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=2026-11-19 08:30:00 -08:00 until=2026-11-19 14:00:09 -08:00 bound=max_wait
 amplihack.recipe.usage_limit_wait progress remaining=60s
-amplihack.recipe.usage_limit_wait end reason=max reached
+amplihack.recipe.usage_limit_wait end reason=capacity expired
 amplihack.recipe.usage_limit_wait resume attempt=3
 amplihack.recipe.usage_limit_wait waiting_for_capacity reason=passed_reset harness=claude until=2026-11-19 20:00:09 -08:00
 amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=2026-11-19 08:30:00 -08:00 until=2026-11-19 20:00:09 -08:00 bound=max_wait

@@ -155,25 +155,58 @@ fn a_prompt_in_argv_is_not_captured() {
     assert_eq!(leftovers(&f), Vec::<String>::new());
 }
 
+/// Issue #2911: a limit that is still there after the wait is waited for
+/// again, as often as it comes back, and every retry is given the same piped
+/// prompt from the one copy the supervisor kept.
+///
+/// Renamed from `a_limit_still_failing_after_the_wait_ends_the_step_and_leaves_no_capture`,
+/// which asserted that the third limit ended the step: the re-entry used the
+/// rest of the step's `max_wait_secs` budget and the next limit was refused.
+/// Both the budget and the refusal are gone. The copy is still removed when
+/// the step ends; the tests above and below that end a step with an error
+/// cover the removal on that path.
 #[test]
-fn a_limit_still_failing_after_the_wait_ends_the_step_and_leaves_no_capture() {
+fn a_limit_that_keeps_coming_back_is_waited_out_each_time_with_the_same_prompt() {
     let f = Fixture::new();
     let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
+    // The shortest length a wait may be given, so the five waits stay short
+    // on the test clock whatever kind of wait each one is.
     c.env("LIMIT_CALLS", "5")
+        .env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "60")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = c.spawn().expect("start amplihack");
-    let feeder = feed(&mut child, b"prompt\n".to_vec());
+    let bytes = b"prompt\n".to_vec();
+    let feeder = feed(&mut child, bytes.clone());
     let out = child.wait_with_output().unwrap();
     feeder.join().unwrap();
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(
         f.count("0"),
-        3,
-        "one wait, one budget wait for the re-entry, then terminal"
+        6,
+        "five limits, five waits, then the attempt that works: {}",
+        describe(&out)
     );
-    assert_eq!(leftovers(&f), Vec::<String>::new(), "removed on error too");
+    for n in 1..=6 {
+        assert_eq!(
+            f.call("0", n)["STDIN"],
+            sha256_hex(&bytes),
+            "attempt {n} was given the whole prompt"
+        );
+    }
+    let ev = events(&out);
+    assert_eq!(
+        ev.iter().filter(|l| l.starts_with("start ")).count(),
+        5,
+        "{ev:?}"
+    );
+    assert!(
+        !ev.iter()
+            .any(|l| l.starts_with("skipped") || l.starts_with("failed")),
+        "{ev:?}"
+    );
+    assert_eq!(leftovers(&f), Vec::<String>::new(), "the copy is removed");
 }
 
 /// Runs `child` with a ceiling, so a step that hangs fails the test instead
