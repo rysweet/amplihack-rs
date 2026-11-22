@@ -86,9 +86,9 @@ pub(in crate::commands::profile::rotate) fn decide_with(
     let live_reading = if live_blocked { NO_ROOM } else { probe.reading };
     let need = Need::of(on_overflow, !on_overflow && needs_swap(s, &live_reading));
     let room = target::live_room(&probe.reading, live_blocked);
-    // A live login whose probe failed may cross as before #2910: its only
-    // move is the failed-probe swap, which `damp` holds until three failures
-    // in a row and the outlook never makes sooner (`outlook_failed`).
+    // A live login whose probe failed may cross as before #2910, and only by
+    // the failed-probe swap, which `damp` holds until three failures in a
+    // row and the outlook never makes sooner (`outlook_failed`).
     let may_cross = match need {
         Need::LeaveOverflow => true,
         Need::Relief => room == LiveRoom::NoRoom || probe.reading == Reading::Failed,

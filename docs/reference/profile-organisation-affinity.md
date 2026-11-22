@@ -136,7 +136,7 @@ earlier thinking and leaves the visible conversation in place. So a login at
 100% moves to a login in another organisation when nothing in its own
 organisation, and nothing unresolved, qualifies, and the move carries the
 confirmed-crossing warning. A live login whose probe failed is treated as
-before: its only move is the
+before: its only crossing is the
 [failed-probe swap](./profile-command.md#rotate-failed-live-probes), which
 waits for three failures in a row, and a substituted figure never makes that
 crossing sooner.

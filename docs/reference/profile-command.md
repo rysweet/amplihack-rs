@@ -6561,9 +6561,10 @@ A cycle with no move writes a stay note, or an ALERT in one of two
 wordings. Neither ends the rotator or a cycle with an error: the next cycle
 decides again on its own measurements.
 
-**A stay note.** When the live login still has room, and eligible logins exist
-but none qualifies, the only qualifying ones are held, or none was confirmed,
-the cycle is a stay with capacity and writes a note, not an ALERT:
+**A stay note.** When the live login still has room or its probe read
+nothing usable, and eligible logins exist but none qualifies, the only
+qualifying ones are held, or none was confirmed, the cycle is a stay with
+capacity and writes a note, not an ALERT:
 
 | Note | Case |
 |------|------|
@@ -7572,7 +7573,8 @@ A projected or substituted figure is decided under
 the room worked out on the live reading as measured for the crossing test,
 never on the projection. So a projected or substituted swap never makes a
 confirmed crossing, nor makes one sooner. A crossing waits for the live login
-to have no room now, or to be an overflow profile.
+to have no room now, to be an overflow profile, or to have failed its probe
+three times in a row (the failed-probe swap).
 
 - **A measured reading below both thresholds.** The live login has
   room, and a crossing is never a target. A login in the live login's
@@ -7585,9 +7587,9 @@ to have no room now, or to be an overflow profile.
   [stay note](#rotate-no-target). The crossing is made, with the crossing
   warning, in the cycle in which the live login has no room.
 - **A failed probe.** The failed-probe rules choose the target in the same
-  way, with the live login counted as room `0`, and a failed live probe never
-  crosses. The substituted figure only makes their swap sooner, and never
-  when its target is in another organisation.
+  way, with the live login counted as room `0`. Their swap may cross, after
+  three failures in a row, as before. The substituted figure only makes
+  their swap sooner, and never when its target is in another organisation.
 
 For example, with `--interval 120 --session-at 70 --margin 5`, live `work`
 (organisation A) reads 63% and is projected to 76%. `spare` (A) reads 40%
@@ -10186,7 +10188,7 @@ run and prints their `reread:` lines; see
 | `damp: <name> swapped away exhausted; no later reading shows room` | `<name>` is in the ledger's `swapped_away`, and its re-read shows it still at or above `--session-at` or `--week-at`, or exhausted. It stays damped. See [Swap-back damping](#swap-back-damping). |
 | `damp: <name> later reading shows room; swap-back allowed` | A reading of `<name>` taken after the rotator swapped away from it shows room, so its `swapped_away` entry was removed. Written in the [record step](#rotate-cycle), after the cycle's `swap`, stay or ALERT line, and never by `--dry-run`. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)` / `ALERT: no capacity known live=<name> s=<n>% w=<n>% (candidates: <counts>)` | No login is eligible and the live login is past a threshold or has no room. The first wording is written only when every other plan login is known, by a fresh or last good reading, to have a window at 100% or an active block; a login the cycle skipped before probing it is never read, so it keeps the second wording. The second is written in every other case. `<counts>` lists, in this order and leaving out any zero count, `<N> unknown (<label>)` for each [label](#rotate-unknown-readings) in the order `HTTP 429`, `transport`, `identity unavailable`, `timeout`, `still running`, `probe error`; `<N> not read (<reason>)` for each plan login skipped before any probe, in the wording of the cycle's `skip:` line; `<N> failed`; `<N> blocked until <time>`, the earliest block end as UTC to the minute; `<N> exhausted`; `<N> above week ceiling <n>%`; and `<N> not tried (re-read limit 3)`. With nothing to count it is `candidates: none`. The line holds no profile names. The ALERT kind stays `no-capacity`, and the key is `no-capacity` for the first wording and `no-capacity/known` for the second, so a change of wording writes a new line and a change in the counts does not. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <counts>)`, or `would alert: no capacity known ...`, without the `ALERT: ` prefix. See [Rotate no target](#rotate-no-target). |
-| `stay: live room <R>, best other login has room <M>, a move needs <N>` | The live login has room, a login is eligible, and none has the `N = R + max(--margin, 1)` room that a move needs. Written once per key `no-capacity/stay`, advisory when the live reading qualifies (see [Rotate advisory alert](#rotate-advisory-alert)). It is not an ALERT. `--dry-run` prints `would stay (live room <R>, ...)`. |
+| `stay: live room <R>, best other login has room <M>, a move needs <N>` | The live login has room, a login is eligible, and none has the `N = R + max(--margin, 1)` room that a move needs. When only a login in another organisation has room, `best other login has room <M>` reads `only a login in another organisation has room`. When the live probe read nothing usable, `<R>` is `unknown` and `<N>` is `--margin`. Written once per key `no-capacity/stay`, advisory when the live reading qualifies (see [Rotate advisory alert](#rotate-advisory-alert)). It is not an ALERT. `--dry-run` prints `would stay (live room <R>, ...)`. |
 | `stay: held after last swap (<S>s of <H>s): <name> is at s=<n>%, at or above --session-at` | The [hold](#rotate-hold) kept the rotator on the live login, which has room, instead of moving to `<name>`. Written once per key `no-capacity/held`, advisory when the live reading qualifies. |
 | `stay: no candidate confirmed by a fresh reading` | Every qualifying login was rejected at [confirmation](#rotate-confirmation), a rejected login is still eligible (its re-read was unknown), and the live login has room. When every rejection showed no room, the no-target line is written instead. Written once per key `no-capacity/unconfirmed`, advisory or hard as the [advisory rule](#rotate-advisory-alert) says. |
 | `reject: <name> <reason>` | A candidate that qualified was rejected by its fresh reading, and the rotator decided again, which reaches the next-ranked login. `<reason>` is `no room on a fresh reading`, `week above ceiling <n>% on a fresh reading`, `spend limit on a fresh reading`, `no usable reading` or `reading unknown (<label>)`. At most three a cycle, because each counts against the three re-reads. See [Rotate confirmation](#rotate-confirmation). |

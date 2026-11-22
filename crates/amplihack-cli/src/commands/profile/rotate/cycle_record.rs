@@ -52,11 +52,13 @@ impl Done<'_> {
     /// answer to the question a waiting step asks (may a retry use this
     /// login), decided by [`plan_room::has_room_under`]: both windows below
     /// 100% and session use below `--session-at`. Since issue #2910 the
-    /// target rule (`target::fit`) may move a live login with no room onto a
-    /// login at or above `--session-at`, so after such a move the bit is
-    /// `false` and a waiting step is not woken until a cycle reads the new
-    /// login below `--session-at`. `None` for a cycle that measured nothing
-    /// about that login, which every reader takes as no room.
+    /// target rule (`target::fit`) may move onto a login at or above
+    /// `--session-at`: from a live login with no room, by the failed-probe
+    /// swap, or from a live login past a threshold once the hold has passed.
+    /// After such a move the bit is `false` and a waiting step is not woken
+    /// until a cycle reads the new login below `--session-at`. `None` for a
+    /// cycle that measured nothing about that login, which every reader
+    /// takes as no room.
     fn live_room(&self, session_at: u8) -> Option<bool> {
         let to = self.swapped.map(|[to, _]| to);
         let after = overflow_record::live_reading(to, self.live, self.others);

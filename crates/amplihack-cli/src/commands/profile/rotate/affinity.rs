@@ -51,7 +51,8 @@ impl Snap {
 /// login eligible. A candidate is usable for the pool when the selector,
 /// offered only that target, picks it: it qualifies and is not held.
 /// `may_cross` says whether the decision may make a confirmed crossing: the
-/// live login is an overflow profile, or has no room now.
+/// live login is an overflow profile, has no room now, or its probe failed
+/// (then only by the failed-probe swap that `damp` holds).
 pub(in super::super) fn decide(
     snap: &Snap,
     input: &OverflowInput<'_>,
