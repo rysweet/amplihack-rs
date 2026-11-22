@@ -621,8 +621,12 @@ merge step's `authorization` helper and the already-merged report open state
 only from that bound path. They compare the child's `autodrive_state_dir` with
 the bound path lexically: nothing is joined onto the working directory,
 canonicalised or resolved through links. Any mismatch makes the authorization
-helper exit `2`, so the merge step reports `authorization-unreadable` and
-hands the PR off, and the run report carries a `note` naming the state directory mismatch.
+helper exit `2`, so the merge step reports `authorization-unreadable`, fails
+with exit `1` and the agent recovery step re-runs finalisation (see
+[An unreadable invocation record goes to recovery](autodrive-merge-ready-round.md#an-unreadable-invocation-record-goes-to-recovery)),
+and the run report carries a `note` naming the state directory mismatch. The
+captured invocation record lives in `runs/<id>/autodrive-invocation-*/`
+beside the state directory, so it lasts as long as the drive.
 
 The state directory also holds the merge-ready loop driver's output
 (`merge-ready-driver.err`) and its result file (`merge-ready-result.json`), so

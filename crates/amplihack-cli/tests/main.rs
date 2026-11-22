@@ -54,6 +54,8 @@ mod issue_2582_nested_context_off_argv;
 mod issue_2582_real_runner_argv;
 #[path = "issue_2585_launch_notices_stderr.rs"]
 mod issue_2585_launch_notices_stderr;
+#[path = "issue_2959_invocation_record_lifetime.rs"]
+mod issue_2959_invocation_record_lifetime;
 
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
