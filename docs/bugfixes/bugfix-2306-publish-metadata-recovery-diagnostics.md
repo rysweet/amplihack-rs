@@ -336,7 +336,11 @@ All fixtures use temporary repositories, fake executables and local refs.
 No test opens a GitHub PR or contacts GitHub. Cancellation fixtures block on a
 local executable and signal only after a readiness marker confirms private files
 exist and sensitive data has been written; they assert termination, cleanup,
-permissions, statuses and caller trap behavior. The suite has also been run once under a
+permissions, statuses and caller trap behavior. Each signalled process starts
+with the default action for SIGINT, SIGHUP and SIGTERM: Bash can neither trap
+nor reset a signal ignored on entry, and a background job of a non-interactive
+shell, such as auto-drive's QA run, inherits SIGINT ignored. Without that reset
+the SIGINT cases never end there. The suite has also been run once under a
 locally built GNU Bash 3.2.0, which verifies Bash syntax and semantics, not Darwin
 libc or every BSD utility. No repository script or CI job does this.
 

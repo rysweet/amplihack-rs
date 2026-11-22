@@ -16,10 +16,39 @@ fn wait_for_file(f: &PublishFixture, child: &mut Child, name: &str) {
     }
 }
 
+/// Start `command` with the default action for every signal these tests send.
+///
+/// An ignored disposition survives `exec`, and Bash can neither trap nor
+/// reset a signal that was ignored on entry to a non-interactive shell. The
+/// test binary inherits SIGINT ignored whenever it runs as a background job
+/// of a non-interactive shell, as auto-drive's QA run does, and SIGHUP
+/// ignored under `nohup`. The shell under test would then never see the
+/// signal, and the test would measure its launcher rather than the helper.
+fn with_default_signal_actions(command: &mut Command) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs in the forked child before exec and calls only
+    // `signal`, which is async-signal-safe; it touches no memory of the parent.
+    unsafe {
+        command.pre_exec(|| {
+            for signal in [libc::SIGINT, libc::SIGHUP, libc::SIGTERM] {
+                if libc::signal(signal, libc::SIG_DFL) == libc::SIG_ERR {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    command
+}
+
 fn interrupt(f: &PublishFixture, mut command: Command, signal: &str) -> Output {
     let stdout = fs::File::create(f.tmp.path().join("cancel.stdout")).unwrap();
     let stderr = fs::File::create(f.tmp.path().join("cancel.stderr")).unwrap();
-    let mut child = command.stdout(stdout).stderr(stderr).spawn().unwrap();
+    let mut child = with_default_signal_actions(&mut command)
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
     wait_for_file(f, &mut child, "ready");
     assert!(
         Command::new("kill")
@@ -212,8 +241,7 @@ fn publisher_reports_the_terminal_line_when_only_the_retry_helper_is_interrupted
     );
     let stdout = fs::File::create(f.tmp.path().join("cancel.stdout")).unwrap();
     let stderr = fs::File::create(f.tmp.path().join("cancel.stderr")).unwrap();
-    let mut child = f
-        .publish_command()
+    let mut child = with_default_signal_actions(&mut f.publish_command())
         .stdout(stdout)
         .stderr(stderr)
         .spawn()
@@ -334,7 +362,11 @@ exit "$status"
     // then wait for its caller to verify the returned status and caller traps.
     let stdout = fs::File::create(f.tmp.path().join("cancel.stdout")).unwrap();
     let stderr = fs::File::create(f.tmp.path().join("cancel.stderr")).unwrap();
-    let mut child = command.stdout(stdout).stderr(stderr).spawn().unwrap();
+    let mut child = with_default_signal_actions(&mut command)
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
+        .unwrap();
     wait_for_file(&f, &mut child, "ready");
     let owner = f.read("writer-owner.pid");
     let pid = owner.trim();
