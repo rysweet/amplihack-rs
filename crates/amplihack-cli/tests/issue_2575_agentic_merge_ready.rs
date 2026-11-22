@@ -208,9 +208,10 @@ exit "$(cat "$S/loop_rc" 2>/dev/null || echo 0)"
 // ---------------------------------------------------------------------------
 
 struct Fx {
-    _tmp: tempfile::TempDir,
+    /// The fixture root, in the effective group so that what the tests make
+    /// in it is not refused as foreign-group evidence (issue #2931).
+    env: crate::isolated_amplihack::PrivateEnv,
     root: PathBuf,
-    home: PathBuf,
     ah: PathBuf,
     bin: PathBuf,
     fake: PathBuf,
@@ -229,11 +230,12 @@ impl Fx {
             eprintln!("SKIP: jq is not installed; the fakes and tools need it");
             return None;
         }
-        let tmp = tempfile::tempdir_in(crate::support::scratch_base::scratch_base()).unwrap();
-        let root = tmp.path().canonicalize().unwrap();
+        let env =
+            crate::isolated_amplihack::private_env_in(crate::support::scratch_base::scratch_base());
+        let root = env.root().to_path_buf();
         let p = |n: &str| root.join(n);
         let (home, ah, bin, fake, state, repo) = (
-            p("home"),
+            env.home().to_path_buf(),
             p("amplihack-home"),
             p("bin"),
             p("fake-state"),
@@ -276,9 +278,8 @@ impl Fx {
         .unwrap();
         std::fs::write(fake.join("server_head"), SHA_A).unwrap();
         Some(Fx {
-            _tmp: tmp,
+            env,
             root,
-            home,
             ah,
             bin,
             fake,
@@ -302,12 +303,12 @@ impl Fx {
             self.bin.display(),
             std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
         );
-        let mut c = crate::isolated_amplihack::isolated("bash");
-        c.env("HOME", &self.home)
-            .env("PATH", path)
+        // `HOME`, `TMPDIR` and `CLAUDE_CONFIG_DIR` come from the private
+        // environment, so a script's temporary files stay in the fixture.
+        let mut c = self.env.command("bash");
+        c.env("PATH", path)
             .env("AMPLIHACK_HOME", &self.ah)
             .env("AMPLIHACK_BIN", self.bin.join("amplihack"))
-            .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"))
             .env("XDG_STATE_HOME", self.root.join("xdg-state"))
             .env("XDG_CONFIG_HOME", self.root.join("xdg-config"))
             .env("XDG_CACHE_HOME", self.root.join("xdg-cache"))
@@ -1222,7 +1223,9 @@ fn authorization_helper_for(
     directory: &Path,
     pr: Option<&str>,
 ) -> Output {
-    let mut c = crate::isolated_amplihack::isolated(crate::support::amplihack_bin::amplihack_bin());
+    let mut c = fx
+        .env
+        .command(crate::support::amplihack_bin::amplihack_bin());
     c.args([
         "orch",
         "helper",
@@ -1234,8 +1237,6 @@ fn authorization_helper_for(
     .arg("--directory")
     .arg(directory)
     .args(pr.map(|p| ["--pr", p]).into_iter().flatten())
-    .env("HOME", &fx.home)
-    .env("CLAUDE_CONFIG_DIR", fx.root.join("claude-config"))
     .env("AMPLIHACK_HOME", &fx.ah)
     .current_dir(&fx.root)
     .stdin(Stdio::null());

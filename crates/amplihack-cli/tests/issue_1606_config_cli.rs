@@ -307,6 +307,34 @@ fn the_guard_keeps_a_non_temp_home_untouched() {
     assert_eq!(stdout(&unguarded), "codex\n");
 }
 
+/// Issue #2931 (GUARD): the library's own test build also accepts `/var/tmp`
+/// and `/tmp` as temporary bases, because fixtures made there are not a
+/// developer's home. The shipped binary must not: with `TMPDIR` naming another
+/// folder, a `HOME` under either is still discarded, and nothing is created
+/// there (the paths below are never made).
+#[test]
+fn the_shipped_binary_keeps_temp_dir_as_its_only_guard_base() {
+    let tmpdir = tempfile::tempdir().unwrap();
+    for outside in ["/var/tmp", "/tmp"] {
+        let home =
+            Path::new(outside).join(format!("amplihack-2931-never-made-{}", std::process::id()));
+        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
+        c.args(["config", "get", "agent.binary"])
+            .env("HOME", &home)
+            .env("TMPDIR", tmpdir.path())
+            .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+            .stdin(Stdio::null());
+        let out = run_bounded(c);
+        assert_ok(&out);
+        assert!(
+            stderr(&out).contains("AMPLIHACK_TEST_HOME_GUARD is set and HOME"),
+            "a HOME under {outside} must be discarded by the binary: {}",
+            stderr(&out)
+        );
+        assert!(!home.exists(), "{} was created", home.display());
+    }
+}
+
 // ── list / get grammar ──────────────────────────────────────────────────────
 
 #[test]

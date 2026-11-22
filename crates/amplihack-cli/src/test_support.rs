@@ -149,6 +149,39 @@ mod scratch_base_tests {
         }
     }
 
+    /// Issue #2931 (ENOTDIR): `/var/folders/..` is a link to `/private/var/..`
+    /// on macOS, and the run directory opens every component without following
+    /// links. The base must therefore come back in canonical form.
+    #[test]
+    fn the_scratch_base_is_returned_in_canonical_form() {
+        let base = super::scratch_base::scratch_base();
+        assert_eq!(
+            base,
+            base.canonicalize().expect("the base exists"),
+            "a base that is reached through a link is refused by the run directory"
+        );
+    }
+
+    /// A link whose target lies under the real `~/.claude` must not pass for a
+    /// clean base because its own text does not start with the home path.
+    #[cfg(unix)]
+    #[test]
+    fn a_base_reached_through_a_link_into_the_real_home_dirs_is_rejected() {
+        let home = tempfile::tempdir().unwrap();
+        let home_path = home.path().canonicalize().unwrap();
+        let real = home_path.join(".claude").join("work");
+        fs::create_dir_all(&real).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let link = outside.path().join("innocent");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let reason = scratch_base_rejection(&link, Some(&home_path));
+        assert!(
+            reason.as_deref().is_some_and(|r| r.contains(".claude")),
+            "{}: {reason:?}",
+            link.display()
+        );
+    }
+
     #[test]
     fn a_missing_base_is_rejected_and_a_clean_one_accepted() {
         let root = super::tempdir_outside_framework_roots();

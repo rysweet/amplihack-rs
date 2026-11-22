@@ -219,3 +219,112 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
     reapply_proc_root(&mut command);
     command
 }
+
+/// A fixture root of the test's own, and the environment that points a child
+/// at it (issue #2931).
+///
+/// Use it when a test gives the binary a `HOME` it made. Setting `HOME` by
+/// hand on an [`isolated`] command leaves `TMPDIR`, the profile root and the
+/// process table where the test process had them, and two faults follow:
+///
+/// - the home guard discards a `HOME` outside the child's temp dir, so a
+///   fixture made under `scratch_base()` (which falls back to `/var/tmp`
+///   when `TMPDIR` lies inside a framework install) reads as "HOME is not
+///   set". Here `TMPDIR` is the root and `HOME` lies inside it, whatever the
+///   test process's own `TMPDIR` is.
+/// - on BSD file systems (macOS) a new entry takes its folder's group, and
+///   under `/var/tmp` that is not the user's own, so checks that refuse a
+///   foreign group refuse the fixture. Here the root's group is set to the
+///   effective group before anything is made in it.
+///
+/// Issue #1699 stands: the profile root named here lies inside the root, so
+/// an install under this `HOME` cannot refresh real profiles. Issue #2922
+/// asks for the same private environment for every test that sets `HOME`;
+/// this type is written for that work to adopt, and only the fixtures behind
+/// the #2931 failures use it so far.
+///
+/// Everything a test writes goes under [`PrivateEnv::root`], which is removed
+/// when the value is dropped.
+pub struct PrivateEnv {
+    _tmp: tempfile::TempDir,
+    root: PathBuf,
+    home: PathBuf,
+    proc_root: PathBuf,
+}
+
+/// A [`PrivateEnv`] whose root is a new folder inside `base`: mode 0700 from
+/// creation, a random name, canonical, and in the effective group. Holds
+/// `home/` (0700) and a seeded, empty process table `fake-proc/` (0700).
+/// Panics on any I/O failure.
+pub fn private_env_in(base: impl AsRef<Path>) -> PrivateEnv {
+    use std::os::unix::fs::PermissionsExt;
+    let base = base.as_ref();
+    let tmp = tempfile::Builder::new()
+        .prefix("private-env-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(base)
+        .unwrap_or_else(|e| panic!("create a private root in {}: {e}", base.display()));
+    let root = tmp
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|e| panic!("resolve {}: {e}", tmp.path().display()));
+    // Before any entry is made, so every entry inherits it where the file
+    // system hands a folder's group down. Not recursive: the root is empty.
+    // SAFETY: getegid has no preconditions.
+    let group = unsafe { libc::getegid() };
+    std::os::unix::fs::chown(&root, None, Some(group))
+        .unwrap_or_else(|e| panic!("set the group of {}: {e}", root.display()));
+    let home = root.join("home");
+    let proc_root = root.join("fake-proc");
+    for dir in [&home, &proc_root] {
+        DirBuilder::new()
+            .mode(0o700)
+            .create(dir)
+            .unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+    }
+    seed_proc_tree(&proc_root);
+    PrivateEnv {
+        _tmp: tmp,
+        root,
+        home,
+        proc_root,
+    }
+}
+
+impl PrivateEnv {
+    /// The root: canonical, mode 0700, in the effective group.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// `<root>/home`, the child's `HOME`.
+    pub fn home(&self) -> &Path {
+        &self.home
+    }
+
+    /// `<root>/profiles`, the child's Claude login profile root. Not created.
+    pub fn profile_root(&self) -> PathBuf {
+        self.root.join("profiles")
+    }
+
+    /// `<root>/claude-config`, the child's `CLAUDE_CONFIG_DIR`. Not created.
+    pub fn claude_config_dir(&self) -> PathBuf {
+        self.root.join("claude-config")
+    }
+
+    /// [`isolated`]`(bin)` with every variable that names user state pointed
+    /// inside the root: `HOME`, `TMPDIR` (the root itself, so the home guard
+    /// accepts the `HOME`), the profile root, the process table,
+    /// `CLAUDE_CONFIG_DIR` and `AMPLIHACK_HOME`. A later `.env()` call wins.
+    pub fn command(&self, bin: impl AsRef<OsStr>) -> Command {
+        let mut command = isolated(bin);
+        command
+            .env("HOME", &self.home)
+            .env("TMPDIR", &self.root)
+            .env(PROC_ROOT_ENV, &self.proc_root)
+            .env(PROFILE_ROOT_ENV, self.profile_root())
+            .env("CLAUDE_CONFIG_DIR", self.claude_config_dir())
+            .env("AMPLIHACK_HOME", self.home.join(".amplihack"));
+        command
+    }
+}
