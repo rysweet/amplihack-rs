@@ -842,6 +842,13 @@ Paths that end before a merge request, such as a closed PR, failing or
 pending checks, a `DIRTY` branch or an unavailable merge message, make no
 repository call at all.
 
+The merge loop also passes `merge_method` to every merge-ready round. Where
+the task text states how the PR is to be merged, or a condition only one
+method can keep, such as a commit that must stay an ancestor of the base, the
+assessment treats it as a stated merge condition: it holds only when the run
+was given that method, and otherwise the round concludes hand-off, naming the
+method the task asks for and the method the run was given.
+
 Every result line carries `merge_method` and `merge_method_reason`, empty
 where the method was never settled. `autodrive-finalize.yaml` passes both on
 in `finalize_merge`, and the `state-outcome` agent step states the method and

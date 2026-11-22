@@ -392,8 +392,13 @@ fixed. Immediately before the merge request, `autodrive_merge` uses the method
 given in the `merge_method` context value where the repository allows it.
 With none given, it takes the first of squash, a merge commit and rebase that
 the repository allows, from one read of `gh api "repos/{owner}/{repo}"`. Only
-the context value is read: a method stated in a task description counts only
-if whoever launches the run passes it as `-c merge_method=...`.
+the context value selects the method: a method stated in a task description
+counts only if whoever launches the run passes it as `-c merge_method=...`.
+The merge-ready assessment is told the run's method, so a task that states
+how the PR is to be merged, or a commit that must stay an ancestor of the
+base, is a condition the assessment can check. Where the run was given a
+different method, or none, the assessment hands the PR off naming both, and
+no merge is requested.
 
 A method the repository does not allow is never used, and no other method
 takes its place. Where the method cannot be settled, the result is `refused`

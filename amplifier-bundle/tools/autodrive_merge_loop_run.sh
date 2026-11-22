@@ -8,7 +8,8 @@
 # The body of the former step-02 command, moved here so the base sync can run
 # the same loop once more. The step's values arrive as RECIPE_VAR_* environment
 # variables (merge_loop_preflight, task_description, plan_task_id, no_merge,
-# autodrive_dry_run, autodrive_budget_*), never by templating into a command.
+# autodrive_dry_run, merge_method, autodrive_budget_*), never by templating
+# into a command.
 # The loop driver, the crusty re-review and the round recipe are taken from
 # beside this tool, never from the PR worktree.
 #
@@ -225,6 +226,7 @@ keep_and_log() {
   --context "pr_url=${PR_URL:-}" \
   --context "no_merge=${RECIPE_VAR_no_merge:-true}" \
   --context "autodrive_dry_run=${RECIPE_VAR_autodrive_dry_run:-false}" \
+  --context "merge_method=${RECIPE_VAR_merge_method:-}" \
   --context "autodrive_base_branch=$(g base_branch)" \
   --context "autodrive_qa_evidence=${DIR}/qa-evidence.json" \
   --context "autodrive_state_dir=${DIR}" \

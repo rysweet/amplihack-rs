@@ -793,6 +793,42 @@ fn merge_loop_run_preserves_recovery_context_for_the_pr_worktree() {
     );
 }
 
+/// #1888: the run's `merge_method` reaches every merge-ready round, from
+/// step-02 and from the one more round after a base sync, so the assessment
+/// can judge a merge method the task states. A run given none passes it
+/// empty.
+#[test]
+fn merge_loop_run_passes_the_run_merge_method_to_every_round() {
+    let Some(fx) = loop_fixture() else { return };
+    fake_loop(&fx, "0", Some("DONE"));
+    let out = loop_cmd(&fx, "step-02", &[("merge_method", "merge")]);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let argv = loop_argv(&fx);
+    assert!(
+        argv.windows(2)
+            .any(|w| w[0] == "--context" && w[1] == "merge_method=merge"),
+        "step-02: {argv:?}"
+    );
+    fake_loop(&fx, "0", Some("DONE"));
+    let out = run_tool(&fx, &["1"], &[("merge_method", "rebase")]);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let argv = loop_argv(&fx);
+    assert!(
+        argv.windows(2)
+            .any(|w| w[0] == "--context" && w[1] == "merge_method=rebase"),
+        "one more round: {argv:?}"
+    );
+    fake_loop(&fx, "0", Some("DONE"));
+    let out = run_tool(&fx, &[], &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let argv = loop_argv(&fx);
+    assert!(
+        argv.windows(2)
+            .any(|w| w[0] == "--context" && w[1] == "merge_method="),
+        "no method given: {argv:?}"
+    );
+}
+
 #[test]
 fn merge_loop_run_keeps_exit_79() {
     let Some(fx) = loop_fixture() else { return };
