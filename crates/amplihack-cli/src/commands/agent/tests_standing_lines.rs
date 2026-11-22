@@ -3,7 +3,7 @@
 //!
 //! The decision and its room gate are in `tests_standing.rs`.
 
-use super::{refused_line, relaunch_line, waiting_line};
+use super::lines::{refused_line, relaunch_line, waiting_line};
 use crate::commands::agent::launch::continue_args;
 use crate::commands::agent::registry::Entry;
 use serde_json::json;

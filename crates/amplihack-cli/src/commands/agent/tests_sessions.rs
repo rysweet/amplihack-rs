@@ -264,19 +264,13 @@ fn transcripts_are_found_under_either_encoding() {
     assert!(!transcript_exists(tmp.path(), launch, ID2));
 }
 
-/// Issue #2912: how much of a conversation is on disk is what the
-/// standing-session wrapper compares across a run, so the size has to come
-/// from whichever encoding holds the transcript, and a missing one has to
-/// be `None` rather than zero.
+/// Issue #2912: the size the standing-session wrapper compares across a run
+/// comes from either encoding, and a missing transcript is `None`, not zero.
 #[test]
 fn the_length_of_a_transcript_is_read_from_either_encoding() {
     let tmp = tempfile::tempdir().unwrap();
     let launch = Path::new("/home/u/src/my.app_x");
-    assert_eq!(
-        transcript_len(tmp.path(), launch, ID),
-        None,
-        "nothing there"
-    );
+    assert_eq!(transcript_len(tmp.path(), launch, ID), None, "none yet");
     let alt = tmp.path().join("projects/-home-u-src-my-app-x");
     fs::create_dir_all(&alt).unwrap();
     let f = alt.join(format!("{ID}.jsonl"));
@@ -287,8 +281,7 @@ fn the_length_of_a_transcript_is_read_from_either_encoding() {
     assert_eq!(transcript_len(tmp.path(), launch, ID2), None);
     assert_eq!(transcript_len(tmp.path(), launch, "not-an-id"), None);
     // A directory in the transcript's place is not a transcript.
-    let dir_id = alt.join(format!("{ID2}.jsonl"));
-    fs::create_dir(&dir_id).unwrap();
+    fs::create_dir(alt.join(format!("{ID2}.jsonl"))).unwrap();
     assert_eq!(transcript_len(tmp.path(), launch, ID2), None, "a directory");
 }
 

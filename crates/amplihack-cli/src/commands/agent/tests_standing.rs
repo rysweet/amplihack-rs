@@ -4,8 +4,10 @@
 //! and the loop itself, with a stand-in session in its pane, is in
 //! `tests/issue_2912_standing_relaunch.rs`.
 
+use super::lines::no_progress_alert;
 use super::relaunch::{Room, wait_for_room_until};
-use super::{AfterExit, Progress, after_exit, no_progress_alert, worth_relaunching};
+use super::{AfterExit, Progress, after_exit, worth_relaunching};
+use crate::commands::agent::report::MAX_LINE;
 use amplihack_utils::rotator_status::swap_record::{
     SWAP_FILE, SwapReading, SwapRecord, rotate_dir,
 };
@@ -188,7 +190,7 @@ fn the_no_progress_alert_names_the_exit_and_the_evidence() {
         Progress::Idle,
     );
     assert!(!hostile.chars().any(char::is_control), "{hostile:?}");
-    assert!(hostile.chars().count() <= super::MAX_LINE, "{hostile:?}");
+    assert!(hostile.chars().count() <= MAX_LINE, "{hostile:?}");
 }
 
 // ── the room rule ───────────────────────────────────────────────────────────

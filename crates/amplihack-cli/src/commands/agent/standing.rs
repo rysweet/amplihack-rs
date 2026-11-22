@@ -38,19 +38,26 @@
 //! same definition of a login with room and nothing else: this one covers
 //! the case where the process has gone.
 
-use super::entry;
-use super::registry::{self, Entry, fmt_ts};
-use super::report::{self, MAX_LINE, MAX_TEXT, sanitize};
-use super::sessions;
-use super::store::AgentsDir;
-use relaunch::Room;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use super::registry::Entry;
 
 /// The room gate of a relaunch: whether a login has room, and the wait for
 /// one. A child of this module because nothing else needs it.
 #[path = "relaunch.rs"]
 mod relaunch;
+
+/// The wrapper-facing half: the session's standing status, the room gate
+/// it reads and the relaunch it decides on. A separate file because every
+/// file in `agent/` is held to 300 lines (D23, enforced by
+/// `tests/issue_1760_agent_source_scan.rs`).
+#[path = "standing_run.rs"]
+mod run;
+
+/// Every line this feature writes to the pane, to the supervisor log and
+/// to the session's record, and the exit text they name.
+#[path = "standing_lines.rs"]
+mod lines;
+
+pub(super) use run::Standing;
 
 /// What the wrapper does once its Claude Code process has returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,268 +210,6 @@ pub(super) struct Relaunch {
     /// every exit is given one. The wrapper carries it into the next
     /// [`Exit::on_trial`], which is what lets the brake judge the chain.
     pub on_trial: bool,
-}
-
-/// Whether this session is standing, and the rotator root its room gate
-/// reads. Settled once, before the first launch.
-pub(super) struct Standing {
-    on: bool,
-    /// `None` when there is no rotator to wait for, or its root could not
-    /// be found (a warning), so a relaunch never waits.
-    root: Option<PathBuf>,
-}
-
-impl Standing {
-    /// `--standing` or `--no-standing` if either was given, else the
-    /// `agent.standing` user key. A key that cannot be read is a warning
-    /// and `false`, so a file nobody can make sense of never starts agents
-    /// unattended.
-    pub(super) fn resolve(flag: Option<bool>, name: &str, home: &Path) -> Self {
-        use super::sessions::root_error;
-        use crate::user_config::{AGENT_STANDING, agent_standing};
-        use amplihack_utils::rotator_status::locate_root;
-        let on = flag.unwrap_or_else(|| match agent_standing(home) {
-            Ok(on) => on,
-            Err(why) => {
-                eprintln!(
-                    "warning: {AGENT_STANDING} could not be read ({why}); \
-                     agent {name} is not standing"
-                );
-                false
-            }
-        });
-        // A root that cannot be found means no wait for room. That changes
-        // what a standing session does, so it is said, with the cause.
-        let root = match locate_root(|k| std::env::var_os(k), Some(home)) {
-            Ok((root, _)) => Some(root),
-            Err(why) => {
-                if on {
-                    eprintln!(
-                        "warning: the profile root could not be found ({}); \
-                         standing agent {name} will be started again without \
-                         waiting for a login with room",
-                        root_error(&why)
-                    );
-                }
-                None
-            }
-        };
-        Self { on, root }
-    }
-
-    /// How many bytes of its own conversation this session has on disk: the
-    /// transcript of the conversation its record names, in whichever
-    /// configuration directory holds it. `Some(0)` when the record names a
-    /// conversation that has no transcript yet, which is what a
-    /// conversation with no turn written to it looks like.
-    ///
-    /// `None` is the absence of a measurement rather than a measurement of
-    /// nothing: the session is not standing, its record names no
-    /// conversation, or the configuration directories cannot be listed.
-    /// [`Progress::of`] keeps that apart from `Some(0)` and
-    /// [`no_progress_alert`] says which of the two a refusal saw, because
-    /// "the conversation did not grow" and "there is no conversation of
-    /// this session's to look at" are different facts about a run. Neither
-    /// is evidence that the run did something, so neither relaunches a run
-    /// that is already on trial.
-    ///
-    /// The wrapper takes this before every launch and again after the exit.
-    /// Growth across a run is the [`Progress::Advanced`] of
-    /// [`worth_relaunching`]: the evidence that the run did something a
-    /// relaunch could continue. It is a measurement of work and not a count
-    /// of attempts, so it never caps a session that is running: a session
-    /// that is working grows it every turn.
-    ///
-    /// It is read from the conversation the session's own record names, not
-    /// from the launch directory as a whole, so a second session running in
-    /// the same directory can neither pass this session off as working nor
-    /// keep its relaunch loop alive.
-    pub(super) fn conversation_bytes(
-        &self,
-        dir: &AgentsDir,
-        home: &Path,
-        launch_dir: &Path,
-        name: &str,
-    ) -> Option<u64> {
-        if !self.on {
-            return None;
-        }
-        let id = entry::conversation(dir, name)?;
-        let dirs = sessions::config_dirs_from(home, |k| std::env::var_os(k)).ok()?;
-        Some(
-            dirs.iter()
-                .filter_map(|d| sessions::transcript_len(d, launch_dir, &id))
-                .max()
-                .unwrap_or(0),
-        )
-    }
-
-    /// The next launch of a standing session, or `None` to stop.
-    ///
-    /// A [`Relaunch`] means start Claude Code again under its launch id,
-    /// with the arguments rebuilt from its entry. Every relaunch, wait and
-    /// refusal is logged; an owner-ended exit, a signalled wrapper and a
-    /// session that is not standing are not, since each of those is a stop
-    /// someone chose. A `no-progress` refusal is left on the session's
-    /// record as well, because it stops a session its owner still wants
-    /// running. `stopped` is the wrapper's flag for SIGHUP and SIGTERM,
-    /// read again during and after a wait for room.
-    pub(super) fn next(
-        &self,
-        dir: &AgentsDir,
-        name: &str,
-        exit: &Exit<'_>,
-        stopped: &AtomicBool,
-    ) -> Option<Relaunch> {
-        let marker = entry::owner_ended(
-            dir,
-            name,
-            exit.launch_id,
-            exit.first_conversation,
-            exit.since,
-        );
-        match after_exit(self.on, exit.result.is_ok(), exit.signalled, marker) {
-            AfterExit::OwnerEnded | AfterExit::GoingAway => return None,
-            AfterExit::Relaunch => {}
-        }
-        let reason = exit_reason(exit.result);
-        // Before the brake, because an exit with no room is the usage limit
-        // this feature exists for: the wait is what makes the next launch
-        // different from the one that failed.
-        let waited = match self.root.as_deref() {
-            Some(root) => relaunch::wait_for_room_until(root, stopped, || {
-                loudly(dir, &waiting_line(registry::now(), name));
-            }),
-            None => Room::Now,
-        };
-        if waited == Room::Gone || stopped.load(Ordering::SeqCst) {
-            loudly(dir, &refused_line(registry::now(), name, "gone"));
-            return None;
-        }
-        let room = waited == Room::Waited;
-        if !worth_relaunching(exit.on_trial, exit.progress, room) {
-            loudly(dir, &refused_line(registry::now(), name, "no-progress"));
-            entry::note_refusal(
-                dir,
-                name,
-                exit.launch_id,
-                &no_progress_alert(&reason, exit.progress),
-            );
-            return None;
-        }
-        // One pane per session: the relaunch happens only while the entry
-        // is still this launch's. If the supervisor rebuilt the session in
-        // another window while this wrapper waited for room, the launch id
-        // has moved on and the relaunch is refused rather than making a
-        // second Claude Code run against one conversation.
-        let Some((launch_id, entry)) = entry::reactivate(dir, name, exit.launch_id) else {
-            loudly(dir, &refused_line(registry::now(), name, "superseded"));
-            return None;
-        };
-        loudly(dir, &relaunch_line(registry::now(), name, &reason, room));
-        Some(Relaunch {
-            launch_id,
-            entry,
-            // Nothing is behind this relaunch but the rule that every exit
-            // is given one, so it is the trial: should the run it starts
-            // come back with nothing to show as well, the brake stops the
-            // chain rather than giving it another start.
-            on_trial: exit.progress != Progress::Advanced && !room,
-        })
-    }
-}
-
-/// Writes one standing-session line to the pane and to the supervisor log.
-/// Loud by design: a session that was started again, or that was not, is
-/// something an operator must be able to find afterwards. A log that cannot
-/// be written is not allowed to stop the relaunch, so it is a debug line.
-fn loudly(dir: &AgentsDir, line: &str) {
-    eprintln!("{line}");
-    if let Err(e) = report::append(&dir.log(), line) {
-        tracing::debug!("agent: could not log a standing-session line: {e}");
-    }
-}
-
-/// The reason text of a relaunch line: `exit-status-<n>`, or the name of
-/// the signal that killed Claude Code, which the launch path reports as
-/// `128 + N`. An error that is not an exit status is a launch that never
-/// reached a child.
-fn exit_reason(result: &anyhow::Result<()>) -> String {
-    let Err(e) = result else {
-        return "exit-status-0".to_string();
-    };
-    let Some(code) = crate::command_error::exit_code(e) else {
-        return "launch-failed".to_string();
-    };
-    match code {
-        129..=255 => amplihack_utils::launch_target::signal_name(code - 128).to_string(),
-        _ => format!("exit-status-{code}"),
-    }
-}
-
-/// `<ts> standing session relaunch session=<name> reason=<reason>
-/// waited=<room|none>`, written to the pane and to the supervisor log
-/// before a standing session is started again. `reason` is the exit:
-/// `exit-status-<n>` or a signal name. Documented in
-/// docs/howto/keep-sessions-running.md.
-pub fn relaunch_line(now: i64, name: &str, reason: &str, waited: bool) -> String {
-    let waited = if waited { "room" } else { "none" };
-    line(now, "relaunch", name, reason, Some(waited))
-}
-
-/// `<ts> standing session refused session=<name> reason=<reason>`: the
-/// wrapper of a standing session did not start it again. `reason` is
-/// `no-progress`, `gone` or `superseded`.
-pub fn refused_line(now: i64, name: &str, reason: &str) -> String {
-    line(now, "refused", name, reason, None)
-}
-
-/// The text left in the session's registry record by a `no-progress`
-/// refusal: the one refusal that leaves a session stopped while its owner
-/// still wants it running.
-///
-/// It names the exit, that the exit was of a relaunch given on nothing but
-/// the rule that every exit is given one, and what was measured of the
-/// conversation: that it did not grow, or that there was none of this
-/// session's to measure. So an operator reading `amplihack agent status`
-/// has the cause without the log, and the supervisor's pass has it on the
-/// entry it recovers.
-pub fn no_progress_alert(reason: &str, progress: Progress) -> String {
-    let reason = sanitize(reason, MAX_TEXT);
-    let measured = match progress {
-        Progress::Unmeasured => "with no conversation of its own on record",
-        Progress::Advanced | Progress::Idle => "without advancing its conversation",
-    };
-    let whole = format!(
-        "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited {reason} {measured} while a login had room, so another \
-         relaunch would repeat it"
-    );
-    sanitize(&whole, MAX_LINE)
-}
-
-/// `<ts> standing session waiting session=<name> reason=no-room`: no login
-/// had room when the session's process exited, so the relaunch is held
-/// until one appears. Written once per wait, after the watch on the swap
-/// record is armed, so an operator looking at a quiet pane can tell a
-/// session waiting for capacity from one that has stopped.
-pub fn waiting_line(now: i64, name: &str) -> String {
-    line(now, "waiting", name, "no-room", None)
-}
-
-/// Every standing-session line. The name and the reason are cut to
-/// [`MAX_TEXT`] characters and the whole line is sanitised: it reaches a
-/// live terminal as well as the log, so no control character of either may
-/// survive to forge a line or an escape sequence.
-fn line(now: i64, verb: &str, name: &str, reason: &str, waited: Option<&str>) -> String {
-    let name = sanitize(name, MAX_TEXT);
-    let reason = sanitize(reason, MAX_TEXT);
-    let tail = waited.map(|w| format!(" waited={w}")).unwrap_or_default();
-    let whole = format!(
-        "{} standing session {verb} session={name} reason={reason}{tail}",
-        fmt_ts(now)
-    );
-    sanitize(&whole, MAX_LINE)
 }
 
 #[cfg(test)]

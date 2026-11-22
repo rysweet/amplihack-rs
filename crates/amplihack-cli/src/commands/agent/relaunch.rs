@@ -125,7 +125,7 @@ pub fn wait_for_room_until(root: &Path, stopped: &AtomicBool, on_wait: impl FnOn
 ///
 /// [`SwapRecord::has_room`]: amplihack_utils::rotator_status::swap_record::SwapRecord::has_room
 fn room_now(root: &Path) -> bool {
-    read_swap(root, super::registry::now()).is_none_or(|r| r.has_room())
+    read_swap(root, crate::commands::agent::registry::now()).is_none_or(|r| r.has_room())
 }
 
 /// A real directory of this user that no one else may write to; the same
