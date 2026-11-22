@@ -325,25 +325,52 @@ common_git_dir() {
     (cd -- "$common" 2>/dev/null && pwd -P) || return 1
 }
 
-# exclude_worktrees_dir <repo> — add `/worktrees/` to the repository's
-# info/exclude (shared by all its worktrees; no tracked file changes). Task
-# worktrees under <repo>/worktrees/ are kept rather than deleted (#1494, #1560),
-# and untracked they would fail every clean-status gate on the main checkout
-# and invite `git add -A` to stage them. Idempotent; best-effort.
+# exclude_worktrees_dir <repo> — add `/worktrees/` and amplihack's runtime
+# paths to the repository's info/exclude (shared by all its worktrees; no
+# tracked file changes). Task worktrees under <repo>/worktrees/ are kept rather
+# than deleted (#1494, #1560), and untracked they would fail every clean-status
+# gate on the main checkout and invite `git add -A` to stage them. The runtime
+# paths (#2335) are written here, at step-04 worktree setup, so every worktree
+# created or adopted afterwards is covered before the indexer or an agent's
+# `git add -A` sees its files. Idempotent; best-effort; never writes through a
+# symlinked info/ or info/exclude.
+#
+# The runtime list is a copy of AMPLIHACK_RUNTIME_EXCLUDE_PATTERNS in
+# workflow_runtime_artifacts.sh, which is canonical; this file does not source
+# that helper. test-issue-2335-runtime-paths-excluded.sh checks the two match.
 exclude_worktrees_dir() {
-    local repo="$1" common exclude
+    local repo="$1" common exclude info missing="" p
+    local -a lines=(
+        '/worktrees/'
+        '/.amplihack/graph_db'
+        '/.amplihack/indexing*'
+        '/.amplihack/indexes/'
+        '/.amplihack/index.scip*'
+        '/.amplihack/blarify.json'
+        '/.amplihack/step*'
+        '/.claude/runtime/'
+    )
     common="$(common_git_dir "$repo")" || return 0
-    exclude="${common}/info/exclude"
-    if [ -f "$exclude" ] && grep -qxF '/worktrees/' "$exclude" 2>/dev/null; then
+    info="${common}/info"
+    exclude="${info}/exclude"
+    if [ -L "$info" ] || [ -L "$exclude" ]; then
+        log_warn "Not writing exclusions through a symlink: ${exclude}."
         return 0
     fi
-    mkdir -p "${common}/info" 2>/dev/null || { log_warn "Could not create ${common}/info."; return 0; }
+    for p in "${lines[@]}"; do
+        if [ -f "$exclude" ] && grep -qxF -- "$p" "$exclude" 2>/dev/null; then
+            continue
+        fi
+        missing="${missing}${p}"$'\n'
+    done
+    [ -n "$missing" ] || return 0
+    mkdir -p "$info" 2>/dev/null || { log_warn "Could not create ${info}."; return 0; }
     # End an unterminated last line first, or the user's last rule and ours merge.
     if [ -s "$exclude" ] && [ -n "$(tail -c1 "$exclude" 2>/dev/null)" ]; then
-        printf '\n' >> "$exclude" 2>/dev/null || true
+        missing=$'\n'"$missing"
     fi
-    printf '/worktrees/\n' >> "$exclude" 2>/dev/null \
-        || log_warn "Could not add /worktrees/ to ${exclude}."
+    { printf '%s' "$missing" >> "$exclude"; } 2>/dev/null \
+        || log_warn "Could not add exclusions to ${exclude}."
     return 0
 }
 

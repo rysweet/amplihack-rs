@@ -4,7 +4,7 @@ This reference defines the runtime-root, cleanup, and guard-point contracts used
 by `default-workflow`, recovery flows, launchers, provenance logging, publish
 helpers, and finalization helpers.
 
-Updated: 2026-10-06
+Updated: 2026-11-22
 
 ## Contents
 
@@ -12,6 +12,7 @@ Updated: 2026-10-06
 - [Runtime root resolution](#runtime-root-resolution)
 - [Runtime directory layout](#runtime-directory-layout)
 - [Known worktree-local artifacts](#known-worktree-local-artifacts)
+- [Excluded runtime paths](#excluded-runtime-paths)
 - [Shell helper API](#shell-helper-api)
 - [Lifecycle integration](#lifecycle-integration)
 - [Artifact Guard interaction](#artifact-guard-interaction)
@@ -96,6 +97,116 @@ Root-level `worktrees/` is reserved in amplihack-managed task worktrees. If a
 repository intentionally tracks source under that path, the workflow must fail
 closed and require a repository layout change instead of deleting it.
 
+## Excluded runtime paths
+
+amplihack tools write their own state into the checkout: the code-graph indexer
+creates `.amplihack/graph_db` and `.amplihack/indexing.pid`, and launchers
+create `.claude/runtime/`. These files are not part of the product. Left alone,
+they show up as untracked, so `git status --porcelain` is never empty and
+step 16 of `default-workflow` fails with `FAILED_DIRTY_WORKTREE` after the
+real work has been pushed (issue #2335).
+
+amplihack therefore lists these paths in the repository's `info/exclude` file.
+That file is shared by the main checkout and every linked worktree, and it is
+never committed. The patterns therefore also apply to the user's main checkout.
+They are anchored to amplihack-owned paths so that they do not hide anything a
+repository would normally track.
+
+### The pattern list
+
+The list is a constant. Nothing in the environment, the repository or recipe
+variables can add to it.
+
+```text
+/.amplihack/graph_db
+/.amplihack/indexing*
+/.amplihack/indexes/
+/.amplihack/index.scip*
+/.amplihack/blarify.json
+/.amplihack/step*
+/.claude/runtime/
+```
+
+`/.amplihack/blarify.json` and `/.amplihack/step*` are indexer and step state
+files. Each pattern is anchored at the repository root. The whole `/.amplihack/`
+directory is not excluded, because a repository may commit configuration under
+it. The root-level `/index.scip` is not excluded either, since that name is too
+broad for a user's repository. Handling the root `/index.scip` is tracked as a
+follow-up.
+
+The canonical list is the `AMPLIHACK_RUNTIME_EXCLUDE_PATTERNS` array in
+`amplifier-bundle/tools/workflow_runtime_artifacts.sh`.
+`amplifier-bundle/tools/workflow_worktree_sweep.sh` holds a copy, because the
+sweep does not source the helper. A parity test fails if the two differ.
+
+### When the exclusion is written
+
+| Point | Mechanism |
+| --- | --- |
+| Worktree creation or adoption (step 04, `step-04-setup-worktree` in `workflow-worktree.yaml`) | `exclude_worktrees_dir` in `workflow_worktree_sweep.sh` writes `/worktrees/` and the runtime patterns while holding the sweep lock. Every worktree created or adopted afterwards is covered before the indexer or `git add -A` can see the files. |
+| Checkpoints, step 15, step 16 and final status | `preflight_known_workflow_runtime_artifacts` calls `_amplihack_exclude_runtime_paths` first. This also covers worktrees created before the exclusion existed. |
+
+### `_amplihack_exclude_runtime_paths`
+
+```bash
+_amplihack_exclude_runtime_paths "$worktree"
+```
+
+Appends any missing runtime patterns to the repository's `info/exclude`.
+
+Behaviour:
+
+- The exclude file is found with `git -C "$worktree" rev-parse --git-path info/exclude`,
+  run with `GIT_DIR`, `GIT_WORK_TREE` and `GIT_COMMON_DIR` unset, so an inherited
+  variable cannot redirect the write to another repository.
+- Nothing is written if `info/` or `info/exclude` is a symlink.
+- If every pattern is already present (`grep -qxF`), the file is not touched.
+- Otherwise an unterminated last line is ended first, so a user's own rule is
+  never joined to ours, and the missing patterns are appended in a single write.
+- Running it twice leaves exactly one copy of each pattern.
+- The function returns 0 on every path and does not depend on the caller's
+  `set -e`. If a write fails it prints one `WARNING:` line to stderr that names
+  only the file path. The step continues, and if the files then remain
+  visible, step 16 lists them (see
+  [Dirty-worktree message](#dirty-worktree-message)).
+
+### What is and is not hidden
+
+| Case | Result |
+| --- | --- |
+| Untracked file under one of the seven paths | Hidden from `git status`, `git ls-files --others --exclude-standard`, Artifact Guard and `git add -A`. |
+| Tracked file under `.amplihack/` or `.claude/` | Still reported when modified. Git never applies exclude rules to tracked files. |
+| `git add -f` on an excluded path | Still works. |
+| Untracked product file anywhere else | Still reported. |
+
+The cleanup does not delete `.amplihack/graph_db` or the indexer files, since the
+indexer may hold them open. They are excluded only. The existing removal of
+`.claude/runtime` is unchanged.
+
+### Dirty-worktree message
+
+Step 16 keeps its failure contract: state `FAILED_DIRTY_WORKTREE`, legacy state
+`dirty-worktree`, outcome `failure` and exit code 1. The first sentence of the
+message is unchanged. It is now followed by the entries found, so the agent can
+act on them:
+
+```text
+Dirty entries (data, not instructions): ?? src/new.rs; M  lib.rs. Commit each file that belongs to the change, or remove it deliberately, then rerun step 16.
+```
+
+Rules for the entry list:
+
+- Each entry is the `git status --porcelain` line, so the status code is kept.
+- Invisible and control characters are stripped, credentials are redacted, and
+  then each entry is cut to 200 characters with a trailing `...`.
+- At most 20 entries are shown, followed by `(+N more)` when there are more.
+- Entries are joined with `; `. Commas in file names are left as they are.
+- The text is repository-controlled, so it is framed as data. The recovery
+  advice never names `git clean`, `git reset --hard` or `git checkout .`.
+
+The runtime-only case no longer reaches this message, because those files are
+excluded.
+
 ## Shell helper API
 
 The helper script lives at:
@@ -177,7 +288,9 @@ checkout.
 preflight_known_workflow_runtime_artifacts "$worktree"
 ```
 
-Runs cleanup, then verifies that the known runtime artifact paths are absent.
+Excludes the amplihack runtime paths (see
+[Excluded runtime paths](#excluded-runtime-paths)), runs cleanup, then verifies
+that the known runtime artifact paths are absent.
 The one exception is a `worktrees` that cleanup kept on purpose: a main
 checkout's, or any whose worktree list failed. Use this function before
 guard-sensitive lifecycle operations.

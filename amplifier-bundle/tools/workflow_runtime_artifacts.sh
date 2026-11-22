@@ -52,6 +52,64 @@ _amplihack_exclude_worktrees_dir() {
   return 0
 }
 
+# amplihack's own runtime paths (#2335). The code-graph indexer, step state
+# and hook runtime write these into a run's worktree; untracked, they made
+# step 16 fail with FAILED_DIRTY_WORKTREE and invited `git add -A` to stage
+# them. This is the canonical list: workflow_worktree_sweep.sh carries a copy
+# in exclude_worktrees_dir, and a parity test keeps the two equal. Set by plain
+# assignment so nothing in the environment can extend it; any addition is a
+# security-relevant change, because each pattern hides untracked files from
+# `git status` and Artifact Guard. Tracked files are never hidden by git.
+AMPLIHACK_RUNTIME_EXCLUDE_PATTERNS=(
+  '/.amplihack/graph_db'
+  '/.amplihack/indexing*'
+  '/.amplihack/indexes/'
+  '/.amplihack/index.scip*'
+  '/.amplihack/blarify.json'
+  '/.amplihack/step*'
+  '/.claude/runtime/'
+)
+
+# _amplihack_exclude_runtime_paths <repo>
+# Append every missing runtime pattern to the repository's info/exclude, which
+# all its worktrees share. Idempotent. Never fails its caller: a write failure
+# prints one WARNING naming the file, and step 16 then lists the files it
+# found. GIT_DIR, GIT_WORK_TREE and GIT_COMMON_DIR are cleared because they
+# take precedence over -C and would redirect the write to another repository.
+# A symlinked info/ or info/exclude is refused rather than written through.
+_amplihack_exclude_runtime_paths() {
+  local repo="${1:-.}" exclude info missing="" p
+  exclude="$(env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+    git -C "$repo" rev-parse --git-path info/exclude 2>/dev/null)" || return 0
+  [ -n "$exclude" ] || return 0
+  case "$exclude" in /*) ;; *) exclude="$repo/$exclude" ;; esac
+  info="$(dirname -- "$exclude")"
+  if [ -L "$info" ] || [ -L "$exclude" ]; then
+    echo "WARNING: not writing amplihack runtime exclusions through a symlink: $exclude" >&2
+    return 0
+  fi
+  for p in "${AMPLIHACK_RUNTIME_EXCLUDE_PATTERNS[@]}"; do
+    if [ -f "$exclude" ] && grep -qxF -- "$p" "$exclude" 2>/dev/null; then
+      continue
+    fi
+    missing="${missing}${p}"$'\n'
+  done
+  [ -n "$missing" ] || return 0
+  if ! mkdir -p -- "$info" 2>/dev/null; then
+    echo "WARNING: could not add amplihack runtime exclusions to $exclude" >&2
+    return 0
+  fi
+  # End an unterminated last line first, or the user's last rule and ours merge.
+  if [ -s "$exclude" ] && [ -n "$(tail -c1 "$exclude" 2>/dev/null)" ]; then
+    missing=$'\n'"$missing"
+  fi
+  # One append, so concurrent preflights cannot interleave partial lines.
+  if ! { printf '%s' "$missing" >> "$exclude"; } 2>/dev/null; then
+    echo "WARNING: could not add amplihack runtime exclusions to $exclude" >&2
+  fi
+  return 0
+}
+
 cleanup_known_workflow_runtime_artifacts() {
   local repo="${1:-.}"
   if ! is_git_worktree "$repo"; then
@@ -102,6 +160,8 @@ cleanup_known_workflow_runtime_artifacts() {
 }
 
 preflight_known_workflow_runtime_artifacts() {
+  # #2335: exclude amplihack's runtime paths before any clean-status check.
+  _amplihack_exclude_runtime_paths "${1:-.}"
   cleanup_known_workflow_runtime_artifacts "$@"
 }
 

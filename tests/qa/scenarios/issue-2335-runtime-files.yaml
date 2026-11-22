@@ -1,0 +1,21 @@
+name: amplihack runtime files never make a run's worktree dirty
+description: Reproduce communication #851. A worktree whose only untracked files are the indexer's .amplihack/graph_db and .amplihack/indexing.pid reaches the PR stage of step 16, and an uncommitted product file still fails step 16 with the file named.
+version: "1.0.0"
+config:
+  timeout: 120000
+  retries: 0
+environment:
+  requires: [git, jq]
+agents:
+  - name: cli-agent
+    type: cli
+steps:
+  - name: Runtime-only worktree reaches gh; a product file is named
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/issue-2335-runtime-files.sh
+    timeout: 120000
+assertions: []
+metadata:
+  tags: [cli, workflow, regression, issue-2335]
+  priority: high
