@@ -5,8 +5,9 @@
 //! builds, against a stand-in `claude` that records its own argv. Every path
 //! is under one temporary home and every variable is set on the child only.
 //!
-//! There is no version probe and no gate: an instance whose Claude cannot take
-//! the flag clears the cell's effort in its own override file, which R9 pins.
+//! A Claude Code whose `--help` does not list `--effort` gets the step without
+//! it and a line saying so; nothing ends the launch. An instance can also
+//! clear the cell's effort in its own override file, which R9 pins.
 
 #![cfg(target_os = "linux")]
 
@@ -83,7 +84,7 @@ fn the_launch_adds_nothing_else_but_the_model_and_the_effort() {
 }
 
 /// R9: an override cell that names a model and no effort clears the shipped
-/// effort. This is the documented fix for a Claude too old for `--effort`.
+/// effort, so the flag is never written.
 #[test]
 fn an_override_cell_with_no_effort_launches_without_the_flag() {
     let f = Fixture::new();
@@ -311,4 +312,34 @@ fn a_codex_launch_is_unchanged_and_carries_no_claude_flag() {
     let launch = f.run("codex", &["exec", "--model", "strong", "-"]);
     assert_eq!(launch.effort(), Some("high"), "argv: {:?}", launch.argv);
     assert_eq!(count_effort_flags(&launch), 0, "argv: {:?}", launch.argv);
+}
+
+/// An installed Claude Code too old to know `--effort`: the step reports it
+/// and runs without the flag rather than failing on Claude's unknown option.
+#[test]
+fn a_claude_too_old_for_effort_runs_the_step_without_it_and_says_so() {
+    let f = Fixture::new();
+    // The stand-in's `--help` lists no `--effort`, and like an old Claude Code
+    // it refuses the option outright if it is passed anyway.
+    let old = crate::support::tier_harness::FAKE_HARNESS
+        .replace("--effort <level>", "--model <model>")
+        .replace(
+            ": > \"$ARGV_LOG\"",
+            "for a in \"$@\"; do [ \"$a\" = --effort ] && { echo \"error: unknown option '--effort'\" >&2; exit 1; }; done\n: > \"$ARGV_LOG\"",
+        );
+    crate::support::exec_stub::write_executable(&f.tools.join("claude"), old, 0o755);
+    let launch = f.run("claude", &["--model", "strong", "-p"]);
+    assert!(
+        launch.output.status.success(),
+        "stderr:\n{}",
+        launch.stderr()
+    );
+    assert_eq!(count_effort_flags(&launch), 0, "argv: {:?}", launch.argv);
+    assert_eq!(launch.model(), Some(STRONG), "argv: {:?}", launch.argv);
+    let stderr = launch.stderr();
+    assert!(
+        stderr.contains("does not list `--effort`")
+            && stderr.contains("runs without `--effort xhigh`"),
+        "the step says it ran without the effort:\n{stderr}"
+    );
 }

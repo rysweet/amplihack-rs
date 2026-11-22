@@ -34,6 +34,14 @@ pub(crate) enum Notice {
     /// The command line already set the reasoning effort, so the tier gave
     /// this launch its model only.
     EffortCallerChose { harness: String, tier: Tier },
+    /// The installed Claude Code does not list `--effort` in its `--help`,
+    /// so the tier's effort was taken back off the command line and the step
+    /// runs without it (issue #2916).
+    EffortUnsupported {
+        harness: String,
+        tier: Tier,
+        effort: Effort,
+    },
     /// The harness has no column at all, so the tier has nothing to resolve
     /// to and the harness's own default model runs.
     NoColumn {
@@ -186,6 +194,17 @@ impl Notice {
                     tier.as_str()
                 )
             }
+            Notice::EffortUnsupported {
+                harness,
+                tier,
+                effort,
+            } => format!(
+                "amplihack: model tier `{}` on `{harness}`: the installed `{harness}` does not \
+                 list `--effort` in its `--help`, so the step runs without `--effort {}`. \
+                 Upgrade Claude Code to give the step its tier's reasoning effort. {ADVICE}",
+                tier.as_str(),
+                effort.as_str()
+            ),
             Notice::NoColumn {
                 harness,
                 column,

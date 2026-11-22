@@ -21,14 +21,14 @@
 //! `--profile` and skips the token after it, which is the shape the recipe
 //! runner builds. See `argv_scan::caller_set_flag`.
 //!
-//! There is no version probe and no gate. `commands/agent/launch.rs` already
-//! appends `--effort` to a Claude command line with no version check on that
-//! path, so this adds no new class of failure; if an installed Claude is old
-//! enough not to know the option, the refusal is Claude's own, in Claude's
-//! own output, and an instance clears the cell's `effort` in its own
-//! `~/.amplihack/model-tiers.toml`.
+//! An installed Claude Code too old to know the option would refuse the whole
+//! launch, and the issue asks that the step then run without it. Once the
+//! binary is resolved, the launch reads that binary's `--help` once and, when
+//! the text does not list `--effort`, [`withdraw`] takes the pair back off and
+//! a line says so. That is a fall-back, never a gate: a help text that could
+//! not be read leaves the flag in place, and nothing here ends a launch.
 //!
-//! Pure: it reads only the argv tail, like `codex_effort`.
+//! Pure: it reads only the argv tail and the help text it is handed.
 
 use super::argv_scan::{Injection, caller_set_flag};
 use super::table::Effort;
@@ -56,4 +56,27 @@ pub(crate) fn inject(args: &[String], effort: Effort) -> Injection {
     let mut out = vec![FLAG.to_string(), effort.as_str().to_string()];
     out.extend_from_slice(args);
     Injection::Added(out)
+}
+
+/// Whether a Claude Code `--help` text lists the option.
+pub(crate) fn help_lists_flag(help: &str) -> bool {
+    help.split_whitespace()
+        .map(|word| word.trim_end_matches(','))
+        .any(|word| word == FLAG || word.starts_with("--effort="))
+}
+
+/// Take the `--effort <level>` pair [`inject`] added back off `args`.
+///
+/// Called only for a launch where amplihack added the pair, which it does
+/// only when the command line carried none, so the first `--effort` is
+/// amplihack's own.
+pub(crate) fn withdraw(args: Vec<String>) -> Vec<String> {
+    let Some(at) = args.iter().position(|a| a == FLAG) else {
+        return args;
+    };
+    args.into_iter()
+        .enumerate()
+        .filter(|(i, _)| *i != at && *i != at + 1)
+        .map(|(_, a)| a)
+        .collect()
 }

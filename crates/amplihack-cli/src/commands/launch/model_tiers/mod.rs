@@ -73,31 +73,92 @@ const RUN_ID_ENV: &str = "AMPLIHACK_RUN_ID";
 /// `is_claude_compatible_tool` excludes, so deriving it twice put a `--model`
 /// the gateway rejects on every tiered Copilot step.
 ///
+/// The returned [`TierLaunch`] is finished with [`TierLaunch::finish`] once
+/// the binary is resolved: only then can a Claude effort be checked against
+/// the Claude Code that will run, and the record and the applied line say
+/// what reached it.
+///
 /// A tail with no tier and no forced model comes back byte-identical.
 pub(crate) fn resolve_passthrough(
     tool: &str,
     extra_args: &[String],
     gateway_target: bool,
-) -> Vec<String> {
-    let mut resolved = resolve_for_launch(tool, extra_args, gateway_target);
+) -> (Vec<String>, TierLaunch) {
+    let resolved = resolve_for_launch(tool, extra_args, gateway_target);
     let (argv, effort) = reasoning_effort(tool, resolved.argv, resolved.effort);
     for notice in &resolved.notices {
         eprintln!("{}", notice.render());
     }
-    // The record is written after the injection, so `effective_effort` says
-    // what actually reached the harness rather than what the tier asked for.
-    if let Some(record) = resolved.record.as_mut() {
-        record.effective_effort = match effort {
-            EffortOutcome::Added(effort) => Some(effort),
-            EffortOutcome::NotApplicable => record.effective_effort,
-            EffortOutcome::CallerChose => None,
-        };
-        if let Some(notice) = applied_notice(tool, record, effort) {
-            eprintln!("{}", notice.render());
-        }
-        record::append(run_dir().as_deref(), record);
+    let pending = TierLaunch {
+        tool: tool.to_string(),
+        claude_effort: matches!(effort, EffortOutcome::Added(_))
+            && table::column_for(tool) != "codex",
+        record: resolved.record,
+        effort,
+    };
+    (argv, pending)
+}
+
+/// A tier decision waiting for the launch's binary.
+#[must_use = "finish it once the binary is resolved, or the record and the applied line are lost"]
+pub(crate) struct TierLaunch {
+    tool: String,
+    /// Whether amplihack itself put `--effort` on a Claude command line.
+    claude_effort: bool,
+    record: Option<record::Record>,
+    effort: EffortOutcome,
+}
+
+impl TierLaunch {
+    /// Check a Claude effort against `binary`, then print the applied line
+    /// and write the record.
+    ///
+    /// When amplihack added `--effort` and the binary's `--help` does not
+    /// list it, the pair is taken back off `argv` and a line says so: the
+    /// step runs without the effort rather than failing on an option Claude
+    /// Code does not know (issue #2916). A help text that could not be read
+    /// leaves the flag in place.
+    pub(crate) fn finish(self, argv: Vec<String>, binary: &Path) -> Vec<String> {
+        let probe = |binary: &Path| super::contract_file::probe_claude_help(binary);
+        self.finish_with(argv, binary, probe)
     }
-    argv
+
+    fn finish_with(
+        mut self,
+        mut argv: Vec<String>,
+        binary: &Path,
+        probe: impl FnOnce(&Path) -> Option<String>,
+    ) -> Vec<String> {
+        if let (true, EffortOutcome::Added(effort)) = (self.claude_effort, self.effort)
+            && probe(binary).is_some_and(|help| !claude_effort::help_lists_flag(&help))
+        {
+            argv = claude_effort::withdraw(argv);
+            self.effort = EffortOutcome::Withdrawn;
+            if let Some(tier) = self.record.as_ref().and_then(|r| r.tier) {
+                let notice = Notice::EffortUnsupported {
+                    harness: self.tool.clone(),
+                    tier,
+                    effort,
+                };
+                eprintln!("{}", notice.render());
+            }
+        }
+        // The record is written after the check, so `effective_effort` says
+        // what actually reached the harness rather than what the tier asked
+        // for.
+        if let Some(record) = self.record.as_mut() {
+            record.effective_effort = match self.effort {
+                EffortOutcome::Added(effort) => Some(effort),
+                EffortOutcome::NotApplicable => record.effective_effort,
+                EffortOutcome::CallerChose | EffortOutcome::Withdrawn => None,
+            };
+            if let Some(notice) = applied_notice(&self.tool, record, self.effort) {
+                eprintln!("{}", notice.render());
+            }
+            record::append(run_dir().as_deref(), record);
+        }
+        argv
+    }
 }
 
 /// What became of the tier's reasoning effort on this launch.
@@ -109,6 +170,9 @@ enum EffortOutcome {
     Added(table::Effort),
     /// The command line already set one, which amplihack never overrides.
     CallerChose,
+    /// It was added for Claude Code, and the installed Claude Code does not
+    /// list `--effort`, so it was taken back off (issue #2916).
+    Withdrawn,
 }
 
 /// The one line a tiered launch prints, or `None` when the tier gave this

@@ -183,11 +183,10 @@ is prompt text for Claude and does not count. On Codex it means the
 `model_reasoning_effort` key. Copilot CLI has no such argument, so an effort
 written in its column is recorded as requested rather than effective.
 
-amplihack does not ask the installed Claude Code whether it knows `--effort`,
-and there is no version check, probe or second launch for it. The flag is
-written at the same point as the tier's `--model`. See
-[a Claude Code that does not know `--effort`](#a-claude-code-that-does-not-know---effort)
-for the one case where that matters and its one-line fix.
+When amplihack adds `--effort` to a Claude-compatible launch, it reads the
+installed binary's `--help` once and keeps the flag only if the text lists it.
+See
+[a Claude Code that does not know `--effort`](#a-claude-code-that-does-not-know---effort).
 
 Accepted effort values differ by harness, weakest first:
 
@@ -271,16 +270,19 @@ rather than a tier word) gets no tier, no effort and no record line, as before:
 
 ### A Claude Code that does not know `--effort`
 
-A Claude Code old enough not to accept `--effort` as an option refuses the
-launch with its own message. amplihack makes no attempt to detect that case
-beforehand: a version check would be a second floor for a binary that already
-has one (amplihack refuses Claude launches below 2.1.319 where it supplies the
-prompt-file contract), and reading the installed Claude's help text would cost a
-subprocess on every agent step. The same applies to a Claude-compatible tool
-launched with that contract opted out.
+A Claude Code old enough not to accept `--effort` would refuse the whole launch
+with its own message. To avoid that, a launch to which amplihack has added
+`--effort` first runs the resolved binary's `--help` once, with the same
+handling as the existing `--version` probe. When the help text does not list
+`--effort`, amplihack takes the pair back off the command line, prints one
+stderr line saying the step runs without it, and records no effective effort.
+The step then runs on the tier's model. This is a fall-back, not a gate: a help
+text that cannot be read leaves the flag in place, and nothing here ends the
+launch. No probe runs when the tier carries no effort or when your command
+already sets `--effort`.
 
-On such a host, write the cell with no `effort` key, which clears the shipped
-effort:
+To stop amplihack writing the flag at all on such a host, and save the probe,
+write the cell with no `effort` key, which clears the shipped effort:
 
 ```toml
 # ~/.amplihack/model-tiers.toml
@@ -297,7 +299,8 @@ removing it.
 `rusty`, `rustyclawd` and `amplifier` share the `claude` column and so receive
 the same `--effort`. They already receive Claude's `--model` with Claude-only
 ids, so the column is already treated as command-line compatible with Claude.
-If one of them refuses the flag, clear the cell as above.
+Their `--help` is read in the same way, and if one of them refuses the flag
+anyway, clear the cell as above.
 
 ### Raising a Codex effort
 

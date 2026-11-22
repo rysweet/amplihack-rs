@@ -177,3 +177,34 @@ fn a_callers_own_claude_effort_is_reported_rather_than_doubled() {
     assert_eq!(outcome, EffortOutcome::CallerChose);
     assert_eq!(out, args);
 }
+
+// The fall-back for a Claude Code too old to know the option: its `--help`
+// is read once and, when it does not list `--effort`, the pair `inject`
+// added is taken back off.
+
+#[test]
+fn a_current_claude_help_lists_the_flag() {
+    // As Claude Code 2.1.329 prints it.
+    let help = "  --effort <level>                      Effort level for the current session\n\
+                                                       (low, medium, high, xhigh, max)\n";
+    assert!(super::claude_effort::help_lists_flag(help));
+}
+
+#[test]
+fn an_old_claude_help_does_not_list_the_flag() {
+    let help = "  --model <model>   Model for the current session\n  --effort-free   not it\n";
+    assert!(!super::claude_effort::help_lists_flag(help));
+    assert!(!super::claude_effort::help_lists_flag(""));
+}
+
+#[test]
+fn withdraw_removes_only_the_added_pair() {
+    let added = added(inject(
+        &argv(&["--model", "m", "-p", "xhigh"]),
+        effort("xhigh"),
+    ));
+    assert_eq!(
+        super::claude_effort::withdraw(added),
+        argv(&["--model", "m", "-p", "xhigh"])
+    );
+}

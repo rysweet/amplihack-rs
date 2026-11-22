@@ -317,7 +317,8 @@ fn run_launch_core(
     // `proxy_target` names which harnesses the gateway routes, and is handed
     // down rather than re-derived: Copilot CLI is a gateway target that
     // `is_claude_compatible_tool` excludes.
-    let extra_args = model_tiers::resolve_passthrough(tool, &extra_args, proxy_target.is_some());
+    let (extra_args, tier_launch) =
+        model_tiers::resolve_passthrough(tool, &extra_args, proxy_target.is_some());
     let proxy_config = amplihack_utils::litellm_proxy::ProxyConfig::from_env()
         .context("invalid external LiteLLM proxy configuration")?;
     let proxy_enabled = proxy_config.is_some();
@@ -497,6 +498,12 @@ fn run_launch_core(
             },
         },
     };
+
+    // Issue #2916: a Claude effort the tier added is checked against the
+    // binary that will run, and taken back off when that Claude Code does not
+    // know `--effort`. The record and the applied line are written here, so
+    // they say what reached the harness.
+    let extra_args = tier_launch.finish(extra_args, &binary.path);
 
     if let Some(proxy_target) = proxy_target {
         validate_proxy_launch_args(proxy_target, resume, continue_session, &extra_args)?;
