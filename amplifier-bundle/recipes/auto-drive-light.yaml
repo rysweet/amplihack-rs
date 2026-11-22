@@ -86,7 +86,8 @@ steps:
       case "${AMPLIHACK_HOME:-}" in /*) ;; *) die "AMPLIHACK_HOME must be an absolute path; tools are loaded only from it" ;; esac
       T="${AMPLIHACK_HOME}/amplifier-bundle/tools"
       for f in autodrive_light_eligibility.sh autodrive_finding_rules.sh \
-               autodrive_followups.sh autodrive_followups_check.sh workflow_issue_tracking.sh \
+               autodrive_followups.sh autodrive_followups_file.sh \
+               autodrive_followups_check.sh workflow_issue_tracking.sh \
                autodrive_state.sh autodrive_trust.sh quick_change_common.sh; do
         [ -f "$T/$f" ] || die "$f not found under AMPLIHACK_HOME"
       done
