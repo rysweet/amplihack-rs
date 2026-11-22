@@ -154,10 +154,12 @@ agent is asked for the move it can actually make.
 `validate-agentic-finalization` is the worked example. It reports the
 terminal state `assess-finalization` decided, from `finalization_assessment`,
 over the facts and blockers in `finalization_evidence` -- all recorded. The
-recovery agent may make no GitHub write and start no recipe, so it can
-neither push the branch and open the pull request that a `FAILED_IMPLEMENTATION`
-is missing, nor produce an assessment where there is none. The repair belongs
-to `assess-finalization`, which is permitted exactly those two actions and
+recovery agent may push only commits the run itself made, on the branch the
+failed step was working on, and may make no other GitHub write and start no
+recipe. This step has no commit of its own to push, and opening the pull
+request that a `FAILED_IMPLEMENTATION` is missing stays forbidden, so the agent
+can neither open it nor produce an assessment where there is none. The repair
+belongs to `assess-finalization`, which is permitted exactly those two actions and
 then decides on what it did.
 
 Making the step read live instead would not rescue the retry. The terminal
@@ -281,14 +283,23 @@ directory that recipe was given by its caller.
 The driver runs `amplihack recipe run step-failure-recovery -c
 step_recovery_evidence=<path>` with `AMPLIHACK_STEP_RECOVERY_ACTIVE=1`. The
 prompt says the evidence is untrusted data, and that the agent must not make
-GitHub writes, bypass hooks, read credentials, change the main checkout,
+GitHub writes other than a plain push of commits the run made (see below),
+bypass hooks, read credentials, change the main checkout,
 guard or validator scripts or their evidence, write under the recovery
 directory, or start another orchestration.
 
 A local repair adds new commits only. The prompt forbids rewriting or
 discarding commits (amend, rebase, squash, reset to an earlier commit) and
-force-pushing (issue #2629). This limits how a repair may change history; it
-does not allow a push, which stays forbidden.
+force-pushing (issue #2629). This limits how a repair may change history.
+
+The one permitted GitHub write is a plain `git push` of commits the run itself
+made, on the branch the failed step was working on, through the repository's
+hooks and never with a flag that skips them. It lets recovery publish a commit
+a review has already seen locally instead of handing off (issue #2923, see
+[Auto-drive Round Push Before Review](auto-drive-round-push.md)). Opening,
+editing, merging or commenting on pull requests and issues, labels, reviews and
+any other API write stay forbidden. The permission is prompt text; no Rust code
+enforces it.
 
 Evidence (`evidence-<id>-<n>-<8 hex>.json`, mode `0600`, schema 1):
 `untrusted_notice`, `step_id`, `goal`, `failure`, `allowed_choices`,
@@ -481,3 +492,4 @@ cargo test -p amplihack-cli --lib step_recovery
 - [Auto Drive To Merge](./auto-drive-to-merge.md)
 - [Default Workflow Agentic Finalization](./default-workflow-agentic-finalization.md)
 - [Recipe Recovery Reference](./recipe-recovery.md#caller-set-keys-in-routing-and-workflow-recipes)
+- [Auto-drive Round Push Before Review](./auto-drive-round-push.md)
