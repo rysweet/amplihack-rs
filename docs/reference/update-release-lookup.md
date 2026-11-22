@@ -73,7 +73,7 @@ removed when the update step ends. Before any file is read:
   directory first. This check has no automated test yet; a follow-up issue
   tracks it.
 
-An asset name that is empty or contains `/`, `..`, `*`, `?`, `[` or a control
+An asset name that is empty or contains `/`, `..`, `*`, `?`, `[`, `\` or a control
 character is refused before `gh` is run. So is a tag that starts with `-` or
 contains whitespace or a control character.
 

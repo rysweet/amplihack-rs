@@ -18,7 +18,7 @@
 
 use super::super::checksum::verify_sha256_bytes;
 use super::super::gh::{self, GhCommand};
-use super::super::install::fetch_release_archive;
+use super::super::install::{check_gh_asset_name, fetch_release_archive};
 use super::super::network::{
     fetch_latest_release_with, http_get_with_retry_unvalidated, refusal_message_at,
     sanitise_remote_text,
@@ -642,7 +642,7 @@ fn hostile_tags_and_asset_names_are_rejected_before_any_gh_call() {
         release.tag = tag.into();
         assert!(fetch_release_archive(&gh, &release).is_err(), "tag {tag:?}");
     }
-    for name in ["", "*.tar.gz", "a?b", "a[b]", "a..b", "a\u{7}b"] {
+    for name in ["", "*.tar.gz", "a?b", "a[b]", "a\\b", "a..b", "a\u{7}b"] {
         let mut release = release_for_download();
         release.asset_url = format!("{base}/{name}");
         release.checksum_url = Some(format!("{base}/{asset}.sha256"));
@@ -657,6 +657,18 @@ fn hostile_tags_and_asset_names_are_rejected_before_any_gh_call() {
         "{:?}",
         root.gh_log()
     );
+}
+
+#[test]
+fn gh_asset_name_check_rejects_the_glob_escape() {
+    // gh treats a backslash in --pattern as a glob escape, so the name would
+    // no longer match itself literally.
+    let err = check_gh_asset_name("a\\b").unwrap_err();
+    assert!(
+        format!("{err:#}").contains("not a plain file name"),
+        "{err:#}"
+    );
+    assert!(check_gh_asset_name("amplihack-x86_64-unknown-linux-gnu.tar.gz").is_ok());
 }
 
 #[test]

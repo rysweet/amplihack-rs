@@ -189,14 +189,15 @@ fn read_gh_download(dir: &Path, name: &str, tag: &str) -> Result<Vec<u8>> {
     fs::read(&path).with_context(|| format!("cannot read {name} from gh release download"))
 }
 
-/// The asset name becomes a `--pattern` glob, so it must be a plain file name.
+/// The asset name becomes a `--pattern` glob, so it must be a plain file name:
+/// no glob metacharacters, no glob escape (`\`) and no path separators.
 pub(super) fn check_gh_asset_name(name: &str) -> Result<()> {
     let bad = name.is_empty()
         || name.contains('/')
         || name.contains("..")
         || name
             .chars()
-            .any(|c| matches!(c, '*' | '?' | '[') || c.is_control());
+            .any(|c| matches!(c, '*' | '?' | '[' | '\\') || c.is_control());
     if bad {
         bail!("release asset name is not a plain file name: {name:?}");
     }
