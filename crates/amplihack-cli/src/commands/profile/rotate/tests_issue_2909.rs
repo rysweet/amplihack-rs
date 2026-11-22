@@ -17,6 +17,8 @@
 //!   a cycle at once, unless the last cycle ended less than `floor` ago.
 //! - `wake::reset_fell_due(&RotateLedger, since, now_unix) -> bool`: a reset
 //!   that passed while the last cycle ran makes the next one run at once.
+//! - `wake::Blocks::fell_due(since, now_unix)`: the same over the blocks the
+//!   last cycle began with, which its own save may have pruned.
 //! - `wake::note_written(&[u8])` and `wake::is_self_write(&Path) -> bool`:
 //!   identical bytes to the last write are this rotator's own; anything
 //!   else, a missing file included, is not.
@@ -28,7 +30,9 @@
 use super::super::daemon::wake::{
     Blocks, coalesce_floor, deadline, event_due, is_self_write, note_written, reset_fell_due,
 };
-use super::super::ledger::{MAX_BLOCK_SECS, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState};
+use super::super::ledger::{
+    MAX_BLOCK_SECS, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState, for_older_readers,
+};
 use super::{active_blocks, kind_label, prune_blocks, valid_kind};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -264,6 +268,36 @@ fn a_reset_already_past_when_the_last_cycle_began_does_not_cause_another() {
     assert!(reset_fell_due(&l, NOW - 30, NOW));
 }
 
+/// What a running rotator meets: the cycle that held spare out saves the
+/// ledger after spare's reset, and the save prunes the block, so the ledger
+/// the next wait reads no longer says spare was ever blocked. The blocks
+/// that cycle began with still do, and they decide.
+#[test]
+fn a_reset_that_fell_due_during_the_last_cycle_counts_after_its_save_pruned_it() {
+    let began = ledger_with("spare", block("session_limit", NOW - 3600, NOW - 10));
+    let mut saved = began.clone();
+    prune_blocks(&mut saved, NOW - 2);
+    assert!(saved.overflow_blocked.is_empty(), "the save pruned it");
+    assert!(
+        !reset_fell_due(&saved, NOW - 30, NOW),
+        "the ledger cannot say"
+    );
+    assert!(Blocks::of(&began).fell_due(NOW - 30, NOW));
+    // Not a second time: the next cycle began after that reset.
+    assert!(!Blocks::of(&began).fell_due(NOW, NOW + 30));
+    // Nor for a block still in force, nor one already past at the start.
+    let ahead = ledger_with("spare", block("session_limit", NOW - 3600, NOW + 60));
+    assert!(!Blocks::of(&ahead).fell_due(NOW - 30, NOW));
+    let past = ledger_with("spare", block("session_limit", NOW - 3600, NOW - 60));
+    assert!(!Blocks::of(&past).fell_due(NOW - 30, NOW));
+    let mut key = RotateLedger::default();
+    key.platform_block = Some(OverflowBlock::key("key_exhausted", NOW - 3600, NOW - 5));
+    assert!(
+        Blocks::of(&key).fell_due(NOW - 30, NOW),
+        "an API-key block too"
+    );
+}
+
 #[test]
 fn a_ledger_write_long_after_the_last_cycle_runs_a_cycle_at_once() {
     let started = Instant::now();
@@ -376,4 +410,29 @@ fn a_new_or_moved_platform_block_is_a_change() {
         Blocks::of(&l).differ_at(&Blocks::of(&later), NOW),
         "a block whose reset moved"
     );
+}
+
+/// An older amplihack refuses a ledger whose `overflow_blocked` reason is
+/// anything but `spend_limit`, so while one runs the field must still be
+/// left out whatever kind of limit it holds. Pinned with the new kinds, so
+/// the guarantee does not rest on the old literal.
+#[test]
+fn an_older_reader_never_sees_a_block_of_any_kind() {
+    for reason in [
+        "session_limit",
+        "week_limit",
+        "credit_limit",
+        "odd_but_valid",
+    ] {
+        let l = ledger_with("spare", block(reason, NOW, NOW + 600));
+        assert!(
+            for_older_readers(&l, true).overflow_blocked.is_empty(),
+            "{reason}"
+        );
+        assert_eq!(
+            for_older_readers(&l, false).overflow_blocked.len(),
+            1,
+            "{reason}: this binary keeps it"
+        );
+    }
 }

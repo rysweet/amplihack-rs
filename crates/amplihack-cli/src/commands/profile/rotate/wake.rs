@@ -16,8 +16,9 @@
 //!   ([`is_self_write`]), or the blocks in force differ from those the last
 //!   cycle began with ([`Blocks`]), which catches a record written while
 //!   that cycle ran and kept by its own save;
-//! - the earliest recorded reset passes ([`deadline`]), so a login comes
-//!   back the moment its block ends;
+//! - the earliest recorded reset passes ([`deadline`]), or passed while the
+//!   last cycle ran ([`Blocks::fell_due`]), so a login comes back the
+//!   moment its block ends;
 //! - SIGTERM or SIGINT arrives, through the stop pipe, so `rotate stop`
 //!   keeps the ten-second latency `control.rs` requires;
 //! - `--interval` passes, which remains only as the outer bound of the
@@ -29,17 +30,21 @@
 //! rotator running on `--interval` alone, because a rotator that stops is
 //! worse than a rotator that is slow.
 
-use super::super::ledger::{MAX_STATE, OverflowBlock, RotateLedger, RotateState, trusted};
+use super::super::ledger::{MAX_STATE, RotateLedger, RotateState, trusted};
 use super::super::log::wake_msg::{self, Reason};
 use crate::commands::profile::auto_switch::kit::{now, read_bounded_nofollow};
 use amplihack_utils::file_event::{SWAP_MASK, Waiter, Watch, Woke};
-use std::collections::BTreeMap;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// The blocks a cycle began with, and the resets that passed since.
+#[path = "wake_blocks.rs"]
+mod blocks;
+pub use blocks::{Blocks, reset_fell_due};
 
 /// The longest a burst of ledger writes may make the rotator run cycles:
 /// one per this many seconds, or per `--interval` when that is shorter.
@@ -121,22 +126,6 @@ pub fn deadline(now: Instant, now_unix: i64, interval: Duration, l: &RotateLedge
     }
 }
 
-/// Whether a recorded reset fell due after `since`, when the last cycle
-/// began, and by `now_unix`.
-///
-/// A cycle decides on the blocks in force when it reads them, so a reset
-/// that passes while it runs is one it did not act on. [`deadline`] looks
-/// only forward and would skip it, leaving the login out until the next
-/// event or `--interval`. This is the check that catches it: the next cycle
-/// then runs at once. A reset before `since` was already in the past when
-/// the last cycle read the ledger, so it cannot cause a cycle twice.
-pub fn reset_fell_due(l: &RotateLedger, since: i64, now_unix: i64) -> bool {
-    l.overflow_blocked
-        .values()
-        .chain(l.platform_block.iter())
-        .any(|b| since < b.until && b.until <= now_unix)
-}
-
 /// The least time between the end of one cycle and a cycle started by a
 /// ledger write: five seconds, or `--interval` when that is shorter, so
 /// `--interval 1` is not slowed.
@@ -160,47 +149,6 @@ pub fn event_due(started: Instant, now: Instant, floor: Duration) -> Instant {
     now.max(started + floor)
 }
 
-/// Every block the ledger records, as a cycle could have read them.
-///
-/// A step that meets a limit records it under the rotate lock, and a cycle
-/// holds that lock only from revalidation to its last save, not while it
-/// measures. A record written while a cycle measures is therefore kept by
-/// that cycle's own save, under the lock, but the cycle decided without
-/// it. The file then holds, byte for byte, what this process wrote, so
-/// [`is_self_write`] alone would take the record for the rotator's own
-/// write and the limit would wait for `--interval`. Comparing these with
-/// the blocks the cycle began with catches it. A block the cycle added
-/// itself differs too, and costs one extra cycle: the cheaper error.
-#[derive(Default)]
-pub struct Blocks {
-    overflow: BTreeMap<String, OverflowBlock>,
-    platform: Option<OverflowBlock>,
-}
-
-impl Blocks {
-    pub fn of(l: &RotateLedger) -> Self {
-        Self {
-            overflow: l.overflow_blocked.clone(),
-            platform: l.platform_block.clone(),
-        }
-    }
-
-    /// Whether the blocks in force at `now` differ between the two. A
-    /// block that expired in between is out of both, so a prune is not a
-    /// change; a reset that passed during a cycle is [`reset_fell_due`]'s.
-    pub fn differ_at(&self, other: &Self, now: i64) -> bool {
-        self.active(now) != other.active(now)
-    }
-
-    fn active(&self, now: i64) -> (Vec<(&String, &OverflowBlock)>, Option<&OverflowBlock>) {
-        let overflow = self.overflow.iter().filter(|(_, v)| now < v.until);
-        (
-            overflow.collect(),
-            self.platform.as_ref().filter(|p| now < p.until),
-        )
-    }
-}
-
 /// The watch loop's intake: the waiter, the stop pipe behind it, and the
 /// lines it has already said.
 pub struct Waker {
@@ -217,7 +165,7 @@ pub struct Waker {
     /// intake is doing its work.
     last: Option<Reason>,
     /// When the cycle before this wait began, in unix seconds, for
-    /// [`reset_fell_due`].
+    /// [`Blocks::fell_due`] and [`reset_fell_due`].
     cycle_from: i64,
     /// The blocks when the cycle before this wait began, for [`Blocks`].
     seen: Blocks,
@@ -271,7 +219,11 @@ impl Waker {
             why = Reason::Ledger;
             until = until.min(event_due(start, start, floor));
         }
-        if reset_fell_due(&ledger, self.cycle_from, now_unix) {
+        // A reset that passed while the last cycle ran. Asked of the blocks
+        // that cycle began with too, because its own save pruned the block.
+        if self.seen.fell_due(self.cycle_from, now_unix)
+            || reset_fell_due(&ledger, self.cycle_from, now_unix)
+        {
             (until, why) = (start, Reason::Reset);
         }
         while !stop.load(Ordering::SeqCst) && Instant::now() < until {

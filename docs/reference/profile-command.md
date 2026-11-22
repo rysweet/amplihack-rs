@@ -1285,7 +1285,10 @@ The wait ends at the earlier of `now + --interval` and the earliest future
 reset. A reset beyond the interval never lengthens a wait, and one already
 past does not count: the next cycle removes it. The exception is a reset that
 fell due while the previous cycle ran: that cycle still held the login out, so
-the next one runs at once, logged as `wake: reset due`. A clock jump cannot
+the next one runs at once, logged as `wake: reset due`. The cycle's own save
+removes such a block from the ledger, so the rotator judges this from the
+blocks as they stood when that cycle began, not from the ledger it saved. A
+clock jump cannot
 lengthen a wait either. With `--interval 1` the rotator still ticks every
 second.
 
