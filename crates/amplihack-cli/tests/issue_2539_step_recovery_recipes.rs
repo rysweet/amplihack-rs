@@ -122,10 +122,13 @@ fn each_converted_step_runs_its_command_through_the_driver_with_its_own_id() {
     //
     // validate-agentic-finalization is not a guard, but it is `--no-repair`
     // (#2819). Since #2343 it reports the terminal state assess-finalization
-    // decided, from values all recorded before the step first ran, and the
-    // recovery agent may make no GitHub write and start no recipe -- so it
-    // can neither push the branch nor produce an assessment, and a retry
-    // would read the same bytes and fail identically. The step is
+    // decided, from values all recorded before the step first ran. Since
+    // #2923 the recovery agent may push commits the run itself made, on the
+    // failed step's branch, but this step has none of its own, and opening
+    // the pull request a FAILED_IMPLEMENTATION is missing stays forbidden,
+    // as does starting a recipe -- so it can neither open that pull request
+    // nor produce an assessment, and a retry would read the same bytes and
+    // fail identically. The step is
     // `--essential --stop-on-handoff --no-repair`: no continue_recorded, no
     // retry that cannot converge, and a handoff still exits 81. See
     // docs/reference/step-failure-recovery.md#when-a-retry-cannot-observe-a-repair.
