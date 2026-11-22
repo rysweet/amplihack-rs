@@ -1081,11 +1081,14 @@ fn a_dirty_clone_whose_name_ends_in_a_space_is_kept() {
 }
 
 #[test]
+#[cfg_attr(
+    target_vendor = "apple",
+    ignore = "APFS refuses a file name that is not valid UTF-8 (EILSEQ), so the input cannot be made"
+)]
 fn a_dirty_clone_whose_name_is_not_utf8_is_kept() {
-    use std::os::unix::ffi::OsStrExt;
     let s = Scratch::new();
     let outer = s.root.join("outer");
-    let clone = outer.join(std::ffi::OsStr::from_bytes(b"clone\xff"));
+    let clone = outer.join(crate::test_support::non_utf8_name::non_utf8(b"clone\xff"));
     s.origin.clone_to(&clone);
     make_dirty(&clone);
 

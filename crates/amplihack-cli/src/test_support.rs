@@ -117,6 +117,13 @@ pub(crate) mod exit_witness;
 #[allow(dead_code)]
 pub(crate) mod ls_mode;
 
+/// Issue #2931: the one place that builds a non-UTF-8 file name and records
+/// why an Apple target ignores the tests that need one.
+#[cfg(unix)]
+#[path = "../tests/support/non_utf8_name.rs"]
+#[allow(dead_code)]
+pub(crate) mod non_utf8_name;
+
 /// A temporary directory that no framework lookup can see past: no
 /// `amplifier-bundle/`, `.claude/` or `src/amplihack/.claude/` above it, and
 /// not under the real `~/.claude` or `~/.amplihack`. Panics when no candidate

@@ -14,6 +14,8 @@ pub mod fifo_release;
 pub mod git_fixture;
 #[cfg(unix)]
 pub mod ls_mode;
+#[cfg(unix)]
+pub mod non_utf8_name;
 pub mod proc_root_scan;
 pub mod proc_tree;
 pub mod profile_1962;
