@@ -213,15 +213,9 @@ fn exit_reason(result: &anyhow::Result<()>) -> String {
     let Some(code) = crate::command_error::exit_code(e) else {
         return "launch-failed".to_string();
     };
-    // Saturating: the code comes from a child's wait status and is always
-    // 0 to 255, but a subtraction that could overflow has no place on a
-    // path whose whole purpose is to keep a session running.
-    match u8::try_from(code.saturating_sub(128))
-        .ok()
-        .filter(|n| *n > 0)
-    {
-        Some(signal) => amplihack_utils::launch_target::signal_name(i32::from(signal)).to_string(),
-        None => format!("exit-status-{code}"),
+    match code {
+        129..=255 => amplihack_utils::launch_target::signal_name(code - 128).to_string(),
+        _ => format!("exit-status-{code}"),
     }
 }
 

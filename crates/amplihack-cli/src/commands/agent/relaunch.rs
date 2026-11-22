@@ -19,7 +19,7 @@
 
 use amplihack_utils::file_event::{SWAP_MASK, Waiter, Watch, Woke};
 use amplihack_utils::rotator_status::MAX_WAIT;
-use amplihack_utils::rotator_status::swap_record::{SWAP_FILE, SwapRecord, read_swap, rotate_dir};
+use amplihack_utils::rotator_status::swap_record::{SWAP_FILE, read_swap, rotate_dir};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,32 +36,6 @@ pub enum Room {
     Waited,
     /// Nothing to wait on, or the wait reached [`MAX_WAIT`] with no room.
     Gone,
-}
-
-/// Whether the login a record names has room.
-///
-/// This is the rule of
-/// [`amplihack_utils::rotator_status::swap_record::judge_at`], which the
-/// `limit-resume` hook uses for the same decision: both windows under 100
-/// percent. Keep the two the same. A difference either starts a session
-/// the hook would still decline to resume, or holds one the hook would.
-///
-/// The rest of `judge_at` is about a session that is still running: which
-/// record was on disk when the hook started, and whether the swap came
-/// after the stop. A wrapper whose process has already exited has no such
-/// history to compare, so only the room half applies here.
-pub fn has_room(record: &SwapRecord) -> bool {
-    record.reading.session < 100 && record.reading.week < 100
-}
-
-/// [`wait_for_room_until`] with nothing able to interrupt it.
-///
-/// Only the tests use this: the wrapper always has the flag that says its
-/// pane has been signalled, and a wait that could not be interrupted would
-/// outlive the pane.
-#[cfg(test)]
-pub fn wait_for_room(root: &Path) -> Room {
-    wait_for_room_until(root, &AtomicBool::new(false), || {})
 }
 
 /// Blocks until a login with room appears under `root`, or `stopped` is
@@ -147,8 +121,16 @@ pub fn wait_for_room_until(root: &Path, stopped: &AtomicBool, on_wait: impl FnOn
 
 /// Whether a session may start now: a login with room, or no rotator whose
 /// record this process can read and understand.
+///
+/// Room is [`SwapRecord::has_room`], the rule the `limit-resume` hook's
+/// `judge_at` uses. The rest of `judge_at` is about a session that is still
+/// running (which record was on disk when the hook started, and whether the
+/// swap came after the stop); a process that has already exited has no such
+/// history, so only the room half applies here.
+///
+/// [`SwapRecord::has_room`]: amplihack_utils::rotator_status::swap_record::SwapRecord::has_room
 fn room_now(root: &Path) -> bool {
-    read_swap(root, epoch_now()).is_none_or(|r| has_room(&r))
+    read_swap(root, super::registry::now()).is_none_or(|r| r.has_room())
 }
 
 /// A real directory of this user that no one else may write to; the same
@@ -160,13 +142,6 @@ fn watchable(dir: &Path) -> bool {
             && m.uid() == amplihack_utils::secure_files::euid()
             && m.mode() & 0o022 == 0
     })
-}
-
-fn epoch_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// `SIGHUP`, `SIGTERM` and `SIGINT` back to `SIG_DFL` while this is alive,

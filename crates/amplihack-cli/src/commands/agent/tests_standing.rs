@@ -5,18 +5,17 @@
 //!   `AfterExit::{OwnerEnded, GoingAway, Relaunch, NeverStarted}`. Pure.
 //!   Order: not standing or signalled first, then a clean return, then the
 //!   ended marker, then whether Claude ever started. There is no count.
-//! - `relaunch::has_room(&SwapRecord) -> bool`: the rule of
-//!   `swap_record::judge_at`, a login whose session and week are both under
-//!   100 percent.
-//! - `relaunch::wait_for_room(root: &Path) -> Room`, `Room::{Now, Waited,
-//!   Gone}`. A missing, refused or unparseable swap record is `Now`: a user
-//!   with no rotator is never delayed.
+//! - `SwapRecord::has_room() -> bool`: the rule of `swap_record::judge_at`,
+//!   a login whose session and week are both under 100 percent.
+//! - `relaunch::wait_for_room_until(root, stopped, on_wait) -> Room`,
+//!   `Room::{Now, Waited, Gone}`. A missing, refused or unparseable swap
+//!   record is `Now`: a user with no rotator is never delayed.
 //!
 //! The relaunch argv and the log lines are in `tests_standing_lines.rs`,
 //! and the loop itself, with a stand-in session in its pane, is in
 //! `tests/issue_2912_standing_relaunch.rs`.
 
-use super::relaunch::{Room, has_room, wait_for_room};
+use super::relaunch::{Room, wait_for_room_until};
 use super::{AfterExit, after_exit};
 use amplihack_utils::rotator_status::swap_record::{
     SWAP_FILE, SwapReading, SwapRecord, rotate_dir,
@@ -24,6 +23,7 @@ use amplihack_utils::rotator_status::swap_record::{
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 
 const NOW: i64 = 1_793_316_490;
 
@@ -120,7 +120,7 @@ fn a_login_has_room_when_both_windows_are_under_a_hundred_percent() {
         (0, 100, false),
         (100, 100, false),
     ] {
-        assert_eq!(has_room(&record(session, week)), room, "{session}/{week}");
+        assert_eq!(record(session, week).has_room(), room, "{session}/{week}");
     }
 }
 
@@ -133,6 +133,11 @@ fn write_record(root: &Path, rec: &SwapRecord, mode: u32) {
     let f = dir.join(SWAP_FILE);
     fs::write(&f, serde_json::to_vec(rec).unwrap()).unwrap();
     fs::set_permissions(&f, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// The wait with nothing able to interrupt it and no waiting line.
+fn wait_for_room(root: &Path) -> Room {
+    wait_for_room_until(root, &AtomicBool::new(false), || {})
 }
 
 fn root() -> tempfile::TempDir {
