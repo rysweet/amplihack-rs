@@ -310,21 +310,32 @@ mod linux {
 
         /// Acts on the interrupt descriptor's `revents`: readable means the
         /// caller signalled, so the bytes are read away and the next wake
-        /// reports it. A hang-up or an error on it means the writer is gone
-        /// for good, so the descriptor is dropped rather than polled for
-        /// ever, and the waiter carries on with its watches alone.
+        /// reports it. Where no further interrupt can arrive the descriptor
+        /// is dropped rather than polled for ever, and the waiter carries on
+        /// with its watches alone.
         ///
-        /// The two are tested in turn, not as alternatives: a socket whose
+        /// A readable descriptor is not kept unconditionally: a socket whose
         /// peer has closed reports `POLLIN | POLLHUP` and keeps reporting it
         /// once drained, so treating readable as the only case would make
         /// every later wait return at once. What is there is read and
-        /// reported once, and then the descriptor goes.
+        /// reported, and then the descriptor goes.
+        ///
+        /// `POLLERR` is final only on a descriptor that is not readable. A
+        /// socket error is cleared by a read, and the drain has just made
+        /// one, so one transient error does not cost the waiter the
+        /// interrupt that `rotate stop` depends on. A hang-up and an invalid
+        /// descriptor are final either way.
         fn take_interrupt(&mut self, revents: i16) {
-            if revents & libc::POLLIN != 0 {
+            let set = |bits: i16| revents & bits != 0;
+            if set(libc::POLLIN) {
                 self.drain_interrupt();
                 self.interrupted = true;
+                if set(libc::POLLHUP | libc::POLLNVAL) {
+                    self.interrupt = None;
+                }
+                return;
             }
-            if revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+            if set(libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) {
                 self.interrupt = None;
             }
         }

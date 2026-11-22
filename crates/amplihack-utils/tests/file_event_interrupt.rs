@@ -128,8 +128,16 @@ fn a_closed_interrupt_peer_is_dropped_rather_than_polled_for_ever() {
     let mut w = waiter(d.path(), &rx);
     tx.write_all(&[1]).unwrap();
     drop(tx);
-    // The byte written before the close is still reported once.
-    assert_eq!(w.wait(Instant::now()).unwrap(), Woke::Deadline);
+    // The byte written before the close is still reported. The deadline is
+    // far off, so returning at all is the evidence: a wait that discarded
+    // the byte would sit here until it passed.
+    let far = Duration::from_secs(600);
+    let start = Instant::now();
+    assert_eq!(w.wait(start + far).unwrap(), Woke::Deadline);
+    assert!(
+        start.elapsed() < far,
+        "the pending interrupt was not reported"
+    );
     // A stream socket whose peer has closed reports `POLLIN | POLLHUP` for
     // ever, drained or not, so a waiter that kept the descriptor would
     // return from every later wait at once. The deadline is the evidence:

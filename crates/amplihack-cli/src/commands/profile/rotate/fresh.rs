@@ -15,7 +15,7 @@
 use super::cycle::Ctx;
 use super::decide::{Decision, Probed, Reading, Reason};
 use super::fresh_msg;
-use super::log::Shown;
+use super::log::{Shown, msg};
 use super::measure;
 use super::observe::{Measurement, Snap, decide_measured};
 use super::swap_back;
@@ -237,7 +237,7 @@ pub(super) fn settle(
                 // goes ahead on the stored one. Said out loud, as the
                 // spent-budget skip is: rule 3's departures are in the log,
                 // never inferred from a missing line.
-                lines.push(super::log::msg::CONFIRM_LOCKED.to_string());
+                lines.push(msg::CONFIRM_LOCKED.to_string());
                 break;
             }
             if ctx.stopping() {
