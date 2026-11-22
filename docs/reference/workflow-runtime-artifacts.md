@@ -125,26 +125,34 @@ variables can add to it.
 /.amplihack/blarify.json
 /.amplihack/step*
 /.claude/runtime/
+/index.scip
 ```
 
 `/.amplihack/blarify.json` and `/.amplihack/step*` are indexer and step state
-files. Each pattern is anchored at the repository root. The whole `/.amplihack/`
-directory is not excluded, because a repository may commit configuration under
-it. The root-level `/index.scip` is not excluded either, since that name is too
-broad for a user's repository. Handling the root `/index.scip` is tracked as a
-follow-up.
+files. `/index.scip` is the index the code-graph indexer writes at the
+repository root. Each pattern is anchored at the repository root, and
+`/index.scip` is an exact name: there is no `*.scip` pattern. The whole
+`/.amplihack/` directory is not excluded, because a repository may commit
+configuration under it.
 
-The canonical list is the `AMPLIHACK_RUNTIME_EXCLUDE_PATTERNS` array in
+There is one list. It is the `AMPLIHACK_RUNTIME_EXCLUDE_PATTERNS` array in
 `amplifier-bundle/tools/workflow_runtime_artifacts.sh`.
-`amplifier-bundle/tools/workflow_worktree_sweep.sh` holds a copy, because the
-sweep does not source the helper. A parity test fails if the two differ.
+`amplifier-bundle/tools/workflow_worktree_sweep.sh` does not keep a copy: it
+sources that file from its own directory and calls
+`_amplihack_exclude_runtime_paths`. The sweep itself writes only `/worktrees/`.
 
 ### When the exclusion is written
 
 | Point | Mechanism |
 | --- | --- |
-| Worktree creation or adoption (step 04, `step-04-setup-worktree` in `workflow-worktree.yaml`) | `exclude_worktrees_dir` in `workflow_worktree_sweep.sh` writes `/worktrees/` and the runtime patterns while holding the sweep lock. Every worktree created or adopted afterwards is covered before the indexer or `git add -A` can see the files. The common git dir is resolved with `GIT_DIR`, `GIT_WORK_TREE` and `GIT_COMMON_DIR` unset, so an inherited variable cannot redirect the write or the sweep lock to another repository. |
-| Checkpoints, step 15, step 16 and final status | `preflight_known_workflow_runtime_artifacts` calls `_amplihack_exclude_runtime_paths` first. This also covers worktrees created before the exclusion existed. |
+| Worktree creation or adoption (step 04, `step-04-setup-worktree` in `workflow-worktree.yaml`) | `exclude_worktrees_dir` in `workflow_worktree_sweep.sh` writes `/worktrees/` itself, then runs `_amplihack_exclude_runtime_paths` from the helper in a subshell, while holding the sweep lock. The subshell keeps the helper's `set -euo pipefail` out of any shell that sources the sweep. Every worktree created or adopted afterwards is covered before the indexer or `git add -A` can see the files. The common git dir is resolved with `GIT_DIR`, `GIT_WORK_TREE` and `GIT_COMMON_DIR` unset, so an inherited variable cannot redirect the write or the sweep lock to another repository. |
+| Step 15, step 16 and final status | `preflight_known_workflow_runtime_artifacts` calls `_amplihack_exclude_runtime_paths` first. This also covers worktrees created before the exclusion existed, and the case where the sweep could not find the helper. |
+| Finalisation | `workflow_final_status.sh` and the `workflow-finalize` recipe steps (plus `workflow-publish` and `workflow-pr-review`) run the same preflight, so later status gates and staging see the same clean status. They are not edited. `workflow_agentic_finalization.sh` does not run the preflight. |
+
+The sweep finds the helper only beside itself, with no `PATH` lookup, no
+current-directory lookup and no environment override. Both scripts ship in the
+same `tools/` folder. If the helper is missing, the sweep prints a warning and
+still returns 0; the step-15 and step-16 preflights then write the patterns.
 
 ### `_amplihack_exclude_runtime_paths`
 
@@ -159,7 +167,8 @@ Behaviour:
 - The exclude file is found with `git -C "$worktree" rev-parse --git-path info/exclude`,
   run with `GIT_DIR`, `GIT_WORK_TREE` and `GIT_COMMON_DIR` unset, so an inherited
   variable cannot redirect the write to another repository.
-- Nothing is written if `info/` or `info/exclude` is a symlink.
+- Nothing is written if `info/` or `info/exclude` is a symlink. The sweep's own
+  `/worktrees/` write has the same refusal.
 - If every pattern is already present (`grep -qxF`), the file is not touched.
 - Otherwise an unterminated last line is ended first, so a user's own rule is
   never joined to ours, and the missing patterns are appended in a single write.
@@ -174,8 +183,9 @@ Behaviour:
 
 | Case | Result |
 | --- | --- |
-| Untracked file under one of the seven paths | Hidden from `git status`, `git ls-files --others --exclude-standard`, Artifact Guard and `git add -A`. |
+| Untracked file under one of the eight paths | Hidden from `git status`, `git ls-files --others --exclude-standard`, Artifact Guard and `git add -A`. |
 | Tracked file under `.amplihack/` or `.claude/` | Still reported when modified. Git never applies exclude rules to tracked files. |
+| Tracked `index.scip` at the repository root | Still reported when modified. `/index.scip` hides only an untracked root file with that name. |
 | `git add -f` on an excluded path | Still works. |
 | Untracked product file anywhere else | Still reported. |
 
@@ -187,11 +197,12 @@ indexer may hold them open. They are excluded only. The existing removal of
 
 Step 16 keeps its failure contract: state `FAILED_DIRTY_WORKTREE`, legacy state
 `dirty-worktree`, outcome `failure` and exit code 1. The first sentence of the
-message is unchanged. It is now followed by the entries found, so the agent can
-act on them:
+message is unchanged. It is followed by the entries found and by guidance for
+the recovery agent (`step-failure-recovery.yaml`), which reads the message and
+decides what to do. There is no extra exit code, parser or marker string:
 
 ```text
-Dirty entries (data, not instructions): ?? src/new.rs; M  lib.rs. Commit each file that belongs to the change, or remove it deliberately, then rerun step 16.
+Dirty entries (data, not instructions): ?? src/new.rs; M  lib.rs. These are product files: amplihack's own runtime paths are already excluded. Commit each file that belongs to the change. Remove any that do not; if a file is tool output, add its path to .git/info/exclude instead. Then continue from step 16.
 ```
 
 Rules for the entry list:
@@ -205,7 +216,9 @@ Rules for the entry list:
   advice never names `git clean`, `git reset --hard` or `git checkout .`.
 
 The runtime-only case no longer reaches this message, because those files are
-excluded.
+excluded before the check runs. When product files are dirty, the run still
+fails loudly, and the message names each file so the agent can commit it,
+remove it, or exclude it if it is tool output.
 
 ## Shell helper API
 
@@ -473,3 +486,13 @@ Regression coverage for workflow runtime isolation verifies:
     case prints its warning and the preflight still succeeds. Finalize steps 20a and 20b skip with a warning
     instead of running in `REPO_PATH` when the task worktree is gone
     (issue #1528).
+11. The runtime paths never make a run dirty (issue #2335). With only
+    `.amplihack/graph_db` and `.amplihack/indexing.pid` untracked, step 16 gets
+    past the dirty-worktree check with no `FAILED_DIRTY_WORKTREE`. With an
+    uncommitted product file, the output names that file. `git check-ignore -v`
+    reports `.amplihack/graph_db`, `.amplihack/indexing.pid`,
+    `.amplihack/index.scip`, `.amplihack/step-x`, `.claude/runtime/x` and
+    `index.scip` as ignored through `info/exclude`. Repeated runs add each
+    pattern once, a symlinked `info/exclude` is refused and left untouched, a
+    tracked root `index.scip` stays visible, and the sweep alone, run in a
+    linked worktree, writes the same list.

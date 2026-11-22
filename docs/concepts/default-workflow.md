@@ -128,7 +128,7 @@ The loud blocking states include:
 
 | State | Meaning |
 | --- | --- |
-| `FAILED_DIRTY_WORKTREE` | Uncommitted changes are present. Commit, stash, or remove them through the workflow before claiming terminal success. amplihack's own runtime files are excluded and never count; see [Excluded runtime paths](../reference/workflow-runtime-artifacts.md#excluded-runtime-paths). |
+| `FAILED_DIRTY_WORKTREE` | Uncommitted changes are present. Commit, stash, or remove them through the workflow before claiming terminal success. amplihack's own runtime files (`.amplihack/` state, `.claude/runtime/`, the indexer's `index.scip`) are excluded and never count: step 04 writes one pattern list to the repository's `info/exclude`, and the step 15 and step 16 preflights, the `workflow-finalize` steps and `workflow_final_status.sh` write it again. When product files are dirty, the message names each file and tells the recovery agent to commit it, remove it, or exclude it if it is tool output. See [Excluded runtime paths](../reference/workflow-runtime-artifacts.md#excluded-runtime-paths). |
 | `FAILED_CLOSED_UNMERGED` | A GitHub PR is closed without merge evidence and obsolete/no-diff proof is missing. |
 | `FAILED_MEANINGFUL_DIFF` | Meaningful branch changes remain but cannot be safely treated as terminal success. |
 | `FAILED_PR_METADATA_UNAVAILABLE` | GitHub metadata is required for a GitHub PR proof or meaningful-diff safety decision but cannot be loaded. This is not used merely because an Azure or unknown remote lacks GitHub metadata. |

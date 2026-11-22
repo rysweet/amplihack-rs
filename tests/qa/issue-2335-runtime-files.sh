@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # QA for #2335, reproducing communication #851: a run's worktree whose only
-# untracked files are the code-graph indexer's .amplihack/graph_db and
-# .amplihack/indexing.pid must reach the PR stage of step 16. A product file
-# left uncommitted must still fail step 16, and the message must name it.
+# untracked files are the code-graph indexer's .amplihack/graph_db,
+# .amplihack/indexing.pid and root index.scip must reach the PR stage of
+# step 16. A product file left uncommitted must still fail step 16, and the
+# message must name it.
 #
 # Flow: main checkout and bare origin -> step-04 worktree sweep (creation-time
 # exclusion) -> linked task worktree with one pushed commit -> indexer files
@@ -44,6 +45,7 @@ git remote set-url origin https://github.com/owner/repo.git
 
 # The indexer writes its state into the worktree, as on 22 Nov.
 mkdir -p .amplihack; : > .amplihack/graph_db; echo 4242 > .amplihack/indexing.pid
+: > index.scip
 
 printf '#!/usr/bin/env bash\necho "$*" >> %q\nexit 77\n' "$root/gh.log" > "$root/bin/gh"
 chmod 0755 "$root/bin/gh"
@@ -67,7 +69,7 @@ rc=0; step16 || rc=$?
 [ "$rc" = 1 ] || fail "an uncommitted product file must fail step 16 (exit $rc)"
 msg=$(jq -r .message "$root/out.json")
 case "$msg" in *"?? forgotten.rs"*) ;; *) fail "message does not name forgotten.rs" ;; esac
-case "$msg" in *.amplihack*) fail "message names runtime files" ;; esac
-case "$msg" in *"rerun step 16"*) ;; *) fail "message gives no recovery step" ;; esac
+case "$msg" in *.amplihack*|*index.scip*) fail "message names runtime files" ;; esac
+case "$msg" in *"continue from step 16"*) ;; *) fail "message gives no recovery step" ;; esac
 [ ! -s "$root/gh.log" ] || fail "a dirty worktree must not reach gh"
 echo "PASS: an uncommitted product file fails step 16 and is named"
