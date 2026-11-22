@@ -336,3 +336,128 @@ fn workflow_finalize_reports_after_validation_and_before_completion() {
     assert_eq!(o.status.code(), Some(HANDOFF_EXIT), "{}", show(&o));
     assert!(own.join("step-21-pr-ready.jsonl").is_file());
 }
+
+/// #2959 S3: when the finalize merge step fails and the recovery step re-runs
+/// finalisation, the re-run is captured from the operator's own inputs and
+/// cannot widen permission. Runs step-03r's own command with a stand-in
+/// `amplihack` that records the `recipe run` arguments it is given.
+#[test]
+fn finalisation_recovery_cannot_widen_permission() {
+    use std::os::unix::fs::PermissionsExt;
+    let command = step_command("autodrive-merge-loop", "step-03r-finalize-recovery");
+    let run = |vars: &[(&str, &str)]| -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let log = dir.path().join("recipe-run.args");
+        std::fs::write(
+            bin.join("amplihack"),
+            "#!/usr/bin/env bash\n\
+             case \"$1 $2 $3\" in\n\
+             \"orch helper step-recovery\") while [ \"$1\" != -- ]; do shift; done; shift; exec \"$@\" ;;\n\
+             \"orch helper extract-json\") cat ;;\n\
+             \"orch helper extract-field\") cat >/dev/null ;;\n\
+             \"recipe run autodrive-finalize\") printf '%s\\n' \"$@\" >\"$RECORD_ARGS\" ;;\n\
+             *) echo \"unexpected: $*\" >&2; exit 3 ;;\n\
+             esac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("amplihack"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let mut cmd = std::process::Command::new("bash");
+        cmd.arg("-c")
+            .arg(&command)
+            .env_clear()
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("RECORD_ARGS", &log)
+            .env("RECIPE_VAR_step_recovery_dir", dir.path())
+            .current_dir(dir.path())
+            .stdin(std::process::Stdio::null());
+        for (k, v) in vars {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+        std::fs::read_to_string(&log)
+            .unwrap_or_else(|e| panic!("recipe run was not invoked ({e}): {}", show(&out)))
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    // No no_merge in the original inputs: the re-run does not merge.
+    let args = run(&[]);
+    assert!(args.contains(&"no_merge=true".to_string()), "{args:?}");
+    // A verify-only original stays verify-only.
+    let args = run(&[("RECIPE_VAR_no_merge", "true")]);
+    assert!(args.contains(&"no_merge=true".to_string()), "{args:?}");
+    // A dry-run original stays a dry run.
+    let args = run(&[
+        ("RECIPE_VAR_no_merge", "false"),
+        ("RECIPE_VAR_autodrive_dry_run", "true"),
+    ]);
+    assert!(
+        args.contains(&"autodrive_dry_run=true".to_string()),
+        "{args:?}"
+    );
+    // Recovery hands the re-run no authorization or record of its own: the
+    // re-run captures its invocation afresh from these inputs.
+    for args in [run(&[]), run(&[("RECIPE_VAR_no_merge", "false")])] {
+        assert!(
+            !args
+                .iter()
+                .any(|a| a.starts_with("autodrive_invocation_file=") || a.contains("allows_merge")),
+            "{args:?}"
+        );
+    }
+}
+
+/// #2959: with the helper failing (exit 2), the finalize merge step exits
+/// non-zero so the loop's recovery step has something to recover.
+#[test]
+fn the_finalize_merge_step_fails_loudly_when_the_record_cannot_be_read() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let stub = bin.join("amplihack");
+    std::fs::write(
+        &stub,
+        "#!/usr/bin/env bash\ncase \"$1 $2 $3 $4\" in\n  \"orch helper autodrive authorization\") echo 'ERROR: stub' >&2; exit 2 ;;\nesac\nexit 0\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let state = dir.path().join("state");
+    std::fs::create_dir(&state).unwrap();
+    let out = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(step_command("autodrive-finalize", "merge"))
+        .env(
+            "PATH",
+            format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+        )
+        .env("AMPLIHACK_HOME", dir.path())
+        .env("AMPLIHACK_BIN", &stub)
+        .env("RECIPE_VAR_pr_number", "2959")
+        .env("RECIPE_VAR_repo_path", dir.path())
+        .env("REPO_PATH", dir.path())
+        .env("RECIPE_VAR_autodrive_state_dir", &state)
+        .env(
+            "RECIPE_VAR_autodrive_invocation_file",
+            state.join("gone/invocation.json"),
+        )
+        .env("RECIPE_VAR_no_merge", "false")
+        .env("RECIPE_VAR_autodrive_dry_run", "false")
+        .current_dir(dir.path())
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("authorization-unreadable"),
+        "{}",
+        show(&out)
+    );
+}
