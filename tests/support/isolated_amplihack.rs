@@ -24,6 +24,11 @@
 //! - no `AMPLIHACK_CLAUDE_PROFILE_ROOT` (issue #1699), so an install under the
 //!   temp `HOME` cannot refresh the developer's real profiles. `env_clear()`
 //!   already drops it; the explicit removal holds if the kept list changes.
+//! - none of the other [`claude_profile_isolation::CLAUDE_PROFILE_ENV_VARS`]
+//!   either (issue #2922), so an inherited `CLAUDE_CONFIG_DIR` cannot make the
+//!   child write its settings into a developer's live profile. As above,
+//!   `env_clear()` already drops them and the explicit removal is what holds
+//!   if the kept list changes.
 //! - `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true` and `SSH_ASKPASS=true`
 //!   ([`NO_GIT_PROMPT_ENV`], issue #1764) and a null stdin, through
 //!   [`no_git_prompt`], so no git the child starts can wait on a credential
@@ -137,6 +142,15 @@ pub fn shared_temp_home() -> &'static Path {
     })
 }
 
+#[path = "claude_profile_isolation.rs"]
+// `cli_integration` loads this file twice, here and through
+// `support/mod.rs`: one source, the same five names, and this file must not
+// name `support` because `tests/integration` and `bins/amplihack/tests` have
+// no such module (issue #2922). The included file carries its own
+// `#![allow(dead_code)]`, so repeating it here is a duplicated attribute.
+#[allow(clippy::duplicate_mod)]
+pub mod claude_profile_isolation;
+
 #[path = "proc_tree_seed.rs"]
 // `cli_integration` loads this file twice, here and through the other of
 // `isolated_amplihack.rs` / `fake_proc.rs`: one source, the same constants,
@@ -200,6 +214,7 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
         }
     }
     command.env_remove(PROFILE_ROOT_ENV);
+    claude_profile_isolation::remove_from_command(&mut command);
     no_git_prompt(&mut command);
     // The toolchain lives under the real HOME unless these say otherwise; a
     // child that runs cargo must still find it after HOME moves.

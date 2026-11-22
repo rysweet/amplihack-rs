@@ -202,12 +202,12 @@ steps:
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
         push_cmd=(git push ${remote_branch:+origin "HEAD:$remote_branch"})
         pull_output_file=$(mktemp -t step20b-cleanup-pull-XXXXXX)
-        if workflow_pull_rebase --no-pager >"$pull_output_file" 2>&1; then  # #2839: autostash the rewritten tracked report the staging helper left unstaged
+        if workflow_pull_merge --no-pager >"$pull_output_file" 2>&1; then  # #2994: merge a moved remote, never rebase; #2839: autostash keeps the unstaged report
           redact_sensitive_output < "$pull_output_file"
           rm -f "$pull_output_file"
         else
           pull_rc=$?
-          echo "ERROR: git pull --rebase failed during step-20b-push-cleanup (exit $pull_rc)" >&2
+          echo "ERROR: git pull --no-rebase failed during step-20b-push-cleanup (exit $pull_rc); nothing was pushed" >&2
           redact_sensitive_output < "$pull_output_file" >&2
           rm -f "$pull_output_file"
           git --no-pager status --short >&2

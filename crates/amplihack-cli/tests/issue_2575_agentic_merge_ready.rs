@@ -1470,18 +1470,37 @@ fn merge_refused_without_captured_authorization() {
     let Some((fx, _)) = finalize_fixture() else {
         return;
     };
-    // The helper fails on a merge run (bad invocation, wrong directory):
-    // exit 2, no stdout. The PR is handed off, not reported as refused.
+    // The helper fails on a merge run (record missing, wrong directory):
+    // exit 2, no stdout. #2959: the step fails loudly with its evidence and
+    // exits 1 before any merge command, so the recovery step takes over. It
+    // is neither a hand-off nor a draft.
     std::fs::remove_file(fx.fake.join("auth_out")).unwrap();
     fx.set("auth_rc", "2");
     let out = finalize_merge(&fx, &AUTHORISED);
-    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
     let v = finalize_result(&out);
     assert_eq!(v["result"], json!("authorization-unreadable"), "{v}");
-    assert_eq!(v["handoff"], json!("true"), "{v}");
-    assert_eq!(
-        v["reason"],
-        json!("the captured invocation could not be read (helper exit 2)")
+    assert_eq!(v["handoff"], json!("false"), "{v}");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    let error_line = err
+        .lines()
+        .find(|l| l.starts_with("ERROR:") && l.contains("authorization-unreadable"))
+        .unwrap_or_else(|| panic!("an ERROR: line with the result name:\n{err}"));
+    assert!(
+        error_line.contains(&fx.state.join("invocation.json").display().to_string()),
+        "names the record path: {error_line}"
+    );
+    assert!(
+        error_line.contains(&fx.state.display().to_string()),
+        "names the state folder: {error_line}"
+    );
+    assert!(
+        error_line.contains("helper exit 2"),
+        "names the helper exit code: {error_line}"
+    );
+    assert!(
+        error_line.contains("missing") || error_line.contains("present"),
+        "says whether the record exists: {error_line}"
     );
     assert_no_merge_attempt(&fx);
 
@@ -1489,10 +1508,18 @@ fn merge_refused_without_captured_authorization() {
     fx.set("auth_rc", "0");
     fx.set("auth_out", r#"{"allows_merge": "yes"}"#);
     let out = finalize_merge(&fx, &AUTHORISED);
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
     let v = finalize_result(&out);
     assert_eq!(v["result"], json!("authorization-unreadable"), "{v}");
-    assert_eq!(v["handoff"], json!("true"), "{v}");
+    assert_eq!(v["handoff"], json!("false"), "{v}");
     assert_no_merge_attempt(&fx);
+
+    // Exit 79 stays terminal: it is a refusal, never sent to recovery.
+    fx.set("auth_rc", "79");
+    let out = finalize_merge(&fx, &AUTHORISED);
+    assert_eq!(out.status.code(), Some(79), "{}", show(&out));
+    assert_no_merge_attempt(&fx);
+    fx.set("auth_rc", "0");
 
     // The captured invocation does not allow a merge.
     fx.set(

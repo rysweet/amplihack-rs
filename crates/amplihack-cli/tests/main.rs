@@ -29,6 +29,9 @@ mod isolated_amplihack;
 mod pinned_runner;
 mod support;
 
+#[path = "issue_2922_quiet_child_purge.rs"]
+mod issue_2922_quiet_child_purge;
+
 #[path = "issue_2808_named_checkout.rs"]
 mod issue_2808_named_checkout;
 
@@ -54,6 +57,8 @@ mod issue_2582_nested_context_off_argv;
 mod issue_2582_real_runner_argv;
 #[path = "issue_2585_launch_notices_stderr.rs"]
 mod issue_2585_launch_notices_stderr;
+#[path = "issue_2959_invocation_record_lifetime.rs"]
+mod issue_2959_invocation_record_lifetime;
 
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
@@ -384,6 +389,8 @@ mod issue_2535_recipe_guide_cli;
 mod issue_2535_recipe_guide_injection;
 #[path = "issue_2535_recipe_guide_publish.rs"]
 mod issue_2535_recipe_guide_publish;
+#[path = "issue_2538_cross_repo_refusal.rs"]
+mod issue_2538_cross_repo_refusal;
 #[path = "issue_2539_step_recovery_driver.rs"]
 mod issue_2539_step_recovery_driver;
 #[path = "issue_2539_step_recovery_fixture.rs"]
