@@ -26,6 +26,16 @@ steps:
     action: execute_command
     target: bash tests/qa/autodrive-followups.sh refused
     timeout: 100000
+  - name: Awkward findings (mentions and references, bidirectional overrides, two-byte characters across the cut, a path with no space, an empty summary) each get a readable labelled title
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/autodrive-followups.sh edge
+    timeout: 100000
+  - name: The crusty loop's own end leaves the phase incomplete while the label is refused, and a rerun files the labelled issue and records the loop complete
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/autodrive-followups.sh finalize
+    timeout: 100000
 assertions: []
 metadata:
   tags: [cli, auto-drive, follow-up, regression]

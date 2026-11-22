@@ -6,16 +6,23 @@
 # is missing, and `gh label create` adds it. HOME, TMPDIR, the state dir and
 # gh's config are fixtures with 0700 roots; no real login or network is used.
 #
-# Usage: bash tests/qa/autodrive-followups.sh label|long|refused
+# Usage: bash tests/qa/autodrive-followups.sh label|long|refused|edge|finalize
 #   label    a repository without the follow-up label: it is made first, the
 #            issue carries it, and the title is the finding with no task id
 #   long     a finding longer than 200 characters, with a short one beside it:
 #            each title is the finding's own whole words
 #   refused  the label cannot be made: the step fails loudly with gh's own
 #            message and followup-create-failed, and records nothing as filed
+#   edge     awkward findings: mentions and references, bidirectional
+#            overrides, two-byte characters across the 256 cut, a path with
+#            no space, and an empty summary; each title stays readable
+#   finalize the crusty loop's own end (autodrive_crusty_finalize.sh, as the
+#            re-review calls it): a refused label leaves the phase incomplete
+#            with gh's message, and a rerun once the label can be made files
+#            the issue and records the crusty loop complete
 set -uo pipefail
-scenario=${1:?expected label, long or refused}
-case "$scenario" in label|long|refused) ;; *) echo "unknown scenario: $scenario" >&2; exit 2 ;; esac
+scenario=${1:?expected label, long, refused, edge or finalize}
+case "$scenario" in label|long|refused|edge|finalize) ;; *) echo "unknown scenario: $scenario" >&2; exit 2 ;; esac
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 tool="$repo_root/amplifier-bundle/tools/autodrive_followups.sh"
 fixture=$(mktemp -d "${TMPDIR:-/tmp}/autodrive-followups-qa.XXXXXX") || exit 1
@@ -66,7 +73,7 @@ chmod 700 "$fixture/bin/gh"
 
 # Every run of the tool: fixtures first on PATH, no token, no inherited state.
 run_tool() {
-  env -u GH_TOKEN -u GITHUB_TOKEN -u GH_HOST -u BASH_ENV -u GIT_DIR -u GIT_WORK_TREE \
+  env -u GH_TOKEN -u GITHUB_TOKEN -u GH_HOST -u BASH_ENV -u GIT_DIR -u GIT_WORK_TREE -u AUTODRIVE_DRY_RUN \
     HOME="$fixture/home" TMPDIR="$fixture/tmp" GH_CONFIG_DIR="$fixture/gh-config" \
     PATH="$fixture/bin:$PATH" QA_REPO="$log" GIT_CONFIG_NOSYSTEM=1 \
     "$@" bash "$tool" "${tool_args[@]}"
@@ -110,6 +117,7 @@ whole_words() {
   [ "${1:0:${#2}}" = "$2" ] && [ "${1:${#2}:1}" = " " ]
 }
 no_task_id() { case "$1" in *2915*|Follow-up*) return 1 ;; esac; }
+chars() { printf '%s' "$1" | jq -Rrs length; } # characters (codepoints), not bytes
 
 case "$scenario" in
   label)
@@ -159,6 +167,63 @@ case "$scenario" in
     tool_args=(gate --state-dir "$state" --pr 7)
     gate=$(run_tool env 2>/dev/null); echo "gate: $gate"
     check "the gate reports the follow-ups as not filed" grep -q "follow-up issues not filed" <<<"$gate" ;;
+  edge)
+    wide=$(printf 'café %.0s' {1..60}); wide=${wide% }
+    path=$(printf 'amplifier-bundle/tools/%.0s' {1..14}); path=${path:0:300}
+    echo "two-byte finding: $(chars "$wide") characters; path with no space: ${#path} characters"
+    crusty_round "$(jq -cn --arg w "$wide" --arg t "$path" '[
+      {id:"refs-1",severity:"minor",summary:"Point @octocat at #42 and GH-7 on github.com/o/r",evidence:"e"},
+      {id:"bidi-2",severity:"minor",summary:"Keep the words \u202ein reading order\u202c here",evidence:"e"},
+      {id:"wide-3",severity:"minor",summary:$w,evidence:"e"},
+      {id:"word-4",severity:"minor",summary:$t,evidence:"e"},
+      {id:"empty-5",severity:"minor",summary:"",evidence:"e"}]')"
+    file_followups
+    for i in 1 2 3 4 5; do
+      printf 'title %s (%s characters): %s\n' "$i" "$(chars "$(cat "$log/title-$i.txt" 2>/dev/null)")" "$(cat "$log/title-$i.txt" 2>/dev/null)"
+    done
+    t1=$(cat "$log/title-1.txt" 2>/dev/null); t2=$(cat "$log/title-2.txt" 2>/dev/null); t3=$(cat "$log/title-3.txt" 2>/dev/null)
+    t4=$(cat "$log/title-4.txt" 2>/dev/null); t5=$(cat "$log/title-5.txt" 2>/dev/null)
+    zw=$'\xe2\x80\x8b'
+    check "file exits 0 and reports followups-ok 5" test "$rc:$out" = "0:followups-ok 5"
+    check "five issues, each with exactly the follow-up label" \
+      test "$(cat "$log"/labels-[1-5].txt 2>/dev/null | sort | uniq -c | awk '{print $1, $2}')" = "5 follow-up"
+    check "no mention or reference in a title links anywhere" test -z "$(grep -lE '@[a-z]|#[0-9]|GH-[0-9]|github\.com/[a-z]' "$log"/title-[1-5].txt)"
+    check "the reference title reads as the finding once the breaks are removed" \
+      test "${t1//$zw/}" = "Point @octocat at #42 and GH-7 on github.com/o/r"
+    check "no title carries a bidirectional override or isolate" \
+      test -z "$(grep -lP '[\x{202A}-\x{202E}\x{2066}-\x{2069}]' "$log"/title-[1-5].txt)"
+    check "the override title is the finding's own words" test "$t2" = "Keep the words in reading order here"
+    check "the two-byte title is within 256 characters" test "$(chars "$t3")" -le 256
+    check "the two-byte title is valid UTF-8 (no character split)" iconv -f UTF-8 -t UTF-8 "$log/title-3.txt" -o /dev/null
+    check "the two-byte title keeps whole words" whole_words "$wide" "$t3"
+    check "a path with no space in it is cut at 256 characters" test "$t4" = "${path:0:256}"
+    check "an empty finding is filed under its id, not an empty title" test "$t5" = "Minor crusty finding empty-5"
+    check "no title has a task id" test -z "$(grep -lE '2915|^Follow-up' "$log"/title-[1-5].txt)" ;;
+  finalize)
+    crusty_round '[{"id":"naming-6","severity":"minor","summary":"Name the round reader after the record it reads","evidence":"e"}]'
+    printf 'Fixes #2915.\n' > "$fixture/task.md"
+    tool="$repo_root/amplifier-bundle/tools/autodrive_crusty_finalize.sh"
+    tool_args=("$state" 7 "" "$fixture/task.md")
+    run_tool env QA_LABEL_REFUSE=1 >"$fixture/fin1.out" 2>&1; rc=$?
+    echo "finalize with the label refused: exit $rc"; sed 's/^/  | /' "$fixture/fin1.out"
+    check "the refused run exits 1" test "$rc" = 1
+    check "gh's own message for the label reaches the log" grep -qF "Resource not accessible by integration" "$fixture/fin1.out"
+    check "the phase is reported incomplete" grep -qF "followups-unfiled: filing failed; phase remains incomplete" "$fixture/fin1.out"
+    check "the crusty loop is not recorded complete" test ! -s "$state/phases.tsv"
+    check "no issue was filed" test ! -e "$log/created"
+    run_tool env >"$fixture/fin2.out" 2>&1; rc=$?
+    echo "finalize once the label can be made: exit $rc"; sed 's/^/  | /' "$fixture/fin2.out"
+    title=$(cat "$log/title-1.txt" 2>/dev/null)
+    check "the rerun exits 0" test "$rc" = 0
+    check "exactly one issue was filed over both runs" test "$(grep -c . "$log/created" 2>/dev/null)" = 1
+    check "the issue carries exactly the follow-up label" test "$(cat "$log/labels-1.txt" 2>/dev/null)" = follow-up
+    check "the title is the finding in plain words" test "$title" = "Name the round reader after the record it reads"
+    check "the body names the task from the task text" grep -qxF "Task: #2915" "$log/body-1.md"
+    check "the crusty loop is recorded complete" grep -q $'^crusty-loop\t' "$state/phases.tsv"
+    check "followups.error is cleared" test ! -e "$state/followups.error"
+    tool="$repo_root/amplifier-bundle/tools/autodrive_followups.sh"; tool_args=(gate --state-dir "$state" --pr 7)
+    gate=$(run_tool env 2>/dev/null); grc=$?; echo "gate (exit $grc): $gate"
+    check "the merge gate's follow-up check passes" test "$grc" = 0 ;;
 esac
 echo "scenario $scenario: $fails failed"
 [ "$fails" -eq 0 ]
