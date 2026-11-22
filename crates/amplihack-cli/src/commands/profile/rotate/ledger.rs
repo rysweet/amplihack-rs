@@ -351,7 +351,7 @@ impl RotateState {
             .map_err(|e| inconsistent(e.to_string()))?;
         self.write("ledger.json", &bytes)?;
         // #2909: so the watch loop does not take its own rename for an event.
-        super::daemon::wake::note_written(&bytes);
+        super::daemon::wake::note_written(&self.ledger, &bytes);
         Ok(())
     }
 

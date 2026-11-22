@@ -16,9 +16,9 @@
 //! - `wake::Blocks::fell_due(since, now_unix) -> bool`: a reset that passed
 //!   while the last cycle ran makes the next one run at once. Asked of the
 //!   blocks that cycle began with as well, because its own save prunes them.
-//! - `wake::note_written(&[u8])` and `wake::is_self_write(&Path) -> bool`:
-//!   identical bytes to the last write are this rotator's own; anything
-//!   else, a missing file included, is not.
+//! - `wake::note_written(&Path, &[u8])` and `wake::is_self_write(&Path) ->
+//!   bool`: identical bytes to the last write *of that ledger* are this
+//!   rotator's own; anything else, a missing file included, is not.
 //! - `wake::Blocks::of(&RotateLedger)` and `Blocks::differ_at(&other, now)`:
 //!   a block recorded while a cycle ran, and kept by that cycle's own save,
 //!   differs from the blocks the cycle began with, so it still wakes the
@@ -33,13 +33,9 @@ use super::super::ledger::{
 use super::{active_blocks, prune_blocks, valid_kind};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const NOW: i64 = 1_793_389_376;
-
-/// `wake` keeps one process-wide record of the last write.
-static SERIAL: Mutex<()> = Mutex::new(());
 
 fn root() -> (tempfile::TempDir, RotateState) {
     let tmp = tempfile::tempdir().unwrap();
@@ -306,20 +302,44 @@ fn a_ledger_write_straight_after_a_cycle_waits_out_the_rest_of_the_floor() {
 
 #[test]
 fn identical_bytes_are_a_self_write_and_any_difference_is_not() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (_t, rs) = root();
     fs::write(&rs.ledger, b"{\"version\":1}").unwrap();
-    note_written(b"{\"version\":1}");
+    note_written(&rs.ledger, b"{\"version\":1}");
     assert!(is_self_write(&rs.ledger));
     fs::write(&rs.ledger, b"{\"version\":1} ").unwrap();
     assert!(!is_self_write(&rs.ledger), "one byte differs");
 }
 
+/// The record is per ledger: a write to another root, which every other
+/// test in this binary makes in parallel, never answers for this one.
+#[test]
+fn a_write_to_another_ledger_is_not_this_ledgers_self_write() {
+    let (_t, mine) = root();
+    let (_o, other) = root();
+    fs::write(&mine.ledger, b"{\"version\":1}").unwrap();
+    note_written(&mine.ledger, b"{\"version\":1}");
+    fs::write(&other.ledger, b"{\"version\":1}").unwrap();
+    note_written(&other.ledger, b"{\"version\":1}");
+    assert!(
+        is_self_write(&mine.ledger),
+        "the other root did not displace it"
+    );
+    fs::write(&other.ledger, b"{}").unwrap();
+    note_written(&other.ledger, b"{}");
+    assert!(
+        is_self_write(&mine.ledger),
+        "nor did changing the other root"
+    );
+    assert!(
+        !is_self_write(&root().1.ledger),
+        "a root never written has no record"
+    );
+}
+
 #[test]
 fn a_missing_or_oversized_file_reads_as_changed() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (_t, rs) = root();
-    note_written(b"x");
+    note_written(&rs.ledger, b"x");
     assert!(!is_self_write(&rs.ledger), "missing");
     fs::write(&rs.ledger, vec![b'x'; 1024 * 1024]).unwrap();
     assert!(!is_self_write(&rs.ledger), "oversized");
@@ -327,7 +347,6 @@ fn a_missing_or_oversized_file_reads_as_changed() {
 
 #[test]
 fn a_ledger_this_process_did_not_write_is_not_a_self_write() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (_t, rs) = root();
     rs.save_ledger(&RotateLedger::default()).unwrap();
     assert!(
@@ -349,7 +368,6 @@ fn a_ledger_this_process_did_not_write_is_not_a_self_write() {
 /// blocks in force.
 #[test]
 fn a_block_kept_by_the_rotators_own_save_still_counts_as_a_change() {
-    let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (_t, rs) = root();
     let began = Blocks::of(&RotateLedger::default());
     // The cycle's save, made after the step's record, carries the block.

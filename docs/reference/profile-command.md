@@ -1293,10 +1293,11 @@ lengthen a wait either. With `--interval 1` the rotator still ticks every
 second.
 
 The rotator's own ledger writes do not wake it. It keeps the bytes it last
-wrote and, on a ledger change, reads the file once; identical bytes mean its
-own write, and it waits on unchanged. Any other content runs a cycle. A
-failed save, and a file that is missing or over the size limit, count as
-changed content and cost one extra cycle.
+wrote to each ledger it has written and, on a ledger change, reads the file
+once; identical bytes for that path mean its own write, and it waits on
+unchanged. Any other content runs a cycle, as does a write to a ledger the
+process has not written. A failed save, and a file that is missing or over the
+size limit, count as changed content and cost one extra cycle.
 
 A writer records a block under the rotate lock, and a cycle holds that lock
 only from its check before a swap to its last save, not while it measures. A

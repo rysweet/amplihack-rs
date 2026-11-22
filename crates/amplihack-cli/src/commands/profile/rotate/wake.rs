@@ -34,9 +34,10 @@ use super::super::ledger::{MAX_STATE, RotateLedger, RotateState, trusted};
 use super::super::log::wake_msg::{self, Reason};
 use crate::commands::profile::auto_switch::kit::{now, read_bounded_nofollow};
 use amplihack_utils::file_event::{SWAP_MASK, Waiter, Watch, Woke};
+use std::collections::BTreeMap;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -50,26 +51,34 @@ pub use blocks::Blocks;
 /// one per this many seconds, or per `--interval` when that is shorter.
 const COALESCE_SECS: u64 = 5;
 
-/// The ledger bytes this process wrote last, so a wake raised by the
-/// rotator's own atomic write is not taken for a limit event. Held in
-/// memory only: it carries profile names and account fields, so it is never
-/// logged, printed or written anywhere, and it has no `Debug`.
-static LAST_WRITTEN: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+/// The bytes this process wrote last into each ledger it has written, so a
+/// wake raised by the rotator's own atomic write is not taken for a limit
+/// event. Held in memory only: the bytes carry profile names and account
+/// fields, so they are never logged, printed or written anywhere, and this
+/// has no `Debug`.
+///
+/// Keyed by the ledger's path, not kept as one slot, so a save to another
+/// root cannot stand in for the watched one. A rotator writes a single
+/// root, so this holds one entry; a process that writes several holds one
+/// each, which is also what keeps the entries of the test binary's
+/// temporary roots apart.
+static LAST_WRITTEN: Mutex<BTreeMap<PathBuf, Vec<u8>>> = Mutex::new(BTreeMap::new());
 
-/// Records the bytes `save_ledger` has just put in `ledger.json`.
+/// Records the bytes `save_ledger` has just put in `ledger`.
 ///
 /// Called *after* the rename succeeds, never before. An external write made
 /// between the rename and this call is then read as this process's own on
 /// the next wake, costing one extra cycle; inverting the order would
 /// instead suppress real external changes, which is the failure that
 /// matters. Do not invert it.
-pub fn note_written(bytes: &[u8]) {
+pub fn note_written(ledger: &Path, bytes: &[u8]) {
     if let Ok(mut last) = LAST_WRITTEN.lock() {
-        *last = Some(bytes.to_vec());
+        last.insert(ledger.to_path_buf(), bytes.to_vec());
     }
 }
 
-/// Whether `ledger` holds, byte for byte, what this process wrote last.
+/// Whether `ledger` holds, byte for byte, what this process wrote into
+/// *that* ledger last.
 ///
 /// `save_ledger` renames over the watched name on nearly every cycle, so a
 /// long-lived waiter wakes on its own write. Comparing content, not the
@@ -78,18 +87,18 @@ pub fn note_written(bytes: &[u8]) {
 ///
 /// Fails open in every direction that costs only a cycle: a missing file, a
 /// file over [`MAX_STATE`], one owned by another user, or nothing recorded
-/// yet all read as changed. Suppression is the only path that skips a
-/// cycle, and it takes an exact match.
+/// for that path all read as changed. Suppression is the only path that
+/// skips a cycle, and it takes an exact match of path and content.
 pub fn is_self_write(ledger: &Path) -> bool {
     let Ok(last) = LAST_WRITTEN.lock() else {
         return false;
     };
-    let Some(last) = last.as_deref() else {
+    let Some(last) = last.get(ledger) else {
         return false;
     };
     matches!(
         read_bounded_nofollow(ledger, MAX_STATE),
-        Ok(Some((raw, m))) if trusted(&m) && raw == last
+        Ok(Some((raw, m))) if trusted(&m) && raw == last.as_slice()
     )
 }
 
