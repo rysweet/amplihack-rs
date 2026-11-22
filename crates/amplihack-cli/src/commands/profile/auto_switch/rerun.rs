@@ -636,11 +636,13 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         if let Some(lim) = &limited {
             // Issues #2890, #2911, #2909: every limit of every kind blocks
             // the login this attempt ran under, until the reset the message
-            // stated. The rotator's `/usage` probe cannot see a spend limit
-            // at all and learns of a window limit only on its own cycle, so
-            // without this record it keeps the login live while every step
-            // on it fails. It is data the rotator reads: it ends no run, and
-            // the wait below is planned whatever happens to it.
+            // stated, held to the kind's own window (five hours for a
+            // session limit, seven days for a weekly one). The rotator's
+            // `/usage` probe cannot see a spend limit at all and learns of a
+            // window limit only on its own cycle, so without this record it
+            // keeps the login live while every step on it fails. It is data
+            // the rotator reads: it ends no run, and the wait below is
+            // planned whatever happens to it.
             //
             // Recorded *before* the wait is planned, so the wake conditions
             // and the rotator's own target choice already leave the blocked

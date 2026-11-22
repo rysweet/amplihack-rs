@@ -379,8 +379,9 @@ or at the failed login's own reset plus 120 seconds. See
 [Usage-limit waits](./usage-limit-waits.md#what-max_wait_secs-means).
 
 The length has a floor of 60 seconds, twice the wait's poll interval, so a
-configured `0` means 60 seconds and not "do not wait". To stop steps waiting
-at all, set `recipe.usage_limit_wait` to `false`.
+configured `0` means 60 seconds and not "do not wait". While the wait is on, a
+step that reads a value below 60 says so in a warning on standard error. To
+stop steps waiting at all, set `recipe.usage_limit_wait` to `false`.
 
 The default is not a ceiling. A user file or
 `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a higher value. A project file

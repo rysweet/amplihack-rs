@@ -1,6 +1,8 @@
 //! Issues #2911 and #2909 (emitter): a step's limit failure of any kind
 //! writes `overflow_blocked[login]` with the reset from the message, in the
-//! shape older readers accept.
+//! shape older readers accept. A session block ends at most five hours after
+//! it is written and a weekly block at most seven days after, whatever reset
+//! the message states (security review of PR #2992).
 
 #![cfg(unix)]
 
@@ -12,6 +14,21 @@ use std::fs;
 use std::process::Command;
 
 const WEEKLY_NEAR: &str = "You've hit your weekly limit · resets Oct 20, 2pm (America/Los_Angeles)";
+
+/// `WEEKLY_NEAR`'s reset, 21:00Z on 20 October, measured from `TEST_NOW`
+/// (15:00Z on 18 October): two days and six hours, inside the weekly window.
+const WEEKLY_NEAR_SECS: i64 = 2 * 86_400 + 6 * 3_600;
+
+/// A message in the harness's own shape stating a reset 30 days away, which
+/// no session or weekly window has. The step cannot tell such a line from
+/// one a model printed as its last line of output.
+const SESSION_FAR: &str =
+    "You've hit your session limit · resets Nov 17, 2pm (America/Los_Angeles)";
+const WEEKLY_FAR: &str = "You've hit your weekly limit · resets Nov 17, 2pm (America/Los_Angeles)";
+
+fn span(b: &serde_json::Value) -> i64 {
+    b["until"].as_i64().unwrap() - b["at"].as_i64().unwrap()
+}
 
 fn ledger(f: &Fixture) -> serde_json::Value {
     let p = f.profiles.join(".auto-switch.d/rotate/ledger.json");
@@ -57,7 +74,21 @@ fn a_session_limit_records_a_block_with_the_stated_reset() {
 fn a_weekly_limit_records_a_block_with_the_stated_reset() {
     let (_f, b) = run_and_block(WEEKLY_NEAR);
     assert_eq!(b["reason"], "spend_limit");
-    assert!(b["until"].as_i64().unwrap() > b["at"].as_i64().unwrap());
+    assert_eq!(span(&b), WEEKLY_NEAR_SECS, "inside the window: unchanged");
+}
+
+#[test]
+fn a_session_limit_stating_a_far_reset_blocks_for_at_most_five_hours() {
+    let (_f, b) = run_and_block(SESSION_FAR);
+    assert_eq!(b["reason"], "spend_limit");
+    assert_eq!(span(&b), 5 * 3_600, "{b}");
+}
+
+#[test]
+fn a_weekly_limit_stating_a_far_reset_blocks_for_at_most_seven_days() {
+    let (_f, b) = run_and_block(WEEKLY_FAR);
+    assert_eq!(b["reason"], "spend_limit");
+    assert_eq!(span(&b), 7 * 86_400, "{b}");
 }
 
 #[test]

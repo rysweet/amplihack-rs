@@ -36,6 +36,16 @@ A limit never ends a step. Only these do:
 There is no retry count and no wall-clock budget that ends a run. A step that
 meets a second, third or tenth limit waits for each.
 
+Without a step timeout, nothing bounds those waits. A step on a single login
+with no rotator, whose harness keeps reporting a limit, waits for one
+`max_wait_secs`, runs the agent again, and repeats until the limit clears.
+Each retry runs the agent again, with its cost and its side effects.
+Unattended runs should therefore set a step timeout, with `--step-timeout`,
+[`recipe.step_timeout`](./user-config.md#recipestep_timeout) or
+[`AMPLIHACK_STEP_TIMEOUT`](./environment-variables.md#amplihack_step_timeout).
+The [waiting_for_capacity line](#the-waiting_for_capacity-line) at the start
+of each wait is how an operator tells such a step from a hung one.
+
 ## Limit kinds
 
 The supervisor reads the kind of limit from the harness's own words:
@@ -48,7 +58,8 @@ The supervisor reads the kind of limit from the harness's own words:
 | `credits` | `Your workspace is out of credits` (Codex) |
 
 Unrecognised wording is read as `session`, the shortest window, so a malformed
-or forged message cannot hold a login out of rotation for long.
+or forged message holds a login out of rotation for at most five hours (see
+[the limit record](#the-limit-record)).
 
 ## The limit record
 
@@ -72,7 +83,7 @@ login name:
 | Field | Meaning |
 |-------|---------|
 | `at` | Epoch second the limit was met. |
-| `until` | Epoch second the reset stated in the message falls on, moved onto the real clock. |
+| `until` | Epoch second the reset stated in the message falls on, moved onto the real clock, and held to the kind's window (rule 3 below). |
 | `reason` | Always `spend_limit`, the one value every version of the rotator accepts. |
 
 The record has this one shape for every kind of limit, because the rotator
@@ -87,12 +98,20 @@ Rules the writer keeps:
 1. The ledger must already exist. The writer never creates it, so a host with
    no rotator gains no file.
 2. The stated span must satisfy the ledger's span rule (`until` after `at`,
-   at most 62 days).
-3. It waits at most 10 seconds for the ledger's lock, then reports
-   `rotator busy` and writes nothing. There is no retry.
-4. An active block stands. It is not extended and raises no second alert.
-5. At most 256 blocks are kept; expired ones are pruned first.
-6. The write is atomic and the ledger keeps its owner-only permissions.
+   at most 62 days). A reset outside it is reported as
+   `stated reset out of range` and writes nothing.
+3. A `session` record ends at most five hours after `at`, and a `weekly`
+   record at most seven days after it, whatever reset the message states. A
+   genuine reset always lies inside its window, so a genuine message is
+   recorded as stated. The step cannot tell the harness's own message from a
+   model that printed one as the last line of its answer, and this rule
+   limits how long a forged one can keep a login out of rotation. `spend` and
+   `credits` records keep the stated reset, within rule 2.
+4. It waits at most 10 seconds for the ledger's lock, for every kind of
+   limit, then reports `rotator busy` and writes nothing. There is no retry.
+5. An active block stands. It is not extended and raises no second alert.
+6. At most 256 blocks are kept; expired ones are pruned first.
+7. The write is atomic and the ledger keeps its owner-only permissions.
 
 When the message states no reset, a `spend` limit is recorded until the
 rotator's own spend reset (00:00 UTC on the 1st of the next month). A
@@ -191,6 +210,13 @@ seconds, and a configured `0` means 60 seconds. A host that set `0` to disable
 waiting must set `recipe.usage_limit_wait` to `false` instead. See
 [recipe.usage_limit_wait](./user-config.md#recipeusage_limit_wait).
 
+While the wait is on, a step that reads a configured length below 60 seconds
+says so on standard error, once per step:
+
+```
+warning: recipe.usage_limit_max_wait_secs (AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS) is below 60 seconds, so each usage-limit wait lasts 60 seconds; 0 no longer turns the wait off: set recipe.usage_limit_wait = false (AMPLIHACK_USAGE_LIMIT_WAIT=0) to stop steps waiting
+```
+
 ## Codex credit exhaustion
 
 `Your workspace is out of credits`, Codex's own words, is classed
@@ -234,7 +260,14 @@ finds them as the `reason=` of a `waiting_for_capacity` line.
 
 ## Limits of this behaviour
 
-- A Codex step launched directly is not supervised and does not wait.
+- A Codex step launched directly is not supervised and does not wait
+  ([#2949](https://github.com/rysweet/amplihack-rs/issues/2949)).
+- A forged `session` or `weekly` line can still keep a login out of rotation
+  for up to five hours or seven days, and a forged `spend` line until its
+  stated reset, within 62 days
+  ([#3005](https://github.com/rysweet/amplihack-rs/issues/3005)).
+- No line reports how long a step has waited in total
+  ([#3003](https://github.com/rysweet/amplihack-rs/issues/3003)).
 - Output carrying both an authentication failure and the credits phrase classes
   `environmental` first, and does not wait. That fails closed.
 - A pinned step with a spend limit that no login change lifts waits in cycles

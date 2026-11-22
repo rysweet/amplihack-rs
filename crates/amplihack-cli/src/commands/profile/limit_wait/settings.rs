@@ -23,6 +23,11 @@
 //! working: a filter that dropped a zero instead would silently raise a
 //! project's configured value to the 21 600-second default.
 //!
+//! Raising it is not silent. Before #2911 a `0` meant "fail at once", so a
+//! host may still carry one that now means a 60-second wait. While the wait
+//! is on, [`resolve`] says so on stderr each time it reads such a value
+//! ([`floor_warning`]), and names the key that turns the wait off.
+//!
 //! [`plan::MIN_WAIT_SECS`]: super::plan::MIN_WAIT_SECS
 
 use crate::user_config::{Effective, Origin, Value};
@@ -51,7 +56,36 @@ pub(crate) fn resolve(cwd: &Path) -> WaitSettings {
             eprintln!("warning: {reason}; ignoring it");
         }
     }
-    from_effective(&effective, ci.as_deref())
+    let settings = from_effective(&effective, ci.as_deref());
+    if let Some(warning) = floor_warning(&effective, &settings) {
+        eprintln!("{warning}");
+    }
+    settings
+}
+
+/// The warning [`resolve`] prints when the configured length is below
+/// [`plan::MIN_WAIT_SECS`] and was raised to it, or `None`.
+///
+/// Only while the wait is on: with it off the length is never used, so
+/// there is nothing to warn about. The line names the key and the variable,
+/// never the configured value, as the invalid-variable warning above does.
+///
+/// [`plan::MIN_WAIT_SECS`]: super::plan::MIN_WAIT_SECS
+pub(crate) fn floor_warning(effective: &Effective, settings: &WaitSettings) -> Option<String> {
+    let floor = super::plan::MIN_WAIT_SECS;
+    let configured = effective
+        .entry(MAX_WAIT_KEY)
+        .value
+        .as_ref()
+        .and_then(Value::as_int)?;
+    (settings.enabled && configured < floor).then(|| {
+        format!(
+            "warning: {MAX_WAIT_KEY} (AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS) is below \
+             {floor} seconds, so each usage-limit wait lasts {floor} seconds; 0 no \
+             longer turns the wait off: set {ENABLED_KEY} = false \
+             (AMPLIHACK_USAGE_LIMIT_WAIT=0) to stop steps waiting"
+        )
+    })
 }
 
 /// [`resolve`] from a loaded config and the value of `CI`.

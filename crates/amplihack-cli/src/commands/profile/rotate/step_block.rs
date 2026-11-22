@@ -6,9 +6,10 @@
 //! the step that met one. The step is the first witness either way, so it
 //! writes the block itself, into the same `overflow_blocked` map and with
 //! the same `spend_limit` reason the rotator already uses. Nothing else
-//! changes: `active_blocks` and `prune_blocks` expire it at the stated
-//! reset, `profile overflow clear` removes it, and every reader that already
-//! honours a block honours this one.
+//! changes: `active_blocks` and `prune_blocks` expire it at its end (the
+//! stated reset, held to the kind's window), `profile overflow clear`
+//! removes it, and every reader that already honours a block honours this
+//! one.
 //!
 //! The reason stays `spend_limit` for every kind on purpose. `valid_overflow`
 //! refuses a whole ledger holding a block with any other reason, so a host
@@ -30,9 +31,18 @@
 //!    none falls back to the monthly reset the rotator already assumes; any
 //!    other kind with no stated reset writes nothing, because a block with
 //!    an invented end would hold a healthy login out of rotation.
-//! 2. **The span is valid** ([`valid_span`], the loader's own rule). A block
-//!    outside it would make the whole ledger unreadable on the next load,
-//!    which would stop the rotator's prelude on every cycle.
+//! 2. **The span is valid, and the block is held to its kind's window**
+//!    ([`bounded`]). The stated reset must pass [`valid_span`], the loader's
+//!    own rule: a block outside it would make the whole ledger unreadable on
+//!    the next load, which would stop the rotator's prelude on every cycle.
+//!    Then a session block is cut to at most five hours and a weekly block
+//!    to at most seven days, however far away the message put the reset.
+//!    The step cannot tell the harness's own message from a model that
+//!    printed one as its last line, so this is what limits how long a forged
+//!    session or weekly message can keep a healthy login out of rotation. A
+//!    genuine reset always falls inside its window, so a genuine message is
+//!    never shortened. A spend or credit limit has no fixed window and keeps
+//!    the span rule alone.
 //! 3. **The lock**, waited for at most [`CLEAR_LOCK_WAIT`] and then given
 //!    up. A busy rotator can hold a step up for that long and no longer;
 //!    there is no retry, so the wait has a ceiling even under contention.
@@ -49,9 +59,13 @@ use super::ledger::{MAX_BLOCKS, OverflowBlock, RotateState, prune_blocks, spend_
 use super::log::msg;
 use super::spend_blocks::valid_span;
 use crate::commands::profile::auto_switch::kit::{State, exists};
+use crate::commands::profile::limit_wait::plan::FIVE_HOURS;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::recipe::run::limit_patterns::LimitKind;
 use std::path::Path;
+
+/// The weekly window's length: the longest a weekly block may last.
+const SEVEN_DAYS: i64 = 7 * 86_400;
 
 /// Why a block was not stored. A closed set of fixed strings: the ALERT
 /// lines interpolate one of these, a parsed [`ProfileName`], a
@@ -93,6 +107,7 @@ pub fn note_limit_block(
     }
     let stored = resolved_until(until, at, kind)
         .ok_or(NO_RESET)
+        .and_then(|until| bounded(at, until, kind))
         .and_then(|until| store(&rs, login, at, until));
     match stored {
         Ok(Some(until)) => report(&rs, at, &msg::alert_step_limit_block(login, kind, until)),
@@ -120,27 +135,57 @@ fn resolved_until(until: Option<i64>, at: i64, kind: LimitKind) -> Option<i64> {
     }
 }
 
-/// Steps 2 to 7. `Ok(Some(until))` stored a block, `Ok(None)` found nothing
-/// to do, `Err(why)` is one of the fixed reasons above. The lock is released
-/// on every path before this returns, so the log append never holds it.
+/// Step 2: the end of the block to store, or one of the fixed reasons
+/// above.
+///
+/// The loader's span rule is applied to the reset as stated, before the
+/// kind's window shortens it, so a reset the loader would refuse is still
+/// reported as out of range. The window then gives the end that is stored:
+/// the stated reset or [`ceiling`] from `at`, whichever comes first.
+fn bounded(at: i64, until: i64, kind: LimitKind) -> Result<i64, &'static str> {
+    // A reset the clock has already gone past is named separately:
+    // `valid_span` refuses it for the same reason it refuses a reset beyond
+    // its 62 days, but the two read nothing alike to whoever finds the
+    // ALERT, so the lapsed one is taken first and `OUT_OF_RANGE` keeps the
+    // rest.
+    if until <= at {
+        return Err(ALREADY_PASSED);
+    }
+    if !valid_span(&OverflowBlock::spend_limit_until(at, until)) {
+        return Err(OUT_OF_RANGE);
+    }
+    Ok(match ceiling(kind) {
+        Some(window) => until.min(at.saturating_add(window)),
+        None => until,
+    })
+}
+
+/// The longest a block of `kind` may last, or `None` for a kind with no
+/// fixed window.
+///
+/// A session window is five hours and a weekly window seven days, so no
+/// genuine reset of either lies further away than that. A spend or credit
+/// limit lifts on a billing date or when someone adds funds, which has no
+/// fixed distance, so it keeps the loader's 62-day span rule alone.
+fn ceiling(kind: LimitKind) -> Option<i64> {
+    match kind {
+        LimitKind::Session => Some(FIVE_HOURS),
+        LimitKind::Weekly => Some(SEVEN_DAYS),
+        LimitKind::Spend | LimitKind::Credits => None,
+    }
+}
+
+/// Steps 3 to 7, for an end [`bounded`] has already checked.
+/// `Ok(Some(until))` stored a block, `Ok(None)` found nothing to do,
+/// `Err(why)` is one of the fixed reasons above. The lock is released on
+/// every path before this returns, so the log append never holds it.
 fn store(
     rs: &RotateState,
     login: &ProfileName,
     at: i64,
     until: i64,
 ) -> Result<Option<i64>, &'static str> {
-    // 2. The loader's own span rule, applied before the insert. A reset
-    //    the clock has already gone past is named separately: `valid_span`
-    //    refuses it for the same reason it refuses a reset beyond the cap,
-    //    but the two read nothing alike to whoever finds the ALERT, so the
-    //    lapsed one is taken first and `OUT_OF_RANGE` keeps the rest.
-    if until <= at {
-        return Err(ALREADY_PASSED);
-    }
     let block = OverflowBlock::spend_limit_until(at, until);
-    if !valid_span(&block) {
-        return Err(OUT_OF_RANGE);
-    }
     // 3. The rotate state lock, as `profile overflow clear` takes it. No
     //    retry loop: a rotator that holds it longer loses this block, and
     //    the next failing step records one.

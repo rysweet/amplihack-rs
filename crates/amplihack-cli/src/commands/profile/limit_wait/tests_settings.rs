@@ -6,12 +6,21 @@
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_settings;`.
 
 use super::plan::MIN_WAIT_SECS;
-use super::settings::{WaitSettings, from_effective};
+use super::settings::{WaitSettings, floor_warning, from_effective};
 use crate::user_config::{LoadCtx, load};
 use std::fs;
 use std::path::Path;
 
 fn settings(home: &Path, env: &[(&str, &str)], ci: Option<&str>) -> WaitSettings {
+    settings_and_warning(home, env, ci).0
+}
+
+/// The settings and the floor warning `resolve` would print for them.
+fn settings_and_warning(
+    home: &Path,
+    env: &[(&str, &str)],
+    ci: Option<&str>,
+) -> (WaitSettings, Option<String>) {
     let lookup = |name: &str| {
         env.iter()
             .find(|(k, _)| *k == name)
@@ -24,7 +33,9 @@ fn settings(home: &Path, env: &[(&str, &str)], ci: Option<&str>) -> WaitSettings
         env: &lookup,
         migrate: false,
     });
-    from_effective(&effective, ci)
+    let s = from_effective(&effective, ci);
+    let warning = floor_warning(&effective, &s);
+    (s, warning)
 }
 
 fn user_file(home: &Path, body: &str) {
@@ -225,4 +236,65 @@ fn issue_2911_turning_the_wait_off_is_its_own_key() {
     let got = settings(home.path(), &[], None);
     assert!(!got.enabled);
     assert_eq!(got.max_wait_secs, Some(MIN_WAIT_SECS));
+}
+
+// Review of PR #2992: before #2911 a configured `0` meant "fail at once".
+// It now means a 60-second wait, and a host that still carries one is told
+// so each time a step reads it, rather than finding out from a wait it did
+// not expect.
+
+#[test]
+fn issue_2911_a_length_raised_to_the_floor_is_reported() {
+    for body in [0u64, 59] {
+        let home = tempfile::tempdir().unwrap();
+        user_file(
+            home.path(),
+            &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
+        );
+        let (_, warning) = settings_and_warning(home.path(), &[], None);
+        let warning = warning.unwrap_or_else(|| panic!("a configured {body}: no warning"));
+        assert!(warning.starts_with("warning: "), "{warning}");
+        assert!(
+            warning.contains("recipe.usage_limit_max_wait_secs"),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("recipe.usage_limit_wait = false"),
+            "{warning}"
+        );
+        let value = body.to_string();
+        let env = [("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", value.as_str())];
+        assert!(
+            settings_and_warning(home.path(), &env, None).1.is_some(),
+            "the variable set to {body}"
+        );
+    }
+}
+
+#[test]
+fn issue_2911_no_floor_warning_without_cause() {
+    let home = tempfile::tempdir().unwrap();
+    // Nothing configured: the default is above the floor.
+    assert_eq!(settings_and_warning(home.path(), &[], None).1, None);
+    // A length at or above the floor.
+    for body in [MIN_WAIT_SECS, 600] {
+        user_file(
+            home.path(),
+            &format!("[recipe]\nusage_limit_max_wait_secs = {body}\n"),
+        );
+        assert_eq!(
+            settings_and_warning(home.path(), &[], None).1,
+            None,
+            "{body}"
+        );
+    }
+    // A zero with the wait turned off, or off because this is CI: the
+    // length is never used, so there is nothing to say.
+    user_file(
+        home.path(),
+        "[recipe]\nusage_limit_wait = false\nusage_limit_max_wait_secs = 0\n",
+    );
+    assert_eq!(settings_and_warning(home.path(), &[], None).1, None);
+    user_file(home.path(), "[recipe]\nusage_limit_max_wait_secs = 0\n");
+    assert_eq!(settings_and_warning(home.path(), &[], Some("true")).1, None);
 }
