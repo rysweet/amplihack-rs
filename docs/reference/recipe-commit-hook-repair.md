@@ -660,41 +660,58 @@ source file moved *into* `run/reports/` whose addition is dropped.
 
 Resetting a rewritten, tracked report in the index leaves it on disk as an
 unstaged modification. `git pull --rebase` refuses to run with one, exiting
-128 with `cannot pull with rebase: You have unstaged changes`, and on the
-publishing path that refusal is a dead end rather than a recoverable failure:
-step 18c of `workflow-pr-review` has `continue_on_error: true`, so
-[`push-failure-recovery`](recipe-push-failure-recovery.md) runs, but that
-recipe refuses to act while `git status --porcelain
---untracked-files=no` is non-empty, forbids its agent to stage, commit, reset
-or rebase, and fails its gate on `uncommitted-changes`. The run would need a
-person.
+128 with `cannot pull with rebase: You have unstaged changes`. A rebase also
+rewrites the branch's published history, and on a conflict it leaves the
+worktree with a detached `HEAD`, which every later step treats as unsafe
+(#2994). Publishing steps therefore never rebase. They merge the remote
+branch into the local one and push the result through the hooks.
 
-So every pull that can follow `stage_workflow_changes` within the same step
-goes through `workflow_pull_rebase`, a third entry point in the same helper —
-each of these steps has already sourced it to stage, and the helper is where
+Every pull that can follow `stage_workflow_changes` within the same step goes
+through `workflow_pull_merge`, a third entry point in the same helper. Each of
+these steps has already sourced the helper to stage, and the helper is where
 the state being tolerated is created:
 
 | Recipe | Step |
 |---|---|
 | `workflow-pr-review` | `step-18c-push-feedback-changes` |
 | `workflow-finalize` | `step-20b-push-cleanup` |
-| `workflow-publish` | the outside-in retry loop in `step-16b` |
+| `workflow-publish` | the outside-in fix loop in `step-16b` |
 | `consensus-publish` | `step9-commit` |
-| `consensus-pr-feedback` | the review-update push |
+| `consensus-pr-feedback` | `step12-push-updates` |
 
 ```
-workflow_pull_rebase [git-option...]
+workflow_pull_merge [git-option...]
 ```
 
-runs `git -c rebase.autoStash=true <git-option...> pull --rebase`. Git stashes
-the report before the rebase and reapplies it afterwards, so the pull and the
-push succeed and the report keeps its bytes on disk. Arguments are passed to
-git before `pull`, which is how step 20b gets `--no-pager`. The setting is
-passed as `-c rebase.autoStash=true` rather than `--autostash` because git
-older than 2.9 has neither, and ignores an unknown configuration key instead
-of failing on an unknown option; on such a git the step behaves as it did
-before. A clean autostash leaves no entry on `refs/stash`, which matters
-because that stack is shared with every other worktree of the repository.
+runs `git -c merge.autoStash=true <git-option...> pull --no-rebase --ff
+--no-edit` once. Git stashes the report before the merge and reapplies it
+afterwards, so the pull and the push succeed and the report keeps its bytes on
+disk. The report is intact when the incoming change does not touch it. If the
+remote also changes the report, the result is git's normal autostash
+behaviour. `--no-rebase` overrides `pull.rebase`, and `--ff` overrides
+`pull.ff=only`, which some versions of git apply to a diverged branch even
+with `--no-rebase`. A clean autostash leaves no entry on
+`refs/stash`, which matters because that stack is shared with every other
+worktree of the repository.
+
+Arguments are passed to git before `pull`, which is how step 20b gets
+`--no-pager`. Callers pass literal options only.
+
+If the pull fails and has left a merge in progress that was not there before,
+the helper runs `git merge --abort`, with git's output visible, and returns
+the pull's exit status. The branch is then checked out with no `MERGE_HEAD`,
+which is the state [`push-failure-recovery`](recipe-push-failure-recovery.md)
+accepts. A merge that was already in progress, such as an agent's earlier
+attempt at a resolution, is never aborted: git refuses the pull and the helper
+leaves that merge as it found it. Git's output goes to stderr. The helper has
+no exit codes of its own and prints nothing of its own, except one line if
+`git merge --abort` itself fails.
+
+Each step prints git's output on stderr with an `ERROR` line naming the
+command that failed. A conflict or any other refusal therefore reaches an
+agent with git's own message. The agent re-runs `git fetch` and
+`git merge --no-edit origin/<branch>`, resolves the conflict or explains why
+it cannot, and the run does not end on the refusal.
 
 The worktree is still left with the report modified, which is the residue
 described under [Residual risks](#residual-risks-and-detection-limits).
@@ -982,8 +999,8 @@ has its own case in the shell test:
 | top-level `run/reports/` stays out of the index whether untracked, pre-staged, rewritten or in a repository with no commit; a staged deletion still commits | [Staging rules](#staging-rules) |
 | the TDD checkpoint's scoped add also keeps a pre-staged or rewritten tracked report out of the `wip:` commit, through `unstage_root_run_reports_here` | [Where it applies](#where-it-applies) |
 | `workflow-pr-review` step 18c, run whole, commits and pushes the reviewed source with no `run/reports/` path in the commit | [Staging rules](#staging-rules) |
-| step 18c on a branch that already tracks a rewritten report, with origin ahead: the pull autostashes, the rebase and push land, the report keeps its new bytes on disk and its committed bytes in `HEAD`, and the stash stack is left empty | [Pulling after staging](#pulling-after-staging) |
-| `workflow_pull_rebase` on its own, against a repository in that state and a plain `git pull --rebase` refusing the same fixture as a control | [Pulling after staging](#pulling-after-staging) |
+| step 18c on a branch that already tracks a rewritten report, with origin ahead: the pull autostashes, the merge and push land, the report keeps its new bytes on disk and its committed bytes in `HEAD`, and the stash stack is left empty | [Pulling after staging](#pulling-after-staging) |
+| `workflow_pull_merge` on its own, against a repository in that state: a commit with two parents, the report's bytes kept, `refs/stash` unchanged and no `.git/rebase-*` directory, with a plain `git pull --rebase` refusing the same fixture as a control | [Pulling after staging](#pulling-after-staging) |
 | step-15's commit hook never sees `PRE_COMMIT_ALLOW_NO_CONFIG`; a checkpoint's does without a config | [Where it applies](#where-it-applies) |
 | a kept `HR_DIR` holds no unredacted agent or evaluator log | [Evidence](#evidence) |
 
