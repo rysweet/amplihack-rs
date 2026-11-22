@@ -561,6 +561,57 @@ folder they cannot prove unused, so on such a system neither removes a kept
 See [the troubleshooting entry](#troubleshooting) for how to check that
 nothing still uses a folder before deleting it.
 
+##### What this costs, and how to list the kept folders
+
+On such a system every run leaves its `runtime/` folder behind, and nothing
+removes it until the system gets a view of running processes (issue #2936).
+The folder holds what the run's steps wrote to `TMPDIR` and to `artifacts/`,
+so its size is whatever they left there; there is no upper limit.
+
+Sizes measured on one macOS host on 22 November 2026, over the 14 runtime
+folders it held, each read with `du -sk` while its run was in progress:
+
+| Runtime folders | Size of each |
+| --- | --- |
+| 8 of the 14 | under 1 MiB (0 to 660 KiB) |
+| 5, each an auto-drive run, whose launcher copies its recipe bundle into `TMPDIR` | 12.4 MiB |
+| 1, the largest | 42.2 MiB |
+
+So a run that writes little to `TMPDIR` leaves well under 1 MiB, and an
+auto-drive run about 12 MiB. A step that builds in `TMPDIR` can leave far more
+than any figure above. At 12.4 MiB a run, a host that makes 50 auto-drive runs
+a day keeps about 620 MiB a day.
+
+The dry run lists them. It removes nothing:
+
+```bash
+amplihack cleanup --only run-tmp
+```
+
+```text
+CATEGORY        ACTION                             SIZE  PATH
+run-tmp         skipped                        12.4 MiB  /Users/ryan/.amplihack/work/r/3f0c9a526d1e
+                reason: running processes cannot be seen on this system
+run-tmp         skipped                               -  /Users/ryan/.amplihack/work/r/7b1e44c0a2d9
+                reason: run is active
+```
+
+A folder with the reason `running processes cannot be seen on this system`
+belongs to a run that has ended, or was killed, and is waiting to be deleted
+by hand. Its size is shown in the dry run only: `--apply`, and the sweep at
+the end of each run, report the same reason without reading the folder. A
+folder with `run is active` belongs to a run that is still going; leave it
+alone. The reason `in use by a running process` appears only where processes
+can be seen, so it is never printed for these folders.
+
+To see only the kept folders, or their total size:
+
+```bash
+amplihack cleanup --only run-tmp | grep -B1 'cannot be seen'
+amplihack cleanup --only run-tmp --format json \
+  | jq '[.entries[] | select(.reason | contains("cannot be seen")) | .size_bytes] | add'
+```
+
 The folder of a `recipe run --dry-run` is not checked: it lives in the system
 temporary folder, no sweep ever looks at it, and keeping it would leave it
 there for good. It is removed at the end of the dry run.
@@ -1856,6 +1907,10 @@ DIR="$HOME/.amplihack/work/r/<id>"   # the quoted path from the message
 lsof +D "$DIR"                       # lists processes with a file or working folder inside it
 rm -rf -- "$DIR"                     # only when lsof printed nothing
 ```
+
+`amplihack cleanup --only run-tmp` lists every folder kept this way, with its
+size; see
+[What this costs, and how to list the kept folders](#what-this-costs-and-how-to-list-the-kept-folders).
 
 `lsof +D` does not show a process whose only link to the folder is a `TMPDIR`
 value, so also make sure that no build server, language server or background

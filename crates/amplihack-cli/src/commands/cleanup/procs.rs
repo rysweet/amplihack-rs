@@ -124,6 +124,27 @@ pub(crate) enum Use {
     Unknown,
 }
 
+/// The reason a cleanup report gives for a folder a process uses.
+pub(crate) const REASON_IN_USE: &str = "in use by a running process";
+
+/// The reason a cleanup report gives for a folder whose use is not known
+/// (issue #2935). It is a different line from [`REASON_IN_USE`] on purpose:
+/// on a system without `/proc` every folder is kept for this reason, and a
+/// report that said "in use" there would name a process that may not exist.
+pub(crate) const REASON_USE_UNKNOWN: &str = "running processes cannot be seen on this system";
+
+impl Use {
+    /// Why a folder with this use is kept, in the words of a cleanup report,
+    /// or `None` when it is free and may go.
+    pub(crate) fn keep_reason(self) -> Option<&'static str> {
+        match self {
+            Use::Free => None,
+            Use::Held => Some(REASON_IN_USE),
+            Use::Unknown => Some(REASON_USE_UNKNOWN),
+        }
+    }
+}
+
 /// Working folders and open files of every other process this user can see.
 pub(crate) struct ProcScan {
     available: bool,
@@ -150,15 +171,17 @@ impl ProcScan {
         }
     }
 
-    /// Whether a process has its working folder, a file open or its temporary
-    /// folder variable in `path`.
-    /// Without a view of the processes, everything counts as in use.
-    pub(crate) fn in_use(&self, path: &Path) -> bool {
-        self.judge(path) != Use::Free
+    /// Why `path` is kept, in the words of a cleanup report: a process has
+    /// its working folder, a file open or its temporary folder variable in
+    /// it, or processes cannot be seen and so nothing is known. `None` when
+    /// the scan saw the processes and none uses it. Without a view of the
+    /// processes, every folder is kept.
+    pub(crate) fn keep_reason(&self, path: &Path) -> Option<&'static str> {
+        self.judge(path).keep_reason()
     }
 
-    /// [`Self::in_use`] with "cannot tell" kept apart (issue #2935), for a
-    /// caller that says which of the two it found.
+    /// What this scan says about `path`, with "cannot tell" kept apart from
+    /// "in use" (issue #2935).
     pub(crate) fn judge(&self, path: &Path) -> Use {
         if !self.available {
             return Use::Unknown;

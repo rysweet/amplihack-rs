@@ -19,8 +19,9 @@
 
 use super::fsx;
 use super::mv::{
-    FakeExchange, HostExchange, LoginExchange, MoveError, RenameExchange, abort_point,
-    exchange_logins, move_login, release_refresh_lock_at, stand_in_requested, take_refresh_lock_at,
+    FakeExchange, HostExchange, LoginExchange, MoveError, RenameExchange, TempDirExchange,
+    abort_point, exchange_for, exchange_logins, move_login, outside_temp_dir_line,
+    release_refresh_lock_at, stand_in_requested, take_refresh_lock_at,
 };
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -159,6 +160,157 @@ fn the_stand_in_needs_its_exact_value_and_the_test_home_variable() {
             "{exchange:?} with {test_home:?}"
         );
     }
+}
+
+/// What the two variables select moves files inside the temp dir it was
+/// given, as a test's logins are. `inside` stands for the binary's temp dir
+/// and is a folder this test made, so nothing here reads the host's.
+#[test]
+fn the_selected_stand_in_swaps_two_logins_inside_the_temp_dir() {
+    let d = dirs();
+    let (pa, pb) = (d.a.join(".credentials.json"), d.b.join(".credentials.json"));
+    let (ia, ib) = (login(&pa), login(&pb));
+    let by = TempDirExchange::inside(d._tmp.path().to_path_buf());
+    assert!(by.supported());
+    assert!(exchange_logins(&by, &pa, &pb).is_ok());
+    assert_eq!((ino(&pa), ino(&pb)), (ib, ia));
+    assert_eq!(
+        fs::read_dir(&d.a).unwrap().count(),
+        1,
+        "no spare name is left"
+    );
+}
+
+/// The protection a debug build has when both variables are set by mistake:
+/// a login outside the temp dir is refused and nothing moves, whichever side
+/// it is on. A person's logins are under their home folder and the profile
+/// root, never under the temp dir, so this is every real login.
+#[test]
+fn the_selected_stand_in_refuses_a_login_outside_the_temp_dir() {
+    let inside = dirs();
+    let outside = dirs();
+    let real = outside.a.join(".credentials.json");
+    let test = inside.a.join(".credentials.json");
+    let (ireal, itest) = (login(&real), login(&test));
+    let by = TempDirExchange::inside(inside._tmp.path().to_path_buf());
+
+    for (a, b) in [(&real, &test), (&test, &real)] {
+        let error = by.exchange(a, b).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        match exchange_logins(&by, a, b) {
+            Err(MoveError::Other(why)) => assert_eq!(why, "exchange failed: permission denied"),
+            _ => panic!("a login outside the temp dir must be refused, and not as unsupported"),
+        }
+        assert_eq!((ino(&real), ino(&test)), (ireal, itest), "nothing moved");
+        for dir in [&outside.a, &inside.a] {
+            assert_eq!(
+                fs::read_dir(dir).unwrap().count(),
+                1,
+                "no spare name is left"
+            );
+        }
+    }
+}
+
+/// A path that leaves the temp dir through `..` or through a link is outside
+/// it: the test is on where the file is, not on how its name begins.
+#[test]
+fn the_selected_stand_in_is_not_fooled_by_dots_or_a_link() {
+    let inside = dirs();
+    let outside = dirs();
+    let real = outside.a.join(".credentials.json");
+    let test = inside.a.join(".credentials.json");
+    let (ireal, itest) = (login(&real), login(&test));
+    let by = TempDirExchange::inside(inside._tmp.path().to_path_buf());
+
+    let link = inside.b.join("link");
+    std::os::unix::fs::symlink(&outside.a, &link).unwrap();
+    let through_link = link.join(".credentials.json");
+    let through_dots = inside
+        .a
+        .join("..")
+        .join("..")
+        .join(outside._tmp.path().file_name().unwrap())
+        .join("a")
+        .join(".credentials.json");
+    assert_eq!(
+        ino(&through_dots),
+        ireal,
+        "the dotted path does name the outside login"
+    );
+
+    for disguised in [&through_link, &through_dots] {
+        assert!(
+            by.exchange(disguised, &test).is_err(),
+            "{}",
+            disguised.display()
+        );
+        assert_eq!((ino(&real), ino(&test)), (ireal, itest), "nothing moved");
+    }
+}
+
+/// What a command is handed for the two variables' values. Both set: the
+/// stand-in, which swaps a pair inside the temp dir and refuses a login
+/// outside it. Either one missing: the host's exchange, which is present on
+/// Linux alone. So the variables never give a command plain renames that
+/// reach outside the temp dir.
+#[test]
+fn a_command_gets_the_confined_stand_in_or_the_hosts_exchange() {
+    use std::ffi::OsStr;
+    let inside = dirs();
+    let outside = dirs();
+    let temp_dir = inside._tmp.path().to_path_buf();
+    let (pa, pb) = (
+        inside.a.join(".credentials.json"),
+        inside.b.join(".credentials.json"),
+    );
+    let real = outside.a.join(".credentials.json");
+    let (ia, ib, ireal) = (login(&pa), login(&pb), login(&real));
+
+    let chosen = exchange_for(
+        Some(OsStr::new("renames")),
+        Some(OsStr::new("1")),
+        temp_dir.clone(),
+    );
+    assert!(chosen.supported());
+    assert!(chosen.exchange(&real, &pa).is_err());
+    assert_eq!((ino(&real), ino(&pa)), (ireal, ia), "nothing moved");
+    chosen.exchange(&pa, &pb).unwrap();
+    assert_eq!((ino(&pa), ino(&pb)), (ib, ia));
+
+    for (exchange, test_home) in [(Some("renames"), None), (None, Some("1")), (None, None)] {
+        let host = exchange_for(
+            exchange.map(OsStr::new),
+            test_home.map(OsStr::new),
+            temp_dir.clone(),
+        );
+        assert_eq!(
+            host.supported(),
+            cfg!(target_os = "linux"),
+            "{exchange:?} with {test_home:?} is the host's exchange"
+        );
+    }
+}
+
+/// The refusal says which variable, which folder and which file, and how to
+/// get the system's own exchange.
+#[test]
+fn the_refusal_line_names_the_variable_the_temp_dir_and_the_file() {
+    let line = outside_temp_dir_line(
+        Path::new("/home/u/.claude/.credentials.json"),
+        Path::new("/tmp/t"),
+    );
+    assert!(
+        line.starts_with("amplihack: AMPLIHACK_TEST_LOGIN_EXCHANGE "),
+        "{line}"
+    );
+    assert!(line.contains("inside the temp dir (/tmp/t) only"), "{line}");
+    assert!(
+        line.contains("/home/u/.claude/.credentials.json is outside it"),
+        "{line}"
+    );
+    assert!(line.contains("nothing was moved"), "{line}");
+    assert!(line.contains("Unset the variable"), "{line}");
 }
 
 #[test]

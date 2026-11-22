@@ -459,6 +459,33 @@ fn a_folder_whose_use_cannot_be_seen_is_kept_and_reported() {
     }
 }
 
+/// The three answers of a scan, in the words a cleanup report uses. "Cannot
+/// tell" has its own line: on a system without `/proc` it is the reason for
+/// every folder, and "in use" there would name a process that may not exist.
+#[test]
+fn a_report_says_in_use_only_for_a_folder_a_process_is_seen_to_hold() {
+    use crate::commands::cleanup::procs::{ProcScan, Use};
+    let (_tmp, rt) = runtime_with_tmp();
+
+    let seen = FakeProcesses::seen();
+    assert_eq!(ProcScan::of(seen.as_ref()).judge(&rt), Use::Free);
+    assert_eq!(ProcScan::of(seen.as_ref()).keep_reason(&rt), None);
+
+    seen.hold(&rt.join("tmp"));
+    assert_eq!(ProcScan::of(seen.as_ref()).judge(&rt), Use::Held);
+    assert_eq!(
+        ProcScan::of(seen.as_ref()).keep_reason(&rt),
+        Some("in use by a running process")
+    );
+
+    let unseen = FakeProcesses::unseen();
+    assert_eq!(ProcScan::of(unseen.as_ref()).judge(&rt), Use::Unknown);
+    assert_eq!(
+        ProcScan::of(unseen.as_ref()).keep_reason(&rt),
+        Some("running processes cannot be seen on this system")
+    );
+}
+
 /// The host's view of a process table, read from a synthetic one the test
 /// writes: no process is started and the host's table is not read.
 mod host_view {

@@ -127,7 +127,8 @@ impl LoginExchange for HostExchange {
 /// plain renames through a spare name beside `a`. It is not atomic, so it is
 /// compiled into test and debug builds only and no shipped binary holds it.
 /// A lib test reaches it through `FakeExchange`; a test that starts the
-/// binary asks for it with `AMPLIHACK_TEST_LOGIN_EXCHANGE`.
+/// binary asks for it with `AMPLIHACK_TEST_LOGIN_EXCHANGE`, and then gets it
+/// only inside the temp dir ([`TempDirExchange`]).
 #[cfg(any(test, debug_assertions))]
 pub struct RenameExchange;
 
@@ -152,6 +153,60 @@ impl LoginExchange for RenameExchange {
     }
 }
 
+/// What a debug binary uses when a test asked for the stand-in:
+/// [`RenameExchange`], for two files that both lie inside `temp_dir`, and a
+/// refusal that moves nothing for any other pair.
+///
+/// The two variables that select the stand-in say only who started the
+/// process. This says which files it may move, and it is checked on every
+/// call. A test's logins are in a folder the test made under the temp dir. A
+/// person's logins are under their home folder and in the profile root,
+/// neither of which is under the temp dir. So a debug binary that carries
+/// both variables by mistake declines to swap real logins, where before it
+/// would have swapped them with three renames that are not atomic.
+#[cfg(any(test, debug_assertions))]
+pub struct TempDirExchange {
+    temp_dir: std::path::PathBuf,
+}
+
+#[cfg(any(test, debug_assertions))]
+impl TempDirExchange {
+    /// The stand-in for files inside `temp_dir`.
+    pub fn inside(temp_dir: std::path::PathBuf) -> Self {
+        Self { temp_dir }
+    }
+}
+
+#[cfg(any(test, debug_assertions))]
+impl LoginExchange for TempDirExchange {
+    fn supported(&self) -> bool {
+        true
+    }
+
+    fn exchange(&self, a: &Path, b: &Path) -> std::io::Result<()> {
+        let bases = [self.temp_dir.clone()];
+        for login in [a, b] {
+            if !crate::user_config::under_any(login, &bases) {
+                eprintln!("{}", outside_temp_dir_line(login, &self.temp_dir));
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+        }
+        RenameExchange.exchange(a, b)
+    }
+}
+
+/// The one line [`TempDirExchange`] prints when it refuses a pair.
+#[cfg(any(test, debug_assertions))]
+pub(super) fn outside_temp_dir_line(login: &Path, temp_dir: &Path) -> String {
+    format!(
+        "amplihack: AMPLIHACK_TEST_LOGIN_EXCHANGE asks for the test stand-in, which moves files \
+         inside the temp dir ({}) only; {} is outside it, so nothing was moved. Unset the \
+         variable to use this system's own exchange",
+        temp_dir.display(),
+        login.display()
+    )
+}
+
 /// Debug builds only: the value `renames`, in a process that also carries
 /// the test home variable, makes [`host_exchange`] the stand-in.
 #[cfg(debug_assertions)]
@@ -159,19 +214,37 @@ pub const TEST_EXCHANGE_ENV: &str = "AMPLIHACK_TEST_LOGIN_EXCHANGE";
 
 /// The exchange a command uses: the host's. A test that starts a debug
 /// binary can ask for the stand-in instead, and only together with the test
-/// home variable, which every test child carries and no user's shell does.
+/// home variable, which every test child carries. What it then gets moves
+/// files inside the temp dir and no others ([`TempDirExchange`]), so the two
+/// variables alone never reach a real login.
 pub fn host_exchange() -> std::sync::Arc<dyn LoginExchange> {
     #[cfg(debug_assertions)]
     {
         let set = |name: &str| std::env::var_os(name);
-        if stand_in_requested(
+        exchange_for(
             set(TEST_EXCHANGE_ENV).as_deref(),
             set(crate::user_config::TEST_HOME_GUARD_ENV).as_deref(),
-        ) {
-            return std::sync::Arc::new(RenameExchange);
-        }
+            std::env::temp_dir(),
+        )
     }
+    #[cfg(not(debug_assertions))]
     std::sync::Arc::new(HostExchange)
+}
+
+/// [`host_exchange`] for the two variables' values and the temp dir given:
+/// the stand-in confined to `temp_dir` when [`stand_in_requested`], and the
+/// host's exchange otherwise.
+#[cfg(any(test, debug_assertions))]
+pub(super) fn exchange_for(
+    exchange: Option<&std::ffi::OsStr>,
+    test_home: Option<&std::ffi::OsStr>,
+    temp_dir: std::path::PathBuf,
+) -> std::sync::Arc<dyn LoginExchange> {
+    if stand_in_requested(exchange, test_home) {
+        std::sync::Arc::new(TempDirExchange::inside(temp_dir))
+    } else {
+        std::sync::Arc::new(HostExchange)
+    }
 }
 
 /// The pure part of [`host_exchange`]: exactly `renames`, and a test home

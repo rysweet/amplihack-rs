@@ -191,6 +191,77 @@ fn unchanged_items_are_removed() {
     );
 }
 
+/// Issue #2935. Where running processes cannot be seen, the runner keeps a
+/// run's runtime folder and no sweep removes it. The dry run is then the list
+/// of what waits to be deleted by hand: it names each such folder, says why
+/// it is kept in words that do not claim a process uses it, and gives its
+/// size. Nothing is removed, with or without `--apply`.
+#[test]
+fn a_dry_run_lists_a_runtime_folder_it_cannot_judge_with_its_size_and_why() {
+    use super::super::procs::{FakeProcesses, REASON_IN_USE, REASON_USE_UNKNOWN};
+    let fx = Fx::new();
+    let runtime = fx.run(&[]).join("runtime");
+    fs::write(runtime.join("tmp/left-behind"), vec![b'x'; 4096]).unwrap();
+    let unseen = || Some(ProcScan::of(FakeProcesses::unseen().as_ref()));
+
+    let mut settings = fx.settings(&[Category::RunTmp]);
+    settings.apply = false;
+    let listed = apply_items(
+        collect_seeing(&settings, unseen()).unwrap(),
+        &settings,
+        true,
+    );
+    let kept = entry(&listed, &runtime);
+    assert_eq!(kept.action, Action::Skipped);
+    assert_eq!(kept.reason, REASON_USE_UNKNOWN);
+    assert_eq!(
+        kept.reason,
+        "running processes cannot be seen on this system"
+    );
+    assert!(
+        kept.size_bytes.is_some_and(|size| size >= 4096),
+        "the list gives the folder's size: {kept:?}"
+    );
+
+    // The sweep that ends every run applies. It keeps the folder for the
+    // same reason and does not walk it for a size.
+    settings.apply = true;
+    let swept = apply_items(
+        collect_seeing(&settings, unseen()).unwrap(),
+        &settings,
+        true,
+    );
+    let kept = entry(&swept, &runtime);
+    assert_eq!(
+        (kept.action, kept.reason.as_str()),
+        (Action::Skipped, REASON_USE_UNKNOWN)
+    );
+    assert_eq!(kept.size_bytes, None);
+    assert!(
+        runtime.join("tmp/left-behind").is_file(),
+        "nothing is removed"
+    );
+
+    // A folder a process is seen to hold keeps the other reason, and no size.
+    let held = FakeProcesses::seen();
+    held.hold(&runtime.join("tmp"));
+    settings.apply = false;
+    let scan = Some(ProcScan::of(held.as_ref()));
+    let busy = apply_items(collect_seeing(&settings, scan).unwrap(), &settings, true);
+    let kept = entry(&busy, &runtime);
+    assert_eq!(
+        (kept.action, kept.reason.as_str()),
+        (Action::Skipped, REASON_IN_USE)
+    );
+    assert_eq!(kept.reason, "in use by a running process");
+    assert_eq!(kept.size_bytes, None);
+
+    // Seen and free: the same folder is a candidate, as before.
+    let free = Some(ProcScan::of(FakeProcesses::seen().as_ref()));
+    let plan = apply_items(collect_seeing(&settings, free).unwrap(), &settings, true);
+    assert_eq!(entry(&plan, &runtime).action, Action::WouldRemove);
+}
+
 /// P1-5: an unreadable `owned-paths` is reported, not treated as empty, and
 /// nothing of that run is deleted.
 #[test]

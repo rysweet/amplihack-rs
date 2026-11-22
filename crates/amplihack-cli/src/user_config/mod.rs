@@ -253,7 +253,7 @@ fn test_build_bases() -> &'static [PathBuf] {
 /// is not made yet is judged by where it would be made. An entry that exists
 /// and cannot be resolved (a dangling link, a loop) is refused: where it leads
 /// is unknown.
-fn under_any(path: &Path, bases: &[PathBuf]) -> bool {
+pub(crate) fn under_any(path: &Path, bases: &[PathBuf]) -> bool {
     use std::path::Component;
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
         return false;

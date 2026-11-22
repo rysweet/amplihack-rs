@@ -86,8 +86,11 @@ pub const PROFILE_ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
 /// exchange two logins with a stand-in made of plain renames, in place of
 /// the host's atomic exchange, which only Linux has (issue #2935). The
 /// binary honours it only together with [`HOME_GUARD_ENV`], and only for
-/// the value [`LOGIN_EXCHANGE_STAND_IN`]. A rotation fixture sets it on every
-/// system, so that what its tests decide does not depend on the host.
+/// the value [`LOGIN_EXCHANGE_STAND_IN`]. The stand-in moves two files only
+/// when both lie inside the child's temp dir, so a fixture keeps its `HOME`
+/// and its profile root under the `TMPDIR` it gives the child. A rotation
+/// fixture sets it on every system, so that what its tests decide does not
+/// depend on the host.
 pub const LOGIN_EXCHANGE_ENV: &str = "AMPLIHACK_TEST_LOGIN_EXCHANGE";
 
 /// The one value [`LOGIN_EXCHANGE_ENV`] takes.
