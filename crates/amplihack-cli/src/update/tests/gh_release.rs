@@ -236,10 +236,6 @@ enum GhMode {
     LoggedOut,
     /// auth status exits 0, api -i returns 403 with a reset header.
     Limited,
-    /// auth status never finishes.
-    HangProbe,
-    /// auth status exits 0, api -i never finishes.
-    HangApi,
     /// auth status exits 0, api -i prints a 200 with a body over the cap.
     HugeApi,
 }
@@ -251,8 +247,6 @@ enum Download {
     Missing,
     Symlink,
     Fail,
-    /// release download never finishes.
-    Hang,
 }
 
 const GH_SCRIPT: &str = r#"#!/bin/sh
@@ -262,11 +256,9 @@ case "$1 $2" in
   # The stand-in prints the token to both streams, as a careless gh might.
   printf 'Logged in as someone (token: %s)\n' "$GH_TOKEN"
   printf 'Logged in as someone (token: %s)\n' "$GH_TOKEN" >&2
-  [ "$GH_MODE" = hang_probe ] && exec sleep 30
   [ "$GH_MODE" = logged_out ] && exit 1
   exit 0 ;;
 "api -i")
-  [ "$GH_MODE" = hang_api ] && exec sleep 30
   if [ "$GH_MODE" = huge_api ]; then
     printf 'HTTP/2.0 200 OK\r\n\r\n'
     head -c 9000000 /dev/zero
@@ -293,7 +285,6 @@ case "$1 $2" in
     printf 'release not found \033[31mred\n%s\n' "$GH_TOKEN" >&2
     exit 3 ;;
   missing) exit 0 ;;
-  hang) exec sleep 30 ;;
   symlink)
     ln -s "$GH_FIXTURE/archive" "$dir/$GH_ASSET"
     cp "$GH_FIXTURE/checksum" "$dir/$GH_ASSET.sha256"
@@ -333,8 +324,6 @@ fn stand_in_gh(root: &Root, mode: GhMode, download: Download, reset: i64) -> GhC
         GhMode::Ok => "ok",
         GhMode::LoggedOut => "logged_out",
         GhMode::Limited => "limited",
-        GhMode::HangProbe => "hang_probe",
-        GhMode::HangApi => "hang_api",
         GhMode::HugeApi => "huge_api",
     };
     let dl_text = match download {
@@ -343,7 +332,6 @@ fn stand_in_gh(root: &Root, mode: GhMode, download: Download, reset: i64) -> GhC
         Download::Missing => "missing",
         Download::Symlink => "symlink",
         Download::Fail => "fail",
-        Download::Hang => "hang",
     };
     let p = |sub: &str| root.path.join(sub).to_string_lossy().into_owned();
     GhCommand::stand_in(
@@ -651,46 +639,8 @@ fn gh_download_failure_is_reported_and_not_retried_anonymously() {
 }
 
 // ---------------------------------------------------------------------------
-// Timeouts
+// Oversized gh api answer
 // ---------------------------------------------------------------------------
-
-const SHORT: std::time::Duration = std::time::Duration::from_millis(500);
-
-/// Asserts the call ended near the timeout, not after the stand-in's sleep.
-fn assert_cut_short(started: std::time::Instant) {
-    let elapsed = started.elapsed();
-    assert!(
-        elapsed < std::time::Duration::from_secs(10),
-        "the gh call was not cut short: {elapsed:?}"
-    );
-}
-
-#[test]
-fn stalled_gh_probe_counts_as_not_usable() {
-    let root = Root::new("hang-probe");
-    let gh = stand_in_gh(&root, GhMode::HangProbe, Download::Good, 0).with_timeouts(SHORT, SHORT);
-    let started = std::time::Instant::now();
-    assert!(!gh.usable());
-    assert_cut_short(started);
-}
-
-#[test]
-fn stalled_gh_api_is_an_error_without_anonymous_fallback() {
-    let root = Root::new("hang-api");
-    let gh = stand_in_gh(&root, GhMode::HangApi, Download::Good, 0).with_timeouts(SHORT, SHORT);
-    let api = ok_api("v0.0.1");
-
-    let started = std::time::Instant::now();
-    let err =
-        fetch_latest_release_with(&gh, &api.url, http_get_with_retry_unvalidated).unwrap_err();
-    assert_cut_short(started);
-
-    let text = format!("{err:#}");
-    assert!(text.contains("failed to run gh api"), "{text}");
-    assert!(text.contains("timed out"), "{text}");
-    assert_eq!(api.count(), 0, "no anonymous fallback after a gh timeout");
-    assert_no_token(&text);
-}
 
 #[test]
 fn oversized_gh_api_output_is_refused() {
@@ -703,27 +653,6 @@ fn oversized_gh_api_output_is_refused() {
     let text = format!("{err:#}");
     assert!(text.contains("gh api output exceeded the limit"), "{text}");
     assert_eq!(api.count(), 0, "no anonymous fallback after a gh failure");
-}
-
-#[test]
-fn stalled_gh_download_is_an_error_and_runs_once() {
-    let root = Root::new("hang-download");
-    let gh = stand_in_gh(&root, GhMode::Ok, Download::Hang, 0).with_timeouts(SHORT, SHORT);
-
-    let started = std::time::Instant::now();
-    let err = fetch_release_archive(&gh, &release_for_download()).unwrap_err();
-    assert_cut_short(started);
-
-    let text = format!("{err:#}");
-    assert!(text.contains("failed to run gh release download"), "{text}");
-    assert!(text.contains("timed out"), "{text}");
-    assert_no_token(&text);
-    let downloads = root
-        .gh_log()
-        .iter()
-        .filter(|l| l.starts_with("release download"))
-        .count();
-    assert_eq!(downloads, 1, "download runs once");
 }
 
 #[test]

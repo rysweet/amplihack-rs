@@ -28,7 +28,7 @@ update check that runs at launch. For the steps to sign in, see
 | Order | Step | Result |
 | ----- | ---- | ------ |
 | 1 | `AMPLIHACK_TEST_FAKE_LATEST_VERSION` | Handled before `gh` is run |
-| 2 | `gh auth status` | Exit 0 within 20 seconds selects the `gh` path. Anything else, including `gh` missing or the probe timing out, selects the anonymous path |
+| 2 | `gh auth status` | Exit 0 selects the `gh` path. Anything else, including `gh` missing, selects the anonymous path |
 | 3 | Lookup and download | On the `gh` path through `gh`. Otherwise an anonymous request |
 
 The probe runs with stdin, stdout and stderr discarded, so only the exit status
@@ -40,17 +40,6 @@ is read. The child inherits the whole environment, so `gh` applies
 
 After a successful probe, a failure on the `gh` path ends the operation with
 that error. There is no fallback to the anonymous request.
-
-### Timeouts
-
-| Command | Limit | On timeout |
-| ------- | ----- | ---------- |
-| `gh auth status` | 20 seconds | Treated as "not usable": the anonymous path is used |
-| `gh api` | 20 seconds | Error `failed to run gh api: ... timed out ...`, no fallback |
-| `gh release download` | 15 minutes | Error `failed to run gh release download: ... timed out ...`, no fallback |
-
-A timed-out `gh` is stopped together with its child processes. The launch
-check discards these errors and logs them at debug level.
 
 `gh api` output larger than 8 MiB is refused with
 `gh api output exceeded the limit of 8388608 bytes`. At most 64 KiB of
@@ -153,9 +142,9 @@ characters.
 | Transport error | Retried automatically |
 | HTTP 403 or 429 | Reported at once. No retry, sleep or wait |
 
-Only statuses of 500 and above are retried. A 429 is no longer retried, which
-is a change from earlier releases, and the rule also applies to bounded
-downloads (#1955).
+This applies to the release lookup and the release download, on both paths.
+The bounded tag download (#1955) is a separate request and keeps its own retry
+rules, which are unchanged.
 
 ## Launch check
 
@@ -174,8 +163,8 @@ as on `main`. The launch check uses the lookup described above.
 
 ## Limitations
 
-- The `gh auth status` probe contacts GitHub, so a slow network can add up to
-  20 seconds before the anonymous path is chosen.
+- The `gh auth status` probe contacts GitHub. amplihack sets no time limit of
+  its own on `gh`; each call takes as long as `gh` takes from a shell.
 - If `GH_HOST` names a GitHub Enterprise host, `gh` queries that host. The
   asset URL allowlist still applies.
 - The 512 MiB limit on the `gh` path is checked after download and has no

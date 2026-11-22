@@ -26,6 +26,16 @@ enum HttpClientError {
         url: String,
         message: String,
     },
+    /// Issue #2957: a 403 or 429 on a release lookup or release download,
+    /// reported with GitHub's message and reset time and never retried. The
+    /// bounded tag download (#1955) still gets a plain `Status` and keeps its
+    /// own retry rules.
+    #[error("{message}")]
+    Refused {
+        status: u16,
+        url: String,
+        message: String,
+    },
     #[error("HTTP request failed for {url}: {source}")]
     Transport {
         url: String,
@@ -38,8 +48,8 @@ enum HttpClientError {
 impl HttpClientError {
     fn is_retryable(&self) -> bool {
         match self {
-            Self::LatestReleaseNotFound { .. } => false,
-            Self::Status { status, .. } => *status >= 500,
+            Self::LatestReleaseNotFound { .. } | Self::Refused { .. } => false,
+            Self::Status { status, .. } => *status == 429 || *status >= 500,
             Self::Transport { .. } | Self::Read { .. } => true,
         }
     }
@@ -112,7 +122,7 @@ pub(crate) fn latest_release_via_gh(gh: &GhCommand) -> Result<Vec<u8>> {
         404 => Err(HttpClientError::LatestReleaseNotFound { repo: GITHUB_REPO }.into()),
         status @ (403 | 429) => {
             let github = json_message(&response.body);
-            Err(HttpClientError::Status {
+            Err(HttpClientError::Refused {
                 status,
                 url,
                 message: refusal_message(status, github.as_deref(), response.reset),
@@ -320,7 +330,7 @@ fn http_get_bounded_once(url: &str, timeout: Duration) -> Result<Vec<u8>> {
 /// Returns `true` when the error is transient and the request should be retried.
 pub(super) fn is_retryable_error(error: &ureq::Error) -> bool {
     match error {
-        ureq::Error::Status(status, _) => *status >= 500,
+        ureq::Error::Status(status, _) => *status == 429 || *status >= 500,
         ureq::Error::Transport(_) => true,
     }
 }
@@ -417,7 +427,7 @@ fn http_get_unvalidated(url: &str) -> Result<Vec<u8>> {
                 .into_string()
                 .ok()
                 .and_then(|body| json_message(body.as_bytes()));
-            return Err(HttpClientError::Status {
+            return Err(HttpClientError::Refused {
                 status,
                 url: url.to_string(),
                 message: refusal_message(status, github.as_deref(), reset),
@@ -514,7 +524,7 @@ mod retry_tests {
 
     #[test]
     fn retry_classifier_preserves_structured_http_status_semantics() {
-        for (status, retryable) in [(403, false), (404, false), (429, false), (500, true)] {
+        for (status, retryable) in [(403, false), (404, false), (429, true), (500, true)] {
             let url = "https://api.github.com/repos/rysweet/amplihack-rs/releases/latest";
             let err: anyhow::Error = HttpClientError::Status {
                 status,
@@ -527,6 +537,20 @@ mod retry_tests {
                 retryable,
                 "unexpected retry classification for HTTP {status}"
             );
+        }
+    }
+
+    #[test]
+    fn release_refusal_is_never_retried() {
+        for status in [403, 429] {
+            let url = "https://api.github.com/repos/rysweet/amplihack-rs/releases/latest";
+            let err: anyhow::Error = HttpClientError::Refused {
+                status,
+                url: url.to_string(),
+                message: refusal_message(status, None, None),
+            }
+            .into();
+            assert!(!is_retryable_http_get_error(&err), "HTTP {status}");
         }
     }
 

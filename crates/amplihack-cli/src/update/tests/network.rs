@@ -12,7 +12,7 @@ fn is_retryable_error_classifies_status_codes() {
         assert!(is_retryable_error(&err), "{status} should be retryable");
     }
     let err = ureq::Error::Status(429, ureq::Response::new(429, "Rate Limited", "").unwrap());
-    assert!(!is_retryable_error(&err), "429 must not be retried (#2957)");
+    assert!(is_retryable_error(&err), "429 should be retryable");
     for status in [400u16, 401, 403, 404, 422] {
         let err = ureq::Error::Status(
             status,

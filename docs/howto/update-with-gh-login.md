@@ -72,8 +72,7 @@ resets. The sample below is illustrative; the times and address will differ:
 GitHub refused the request (HTTP 403): API rate limit exceeded for 203.0.113.7. The limit resets at 14:05 UTC (in 23 minutes). Set AMPLIHACK_NO_UPDATE_CHECK=1 to skip the update check at launch.
 ```
 
-amplihack does not wait or retry. A 429 is no longer retried, including during
-bounded downloads. Run `amplihack update` again after the reset
+amplihack does not wait or retry. Run `amplihack update` again after the reset
 time, or sign in with `gh` as described above.
 
 If GitHub gives no reset time, the message says `GitHub did not give a reset
@@ -81,11 +80,9 @@ time.`
 
 ## Limitations
 
-- The `gh auth status` probe contacts GitHub. On a host with a poor connection
-  the update can pause at that step for up to 20 seconds, after which the
-  anonymous request is used. `gh api` has the same 20-second limit and
-  `gh release download` a 15-minute limit; either timing out ends the update
-  with an error.
+- The `gh auth status` probe contacts GitHub. amplihack sets no time limit of
+  its own on `gh`, so on a poor connection the update waits as long as `gh`
+  does.
 - If `GH_HOST` names a GitHub Enterprise host, `gh` queries that host. The
   allowlist for asset URLs still applies, so a release whose asset URL is on a
   host outside the allowlist is refused.
