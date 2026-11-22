@@ -890,7 +890,7 @@ stops rather than continuing.
 |---|---|---|
 | `AMPLIHACK_BIN` | `amplihack` | binary used for nested `recipe run` calls |
 | `WORKFLOW_HOOK_REPAIR_HELPER` | `workflow_hook_repair.sh` in the directory of `RUNTIME_ARTIFACT_HELPER`, then under `amplifier-bundle/tools/` in `AMPLIHACK_HOME`, `REPO_PATH`, the worktree, `~/.copilot` and `~/.amplihack` | path to the driver |
-| `WORKFLOW_STAGE_CHANGES_HELPER` | `workflow_stage_changes.sh` in the same directory as the driver | path to the staging helper; the runner supplies it for release-based runs, see [Helper pin set by the recipe runner](#helper-pin-set-by-the-recipe-runner) |
+| `WORKFLOW_STAGE_CHANGES_HELPER` | `workflow_stage_changes.sh` in the same directory as the driver | path to the staging helper; for a release-based run the recipe runner sets it at start to the helper in the run's release, so an upgrade during the run does not change it |
 | `HOOK_REPAIR_ROUND_RECIPE` | `<bundle>/recipes/hook-rejection-repair.yaml` | path to the fixing recipe |
 | `HOOK_REPAIR_HEALTH_RECIPE` | `<bundle>/recipes/loop-health-evaluator.yaml` | path to the evaluator |
 
@@ -903,48 +903,6 @@ repository's own copies.
 Each of these variables can make the step run a different program. Anyone who
 can set them in the step's environment can already run arbitrary code there,
 so they give no further access.
-
-### Helper pin set by the recipe runner
-
-When the runner can resolve the release root that the bundle is reached
-through (a release under `~/.amplihack/releases/`) and that release contains
-`amplifier-bundle/tools/workflow_stage_changes.sh`, it sets
-`WORKFLOW_STAGE_CHANGES_HELPER` once, at start, to that file. The value in the
-table above is then supplied by the runner for release-based runs instead of
-being searched for beside the driver.
-
-Steps that read `WORKFLOW_STAGE_CHANGES_HELPER` use the pinned helper even if
-an upgrade moves the `amplifier-bundle` link to a newer release part-way
-through the run. Today those are the helper lookups in `consensus-publish.yaml`
-and `consensus-pr-feedback.yaml`, and any other recipe that already reads the
-variable first. Steps with their own lookup keep it. The pin does not cover
-`recipe_context_value.sh` or other helpers; that is left as follow-up work.
-The pin gives stability across upgrades. It does not verify the helper's
-contents.
-
-The runner sets nothing when the release root does not resolve (a development
-checkout, or a bundle not reached through a release link), when the release
-has no helper file, or when the variable is already set in the parent
-environment (a nested run keeps its parent's release). Auto-drive runs are
-unchanged. The two consensus recipes accept the variable only when it is an
-absolute path to a regular file, and otherwise search for the helper as
-before.
-
-An inherited value is trusted to the same degree as the other helper
-overrides described above. The absolute-path and regular-file check rejects
-relative values and missing files. It does not check the file's owner or mode.
-
-On Linux, while the runner process is alive its environment names the release,
-so the install's release clean-up reports that release as in use and keeps it.
-This protection depends on the runner process staying alive. Once the run
-exits, the release may be removed. On other platforms the clean-up does not
-read the environment and gives no such protection.
-
-Runs already in flight on a release before this change (1.2.202 or earlier at
-the time of writing) read their recipes and runner before the pin existed, so
-the pin does not reach them. They are covered by the `workflow_pull_rebase`
-alias in `workflow_stage_changes.sh`, which forwards to `workflow_pull_merge`
-and so merges, never rebases (#3019, #3049).
 
 ## Residual risks and detection limits
 

@@ -2,8 +2,6 @@
 //! started on. The runner sets `WORKFLOW_STAGE_CHANGES_HELPER` once per run, so
 //! swapping the `amplifier-bundle` link mid-run does not change it, and a live
 //! process that carries the value keeps that release out of clean-up.
-//!
-//! These tests fail until the runner resolves and exports the pin.
 
 use super::*;
 use crate::commands::install::release_layout::{InUse, scan_pids};
