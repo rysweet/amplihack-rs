@@ -6,8 +6,9 @@
 # PRIV, TSV, SET_FILE, ERR_FILE, LABEL, LABEL_COLOUR, LABEL_DESC, ID_RE and
 # JQ_MISSING, the helpers state_ok, safe_file, write_state, norm_set, rows_ok,
 # filed_ids, parent_key, parent_commented, resolve_task, closing_ref, gh_line,
-# priv_dir and fail from there, and cell(), break_refs() and issue_title()
-# from autodrive_finding_rules.sh.
+# priv_dir and fail from there, cell() and issue_title() from
+# autodrive_finding_rules.sh, and autodrive_crusty_manifest_row from
+# autodrive_state.sh.
 #
 # file  One `gh issue create --repo <owner/repo of the PR> --label follow-up`
 #       per finding id with no row in followups.tsv, after one
@@ -21,6 +22,20 @@
 #       followups.parent records the list posted, and a changed list is posted
 #       again. On failure: followups.error, exit 1 (gh's 79 is final and
 #       passed through); a full run removes it.
+
+# crusty_round: the label of the last loop-written crusty round, or nothing
+# when no manifest row names a readable record. The follow-up set spans
+# rounds, so this is the round standing at filing time, not one per finding.
+# The record is not hashed again: collect already bound it to the manifest,
+# and a round that cannot be read must not end the drive.
+crusty_round() {
+  local row file
+  row="$(autodrive_crusty_manifest_row "$STATE")" || return 0
+  file="${row%% *}"
+  [ -n "$file" ] && [ ! -L "$STATE/$file" ] && [ -f "$STATE/$file" ] || return 0
+  LC_ALL=C sed -n '1s/.*"round_label"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9._-]\{1,64\}\)".*/\1/p' \
+    -- "$STATE/$file" 2>/dev/null
+}
 
 # post_parent: one comment on the task issue listing every follow-up, posted
 # again only when the list changed; followups.parent records the list posted.
@@ -47,21 +62,22 @@ post_parent() {
 }
 
 cmd_file() {
-  local fset filed n task="" prj url body repo out rc num re title id summary evidence created=0 tf
-  local round="not recorded" mrow recfile lab
+  local fset total filed n task="" prj url body repo out rc num re title id summary evidence created=0 tf
+  local round="not recorded" lab
   [ -z "${JQ_MISSING:-}" ] || { echo "ERROR: followup-create-failed: jq is not on PATH" >&2; exit 1; }
   state_ok || { echo "ERROR: followup-state-unsafe: the state dir is not private to this user" >&2; exit 1; }
   for n in followups.jsonl followups.tsv followups.error followups.parent; do
     safe_file "$STATE/$n" || fail followup-state-unsafe "$n is a symlink, not a regular file, or not private"
   done
   fset="$(norm_set "$SET_FILE")" || fail followup-set-invalid "followups.jsonl has a line that is not a valid finding"
+  total="$(printf '%s' "$fset" | jq length)"
   rows_ok || fail followup-row-malformed "followups.tsv has a row that is not id, issue, task, PR #${PR}"
   filed="$(filed_ids)"
   n="$(printf '%s' "$fset" | jq --argjson d "$filed" '[.[] | select(.id as $i | $d | index([$i]) | not)] | length')"
   if [ "$n" = 0 ] && parent_commented; then
     rm -f -- "$ERR_FILE"
-    echo "INFO: followups: every minor finding has an issue ($(printf '%s' "$fset" | jq length) in the set)" >&2
-    printf 'followups-ok %s\n' "$(printf '%s' "$fset" | jq length)"
+    echo "INFO: followups: every minor finding has an issue (${total} in the set)" >&2
+    printf 'followups-ok %s\n' "$total"
     exit 0
   fi
   if [ "$n" != 0 ] && [ -n "$TASK_ID" ]; then
@@ -77,14 +93,14 @@ cmd_file() {
   re="^https://github\\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/pull/${PR}\$"
   [[ "$url" =~ $re ]] || fail followup-repo-unresolved "the URL of PR #${PR} is not https://github.com/<owner>/<repo>/pull/${PR}"
   repo="${BASH_REMATCH[1]}"
-  if [ "$n" != 0 ] && [ -z "$task" ]; then
-    body="$(printf '%s' "$prj" | jq -r '.body // "" | strings' 2>/dev/null)"
-    num="$(printf '%s' "$body" | closing_ref)"
-    if [ -z "$num" ] && [ -n "$TASK_FILE" ] && [ -f "$TASK_FILE" ]; then num="$(closing_ref < "$TASK_FILE")"; fi
-    [ -n "$num" ] && task="$(resolve_task "$num")" \
-      || fail followup-task-unresolved "no plan task id, and neither the PR body nor the task names Closes/Fixes/Resolves #N"
-  fi
   if [ "$n" != 0 ]; then
+    if [ -z "$task" ]; then
+      body="$(printf '%s' "$prj" | jq -r '.body // "" | strings' 2>/dev/null)"
+      num="$(printf '%s' "$body" | closing_ref)"
+      if [ -z "$num" ] && [ -n "$TASK_FILE" ] && [ -f "$TASK_FILE" ]; then num="$(closing_ref < "$TASK_FILE")"; fi
+      [ -n "$num" ] && task="$(resolve_task "$num")" \
+        || fail followup-task-unresolved "no plan task id, and neither the PR body nor the task names Closes/Fixes/Resolves #N"
+    fi
     echo "INFO: followups: filing ${n} follow-up issue(s) in ${repo} for task ${task}, PR #${PR}" >&2
     # The label, once per run and before the first issue (#2915). Advisory: a
     # refusal is logged with gh's own message and the drive goes on, because
@@ -94,16 +110,7 @@ cmd_file() {
     then echo "INFO: followups: the ${LABEL} label is present in ${repo}" >&2
     else echo "INFO: followups: gh label create ${LABEL} in ${repo} did not succeed: $(gh_line "$PRIV/gh.err"); the creates carry --label and report any refusal" >&2
     fi
-    # The round standing when the follow-ups were filed, for the body; the set
-    # spans rounds, so it is not per finding. Anything unreadable leaves "not
-    # recorded" rather than ending the drive, and the record is not hashed
-    # again, because collect already bound it to the manifest.
-    mrow="$(autodrive_crusty_manifest_row "$STATE")" || mrow=""
-    recfile="${mrow%% *}"
-    if [ -n "$recfile" ] && [ ! -L "$STATE/$recfile" ] && [ -f "$STATE/$recfile" ]; then
-      lab="$(LC_ALL=C sed -n '1s/.*"round_label"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9._-]\{1,64\}\)".*/\1/p' -- "$STATE/$recfile" 2>/dev/null)"
-      [ -z "$lab" ] || round="$lab"
-    fi
+    lab="$(crusty_round)"; [ -z "$lab" ] || round="$lab"
   fi
   tf="$PRIV/body.md"
   while IFS=$'\x1f' read -r id summary evidence; do
@@ -132,5 +139,5 @@ cmd_file() {
   [ "$created" = "$n" ] || fail followup-create-failed "${created} of ${n} follow-up issue(s) were filed"
   post_parent
   rm -f -- "$ERR_FILE"
-  printf 'followups-ok %s\n' "$(printf '%s' "$fset" | jq length)"
+  printf 'followups-ok %s\n' "$total"
 }
