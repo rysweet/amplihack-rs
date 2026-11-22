@@ -145,9 +145,10 @@ never widens the extra directories.
   A session that starts and then exits at once for a cause other than
   capacity, such as a broken configuration, while a login has room, is
   relaunched each time. The relaunch lines in the supervisor log show it.
-- `--continue` resumes the most recent conversation in the configuration
-  directory. If another session in that directory was more recently active,
-  the relaunch can pick up that one.
+- `--continue` resumes the most recent conversation for the session's working
+  directory in its configuration directory. If another session with the same
+  working directory and configuration directory was more recently active, the
+  relaunch can pick up that one.
 - A Claude Code flag the registry does not record is not carried over, as with
   the supervisor's own resume.
 - Claude Code exiting `0` for a reason other than you is not relaunched.

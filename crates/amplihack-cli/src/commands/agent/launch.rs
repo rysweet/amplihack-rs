@@ -101,9 +101,16 @@ pub fn pane_command(name: &str, e: &Entry, exe: &Path, msg: &str) -> Vec<String>
 /// The Claude arguments of a standing session's relaunch (issue #2912):
 /// `--continue`, then the options recorded for the session, in the order
 /// [`pane_command`] uses. The conversation is never named: `--continue`
-/// picks the most recent one in the config directory, which is the
-/// behaviour the issue asks for, and no message is added, because the
-/// conversation carries on rather than being resumed after a loss.
+/// picks the most recent one for the current directory in the config
+/// directory, which is the behaviour the issue asks for. The wrapper never
+/// changes its working directory, so that is the directory of the original
+/// launch. No message is added, because the conversation carries on rather
+/// than being resumed after a loss.
+///
+/// Each value-taking flag is parsed by Claude Code in the `--flag=value`
+/// form exactly as in the `--flag value` form (checked against Claude Code
+/// 2.1.330), and the `=` form also stops the variadic `--add-dir` from
+/// taking any argument that follows it.
 ///
 /// Rebuilt from the registry record rather than filtered out of the
 /// original argv, so no flag parser is involved and the relaunch can carry
