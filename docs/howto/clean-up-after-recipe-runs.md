@@ -487,7 +487,17 @@ A real run starts its workspace with `RunWorkspace::begin_durable`. If the
 work root cannot be used, for example because it is group-writable, the run
 fails before any step starts, with an error that names the work root. Fix
 its permissions (`chmod g-w,o-w`) or point `AMPLIHACK_WORK_ROOT` at a private
-absolute directory. A real run never falls back to a temporary folder. A `--dry-run` uses
+absolute directory. A real run never falls back to a temporary folder.
+
+The error names the work root and the operation that failed, for example
+opening the work root or creating the run's runtime folder. The run opens every
+component of the work root without following symbolic links, so a work root that
+passes through a link is unusable, as it has always been. When a link is on the
+path, the error also names the first component that is a symbolic link, but not
+the place it points to. Name the folder by its canonical path
+(`realpath "$AMPLIHACK_WORK_ROOT"`) to avoid the link. On macOS, `/var` and `/tmp`
+are links to `/private/var` and `/private/tmp`, so `/var/tmp` is reached through
+one; a path under any of them goes through a link there. A `--dry-run` uses
 `RunWorkspace::dry_runtime`: a temporary `amplihack-dry-*` folder that is
 removed on exit, with no run folder and no checkout.
 

@@ -1364,3 +1364,79 @@ mod build_output_at_run_end {
         }
     }
 }
+
+// ── Issue #2931 (ENOTDIR): a work root that cannot be opened says why ───────
+//
+// Contract: `open_work_root(root: &Path) -> Result<Directory>` opens the work
+// root the way `begin_durable` does (every component without following links,
+// so a link component is refused: that control is unchanged). On failure the
+// error names the work root and, when one component of it is a symbolic link,
+// that component. It reads the link with `symlink_metadata` only, and never
+// prints where the link points.
+
+#[cfg(unix)]
+mod open_work_root_tests {
+    use super::super::open_work_root;
+    use std::fs;
+    use std::os::unix::fs::DirBuilderExt;
+
+    /// The work root is opened as a private folder, so make it mode 0700.
+    fn private_dir(path: &std::path::Path) {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_plain_folder_opens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap().join("work");
+        private_dir(&root);
+        assert!(open_work_root(&root).is_ok());
+    }
+
+    #[test]
+    fn a_link_component_is_still_refused_and_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let hidden_target = base.join("target-folder-with-a-distinct-name");
+        private_dir(&hidden_target.join("work"));
+        let link = base.join("the-link");
+        std::os::unix::fs::symlink(&hidden_target, &link).unwrap();
+        let root = link.join("work");
+
+        let error = match open_work_root(&root) {
+            Ok(_) => panic!("a work root through a link must stay refused"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(
+            error.contains(&root.display().to_string()),
+            "names the work root: {error}"
+        );
+        assert!(
+            error.contains(&link.display().to_string()),
+            "names the first link component: {error}"
+        );
+        assert!(
+            !error.contains("target-folder-with-a-distinct-name"),
+            "never prints where the link points: {error}"
+        );
+    }
+
+    #[test]
+    fn a_work_root_below_a_file_names_the_work_root_and_no_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let blocker = base.join("blocker");
+        fs::write(&blocker, b"not a folder").unwrap();
+        let root = blocker.join("work");
+        let error = match open_work_root(&root) {
+            Ok(_) => panic!("a work root below a file cannot open"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(error.contains(&root.display().to_string()), "{error}");
+        assert!(!error.contains("symbolic link"), "{error}");
+    }
+}

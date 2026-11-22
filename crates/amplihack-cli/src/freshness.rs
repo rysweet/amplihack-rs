@@ -349,8 +349,12 @@ pub(crate) fn probe_recipe_runner() -> Result<()> {
         }
     }
     let path = crate::rust_toolchain::find_recipe_runner().context("recipe-runner-rs not found")?;
-    crate::runner_validation::probe(&path, "codex")
-        .context("recipe-runner-rs requires a valid capability report with codex_exec; fix the override or install the pinned runner")?;
+    crate::runner_validation::probe(&path, "codex").map_err(|e| {
+        crate::runner_validation::context_with_cause(
+            e,
+            "recipe-runner-rs requires a valid capability report with codex_exec; fix the override or install the pinned runner",
+        )
+    })?;
     Ok(())
 }
 
@@ -380,7 +384,12 @@ fn verify_managed_runner_at(url: &str, rev: &str) -> Result<()> {
         "managed runner receipt or selected executable does not establish requested revision",
     )?;
     crate::runner_validation::probe(&selected, if codex_selected() { "codex" } else { "claude" })
-        .context("managed runner capability contract invalid")?;
+        .map_err(|e| {
+        crate::runner_validation::context_with_cause(
+            e,
+            "managed runner capability contract invalid",
+        )
+    })?;
     Ok(())
 }
 

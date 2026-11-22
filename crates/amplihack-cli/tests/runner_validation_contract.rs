@@ -19,6 +19,8 @@ fn cli_binary() -> std::path::PathBuf {
 
 const REPO: &str = "https://github.com/rysweet/amplihack-recipe-runner";
 const REV: &str = "1111111111111111111111111111111111111111";
+/// A value set in the child's environment that must never come back out.
+const ENV_CANARY_VALUE: &str = "env-canary-5b1f";
 const REPORT: &str = r#"{"capabilities":["future","codex_exec","durable_recovery_v1"],"version":"custom-99","schema_version":1,"extra":true}"#;
 
 struct Fixture {
@@ -70,6 +72,7 @@ impl Fixture {
         .arg(binary)
         .env("HOME", self.path())
         .env("PATH", self.path().join("bin"))
+        .env("RUNNER_ENV_CANARY", ENV_CANARY_VALUE)
         .env_remove("RECIPE_RUNNER_RS_PATH")
         .env_remove("CODEX_HOME");
         if managed {
@@ -96,7 +99,7 @@ impl Fixture {
         );
     }
 }
-fn failure(o: Output, code: &str) {
+fn failure(o: Output, code: &str) -> Value {
     assert_eq!(o.status.code(), Some(1));
     assert!(
         o.stdout.is_empty(),
@@ -105,6 +108,7 @@ fn failure(o: Output, code: &str) {
     let v: Value = serde_json::from_slice(&o.stderr).expect("structured private endpoint error");
     assert_eq!(v["error"]["code"], code);
     assert!(!String::from_utf8_lossy(&o.stderr).contains("secret-canary"));
+    v
 }
 #[test]
 fn reordered_additive_report_works_without_python_or_node() {
@@ -273,4 +277,60 @@ fn exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group() {
             panic!("probe descendant still running 10 s after the probe returned")
         }
     }
+}
+
+/// Issue #2931 (PROBE): a probe that fails says why. The code stays exactly
+/// `RUNNER_PROBE_FAILED`, and `details.cause` names the step and the exit
+/// status, in words the source wrote.
+#[test]
+fn a_failed_probe_names_its_cause_in_the_details() {
+    let f = Fixture::new(REPORT, 17);
+    let v = failure(f.run("codex", false, &f.binary()), "RUNNER_PROBE_FAILED");
+    assert_eq!(v["error"]["details"]["provider"], "codex");
+    assert_eq!(
+        v["error"]["details"]["cause"],
+        "runner exited with status 17"
+    );
+}
+
+/// The cause is built from step names and OS errors only. Nothing the runner
+/// wrote, nothing about where it lives and nothing from the environment may
+/// reach it.
+#[test]
+fn the_cause_carries_nothing_the_runner_or_the_host_supplied() {
+    let f = Fixture::new(REPORT, 17);
+    let o = f.run("codex", false, &f.binary());
+    let text = String::from_utf8_lossy(&o.stderr).into_owned();
+    let v: Value = serde_json::from_slice(&o.stderr).expect("one JSON document on stderr");
+    let cause = v["error"]["details"]["cause"].as_str().expect("a cause");
+    for (what, secret) in [
+        ("the runner's stderr", "secret-canary".to_string()),
+        ("the runner's stdout", "custom-99".to_string()),
+        ("the binary's path", f.path().display().to_string()),
+        ("the environment", ENV_CANARY_VALUE.to_string()),
+    ] {
+        assert!(!text.contains(&secret), "{what} reached stderr: {text}");
+        assert!(
+            !cause.contains(&secret),
+            "{what} reached the cause: {cause}"
+        );
+    }
+    assert!(cause.chars().count() <= 512, "the cause is capped: {cause}");
+    assert!(
+        cause.chars().all(|c| !c.is_control()),
+        "the cause holds no control character: {cause:?}"
+    );
+}
+
+/// `details.cause` belongs to the probe code alone: another failure keeps the
+/// object it had.
+#[test]
+fn a_failure_that_is_not_a_probe_failure_has_no_cause() {
+    let f = Fixture::new(r#"{"capabilities":[],"version":"x","schema_version":2}"#, 0);
+    let v = failure(f.run("codex", false, &f.binary()), "RUNNER_REPORT_INVALID");
+    assert!(
+        v["error"]["details"].get("cause").is_none(),
+        "{}",
+        v["error"]["details"]
+    );
 }

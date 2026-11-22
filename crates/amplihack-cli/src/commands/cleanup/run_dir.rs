@@ -100,7 +100,8 @@ fn open_anchor(path: &Path) -> Result<(fs::File, (u64, u64))> {
 
 impl RuntimeGuard {
     pub(crate) fn new(path: PathBuf) -> Result<Self> {
-        let metadata = fs::symlink_metadata(&path)?;
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("cannot inspect runtime folder {}", path.display()))?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
             bail!("runtime resource is not a private directory");
         }
@@ -137,7 +138,12 @@ impl RuntimeGuard {
             Ok(_) => bail!("{path:?} is no longer this run's runtime folder"),
             Err(error) if error.kind() == ErrorKind::NotFound => {
                 create_private_dir_all(path.parent().context("runtime parent")?)?;
-                fs::DirBuilder::new().mode(0o700).create(path)?;
+                fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(path)
+                    .with_context(|| {
+                        format!("cannot re-create runtime folder {}", path.display())
+                    })?;
                 let (anchor, identity) = open_anchor(path)?;
                 self._anchor = anchor;
                 self.identity = identity;
@@ -662,6 +668,45 @@ pub(crate) struct RunScope {
     report: RunReport,
 }
 
+/// Opens the work root the way a durable run needs it: created if missing,
+/// every component opened without following links, and private.
+///
+/// A work root that passes through a symbolic link is refused, as it always
+/// was. The error now says which folder could not be opened and, when a
+/// component of it is a link, which one (issue #2931): before, the caller saw
+/// a bare "Not a directory". The link is found with `symlink_metadata` on
+/// this error path only; where it points is never read or printed, and no
+/// decision depends on it.
+pub(crate) fn open_work_root(
+    root: &Path,
+) -> Result<recipe_runner_rs::recovery::private_fs::Directory> {
+    recipe_runner_rs::recovery::private_fs::Directory::open(root, true).map_err(|error| {
+        let mut message = format!("cannot open work root {}", root.display());
+        if let Some(link) = first_symlink_component(root) {
+            message.push_str(&format!(
+                ": {} is a symbolic link, and a work root is opened without following links; \
+                 name the work root by its canonical path",
+                link.display()
+            ));
+        }
+        error.context(message)
+    })
+}
+
+/// The shortest prefix of `path` that is a symbolic link, if any.
+fn first_symlink_component(path: &Path) -> Option<PathBuf> {
+    let mut prefix = PathBuf::new();
+    for part in path.components() {
+        prefix.push(part);
+        match fs::symlink_metadata(&prefix) {
+            Ok(meta) if meta.file_type().is_symlink() => return Some(prefix),
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
 impl RunScope {
     /// Creates the run folder, writes the first `run.json` and creates
     /// `runtime/tmp` and `runtime/artifacts`. The returned guard removes
@@ -707,7 +752,10 @@ impl RunScope {
         };
         scope.write_report()?;
         create_private_dir_all(runtime_dir.parent().context("runtime parent")?)?;
-        fs::DirBuilder::new().mode(0o700).create(&runtime_dir)?;
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&runtime_dir)
+            .with_context(|| format!("cannot create runtime folder {}", runtime_dir.display()))?;
         let guard = RuntimeGuard::new(runtime_dir.clone())?;
         create_private_dir_all(&runtime_dir.join("tmp"))?;
         create_private_dir_all(&runtime_dir.join("artifacts"))?;
@@ -801,7 +849,7 @@ impl RunWorkspace {
     /// Recovery never silently executes without durable admission.
     pub(crate) fn begin_durable(recipe: &str, cwd: &Path) -> Result<Self> {
         let root = super::work_root::resolve_from_env()?;
-        recipe_runner_rs::recovery::private_fs::Directory::open(&root.path, true)?;
+        open_work_root(&root.path)?;
         let (scope, guard) = RunScope::begin(root, recipe, cwd)?;
         Ok(Self::Scoped {
             scope: Box::new(scope),

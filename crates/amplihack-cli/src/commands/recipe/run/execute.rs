@@ -845,7 +845,12 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 binary.as_path(),
             );
             correlation.emit_early();
-            eprintln!("amplihack: runner capability check failed: {error}");
+            // The code first, unchanged, then why the probe failed (issue
+            // #2931): a step name and an OS error, never runner output.
+            eprintln!(
+                "amplihack: runner capability check failed: {error}{}",
+                crate::runner_validation::cause_suffix(&error)
+            );
             return Err(fail_with_final_record(
                 &correlation,
                 RecipeRunFinalStatus::SpawnFailure,
