@@ -100,7 +100,9 @@ pub(super) fn fetch_latest_release_with(
     parse_latest_release(body, &asset_name)
 }
 
-fn latest_release_via_gh(gh: &GhCommand) -> Result<Vec<u8>> {
+/// The body of the latest-release answer through gh. 403 and 429 become the
+/// refusal message; 404 means no release yet. Shared with `auto_update`.
+pub(crate) fn latest_release_via_gh(gh: &GhCommand) -> Result<Vec<u8>> {
     let response = gh
         .latest_release_json()
         .context("failed to query latest stable release through gh")?;
@@ -141,7 +143,7 @@ fn json_message(body: &[u8]) -> Option<String> {
 /// Makes text from GitHub or gh safe to show: the first line only, control
 /// characters (including ESC) removed, at most 300 characters, and no trailing
 /// full stop, so it can sit inside a sentence.
-pub(crate) fn sanitise_remote_text(text: &str) -> String {
+pub(super) fn sanitise_remote_text(text: &str) -> String {
     let first = text.trim().lines().next().unwrap_or_default();
     let cleaned: String = first
         .chars()
@@ -155,7 +157,7 @@ pub(crate) fn sanitise_remote_text(text: &str) -> String {
 /// Issue #2957: the message for a 403 or 429 from GitHub, on either path. It
 /// gives GitHub's own message and when the limit resets, and does not suggest
 /// waiting or retrying.
-pub(crate) fn refusal_message(status: u16, github: Option<&str>, reset: Option<i64>) -> String {
+fn refusal_message(status: u16, github: Option<&str>, reset: Option<i64>) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

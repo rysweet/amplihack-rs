@@ -198,34 +198,18 @@ fn _fetch_latest_version(timeout_secs: u64) -> Option<String> {
 }
 
 fn latest_version_via_gh(gh: &crate::update::gh::GhCommand) -> Option<String> {
-    let response = match gh.latest_release_json() {
-        Ok(response) => response,
+    let body = match crate::update::latest_release_via_gh(gh) {
+        Ok(body) => body,
         Err(err) => {
             debug!(error = %format!("{err:#}"), "gh release lookup failed");
             return None;
         }
     };
-    match response.status {
-        200..=299 => {
-            let body: serde_json::Value = serde_json::from_slice(&response.body).ok()?;
-            let tag = body.get("tag_name")?.as_str()?;
-            let trimmed = tag.trim_start_matches('v');
-            debug!(version = trimmed, "Fetched latest release through gh");
-            Some(trimmed.to_string())
-        }
-        status @ (403 | 429) => {
-            let github = serde_json::from_slice::<serde_json::Value>(&response.body)
-                .ok()
-                .and_then(|v| v.get("message")?.as_str().map(str::to_string));
-            let message = crate::update::refusal_message(status, github.as_deref(), response.reset);
-            debug!(message = %message, "gh release lookup refused");
-            None
-        }
-        status => {
-            debug!("gh release lookup failed: HTTP {status}");
-            None
-        }
-    }
+    let body: serde_json::Value = serde_json::from_slice(&body).ok()?;
+    let tag = body.get("tag_name")?.as_str()?;
+    let trimmed = tag.trim_start_matches('v');
+    debug!(version = trimmed, "Fetched latest release through gh");
+    Some(trimmed.to_string())
 }
 
 /// Compare two semver strings, returning `true` if `latest > current`.

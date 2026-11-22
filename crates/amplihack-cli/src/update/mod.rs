@@ -11,7 +11,7 @@ pub use check::{
     StartupUpdateOutcome, maybe_print_update_notice_from_args, run_update,
     should_skip_update_check_for_subcommand,
 };
-pub(crate) use network::{MAX_TAG_TARBALL_BYTES, http_get_bounded, refusal_message};
+pub(crate) use network::{MAX_TAG_TARBALL_BYTES, http_get_bounded, latest_release_via_gh};
 
 use anyhow::{Result, anyhow, bail};
 use semver::Version;

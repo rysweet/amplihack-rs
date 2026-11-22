@@ -10,7 +10,7 @@ use super::network::sanitise_remote_text;
 use anyhow::{Result, bail};
 use std::ffi::OsString;
 use std::path::Path;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, Stdio};
 
 /// How to run gh. Deliberately has no `Debug` or `Display`, so a value can
 /// never be formatted into a message or log.
@@ -110,7 +110,7 @@ impl GhCommand {
         if !output.status.success() {
             bail!(
                 "gh release download {tag} failed ({}): {}",
-                describe_exit(output.status),
+                describe_exit(output.status.code()),
                 stderr_text(&output.stderr)
             );
         }
@@ -118,8 +118,8 @@ impl GhCommand {
     }
 }
 
-fn describe_exit(status: ExitStatus) -> String {
-    match status.code() {
+fn describe_exit(code: Option<i32>) -> String {
+    match code {
         Some(code) => format!("exit status {code}"),
         None => "terminated by a signal".to_string(),
     }
@@ -143,11 +143,11 @@ pub(crate) fn parse_api_output(
     exit_code: Option<i32>,
 ) -> Result<GhApiResponse> {
     let fail = || {
-        let exit = match exit_code {
-            Some(code) => format!("exit status {code}"),
-            None => "terminated by a signal".to_string(),
-        };
-        anyhow::anyhow!("gh api failed ({exit}): {}", stderr_text(stderr))
+        anyhow::anyhow!(
+            "gh api failed ({}): {}",
+            describe_exit(exit_code),
+            stderr_text(stderr)
+        )
     };
 
     let mut rest = stdout;
