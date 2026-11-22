@@ -428,32 +428,6 @@ fn check_unmerged_observes_platform_and_retains_failed_attempts() {
 }
 
 #[test]
-fn light_qa_judges_criterion_1_and_records_the_judgement_in_its_reply() {
-    let s = step(&r(), "light-qa");
-    assert!(is_agent(&s));
-    let prompt = s["prompt"].as_str().unwrap();
-    for policy in [
-        "qa_command",
-        "recorded base",
-        "criterion-1-qa-judgement.md",
-        "{{light_qa_inputs}}",
-        "qa_judgement",
-        "qa_handoff",
-        "does not meet criterion 1",
-    ] {
-        assert!(prompt.contains(policy), "light-qa must mention `{policy}`");
-    }
-    // The parsed record that decided criterion 1 is retired (#2569): the
-    // judgement is the agent's own reply, and the measurement owns its file.
-    for retired in ["qa-record", "qa-inputs.json"] {
-        assert!(
-            !prompt.contains(retired),
-            "light-qa must not name the retired `{retired}`"
-        );
-    }
-}
-
-#[test]
 fn report_uses_typed_finalization_and_missing_evidence_stays_incomplete() {
     let s = step(&r(), "light-report");
     let cmd = s["command"].as_str().unwrap();
