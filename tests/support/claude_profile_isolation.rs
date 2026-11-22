@@ -54,7 +54,7 @@
 #![allow(dead_code)]
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 /// The variables that can send a settings write outside the `HOME` a test was
@@ -196,16 +196,28 @@ pub fn with_config_dir(home: &Path, dir: &Path) -> ClaudeProfileIsolation {
 /// be compared for containment.
 ///
 /// A path that does not exist yet cannot be canonicalised, so its nearest
-/// existing ancestor is resolved and the remaining components are appended.
-/// That keeps `<home>/not-created-yet` usable while still resolving anything
-/// real on the way to it.
+/// existing ancestor is resolved and the remaining components are applied to
+/// it one by one. That keeps `<home>/not-created-yet` usable while still
+/// resolving anything real on the way to it. A `..` among those remaining
+/// components removes the last component of the resolved prefix, so
+/// `<home>/missing/../../other` resolves outside `<home>` as the kernel would
+/// resolve it once `missing` exists. The prefix holds no symlinks at that
+/// point, so removing a component lexically is exact.
 fn resolve_for_containment(path: &Path) -> PathBuf {
     if let Ok(resolved) = path.canonicalize() {
         return resolved;
     }
-    match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => resolve_for_containment(parent).join(name),
+    let Some(parent) = path.parent() else {
         // A root or a relative path with no parent left: nothing to resolve.
+        return path.to_path_buf();
+    };
+    match path.components().next_back() {
+        Some(Component::Normal(name)) => resolve_for_containment(parent).join(name),
+        Some(Component::ParentDir) => {
+            let mut resolved = resolve_for_containment(parent);
+            resolved.pop();
+            resolved
+        }
         _ => path.to_path_buf(),
     }
 }

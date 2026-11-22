@@ -320,6 +320,33 @@ fn with_config_dir_panics_for_a_dotdot_escape() {
     let _iso = with_config_dir(&home, &home.join("..").join("other"));
 }
 
+/// `<home>/missing` does not exist, so the path cannot be canonicalised as a
+/// whole; the `..` segments after it must still be applied, or the path would
+/// pass a component-prefix check while resolving outside `home`.
+#[test]
+#[should_panic(expected = "outside")]
+fn with_config_dir_panics_for_a_dotdot_escape_through_a_missing_directory() {
+    let _lock = lock();
+    let scratch = tempdir_outside_framework_roots();
+    let home = scratch.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let dir = home.join("missing").join("..").join("..").join("other");
+    let _iso = with_config_dir(&home, &dir);
+}
+
+/// A `..` that stays inside `home` after a missing directory is accepted.
+#[test]
+fn with_config_dir_accepts_a_dotdot_that_stays_inside_home() {
+    let _lock = lock();
+    let scratch = tempdir_outside_framework_roots();
+    let home = scratch.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let dir = home.join("missing").join("..").join("later");
+    let _outer = EnvGuard::unset(CLAUDE_PROFILE_ENV_VARS);
+    let _iso = with_config_dir(&home, &dir);
+    assert_eq!(get("CLAUDE_CONFIG_DIR").as_deref(), Some(dir.as_os_str()));
+}
+
 #[cfg(unix)]
 #[test]
 #[should_panic(expected = "outside")]

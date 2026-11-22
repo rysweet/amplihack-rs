@@ -124,6 +124,9 @@ if [ -n "${QA_EVIDENCE_DIR:-}" ]; then
 fi
 
 # The test summary lines, so a reader sees what ran without the whole log.
+# Diagnostic only: grep exits 1 when cargo printed no summary line (a build
+# failure, say), and under `set -e` that would stop the script before it
+# reports the cargo exit status and checks the manifests below.
 grep -E '^test result:|^error(\[|:)|^failures:|^    [a-z_:0-9]+$' "$fixture/cargo.log" | tail -n 60 || true
 echo "cargo exit: $status"
 passed=$(sed -n 's/^test result: [a-zA-Z]*\. \([0-9]*\) passed.*/\1/p' "$fixture/cargo.log" \
@@ -132,6 +135,8 @@ echo "tests passed: $passed"
 
 if ! cmp -s "$fixture/before.manifest" "$fixture/after.manifest"; then
     echo "FAIL: a stand-in profile or home changed during '${test_cmd[*]}':" >&2
+    # Diagnostic only: diff exits 1 because the files differ, which the `cmp`
+    # above has already established; the script fails on the next line.
     diff "$fixture/before.manifest" "$fixture/after.manifest" >&2 || true
     exit 1
 fi
