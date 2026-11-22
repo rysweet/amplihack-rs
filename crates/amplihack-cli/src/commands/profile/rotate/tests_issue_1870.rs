@@ -397,20 +397,17 @@ fn unused_measure(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
     panic!("the gate tests call decide_measured themselves")
 }
 
-/// A context for the gate alone: no measurement, and `reread` as given.
-/// Issue #2910's confirming-read tests ask the gate the same questions, so
-/// this and [`snap`] are shared with `tests_issue_2910_confirm`.
-pub(super) fn gate_ctx(e: &Env, reread: Option<RereadFn>) -> Ctx {
+fn gate_ctx(e: &Env, reread: Option<RereadFn>) -> Ctx {
     let mut c = ctx_with(e, unused_measure as MeasureFn);
     c.reread = reread;
     c
 }
 
-pub(super) fn snap(c: &Ctx) -> Snap {
+fn snap(c: &Ctx) -> Snap {
     snapshot(c, &State::new(c.store.root()).unwrap()).unwrap()
 }
 
-pub(super) fn panics(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+fn panics(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     panic!("no read may happen here, but {name} was read")
 }
 
@@ -600,9 +597,6 @@ fn a_spent_time_limit_makes_the_target_unknown_with_no_read() {
         got.fresh_lines,
         ["reread: spare time limit reached; treated as unknown"]
     );
-    // Issue #2910: the decision the gate settled on is the ALERT, so it
-    // says why it passed its only candidate over.
-    assert_eq!(got.rejected, ["reject: spare no usable reading"]);
     assert!(
         !matches!(got.decision, Decision::Swap { .. }),
         "{:?}",
@@ -651,9 +645,6 @@ fn gate_rereads_a_stale_target_and_decides_again_without_writing() {
         got.fresh_lines,
         ["reread: spare reading stale s=11% w=20%; fresh s=43% w=100%"]
     );
-    // Issue #2910: the re-read left no login with room, so the settled
-    // decision is the ALERT, and it says why it passed spare over.
-    assert_eq!(got.rejected, ["reject: spare no room left"]);
     assert_eq!(
         e.rs.load_ledger().unwrap().unwrap().account.as_deref(),
         Some("u-work"),
@@ -679,9 +670,6 @@ fn gate_never_reads_under_the_lock_and_a_stale_target_is_unknown() {
     let got = fresh::gate(&c, &s, m, Reread::Never).unwrap();
     assert_eq!(got.decision, Decision::Alert);
     assert!(got.fresh_lines.is_empty(), "the Never path writes no line");
-    // Issue #2910: the ALERT the gate settled on still says why it passed
-    // its only candidate over, in every mode.
-    assert_eq!(got.rejected, ["reject: spare no usable reading"]);
 }
 
 #[test]

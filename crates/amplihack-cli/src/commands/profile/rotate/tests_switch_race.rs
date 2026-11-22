@@ -54,7 +54,6 @@ fn decided(measured_at: i64) -> Measurement {
         measured_at,
         probed: None,
         fresh_lines: Vec::new(),
-        rejected: Vec::new(),
     }
 }
 

@@ -1030,28 +1030,11 @@ fn a_spend_limit_on_the_live_overflow_moves_to_the_next_overflow() {
     assert_ne!(v.decision, swap("cred2", Reason::OverflowIn));
 }
 
-/// Issue #2910 reverses the last-resort half of this rule. The fallback used
-/// to take the best plan login whatever its windows read, so a live overflow
-/// that could not spend moved onto a login at 95% of its session. On
-/// 21 November 2026 at 18:00Z on calypso that is how the rotator reached
-/// nnorth, which was spent within minutes. The rotator now moves only onto a
-/// login under `--session-at` and `--week-at`, and alerts when none is, so
-/// the two halves below are the same cycle either side of that bound.
 #[test]
 fn a_spend_limit_on_the_live_overflow_falls_back_to_the_best_plan_login() {
-    // Neither plan login is one the rotator may move onto: no swap at all.
     let v = Case::new("cred", spend_limited())
         .cand("spare", measured(95.0, 50.0, None, None))
         .cand("extra", measured(99.0, 50.0, None, None))
-        .overflow(&["cred"])
-        .run();
-    assert_eq!(v.new_blocks, vec![n("cred")]);
-    assert_eq!(v.decision, Decision::Alert, "{v:?}");
-    // With both under the thresholds the fallback still ranks them, and the
-    // one with the most headroom wins.
-    let v = Case::new("cred", spend_limited())
-        .cand("spare", measured(50.0, 50.0, None, None))
-        .cand("extra", measured(80.0, 50.0, None, None))
         .overflow(&["cred"])
         .run();
     assert_eq!(v.new_blocks, vec![n("cred")]);
@@ -1207,40 +1190,17 @@ fn a_plan_login_over_a_threshold_comes_before_overflow() {
     }
 }
 
-/// The same cycle with the plan login under `--session-at`, either side of
-/// `--week-at`.
-///
-/// This test used to say that a plan login under `--session-at` but *without
-/// capacity* (a week at 97%) still came before overflow, as a plan-room move.
-/// Issue #2910 reverses that: a login at or above `--week-at` is not a target
-/// in any pass, plan-room included. On 21 November 2026 at 07:20:31Z the
-/// rotator moved candide onto a login at 98% of its week with
-/// `reason=plan-room`, and its next request met the organisation's spend
-/// limit. What survives is the guarantee the test was really protecting: no
-/// credit is spent while a plan login still has room at all, so the cycle
-/// alerts rather than starting `cred`. `plan_room::has_room` (the 100% rule)
-/// still holds that gate, which is why the tag stays `None`.
+/// The same cycle with the plan login under `--session-at` and a gain short of
+/// `--margin`: the free swap still happens, as a plan-room move.
 #[test]
 fn a_plan_login_under_the_session_threshold_without_capacity_comes_before_overflow() {
     for reset in [Some(NOW + 5 * HOUR), Some(NOW + 600)] {
-        // Week at 97%: not a target, and no credit spend either.
         let v = Case::new("work", exhausted(reset, reset))
             .cand("spare", measured(50.0, 97.0, reset, reset))
             .cand("cred", exhausted(reset, reset))
             .overflow(&["cred"])
             .run();
-        assert_eq!(v.decision, Decision::Alert, "{v:?}");
-        assert_eq!(v.tag, None, "no credit spend while a plan login has room");
-        // Under both thresholds the free swap still happens. The live login
-        // is exhausted, so its headroom is 0 and the gain clears `--margin`:
-        // the threshold pass names the target before the plan-room pass is
-        // reached, which is the same login by a different reason.
-        let v = Case::new("work", exhausted(reset, reset))
-            .cand("spare", measured(50.0, 50.0, reset, reset))
-            .cand("cred", exhausted(reset, reset))
-            .overflow(&["cred"])
-            .run();
-        assert_eq!(v.decision, swap("spare", Reason::Threshold), "{v:?}");
+        assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
         assert_eq!(v.tag, None);
     }
 }
@@ -1278,12 +1238,9 @@ fn every_overflow_profile_blocked_means_no_move_onto_overflow() {
 fn a_blocked_overflow_profile_is_never_reselected() {
     // `cred` is live and just hit its spend limit; `cred2` is blocked
     // already. The fallback is the best plan login, never either of them.
-    // Issue #2910: `spare` reads 50/50 rather than the old 95/50, which is
-    // no longer a login the rotator may move onto; the subject here is that
-    // neither overflow profile is picked, not the plan login's windows.
     let mut c = Case::new("cred", spend_limited())
         .cand("cred2", exhausted(None, None))
-        .cand("spare", measured(50.0, 50.0, None, None))
+        .cand("spare", measured(95.0, 50.0, None, None))
         .overflow(&["cred", "cred2"]);
     c.blocks
         .insert("cred2".into(), block(NOW - HOUR, NOW + 24 * HOUR));
@@ -1347,24 +1304,17 @@ fn moving_back_off_overflow_ignores_a_recent_swap() {
 /// given. Which logins that pool holds (a crossing is in it when leaving
 /// overflow and no same-organisation plan login has room) is decided by
 /// `organisation_affinity::pools`; see its tests.
-///
-/// Issue #2910 changed what this cycle does. The fallback used to take a
-/// login at 95/95 when it was in the pool, which is the decision the 21
-/// November 2026 evidence condemns; now no pass will move onto it, so the
-/// cycle alerts whichever pool it is in. A login under both thresholds in
-/// the `allowed` pool is taken by the first pass, before the fallback, so
-/// the pool restriction is pinned last with the login outside `allowed`:
-/// the fallback then moves onto it only when the plan-room pool holds it.
 #[test]
 fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
-    let live = n("credits");
-    let overflow = vec![OverflowEntry::new(live.clone(), 1)];
-    let plan = [n("plan")];
-    let decide = |reading: Probed, allowed: &[ProfileName], same: &[ProfileName]| {
+    for same_org in [false, true] {
         let case = Case::new("credits", spend_limited())
             .overflow(&["credits"])
-            .cand("plan", reading);
-        super::overflow::decide_restricted(
+            .cand("plan", measured(95.0, 95.0, FAR, FAR));
+        let live = n("credits");
+        let overflow = vec![OverflowEntry::new(live.clone(), 1)];
+        let allowed = vec![n("plan")];
+        let same = if same_org { allowed.clone() } else { vec![] };
+        let result = super::overflow::decide_restricted(
             &OverflowInput {
                 settings: &case.s,
                 live_name: Some(&live),
@@ -1378,30 +1328,12 @@ fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
                 swapped_at: None,
                 now: NOW,
             },
-            Some((allowed, same)),
-        )
-    };
-    for same_org in [false, true] {
-        let same: &[ProfileName] = if same_org { &plan } else { &[] };
-        let result = decide(measured(95.0, 95.0, FAR, FAR), &plan, same);
-        assert!(
-            !matches!(result.decision, Decision::Swap { .. }),
-            "95/95 is no target in any pool: {result:?}"
+            Some((&allowed, &same)),
         );
-        // Under both thresholds and in `allowed`: the first pass takes it,
-        // whether or not the login is a same-organisation one.
-        let result = decide(measured(50.0, 50.0, FAR, FAR), &plan, same);
-        assert_eq!(result.decision, swap("plan", Reason::OverflowOut));
-        // Under both thresholds but outside `allowed`: only the room
-        // fallback can reach it, and only through its own pool.
-        let result = decide(measured(50.0, 50.0, FAR, FAR), &[], same);
         if same_org {
             assert_eq!(result.decision, swap("plan", Reason::OverflowOut));
         } else {
-            assert!(
-                !matches!(result.decision, Decision::Swap { .. }),
-                "outside the room pool: {result:?}"
-            );
+            assert!(!matches!(result.decision, Decision::Swap { .. }));
         }
     }
 }

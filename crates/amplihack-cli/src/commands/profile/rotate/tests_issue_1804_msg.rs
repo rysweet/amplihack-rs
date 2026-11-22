@@ -345,11 +345,10 @@ fn the_rotator_does_not_leave_an_unmarked_live_api_key_for_a_plan_login_past_ses
 
 #[test]
 fn the_rotator_leaves_an_unmarked_live_api_key_for_a_plan_login_with_room() {
-    // 60/85 at --session-at 85 and --week-at 90: room under both. D6 says
-    // the rotator leaves the unmarked key as soon as a plan login has room.
-    // Issue #2910 moved work's week from 95, where it had session room but
-    // no capacity: that is no longer a login the rotator may move onto.
-    let v = decide_on_unmarked(&[("work", measured(60.0, 85.0)), ("spare", exhausted())]);
+    // 60/95 at --session-at 85: no capacity (the week is past --week-at), but
+    // room under the session threshold. D6 says the rotator leaves the
+    // unmarked key as soon as a plan login has room.
+    let v = decide_on_unmarked(&[("work", measured(60.0, 95.0)), ("spare", exhausted())]);
     assert_eq!(
         v.decision,
         Decision::Swap {

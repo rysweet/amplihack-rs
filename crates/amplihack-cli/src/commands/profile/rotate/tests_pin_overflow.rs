@@ -130,7 +130,6 @@ fn off_overflow(_: &Ctx, _: &super::observe::Snap) -> Result<Measurement, Profil
         measured_at: at,
         probed: None,
         fresh_lines: Vec::new(),
-        rejected: Vec::new(),
     })
 }
 
@@ -217,7 +216,6 @@ fn onto_overflow(_: &Ctx, _: &super::observe::Snap) -> Result<Measurement, Profi
         measured_at: now(),
         probed: None,
         fresh_lines: Vec::new(),
-        rejected: Vec::new(),
     })
 }
 

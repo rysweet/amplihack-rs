@@ -1094,19 +1094,8 @@ mod evidence {
         CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["spare"]));
     }
 
-    /// Issue #2910 reversed the "without rereading" half of this test. A
-    /// stored reading of the chosen target is now confirmed by a reading
-    /// taken for the swap: on 21 November 2026 at 18:00Z the rotator on
-    /// calypso swapped to nnorth on a stored reading, and nnorth was spent
-    /// within minutes, so about nine runs waited until the 18:10:15Z swap
-    /// released them.
-    ///
-    /// What issue #2211 fixed still holds, and is what this test now pins:
-    /// a reading taken after the recorded use is not *stale*, so the one
-    /// read made is the confirming read and not a staleness re-read, and
-    /// the swap stands on the figures it returns.
     #[test]
-    fn a_reading_after_recorded_use_is_confirmed_once_and_never_treated_as_stale() {
+    fn a_reading_after_recorded_use_remains_eligible_without_rereading() {
         let (e, c, snap) = fixture();
         let t = clock();
         let mut ledger = e.rs.load_ledger().unwrap().unwrap();
@@ -1114,8 +1103,6 @@ mod evidence {
         ledger.swapped_at = Some(t - 10);
         ledger.swapped_away.insert("spare".into(), t - 20);
         e.rs.save_ledger(&ledger).unwrap();
-        // The confirming read finds the same room the stored reading had.
-        script([rd(10.0, 20.0, None)]);
         let m = observe::decide_measured(
             &c,
             &snap,
@@ -1126,19 +1113,7 @@ mod evidence {
         .unwrap();
         let m = fresh::gate(&c, &snap, m, fresh::Reread::Allowed).unwrap();
         assert!(matches!(m.decision, Decision::Swap { to, .. } if to == n("spare")));
-        CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["spare"], "one confirming read"));
-        assert!(
-            m.fresh_lines
-                .iter()
-                .any(|l| l.starts_with("confirm: spare")),
-            "{:?}",
-            m.fresh_lines
-        );
-        assert!(
-            !m.fresh_lines.iter().any(|l| l.contains("stale")),
-            "a reading after the recorded use is not stale: {:?}",
-            m.fresh_lines
-        );
+        CALLS.with_borrow(|v| assert!(v.is_empty()));
     }
 
     /// Crusty round 6: the live step runs after the measurement, so a live
@@ -1275,9 +1250,6 @@ mod evidence {
                 "reread: spare failed; treated as unknown",
             ]
         );
-        // Issue #2910: the gate's two reads left no login with room, so the
-        // settled decision is the ALERT and it says why it passed spare over.
-        assert_eq!(m.rejected, ["reject: spare no usable reading"]);
         CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["spare"]));
     }
 

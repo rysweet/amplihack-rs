@@ -15,7 +15,7 @@
 use super::cycle::Ctx;
 use super::decide::{Decision, Probed, Reading, Reason};
 use super::fresh_msg;
-use super::log::{Shown, msg};
+use super::log::Shown;
 use super::measure;
 use super::observe::{Measurement, Snap, decide_measured};
 use super::swap_back;
@@ -28,15 +28,6 @@ use std::time::{Duration, Instant};
 
 #[path = "live_fresh.rs"]
 pub(super) mod live;
-
-/// Issue #2910: the fresh reading taken of a chosen target before the swap.
-#[path = "fresh_confirm.rs"]
-mod confirm;
-
-/// Issue #2910, rule 3, through the gate itself.
-#[cfg(test)]
-#[path = "tests_issue_2910_confirm.rs"]
-mod tests_issue_2910_confirm;
 
 /// The oldest a target's reading may be. It equals the default passive
 /// age (`DEFAULT_PASSIVE_MAX_AGE_SECS`) and the usage history's limit, so a
@@ -219,40 +210,7 @@ pub(super) fn settle(
         let t = (ctx.now)();
         let after = damped_at.max(left_at);
         if !stale(read_at(&probes[i].1, m.measured_at), live_at, after, t) {
-            // Issue #2910, rule 3: the chosen target is confirmed by a
-            // reading taken for this swap. A reading this cycle took
-            // directly is already that confirmation, so only a stored one
-            // (passive, or carried from an earlier cycle) is read again.
-            // The reading that replaces it is direct, so no target is
-            // confirmed twice. Issue #1870 fixed that a fresh target is not
-            // re-read, and #2029 wants fewer probes, not two per swap; the
-            // readings that went stale under the rotator are the ones #2910
-            // names. Where no read is allowed, see `fresh_confirm.rs`.
-            let stored = probes[i].1.passive || probes[i].1.carried;
-            if !stored {
-                break;
-            }
-            if mode == Reread::Never {
-                // Under the lock no reading is taken at all, so the swap
-                // goes ahead on the stored one. Said out loud, as the
-                // spent-budget skip is: rule 3's departures are in the log,
-                // never inferred from a missing line.
-                lines.push(msg::CONFIRM_LOCKED.to_string());
-                break;
-            }
-            if ctx.stopping() {
-                // As for a stale target below: no read and no swap.
-                m.decision = Decision::Stay;
-                break;
-            }
-            let old = &probes[i].1;
-            let Some(new) = confirm::read(ctx, &to, old, &mut reads, budget, started, &mut lines)
-            else {
-                break;
-            };
-            probes[i].1 = new;
-            m = decide(live.clone(), probes.clone(), m.measured_at)?;
-            continue;
+            break;
         }
         if handled >= max_handled {
             return Err(ProfileError::GateUnsettled);
@@ -282,8 +240,7 @@ pub(super) fn settle(
             } else {
                 reads += 1;
                 let p = reread(ctx, &to, left);
-                let damped = damped_at.is_some();
-                let p = fresh_probe(ctx, &to, &probes[i].1, p, damped, false, &mut lines);
+                let p = fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines);
                 if p != Probed::failed() {
                     accepted.push(to.clone());
                 }
@@ -304,22 +261,18 @@ pub(super) fn settle(
         );
         m = again;
     }
-    // Issue #2910: the settled `m` carries the `rejected` lines of the
-    // decision the gate settled on, not of one it moved off, because every
-    // pass round the loop replaced `m` with a new decision.
     m.fresh_lines = lines;
     Ok(m)
 }
 
 /// The probe that replaces `old` after a re-read returned `p`, and its log
 /// lines. A failed read is unknown; a successful one is read now.
-pub(super) fn fresh_probe(
+fn fresh_probe(
     ctx: &Ctx,
     to: &ProfileName,
     old: &Probed,
     mut p: Probed,
     damped: bool,
-    confirming: bool,
     lines: &mut Vec<String>,
 ) -> Probed {
     if p.reading == Reading::Failed || p.unknown || p.still_running || p.carried {
@@ -333,12 +286,7 @@ pub(super) fn fresh_probe(
     // Issue #1970: a re-read is made with passive readings off, so it is a
     // direct reading and never checked as a stale cached one.
     p.passive = false;
-    let (old, new) = (Shown::of(old), Shown::of(&p));
-    lines.push(if confirming {
-        fresh_msg::confirmed(to, &old, &new)
-    } else {
-        fresh_msg::stale(to, &old, &new)
-    });
+    lines.push(fresh_msg::stale(to, &Shown::of(old), &Shown::of(&p)));
     if damped && !swap_back::room(&p.reading, &ctx.settings) {
         lines.push(fresh_msg::still_damped(to));
     }

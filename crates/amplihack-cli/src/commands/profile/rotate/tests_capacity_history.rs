@@ -276,7 +276,6 @@ fn stay(probed: Option<super::super::observe::Probes>) -> Measurement {
         unknown_plan: Vec::new(),
         key_held: Vec::new(),
         fresh_lines: Vec::new(),
-        rejected: Vec::new(),
     }
 }
 

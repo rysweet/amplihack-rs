@@ -174,9 +174,11 @@ fn a_recorded_reset_wakes_the_rotator_and_frees_the_login() {
         Some(woke) < first(&log, "->spare live "),
         "the reset wake comes before the swap onto spare:\n{log}"
     );
+    // Before its reset spare is no candidate at all: every cycle until the
+    // wake found no login with capacity, and none of them moved onto spare.
     assert!(
-        first(&log, "reject: spare").is_some_and(|r| r < woke),
-        "before its reset spare was passed over as blocked:\n{log}"
+        first(&log, "ALERT: no profile has capacity").is_some_and(|a| a < woke),
+        "before its reset the block left no login with capacity:\n{log}"
     );
     println!("[#2909 reset] {}", log.replace('\n', "\n[#2909 reset] "));
     for l in log.lines() {
@@ -235,12 +237,16 @@ fn a_running_rotator_honours_a_credit_limit_and_an_unknown_limit_kind() {
     let woke = first(&log, "wake: ledger changed").expect("the record woke the rotator");
     assert!(Some(woke) < first(&log, " swap work->"), "{log}");
     assert!(!log.contains("wake: interval"), "no interval tick: {log}");
-    let stamp = chrono::DateTime::from_timestamp(spare_until, 0)
-        .unwrap()
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
-    let want = format!("reject: spare a recorded limit recorded until {stamp}");
-    assert!(log.contains(&want), "want {want:?} in:\n{log}");
+    // spare is held by the unknown kind until `spare_until`, which is hours
+    // away, so no cycle in this test moved onto it.
+    assert!(
+        spare_until > now() + 3600,
+        "spare's block is still in force"
+    );
+    assert!(
+        !log.contains("->spare "),
+        "a login held by a recorded limit is never a target: {log}"
+    );
     assert!(
         !log.contains("org_monthly_cap"),
         "a stored kind is never quoted: {log}"

@@ -1,7 +1,6 @@
 //! The decision rule (D1-D5): a pure function of the settings, the live
 //! reading, the candidates' readings, the last swap time and the clock.
 
-use super::overflow::plan_usable;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
@@ -204,24 +203,6 @@ impl Probed {
         }
     }
 
-    /// Issue #2910: what a confirming read of a chosen target contributes
-    /// when that read shows the login has no room after all. Exhausted with
-    /// no figures, the value every rule already reads as "no room", with the
-    /// windows blanked so the login's own reset cannot shorten the overflow
-    /// gate, and `spend_limit` false so it blocks nothing and leaves no
-    /// trace of a limit that was never reported.
-    ///
-    /// [`Probed::excluded`], but known. Not [`Probed::failed`] either: the
-    /// read succeeded, so the login's state is known, and treating it as
-    /// unknown would hold the per-token tiers back for a login that was read
-    /// perfectly well.
-    pub fn no_room() -> Self {
-        Self {
-            unknown: false,
-            ..Self::excluded()
-        }
-    }
-
     /// A probe that failed before any output was read: unknown.
     pub fn failed() -> Self {
         Self {
@@ -314,25 +295,12 @@ pub(super) fn needs_swap(s: &Settings, live: &Reading) -> bool {
     }
 }
 
-/// The candidate with the most headroom among those the rotator may move
-/// onto; ties go to the first name.
-///
-/// Issue #2910: the filter is [`plan_usable`], the one answer to "may the
-/// rotator move onto this login" (`--session-at` and `--week-at`, both
-/// strict), rather than "is this reading not exhausted". On 21 November
-/// 2026 at 07:20:31Z the rotator moved candide onto a login at 98% of its
-/// week, and its next request met the organisation's spend limit. A failed,
-/// exhausted or unreadable (NaN) reading fails `plan_usable`, so those are
-/// still never chosen, and nothing weaker than this is used anywhere a
-/// target is picked.
-///
-/// `plan_usable` is not `plan_room::room_under`: that one answers whether a
-/// login has room at all, keeps the week bound at 100%, and is what the
-/// usage-limit wait reads through `last_cycle.live_room`. Both stay.
-pub(super) fn best<'a>(s: &Settings, candidates: &'a [Measured]) -> Option<(&'a ProfileName, u8)> {
+/// The candidate with the most headroom; ties go to the first name. Failed
+/// and exhausted candidates are never chosen.
+pub(super) fn best(candidates: &[Measured]) -> Option<(&ProfileName, u8)> {
     candidates
         .iter()
-        .filter(|c| plan_usable(s, &c.reading))
+        .filter(|c| !matches!(c.reading, Reading::Exhausted { .. }))
         .filter_map(|c| c.reading.headroom().map(|h| (&c.name, h)))
         .min_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.as_str().cmp(b.0.as_str())))
 }
@@ -345,7 +313,7 @@ pub fn decide(
     now: i64,
 ) -> Decision {
     let live_h = i32::from(live.headroom().unwrap_or(0));
-    let best = best(s, candidates);
+    let best = best(candidates);
     let gain = best.map(|(_, h)| i32::from(h) - live_h);
     if needs_swap(s, live) {
         return match (best, gain) {

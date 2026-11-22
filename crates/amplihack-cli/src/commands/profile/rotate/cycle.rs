@@ -192,19 +192,6 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         Verdict::Reconsidered { m, fresh, line } => {
             out.emit(t, &line);
             first = *fresh;
-            // Issue #2910: the retry's own gate lines, after the
-            // `revalidate:` line. The retry is a measurement of its own
-            // (`revalidate::reconsider` builds it with `decide_measured`,
-            // whose `fresh_lines` start empty), so these are its lines
-            // alone and never the pre-lock gate's, which went out above.
-            //
-            // This is the one verdict that needs it. `Skip` drops the
-            // cycle. `Proceed` keeps the pre-lock measurement, whose lines
-            // are written already; the retry it discards can only have
-            // skipped a confirmation for a target the pre-lock gate also
-            // left stored, and that gate logged `CONFIRM_SKIPPED` for it.
-            // So no swap on an unconfirmed reading goes unsaid.
-            m.fresh_lines.iter().for_each(|l| out.emit(t, l));
             *m
         }
         Verdict::Skip(why) => {
@@ -223,9 +210,6 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             return Ok(CycleOutcome::Skipped);
         }
     };
-    // Issue #2910: why the decision acted on below, and no earlier one,
-    // passed each other login over. Written just before its swap or ALERT.
-    m.rejected.iter().for_each(|line| out.emit(t, line));
     let (live_shown, others_shown) = shown(&m, first.live_excluded, (ctx.now)());
     let Measurement {
         live,

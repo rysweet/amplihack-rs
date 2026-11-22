@@ -8,7 +8,8 @@
 //! login out of its choices until the recorded reset. The field is
 //! admitted by a short-token rule ([`valid_kind`]) rather than a closed
 //! list, so a writer this binary does not know about still blocks its
-//! login; [`kind_label`] keeps a stored token out of every log line.
+//! login. No rotate log line renders a stored token, so a process able to
+//! write the ledger cannot choose text in the log.
 
 use super::ledger::{
     MAX_BLOCK_SECS, MAX_BLOCKS, OVERFLOW_TAGS, OverflowBlock, RotateLedger, SPEND_LIMIT,
@@ -84,13 +85,6 @@ pub(super) fn valid_overflow(l: &RotateLedger) -> bool {
         })
 }
 
-/// The five-hour session window ran out (issue #2909).
-pub const SESSION_LIMIT: &str = "session_limit";
-/// The seven-day window ran out.
-pub const WEEK_LIMIT: &str = "week_limit";
-/// The account's credit balance ran out.
-pub const CREDIT_LIMIT: &str = "credit_limit";
-
 /// The longest limit-kind token a stored block may carry.
 const MAX_KIND: usize = 32;
 
@@ -110,23 +104,6 @@ pub fn valid_kind(kind: &str) -> bool {
         && kind
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-}
-
-/// Fixed text for a stored limit kind, for a log line or an ALERT. The
-/// return type is `&'static str`, so the compiler guarantees that no byte a
-/// writer chose can reach the rotate log: a token outside the kinds this
-/// binary knows is labelled, not quoted.
-pub fn kind_label(kind: &str) -> &'static str {
-    match kind {
-        SPEND_LIMIT => "spend limit",
-        SESSION_LIMIT => "session limit",
-        WEEK_LIMIT => "week limit",
-        CREDIT_LIMIT => "credit limit",
-        KEY_EXHAUSTED => "API key exhausted",
-        KEY_REVOKED => "API key revoked",
-        KEY_RATE_LIMITED => "API key rate limited",
-        _ => "a recorded limit",
-    }
 }
 
 /// When an organisation's monthly spend resets, as assumed for a block

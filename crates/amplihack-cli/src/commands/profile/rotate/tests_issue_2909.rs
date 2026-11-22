@@ -3,8 +3,6 @@
 //!
 //! Contract:
 //! - `spend_blocks::valid_kind(&str) -> bool`: `^[a-z0-9_]{1,32}$`, on bytes.
-//! - `spend_blocks::kind_label(&str) -> &'static str`: a fixed label for any
-//!   token, so a stored reason never reaches a log line.
 //! - `valid_overflow` accepts any such reason; `ProfileName::parse`,
 //!   `valid_span` and `MAX_BLOCKS` are unchanged.
 //! - `wake::deadline(now: Instant, now_unix: i64, interval: Duration,
@@ -32,7 +30,7 @@ use super::super::daemon::wake::{
 use super::super::ledger::{
     MAX_BLOCK_SECS, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState, for_older_readers,
 };
-use super::{active_blocks, kind_label, prune_blocks, valid_kind};
+use super::{active_blocks, prune_blocks, valid_kind};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Mutex;
@@ -97,16 +95,6 @@ fn kind_tokens_follow_the_short_token_rule() {
         assert!(!valid_kind(bad), "{bad:?}");
     }
     assert!(!valid_kind(&"a".repeat(33)));
-}
-
-#[test]
-fn a_kind_label_is_fixed_text_for_any_token() {
-    let odd = "token_like_sk_ant_0123";
-    assert!(valid_kind(odd));
-    let label: &'static str = kind_label(odd);
-    assert!(!label.contains(odd), "{label}");
-    assert!(!kind_label("spend_limit").is_empty());
-    assert_eq!(kind_label(odd), kind_label("another_odd_one"));
 }
 
 #[test]

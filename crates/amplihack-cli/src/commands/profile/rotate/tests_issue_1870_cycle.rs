@@ -69,13 +69,6 @@ fn reread_a(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
 
 /// The 13:09Z cycle: `work` live past `--week-at`; `spare` has a passive
 /// reading from a minute ago; `spare2` is still being read.
-///
-/// Issue #2910 lowered `spare`'s recorded week from 95% to 85%. The week
-/// bound on a swap target is now `--week-at` (90) rather than 100, so at
-/// 95% `spare` would be refused before the gate ever saw it and the
-/// re-read this test is about would not happen. The rule under test is
-/// #1870's: an old reading of the chosen target is read again, and a login
-/// the fresh reading shows is full is not chosen.
 fn measure_a(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let mut running = Probed::failed();
@@ -83,7 +76,7 @@ fn measure_a(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let probes = probes_for(
         snap,
         &[
-            ("spare", rd(11.0, 85.0, Some(at - 60))),
+            ("spare", rd(11.0, 95.0, Some(at - 60))),
             ("spare2", running),
         ],
     );
@@ -105,7 +98,7 @@ fn a_regression_an_old_reading_is_read_again_and_the_full_login_is_not_chosen() 
     assert_eq!(swaps(&log), 0, "{log}");
     assert_eq!(calls(&CALLS_A), ["spare"]);
     assert!(
-        log.contains("reread: spare reading stale s=11% w=85%; fresh s=43% w=100%"),
+        log.contains("reread: spare reading stale s=11% w=95%; fresh s=43% w=100%"),
         "{log}"
     );
     assert!(
@@ -115,18 +108,6 @@ fn a_regression_an_old_reading_is_read_again_and_the_full_login_is_not_chosen() 
     assert!(
         log.find("reread: spare") > log.find(" cycle live=work"),
         "the reread line follows the cycle line:\n{log}"
-    );
-    // Issue #2910, rule 3: this is the cycle that becomes the ALERT because
-    // the gate read its target again, which is exactly the cycle that found
-    // no login with room. It must say why it passed each candidate over,
-    // and the lines the settled decision brings are the ones that count.
-    assert!(
-        log.contains("reject: spare no room left"),
-        "the re-read left spare with no room, and the cycle says so:\n{log}"
-    );
-    assert!(
-        log.find("reject: spare") > log.find("reread: spare"),
-        "the reason follows the read that found it:\n{log}"
     );
 }
 
@@ -237,12 +218,9 @@ fn reread_d(_: &Ctx, _: &ProfileName, _: Duration) -> Probed {
     Probed::failed()
 }
 
-/// Issue #2910 lowered `spare`'s recorded week from 95% to 85%, as in
-/// `measure_a`: a target at or above `--week-at` (90) is refused before the
-/// gate, so the failed re-read under test would not be made at all.
 fn measure_d(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let probes = probes_for(snap, &[("spare", rd(11.0, 85.0, Some(at - 60)))]);
+    let probes = probes_for(snap, &[("spare", rd(11.0, 95.0, Some(at - 60)))]);
     decide_measured(ctx, snap, rd(0.0, 97.0, None), probes, at)
 }
 
@@ -282,20 +260,12 @@ fn reread_e(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     exh(43.0, 100.0)
 }
 
-/// Issue #2910 moved both readings down. A plan-room target must now be
-/// under `--week-at` (90) as well as under `--session-at`, so `spare` reads
-/// 11/89 rather than 11/93; and a target under both bounds has at least 11
-/// points of headroom, so the live login needs headroom of its own for the
-/// gain to stay under `--margin`. `work` therefore reads 0/92: past
-/// `--week-at`, so a swap is wanted, with 8 points of headroom to spare's
-/// 11. The rule under test is #1870's: a plan-room target is read again
-/// before the move.
 fn measure_e(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let probes = probes_for(snap, &[("spare", rd(11.0, 89.0, Some(at - 90)))]);
-    // `work` is past --week-at; spare's gain (3) is under --margin (5) and
+    let probes = probes_for(snap, &[("spare", rd(11.0, 93.0, Some(at - 90)))]);
+    // `work` is past --week-at; spare's gain (4) is under --margin (5) and
     // its week is lower, so the decision is a plan-room move.
-    let m = decide_measured(ctx, snap, rd(0.0, 92.0, None), probes, at)?;
+    let m = decide_measured(ctx, snap, rd(0.0, 97.0, None), probes, at)?;
     assert_eq!(
         m.decision,
         Decision::Swap {
@@ -317,7 +287,7 @@ fn e_a_plan_room_target_is_read_again_before_the_move() {
     assert_eq!(ino_at(&e.live()), Some(e.l));
     assert_eq!(calls(&CALLS_E), ["spare"]);
     assert!(
-        log.contains("reread: spare reading stale s=11% w=89%; fresh s=43% w=100%"),
+        log.contains("reread: spare reading stale s=11% w=93%; fresh s=43% w=100%"),
         "{log}"
     );
     assert!(!log.contains("reason=plan-room"), "{log}");
@@ -649,13 +619,9 @@ fn reread_dry(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
 
 /// `work` past --week-at; `spare`, damped two minutes ago, has a passive
 /// reading older than the live one.
-///
-/// Issue #2910 lowered `spare`'s recorded week from 95% to 85%, as in
-/// `measure_a`: at 95% it would be refused before the gate, and the dry
-/// run's re-read under test would not be made.
 fn measure_dry(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let probes = probes_for(snap, &[("spare", rd(11.0, 85.0, Some(at - 60)))]);
+    let probes = probes_for(snap, &[("spare", rd(11.0, 95.0, Some(at - 60)))]);
     decide_measured(ctx, snap, rd(0.0, 97.0, None), probes, at)
 }
 
