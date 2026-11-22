@@ -21,18 +21,22 @@
 # the completion step.
 #
 # What is stood in for, and nothing else:
-#   gh      answers `auth status`, `pr view` and `pr list`, accepts the one
-#           write a shipped step makes here (`pr comment`, the "Ready for Final
-#           Review" note of step-21-pr-ready, recorded in $CASE/gh-comments.log;
-#           every case fails on more than one comment or on any other), and
-#           exits 96 on anything else (merge, any api call, secret, variable,
-#           workflow), recording that call in $CASE/gh-unexpected. The pull
-#           request is #7,
+#   gh      answers `auth status`, `pr view`, `pr list` and
+#           `pr checks --watch`, accepts the one write a shipped step makes
+#           here (`pr comment`, the "Ready for Final Review" note of
+#           step-21-pr-ready, recorded in $CASE/gh-comments.log; every case
+#           fails on more than one comment or on any other), and exits 96 on
+#           anything else (merge, any api call, secret, variable, workflow,
+#           `pr checks` without `--watch`), recording that call in
+#           $CASE/gh-unexpected. The pull request is #7,
 #           open and not a draft, at the tip the bare remote holds for the run
 #           branch. Its checks are read from that tip, not from a flag the
 #           driver flips: the `smoke` check fails until the tip holds the file
 #           fixed.txt, so a repair counts only once it has been pushed. In the
-#           unfixable case the `deploy` check fails whatever the tip holds.
+#           unfixable case the `deploy` check fails whatever the tip holds. In
+#           the pending case the `smoke` check is in progress until
+#           `gh pr checks --watch` has been run, which returns it settled and
+#           green, as the real command returns once nothing is pending.
 #   claude  answers the prompt. It is a scripted stand-in for an agent and
 #           dispatches on a literal phrase of the prompt, never evaluating any
 #           of it. One entry per agent step of the recipe:
@@ -48,7 +52,9 @@
 #                         `deploy` check names a missing secret, which it cannot
 #                         fix, so it reports BLOCKED_CI with the check, the cause
 #                         and the owner's step. Otherwise, with every check green,
-#                         it reports EXISTING_OPEN_PR for #7.
+#                         it reports EXISTING_OPEN_PR for #7. A check still in
+#                         progress it waits out with `gh pr checks --watch`
+#                         first, and reads the pull request again.
 #             recover     the step-recovery agent ("Recover a failed workflow
 #                         step"). It hands off, to the default owner, with the
 #                         step the failure line asked for.
@@ -77,6 +83,12 @@
 #                                       push is made, and the run ends exit 81
 #                                       with BLOCKED_CI, the check, the cause and
 #                                       the human step in the hand-off record.
+#   pending_checks_are_waited_on        the `smoke` check is still in progress.
+#                                       The repair step pushes nothing; the
+#                                       assessment waits with
+#                                       `gh pr checks --watch`, reads the settled
+#                                       green head and reports EXISTING_OPEN_PR.
+#                                       Exit 0, no push, no hand-off.
 #
 # The baseline (opt in): AMPLIHACK_2966_BASELINE_REF=origin/main extracts that
 # ref's amplifier-bundle with `git archive` into a separate temporary folder and
@@ -267,9 +279,13 @@ emit() {
 # run branch, so a check can turn green only by a push.
 rollup() {
   local tip="$1"
-  if [ "$(cat "$dir/mode" 2>/dev/null)" = unfixable ]; then
+  local mode
+  mode="$(cat "$dir/mode" 2>/dev/null)"
+  if [ "$mode" = unfixable ]; then
     printf '%s' '[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"CheckRun","name":"deploy","status":"COMPLETED","conclusion":"FAILURE"}]'
-  elif git --git-dir="$dir/origin.git" cat-file -e "$tip:fixed.txt" 2>/dev/null; then
+  elif [ "$mode" = pending ] && [ ! -e "$dir/checks-settled" ]; then
+    printf '%s' '[{"__typename":"CheckRun","name":"smoke","status":"IN_PROGRESS","conclusion":null}]'
+  elif [ "$mode" = pending ] || git --git-dir="$dir/origin.git" cat-file -e "$tip:fixed.txt" 2>/dev/null; then
     printf '%s' '[{"__typename":"CheckRun","name":"smoke","status":"COMPLETED","conclusion":"SUCCESS"}]'
   else
     printf '%s' '[{"__typename":"CheckRun","name":"smoke","status":"COMPLETED","conclusion":"FAILURE"}]'
@@ -297,6 +313,12 @@ case "${1-} ${2-}" in
   # The one write a shipped step makes here: step-21-pr-ready's "Ready for Final
   # Review" comment. It is accepted and recorded; nothing else is.
   "pr comment") printf '%s\n' "$*" | head -n 1 >> "$dir/gh-comments.log"; exit 0 ;;
+  # Waiting on the checks: it returns once nothing is pending, so here it
+  # settles the pending check. Without --watch it is not in the table.
+  "pr checks")
+    case " $* " in
+      *" --watch "*) : > "$dir/checks-settled"; echo "All checks were successful"; exit 0 ;;
+    esac ;;
 esac
 printf '%s\n' "$*" >> "$dir/gh-unexpected"
 echo "gh stub: unexpected call: $*" >&2
@@ -382,6 +404,10 @@ case "$role" in
     [ -z "$wt" ] || cd "$wt" || { echo "cannot enter $wt" >&2; exit 1; }
     pushed=none
     facts="$(view)"
+    if printf '%s' "$facts" | jq -e '[.statusCheckRollup[] | select(.status != "COMPLETED")] | length > 0' >/dev/null; then
+      gh pr checks 7 --repo owner/repo --watch >/dev/null || { echo "gh pr checks --watch failed" >&2; exit 1; }
+      facts="$(view)"
+    fi
     if printf '%s' "$facts" | jq -e '[.statusCheckRollup[] | select(.name == "smoke" and .conclusion == "FAILURE")] | length > 0' >/dev/null; then
       fix_and_push assess
       pushed=repaired_ci
@@ -447,8 +473,9 @@ qa_git() {
 # new_case <id> <mode> <repair script>: a private folder with a bare remote whose
 # HEAD is main, a clone whose origin is a GitHub-shaped URL that Git rewrites to
 # the bare remote, and a linked worktree on the run branch holding one committed,
-# pushed change. <mode> is `fixable` or `unfixable`; the repair script is what
-# the stand-in CI repair step does, `repair` or `leave`. Prints the case folder.
+# pushed change. <mode> is `fixable`, `unfixable` or `pending`; the repair
+# script is what the stand-in CI repair step does, `repair` or `leave`. Prints
+# the case folder.
 new_case() {
   local id="$1" mode="$2" script="$3" dir
   dir="$WORK/case-$id"
@@ -700,8 +727,29 @@ else
   die "unfixable_cause_is_handed_to_its_owner: cannot set up the case"
 fi
 
+# --- I: case 4, a check still in progress is waited on -----------------------
+if dir="$(new_case pending_checks_are_waited_on pending leave)"; then
+  run_case "$dir"
+  problems=()
+  check_common "$dir"
+  expect_exit "$dir" 0
+  expect_calls "$dir" repair 1
+  expect_calls "$dir" assess 1
+  expect_calls "$dir" recover 0
+  [ ! -s "$dir/push.log" ] || problems+=("a push was made for a check that only needed waiting on")
+  [ "$(remote_tip "$dir")" = "$(cat "$dir/initial-tip")" ] || problems+=("the remote tip moved")
+  grep -q '^pr checks 7 .*--watch' "$dir/gh.log" || problems+=("the assessment did not wait with gh pr checks --watch")
+  expect_result "$dir" terminal_state EXISTING_OPEN_PR
+  expect_result "$dir" terminal_success true
+  expect_no_handoff "$dir"
+  verdict pending_checks_are_waited_on "$dir" "the assessment waited with gh pr checks --watch and decided on the settled head; EXISTING_OPEN_PR, exit 0, no push"
+else
+  dump_case "$WORK/case-pending_checks_are_waited_on"
+  die "pending_checks_are_waited_on: cannot set up the case"
+fi
+
 echo "cases passed: $passed"
-if [ "$fail" -eq 0 ] && [ "$passed" -eq 3 ]; then
+if [ "$fail" -eq 0 ] && [ "$passed" -eq 4 ]; then
   echo "issue 2966 red CI at finalisation is repaired, and an unfixable cause is handed to its owner"
   echo "ALL_CASES_PASSED"
   exit 0

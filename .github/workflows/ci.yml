@@ -821,8 +821,9 @@ jobs:
       # binary installed above and the pinned runner, with `gh` and `claude` as
       # stand-ins on a private PATH and the remote a folder. A failing check is
       # fixed and pushed, by the repair step or by the assessment, and the run
-      # ends a success; a check that fails on a missing secret ends it with its
-      # owner's step on record. Nothing reaches GitHub or a live agent.
+      # ends a success; a check still in progress is waited on with
+      # `gh pr checks --watch`; a check that fails on a missing secret ends it
+      # with its owner's step on record. Nothing reaches GitHub or a live agent.
       - name: "Outside-in: red CI at finalisation is repaired (issue #2966)"
         shell: bash
         run: AMPLIHACK_2966_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-2966-finalize-ci-repair-scenario.sh

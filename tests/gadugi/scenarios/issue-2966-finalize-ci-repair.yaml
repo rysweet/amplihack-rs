@@ -25,7 +25,11 @@ description: >
   third checks that a check which fails on a secret the repository does not
   define, which no push can fix, ends the run with exit 81 after one look by the
   repair step and one by the assessment, with BLOCKED_CI, the check, the cause
-  and the owner's step in the hand-off record and on the failure line. With
+  and the owner's step in the hand-off record and on the failure line. The
+  fourth checks that a check still in progress is waited on: the assessment
+  runs `gh pr checks --watch`, reads the settled green head and reports
+  EXISTING_OPEN_PR, with exit 0 and no push. Every case allows at most one pull
+  request comment, the "Ready for Final Review" note. With
   AMPLIHACK_2966_BASELINE_REF set, the driver runs the first fixture against the
   bundle that ref held and confirms the reported behaviour: BLOCKED_CI, exit 81,
   and the repair step never started. What the scenario does not cover is an
@@ -79,3 +83,8 @@ assertions:
     params:
       target: stdout
       expected: "PASS: unfixable_cause_is_handed_to_its_owner - "
+  - name: pending-checks-are-waited-on
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: pending_checks_are_waited_on - "
