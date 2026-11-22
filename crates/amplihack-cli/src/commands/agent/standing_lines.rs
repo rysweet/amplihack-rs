@@ -6,8 +6,8 @@
 //! every line is sanitised: no control character of either may survive to
 //! forge a line or an escape sequence.
 
+use super::Quiet;
 use super::relaunch::Lost;
-use super::{Evidence, Progress};
 use crate::commands::agent::registry::fmt_ts;
 use crate::commands::agent::report::{self, MAX_LINE, MAX_TEXT, sanitize};
 use crate::commands::agent::store::AgentsDir;
@@ -53,44 +53,57 @@ pub fn relaunch_line(now: i64, name: &str, reason: &str, waited: bool) -> String
 
 /// `<ts> standing session refused session=<name> reason=<reason>`: the
 /// wrapper of a standing session did not start it again. `reason` is
-/// `no-progress`, `gone` or `superseded`.
+/// `launch-failed`, `gone` or `superseded`.
 pub fn refused_line(now: i64, name: &str, reason: &str) -> String {
     line(now, "refused", name, reason, None)
 }
 
-/// The text left in the session's registry record by a `no-progress`
-/// refusal, which leaves a session stopped while its owner still wants it
-/// running.
+/// The text a relaunch leaves in the session's registry record, which
+/// `amplihack agent status` prints as an `ALERT` line and `status --json`
+/// gives in `alert`.
 ///
-/// It names the exit, that the exit was of a relaunch given on nothing but
-/// the rule that every exit is given one, what was read of the
-/// conversation (that the model wrote no reply to it during the run, or
-/// that there was none of this session's to read), and what the room the
-/// refusal rests on was read from. So an operator reading `amplihack agent
-/// status` has the cause without the log, and the supervisor's pass has it
-/// on the entry it recovers, including whether a usage limit was ruled out
-/// by the rotator or only by a swap record older than the exit.
-pub fn no_progress_alert(reason: &str, progress: Progress, evidence: Evidence) -> String {
+/// It names when the relaunch was made, the exit it answers and whether a
+/// login with room was waited for, and then either that the model replied
+/// during the run or how many relaunches there have been since it last
+/// did, and since when ([`Quiet`]). That is the evidence the supervisor
+/// agent reads to tell a start-up crash loop from a host that keeps
+/// killing an idle session; the wrapper relaunches either way.
+pub fn relaunch_note(now: i64, reason: &str, waited: bool, quiet: Option<Quiet>) -> String {
     let reason = sanitize(reason, MAX_TEXT);
-    let measured = match progress {
-        Progress::Unmeasured => "with no conversation of its own on record",
-        Progress::Advanced | Progress::Idle => "without a reply from the model in its conversation",
+    let waited = if waited {
+        " and a login with room was waited for"
+    } else {
+        ""
     };
-    let room = match evidence {
-        Evidence::Unchecked => "while a login had room",
-        Evidence::Record => {
-            "while the last swap record showed a login with room and no rotator \
-             reading after the exit could be had"
-        }
-        Evidence::Reading => {
-            "while the rotator's first reading after the exit found a login with room"
-        }
+    let chain = match quiet {
+        None => "the model replied during the run".to_string(),
+        Some(q) => format!(
+            "{} since {} without a reply from the model in its conversation",
+            match q.relaunches {
+                1 => "1 relaunch".to_string(),
+                n => format!("{n} relaunches"),
+            },
+            fmt_ts(q.since)
+        ),
     };
     let whole = format!(
-        "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited {reason} {measured} {room}, so another relaunch would repeat it"
+        "relaunched in its pane at {} after it exited {reason}{waited}; {chain}",
+        fmt_ts(now)
     );
     sanitize(&whole, MAX_LINE)
+}
+
+/// The text left in the session's registry record when the launch returned
+/// an error that is not an exit status of Claude Code. No process exited,
+/// so there was nothing to relaunch, and a relaunch would meet the same
+/// failure within moments with no Claude Code start to pace it. The error
+/// itself is printed in the pane when the wrapper returns it; it is not
+/// copied here because it may name arguments.
+pub fn launch_failed_alert() -> String {
+    "not relaunched: the launch failed without an exit status from Claude \
+     Code, so no process exited to be relaunched; the error is in the pane, \
+     and the session was left for the supervisor"
+        .to_string()
 }
 
 /// The text left in the session's registry record by a `gone` refusal that
@@ -110,7 +123,6 @@ pub fn gone_alert(reason: &str, why: Lost) -> String {
         Lost::Unwatchable => {
             "the rotator's directory is missing or not private to this user".to_string()
         }
-        Lost::Rotator => "the rotator stopped before one appeared".to_string(),
     };
     let whole = format!(
         "not relaunched: it exited {reason} while no login had room, and {why}, \
@@ -122,11 +134,9 @@ pub fn gone_alert(reason: &str, why: Lost) -> String {
 /// `<ts> standing session waiting session=<name> reason=<reason>`: the
 /// relaunch is held, so an operator looking at a quiet pane can tell a
 /// session waiting from one that has stopped. `reason` is `no-room` when no
-/// login has room and the wrapper waits until one does, and
-/// `room-unconfirmed` when the brake would refuse on room that only a swap
-/// record older than the exit showed, and the wrapper waits for the
-/// rotator's next reading. Written once per wait and reason, after the
-/// watch on the rotate directory is armed.
+/// login has room and the wrapper waits until one does, the only wait it
+/// makes. Written once per wait, after the watch on the swap record is
+/// armed.
 pub fn waiting_line(now: i64, name: &str, reason: &str) -> String {
     line(now, "waiting", name, reason, None)
 }

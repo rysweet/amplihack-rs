@@ -3,7 +3,10 @@
 //!
 //! The decision and its room gate are in `tests_standing.rs`.
 
-use super::lines::{gone_alert, refused_line, relaunch_line, waiting_line};
+use super::Quiet;
+use super::lines::{
+    gone_alert, launch_failed_alert, refused_line, relaunch_line, relaunch_note, waiting_line,
+};
 use super::relaunch::Lost;
 use crate::commands::agent::launch::continue_args;
 use crate::commands::agent::registry::Entry;
@@ -115,25 +118,88 @@ fn the_relaunch_line_is_the_documented_one() {
 
 #[test]
 fn the_refusal_line_is_the_documented_one() {
-    assert_eq!(
-        refused_line(NOW, "coordinator", "superseded"),
-        "2026-10-29T23:28:10Z standing session refused session=coordinator reason=superseded"
-    );
+    for reason in ["superseded", "gone", "launch-failed"] {
+        assert_eq!(
+            refused_line(NOW, "coordinator", reason),
+            format!(
+                "2026-10-29T23:28:10Z standing session refused session=coordinator reason={reason}"
+            )
+        );
+    }
 }
 
 /// Written once the watch is armed, so an operator reading a quiet pane can
-/// tell a session waiting for capacity, or for the rotator's reading before
-/// a refusal, from one that has stopped.
+/// tell a session waiting for capacity from one that has stopped.
 #[test]
 fn the_waiting_line_is_the_documented_one() {
     assert_eq!(
         waiting_line(NOW, "coordinator", "no-room"),
         "2026-10-29T23:28:10Z standing session waiting session=coordinator reason=no-room"
     );
+}
+
+// ── the record of a relaunch ────────────────────────────────────────────────
+
+/// After a run in which the model replied there is no chain to report.
+#[test]
+fn the_relaunch_note_says_the_model_replied() {
     assert_eq!(
-        waiting_line(NOW, "coordinator", "room-unconfirmed"),
-        "2026-10-29T23:28:10Z standing session waiting session=coordinator \
-         reason=room-unconfirmed"
+        relaunch_note(NOW, "exit-status-1", false, None),
+        "relaunched in its pane at 2026-10-29T23:28:10Z after it exited \
+         exit-status-1; the model replied during the run"
+    );
+}
+
+/// After runs with no reply, the note gives the length of the chain and
+/// when it began: the evidence the supervisor agent reads.
+#[test]
+fn the_relaunch_note_gives_the_chain_since_the_last_reply() {
+    let one = Quiet {
+        since: NOW,
+        relaunches: 1,
+    };
+    assert_eq!(
+        relaunch_note(NOW, "SIGKILL", false, Some(one)),
+        "relaunched in its pane at 2026-10-29T23:28:10Z after it exited \
+         SIGKILL; 1 relaunch since 2026-10-29T23:28:10Z without a reply from \
+         the model in its conversation"
+    );
+    let many = Quiet {
+        since: NOW - 600,
+        relaunches: 212,
+    };
+    assert_eq!(
+        relaunch_note(NOW, "exit-status-1", true, Some(many)),
+        "relaunched in its pane at 2026-10-29T23:28:10Z after it exited \
+         exit-status-1 and a login with room was waited for; 212 relaunches \
+         since 2026-10-29T23:18:10Z without a reply from the model in its \
+         conversation"
+    );
+}
+
+/// The note goes to a terminal through `agent status`, so no control
+/// character of the exit reason survives and it stays one bounded line.
+#[test]
+fn the_relaunch_note_is_one_clean_bounded_line() {
+    let hostile = relaunch_note(
+        NOW,
+        &format!("a\u{1b}[31mb\nc{}", "x".repeat(4096)),
+        false,
+        None,
+    );
+    assert!(!hostile.chars().any(char::is_control), "{hostile:?}");
+    assert!(hostile.chars().count() <= MAX_LINE, "{hostile:?}");
+}
+
+/// A launch that failed without an exit status leaves the session to the
+/// supervisor and says so on the record.
+#[test]
+fn the_launch_failed_alert_says_no_process_exited() {
+    assert_eq!(
+        launch_failed_alert(),
+        "not relaunched: the launch failed without an exit status from Claude \
+         Code, so no process exited to be relaunched; the error is in the pane, \
+         and the session was left for the supervisor"
     );
 }
 
@@ -173,7 +239,6 @@ fn the_gone_alert_names_the_exit_and_why_the_wait_ended() {
             Lost::Unwatchable,
             "the rotator's directory is missing or not private to this user",
         ),
-        (Lost::Rotator, "the rotator stopped before one appeared"),
     ];
     for (why, text) in cases {
         assert_eq!(

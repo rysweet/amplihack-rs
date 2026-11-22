@@ -597,13 +597,17 @@ ALERT custodian: stopped: restart limit (3 restarts in the last hour)
 `status --json` gives the same text in the agent's `alert` field. A stopped
 agent stays stopped until you act.
 
-A [standing session](./keep-sessions-running.md) that keeps failing arrives
-here too. Its own pane gives every exit one relaunch, and stops when that
-relaunch gets nowhere either, or when its wait for a login with room ends
-without one; it then leaves the reason in the agent's `alert` field and
-leaves the agent `active` for this recovery. So an alert of the form
-`not relaunched: …` is a session the supervisor is about to pick up, and
-`stopped: restart limit` is one it has given up on.
+A [standing session](./keep-sessions-running.md) is relaunched by its own
+pane on every exit, so it reaches this recovery only when the pane could not
+relaunch it: the launch failed without an exit status from Claude Code, or the
+wait for a login with room ended without one. The pane then leaves the reason
+in the agent's `alert` field, of the form `not relaunched: …`, and leaves the
+agent `active` for this recovery. An alert of the form `relaunched in its pane
+at …` is the pane's record of its last relaunch, with the number of
+relaunches since the model last replied; it is evidence for you or the
+supervisor agent to judge, not a request for recovery. See
+[when a session keeps exiting](./keep-sessions-running.md#when-a-session-keeps-exiting).
+`stopped: restart limit` is a session the supervisor has given up on.
 
 Find out why the session fails before you re-arm it. A session that exits
 with an error closes its tmux window, so run it yourself in a window that
@@ -711,7 +715,10 @@ unregistered writer
 ```
 
 This removes the record only. The session, its tmux session and its
-processes are left alone. Earlier lines in the log are kept.
+processes are left alone. Earlier lines in the log are kept. A
+[standing session](./keep-sessions-running.md) whose record is removed is
+not relaunched when its current run exits: its pane refuses with
+`reason=superseded`.
 
 ## Unattended resumes and other users
 

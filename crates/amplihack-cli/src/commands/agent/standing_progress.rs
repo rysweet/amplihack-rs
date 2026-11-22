@@ -1,8 +1,10 @@
-//! Whether one run of a standing session did any work, read from its
-//! conversation's transcript after the exit (issue #2912).
+//! Whether the model replied during one run of a standing session, read from
+//! its conversation's transcript after the exit (issue #2912). The answer
+//! goes on the record of the relaunch as evidence for the supervisor agent
+//! (`standing::Quiet`); the wrapper relaunches whatever it is.
 //!
-//! The evidence is a reply written by the model during the run, and nothing
-//! else. The size of the transcript is not evidence, because Claude Code
+//! What is looked for is a reply written by the model during the run, and
+//! nothing else. The size of the transcript is not evidence, because Claude Code
 //! writes to it without doing a turn. Observed with Claude Code 2.1.330 on
 //! 2026-11-22, `claude --continue` resuming an existing conversation under
 //! the same id (fixtures in `testdata/issue_2912/`, figures in
@@ -26,17 +28,17 @@
 //!   first written with.
 //!
 //! The first two grow the transcript on every start, so a start-up crash
-//! loop measured by size would never be braked. A model reply dated after
-//! the launch cannot come from a crash, a failed request or a copy of
-//! earlier history.
+//! loop measured by size would look like work on every start. A model reply
+//! dated after the launch cannot come from a crash, a failed request or a
+//! copy of earlier history.
 //!
 //! Claude Code does not document this format, and the field names matched
 //! here are what 2.1.330 wrote. If a later version changes them so that no
-//! reply is recognised, every run reads as idle and each standing session
-//! is refused after one relaunch, loudly and on its record. That errs
-//! towards stopping, but it stops sessions that were working. Issue #3077
-//! proposes that the supervisor agent judge `no-progress` from the
-//! transcript's tail instead of this reader.
+//! reply is recognised, the record of every relaunch says there was no
+//! reply, and a working session looks like one that is not. Nothing stops
+//! on that: the session is relaunched either way, and the supervisor agent
+//! is told to read the transcript's tail before it acts on the record (see
+//! docs/howto/keep-sessions-running.md).
 
 use serde::Deserialize;
 use std::io::BufRead;
@@ -56,8 +58,8 @@ const SYNTHETIC: &str = "<synthetic>";
 ///
 /// The transcript is written by Claude Code on this host and `since` is
 /// read from the same clock just before the launch, so only a clock set
-/// back during the run can hide a reply. That errs towards the brake, which
-/// is loud and leaves the session to the supervisor, never towards a loop.
+/// back during the run can hide a reply. A hidden reply changes the record
+/// of the relaunch and nothing else.
 pub fn replied_since(mut transcript: impl BufRead, since: SystemTime) -> bool {
     let Some(since) = millis(since) else {
         return false;

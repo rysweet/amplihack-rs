@@ -100,7 +100,6 @@ fn procfs_reads_the_variable_by_this_name_and_names_its_exceptions() {
         "/proc/self",
         "util.rs",
         "rotator_down",
-        "running_rotator",
         "running_on_host",
         "recipe/process_tree.rs",
     ] {

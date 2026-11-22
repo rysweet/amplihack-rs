@@ -5,8 +5,7 @@
 //! - [`resolve_root`], [`locate_root`]: where the profile root is (`root.rs`).
 //! - [`auto_switch_on`], [`parse_toggle`]: the auto-switch toggle (`gate.rs`).
 //! - [`read_cycle`]: the rotate ledger's last cycle (`ledger.rs`).
-//! - [`rotator_down`], [`running_rotator`], [`daemon_state`]: whether the
-//!   rotator runs (`daemon.rs`).
+//! - [`rotator_down`], [`daemon_state`]: whether the rotator runs (`daemon.rs`).
 //! - [`swap_record`]: the record the rotator writes after a swap (issue #2085).
 //!
 //! Nothing here creates, changes or locks a file.
@@ -21,7 +20,7 @@ pub mod swap_record;
 #[cfg(unix)]
 pub use daemon::{
     DaemonState, daemon_state, foreign_rotator, is_rotator, parse_pid, pid_path, rotator_down,
-    rotator_down_at, running_on_host, running_rotator,
+    rotator_down_at, running_on_host,
 };
 pub use gate::{
     DEFAULT_THRESHOLD, DEFAULT_TIER, EnvToggle, MAX_TIER, MAX_TOGGLE_BYTES, TOGGLE_ENV,

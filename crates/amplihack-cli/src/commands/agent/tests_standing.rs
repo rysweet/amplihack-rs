@@ -1,14 +1,13 @@
 //! Issue #2912: the standing-session decision and its room gate.
 //!
-//! The relaunch argv and the log lines are in `tests_standing_lines.rs`,
-//! what counts as a run having done work is in `tests_standing_progress.rs`,
-//! and the loop itself, with a stand-in session in its pane, is in
-//! `tests/issue_2912_standing_relaunch.rs`.
+//! The relaunch argv and the lines and record text are in
+//! `tests_standing_lines.rs`, what counts as a model reply is in
+//! `tests_standing_progress.rs`, and the loop itself, with a stand-in
+//! session in its pane, is in `tests/issue_2912_standing_relaunch.rs`.
 
-use super::lines::no_progress_alert;
 use super::relaunch::{Lost, Room, wait_for_room_until};
-use super::{AfterExit, Evidence, Progress, after_exit, worth_relaunching};
-use crate::commands::agent::report::MAX_LINE;
+use super::{AfterExit, Quiet, after_exit};
+use crate::command_error::exit_error;
 use amplihack_utils::rotator_status::swap_record::{
     SWAP_FILE, SwapReading, SwapRecord, rotate_dir,
 };
@@ -21,30 +20,75 @@ const NOW: i64 = 1_793_316_490;
 
 // ── after_exit ──────────────────────────────────────────────────────────────
 
+/// What a launch can return: a clean exit, Claude Code's own non-zero exit
+/// status (a signal comes back as `128 + N`), and an error that carries no
+/// exit status, which is the launch path failing.
+fn results() -> [(&'static str, anyhow::Result<()>); 4] {
+    [
+        ("ok", Ok(())),
+        ("status 1", Err(exit_error(1))),
+        ("SIGKILL", Err(exit_error(137))),
+        ("launch error", Err(anyhow::anyhow!("claude not found"))),
+    ]
+}
+
+/// Every process exit nobody chose is relaunched: a non-zero status and a
+/// signal alike, however often it happens. There is no count to consult.
 #[test]
-fn a_standing_session_that_exits_badly_puts_a_relaunch_in_question() {
-    // standing, ok, signalled, ended_marker
-    assert_eq!(after_exit(true, false, false, false), AfterExit::Relaunch);
+fn a_standing_session_whose_process_exits_badly_is_relaunched() {
+    // standing, signalled, ended_marker, result
+    for code in [1, 2, 137, 143] {
+        assert_eq!(
+            after_exit(true, false, false, &Err(exit_error(code))),
+            AfterExit::Relaunch,
+            "{code}"
+        );
+    }
 }
 
 #[test]
 fn a_clean_return_is_the_owner_ending_the_session() {
-    assert_eq!(after_exit(true, true, false, false), AfterExit::OwnerEnded);
+    assert_eq!(
+        after_exit(true, false, false, &Ok(())),
+        AfterExit::OwnerEnded
+    );
 }
 
 #[test]
 fn the_ended_marker_is_the_owner_ending_the_session() {
-    assert_eq!(after_exit(true, false, false, true), AfterExit::OwnerEnded);
+    for (what, result) in results() {
+        assert_eq!(
+            after_exit(true, false, true, &result),
+            AfterExit::OwnerEnded,
+            "{what}"
+        );
+    }
+}
+
+/// An error with no exit status is the launch path failing, not a process
+/// that exited: there is nothing to relaunch, and a relaunch would fail the
+/// same way at once with no Claude Code start to pace the loop.
+#[test]
+fn a_launch_that_failed_without_an_exit_status_is_not_relaunched() {
+    assert_eq!(
+        after_exit(
+            true,
+            false,
+            false,
+            &Err(anyhow::anyhow!("claude not found"))
+        ),
+        AfterExit::LaunchFailed
+    );
 }
 
 #[test]
 fn a_signal_to_the_wrapper_means_the_pane_is_going_away() {
-    for ok in [true, false] {
+    for (what, result) in results() {
         for marker in [true, false] {
             assert_eq!(
-                after_exit(true, ok, true, marker),
+                after_exit(true, true, marker, &result),
                 AfterExit::GoingAway,
-                "ok={ok} marker={marker}"
+                "{what} marker={marker}"
             );
         }
     }
@@ -52,120 +96,65 @@ fn a_signal_to_the_wrapper_means_the_pane_is_going_away() {
 
 #[test]
 fn a_session_that_is_not_standing_is_never_relaunched() {
-    for ok in [true, false] {
+    for (what, result) in results() {
         for signalled in [true, false] {
             for marker in [true, false] {
-                assert_ne!(
-                    after_exit(false, ok, signalled, marker),
-                    AfterExit::Relaunch,
-                    "ok={ok} signalled={signalled} marker={marker}"
+                assert_eq!(
+                    after_exit(false, signalled, marker, &result),
+                    AfterExit::GoingAway,
+                    "{what} signalled={signalled} marker={marker}"
                 );
             }
         }
     }
 }
 
-// ── the brake on the relaunch loop ──────────────────────────────────────────
+// ── the chain on the record ─────────────────────────────────────────────────
 
-/// Every exit is given a relaunch. A session that sat idle and was then
-/// killed by the host or the out-of-memory killer has nothing to show for
-/// its run and a login with room, and is still started again: the issue
-/// asks for a relaunch whenever the process exits other than by its owner,
-/// and "this run did no work" is not "this start is failing". The same
-/// holds when there was no conversation of its own to measure at all.
+/// A reply ends the chain, whatever came before it.
 #[test]
-fn an_exit_that_is_not_on_trial_is_always_relaunched() {
-    for progress in [Progress::Advanced, Progress::Idle, Progress::Unmeasured] {
-        for room_appeared in [true, false] {
-            assert!(
-                worth_relaunching(false, progress, room_appeared),
-                "{progress:?} room={room_appeared}"
-            );
+fn a_reply_during_the_run_clears_the_chain() {
+    assert_eq!(Quiet::after(None, true, NOW), None);
+    let before = Quiet {
+        since: NOW - 600,
+        relaunches: 40,
+    };
+    assert_eq!(Quiet::after(Some(before), true, NOW), None);
+}
+
+/// The first relaunch with no reply behind it starts a chain at its own
+/// time; each later one adds to it and keeps the time it started.
+#[test]
+fn relaunches_without_a_reply_add_to_the_chain_and_keep_its_start() {
+    let first = Quiet::after(None, false, NOW).unwrap();
+    assert_eq!(
+        first,
+        Quiet {
+            since: NOW,
+            relaunches: 1
         }
-    }
-}
-
-/// A run that added to the conversation is started again however often it
-/// happens, trial or not: the evidence is work done, not a number of
-/// attempts, so a working session is never capped.
-#[test]
-fn a_run_that_advanced_the_conversation_is_relaunched() {
-    for room_appeared in [true, false] {
-        assert!(
-            worth_relaunching(true, Progress::Advanced, room_appeared),
-            "{room_appeared}"
-        );
-    }
-}
-
-/// The usage-limit case the feature exists for: a process that died with
-/// nothing to show is still started again once the wait for room has found
-/// capacity, because the capacity is what has changed.
-#[test]
-fn a_run_that_waited_for_room_is_relaunched_with_nothing_else_to_show() {
-    for progress in [Progress::Idle, Progress::Unmeasured] {
-        assert!(worth_relaunching(true, progress, true), "{progress:?}");
-    }
-}
-
-/// The brake, and the only case it stops: the run was itself the one trial
-/// an exit with nothing to show is given, and it has come back with nothing
-/// to show as well while a login had room. The chain is getting nowhere, so
-/// another start would repeat the one that just failed.
-#[test]
-fn a_trial_run_with_neither_progress_nor_new_room_is_not_relaunched() {
-    for progress in [Progress::Idle, Progress::Unmeasured] {
-        assert!(!worth_relaunching(true, progress, false), "{progress:?}");
-    }
-}
-
-/// The alert names the exit, the chain it stopped, and what was measured of
-/// the conversation; it carries no control character and does not grow
-/// without bound on a hostile exit reason.
-#[test]
-fn the_no_progress_alert_names_the_exit_and_the_evidence() {
-    assert_eq!(
-        no_progress_alert("exit-status-1", Progress::Idle, Evidence::Unchecked),
-        "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited exit-status-1 without a reply from the model in its \
-         conversation while a login had room, so another relaunch would repeat it"
     );
-    // The blind case says so rather than claiming the model wrote nothing:
-    // there was no conversation of this session's to look at.
+    let second = Quiet::after(Some(first), false, NOW + 3).unwrap();
     assert_eq!(
-        no_progress_alert("SIGKILL", Progress::Unmeasured, Evidence::Unchecked),
-        "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited SIGKILL with no conversation of its own on record while a login \
-         had room, so another relaunch would repeat it"
+        second,
+        Quiet {
+            since: NOW,
+            relaunches: 2
+        }
     );
-    let hostile = no_progress_alert(
-        &format!("a\u{1b}[31mb\nc{}", "x".repeat(4096)),
-        Progress::Idle,
-        Evidence::Record,
-    );
-    assert!(!hostile.chars().any(char::is_control), "{hostile:?}");
-    assert!(hostile.chars().count() <= MAX_LINE, "{hostile:?}");
 }
 
-/// The alert says what the room the refusal rests on was read from, so the
-/// supervisor can tell a usage limit ruled out by the rotator after the exit
-/// from one ruled out only by a swap record older than the run.
+/// The chain is evidence and is never a limit, so it cannot overflow into
+/// a panic however long a session runs.
 #[test]
-fn the_no_progress_alert_says_where_the_room_was_read() {
+fn the_chain_saturates_rather_than_overflowing() {
+    let long = Quiet {
+        since: NOW,
+        relaunches: u32::MAX,
+    };
     assert_eq!(
-        no_progress_alert("exit-status-1", Progress::Idle, Evidence::Reading),
-        "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited exit-status-1 without a reply from the model in its \
-         conversation while the rotator's first reading after the exit found \
-         a login with room, so another relaunch would repeat it"
-    );
-    assert_eq!(
-        no_progress_alert("exit-status-1", Progress::Idle, Evidence::Record),
-        "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited exit-status-1 without a reply from the model in its \
-         conversation while the last swap record showed a login with room and \
-         no rotator reading after the exit could be had, so another relaunch \
-         would repeat it"
+        Quiet::after(Some(long), false, NOW + 1).map(|q| q.relaunches),
+        Some(u32::MAX)
     );
 }
 

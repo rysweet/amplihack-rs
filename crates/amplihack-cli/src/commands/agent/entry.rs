@@ -1,8 +1,8 @@
 //! Every registry write the in-pane wrapper makes for its own session:
 //! starting it, recording the Claude Code process the id thread found,
 //! marking it ended, reading whether its owner ended it, taking it again
-//! for a relaunch, and leaving on it the reason a relaunch was refused
-//! (issue #2912).
+//! for a relaunch with the record of that relaunch, and leaving on it the
+//! reason a relaunch was refused (issue #2912).
 //!
 //! Nothing here widens a permission or removes a file: the ended markers
 //! are only read, and every write happens under the registry's own lock,
@@ -99,12 +99,11 @@ pub(super) fn owner_ended(
 ///
 /// The launch id is deliberately not matched here. The conversation belongs
 /// to the session and not to one launch, and the standing-session wrapper
-/// reads the model's replies in it to tell a run that did something from
-/// one that did not (issue #2912). A supervisor that rebuilt the session in
-/// another window while this run was going would otherwise make the run
-/// look idle, and the refusal would name the wrong cause; the relaunch
-/// itself still happens
-/// only under this launch's id, in [`reactivate`].
+/// reads the model's replies in it for the record of a relaunch (issue
+/// #2912). A supervisor that rebuilt the session in another window while
+/// this run was going would otherwise make the run look idle on that
+/// record; the relaunch itself still happens only under this launch's id,
+/// in [`reactivate`].
 pub(super) fn conversation(dir: &AgentsDir, name: &str) -> Option<String> {
     let reg = store::load(dir).ok()?;
     reg.agents.get(name)?.conversation_id.clone()
@@ -115,11 +114,9 @@ pub(super) fn conversation(dir: &AgentsDir, name: &str) -> Option<String> {
 /// #2912), so the failure reaches `amplihack agent status` and the
 /// supervisor's next pass rather than only the supervisor log.
 ///
-/// The state is left `active` on purpose. The supervisor's own recovery is
-/// the next thing to try, and it carries the brake an in-pane relaunch must
-/// not have: it counts the restarts of the last hour and, at its limit,
-/// stops the session with an alert. Stopping the record here would instead
-/// be the fourteen-hour outage this issue fixes.
+/// The state is left `active` on purpose: the supervisor's own recovery is
+/// the next thing to try. Stopping the record here would instead be the
+/// fourteen-hour outage this issue fixes.
 pub(super) fn note_refusal(dir: &AgentsDir, name: &str, launch_id: &str, alert: &str) {
     let now = registry::now();
     let out = store::update(dir, now, |reg| {
@@ -148,11 +145,19 @@ fn read_entry(dir: &AgentsDir, name: &str, launch_id: &str) -> Option<Entry> {
 
 /// Compare and set, under the registry's own lock: the entry becomes active
 /// again under a new launch id, but only while it is still `launch_id`'s
-/// and still active. Returns the new launch id and the entry the relaunch
-/// is rebuilt from, or `None` when the entry has moved on (the supervisor
-/// rebuilt the session elsewhere, or ended or stopped it), is gone, or
-/// cannot be written.
-pub(super) fn reactivate(dir: &AgentsDir, name: &str, launch_id: &str) -> Option<(String, Entry)> {
+/// and still active, and `note` is left on it as its `alert`, the record of
+/// this relaunch for `amplihack agent status` and the supervisor agent
+/// (issue #2912). It replaces the note of the relaunch before, which the
+/// supervisor log keeps. Returns the new launch id and the entry the
+/// relaunch is rebuilt from, or `None` when the entry has moved on (the
+/// supervisor rebuilt the session elsewhere, or ended, stopped or
+/// unregistered it), is gone, or cannot be written.
+pub(super) fn reactivate(
+    dir: &AgentsDir,
+    name: &str,
+    launch_id: &str,
+    note: &str,
+) -> Option<(String, Entry)> {
     let next = registry::new_launch_id();
     let now = registry::now();
     let out = store::update(dir, now, |reg| {
@@ -163,6 +168,7 @@ pub(super) fn reactivate(dir: &AgentsDir, name: &str, launch_id: &str) -> Option
             return Ok(None);
         }
         e.activate(now, &next);
+        e.alert = Some(note.to_string());
         Ok(Some(e.clone()))
     });
     match out {

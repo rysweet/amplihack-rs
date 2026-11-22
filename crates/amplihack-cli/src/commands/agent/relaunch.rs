@@ -14,9 +14,9 @@
 //!
 //! The record is written only when the rotator swaps, so a record that
 //! shows room may be older than the run and blind to a limit the run has
-//! just met. That is not settled here, because an exit is relaunched at
-//! once and the next run shows whether the room was real. It is settled
-//! before the brake refuses a relaunch on it: see `standing_recheck.rs`.
+//! just met. The session is relaunched on it all the same. `claude
+//! --continue` sends no prompt, so the relaunched session waits at its
+//! prompt instead of meeting the limit again.
 
 use amplihack_utils::file_event::{SWAP_MASK, Waiter, Watch, Woke};
 use amplihack_utils::rotator_status::MAX_WAIT;
@@ -56,9 +56,6 @@ pub enum Lost {
     Watch,
     /// [`MAX_WAIT`] passed with no login with room.
     Deadline,
-    /// The rotator found no capacity after the exit and then stopped
-    /// running, so no record with room can come.
-    Rotator,
 }
 
 /// Blocks until a login with room appears under `root`, or `stopped` is
@@ -162,7 +159,7 @@ fn room_now(root: &Path) -> bool {
 
 /// A real directory of this user that no one else may write to; the same
 /// rule the hook applies before it watches the rotate directory.
-pub(super) fn watchable(dir: &Path) -> bool {
+fn watchable(dir: &Path) -> bool {
     std::fs::symlink_metadata(dir).is_ok_and(|m| {
         !m.file_type().is_symlink()
             && m.is_dir()
@@ -180,12 +177,12 @@ pub(super) fn watchable(dir: &Path) -> bool {
 /// alive, which is right while Claude Code runs and wrong while the wrapper
 /// is blocked for up to seven days waiting for room: a closed pane, or the
 /// owner's Ctrl-C, must end it.
-pub(super) struct DefaultSignals {
+struct DefaultSignals {
     saved: Vec<(libc::c_int, libc::sigaction)>,
 }
 
 impl DefaultSignals {
-    pub(super) fn install() -> Self {
+    fn install() -> Self {
         let mut saved = Vec::new();
         for sig in [libc::SIGHUP, libc::SIGTERM, libc::SIGINT] {
             // SAFETY: `sigaction` with a valid signal number and two owned,

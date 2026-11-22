@@ -1,4 +1,4 @@
-//! Issue #2912: what counts as a run having done work.
+//! Issue #2912: what counts as the model having replied during a run.
 //!
 //! The fixtures in `testdata/issue_2912/` are the lines a real Claude Code
 //! 2.1.330 appended to a conversation's transcript when it was started with
@@ -6,7 +6,6 @@
 //! stands for the time each line was written. How they were recorded is in
 //! docs/howto/keep-sessions-running.md.
 
-use super::Progress;
 use super::progress::replied_since;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -45,7 +44,7 @@ fn a_reply_the_model_wrote_during_the_run_is_work() {
 
 /// What every start of a real Claude Code appends, with no turn behind it.
 /// The transcript grows, so a measurement of its size would have read this
-/// as work and never braked a session that crashes after starting.
+/// as work and hidden a session that crashes after starting.
 #[test]
 fn a_start_with_no_turn_grows_the_transcript_but_is_not_work() {
     assert_eq!(START.len(), 841);
@@ -106,11 +105,4 @@ fn damaged_lines_are_not_replies_and_do_not_hide_one() {
     let damaged = format!("not json\n\u{0}\u{1}\n{{\"type\":\"assistant\"}}\n{cut}\n");
     assert!(!replied(&damaged));
     assert!(replied(&(damaged + &reply)));
-}
-
-#[test]
-fn a_conversation_is_read_as_work_idle_or_absent() {
-    assert_eq!(Progress::of(Some(true)), Progress::Advanced);
-    assert_eq!(Progress::of(Some(false)), Progress::Idle);
-    assert_eq!(Progress::of(None), Progress::Unmeasured);
 }

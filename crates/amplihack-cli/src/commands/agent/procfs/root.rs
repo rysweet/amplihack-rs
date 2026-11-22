@@ -9,8 +9,7 @@
 //!
 //! Some readers stay on the real `/proc` on purpose: `/proc/loadavg`, the
 //! process's own `/proc/self/*`, the process-tree kill in `util.rs`,
-//! `rotator_down` and `running_rotator` (whose pid a standing session's
-//! wrapper waits on), `running_on_host` (the check `rotate stop` makes just
+//! `rotator_down`, `running_on_host` (the check `rotate stop` makes just
 //! before it signals), and `recipe/process_tree.rs`, which `recipe stop` and
 //! `recipe run`'s teardown use to find the processes they then signal (see
 //! the guide). A fake tree must never choose a pid that is signalled.

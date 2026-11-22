@@ -5,41 +5,40 @@
 //! wrapper starts it again in the same pane with `claude --continue`,
 //! after waiting for a login with room if none has room at the exit.
 //!
-//! There is no count-based limit on relaunches. A count is a retry limit,
-//! and the defect this fixes was a supervisor session held stopped for
-//! fourteen hours by one. The brake is [`worth_relaunching`] instead, and
-//! what it judges is the relaunch chain rather than the run:
+//! The wrapper does not judge whether a chain of relaunches is getting
+//! anywhere. It keeps no count that can stop a session and has no brake:
+//! a session whose process exits is relaunched every time, however often
+//! that is. The defect this fixes was a supervisor session held stopped
+//! for fourteen hours by a count, and a brake in the wrapper, whatever it
+//! reads, stops a session in the same way.
 //!
-//! - Every exit is given a relaunch. A session that sat idle for hours and
-//!   was then killed by the host, by the out-of-memory killer or by a pane
-//!   that went away has nothing to show for its run, and is started again
-//!   all the same, because "this run did no work" and "this start is
-//!   failing" are different facts.
-//! - A relaunch given on nothing but that rule, when the model wrote no
-//!   reply during the run and no room had to be waited for, is a trial. If
-//!   the run it starts comes back the same way, the chain is a start-up
-//!   crash loop and the wrapper stops: one more start would repeat the one
-//!   that just failed.
+//! What the wrapper does instead is leave the evidence where the supervisor
+//! agent reads it. Every relaunch is written to the pane, to the supervisor
+//! log and to the session's own record, and the record says how many
+//! relaunches there have been since the model last replied in the
+//! session's conversation, and since when ([`Quiet`]). A session that keeps
+//! exiting without a reply is either a start-up crash loop or a host that
+//! keeps killing it. Which of the two it is, and whether to stop it, is the
+//! supervisor agent's decision, made from that record, the supervisor log
+//! and the transcript; docs/howto/keep-sessions-running.md says what to read
+//! and how to stop a session.
 //!
-//! So a process that cannot start is started again once and then left to
-//! the supervisor with its failure on its own record as evidence, while a
-//! session that does work, or that waits for capacity, is relaunched as
-//! often as it exits. The trial is a count of one: it does not accumulate,
-//! because any reply or new room clears it, but it is a count. Issue #3077
-//! proposes moving the judgement to the supervisor agent.
+//! Two exits are not relaunched, and each rests on a fact about the exit
+//! rather than on a number of attempts:
 //!
-//! A refusal rests on a login having had room, and the rotator's swap
-//! record, which says so, is written only when the rotator swaps. Before it
-//! refuses, the wrapper therefore asks a running rotator for a reading taken
-//! after the exit (`standing_recheck.rs`), so a run that went into a usage
-//! limit is waited for and relaunched rather than refused as a crash.
+//! - the launch returned an error that is not an exit status of Claude
+//!   Code, so the launch path itself failed and there is no process exit
+//!   to answer. Starting it again would fail the same way within moments,
+//!   and with no Claude Code start to pace it the loop would spin;
+//! - the wait for a login with room ended without one.
+//!
+//! Each writes a `refused` line, leaves its reason on the session's record
+//! and leaves the record `active`, so the supervisor's own recovery is the
+//! next thing to try.
 //!
 //! [`Standing`] is the whole of the decision: the wrapper calls
 //! [`Standing::next`] once its child has returned and either starts the
-//! session again with what it gets back, or stops. Every relaunch and
-//! every refusal is written to the pane and to the supervisor log, and a
-//! refusal that leaves a failing session stopped is written to the
-//! session's own record as well.
+//! session again with what it gets back, or stops.
 //!
 //! This is not part of the `limit-resume` hook, which answers the
 //! usage-limit menu of a session that is still running. The two share the
@@ -65,14 +64,10 @@ mod run;
 #[path = "standing_lines.rs"]
 mod lines;
 
-/// Whether a run did any work: a reply the model wrote to the session's
-/// conversation during the run, read from its transcript after the exit.
+/// Whether the model replied during a run, read from the session's
+/// transcript after the exit, for the record of the relaunch.
 #[path = "standing_progress.rs"]
 mod progress;
-
-/// The rotator's reading after an exit, taken before the brake refuses.
-#[path = "standing_recheck.rs"]
-mod recheck;
 
 pub(super) use run::Standing;
 
@@ -83,126 +78,85 @@ pub enum AfterExit {
     OwnerEnded,
     /// The pane or the host is going away, or the session is not standing.
     GoingAway,
-    /// A relaunch is in question. Whether it is made is
-    /// [`worth_relaunching`], which needs the room gate's answer and so
-    /// cannot be settled until the wrapper has waited.
+    /// The launch returned an error that is not an exit status of Claude
+    /// Code: no process exited, so there is nothing to relaunch.
+    LaunchFailed,
+    /// Claude Code exited and nobody ended it: the session is relaunched,
+    /// once a login has room.
     Relaunch,
 }
 
-/// Whose stop an exit was, from three observations and nothing else. Pure,
-/// and deliberately without a count: the resume cap this issue removes was
+/// Whose stop an exit was, from what the wrapper saw of it and nothing
+/// else. Pure, and without a count: the resume cap this issue removes was
 /// exactly such a count.
 ///
 /// In order: a session that is not standing, and one whose wrapper was
 /// signalled, are left alone; then a clean return is the owner ending the
-/// session, as is an ended marker. Anything left is nobody's stop, and a
-/// relaunch is in question.
+/// session, as is an ended marker; then an error that carries no exit
+/// status is a launch that failed. Anything left is a process exit nobody
+/// chose, and it is relaunched.
 ///
-/// `ok` is whether the launch returned `Ok`, `signalled` whether the
-/// wrapper has had SIGHUP or SIGTERM, and `ended_marker` whether the
-/// session's SessionEnd marker is on disk.
-pub fn after_exit(standing: bool, ok: bool, signalled: bool, ended_marker: bool) -> AfterExit {
+/// `signalled` is whether the wrapper has had SIGHUP or SIGTERM,
+/// `ended_marker` whether the session's SessionEnd marker is on disk, and
+/// `result` what the launch returned. Claude Code's own exit status comes
+/// back as an error that carries it (`command_error::exit_code`); a signal
+/// that killed it comes back as the status `128 + N`.
+pub fn after_exit(
+    standing: bool,
+    signalled: bool,
+    ended_marker: bool,
+    result: &anyhow::Result<()>,
+) -> AfterExit {
     if !standing || signalled {
         AfterExit::GoingAway
-    } else if ok || ended_marker {
+    } else if result.is_ok() || ended_marker {
         AfterExit::OwnerEnded
+    } else if result
+        .as_ref()
+        .is_err_and(|e| crate::command_error::exit_code(e).is_none())
+    {
+        AfterExit::LaunchFailed
     } else {
         AfterExit::Relaunch
     }
 }
 
-/// What one run did in its session's conversation, read by
-/// [`Standing::progress`] after the exit (issue #2912).
+/// The relaunches of a session since the model last replied in its
+/// conversation, and when the first of them was made.
 ///
-/// It is read from replies the model wrote, not from the size of the
-/// transcript. Claude Code appends bookkeeping lines on a start that does
-/// no work, and a request that fails is written as an assistant line of its
-/// own, so a start-up crash loop grows the transcript on every start; see
-/// `standing_progress.rs` for what was observed.
+/// This is evidence for the supervisor agent and nothing else: the wrapper
+/// writes it on the session's record with each relaunch, and no decision
+/// in the wrapper reads it. A long chain made in minutes is the shape of a
+/// start-up crash loop; a short one spread over hours is the shape of a
+/// host that keeps killing an idle session. Telling them apart, and acting,
+/// is left to the agent, which can read the transcript as well.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Progress {
-    /// The conversation holds a reply the model wrote during the run: the
-    /// run did a turn of work, and a relaunch has more to carry on from
-    /// than the last one had.
-    Advanced,
-    /// The conversation holds no such reply, or has no transcript: the run
-    /// left nothing a `--continue` could carry on.
-    Idle,
-    /// There is no conversation of this session's to read, so the run is
-    /// neither known to have worked nor known to have been idle. A record
-    /// names a conversation only once the wrapper's id thread has found the
-    /// Claude process and its sessions file, and it names none while
-    /// another active agent holds that conversation (C3).
-    Unmeasured,
+pub struct Quiet {
+    /// Unix seconds of the first relaunch since the model last replied.
+    pub since: i64,
+    /// The relaunches since the model last replied, this one included.
+    pub relaunches: u32,
 }
 
-impl Progress {
-    /// From whether the session's conversation holds a reply the model
-    /// wrote during the run. `None` is the absence of a conversation to
-    /// read, not a conversation with nothing in it.
-    pub fn of(replied: Option<bool>) -> Self {
-        match replied {
-            Some(true) => Self::Advanced,
-            Some(false) => Self::Idle,
-            None => Self::Unmeasured,
+impl Quiet {
+    /// The chain after a run that ended before the relaunch made at `now`:
+    /// `None` when the model replied during the run, otherwise `before`
+    /// with this relaunch added, or a chain that starts with it.
+    pub fn after(before: Option<Self>, replied: bool, now: i64) -> Option<Self> {
+        if replied {
+            return None;
         }
+        Some(match before {
+            Some(q) => Self {
+                since: q.since,
+                relaunches: q.relaunches.saturating_add(1),
+            },
+            None => Self {
+                since: now,
+                relaunches: 1,
+            },
+        })
     }
-}
-
-/// Whether a relaunch answers something new rather than repeating the
-/// launch that has just failed. This is the brake on the relaunch loop, and
-/// every input is read from the exit itself: no count of attempts, no timer
-/// and no poll.
-///
-/// A relaunch is made unless all three of these are against it:
-///
-/// - `progress`: [`Progress::Advanced`] means the model wrote a reply to
-///   the session's conversation during the run, so the run did something
-///   and there is more for `--continue` to carry on. Whatever failure comes
-///   next will be a new one. Lines Claude Code writes without a turn, and
-///   the assistant line it writes for a failed request, are not replies.
-/// - `room_appeared`: the capacity that was spent has been replaced. Either
-///   no login had room at the exit and the wrapper waited until one did, or
-///   the rotator, asked before a refusal, swapped after the run began or
-///   found the login spent and then with room again. This is the
-///   usage-limit case the feature exists for, and it is why a process that
-///   dies in under a second on a limit wall is still started again.
-/// - `on_trial`: the run that has just exited was itself started by a
-///   relaunch that had neither of the above behind it. That relaunch was
-///   the one trial an exit with nothing to show is given; the run it
-///   started has now come back with nothing to show either, so the chain,
-///   and not just this run, is getting nowhere.
-///
-/// An exit that is not on trial is therefore always relaunched, whatever it
-/// has to show. A session killed while idle, by the out-of-memory killer,
-/// by a host event or by a pane that went away, is exactly that case, and
-/// it is the one the issue was reported from.
-///
-/// With all three against it, the process ran on a host that could run it,
-/// was started again for that reason alone, and left nothing behind twice:
-/// a configuration it cannot start under, a `--continue` that resolves to
-/// nothing, a crash during start-up. Starting it again would repeat it, so
-/// the wrapper stops, says why in the pane and the log, and leaves the
-/// failure on the session's record for the supervisor and for `amplihack
-/// agent status`.
-pub fn worth_relaunching(on_trial: bool, progress: Progress, room_appeared: bool) -> bool {
-    !on_trial || progress == Progress::Advanced || room_appeared
-}
-
-/// What a `no-progress` refusal knew of the room a login had when it
-/// refused, for the alert it leaves on the session's record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Evidence {
-    /// No swap record and no reading from a rotator: nothing was holding
-    /// the session back for capacity.
-    Unchecked,
-    /// The last swap record showed a login with room, and no rotator reading
-    /// taken after the exit could be had: no rotator runs, a login is
-    /// pinned, or the rotator stopped before it measured.
-    Record,
-    /// The rotator measured the live login after the exit and found room, so
-    /// the exit was not a usage limit.
-    Reading,
 }
 
 /// What the wrapper saw of one run of Claude Code, for [`Standing::next`].
@@ -218,15 +172,13 @@ pub(super) struct Exit<'a> {
     pub result: &'a anyhow::Result<()>,
     /// The wrapper has had SIGHUP or SIGTERM.
     pub signalled: bool,
-    /// What the run did in the session's conversation: [`Standing::progress`]
-    /// read after the exit, for replies dated from just before the launch.
-    pub progress: Progress,
-    /// This run was started by a relaunch that had nothing behind it but
-    /// the rule that every exit is given one: the trial of
-    /// [`worth_relaunching`]. `false` for the first run of a wrapper, and
-    /// for any run started because the model replied during the run before
-    /// it or because room appeared.
-    pub on_trial: bool,
+    /// The model wrote a reply in the session's conversation during the
+    /// run: [`Standing::replied`], read after the exit. It goes on the
+    /// record of the relaunch and decides nothing.
+    pub replied: bool,
+    /// The chain this run belonged to, from the [`Relaunch`] that started
+    /// it; `None` for the first run of a wrapper and after a reply.
+    pub quiet: Option<Quiet>,
 }
 
 /// The next launch of a standing session: what [`Standing::next`] hands
@@ -237,10 +189,9 @@ pub(super) struct Relaunch {
     pub launch_id: String,
     /// The entry the run's Claude Code arguments are rebuilt from.
     pub entry: Entry,
-    /// This relaunch is a trial: nothing was behind it but the rule that
-    /// every exit is given one. The wrapper carries it into the next
-    /// [`Exit::on_trial`], which is what lets the brake judge the chain.
-    pub on_trial: bool,
+    /// The chain this relaunch extends, which the wrapper carries into the
+    /// next [`Exit::quiet`] so the record can say how long it has run.
+    pub quiet: Option<Quiet>,
 }
 
 #[cfg(test)]
@@ -252,6 +203,3 @@ mod tests_standing_lines;
 #[cfg(test)]
 #[path = "tests_standing_progress.rs"]
 mod tests_standing_progress;
-#[cfg(test)]
-#[path = "tests_standing_recheck.rs"]
-mod tests_standing_recheck;

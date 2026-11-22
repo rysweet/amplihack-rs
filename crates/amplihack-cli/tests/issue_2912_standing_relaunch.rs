@@ -16,18 +16,18 @@
 //!
 //! A run that is meant to have done something appends a turn the model
 //! answered to its conversation's transcript, as a real session does on
-//! every turn. That reply is the evidence the wrapper's brake reads, so a
-//! stand-in that writes no reply is a session that started and crashed with
-//! nothing for `--continue` to carry on, however much else it writes. The
-//! lines it writes are the fixtures in
+//! every turn. Whether a run holds such a reply goes on the session's record
+//! with the relaunch, so a stand-in that writes no reply is a session that
+//! started and crashed with nothing for `--continue` to carry on, however
+//! much else it writes. The lines it writes are the fixtures in
 //! `src/commands/agent/testdata/issue_2912/`, recorded from a real Claude
 //! Code; see docs/howto/keep-sessions-running.md.
 //!
-//! The brake judges the relaunch chain, so a run that writes nothing is
-//! started again once; it takes a second such run, started by that
-//! relaunch, to be refused. A script of two barren runs is therefore a
-//! start-up crash loop, and a single barren run is a session that died with
-//! no work in flight and is answered.
+//! The wrapper has no brake. Every process exit nobody chose is relaunched,
+//! and a crash loop runs until the script ends with a clean exit, which is
+//! the owner ending the session, or until the supervisor takes the record
+//! away. What a crash loop leaves is evidence on the record for the
+//! supervisor agent.
 
 #![cfg(target_os = "linux")]
 
@@ -39,11 +39,6 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-
-/// The check a refusal makes with a running rotator, which uses the
-/// stand-in session and the helpers below.
-#[path = "issue_2912_standing_recheck.rs"]
-mod recheck;
 
 const NAME: &str = "area-docs";
 const CLAUDE_PID: u32 = 60001;
@@ -308,6 +303,66 @@ fn fixture(script: &[&str]) -> (Fx, PathBuf) {
     (fx, dir)
 }
 
+/// The session record's `alert`: the record of the last relaunch, or the
+/// reason one was refused. Empty when there is none.
+fn alert(fx: &Fx) -> String {
+    entry(fx)
+        .and_then(|e| e["alert"].as_str().map(String::from))
+        .unwrap_or_default()
+}
+
+/// `text` with every `YYYY-MM-DDTHH:MM:SSZ` replaced by `<ts>`, and the
+/// timestamps in the order they appeared, each checked to parse.
+fn untimed(text: &str) -> (String, Vec<String>) {
+    let shape = |w: &[u8]| {
+        w.len() == 20
+            && w.iter().enumerate().all(|(i, &c)| match i {
+                4 | 7 => c == b'-',
+                10 => c == b'T',
+                13 | 16 => c == b':',
+                19 => c == b'Z',
+                _ => c.is_ascii_digit(),
+            })
+    };
+    let bytes = text.as_bytes();
+    let (mut out, mut found, mut i) = (String::new(), Vec::new(), 0);
+    while i < bytes.len() {
+        if i + 20 <= bytes.len() && shape(&bytes[i..i + 20]) {
+            let ts = &text[i..i + 20];
+            parse_ts(ts);
+            found.push(ts.to_string());
+            out.push_str("<ts>");
+            i += 20;
+        } else {
+            let c = text[i..].chars().next().unwrap();
+            out.push(c);
+            i += c.len_utf8();
+        }
+    }
+    (out, found)
+}
+
+/// The record a relaunch leaves after an exit with `status` and `chain`
+/// relaunches since the model last replied, timestamps left as `<ts>`.
+fn quiet_note(status: u8, chain: u32) -> String {
+    let count = match chain {
+        1 => "1 relaunch".to_string(),
+        n => format!("{n} relaunches"),
+    };
+    format!(
+        "relaunched in its pane at <ts> after it exited exit-status-{status}; \
+         {count} since <ts> without a reply from the model in its conversation"
+    )
+}
+
+fn no_refusal(fx: &Fx) {
+    let log = fx.log_lines();
+    assert!(
+        !log.iter().any(|l| l.contains(" standing session refused ")),
+        "{log:?}"
+    );
+}
+
 /// The one refusal line the log holds, with the test's own message.
 fn refusal(fx: &Fx, what: &str) -> String {
     let log = fx.log_lines();
@@ -470,12 +525,11 @@ fn the_standing_flag_overrides_the_key_both_ways() {
     assert_eq!(runs(&fx).len(), 1);
 }
 
-/// Issue #2912's own case, and the one the brake must not swallow: a
-/// standing session that sat idle and was then killed by the out-of-memory
-/// killer, by a host event or by a pane that went away has nothing to show
-/// for its run, and a login has room, so nothing waited. It is
-/// started again all the same. Every exit is given a relaunch, because "no
-/// work in this run" and "this start is failing" are different facts.
+/// Issue #2912's own case: a standing session that sat idle and was then
+/// killed by the out-of-memory killer, by a host event or by a pane that
+/// went away has nothing to show for its run, and a login has room, so
+/// nothing waited. It is started again all the same, as every process exit
+/// nobody chose is.
 ///
 /// Run 1 is waited for until the wrapper has recorded its process, so the
 /// session was certainly up; it then dies having written nothing. Run 2
@@ -508,49 +562,65 @@ fn an_idle_session_that_was_killed_is_started_again_while_a_login_has_room() {
     assert_eq!(waiting_lines(&fx), 0, "a login had room: {log:?}");
 }
 
-/// The brake on the relaunch loop, and the case the brief asks to be
-/// evidenced: a session that starts, is seen, and exits non-zero on every
-/// start. Without a brake the script below would run four times and then
-/// run on; with it there are three runs and a refusal that says why.
+/// A session that starts, is seen, and exits non-zero on every start is
+/// relaunched on every exit. The wrapper keeps no count that could stop it.
+/// What it leaves instead is the evidence the supervisor agent judges a
+/// crash loop on: each relaunch on the session's record, with how many
+/// relaunches there have been since the model last replied and since when.
 ///
-/// Run 1 does a turn of work and exits 1, so it is relaunched on that
-/// evidence. Run 2 is waited for until the wrapper's id thread has recorded
-/// its process, so the wrapper certainly saw it and it certainly outlived
-/// the first scan; it then exits 1 having written nothing. That exit is
-/// given the one relaunch every exit gets, and run 3 comes back the same
-/// way, so the chain is a start-up crash loop and the wrapper stops. What
-/// stops it is the evidence of the exits themselves and not a count of
-/// attempts, a timer or a scan: the model wrote no reply to the
-/// conversation after run 2 started, and a login had room throughout.
+/// Run 1 does a turn of work and exits 1, so the record of its relaunch
+/// says the model replied. Runs 2 to 4 are waited for until the wrapper's id
+/// thread has recorded their process, so the wrapper certainly saw them, and
+/// each exits 1 having written nothing: the chain grows by one each time and
+/// keeps the time it began. Run 5 ends cleanly, which is the owner ending
+/// the session.
 #[test]
-fn a_session_that_keeps_crashing_with_nothing_to_show_is_refused_loudly() {
-    let (fx, dir) = fixture(&["hold:1", "wait:1", "wait:1", "wait:1"]);
+fn a_session_that_keeps_crashing_is_relaunched_every_time_and_its_record_says_so() {
+    let (fx, dir) = fixture(&["hold:1", "wait:1", "wait:1", "wait:1", "wait:0"]);
     set_standing(&fx, true);
     let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
-    for n in 1..=3usize {
+    let mut notes = Vec::new();
+    for n in 1..=5usize {
         run_is_up(&fx, n);
+        notes.push(untimed(&alert(&fx)));
         release(&fx, n);
     }
     let out = w.finish();
-    expect_code(&out, 1);
+    expect_code(&out, 0);
+    assert_eq!(runs(&fx).len(), 5, "{:?}", runs(&fx));
+    let log = fx.log_lines();
+    let lines = relaunch_lines(&log);
+    assert_eq!(lines.len(), 4, "{log:?}");
+    for line in lines {
+        assert!(
+            line.ends_with(
+                " standing session relaunch session=area-docs reason=exit-status-1 waited=none"
+            ),
+            "{line}"
+        );
+        assert!(stderr(&out).contains(line.as_str()), "{}", stderr(&out));
+    }
+    no_refusal(&fx);
+
+    assert_eq!(notes[0].0, "", "the first run has no relaunch to record");
     assert_eq!(
-        runs(&fx).len(),
-        3,
-        "the crashing chain is not started again: {:?}",
-        runs(&fx)
+        notes[1].0,
+        "relaunched in its pane at <ts> after it exited exit-status-1; \
+         the model replied during the run"
     );
-    assert_eq!(
-        relaunch_lines(&fx.log_lines()).len(),
-        2,
-        "{:?}",
-        fx.log_lines()
-    );
-    let refusal = refusal(&fx, "start then crash");
+    for (n, chain) in [(2, 1), (3, 2), (4, 3)] {
+        assert_eq!(notes[n].0, quiet_note(1, chain), "run {}", n + 1);
+    }
+    let began = &notes[2].1[1];
     assert!(
-        refusal.ends_with(" standing session refused session=area-docs reason=no-progress"),
-        "{refusal}"
+        notes[2..].iter().all(|(_, ts)| &ts[1] == began),
+        "the chain keeps the time it began: {notes:?}"
     );
-    assert!(stderr(&out).contains(refusal.as_str()), "{}", stderr(&out));
+    assert_eq!(
+        fx.agent(NAME)["state"],
+        "ended",
+        "the clean exit is the owner"
+    );
 }
 
 /// The bytes of the stand-in's transcript on disk, zero when there is none.
@@ -563,63 +633,46 @@ fn transcript_bytes(fx: &Fx, dir: &Path) -> u64 {
 /// `--continue` start ended before any turn appends `bridge-session` and
 /// `cost-state` lines, and a failed request appends the prompt and an
 /// assistant line of Claude Code's own. Measured by size, every one of
-/// these runs did work and the chain would never be braked. Measured by
-/// replies, they did none.
+/// these runs did work, and the record would say so. Measured by replies,
+/// they did none, and the record says that.
 ///
-/// Run 1 does a turn of work and exits 1, so it is relaunched on that
-/// evidence. Run 2 starts, writes what a start writes and exits 1: it is
-/// not on trial, so it is given the one relaunch every exit gets. Run 3 has
-/// its request fail and exits 1: it was the trial, and it has nothing to
-/// show either, so the wrapper stops. Run 4 never happens.
+/// Run 1 does a turn of work and exits 1. Runs 2 and 4 start, write what a
+/// start writes and exit 1; run 3 has its request fail and exits 1. Each is
+/// relaunched, and while run 5 is up the record counts three relaunches
+/// with no reply behind them.
 #[test]
-fn a_start_up_crash_loop_that_grows_its_transcript_is_refused() {
-    let (fx, dir) = fixture(&["hold:1", "boot:1", "fail:1", "boot:1", "exit:0"]);
+fn a_crash_loop_that_grows_its_transcript_is_recorded_as_without_a_reply() {
+    let (fx, dir) = fixture(&["hold:1", "boot:1", "fail:1", "boot:1", "wait:0"]);
     set_standing(&fx, true);
     let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
     let mut sizes = Vec::new();
-    for n in 1..=3usize {
+    for n in 1..=4usize {
         run_is_up(&fx, n);
         sizes.push(transcript_bytes(&fx, &dir));
         release(&fx, n);
     }
-    let out = w.finish();
-    expect_code(&out, 1);
+    run_is_up(&fx, 5);
+    let note = untimed(&alert(&fx)).0;
+    release(&fx, 5);
+    expect_code(&w.finish(), 0);
     assert!(
         sizes.windows(2).all(|w| w[1] > w[0]) && sizes[0] > 0,
         "the premise: every run grew the transcript: {sizes:?}"
     );
-    assert_eq!(runs(&fx).len(), 3, "{:?}", runs(&fx));
-    assert_eq!(
-        relaunch_lines(&fx.log_lines()).len(),
-        2,
-        "{:?}",
-        fx.log_lines()
-    );
-    let refusal = refusal(&fx, "a crash loop that writes");
-    assert!(
-        refusal.ends_with(" standing session refused session=area-docs reason=no-progress"),
-        "{refusal}"
-    );
-    let e = fx.agent(NAME);
-    assert_eq!(e["state"], "active", "{e}");
-    assert_eq!(
-        e["alert"].as_str().unwrap_or_default(),
-        "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited exit-status-1 without a reply from the model in its \
-         conversation while a login had room, so another relaunch would repeat it",
-        "{e}"
-    );
+    assert_eq!(runs(&fx).len(), 5, "{:?}", runs(&fx));
+    assert_eq!(relaunch_lines(&fx.log_lines()).len(), 4);
+    no_refusal(&fx);
+    assert_eq!(note, quiet_note(1, 3));
 }
 
 /// A resume that copies the conversation's history into the transcript the
 /// record names, as `--continue --fork-session` does into a new one, grows
 /// it by everything that went before. The copied replies keep the times
 /// they were first written, before this run's launch, so they are not this
-/// run's work and the chain is braked as for any other run with nothing to
-/// show.
+/// run's replies and the record counts the runs as without one.
 #[test]
-fn history_copied_into_the_transcript_is_not_work() {
-    let (fx, dir) = fixture(&["hold:1", "copy:1", "copy:1", "exit:0"]);
+fn history_copied_into_the_transcript_is_not_a_reply() {
+    let (fx, dir) = fixture(&["hold:1", "copy:1", "copy:1", "wait:0"]);
     set_standing(&fx, true);
     let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
     for n in 1..=3usize {
@@ -627,8 +680,11 @@ fn history_copied_into_the_transcript_is_not_work() {
         release(&fx, n);
         assert!(wait_until(|| exited(&fx, n)), "run {n}");
     }
-    expect_code(&w.finish(), 1);
-    assert_eq!(runs(&fx).len(), 3, "{:?}", runs(&fx));
+    run_is_up(&fx, 4);
+    let note = untimed(&alert(&fx)).0;
+    release(&fx, 4);
+    expect_code(&w.finish(), 0);
+    assert_eq!(runs(&fx).len(), 4, "{:?}", runs(&fx));
     let reply = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/commands/agent/testdata/issue_2912/model_reply_turn.jsonl"),
@@ -641,111 +697,162 @@ fn history_copied_into_the_transcript_is_not_work() {
         4 * one_turn as u64,
         "the premise: two copies doubled the transcript twice"
     );
-    let refusal = refusal(&fx, "copied history");
-    assert!(refusal.ends_with(" reason=no-progress"), "{refusal}");
+    assert_eq!(note, quiet_note(1, 2));
+    no_refusal(&fx);
 }
 
-/// The same brake on a session that never gets anywhere at all, whether its
-/// Claude Code never started or started and died at once: its first exit is
-/// given a relaunch, that relaunch gets nowhere either, and the wrapper
-/// stops. The window between the two cases was decided by the wrapper's
-/// once-a-second process scan, and is not consulted here.
+/// A session that never gets anywhere at all, whether its Claude Code was
+/// seen by the wrapper's process scan or died before it could be, is
+/// relaunched on every exit, and the scan is not consulted. Three crashes
+/// are three relaunches; the fourth run ends cleanly, which is the owner.
 #[test]
-fn a_session_that_gets_nowhere_at_all_is_started_again_once_then_refused() {
+fn a_session_that_gets_nowhere_at_all_is_relaunched_on_every_exit() {
     for seen in [true, false] {
         let fx = Fx::new();
         let dir = fx.dir("docs");
-        install_stand_in(&fx, &dir, &["exit:1", "exit:1", "exit:0"]);
+        install_stand_in(&fx, &dir, &["exit:1", "exit:1", "exit:1"]);
         if seen {
             show_claude(&fx, &dir);
         }
         set_standing(&fx, true);
         let out = fx.output(&mut wrapped(&fx, &dir, &[], &[]));
-        expect_code(&out, 1);
-        assert_eq!(runs(&fx).len(), 2, "seen={seen}: {:?}", runs(&fx));
-        let refusal = refusal(&fx, &format!("seen={seen}"));
-        assert!(
-            refusal.ends_with(" standing session refused session=area-docs reason=no-progress"),
-            "seen={seen}: {refusal}"
-        );
-        assert!(
-            stderr(&out).contains(refusal.as_str()),
-            "seen={seen}: {}",
-            stderr(&out)
-        );
+        expect_code(&out, 0);
+        assert_eq!(runs(&fx).len(), 4, "seen={seen}: {:?}", runs(&fx));
+        let log = fx.log_lines();
+        let lines = relaunch_lines(&log);
+        assert_eq!(lines.len(), 3, "seen={seen}: {log:?}");
+        for line in lines {
+            assert!(
+                stderr(&out).contains(line.as_str()),
+                "seen={seen}: {}",
+                stderr(&out)
+            );
+        }
+        no_refusal(&fx);
     }
 }
 
 /// A session whose conversation is never on its record: nothing in the
 /// synthetic process table is a Claude, so the wrapper's id thread never
 /// finds one with a sessions file and there is no conversation of this
-/// session's to measure. That is not evidence that the run worked, and not
-/// evidence that it was idle either, so the chain rule decides: the first
-/// exit is started again, the second is refused, and the refusal says there
-/// was no conversation on record rather than claiming one stood still.
+/// session's to read. It is relaunched like any other, and the record says
+/// no reply was found; `agent status` shows the missing conversation next
+/// to it.
 #[test]
-fn a_session_with_no_conversation_on_record_is_started_again_once_then_refused() {
+fn a_session_with_no_conversation_on_record_is_relaunched_and_recorded() {
     let fx = Fx::new();
     let dir = fx.dir("docs");
-    install_stand_in(&fx, &dir, &["exit:1", "exit:1", "exit:0"]);
+    install_stand_in(&fx, &dir, &["exit:1", "exit:1", "wait:0"]);
     set_standing(&fx, true);
-    let out = fx.output(&mut wrapped(&fx, &dir, &[], &[]));
-    expect_code(&out, 1);
-    assert_eq!(runs(&fx).len(), 2, "{:?}", runs(&fx));
+    let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
+    assert!(wait_until(|| runs(&fx).len() == 3), "{:?}", runs(&fx));
     let e = fx.agent(NAME);
+    let note = untimed(&alert(&fx)).0;
+    release(&fx, 3);
+    expect_code(&w.finish(), 0);
     assert!(
         e["conversation_id"].is_null(),
         "the premise is a record with no conversation: {e}"
     );
-    assert_eq!(e["state"], "active", "the supervisor may still recover it");
-    assert_eq!(
-        e["alert"].as_str().unwrap_or_default(),
-        "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited exit-status-1 with no conversation of its own on record while \
-         a login had room, so another relaunch would repeat it",
-        "{e}"
-    );
-    let refusal = refusal(&fx, "no conversation on record");
-    assert!(
-        refusal.ends_with(" standing session refused session=area-docs reason=no-progress"),
-        "{refusal}"
-    );
+    assert_eq!(e["state"], "active", "{e}");
+    assert_eq!(note, quiet_note(1, 2));
+    no_refusal(&fx);
 }
 
-/// A refusal that leaves a session stopped reaches the supervisor, not only
-/// the log: the reason is on the session's own record, and the record is
-/// left `active`, so the supervisor's own recovery is the next thing to try
-/// and the alert is in `amplihack agent status`.
+/// Every relaunch reaches the supervisor, not only the log: it is on the
+/// session's own record, which stays `active`, and `amplihack agent status`
+/// prints it as an `ALERT` line. That is where the supervisor agent reads a
+/// session that keeps exiting.
 ///
-/// Both runs are waited for until the wrapper has recorded the session's
-/// process and conversation, so the conversation is on the record and the
-/// alert names what was read of it: the model wrote no reply to it.
+/// Both crashing runs are waited for until the wrapper has recorded the
+/// session's process and conversation, so the conversation is on the record
+/// and the note names what was read of it: the model wrote no reply to it.
 #[test]
-fn a_no_progress_refusal_is_left_on_the_record_for_the_supervisor() {
-    let (fx, dir) = fixture(&["wait:7", "wait:7", "exit:0"]);
+fn every_relaunch_is_left_on_the_record_for_the_supervisor() {
+    let (fx, dir) = fixture(&["wait:7", "wait:7", "wait:0"]);
     set_standing(&fx, true);
     let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
     for n in 1..=2usize {
         run_is_up(&fx, n);
         release(&fx, n);
     }
-    expect_code(&w.finish(), 7);
-    assert_eq!(runs(&fx).len(), 2, "{:?}", runs(&fx));
+    run_is_up(&fx, 3);
     let e = fx.agent(NAME);
-    assert_eq!(e["state"], "active", "the supervisor may still recover it");
-    let alert = e["alert"].as_str().unwrap_or_default();
-    assert_eq!(
-        alert,
-        "not relaunched: the relaunch of an exit that showed nothing itself \
-         exited exit-status-7 without a reply from the model in its \
-         conversation while a login had room, so another relaunch would repeat it",
-        "{e}"
-    );
+    let raw = alert(&fx);
     let status = fx.run(&["agent", "status"]);
+    release(&fx, 3);
+    expect_code(&w.finish(), 0);
+    assert_eq!(e["state"], "active", "{e}");
+    assert_eq!(e["conversation_id"], CONV_C, "{e}");
+    let (note, times) = untimed(&raw);
+    assert_eq!(note, quiet_note(7, 2), "{raw}");
     assert!(
-        stdout(&status).contains(&format!("ALERT {NAME}: {alert}")),
+        times[1] <= times[0],
+        "the chain began before this relaunch: {raw}"
+    );
+    assert!(
+        stdout(&status).contains(&format!("ALERT {NAME}: {raw}")),
         "the status shows it: {}",
         stdout(&status)
+    );
+}
+
+/// The supervisor agent's way to stop a session it judges to be a crash
+/// loop: take the record away. The next exit is then not this wrapper's to
+/// relaunch, and it says so once rather than starting Claude Code again.
+#[test]
+fn a_crash_loop_the_supervisor_unregisters_is_not_relaunched_again() {
+    let (fx, dir) = fixture(&["wait:1", "wait:1", "wait:1", "wait:1"]);
+    set_standing(&fx, true);
+    let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
+    run_is_up(&fx, 1);
+    release(&fx, 1);
+    run_is_up(&fx, 2);
+    let unregistered = fx.run(&["agent", "unregister", NAME]);
+    expect_code(&unregistered, 0);
+    release(&fx, 2);
+    expect_code(&w.finish(), 1);
+    assert_eq!(runs(&fx).len(), 2, "{:?}", runs(&fx));
+    assert_eq!(relaunch_lines(&fx.log_lines()).len(), 1);
+    let refusal = refusal(&fx, "unregistered");
+    assert!(
+        refusal.ends_with(" standing session refused session=area-docs reason=superseded"),
+        "{refusal}"
+    );
+}
+
+/// A launch that returns an error with no exit status from Claude Code
+/// started no process, so there is no exit to relaunch, and a relaunch would
+/// fail again within moments with no Claude Code start to pace the loop.
+/// Here the stand-in is removed while run 1 is up, so the relaunch's launch
+/// cannot find `claude`. The wrapper refuses once, leaves the reason on the
+/// record, which stays `active` for the supervisor's recovery, and returns
+/// the error.
+#[test]
+fn a_launch_that_fails_without_an_exit_status_is_left_for_the_supervisor() {
+    let (fx, dir) = fixture(&["hold:1", "hold:0"]);
+    set_standing(&fx, true);
+    let w = Running::spawn(&fx, wrapped(&fx, &dir, &[], &[]));
+    run_is_up(&fx, 1);
+    fs::remove_file(fx.tools.join("claude")).unwrap();
+    release(&fx, 1);
+    let out = w.finish();
+    assert!(!out.status.success(), "{:?}", out.status);
+    assert_eq!(runs(&fx).len(), 1, "{:?}", runs(&fx));
+    assert_eq!(relaunch_lines(&fx.log_lines()).len(), 1);
+    let refusal = refusal(&fx, "launch failed");
+    assert!(
+        refusal.ends_with(" standing session refused session=area-docs reason=launch-failed"),
+        "{refusal}"
+    );
+    let e = fx.agent(NAME);
+    assert_eq!(e["state"], "active", "{e}");
+    assert_eq!(
+        e["alert"].as_str().unwrap_or_default(),
+        "not relaunched: the launch failed without an exit status from Claude \
+         Code, so no process exited to be relaunched; the error is in the pane, \
+         and the session was left for the supervisor",
+        "{e}"
     );
 }
 
@@ -803,9 +910,9 @@ fn no_relaunch_until_a_login_has_room_then_one_on_the_event() {
 /// A wait for room that ends without one and without a signal leaves a
 /// session stopped that its owner wants running. Here the rotator's
 /// directory is moved away during the wait, so the watch on the swap record
-/// is lost. The refusal is logged as before, and its cause is now on the
-/// session's record too, as a `no-progress` refusal's is: the record stays
-/// `active` for the supervisor and `amplihack agent status` shows why.
+/// is lost. The refusal is logged, and its cause is on the session's record
+/// too: the record stays `active` for the supervisor and `amplihack agent
+/// status` shows why.
 #[test]
 fn a_wait_for_room_that_loses_its_watch_is_left_on_the_record() {
     let (fx, dir) = fixture(&["hold:1", "hold:0"]);

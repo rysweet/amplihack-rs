@@ -109,12 +109,11 @@ pub fn run_wrapped(
     let standing = Standing::resolve(req.standing, req.name, &home);
 
     let mut args: Vec<String> = req.claude_args.to_vec();
-    // Issue #2912: whether this run was started by a relaunch that had
-    // nothing behind it but the rule that every exit is given one. The
-    // first run of a wrapper never is, and carrying it from one turn of the
-    // loop to the next is what lets the brake judge the relaunch chain
-    // instead of the run; see `standing::worth_relaunching`.
-    let mut on_trial = false;
+    // Issue #2912: the relaunches since the model last replied, carried from
+    // one turn of the loop to the next so the session's record can say how
+    // long the chain has run. Evidence for the supervisor agent; nothing
+    // here decides on it.
+    let mut quiet = None;
     loop {
         // One per run, so the id thread of an earlier run can never say
         // that this one started.
@@ -126,14 +125,13 @@ pub fn run_wrapped(
             launch_id.clone(),
             Arc::clone(&run),
         );
-        // Issue #2912: when this run began. A reply the model wrote to the
-        // session's conversation from then on is the evidence that a
-        // relaunch would answer something new; see
-        // `standing::worth_relaunching`. It is read once, after the exit.
+        // Issue #2912: when this run began. Whether the model wrote a reply
+        // to the session's conversation from then on is read once, after
+        // the exit, for the record of the relaunch; see `standing::Quiet`.
         let started = SystemTime::now();
         let result = launch(&args);
         run.over.store(true, Ordering::SeqCst);
-        let progress = standing.progress(&dir, &home, &cwd, req.name, started);
+        let replied = standing.replied(&dir, &home, &cwd, req.name, started);
         let signalled = stopped.load(Ordering::SeqCst);
         if result.is_ok()
             && !signalled
@@ -153,14 +151,14 @@ pub fn run_wrapped(
             first_conversation: first_conversation.as_deref(),
             result: &result,
             signalled,
-            progress,
-            on_trial,
+            replied,
+            quiet,
         };
         let Some(next) = standing.next(&dir, req.name, &exit, &stopped) else {
             return result;
         };
         launch_id = next.launch_id;
-        on_trial = next.on_trial;
+        quiet = next.quiet;
         since = registry::now();
         // Through the same launch path as the first run, so the relaunch
         // gets what the first launch got from the launcher and nothing
@@ -183,10 +181,10 @@ pub fn run_wrapped(
 /// already ended.
 ///
 /// Nothing in the standing-session decision rests on what this thread saw.
-/// It records the conversation, and the decision reads that record and the
-/// conversation's transcript off the disk after the exit, so a run that
-/// ended between two of these ticks is judged on what it did rather than on
-/// whether a scan happened to catch it.
+/// It records the conversation, and the record of a relaunch reads that and
+/// the conversation's transcript off the disk after the exit, so a run that
+/// ended between two of these ticks is described by what it wrote rather
+/// than by whether a scan happened to catch it.
 fn watch_for_claude(
     dir: AgentsDir,
     home: PathBuf,
