@@ -272,17 +272,52 @@ fn tmux_server_holds_marker(
 /// the marker, and the run goes on.
 const TMUX_QUERY_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// The wait one `tmux show-environment` gets: `None` means "until it exits".
+///
+/// Always [`TMUX_QUERY_TIMEOUT`] in a release build. In a debug build a test
+/// that set `AMPLIHACK_TEST_PROBE_WAIT=exit` gets `None`, so that a stub
+/// `tmux` on a busy host is waited for and not read as a server that does not
+/// hold the marker (issue #2931). The unit tests of this module get `None`
+/// too: each asks a stand-in script it wrote a moment before, and on macOS
+/// the first start of a new script can take longer than the limit.
+/// [`tmux_holds_within`] takes the limit as an argument, and one test gives
+/// it both.
+fn tmux_query_limit() -> Option<Duration> {
+    if cfg!(test) {
+        return None;
+    }
+    #[cfg(debug_assertions)]
+    if amplihack_utils::launch_target::test_waits_for_exit() {
+        return None;
+    }
+    Some(TMUX_QUERY_TIMEOUT)
+}
+
 /// Whether `tmux show-environment -g <variable>` prints `<variable>=<value>`.
 ///
 /// Inside a tmux pane the client finds the server through `$TMUX`. Any failure
 /// -- no tmux binary, no server, a timeout, an unset or removed variable --
 /// is `false`: nothing then suggests the marker came from the server.
 fn tmux_global_environment_holds(tmux: &OsStr, variable: &str, value: &OsStr) -> bool {
+    tmux_holds_within(tmux, variable, value, tmux_query_limit())
+}
+
+/// [`tmux_global_environment_holds`] with the wait given: `Some(limit)` gives
+/// up at the limit, `None` waits for `tmux` to exit.
+fn tmux_holds_within(tmux: &OsStr, variable: &str, value: &OsStr, limit: Option<Duration>) -> bool {
     let mut command = Command::new(tmux);
     command
         .args(["show-environment", "-g", variable])
         .stdin(Stdio::null());
-    let Ok(output) = crate::util::run_output_with_timeout(command, TMUX_QUERY_TIMEOUT) else {
+    let answer = match limit {
+        Some(limit) => crate::util::run_output_with_timeout(command, limit),
+        None => command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(anyhow::Error::from),
+    };
+    let Ok(output) = answer else {
         return false;
     };
     if !output.status.success() {
@@ -557,7 +592,7 @@ fn handed_on_tmux_server_marker_notice(lead: &str, marker: SessionMarker) -> Str
 mod tests {
     use super::{
         EnvBinaryValue, Reporter, agent_binary_notice, answer_from_tmux_server_marker,
-        tmux_global_environment_holds, tmux_server_holds_marker,
+        tmux_global_environment_holds, tmux_holds_within, tmux_server_holds_marker,
     };
     use amplihack_utils::agent_binary::{
         Resolution, ResolutionSource, SessionMarker, UnusableContext,
@@ -916,6 +951,64 @@ mod tests {
             dir.path().join("no-such-tmux").as_os_str(),
             "COPILOT_CLI",
             value
+        ));
+    }
+
+    /// Issue #2931: what ends the query is an input. With no limit a `tmux`
+    /// that answers late is still heard; with a limit one that never answers
+    /// is given up on. The stand-in blocks on a named pipe, so the first case
+    /// is decided by the write that releases it and not by a sleep.
+    #[cfg(unix)]
+    #[test]
+    fn the_tmux_query_waits_for_exit_without_a_limit_and_gives_up_at_one() {
+        let dir = crate::test_support::tempdir_outside_framework_roots();
+        let gate = dir.path().join("gate");
+        let gate_c = std::ffi::CString::new(gate.to_str().unwrap()).unwrap();
+        // SAFETY: a valid NUL-terminated path and a plain mode.
+        assert_eq!(unsafe { libc::mkfifo(gate_c.as_ptr(), 0o600) }, 0);
+        let tmux = dir.path().join("gated-tmux");
+        crate::test_support::write_executable(
+            &tmux,
+            &format!(
+                "#!/bin/sh\nIFS= read -r _ < {}\necho \"$3=1\"\n",
+                crate::test_support::sh_quote(gate.to_str().unwrap())
+            ),
+        );
+        let value = OsStr::new("1");
+
+        // Opening the gate for writing blocks until the stand-in has opened
+        // it for reading, so the answer below can only follow a wait for it.
+        let opener = std::thread::spawn({
+            let gate = gate.clone();
+            move || std::fs::write(gate, "go\n").expect("release the gate")
+        });
+        assert!(tmux_holds_within(
+            tmux.as_os_str(),
+            "COPILOT_CLI",
+            value,
+            None
+        ));
+        opener.join().expect("the gate was released");
+
+        // A limit that is not reached changes nothing: the answer is read
+        // through the capture the shipped binary uses. The minute is a
+        // ceiling on a failure, not a wait.
+        let prompt = dir.path().join("prompt-tmux");
+        crate::test_support::write_executable(&prompt, "#!/bin/sh\necho \"$3=1\"\n");
+        assert!(tmux_holds_within(
+            prompt.as_os_str(),
+            "COPILOT_CLI",
+            value,
+            Some(std::time::Duration::from_secs(60))
+        ));
+
+        // Nothing opens the gate now: the stand-in never answers, and is
+        // stopped at the limit.
+        assert!(!tmux_holds_within(
+            tmux.as_os_str(),
+            "COPILOT_CLI",
+            value,
+            Some(std::time::Duration::from_millis(50))
         ));
     }
 
