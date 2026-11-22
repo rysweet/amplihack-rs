@@ -444,7 +444,7 @@ fn a_gateway_launch_uses_the_gateway_model_and_not_the_tier() {
     // assertion below is about the model, which is what this issue decides.
     crate::support::exec_stub::write_executable(
         &f.tools.join("claude"),
-        FAKE_HARNESS.replace("2.1.319", "2.1.247"),
+        FAKE_HARNESS.replace("2.1.329", "2.1.247"),
         0o755,
     );
     let launch = f.finish(

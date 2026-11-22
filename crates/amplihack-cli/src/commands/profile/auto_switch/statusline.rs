@@ -243,7 +243,13 @@ fn record(
         let merged = usage::merge(file.accounts.get(&account), reading);
         file.accounts.insert(account, merged);
         match state.save_usage(&file) {
-            Ok(()) if due => super::capacity::refresh(state, &file, &ledger, "statusline"),
+            // Issue #2885: stderr, as the other notes here; stdout is the
+            // status line.
+            Ok(()) if due => {
+                for note in super::capacity::refresh(state, &file, &ledger, "statusline") {
+                    eprintln!("{note}");
+                }
+            }
             Ok(()) => {}
             Err(e) => eprintln!("auto-switch: {e}"),
         }

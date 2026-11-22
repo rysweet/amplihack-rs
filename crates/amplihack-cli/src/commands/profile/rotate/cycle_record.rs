@@ -63,7 +63,7 @@ impl Done<'_> {
 
 /// Writes the cycle's record, under the lock the caller still holds.
 pub(super) fn record(
-    ctx: &Ctx,
+    ctx: &mut Ctx,
     out: &mut Sink,
     l: &mut RotateLedger,
     d: &Done<'_>,
@@ -71,7 +71,7 @@ pub(super) fn record(
     // Issue #2218: nothing measured is recorded under an excluded live
     // login's name; it was never probed.
     let recorded_live = live_name(&d.first.live).filter(|_| !d.first.live_excluded);
-    refresh_capacity(
+    let unreadable = refresh_capacity(
         ctx,
         recorded_live,
         d.live,
@@ -80,6 +80,8 @@ pub(super) fn record(
         d.tag,
         d.first.shown_platform(),
     );
+    // Issue #2885: said once, not left as a silent skip.
+    ctx.note_keychain(out, d.t, unreadable);
     no_room::record(l, ctx, d.first, (d.live, d.others), d.probed, d.measured_at);
     let left = d
         .swapped

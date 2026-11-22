@@ -20,6 +20,8 @@ mod duplicates;
 pub(in crate::commands::profile) mod expected;
 pub(crate) mod governor_view;
 #[cfg(unix)]
+mod keychain;
+#[cfg(unix)]
 mod kind;
 #[cfg(unix)]
 pub(crate) mod limit_wait;
@@ -83,7 +85,11 @@ mod tests_fake_http;
 #[cfg(all(test, unix))]
 mod tests_issue_2279_profile;
 #[cfg(all(test, unix))]
+mod tests_keychain;
+#[cfg(all(test, unix))]
 mod tests_kind;
+#[cfg(all(test, unix))]
+mod tests_kind_keychain;
 #[cfg(all(test, unix))]
 mod tests_login_check;
 #[cfg(test)]
@@ -269,6 +275,18 @@ pub enum ProfileError {
         "profile {0} is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. Run 'amplihack profile login {0}', or run 'amplihack profile kind set {0} api-key' if per-token billing is intended."
     )]
     SubscriptionNoLogin(String),
+    /// Issue #2885: on macOS the profile has no login file and the Keychain
+    /// gave no answer. A refusal of its own, so that a locked Keychain is
+    /// never reported as "no login", and never taken for an API key. The
+    /// cause is one of five fixed texts; nothing `security` printed is here.
+    #[cfg(unix)]
+    #[error(
+        "profile {name} has no login file and the macOS Keychain could not be read ({cause}); launching it could bill the Claude Platform API key per token. Unlock the login Keychain and run again, or run 'amplihack profile kind set {name} api-key' if per-token billing is intended."
+    )]
+    KeychainUnreadable {
+        name: String,
+        cause: keychain::Cause,
+    },
     #[error(
         "profile {0} is an API-key profile; the API-key tier is fixed at 10, so --tier cannot be set"
     )]
@@ -363,6 +381,10 @@ impl ProfileError {
             Self::RotateDaemon(_) => "run `amplihack profile rotate status`",
             Self::SubscriptionNoLogin(_) => {
                 "amplihack profile login <name>, or: amplihack profile kind set <name> api-key"
+            }
+            #[cfg(unix)]
+            Self::KeychainUnreadable { .. } => {
+                "unlock the login Keychain and run again, or: amplihack profile kind set <name> api-key"
             }
             Self::PlatformTierFixed(_) => {
                 "run `amplihack profile overflow add <name>` without --tier"

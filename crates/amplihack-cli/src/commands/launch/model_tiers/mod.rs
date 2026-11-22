@@ -9,17 +9,21 @@
 //! step runs on the harness's own default model: it never fails for this
 //! reason, and there is no retry, no timer and no probe.
 //!
-//! [`table`], [`resolve`], [`codex_effort`] and [`record`] are pure; this
-//! module is the only one that reads a file or the environment, and the only
-//! one that decides nothing. The contract is `docs/reference/model-tiers.md`.
+//! [`table`], [`resolve`], [`codex_effort`], [`claude_effort`] and [`record`]
+//! are pure; this module is the only one that reads a file or the
+//! environment, and the only one that decides nothing. The contract is
+//! `docs/reference/model-tiers.md`.
 
 pub(crate) mod argv_scan;
+pub(crate) mod claude_effort;
 pub(crate) mod codex_effort;
 pub(crate) mod notice;
 pub(crate) mod record;
 pub(crate) mod resolve;
 pub(crate) mod table;
 
+#[cfg(test)]
+mod tests_claude_effort;
 #[cfg(test)]
 mod tests_codex_effort;
 #[cfg(test)]
@@ -28,6 +32,8 @@ mod tests_default_model;
 mod tests_effort_ceiling;
 #[cfg(test)]
 mod tests_load;
+#[cfg(test)]
+mod tests_notice_effort;
 #[cfg(test)]
 mod tests_record;
 #[cfg(test)]
@@ -69,31 +75,129 @@ const RUN_ID_ENV: &str = "AMPLIHACK_RUN_ID";
 /// `is_claude_compatible_tool` excludes, so deriving it twice put a `--model`
 /// the gateway rejects on every tiered Copilot step.
 ///
+/// The returned [`TierLaunch`] is finished with [`TierLaunch::finish`] once
+/// the binary is resolved: only then can a Claude effort be checked against
+/// the Claude Code that will run, and the record and the applied line say
+/// what reached it.
+///
 /// A tail with no tier and no forced model comes back byte-identical.
 pub(crate) fn resolve_passthrough(
     tool: &str,
     extra_args: &[String],
     gateway_target: bool,
-) -> Vec<String> {
-    let mut resolved = resolve_for_launch(tool, extra_args, gateway_target);
+) -> (Vec<String>, TierLaunch) {
+    let resolved = resolve_for_launch(tool, extra_args, gateway_target);
     let (argv, effort) = reasoning_effort(tool, resolved.argv, resolved.effort);
     for notice in &resolved.notices {
         eprintln!("{}", notice.render());
     }
-    // The record is written after the injection, so `effective_effort` says
-    // what actually reached the harness rather than what the tier asked for.
-    if let Some(record) = resolved.record.as_mut() {
-        record.effective_effort = match effort {
-            EffortOutcome::Added(effort) => Some(effort),
-            EffortOutcome::NotApplicable => record.effective_effort,
-            EffortOutcome::CallerChose => None,
+    let pending = TierLaunch(Some(Pending {
+        tool: tool.to_string(),
+        claude_effort: matches!(effort, EffortOutcome::Added(_))
+            && table::column_for(tool) != "codex",
+        record: resolved.record,
+        effort,
+    }));
+    (argv, pending)
+}
+
+/// A tier decision waiting for the launch's binary.
+///
+/// A launch that returns before [`TierLaunch::finish`] (the Docker hand-off,
+/// or a binary that cannot be resolved) still prints the applied line and
+/// writes the record when this is dropped, so those launches are recorded
+/// with the effort the tier asked for.
+pub(crate) struct TierLaunch(Option<Pending>);
+
+struct Pending {
+    tool: String,
+    /// Whether amplihack itself put `--effort` on a Claude command line.
+    claude_effort: bool,
+    record: Option<record::Record>,
+    effort: EffortOutcome,
+}
+
+impl TierLaunch {
+    /// Check a Claude effort against the version of the binary that will
+    /// run, then print the applied line and write the record.
+    ///
+    /// `version` is the binary's `--version` output, read when the binary
+    /// was resolved; nothing is spawned here. When amplihack added `--effort`
+    /// and that version is older than
+    /// [`claude_effort::MIN_EFFORT_VERSION`], or could not be read, the pair
+    /// is taken back off `argv` and a line says so: the step runs without
+    /// the effort rather than failing on an option Claude Code does not know
+    /// (issue #2916).
+    pub(crate) fn finish(mut self, argv: Vec<String>, version: Option<&str>) -> Vec<String> {
+        let Some(mut pending) = self.0.take() else {
+            return argv;
         };
-        if let Some(notice) = applied_notice(tool, record, effort) {
+        let argv = pending.check_version(argv, version);
+        pending.write();
+        argv
+    }
+}
+
+impl Pending {
+    /// The version check behind [`TierLaunch::finish`], apart from the write
+    /// so a test can read the outcome it leaves.
+    ///
+    /// The outcome becomes `Withdrawn`, and the notice prints, only when the
+    /// pair really came off `argv`. Should `argv` no longer start with the
+    /// pair `inject` prepended, it is sent as it is and the outcome stays
+    /// `Added`, so the record and the applied line say what Claude Code was
+    /// handed. That breaks `inject`'s contract and cannot happen on today's
+    /// path; Claude Code's own refusal of the option would then be visible.
+    fn check_version(&mut self, argv: Vec<String>, version: Option<&str>) -> Vec<String> {
+        let EffortOutcome::Added(effort) = self.effort else {
+            return argv;
+        };
+        if !self.claude_effort || claude_effort::version_accepts_effort(version) {
+            return argv;
+        }
+        let argv = match claude_effort::withdraw(argv) {
+            Ok(argv) => argv,
+            Err(argv) => return argv,
+        };
+        self.effort = EffortOutcome::Withdrawn;
+        if let Some(tier) = self.record.as_ref().and_then(|r| r.tier) {
+            let notice = Notice::EffortUnsupported {
+                harness: self.tool.clone(),
+                tier,
+                effort,
+                found: version.map(str::to_owned),
+            };
             eprintln!("{}", notice.render());
         }
-        record::append(run_dir().as_deref(), record);
+        argv
     }
-    argv
+}
+
+impl Drop for TierLaunch {
+    fn drop(&mut self) {
+        if let Some(pending) = self.0.take() {
+            pending.write();
+        }
+    }
+}
+
+impl Pending {
+    /// Print the applied line and append the record. Written after the
+    /// check, so `effective_effort` says what actually reached the harness
+    /// rather than what the tier asked for.
+    fn write(mut self) {
+        if let Some(record) = self.record.as_mut() {
+            record.effective_effort = match self.effort {
+                EffortOutcome::Added(effort) => Some(effort),
+                EffortOutcome::NotApplicable => record.effective_effort,
+                EffortOutcome::CallerChose | EffortOutcome::Withdrawn => None,
+            };
+            if let Some(notice) = applied_notice(&self.tool, record, self.effort) {
+                eprintln!("{}", notice.render());
+            }
+            record::append(run_dir().as_deref(), record);
+        }
+    }
 }
 
 /// What became of the tier's reasoning effort on this launch.
@@ -105,6 +209,10 @@ enum EffortOutcome {
     Added(table::Effort),
     /// The command line already set one, which amplihack never overrides.
     CallerChose,
+    /// It was added for Claude Code, and the installed Claude Code's version
+    /// is older than the first seen to accept `--effort`, or could not be
+    /// read, so it was taken back off (issue #2916).
+    Withdrawn,
 }
 
 /// The one line a tiered launch prints, or `None` when the tier gave this
@@ -126,6 +234,10 @@ fn applied_notice(tool: &str, record: &record::Record, effort: EffortOutcome) ->
         model: record.effective_model.clone(),
         effort: record.effective_effort,
         capped_from: capped_from(record),
+        // Under the gateway the model is substituted downstream, so this line
+        // says nothing about it and the gateway's own line, which still
+        // prints, explains where it came from.
+        model_elsewhere: record.fallback == Some(record::Fallback::Gateway),
     })
 }
 
@@ -143,27 +255,43 @@ fn capped_from(record: &record::Record) -> Option<table::Effort> {
     }
 }
 
-/// The tier's reasoning effort, on the one harness that has a launch control
+/// The tier's reasoning effort, on the harnesses that have a launch control
 /// for it.
 ///
 /// Codex takes it as its own `-c model_reasoning_effort=<value>` argument,
-/// which is the fix for the propagation defect of the issue's 3 November
-/// comment. Claude Code and Copilot CLI have no such control, so a declared
-/// effort for them is recorded rather than written onto a command line.
+/// which is the fix for the propagation defect of issue #1619's 3 November
+/// comment. Claude Code takes `--effort <level>` (issue #2916). Copilot CLI
+/// has no such control, so a declared effort there is recorded rather than
+/// written onto a command line.
 ///
-/// The value is an [`table::Effort`], so a word outside the five is refused at
-/// the table, where the operator wrote it, and never reaches here.
+/// The dispatch is on the column, not the binary name, so `rusty`,
+/// `rustyclawd` and `amplifier` travel with `claude`: they already receive
+/// Claude's `--model` with Claude-only model ids, so they are already treated
+/// as command-line compatible with it.
+///
+/// The value is a [`table::Effort`], so a word outside the column's own
+/// vocabulary is refused at the table, where the operator wrote it, and never
+/// reaches here.
 fn reasoning_effort(
     tool: &str,
     args: Vec<String>,
     effort: Option<table::Effort>,
 ) -> (Vec<String>, EffortOutcome) {
-    let Some(effort) = effort.filter(|_| tool == "codex") else {
+    let column = table::column_for(tool);
+    let Some(effort) = effort.filter(|_| table::Effort::has_effort_control(&column)) else {
         return (args, EffortOutcome::NotApplicable);
     };
-    match codex_effort::inject(&args, effort) {
-        codex_effort::Injection::Added(injected) => (injected, EffortOutcome::Added(effort)),
-        codex_effort::Injection::CallerChose => (args, EffortOutcome::CallerChose),
+    let injection = match column.as_str() {
+        "codex" => codex_effort::inject(&args, effort),
+        // `has_effort_control` admits two columns and Codex is the other, so
+        // this is the Claude one. Written as the fall-through rather than a
+        // second name test, so the two readers of `has_effort_control` cannot
+        // disagree about which columns it admits.
+        _ => claude_effort::inject(&args, effort),
+    };
+    match injection {
+        argv_scan::Injection::Added(injected) => (injected, EffortOutcome::Added(effort)),
+        argv_scan::Injection::CallerChose => (args, EffortOutcome::CallerChose),
     }
 }
 

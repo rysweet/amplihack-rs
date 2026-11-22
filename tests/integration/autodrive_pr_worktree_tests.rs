@@ -1427,6 +1427,13 @@ fn run_loop_step_02_from(
         tools.join("autodrive_merge_loop_run.sh"),
     )
     .expect("copy autodrive_merge_loop_run.sh");
+    // #1888: the tool checks the run's merge method with the merge tool's own
+    // list, loaded from beside itself, before any round starts.
+    fs::copy(
+        tools_dir().join("autodrive_merge.sh"),
+        tools.join("autodrive_merge.sh"),
+    )
+    .expect("copy autodrive_merge.sh");
     // Step-02 passes the launch tree's round recipe by absolute path and
     // refuses when it is missing there (#1543).
     let recipes = root.join("ah/amplifier-bundle/recipes");

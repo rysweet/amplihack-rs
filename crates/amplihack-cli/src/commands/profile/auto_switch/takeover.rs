@@ -20,6 +20,7 @@
 use super::config::{self, Config, FileState};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
+use super::own_login::OwnLogins;
 use super::rerun::{KeyAlert, Pick, login_ready, nested_candidate, silent_candidate};
 use super::state::State;
 use crate::commands::profile::name::ProfileName;
@@ -121,16 +122,32 @@ fn another_login(store: &ProfileStore, own: Option<&str>, home: Option<&Path>) -
         }
     };
     let overflow = OverflowInputs::load_at(store.root(), &cfg, fsx::now(), home);
-    another_login_with(store, own, &cfg, &overflow)
+    // The same home for the Keychain lookups as for everything else here.
+    another_login_in(store, own, &cfg, &overflow, &OwnLogins::new(store, home))
 }
 
 /// [`another_login`] with the config and overflow inputs already read, so a
-/// test can give the overflow gate.
+/// test can give the overflow gate. The home is the process's own.
+#[cfg(test)]
 pub(super) fn another_login_with(
     store: &ProfileStore,
     own: Option<&str>,
     cfg: &Config,
     overflow: &OverflowInputs,
+) -> Option<bool> {
+    let home = crate::commands::profile::usage_cmd::home_dir();
+    let logins = OwnLogins::new(store, home.as_deref());
+    another_login_in(store, own, cfg, overflow, &logins)
+}
+
+/// [`another_login`] over inputs already read; `logins` answers whether
+/// each profile holds a login of its own.
+fn another_login_in(
+    store: &ProfileStore,
+    own: Option<&str>,
+    cfg: &Config,
+    overflow: &OverflowInputs,
+    logins: &OwnLogins<'_>,
 ) -> Option<bool> {
     let state = State::new(store.root()).ok()?;
     let ledger = RotateState::new(&state.root).load_ledger().ok()?;
@@ -148,7 +165,7 @@ pub(super) fn another_login_with(
             !blocked.contains_key(*n)
                 && !cfg.exclude.iter().any(|e| e == p)
                 && pool.could_select(p)
-                && login_ready(&state, overflow, p)
+                && login_ready(&state, overflow, logins, p)
         })
         .map(|(n, _)| hosts.account_in(n))
         .collect();
@@ -184,8 +201,10 @@ pub(super) fn is_fresh(observed_at: i64, start: i64, now: i64) -> bool {
 /// Its reads are bounded: the effective configuration, the auto-switch
 /// ledger, the readings, a listing of the profile root, and the overflow
 /// inputs, which resolve each stored profile's kind and read the rotate
-/// ledger for spend blocks and the overflow gate. Off macOS each candidate
-/// costs one further `stat` for its login file.
+/// ledger for spend blocks and the overflow gate. Each candidate costs one
+/// further `stat` for its login file; on macOS a candidate without one is
+/// resolved once more through `kind::Ctx`, which is where the Keychain is
+/// asked (issue #2885).
 pub(super) fn capacity_candidate(
     store: &ProfileStore,
     state: &State,

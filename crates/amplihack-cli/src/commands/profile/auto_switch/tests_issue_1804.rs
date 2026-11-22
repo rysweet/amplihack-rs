@@ -10,7 +10,6 @@ use super::config::{self, Config};
 use super::fsx;
 use super::liveness::FakeSessions;
 use super::overflow_inputs::OverflowInputs;
-use super::overflow_inputs::{ChosenStorage, LoginStorage};
 use super::per_token;
 use super::rerun::{Pick, nested_candidate};
 use super::state::{CREDS, Ledger, State, UsageFile};
@@ -58,12 +57,10 @@ fn no_sessions() -> FakeSessions {
 /// and `ignored` are API-key profiles with mode-600 `{}` logins, which pass
 /// `fsx::movable_login` like the host's did on 30 October.
 ///
-/// Every login here is a file, so the fixture states that logins are kept
-/// in files for as long as it lives (issue #2935). The host's own answer,
-/// the Keychain on macOS, would make a missing file say nothing; the tests
-/// of that answer are at the end of this file.
+/// Every login here is a file. A test build reads as not macOS unless the
+/// test holds `keychain::test_seam` (issue #2885), so a missing file means
+/// no login on every host; the Keychain answers are in `tests_own_login.rs`.
 struct Fx {
-    _logins: ChosenStorage,
     _tmp: tempfile::TempDir,
     home: PathBuf,
     root: PathBuf,
@@ -98,7 +95,6 @@ fn fx(auto_switch: &str) -> Fx {
     let state = State::new(&root).unwrap();
     state.ensure().unwrap();
     Fx {
-        _logins: LoginStorage::File.for_this_thread(),
         _tmp: tmp,
         home,
         root,
@@ -315,15 +311,19 @@ fn capacity_counts_no_overflow_profile_without_a_login_file() {
     let now = 2_000_000_000;
     let blocked = |f: &Fx| {
         let mut inputs = f.inputs(&c, Some(GATE), now);
-        inputs.refuse_no_login(&f.root);
+        // No Keychain is asked in this test, so none is unreadable.
+        assert!(inputs.refuse_no_login(&f.root, Some(&f.home)).is_empty());
         inputs.blocked.contains(&"console".to_string())
     };
     assert!(!blocked(&f), "its login file is there");
-    assert!(super::can_take_login(&f.root, &console));
+    assert_eq!(super::login_gap(&f.root, &console), None);
 
     fs::remove_file(f.root.join("console").join(CREDS)).unwrap();
     assert!(blocked(&f), "selection would pass it over");
-    assert!(!super::can_take_login(&f.root, &console));
+    assert_eq!(
+        super::login_gap(&f.root, &console),
+        Some(super::overflow_inputs::LoginGap::NoLogin)
+    );
 
     let rs = RotateState::new(&f.root);
     rs.ensure().unwrap();
@@ -945,41 +945,3 @@ fn the_rotators_capacity_write_reads_the_home_it_is_given() {
 
 #[path = "tests_issue_1804_held.rs"]
 mod held;
-
-// --- Where the host keeps logins (issue #2935) ---------------------------------
-
-/// A host that keeps logins in the Keychain (macOS) writes no login file, so
-/// a missing file proves nothing there: the profile can still take a login,
-/// and it is not listed as one the rotator would skip. On a host that keeps
-/// logins in files, the same root gives the opposite answers.
-#[test]
-fn a_missing_login_file_says_nothing_where_logins_are_in_the_keychain() {
-    let f = fx("enabled=on\noverflow=console\n");
-    fs::remove_file(f.root.join("spare").join(CREDS)).unwrap();
-    let c = cfg(&["console"]);
-    let now = 2_000_000_000;
-    assert!(!super::can_take_login(&f.root, &n("spare")), "files");
-    assert_eq!(f.inputs(&c, Some(GATE), now).no_login, vec![n("spare")]);
-
-    let _keychain = LoginStorage::Keychain.for_this_thread();
-    assert!(super::can_take_login(&f.root, &n("spare")), "Keychain");
-    assert!(f.inputs(&c, Some(GATE), now).no_login.is_empty());
-}
-
-/// The choice a test makes ends with the value it holds, and the host's
-/// answer is the Keychain on macOS and a file anywhere else.
-#[test]
-fn the_hosts_login_storage_follows_the_system_and_a_test_choice_ends_with_its_scope() {
-    let host = if cfg!(target_os = "macos") {
-        LoginStorage::Keychain
-    } else {
-        LoginStorage::File
-    };
-    assert_eq!(LoginStorage::host(), host);
-    for chosen in [LoginStorage::File, LoginStorage::Keychain] {
-        let scope = chosen.for_this_thread();
-        assert_eq!(LoginStorage::host(), chosen);
-        drop(scope);
-        assert_eq!(LoginStorage::host(), host);
-    }
-}

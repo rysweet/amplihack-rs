@@ -4339,11 +4339,10 @@ fn test_2582_authorization_keys_are_written_after_the_context_and_carried_by_the
     let invocation = text("autodrive_invocation_file");
     assert_ne!(invocation, "/ZQXV2582FORGEDPATH/invocation.json");
     // The record this run wrote, named by the run and not by the planted
-    // value. Its existence is deliberately not asserted here: it lives in the
-    // `LaunchBundle`'s own temporary folder, which is removed when the bundle
-    // is dropped as the run returns, so by this line it is gone. What is
-    // checkable afterwards is that the path the runner was handed is the one
-    // the run assigned.
+    // value. #2959: it lives in the run's own durable folder, beside the
+    // state directory the runner bound, not in a loose TMPDIR folder, so
+    // nothing that sweeps TMPDIR can take it. It is removed when the owner
+    // ends; by this line the run has returned, so it is gone.
     let invocation = Path::new(&invocation);
     assert!(
         invocation.is_absolute(),
@@ -4366,6 +4365,16 @@ fn test_2582_authorization_keys_are_written_after_the_context_and_carried_by_the
     assert!(
         Path::new(&state_dir).is_absolute(),
         "the state directory is assigned by the run: {state_dir}"
+    );
+    assert_eq!(
+        invocation.parent().unwrap().parent(),
+        Path::new(&state_dir).parent(),
+        "the record sits in the same durable run folder as the state directory"
+    );
+    assert!(
+        !invocation.exists(),
+        "the owner removes the record when it ends: {}",
+        invocation.display()
     );
 
     let path = PathBuf::from(
