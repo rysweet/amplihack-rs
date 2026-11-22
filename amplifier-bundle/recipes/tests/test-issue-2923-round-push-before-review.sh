@@ -26,8 +26,9 @@
 # What is a stand-in: the agent. The address-step agent obeys an explicit
 # `STOP:` in the block (the prompt says each check ends in `exit 1`) and
 # otherwise recovers from a refused push. The recovery agent pushes a commit
-# the run made only when the rendered prohibition list does not forbid every
-# push. The review and the dispatch comparison (recorded head against the
+# the run made only when the rendered prohibition list carries the push limit
+# bullet, matched as a whole (RECOVERY_PUSH_LIMIT); without it the agent hands
+# off and the suite says the bullet is missing. The review and the dispatch comparison (recorded head against the
 # remote head) are scripted. These tests prove the plumbing permits and
 # completes the behaviour; they do not prove that a live model chooses it.
 # Assertions are on `git ls-remote`, hook logs, recorded git argv, recovery
@@ -212,15 +213,15 @@ agent_recover_push() { # <worktree> <evidence-file>
     ( cd "${wt}" && git push -q ) >>"${evidence}" 2>&1
 }
 
-# Step recovery: pushes a commit the run made unless the prompt forbids every push.
+# Step recovery: pushes a commit the run made only when the prohibition list
+# carries the push limit bullet. Other bullets are not read, so rewording them
+# cannot change the decision; a missing or reworded limit bullet fails loudly.
+RECOVERY_PUSH_LIMIT="push anything other than commits this run itself made, on the branch the failed step was working on, through the repository's hooks;"
 run_step_recovery() { # <worktree> <record-dir>
-    local wt="$1" dir="$2" forbids=0 line n
-    while IFS= read -r line; do
-        case "${line}" in *force*) continue ;; esac
-        case "${line}" in *push*) case "${line}" in *"this run"*) ;; *) forbids=1 ;; esac ;; esac
-    done < "${WORK}/recovery-prohibitions.txt"
+    local wt="$1" dir="$2" n
     n=$(( $(find "${dir}" -name 'record-*.json' | wc -l) + 1 ))
-    if [[ "${forbids}" -eq 1 ]]; then
+    if ! grep -qxF -- "${RECOVERY_PUSH_LIMIT}" "${WORK}/recovery-prohibitions.txt"; then
+        fail "step-failure-recovery.yaml has no prohibition bullet reading: ${RECOVERY_PUSH_LIMIT}"
         printf '{"step_recovery":{"choice":"handoff","reason":"unpushed commit; push is forbidden here","owner":"operator","needs":"push the commit"}}\n' > "${dir}/record-${n}.json"
         return 0
     fi

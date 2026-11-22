@@ -59,10 +59,8 @@ steps:
       normal tools: fix a script, set a missing value, remove a stale lock
       file, regenerate an artefact. Then say exactly what you changed.
 
-      If the failed step made a commit that the branch on the remote does not
-      carry, you may push it: on that branch, through the repository's hooks,
-      and with no flag that skips them. Do not hand off on the ground that
-      pushing is forbidden here.
+      Pushing is allowed within the limit below, so do not hand off on the
+      ground that pushing is forbidden here.
 
       You must not:
       - modify the main checkout, any validator or guard script, or the
