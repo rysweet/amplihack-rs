@@ -219,7 +219,7 @@ fn describe_blarify_action(action: BlarifyIndexAction) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::env_lock;
+    use crate::test_support::{blarify_not_disabled, env_lock};
     use amplihack_types::ProjectDirs;
     use std::fs;
     use std::path::Path;
@@ -481,6 +481,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let saved_graph_db = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") };
 
@@ -571,6 +572,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         let src_dir = dir.path().join("src");
@@ -615,6 +617,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(dir.path().join("src")).unwrap();
@@ -638,6 +641,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _blarify = blarify_not_disabled();
         let dir = tempfile::tempdir().unwrap();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(dir.path().join("src")).unwrap();

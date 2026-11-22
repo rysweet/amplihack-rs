@@ -67,6 +67,10 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 tracing = { workspace = true }
 sha2 = { workspace = true }
+# Issue #2885: Claude Code NFC-normalises its config directory before it
+# hashes it into the Keychain service name (`profile::keychain`). Already in
+# the lock file through `idna`, so it adds no crate to the build.
+icu_normalizer = { version = "2.2", default-features = false, features = ["compiled_data"] }
 toml = "0.8"
 # Issue #1453 — Codex's config.toml is a file users hand-edit, so amplihack
 # merges its one key into the existing document rather than reserializing it,

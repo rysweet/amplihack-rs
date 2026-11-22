@@ -66,6 +66,19 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Clears `AMPLIHACK_DISABLE_BLARIFY` for the guard's lifetime.
+///
+/// `setup_blarify_indexing` short-circuits when that variable is `1`, before it
+/// ever consults `AMPLIHACK_BLARIFY_MODE`. An ambient value in the shell that
+/// launched the test run (a developer shell, or the environment a pre-push hook
+/// inherits) therefore silences every mode-specific assertion. Tests that
+/// exercise the blarify setup own the variable instead of inheriting it. The
+/// guard takes no lock of its own: the caller must already hold [`env_lock`]
+/// and keep it for the guard's lifetime.
+pub(crate) fn blarify_not_disabled() -> EnvVarGuard {
+    EnvVarGuard::unset("AMPLIHACK_DISABLE_BLARIFY")
+}
+
 /// Points the hook state root (issue #1963) at a throwaway home directory.
 ///
 /// Sets `HOME` to `home` and removes `AMPLIHACK_HOME`, so the state root
