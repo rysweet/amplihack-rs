@@ -128,26 +128,47 @@ impl TierLaunch {
     /// is taken back off `argv` and a line says so: the step runs without
     /// the effort rather than failing on an option Claude Code does not know
     /// (issue #2916).
-    pub(crate) fn finish(mut self, mut argv: Vec<String>, version: Option<&str>) -> Vec<String> {
+    pub(crate) fn finish(mut self, argv: Vec<String>, version: Option<&str>) -> Vec<String> {
         let Some(mut pending) = self.0.take() else {
             return argv;
         };
-        if let (true, EffortOutcome::Added(effort)) = (pending.claude_effort, pending.effort)
-            && !claude_effort::version_accepts_effort(version)
-        {
-            argv = claude_effort::withdraw(argv);
-            pending.effort = EffortOutcome::Withdrawn;
-            if let Some(tier) = pending.record.as_ref().and_then(|r| r.tier) {
-                let notice = Notice::EffortUnsupported {
-                    harness: pending.tool.clone(),
-                    tier,
-                    effort,
-                    found: version.map(str::to_owned),
-                };
-                eprintln!("{}", notice.render());
-            }
-        }
+        let argv = pending.check_version(argv, version);
         pending.write();
+        argv
+    }
+}
+
+impl Pending {
+    /// The version check behind [`TierLaunch::finish`], apart from the write
+    /// so a test can read the outcome it leaves.
+    ///
+    /// The outcome becomes `Withdrawn`, and the notice prints, only when the
+    /// pair really came off `argv`. Should `argv` no longer start with the
+    /// pair `inject` prepended, it is sent as it is and the outcome stays
+    /// `Added`, so the record and the applied line say what Claude Code was
+    /// handed. That breaks `inject`'s contract and cannot happen on today's
+    /// path; Claude Code's own refusal of the option would then be visible.
+    fn check_version(&mut self, argv: Vec<String>, version: Option<&str>) -> Vec<String> {
+        let EffortOutcome::Added(effort) = self.effort else {
+            return argv;
+        };
+        if !self.claude_effort || claude_effort::version_accepts_effort(version) {
+            return argv;
+        }
+        let argv = match claude_effort::withdraw(argv) {
+            Ok(argv) => argv,
+            Err(argv) => return argv,
+        };
+        self.effort = EffortOutcome::Withdrawn;
+        if let Some(tier) = self.record.as_ref().and_then(|r| r.tier) {
+            let notice = Notice::EffortUnsupported {
+                harness: self.tool.clone(),
+                tier,
+                effort,
+                found: version.map(str::to_owned),
+            };
+            eprintln!("{}", notice.render());
+        }
         argv
     }
 }

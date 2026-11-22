@@ -281,7 +281,7 @@ fn withdraw_leaves_a_caller_value_that_equals_the_flag() {
     ));
     let mut out = argv(&["--effort", "xhigh"]);
     out.extend(caller.iter().cloned());
-    assert_eq!(super::claude_effort::withdraw(out), caller);
+    assert_eq!(super::claude_effort::withdraw(out), Ok(caller));
 }
 
 #[test]
@@ -291,7 +291,7 @@ fn withdraw_leaves_a_tail_that_does_not_start_with_the_added_pair() {
         argv(&["--effort", "--model", "m"]),
         argv(&[]),
     ] {
-        assert_eq!(super::claude_effort::withdraw(tail.clone()), tail);
+        assert_eq!(super::claude_effort::withdraw(tail.clone()), Err(tail));
     }
 }
 
@@ -300,7 +300,7 @@ fn withdraw_leaves_positional_text_after_a_terminator() {
     let caller = argv(&["-p", "--", "--effort", "text"]);
     let out = added(inject(&caller, effort("xhigh")));
     assert_eq!(&out[..2], argv(&["--effort", "xhigh"]).as_slice());
-    assert_eq!(super::claude_effort::withdraw(out), caller);
+    assert_eq!(super::claude_effort::withdraw(out), Ok(caller));
 }
 
 #[test]
@@ -325,6 +325,77 @@ fn withdraw_removes_only_the_added_pair() {
     ));
     assert_eq!(
         super::claude_effort::withdraw(added),
-        argv(&["--model", "m", "-p", "xhigh"])
+        Ok(argv(&["--model", "m", "-p", "xhigh"]))
     );
+}
+
+// What `finish` reports must match what reached Claude Code.
+
+#[test]
+fn a_pair_that_is_not_at_the_front_is_sent_and_reported_as_sent() {
+    // Not a shape `inject` produces: this pins the contract should a later
+    // change put a token ahead of the pair. `withdraw` leaves such an argv
+    // alone, so the outcome must stay `Added` (no `Withdrawn`, and so no
+    // withheld notice) and the argv must reach the harness as it is.
+    let misordered = argv(&["--model", "m", "--effort", "xhigh", "-p"]);
+    let mut pending = super::Pending {
+        tool: "claude".to_string(),
+        claude_effort: true,
+        record: None,
+        effort: EffortOutcome::Added(effort("xhigh")),
+    };
+    let out = pending.check_version(misordered.clone(), Some("2.1.100"));
+    assert_eq!(out, misordered);
+    assert_eq!(pending.effort, EffortOutcome::Added(effort("xhigh")));
+}
+
+#[test]
+fn a_launch_that_returns_before_finish_records_the_requested_effort() {
+    // The Docker hand-off and an unresolved binary drop the `TierLaunch`
+    // without calling `finish`, so no version is checked and the record holds
+    // the effort the tier asked for. This is the documented behaviour on
+    // `TierLaunch`; the test pins it rather than endorsing it as exact.
+    use super::record::{self, Record};
+    use super::table::Tier;
+
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().expect("temporary run directory");
+    let previous = std::env::var_os(super::RUN_DIR_ENV);
+    // SAFETY: serialised against every other env-mutating test in this
+    // binary by `env_lock`, and restored below.
+    unsafe { std::env::set_var(super::RUN_DIR_ENV, dir.path()) };
+
+    let (out, outcome) = reasoning_effort("claude", argv(&["-p"]), Some(effort("xhigh")));
+    assert_eq!(outcome, EffortOutcome::Added(effort("xhigh")));
+    assert_eq!(&out[..2], argv(&["--effort", "xhigh"]).as_slice());
+    let launch = super::TierLaunch(Some(super::Pending {
+        tool: "claude".to_string(),
+        claude_effort: true,
+        record: Some(Record {
+            v: 1,
+            seq: 0,
+            run_id: None,
+            harness: "claude".to_string(),
+            column: "claude".to_string(),
+            tier: Some(Tier::Strong),
+            requested_model: None,
+            effective_model: None,
+            requested_effort: Some(effort("xhigh")),
+            effective_effort: None,
+            fallback: None,
+        }),
+        effort: outcome,
+    }));
+    drop(launch);
+    let records = record::read_all(dir.path());
+
+    match previous {
+        // SAFETY: as above.
+        Some(value) => unsafe { std::env::set_var(super::RUN_DIR_ENV, value) },
+        None => unsafe { std::env::remove_var(super::RUN_DIR_ENV) },
+    }
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0].effective_effort, Some(effort("xhigh")));
 }

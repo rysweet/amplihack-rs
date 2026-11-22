@@ -86,13 +86,16 @@ pub(crate) fn version_accepts_effort(version: Option<&str>) -> bool {
 /// [`inject`] prepends the pair, so it is the first two tokens. The removal
 /// is by that position, never by searching for the flag: a caller's own text
 /// can equal `--effort` (an option's value, or prompt text after `--`), and
-/// that text must reach the harness untouched. When the first two tokens are
-/// not a pair amplihack could have written, `args` comes back unchanged.
-pub(crate) fn withdraw(args: Vec<String>) -> Vec<String> {
+/// that text must reach the harness untouched.
+///
+/// `Ok` carries `args` without the pair. When the first two tokens are not a
+/// pair amplihack could have written, `Err` hands `args` back unchanged, so
+/// the caller can say what was sent rather than what it meant to send.
+pub(crate) fn withdraw(args: Vec<String>) -> Result<Vec<String>, Vec<String>> {
     let ours = args.first().is_some_and(|a| a == FLAG)
         && args.get(1).and_then(|value| Effort::parse(value)).is_some();
     if !ours {
-        return args;
+        return Err(args);
     }
-    args.into_iter().skip(2).collect()
+    Ok(args.into_iter().skip(2).collect())
 }
