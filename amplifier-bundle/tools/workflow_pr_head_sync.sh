@@ -24,7 +24,8 @@
 #      construction, so this cannot conflict with history; it can only be
 #      refused by uncommitted changes to the same files.
 # A local HEAD that is equal to, ahead of or diverged from origin/<branch> is
-# left alone: step-20b's `git pull --rebase` handles it, as before.
+# left alone: step-20b merges origin/<branch> through workflow_pull_merge
+# (#2994), never rebasing.
 #
 # Exit status is always 0. A failed fetch, a detached HEAD, a branch that was
 # never pushed, or a refused fast-forward prints one WARNING or INFO line on
@@ -84,6 +85,6 @@ count="$(git rev-list --count "$local_oid..$remote_oid")"
 if git merge --ff-only --quiet "$remote_oid" >/dev/null 2>&1; then
   echo "INFO: workflow_pr_head_sync: fast-forwarded $local_branch by $count commit(s) to the PR head $remote_oid (#1714)" >&2
 else
-  echo "WARNING: workflow_pr_head_sync: could not fast-forward $local_branch to $remote_oid (uncommitted changes in the way?); step-20b will pull --rebase (#1714)" >&2
+  echo "WARNING: workflow_pr_head_sync: could not fast-forward $local_branch to $remote_oid (uncommitted changes in the way?); step-20b will merge it (#1714, #2994)" >&2
 fi
 exit 0

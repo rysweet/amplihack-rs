@@ -25,6 +25,7 @@ context:
 steps:
   - id: "step9-commit"
     type: "bash"
+    working_dir: "{{worktree_setup.worktree_path}}"
     command: |
       set -euo pipefail
       echo "Committing changes..."
@@ -76,11 +77,22 @@ steps:
       PUSH_RESULT=false
       PUSH_REASON="no_remote"
       if git remote get-url origin >/dev/null 2>&1; then
-        if workflow_pull_rebase 2>/dev/null && git push 2>/dev/null; then  # #2839: autostash the rewritten tracked report the staging helper left unstaged
-          PUSH_RESULT=true
-          PUSH_REASON="success"
-        else
+        # #2994: merge a moved remote, never rebase; #2839: autostash keeps the unstaged report. One pull, then one push.
+        # git's output goes to stderr with URL user-info redacted (step-20b's expression); a failure goes to step9-push-recovery.
+        redact_to_stderr() { ( set -o pipefail; "$@" 2>&1 | sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' >&2 ); }
+        pull_rc=0; redact_to_stderr workflow_pull_merge || pull_rc=$?
+        if [ "$pull_rc" -ne 0 ]; then
+          echo "ERROR: git pull --no-rebase failed during consensus step9-commit (exit $pull_rc); nothing was pushed" >&2
           PUSH_REASON="push_failed"
+        else
+          push_rc=0; redact_to_stderr git push || push_rc=$?
+          if [ "$push_rc" -eq 0 ]; then
+            PUSH_RESULT=true
+            PUSH_REASON="success"
+          else
+            echo "ERROR: git push failed during consensus step9-commit (exit $push_rc)" >&2
+            PUSH_REASON="push_failed"
+          fi
         fi
       else
         echo "Skipping push — no remote configured" >&2
@@ -90,12 +102,20 @@ steps:
     output: "commit_result"
     parse_json: true
 
+  # #2994: a refused merge or push goes to the agent, which merges, resolves or explains.
+  - id: "step9-push-recovery"
+    type: "recipe"
+    recipe: "push-failure-recovery"
+    condition: "commit_result.push_reason == 'push_failed'"
+    context: { push_step: "step9-commit", push_output_key: "commit_result", push_recovery_snapshot: "", push_recovery: "", push_recovery_result: "" }
+
   # ============================================================================
   # STEP 10: OPEN PULL REQUEST
   # ============================================================================
 
   - id: "step10-create-pr"
     type: "bash"
+    working_dir: "{{worktree_setup.worktree_path}}"
     command: |
       echo "Creating pull request..."
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

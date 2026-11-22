@@ -656,7 +656,13 @@ mod codex_delivery_contract_tests {
         assert!(!args.contains(&"--branch"));
     }
     fn run_worker(test: &str, home: &Path, bin: &Path) {
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        // The worker runs the install and freshness writers without taking
+        // `env_lock()`, so the one-shot purge never fires in it; an inherited
+        // `CLAUDE_CONFIG_DIR` would send its settings write outside the
+        // temporary `HOME` below (issue #2922).
+        crate::test_support::claude_profile_isolation::remove_from_command(&mut command);
+        let result = command
             .args([
                 "--exact",
                 &format!("freshness::codex_delivery_contract_tests::{test}"),
@@ -1084,6 +1090,10 @@ mod downgrade_guard_tests {
         executable(&bin.join("cc"), "#!/bin/sh\nexit 0\n");
         let path = format!("{}:/usr/bin:/bin", bin.display());
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        // As in `codex_delivery_contract_tests::run_worker`: the worker takes
+        // no `env_lock()`, so it needs the five profile variables removed here
+        // (issue #2922).
+        crate::test_support::claude_profile_isolation::remove_from_command(&mut command);
         command
             .args([
                 "--exact",

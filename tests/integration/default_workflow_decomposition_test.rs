@@ -780,24 +780,6 @@ fn workflow_pr_review_input_description_reflects_resilient_step_19c() {
 }
 
 #[test]
-fn workflow_pr_review_retries_remote_push_operations_without_silencing_failures() {
-    let command = step_command("workflow-pr-review", "step-18c-push-feedback-changes");
-    assert!(
-        command.contains("git_remote_with_retry()") && command.contains("for attempt in 1 2 3"),
-        "step-18c must retry transient git remote operations"
-    );
-    assert!(
-        command.contains("git_remote_with_retry workflow_pull_rebase")
-            && command.contains("git_remote_with_retry git push"),
-        "step-18c must wrap pull/rebase and push with retry handling"
-    );
-    assert!(
-        command.contains("retrying ($attempt/3)") && command.contains("return \"$rc\""),
-        "step-18c retry handling must be bounded and preserve the failing status"
-    );
-}
-
-#[test]
 fn workflow_pr_review_scopes_pre_commit_allow_no_config_to_stale_hook_case() {
     let command = step_command("workflow-pr-review", "step-18c-push-feedback-changes");
     assert_eq!(
