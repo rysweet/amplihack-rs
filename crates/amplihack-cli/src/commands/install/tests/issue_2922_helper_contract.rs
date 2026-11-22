@@ -215,20 +215,55 @@ fn env_guard_leaves_the_five_alone_when_home_is_not_among_its_keys() {
     }
 }
 
+/// The child names the variables it holds through `${NAME+NAME}`, which
+/// expands to nothing when `NAME` is unset, rather than by matching lines of
+/// `env` output. A test binary launched from a recipe step inherits variables
+/// whose values are whole agent transcripts, and such a value can hold a line
+/// that begins `CLAUDE_CONFIG_DIR=`; grepping `env` reports those lines as if
+/// the child held the variable.
 #[test]
 fn remove_from_command_strips_all_five_from_a_child() {
     let _lock = lock();
     let scratch = tempdir_outside_framework_roots();
     let _outer = export_all(scratch.path());
+    let names = CLAUDE_PROFILE_ENV_VARS
+        .iter()
+        .map(|name| format!("${{{name}+{name}}}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut cmd = Command::new("sh");
-    cmd.args([
-        "-c",
-        "env | grep -E '^(CLAUDE_CONFIG_DIR|AMPLIHACK_CLAUDE_PROFILE|AMPLIHACK_CLAUDE_PROFILE_ROOT|AMPLIHACK_CLAUDE_AUTO_SWITCH|AMPLIHACK_HOME)=' | cut -d= -f1; true",
-    ]);
+    cmd.args(["-c", &format!("printf '%s\\n' {names}")]);
     remove_from_command(&mut cmd);
     let out = cmd.output().unwrap();
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "");
+}
+
+/// The probe above must report a variable that is still set, or it would pass
+/// against a `remove_from_command` that did nothing.
+#[test]
+fn the_child_probe_names_a_variable_that_is_still_set() {
+    let _lock = lock();
+    let scratch = tempdir_outside_framework_roots();
+    let _outer = export_all(scratch.path());
+    let names = CLAUDE_PROFILE_ENV_VARS
+        .iter()
+        .map(|name| format!("${{{name}+{name}}}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", &format!("printf '%s\\n' {names}")]);
+    let out = cmd.output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let mut reported = stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    reported.sort_unstable();
+    let mut expected = CLAUDE_PROFILE_ENV_VARS.to_vec();
+    expected.sort_unstable();
+    assert_eq!(reported, expected);
 }
 
 // with_config_dir: the only way a test may keep CLAUDE_CONFIG_DIR set, and
