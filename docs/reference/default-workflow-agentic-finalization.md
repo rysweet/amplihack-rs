@@ -168,7 +168,7 @@ failures. The finished model is designed around these concrete cases:
 | Failed CI | Open PRs with failing checks reached final output that looked complete. Until #2966 a run that reached finalization with red CI ended `BLOCKED_CI`, and step recovery handed it off with exit `81`, although the failure was an ordinary one (the Install Smoke Test on PR #2947 reported `claude-strong: 2 launches of claude, want 1`). | Repair it: diagnose, fix, push, wait for CI and reassess until the checks are green. Report `BLOCKED_CI` only for a cause the run cannot fix, with `terminal_success=false`, the cause and the human step. See [Red CI Is Repaired](#red-ci-is-repaired-2966). |
 | Hollow success | A recipe exited `0` after setup, planning, empty agent output, or inaccessible codebase messages without implementation, verification, publish, or valid no-op evidence. | The signal is a typed fact beside the published outcome; `HOLLOW_SUCCESS` when nothing published contradicts it (#2809). |
 | Finished runs failed on bookkeeping | A run whose branch was pushed and whose pull request was open ended `FAILED_IMPLEMENTATION` because its context file was unreadable and its checks were pending (#2343, the #2784 run). | The terminal state is decided on what the run published, not on whether its own record of itself is complete. |
-| Implementation failure | Implementation or verification evidence is absent or failed while meaningful work remains. | Return `FAILED_IMPLEMENTATION`, distinct from a reporting failure. |
+| Implementation failure | Implementation or verification evidence is absent or failed while meaningful work remains, which since #2966 includes a published pull request whose head the run left not green. | Return `FAILED_IMPLEMENTATION`, distinct from a reporting failure. |
 
 ## Input Evidence Document
 
@@ -526,14 +526,25 @@ The assessment reports it with two sentences:
 | `next_action` | `<owner>: <exact step>` | `repository administrator: add PREVIEW_TOKEN under Settings, Secrets and variables, Actions, then re-run deploy-preview` |
 
 Both sentences are required, and the validator checks for them. A `BLOCKED_CI`
-with no `reason`, no `next_action`, or neither names no owner and no step, so
-the placeholder sentences the validator would otherwise substitute would end
-the run at exit `81` pointing back at the assessment. It is therefore read the
-same way as a pull-request state that names no pull request: no decision,
-reported as `FAILED_MISSING_TERMINAL_EVIDENCE` for the recovery agent, and
-never handed to the auto-drive loops. The rule is
-`_finalization_decision_unowned` in `workflow_finalization_result.sh`; it
-re-judges no fact and reads no check.
+with no `reason`, no `next_action`, or neither names no owner and no step; the
+placeholder sentences the validator would otherwise substitute point back at
+the assessment and tell that person nothing. It is read the same way as a
+pull-request state that names no pull request: no decision, reported as
+`FAILED_MISSING_TERMINAL_EVIDENCE` for the recovery agent, which stops with the
+reason at exit `81`.
+
+Inside auto-drive it is different, because there the state does not end the run:
+the pull request goes to the merge-ready loop, which reviews and repairs it, and
+nobody is waiting on the two sentences. The hand-off therefore still happens,
+with the gap recorded in place of them, exactly as it did before this check
+existed. Stopping a whole drive over a missing sentence would be the failure
+mode #2966 exists to remove. Without a pull request number to hand on, the
+answer is no decision whatever the flag says.
+
+The rule is `_finalization_decision_unowned` and `_finalization_unowned_or_handoff`
+in `workflow_finalization_result.sh`; neither re-judges a fact or reads a check.
+Neither checks `pr_number`: a `BLOCKED_CI` that carries both sentences and no
+pull request is still published, and fails closed with no hand-off, as below.
 
 `pr_number` is required with it. Without a pull request number the state
 cannot be handed on, and finalization fails closed with no hand-off.
@@ -664,11 +675,13 @@ Three checks stay in the validator, and none reads CI:
   fails there, because neither shows a clean worktree. Without a recorded path
   the probe runs against `.` only when the record does not say exactly `false`.
 - **A decision that names what it asserts.** A state whose definition is an
-  open pull request has to name one, and `BLOCKED_CI`, which ends the run for a
-  person, has to carry the cause and that person's step. Either reported
+  open pull request has to name one, and `BLOCKED_CI`, where it ends the run
+  for a person, has to carry the cause and that person's step. Either reported
   without them is no decision, not a verdict: the run goes to the recovery
-  agent as `FAILED_MISSING_TERMINAL_EVIDENCE`. This asks only whether the
-  decision named the thing it asserts; it re-judges no fact.
+  agent as `FAILED_MISSING_TERMINAL_EVIDENCE`. Inside auto-drive, where the
+  state hands the pull request to the merge-ready loop instead of ending the
+  run, the hand-off still happens and records the gap. This asks only whether
+  the decision named the thing it asserts; it re-judges no fact.
 - **Quoted vocabulary.** `action_taken` must be `none`, `pushed_branch`,
   `opened_pull_request` or `repaired_ci`. An empty value becomes `none`; it
   labels the record and decides nothing. The terminal state is quoted as

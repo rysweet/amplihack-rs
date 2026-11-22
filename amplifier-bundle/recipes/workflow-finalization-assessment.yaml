@@ -157,9 +157,9 @@ steps:
       run cannot fix. Name the pull request in `pr_number` so the next loop is
       handed it, report in `reason` the head commit and the count of green,
       failing, pending and unknown checks you read, and say in `next_action`
-      what the next attempt should try. An empty or unparseable answer is the
-      one ending that names no cause and no owner, and finalization can only
-      report it as missing evidence.
+      what the next attempt should try. An empty or unparseable answer names
+      no cause and no owner, and finalization can only report it as missing
+      evidence.
 
       After a push, GitHub moves the pull request to the new commit shortly
       afterwards, not at once. Until it has, `gh pr checks` reports the
@@ -245,10 +245,10 @@ steps:
         example `repository administrator: add DEPLOY_TOKEN under Settings,
         Secrets and variables, Actions, then re-run deploy`. A cause the run
         can fix is never `BLOCKED_CI`: repair it instead, and a repair you
-        left unfinished is `FAILED_IMPLEMENTATION`. Reporting it without both
-        sentences names no owner and no step, so finalization refuses to
-        publish it, reports that it has no decision, and the run goes to the
-        recovery agent.
+        left unfinished is `FAILED_IMPLEMENTATION`. Reported without either
+        sentence it names no owner or no step, so finalization refuses to
+        publish it and reports that it has no decision; inside auto-drive the
+        pull request still goes to the merge-ready loop.
       - `FAILED_IMPLEMENTATION` — nothing was published, there is no pull
         request, or the only pull request is at a commit unrelated to the local
         head, and `task.description` did ask for a change. It is also the state

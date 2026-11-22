@@ -20,6 +20,9 @@
 #                     the actions assess-finalization may report taking
 #   _finalization_state_names_pr
 #                     the states whose definition IS an open pull request
+#   _finalization_decision_unowned / _finalization_unowned_or_handoff
+#                     the states whose definition IS a person's next move, and
+#                     what becomes of one that named no person
 #   emit_without_jq   the literal object for a host with no jq
 #   emit_result       one complete, validated JSON object on stdout
 #   fail_result       emit a non-success result, announce it on one line
@@ -135,7 +138,7 @@ _finalization_state_names_pr() {
 # #2966. The same rule for the one state whose published definition IS a person's
 # next move. BLOCKED_CI asserts a cause the run cannot fix, so it carries the
 # cause (`reason`) and the step its owner must take (`next_action`); reported
-# with neither it ends the run naming nobody, and the validator's placeholder
+# without either, it ends the run naming nobody, and the validator's placeholder
 # sentences would hide that behind a pointer back at the assessment. As with a
 # pull-request state that names no pull request, the decision contradicts its
 # own definition, which is no decision for the recovery agent to close. This
@@ -151,4 +154,25 @@ _finalization_decision_unowned() {
   [ -n "${next//[[:space:]]/}" ] || missing="${missing:+$missing and }no step for its owner"
   [ -n "$missing" ] || return 1
   printf '%s\n' "$missing"
+}
+
+# _finalization_unowned_or_handoff <state> <missing> <evidence>
+# What becomes of such a decision. It never returns.
+#
+# Inside auto-drive the state does not end the run: the pull request goes to the
+# merge-ready loop, which reviews and repairs it, and no person is waiting on
+# the sentences the assessment left empty. The hand-off therefore still happens,
+# as it did before this check existed, with the gap recorded in place of them;
+# refusing it would stop a whole drive over a missing sentence, which is the
+# failure mode #2966 exists to remove. Everywhere else a person is the
+# destination, so the decision is reported as no decision and the recovery agent
+# closes it.
+_finalization_unowned_or_handoff() {
+  local reason next
+  reason="assess-finalization reported $1, which ends the run and hands it to a person, but gave $2"
+  next="Run finalization again so assess-finalization reports the failing check, the cause the run cannot fix and the step its owner must take, or the state the facts do support; re-running this step alone reads the same recorded answer."
+  if declare -F finalization_try_handoff_open_pr >/dev/null 2>&1; then
+    finalization_try_handoff_open_pr "$1" "$reason" "$next" "$3" || :
+  fi
+  fail_result "FAILED_MISSING_TERMINAL_EVIDENCE" "$reason" "$next" "$3"
 }
