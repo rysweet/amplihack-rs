@@ -1,13 +1,15 @@
-//! The validator half of #1714. Both BLOCKED_CI routes (the prior-state probe,
-//! and the published outcome that `assess-finalization` judged) hand off only
-//! when `RECIPE_VAR_finalization_handoff` is exactly `true` and the PR number
-//! is valid; the result keeps `terminal_success:"false"` and gains
-//! `handoff:"merge_ready_loop"`. Every other state, and every run without the
-//! flag, exits 1 with no `handoff` key.
+//! The validator half of #1714. BLOCKED_CI is reached only through the
+//! assessment (#2966): it is the state `assess-finalization` reports for a red
+//! or blocked check whose cause the run cannot fix, after the CI repair has
+//! looked. It hands off only when `RECIPE_VAR_finalization_handoff` is exactly
+//! `true` and the PR number is valid; the result keeps `terminal_success:"false"`
+//! and gains `handoff:"merge_ready_loop"`. Every other state, and every run
+//! without the flag, exits 1 with no `handoff` key.
 //!
 //! Since #2343 the terminal state of a published outcome is the one
-//! `assess-finalization` decided, so these cases supply that decision; the
-//! prior-state probe is unchanged and still answers from its own record.
+//! `assess-finalization` decided, so these cases supply that decision. The
+//! probe no longer reports BLOCKED_CI, and a stale record of it is not
+//! answered from (`assessed_ci.rs`); the other prior-state blockers still are.
 
 use serde_json::json;
 
@@ -24,6 +26,16 @@ pub(super) fn prior_state_env(fx: &Fixture, state: &str, pr: &str) -> Vec<(&'sta
     if !pr.is_empty() {
         envs.push(("PR_NUMBER", pr.to_owned()));
     }
+    envs
+}
+
+/// A run whose assessment reported BLOCKED_CI for PR `pr`, on a head that has a
+/// failing check: the one route to BLOCKED_CI since #2966.
+pub(super) fn assessed_blocked_ci_env(fx: &Fixture, pr: &str) -> Vec<(&'static str, String)> {
+    fx.gh_view(&open_pr(json!([check_run("COMPLETED", json!("FAILURE"))])));
+    let mut envs = resumed_env(&fx.repo_path());
+    envs.push(("PR_URL", PR_URL.to_owned()));
+    envs.push(assessment("BLOCKED_CI", "none", pr));
     envs
 }
 
@@ -71,36 +83,40 @@ pub(super) fn assert_failed_closed(outcome: &Outcome, state: &str, why: &str) {
     assert_no_handoff_key(outcome, why);
 }
 
-// T1a: the prior-state probe, where the failing #1714 run stopped.
+// T1a: the assessed route, which is the only one since #2966. The prior-state
+// probe, where the failing #1714 run once stopped, no longer reports it.
 #[test]
-fn prior_state_blocked_ci_with_the_flag_and_a_pr_is_handed_off() {
+fn assessed_blocked_ci_with_the_flag_and_a_pr_is_handed_off() {
     let fx = Fixture::new();
-    let envs = prior_state_env(&fx, "BLOCKED_CI", "134");
+    let envs = assessed_blocked_ci_env(&fx, "7");
     let outcome = validate(&fx, &with_flag(&envs));
-    assert_handed_off(&outcome, "134", "prior-state probe");
-    fx.assert_gh_not_called("prior-state probe");
+    assert_handed_off(&outcome, "7", "assessed route");
+    fx.assert_gh_reads_only();
 }
 
 // T1a, production transport: the context arrives as RECIPE_VAR_* objects.
 #[test]
-fn canonical_transport_prior_state_blocked_ci_is_handed_off() {
+fn canonical_transport_assessed_blocked_ci_is_handed_off() {
     let fx = Fixture::new();
+    fx.gh_view(&open_pr(json!([check_run("COMPLETED", json!("FAILURE"))])));
     let repo_path = fx.repo_path();
-    let terminal_state =
-        json!({"terminal_state": "BLOCKED_CI", "pr_number": "134", "pr_url": PR134_URL})
-            .to_string();
+    // The probe let the run continue, so its record names no blocker.
+    let terminal_state = json!({"terminal_state": "FOLLOWUP_CREATED"}).to_string();
+    let assessed = assessment("BLOCKED_CI", "none", "7").1;
     let outcome = validate(
         &fx,
         &[
             ("RECIPE_VAR_repo_path", repo_path.as_str()),
             ("RECIPE_VAR_branch_name", BRANCH),
+            ("RECIPE_VAR_pr_url", PR_URL),
             ("RECIPE_VAR_terminal_state", terminal_state.as_str()),
             ("RECIPE_VAR_finalizer_step_status", r#"{"status":"ok"}"#),
+            ("RECIPE_VAR_finalization_assessment", assessed.as_str()),
             FLAG,
         ],
     );
-    assert_handed_off(&outcome, "134", "canonical transport");
-    assert_eq!(outcome.field("pr_url"), PR134_URL);
+    assert_handed_off(&outcome, "7", "canonical transport");
+    assert_eq!(outcome.field("pr_url"), PR_URL);
 }
 
 // T1a: the completion envelope keeps terminal_success "false" everywhere and
@@ -108,9 +124,9 @@ fn canonical_transport_prior_state_blocked_ci_is_handed_off() {
 #[test]
 fn completion_of_a_handed_off_result_never_reports_success() {
     let fx = Fixture::new();
-    let envs = prior_state_env(&fx, "BLOCKED_CI", "134");
+    let envs = assessed_blocked_ci_env(&fx, "7");
     let validated = validate(&fx, &with_flag(&envs));
-    assert_handed_off(&validated, "134", "before completion");
+    assert_handed_off(&validated, "7", "before completion");
     let result = validated.stdout.trim().to_owned();
 
     let outcome = dispatch(&fx, "complete", &[("RECIPE_VAR_workflow_result", &result)]);
@@ -138,7 +154,7 @@ fn without_exactly_true_blocked_ci_still_fails_closed() {
     ];
     for value in values {
         let fx = Fixture::new();
-        let mut envs = prior_state_env(&fx, "BLOCKED_CI", "134");
+        let mut envs = assessed_blocked_ci_env(&fx, "7");
         if let Some(value) = value {
             envs.push(("RECIPE_VAR_finalization_handoff", value.to_owned()));
         }
@@ -198,7 +214,7 @@ fn non_ci_failures_with_the_flag_still_fail_closed() {
     );
 
     let fx = Fixture::new();
-    let mut envs = prior_state_env(&fx, "BLOCKED_CI", "134");
+    let mut envs = prior_state_env(&fx, "FAILED_MEANINGFUL_DIFF", "134");
     envs.push((
         "FINALIZATION_EVIDENCE_GIT_DIRTY_WORKTREE",
         "true".to_owned(),
@@ -235,7 +251,7 @@ fn non_ci_failures_with_the_flag_still_fail_closed() {
 fn a_failed_handoff_emit_exits_non_zero() {
     let fx = Fixture::new();
     break_handoff_jq(&fx);
-    let envs = prior_state_env(&fx, "BLOCKED_CI", "134");
+    let envs = assessed_blocked_ci_env(&fx, "7");
     let outcome = validate(&fx, &with_flag(&envs));
     assert!(
         !outcome.success(),

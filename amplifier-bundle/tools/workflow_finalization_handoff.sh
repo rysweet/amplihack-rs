@@ -14,7 +14,13 @@
 # number, the live PR state), never log text.
 #
 #   Handed off (FINALIZATION_HANDOFF_STATES):
-#     BLOCKED_CI             the PR exists and its checks are red.
+#     BLOCKED_CI             a check on the PR head fails, or cannot run, for a
+#                            cause the run cannot fix itself, such as a missing
+#                            secret or a run awaiting maintainer approval
+#                            (#2966). A red CI the run can fix is repaired
+#                            before finalization decides, so it never gets
+#                            here. assess-finalization reports the state with
+#                            the cause and the human step, and names the PR.
 #     FAILED_IMPLEMENTATION  assess-finalization decided the work is not
 #                            complete, and named a pull request while doing
 #                            so. The crusty loop reviews exactly that.
@@ -37,21 +43,18 @@
 #   HOLLOW_SUCCESS (the agent output is empty, so the PR may be too),
 #   FAILED_CLOSED_UNMERGED and FAILED_MEANINGFUL_DIFF (there is no open PR
 #   worth reviewing), FAILED_PR_METADATA_UNAVAILABLE (the PR is unknown)
-#   and INCOMPLETE. Success states need no hand-off. FAILED_IMPLEMENTATION
-#   and FAILED_REPORTING are handed off only through the *_open_pr
-#   functions, which require the pull request number the assessment
-#   returned (open_pr_confirmed_number).
+#   and INCOMPLETE. Success states need no hand-off. Every handed-off state
+#   goes through the *_open_pr functions, which require the pull request
+#   number the assessment returned (open_pr_confirmed_number).
 #
 #   finalization_handoff_allowed <state>
 #       Return 0 only for exactly one of FINALIZATION_HANDOFF_STATES.
 #   finalization_handoff_flag
 #       Print `true` only when RECIPE_VAR_finalization_handoff is exactly `true`,
 #       else `false`. No bare environment fallback, no case folding, no trimming.
-#   finalization_fail_or_handoff <state> <reason> <next> <evidence>
-#       Drop-in for fail_result; callable only inside validate_finalization.
-#       Hands off with the validator's current pr_number.
 #   finalization_fail_or_handoff_open_pr <state> <reason> <next> <evidence>
-#       As above, but hands off only when the assessment named a pull request
+#       Drop-in for fail_result; callable only inside validate_finalization.
+#       Hands off only when the assessment named a pull request
 #       (open_pr_confirmed_number/url/facts, set by the validator); otherwise it
 #       fails closed with the run's own PR evidence.
 #   finalization_try_handoff_open_pr <state> <reason> <next> <evidence>
@@ -103,11 +106,6 @@ _finalization_handoff_emit() {
   fi
   echo "ERROR: #1714: could not write the hand-off result; failing closed" >&2
   return 1
-}
-
-finalization_fail_or_handoff() {
-  _finalization_handoff_emit "$@" || :
-  fail_result "$@"
 }
 
 finalization_try_handoff_open_pr() {

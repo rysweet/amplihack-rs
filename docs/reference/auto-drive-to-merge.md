@@ -95,6 +95,16 @@ PR to review and readiness work. A failure before a PR exists remains
 incomplete. Receiving steps preserve the cause and resolve outstanding work
 before claiming readiness.
 
+Since #2966 the build repairs red CI itself: `default-workflow` diagnoses,
+fixes, pushes and waits until the checks are green, with no round or time limit.
+A `BLOCKED_CI` that reaches phase 1 therefore means a named cause the run could
+not fix, such as a missing secret or a workflow run awaiting maintainer
+approval. Its `terminal_reason` names the check and the cause, and
+`required_next_action` names the owner and the exact step. The hand-off
+routes (`FINALIZATION_HANDOFF_STATES`, `handoff=merge_ready_loop`) are
+unchanged; only the meaning of the state narrowed. See
+[Red CI Is Repaired](default-workflow-agentic-finalization.md#red-ci-is-repaired-2966).
+
 ## Configuration
 
 Pass context with `amplihack recipe run auto-drive-to-merge -c key=value`.
@@ -517,6 +527,15 @@ no progress. A pending CI signal at an unchanged head is `CONTINUE`, never
 judged `STUCK` and the PR is handed off. Budget exhaustion is separate,
 checked before starting more work. Budgets limit cost, not convergence.
 A completed crusty objective is exempt; it does not reach these checks.
+
+A red CI is not a stop on its own (#2966). When the evaluator judges a round,
+`fail@<head>` is `CONTINUE` with CI repair named in `recommended_action`, and
+it is `STUCK` only when the evidence names a cause the run cannot fix, with that
+cause and the human step. A crusty round that changes nothing at all (head,
+open items and CI signal) is still a code-decided no-progress stop, because a
+repair always moves the head. `BUDGET_EXHAUSTED` is the operator's own usage
+budget for the whole drive, and the drive can be resumed with a larger one; it
+is not a verdict on CI.
 
 ### Budget keys and defaults
 

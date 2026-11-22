@@ -120,7 +120,10 @@ fn unusable_run_scope_is_never_read_and_never_decided() {
 
 // Every blocker about the local checkout keeps its state, is reached before
 // anything is read, and cannot be overridden by an assessment that claims a
-// success.
+// success. #2966: the prior-probe blocker here is one the probe still reports.
+// `BLOCKED_CI` is not among them any more, since a red check is repaired before
+// finalization decides, so a stale record of it blocks nothing (the
+// issue_1714_finalization_handoff `assessed_ci` cases).
 #[test]
 fn blockers_keep_their_state_and_are_not_masked_by_a_claimed_success() {
     let claimed = assessment("EXISTING_OPEN_PR", "none", "7");
@@ -139,9 +142,9 @@ fn blockers_keep_their_state_and_are_not_masked_by_a_claimed_success() {
             "prior terminal probe",
             (
                 "RECIPE_VAR_terminal_state",
-                json!({"terminal_state": "BLOCKED_CI", "pr_number": "7"}).to_string(),
+                json!({"terminal_state": "FAILED_MEANINGFUL_DIFF", "pr_number": "7"}).to_string(),
             ),
-            "BLOCKED_CI",
+            "FAILED_MEANINGFUL_DIFF",
         ),
     ];
     for (name, context, expected) in cases {

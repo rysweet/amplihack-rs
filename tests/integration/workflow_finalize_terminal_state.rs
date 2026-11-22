@@ -144,12 +144,12 @@ fn finalize_preserves_loud_blockers_instead_of_converting_them_to_success() {
     let recipe = load_finalize_recipe();
     let text = recipe_text(&recipe);
 
-    for blocker in [
-        "FAILED_CLOSED_UNMERGED",
-        "FAILED_MEANINGFUL_DIFF",
-        "BLOCKED_CI",
-        "exit 1",
-    ] {
+    // #2966: a red check is repaired, not a blocker the probe ends the run on,
+    // so `BLOCKED_CI` and the probe's `exit 1` are no longer pinned here. What
+    // a red check does is shown by behaviour: the probe tests in
+    // `default_workflow_terminal_state` and the assessed-route cases in
+    // `issue_1714_finalization_handoff::assessed_ci`.
+    for blocker in ["FAILED_CLOSED_UNMERGED", "FAILED_MEANINGFUL_DIFF"] {
         assert!(
             text.contains(blocker),
             "workflow-finalize must preserve loud blocker `{blocker}`"
@@ -388,5 +388,76 @@ fn workflow_complete_reports_canonical_agentic_workflow_result_fields_and_failur
     assert!(
         !command.contains("status: \"complete\"") && !command.contains("steps_completed: 23"),
         "workflow-complete must not report legacy unconditional completion once finalizer validation owns terminal status"
+    );
+}
+
+// #2966: a red CI sends the run back to repair it, and the repair is the CI
+// repair step's. Only the shape that makes that repair possible is checked here,
+// as fields of the recipe and not as prose: what the agent is told is the
+// agent's guidance, and what it does is shown by the QA scenario
+// (`tests/gadugi/run-issue-2966-finalize-ci-repair-scenario.sh`).
+//
+// - It runs in the run's own worktree, where the fix is committed and pushed.
+//   Started anywhere else, a repair would be made in the wrong tree, or in the
+//   caller's checkout.
+// - It still runs on a failing check: the probe lets the run continue, and its
+//   gate is the same two flags every finalization step shares.
+// - It is not wrapped. A failure of the repair agent itself ends the run with
+//   its own failure, which is an agent failure and not a verdict on CI, and no
+//   JSON contract or error swallowing sits between its work and its result.
+#[test]
+fn the_ci_repair_step_works_in_the_runs_worktree_and_is_not_wrapped() {
+    let recipe = load_finalize_recipe();
+    let step = step_by_id(&recipe, "step-22-ensure-mergeable");
+
+    assert_eq!(
+        step.get("agent").and_then(Value::as_str),
+        Some("amplihack:ci-diagnostic-workflow"),
+        "the CI repair step is the ci-diagnostic-workflow agent"
+    );
+    assert_eq!(
+        step.get("working_dir").and_then(Value::as_str),
+        Some("{{worktree_setup.worktree_path}}"),
+        "the repair must be started in the run's linked worktree"
+    );
+    for key in ["parse_json", "continue_on_error"] {
+        assert!(
+            step.get(key).is_none(),
+            "the CI repair step must not declare `{key}`: its failure is its own"
+        );
+    }
+    let condition = step_condition(&recipe, "step-22-ensure-mergeable");
+    assert!(
+        condition.contains("terminal_state.terminal_success != 'true'")
+            && condition.contains("terminal_state.should_run_ci_wait == 'true'"),
+        "a failing check reaches the repair through the probe's continue gates; condition was `{condition}`"
+    );
+}
+
+// #2966: the assessment that decides the terminal state is still the one
+// agent step of its recipe. The CI repair is done inside it, not by a step
+// added beside it, so the recipe's step budget (`max_total_steps`) is unchanged.
+#[test]
+fn the_assessment_recipe_gains_no_step_for_the_repair() {
+    let path = workspace_root()
+        .join("amplifier-bundle")
+        .join("recipes")
+        .join("workflow-finalization-assessment.yaml");
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let recipe: Value =
+        serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+
+    let ids: Vec<&str> = recipe
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .expect("the assessment recipe has steps")
+        .iter()
+        .filter_map(|step| step.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(ids, ["assess-finalization"], "one step, as before");
+    assert_eq!(
+        recipe["recursion"]["max_total_steps"].as_u64(),
+        Some(4),
+        "the step budget is unchanged"
     );
 }

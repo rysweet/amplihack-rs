@@ -123,7 +123,7 @@ The loud blocking states include:
 | `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. |
 | `FAILED_REPORTING` | Implementation succeeded but a reporting/finalization step failed. Durable evidence (`pr_url`, `pr_number`, implementation/verification markers) is preserved and reported. |
 | `HOLLOW_SUCCESS` | The run appeared successful but its agent output was empty or inaccessible, so it may have produced nothing at all. Unchanged by #2343. |
-| `BLOCKED_CI` | Required checks are failing or a CI policy blocks publish or merge. |
+| `BLOCKED_CI` | A check on the PR head fails, or cannot run, for a cause the run cannot fix itself, such as a missing secret (#2966). A red CI the run can fix is repaired and is not a terminal state. The reason names the check and the cause, and the next action names the owner and the exact step. |
 
 `workflow-terminal-state` never invokes `gh pr list`, `gh pr view`, or related
 GitHub metadata commands for Azure Repos, `visualstudio.com`,
@@ -562,7 +562,12 @@ gh pr ready 2>&1 | cat
 ### Step 21: Ensure PR is Mergeable
 
 - [ ] Check CI status (all checks passing)
-- [ ] **Always use** ci-diagnostic-workflow agent if CI fails
+- [ ] **Always use** ci-diagnostic-workflow agent if CI fails. It diagnoses,
+      fixes, pushes, waits with `gh pr checks --watch` and reassesses until
+      every check is green, with no round or time limit (#2966). It stops early
+      only on a cause the run cannot fix (a missing secret, a workflow run
+      awaiting maintainer approval), and then names the check, the cause, the
+      owner and the exact step to take.
 - [ ] **💡 TIP**: When investigating CI failures, use [parallel agent investigation](../../../amplifier-bundle/CLAUDE.md#parallel-agent-investigation-strategy) to explore logs and code simultaneously
 - [ ] Resolve any merge conflicts
 - [ ] Verify all review comments addressed, including check for any that showed up after marking the PR as ready

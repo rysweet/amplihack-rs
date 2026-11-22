@@ -33,8 +33,10 @@
 # changes them: it may make no GitHub write, so it cannot push the branch or
 # open the pull request the facts are missing, and may start no recipe, so it
 # cannot produce an assessment where there was none. Repairing the run's
-# outcome belongs to assess-finalization, which is allowed exactly those two
-# actions and then decides on what it did.
+# outcome belongs to assess-finalization, which is allowed exactly three
+# actions (push, open the pull request, bring CI to green: #2966) and then
+# decides on what it read after the last. BLOCKED_CI reaches this file only as
+# its decision, for a cause the run cannot fix; red CI is never a blocker here.
 #
 # The facts themselves are obtained and rendered by
 # workflow_finalization_facts.sh, which this file requires to be sourced
@@ -148,6 +150,13 @@ FIELDS
   [ -n "$prior_terminal_state" ] || prior_terminal_state="$evidence_prior_terminal_state"
   [ "$evidence_hollow_success" != "true" ] || hollow_success_detected="true"
 
+  # What assess-finalization says it did, read before the checkout blockers
+  # because a write can contradict the record collected before it (SEC-01).
+  # Outside the vocabulary it is quoted as `unrecognised` (SEC-12, #2966).
+  assessment_action="$(workflow_finalization_field finalization_assessment action_taken || :)"
+  [ -n "$assessment_action" ] || assessment_action="none"
+  _finalization_action_allowed "$assessment_action" || assessment_action="unrecognised"
+
   # 2. Blockers about the local checkout, which no published outcome can
   #    answer. gh is deliberately absent (#2343): without it the outcome
   #    cannot be read, which the facts say in words instead.
@@ -166,7 +175,10 @@ FIELDS
   # with uncommitted changes whose record read "1" published EXISTING_OPEN_PR
   # -- so a record that does not say true or false sends the question to the
   # worktree, which can always answer it.
-  if [ "$evidence_dirty_worktree" != "false" ]; then
+  # SEC-01 (#2966): after any write the assessment made, the worktree is asked
+  # again whatever the record says, so a file a repair left behind is a dirty
+  # worktree. Only a recorded checkout is asked, never an implicit ".".
+  if [ "$evidence_dirty_worktree" != "false" ] || { [ "$assessment_action" != "none" ] && [ "$target_dir_explicit" = "true" ]; }; then
     if command -v git >/dev/null 2>&1 && [ -d "$target_dir" ] && git -C "$target_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       if [ -n "$(git -C "$target_dir" status --porcelain)" ]; then
         fail_result "FAILED_DIRTY_WORKTREE" "dirty worktree prevents terminal success" "Commit, stash, or remove uncommitted changes before finalization." "git.dirty_worktree=true"
@@ -180,10 +192,11 @@ FIELDS
   esac
 
   # A deterministic terminal probe that already named a blocker is answered
-  # from its own record, without asking the remote again.
+  # from its own record, and never handed off. BLOCKED_CI is not among them
+  # (#2966): red CI is repaired, and a stale record of it decides nothing.
   case "$prior_terminal_state" in
-    BLOCKED_CI|FAILED_MEANINGFUL_DIFF|FAILED_CLOSED_UNMERGED|FAILED_PR_METADATA_UNAVAILABLE|FAILED_INVALID_INPUT|FAILED_WRONG_BRANCH)
-      finalization_fail_or_handoff "$prior_terminal_state" "deterministic terminal probe reported $prior_terminal_state" "Resolve the deterministic blocker before finalization." "prior_terminal_state=$prior_terminal_state"
+    FAILED_MEANINGFUL_DIFF|FAILED_CLOSED_UNMERGED|FAILED_PR_METADATA_UNAVAILABLE|FAILED_INVALID_INPUT|FAILED_WRONG_BRANCH)
+      fail_result "$prior_terminal_state" "deterministic terminal probe reported $prior_terminal_state" "Resolve the deterministic blocker before finalization." "prior_terminal_state=$prior_terminal_state"
       ;;
   esac
 
@@ -211,11 +224,9 @@ FIELDS
   #    facts carry; no URL is ever adopted from the assessment's own text, the
   #    canonical one is built for the remote the facts report.
   assessment_state="$(workflow_finalization_field finalization_assessment terminal_state || :)"
-  assessment_action="$(workflow_finalization_field finalization_assessment action_taken || :)"
   assessment_pr="$(workflow_finalization_field finalization_assessment pr_number || :)"
   assessment_reason="$(_finalization_outcome_clean "$(workflow_finalization_field finalization_assessment reason || :)")"
   assessment_next="$(_finalization_outcome_clean "$(workflow_finalization_field finalization_assessment next_action || :)")"
-  case "$assessment_action" in ''|none) assessment_action="none" ;; *) assessment_action="$(_finalization_outcome_clean "$assessment_action")" ;; esac
   # What came back, kept only to quote it back when it is not a pull request
   # number, the way an unusable terminal_state is quoted below: cleaned of
   # control characters and cut to 40 characters, since a pull request number is

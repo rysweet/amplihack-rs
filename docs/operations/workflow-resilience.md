@@ -38,7 +38,7 @@ exposed these concrete failure modes:
 | Closed-unmerged PR handling | A closed PR without merge evidence is treated as completed while branch diff remains. | Finalization returns `FAILED_CLOSED_UNMERGED` unless local obsolete/no-diff proof supports `CLOSED_OBSOLETE`. |
 | Remaining meaningful diff | Branch changes remain but no valid PR, merge, follow-up, or verified implementation path proves closure. | Finalization returns `FAILED_MEANINGFUL_DIFF` rather than treating the branch as a no-op success. |
 | Missing tooling | Required `git`, `jq`, provider CLI, or provider auth is unavailable on a path that depends on it. | Finalization returns `FAILED_MISSING_TOOLING`, `FAILED_PR_METADATA_UNAVAILABLE`, or `BLOCKED_MANUAL_PROVIDER`; it does not silently skip required proof. |
-| Failed CI | Open PR has failing required checks but final output looks complete. | Finalization returns `BLOCKED_CI` with failing check evidence and nonzero exit. |
+| Failed CI | Open PR has failing checks but final output looks complete. | Finalization repairs it: diagnose, fix, push, wait for CI and reassess until the checks are green, with no round or time limit (#2966). It returns `BLOCKED_CI` and a nonzero exit only for a cause the run cannot fix, with the check, the cause, the owner and the exact step named. |
 | Hollow success | Workflow exits after setup, design, empty agent output, or inaccessible-codebase messages. | Finalization returns `HOLLOW_SUCCESS`, which #2343 leaves unchanged. Where the agent output was not empty, the run is classified on its real outcome: no pushed head or open pull request is a failure naming that gap. |
 
 ## Publish behavior
@@ -90,8 +90,10 @@ agentic finalizer described in
 | PR closed after merge | Success with `terminal_state=MERGED` when merge evidence exists. |
 | PR or branch obsolete | Success with `terminal_state=CLOSED_OBSOLETE` only when local no-diff/obsolete proof exists. |
 | Run superseded by a newer workflow-owned PR or issue | Success with `terminal_state=SUPERSEDED` only when durable replacement metadata and reason text are present. |
-| Open PR with green required checks | Merge according to repository policy. |
-| Open PR with pending or failed required checks | Failure with `terminal_state=BLOCKED_CI`; CI gating remains active. |
+| Open PR with green checks | Success with `terminal_state=EXISTING_OPEN_PR`; merge according to repository policy. |
+| Open PR with pending checks | The assessment waits for them with `gh pr checks --watch`, then decides on what they report. Pending is not success. |
+| Open PR with failing checks the run can fix | Repaired in a loop with no round or time limit; success once the head is green. CI gating remains active and nothing is skipped to get past it. |
+| Open PR with a failing check the run cannot fix (missing secret, run awaiting maintainer approval, owner-only setting, account or billing block, fix in a workflow file the token cannot push) | Failure with `terminal_state=BLOCKED_CI`, the check and cause as the reason, and the owner and exact step as the next action. The run exits `81` after step recovery hands it off. |
 | Closed unmerged PR with remaining branch diff | Failure with `terminal_state=FAILED_CLOSED_UNMERGED`; user action is required. |
 | Meaningful branch diff without terminal publication or verification proof | Failure with `terminal_state=FAILED_MEANINGFUL_DIFF`. |
 | Missing or ambiguous PR state | Failure; ambiguity is not treated as success. |
@@ -100,8 +102,11 @@ agentic finalizer described in
 | Success-looking run without completion evidence | Failure with a gap reported from the pushed head and PR facts, normally `INCOMPLETE` (#2343). |
 
 Already-terminal states are success only when verified through Git branch diff,
-GitHub PR metadata, or both. Pending or failed required checks on active PRs
-remain failures; terminal-state resilience must not bypass CI.
+GitHub PR metadata, or both. Failing checks on an active PR are repaired and
+pending checks are waited on; terminal-state resilience must not bypass CI, and
+the repair never lowers the bar (no skip directive, no weakened test, no
+non-blocking check). See
+[Red CI Is Repaired](../reference/default-workflow-agentic-finalization.md#red-ci-is-repaired-2966).
 
 ## Recipe context reference
 
@@ -191,6 +196,29 @@ export NODE_OPTIONS=--max-old-space-size=32768
 This setting affects child Node tooling only. It does not relax terminal-state
 or finalizer validation.
 
+## Operator prerequisites for CI repair
+
+A run that repairs CI pushes to the pull request branch as often as it needs to,
+and has no round limit. Before relying on it:
+
+- Give the run's token `contents`, `pull-requests` and `actions` write access
+  and no administration or secrets permission. Do not add the `workflow` scope:
+  without it GitHub rejects a push that changes `.github/workflows/`, so a red
+  check whose fix is in a workflow file ends the run `BLOCKED_CI`, naming the
+  file and asking the repository administrator to push the change.
+- Protect the base branch: require a review, dismiss stale approvals when new
+  commits are pushed, and forbid force-push and deletion. The repair rules
+  forbid force-push and merging without an approval on the current head, but
+  the branch protection is what enforces it.
+- Cover `.github/` with `CODEOWNERS`. The repair does not edit workflow files
+  that the pull request does not already change, but a rule in a prompt is
+  advice and the code-owner review is the control.
+- Do not configure deploy workflows to run on pushes to non-default branches.
+  Each repair push would start one.
+
+See [Red CI Is Repaired](../reference/default-workflow-agentic-finalization.md#red-ci-is-repaired-2966)
+for the safeguards and the limits of the design.
+
 ## Troubleshooting
 
 | Symptom | Meaning | Action |
@@ -201,7 +229,7 @@ or finalizer validation.
 | `branch_diff_status=unknown` | Git could not determine a safe base/head diff. | Check remotes, fetch state, and branch name. |
 | `MANUAL_REQUIRED` | The repository needs a provider action that this workflow does not automate, such as creating an Azure Repos pull request. | Perform the named manual action, then rerun status/finalization with the durable change-request URL. |
 | `BLOCKED_MANUAL_PROVIDER` | Required provider tooling, auth, permissions, or metadata is unavailable. | Fix the named blocker, then rerun the provider helper. |
-| `BLOCKED_CI` | Required checks are pending, failed, or unavailable when required. | Fix CI or wait for checks; terminal-state resilience does not bypass CI. |
+| `BLOCKED_CI` | A check on the PR head fails, or cannot run, for a cause the run cannot fix itself. The stderr line and `terminal_reason` name the check and the cause. | Take the step named in `required_next_action` (for example, add the missing secret or approve the workflow run), then rerun. Pending or fixable failures do not end a run this way. |
 | `FAILED_IMPLEMENTATION` | Durable implementation or verification evidence is absent or failed while meaningful work remains. | Resume `default-workflow` from implementation and verification, or choose a more specific failure state. |
 | `FAILED_REPORTING` | Implementation succeeded but a reporting/finalization step failed. Durable `pr_url`/`pr_number` and implementation/verification evidence are preserved. | Re-run the reporting step; the implementation is intact. Do not re-run the implementation. |
 | `HOLLOW_SUCCESS` | The run looked successful but its agent output was empty or inaccessible, so it may have produced nothing at all. Unchanged by #2343, and still ahead of every success classification. | Resume `default-workflow` from the missing phase or emit a supported no-op state with evidence. |

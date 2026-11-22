@@ -39,6 +39,16 @@ fn rel(path: &std::path::Path) -> String {
         .to_string()
 }
 
+/// Every bundle tool, then every recipe, whose text holds `definition`.
+fn definers(definition: &str) -> Vec<String> {
+    tool_files()
+        .into_iter()
+        .chain(recipe_files())
+        .filter(|p| read(p).contains(definition))
+        .map(|p| rel(&p))
+        .collect()
+}
+
 // T6: only autodrive-build step-02 sets the flag; default-workflow and
 // autodrive-build's own context declare "".
 #[test]
@@ -130,21 +140,10 @@ fn the_allow_list_is_defined_once_in_the_brick() {
     for function in [
         "finalization_handoff_allowed()",
         "finalization_handoff_flag()",
-        "finalization_fail_or_handoff()",
         "autodrive_build_handoff()",
     ] {
-        let mut definers: Vec<String> = tool_files()
-            .into_iter()
-            .filter(|p| read(p).contains(function))
-            .map(|p| rel(&p))
-            .collect();
-        for path in recipe_files() {
-            if read(&path).contains(function) {
-                definers.push(rel(&path));
-            }
-        }
         assert_eq!(
-            definers,
+            definers(function),
             [format!("amplifier-bundle/tools/{BRICK}")],
             "`{function}` must be defined only in the brick"
         );
@@ -171,6 +170,24 @@ fn the_allow_list_is_defined_once_in_the_brick() {
     assert!(
         brick_text.lines().count() <= 300,
         "the brick must fit the 300-line budget"
+    );
+}
+
+// #2966: the validator no longer answers BLOCKED_CI from the probe's record, so
+// the drop-in that handed off on the run's own PR number has no caller and no
+// definition. A hand-off now goes only through the *_open_pr functions, which
+// need the pull request number the assessment returned.
+#[test]
+fn the_prior_state_handoff_helper_is_gone() {
+    let holders = definers("finalization_fail_or_handoff()");
+    assert!(
+        holders.is_empty(),
+        "finalization_fail_or_handoff() must not be defined: {holders:?}"
+    );
+    let validate = read(&tool_path("workflow_finalization_validate.sh"));
+    assert!(
+        !code_lines(&validate).any(|l| l.contains("finalization_fail_or_handoff ")),
+        "the validator must not call the removed helper"
     );
 }
 

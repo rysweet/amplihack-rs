@@ -167,8 +167,8 @@ fn validator_legacy_hard_blockers_are_not_bypassed_by_completion() {
             "FAILED_MISSING_TOOLING",
         ),
         (
-            json!({"prior_terminal_state":{"terminal_state":"BLOCKED_CI"}}),
-            "BLOCKED_CI",
+            json!({"prior_terminal_state":{"terminal_state":"FAILED_MEANINGFUL_DIFF"}}),
+            "FAILED_MEANINGFUL_DIFF",
         ),
     ] {
         validate(
@@ -209,8 +209,8 @@ fn validator_hard_blockers_are_not_bypassed_by_a_claimed_success_assessment() {
             "FAILED_MISSING_TOOLING",
         ),
         (
-            json!({"prior_terminal_state":{"terminal_state":"BLOCKED_CI"}}),
-            "BLOCKED_CI",
+            json!({"prior_terminal_state":{"terminal_state":"FAILED_MEANINGFUL_DIFF"}}),
+            "FAILED_MEANINGFUL_DIFF",
         ),
     ] {
         for claim in ["IMPLEMENTED_VERIFIED", "ALLOW_NO_OP"] {

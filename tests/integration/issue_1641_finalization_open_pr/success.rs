@@ -88,10 +88,13 @@ fn resumed_run_with_only_a_pr_number_succeeds() {
     fx.assert_gh_reads_only();
 }
 
-// CI has not reported yet (pending or no checks). #2784, #2343: a published PR
-// at the run's head whose checks have not reported is finished work waiting on
-// CI, and this run's own verification boolean is not consulted at all -- not by
-// the facts reader, which never sees it, and not by the validator.
+// CI has not reported yet (pending or no checks). The validator reports the
+// decision it is given. Since #2966 the assessment waits out pending checks
+// before it decides, so a pending reading here is a fact the decision was made
+// beside, not a state the assessment may decide a success on without looking
+// again. This run's own verification boolean is not consulted at all (#2784,
+// #2343) -- not by the facts reader, which never sees it, and not by the
+// validator.
 #[test]
 fn pending_or_absent_checks_are_read_as_such_and_hand_the_pr_on() {
     for (rollup, checks) in [

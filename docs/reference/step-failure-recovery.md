@@ -159,8 +159,19 @@ failed step was working on, and may make no other GitHub write and start no
 recipe. This step has no commit of its own to push, and opening the pull
 request that a `FAILED_IMPLEMENTATION` is missing stays forbidden, so the agent
 can neither open it nor produce an assessment where there is none. The repair
-belongs to `assess-finalization`, which is permitted exactly those two actions and
-then decides on what it did.
+belongs to `assess-finalization`, which is permitted exactly three actions
+(push the run branch, open the pull request, bring CI to green) and then
+decides on what it did.
+
+A CI failure the run can fix never reaches this step (#2966). The probe lets
+failing checks continue, `step-22-ensure-mergeable` repairs them, and
+`assess-finalization` waits for what is pending and continues the repair before
+it decides. `BLOCKED_CI` therefore arrives here only when the assessment judged
+the cause one the run cannot fix, such as a missing secret or a workflow run
+awaiting maintainer approval. The step's goal text says so, and the move is
+`handoff` to the owner the assessment named, with the check, the cause and the
+exact step. `--no-repair` stays right for it: the cause is recorded, and a retry
+would read the same bytes.
 
 Making the step read live instead would not rescue the retry. The terminal
 state is still the one recorded before the first attempt, so fresher facts
@@ -369,6 +380,13 @@ characters). `repair`, `alternative`, `owner` and `needs` appear only with
 their choice. `source` is `agent`, `validator` or `policy`. Unknown fields
 are refused, and a record whose `step_id` does not match its file is invalid.
 
+The excerpt keeps the end of the output, so what a step must tell the owner
+belongs on its last line. `validate-agentic-finalization` does this for
+`BLOCKED_CI` (#2966): its failure line is
+`ERROR: workflow finalization failed closed: <state>: <reason>; next action: <next action>`,
+built only from the already-cleaned fields, so the check, the cause, the owner
+and the exact step survive the 2000-character cut and reach the hand-off record.
+
 On `continue_recorded` or `handoff`, `run` prints a text line and then the
 outcome line `{"step_recovery":{"choice":…,"step_id":…,"record":…}}`; the
 text line keeps the runner from parsing the output as an object.
@@ -394,7 +412,10 @@ where it used to exit 1.
 
 `validate-agentic-finalization` ends the run only on a failure the run really
 has: a branch that was not pushed, no open PR, a PR at a different head, a
-failing check, a dirty worktree or missing `git`/`jq`. A missing or unreadable
+check failing for a cause the run cannot fix (`BLOCKED_CI`, which names the
+check, the cause, the owner and the step), a dirty worktree or missing
+`git`/`jq`. A red CI the run can fix is repaired before the step runs, and
+does not reach it (#2966). A missing or unreadable
 context file, an unset empty object key and pending CI no longer produce a
 failure, so they never reach the guard (#2343, #1726). See
 [The Run's Real Outcome](./default-workflow-agentic-finalization.md#the-runs-real-outcome-2343).

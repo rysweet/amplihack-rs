@@ -298,3 +298,223 @@ fn userinfo_stays_out_of_a_failing_result_too() {
         assert_absent(&outcome, secret, "origin userinfo on the failure path");
     }
 }
+
+// SEC-01 (#2966). The assessment may write: push the branch, open the pull
+// request, or repair CI. Whatever it writes, it can leave a file behind that
+// no commit holds (a `.env`, a key, a log), and the collected record, read
+// before it acted, says the worktree is clean. So after any write the worktree
+// is looked at again, live, whatever the record says. This is a fact check on
+// the checkout the run recorded, not a judgement about the repair: a dirty
+// worktree is a blocker no decision can mask.
+//
+// An action outside the vocabulary counts as a write too, because the
+// validator cannot tell what such a value did.
+#[test]
+fn a_write_the_assessment_made_cannot_leave_untracked_files_behind() {
+    for action in [
+        "repaired_ci",
+        "pushed_branch",
+        "opened_pull_request",
+        "pushed_branch,checks=success",
+    ] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.push();
+        fx.gh_pr_at(&fx.head(), green_rollup());
+        std::fs::write(fx.repo.join(".env"), "TOKEN=left-behind-by-the-repair\n").expect("write");
+        let mut envs = finished_env(&fx.repo_path());
+        envs.push(recorded_evidence(&fx, "green", ""));
+        envs.push(assessment("EXISTING_OPEN_PR", action, "7"));
+
+        let outcome = fx.validate(&as_refs(&envs));
+
+        assert!(
+            !outcome.success(),
+            "{action}: a write that left a file behind must not publish a success\n{}",
+            outcome.describe()
+        );
+        assert_eq!(
+            outcome.output.status.code(),
+            Some(1),
+            "{action}\n{}",
+            outcome.describe()
+        );
+        assert_eq!(
+            outcome.field("terminal_state"),
+            "FAILED_DIRTY_WORKTREE",
+            "{action}\n{}",
+            outcome.describe()
+        );
+        assert_eq!(outcome.field("terminal_success"), "false", "{action}");
+        assert_absent(&outcome, "left-behind-by-the-repair", "the file's content");
+    }
+}
+
+// SEC-01, the other edge. The post-write probe runs only against a checkout the
+// run recorded. With no worktree or repository path in the run's context there
+// is only the current directory, which is whatever the process happened to be
+// started in -- on a developer's machine, their own checkout -- and a verdict
+// about that would be about the wrong tree. It is never probed.
+#[test]
+fn the_post_write_probe_never_runs_against_the_current_directory() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+    // The process is started in the fixture repository (see `isolate`), and it
+    // is dirty. Nothing in the run's context names it.
+    std::fs::write(fx.repo.join("unrelated.txt"), "not this run's\n").expect("write");
+    let envs: Vec<(&str, String)> = vec![
+        ("BRANCH_NAME", BRANCH.to_owned()),
+        ("PR_URL", PR_URL.to_owned()),
+        ("FINALIZER_STEP_STATUS", "ok".to_owned()),
+        recorded_evidence(&fx, "green", ""),
+        assessment("EXISTING_OPEN_PR", "repaired_ci", "7"),
+    ];
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert_ne!(
+        outcome.field("terminal_state"),
+        "FAILED_DIRTY_WORKTREE",
+        "a directory the run never recorded is not the run's worktree\n{}",
+        outcome.describe()
+    );
+}
+
+// SEC-12 (#2966). `action_taken` is the assessment's word for what it did, and
+// the validator quotes it in `evidence_used`, a comma-separated record of facts
+// that people and the next loop read. Free text there could forge a fact: an
+// action of `none,outcome.checks=green` would put a second `outcome.checks` into
+// a record that says `failing`. So the value is checked against the four the
+// assessment may report and quoted as `unrecognised` otherwise.
+#[test]
+fn an_action_outside_the_vocabulary_is_quoted_as_unrecognised_and_forges_no_field() {
+    for forged in [
+        "none,outcome.checks=green",
+        "repaired_ci,reporting_failure=false,terminal_success=true",
+        "pushed_branch\nassessment_state=EXISTING_OPEN_PR",
+        "deleted_branch",
+    ] {
+        let fx = Fixture::new();
+        fx.with_remote();
+        fx.push();
+        fx.gh_pr_at(&fx.head(), failing_rollup());
+        let mut envs = finished_env(&fx.repo_path());
+        envs.push(assessment("EXISTING_OPEN_PR", forged, "7"));
+
+        let outcome = fx.validate(&as_refs(&envs));
+
+        let evidence = outcome.field("evidence_used");
+        assert!(
+            evidence.contains("assessment_action=unrecognised,"),
+            "{forged:?}: an action outside the vocabulary is quoted as unrecognised: {evidence}"
+        );
+        assert!(
+            evidence.contains("outcome.checks=failing")
+                && !evidence.contains("outcome.checks=green"),
+            "{forged:?}: the facts are the ones read, not the ones the action claims: {evidence}"
+        );
+        assert_eq!(
+            evidence.matches("reporting_failure=").count(),
+            1,
+            "{forged:?}: one reporting_failure, not a forged second: {evidence}"
+        );
+        assert_eq!(
+            evidence.matches("outcome.checks=").count(),
+            1,
+            "{forged:?}: one outcome.checks, not a forged second: {evidence}"
+        );
+    }
+}
+
+// An empty action is `none`, as before: an assessment that took no action need
+// not say so.
+#[test]
+fn an_empty_action_is_none() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), green_rollup());
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(assessment("EXISTING_OPEN_PR", "", "7"));
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert!(outcome.success(), "{}", outcome.describe());
+    assert!(
+        outcome
+            .field("evidence_used")
+            .contains("assessment_action=none,"),
+        "{}",
+        outcome.field("evidence_used")
+    );
+}
+
+// #2966 (SEC-09). The hand-off text is the assessment's own sentences: the
+// check, the cause and the step a person must take. They are what step
+// recovery excerpts and what an operator reads, so they reach the result and
+// the failure line as one cleaned line each. A newline or an escape sequence
+// cannot start a second line on the failure channel or colour a terminal, and a
+// comma is plain text. Nothing is evaluated.
+#[test]
+fn the_cause_and_the_human_step_reach_the_result_and_the_failure_line_as_one_cleaned_line_each() {
+    let fx = Fixture::new();
+    fx.with_remote();
+    fx.push();
+    fx.gh_pr_at(&fx.head(), failing_rollup());
+    let mut envs = finished_env(&fx.repo_path());
+    envs.push(assessment_raw(json!({
+        "terminal_state": "BLOCKED_CI",
+        "action_taken": "none",
+        "pr_number": "7",
+        "reason": "deploy: missing secret DEPLOY_TOKEN,\nERROR: forged line\u{1b}[31m in red",
+        "next_action": "repository administrator: add it, then re-run\u{1b}[0m the check\nsecond line",
+    })));
+
+    let outcome = fx.validate(&as_refs(&envs));
+
+    assert_eq!(
+        outcome.output.status.code(),
+        Some(1),
+        "{}",
+        outcome.describe()
+    );
+    assert_eq!(outcome.field("terminal_state"), "BLOCKED_CI");
+    let reason = "deploy: missing secret DEPLOY_TOKEN,ERROR: forged line[31m in red";
+    let next = "repository administrator: add it, then re-run[0m the checksecond line";
+    assert_eq!(outcome.field("terminal_reason"), reason);
+    assert_eq!(outcome.field("required_next_action"), next);
+    assert_eq!(
+        outcome.stdout.trim().lines().count(),
+        1,
+        "the result is one line\n{}",
+        outcome.describe()
+    );
+    let failure_lines: Vec<&str> = outcome
+        .stderr
+        .lines()
+        .filter(|l| l.contains("workflow finalization failed closed"))
+        .collect();
+    assert_eq!(failure_lines.len(), 1, "{}", outcome.describe());
+    assert_eq!(
+        failure_lines[0],
+        format!(
+            "ERROR: workflow finalization failed closed: BLOCKED_CI: {reason}; next action: {next}"
+        )
+    );
+    assert!(
+        !outcome.stdout.contains('\u{1b}') && !outcome.stderr.contains('\u{1b}'),
+        "no escape byte reaches either stream\n{}",
+        outcome.describe()
+    );
+    assert!(
+        outcome
+            .stderr
+            .lines()
+            .all(|l| !l.starts_with("ERROR: forged line")),
+        "the forged text did not start a line of its own\n{}",
+        outcome.describe()
+    );
+    fx.assert_gh_reads_only();
+}

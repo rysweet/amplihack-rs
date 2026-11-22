@@ -1066,14 +1066,14 @@ assert_terminal_status_case \
     "terminal-failure-overrides-success-looking-markers" \
     "1" \
     "false" \
-    "BLOCKED_CI" \
+    "FAILED_MEANINGFUL_DIFF" \
     "terminal_failure=true" \
     "OBSERVED_PHASES=workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-precommit-test" \
     "RECIPE_VAR_implementation_terminal_evidence__implementation_completed=true" \
     "RECIPE_VAR_verification_terminal_evidence__verification_completed=true" \
     "RECIPE_VAR_terminal_state__terminal_failure=true" \
-    "RECIPE_VAR_terminal_state__terminal_state=BLOCKED_CI" \
-    "RECIPE_VAR_terminal_state__terminal_reason=required checks failed"
+    "RECIPE_VAR_terminal_state__terminal_state=FAILED_MEANINGFUL_DIFF" \
+    "RECIPE_VAR_terminal_state__terminal_reason=goal_already_met=true is ambiguous because meaningful unmerged diff remains"
 
 assert_terminal_recipe_uses_final_status_tool
 assert_yaml_step_not_fatal_false "workflow-finalize final status" "${FINALIZE_RECIPE}" "step-22b-final-status"

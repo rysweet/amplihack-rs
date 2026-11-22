@@ -133,9 +133,9 @@ steps:
       - `tests_observed` / `tests_moved`, `ci_observed` / `ci_moved` — whether
         the test and CI signals changed at all. Unobserved is NOT progress.
       - `waiting_on_output` — the loop reporting it is waiting on output that
-        never arrives. The CI signal `{{loop_ci_signal}}` is `<pass|pending|fail|none>@<head>`:
-        `pending@<head>` with the head unchanged is a required check still running, a wait,
-        so answer `CONTINUE`, never `STUCK`. `fail@<head>` with no movement is still `STUCK`.
+        never arrives. The CI signal `{{loop_ci_signal}}` is `<pass|pending|fail|none>@<head>`: `pending@<head>` with the head
+        unchanged is a required check still running, a wait, so answer `CONTINUE`, never `STUCK`. `fail@<head>` is `CONTINUE` with CI repair named in
+        `recommended_action` (#2966); answer `STUCK` for red CI only when the evidence names a cause the run cannot fix, naming that cause and the human step.
       - `infrastructure_fault` / `infrastructure_fault_class` — the last round
         ended on an infrastructure fault (an overloaded model endpoint, a
         missing credential), not on the work. `amplihack recipe run` already
