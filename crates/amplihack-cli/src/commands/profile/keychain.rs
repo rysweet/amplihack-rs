@@ -230,7 +230,8 @@ fn nfc_bytes(dir: &Path) -> Cow<'_, [u8]> {
 /// with `op="keychain lookup"`. It is written before the child exists, so a
 /// command held by a Keychain dialog and run with `RUST_LOG=debug` shows it
 /// as its last line about the lookup. It names neither the service nor the
-/// home. Bounding the wait is left to whatever started the command.
+/// home. Bounding the wait is left to whatever started the command. No layer
+/// does that yet; issue #2968 records which one should.
 ///
 /// The lookup is never retried: the exit status is the answer, and a second
 /// start could raise a second dialog. The rotator's stop flag is not read

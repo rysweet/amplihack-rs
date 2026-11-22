@@ -14009,7 +14009,8 @@ Limits:
   is the exit status `security` ends with. A `security` that is held by a
   Keychain dialog holds the command that asked, the rotator's cycle
   included, until the dialog is answered. A command that must not wait is
-  supervised from outside, by whatever started it. Before `security` is
+  supervised from outside, by whatever started it. No amplihack layer sets
+  that bound yet; issue #2968 tracks which one should. Before `security` is
   started, amplihack logs the debug line
   `starting security; the lookup waits for it to end, with no time limit`
   with `op="keychain lookup"`, so a command run with `RUST_LOG=debug` that
